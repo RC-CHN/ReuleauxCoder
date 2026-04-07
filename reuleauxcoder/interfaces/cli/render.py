@@ -25,6 +25,8 @@ class CLIRenderer:
             self._render_tool_start(event.tool_name, event.tool_args)
         elif event.event_type == AgentEventType.TOOL_CALL_END:
             self._render_tool_end(event.tool_name, event.tool_result)
+        elif event.event_type == AgentEventType.CHAT_END:
+            self.finalize_response(event.data.get("response", ""))
         elif event.event_type == AgentEventType.ERROR:
             self._render_error(event.error_message)
 

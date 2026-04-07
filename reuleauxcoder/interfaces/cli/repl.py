@@ -47,8 +47,7 @@ def run_repl(agent, config) -> None:
             continue
 
         try:
-            response = agent.chat(user_input)
-            renderer.finalize_response(response)
+            agent.chat(user_input)
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/yellow]")
         except Exception as e:

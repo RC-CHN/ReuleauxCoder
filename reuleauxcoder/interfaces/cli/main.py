@@ -41,8 +41,7 @@ def _run_once(agent: Agent, prompt: str):
     renderer = CLIRenderer()
     agent.add_event_handler(renderer.on_event)
 
-    response = agent.chat(prompt)
-    renderer.finalize_response(response)
+    agent.chat(prompt)
 
 
 def main():
