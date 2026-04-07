@@ -4,8 +4,20 @@ from pathlib import Path
 
 
 def get_sessions_dir() -> Path:
-    """Get the default sessions directory."""
-    return Path.home() / ".reuleauxcoder" / "sessions"
+    """Get the default sessions directory.
+    
+    Default: current working directory / .reuleauxcoder / sessions
+    Falls back to user home directory if cwd is not writable.
+    """
+    cwd_sessions = Path.cwd() / ".reuleauxcoder" / "sessions"
+    # Check if we can write to cwd
+    cwd_reuleaux = Path.cwd() / ".reuleauxcoder"
+    try:
+        cwd_reuleaux.mkdir(parents=True, exist_ok=True)
+        return cwd_sessions
+    except (PermissionError, OSError):
+        # Fall back to home directory
+        return Path.home() / ".reuleauxcoder" / "sessions"
 
 
 def get_history_file() -> Path:

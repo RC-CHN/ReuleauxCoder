@@ -1,5 +1,7 @@
 """CLI command handlers."""
 
+from pathlib import Path
+
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.services.sessions.manager import list_sessions, save_session
 from reuleauxcoder.interfaces.cli.render import show_help
@@ -12,10 +14,11 @@ def handle_command(
     config,
     current_session_id: str | None,
     ui_bus: UIEventBus,
+    sessions_dir: Path | None = None,
 ):
     if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
         if agent.messages:
-            sid = save_session(agent.messages, config.model, current_session_id)
+            sid = save_session(agent.messages, config.model, current_session_id, sessions_dir)
             ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
         return {"action": "exit", "session_id": current_session_id}
 
@@ -59,14 +62,14 @@ def handle_command(
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/save":
-        sid = save_session(agent.messages, config.model, current_session_id)
+        sid = save_session(agent.messages, config.model, current_session_id, sessions_dir)
         current_session_id = sid
         ui_bus.success(f"Session saved: {sid}", kind=UIEventKind.SESSION)
         ui_bus.info(f"Resume with: rcoder -r {sid}", kind=UIEventKind.SESSION)
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/sessions":
-        sessions = list_sessions()
+        sessions = list_sessions(sessions_dir)
         if not sessions:
             ui_bus.info("No saved sessions.", kind=UIEventKind.SESSION)
         else:

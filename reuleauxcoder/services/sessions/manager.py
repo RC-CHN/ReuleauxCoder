@@ -81,3 +81,11 @@ def list_sessions(
             continue
 
     return sessions[:limit]
+
+
+def get_latest_session(
+    sessions_dir: Optional[Path] = None,
+) -> Optional[SessionMetadata]:
+    """Get the most recent session, or None if no sessions exist."""
+    sessions = list_sessions(sessions_dir, limit=1)
+    return sessions[0] if sessions else None

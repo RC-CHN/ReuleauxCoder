@@ -10,7 +10,7 @@ from reuleauxcoder.interfaces.cli.repl import run_repl
 from reuleauxcoder.interfaces.events import AgentEventBridge, UIEventBus, UIEventKind
 from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.llm.client import LLM
-from reuleauxcoder.services.sessions.manager import load_session
+from reuleauxcoder.services.sessions.manager import load_session, get_latest_session
 
 
 def _init_mcp(mcp_servers, agent: Agent, ui_bus: UIEventBus):
@@ -86,20 +86,38 @@ def main():
         mcp_manager = _init_mcp(config.mcp_servers, agent, ui_bus)
 
     try:
+        current_session_id = None
+        sessions_dir = Path(config.session_dir) if config.session_dir else None
+        
         if args.resume:
-            loaded = load_session(args.resume)
+            loaded = load_session(args.resume, sessions_dir)
             if loaded:
                 agent.state.messages, _loaded_model = loaded
+                current_session_id = args.resume
                 ui_bus.success(f"Resumed session: {args.resume}", kind=UIEventKind.SESSION)
             else:
                 ui_bus.error(f"Session '{args.resume}' not found.", kind=UIEventKind.SESSION)
                 sys.exit(1)
+        else:
+            # Auto-load latest session on startup
+            latest = get_latest_session(sessions_dir)
+            if latest:
+                loaded = load_session(latest.id, sessions_dir)
+                if loaded:
+                    agent.state.messages, _loaded_model = loaded
+                    current_session_id = latest.id
+                    ui_bus.info(
+                        f"Auto-resumed latest session: {latest.id} ({latest.saved_at})",
+                        kind=UIEventKind.SESSION,
+                    )
+                    if latest.preview:
+                        ui_bus.info(f"  Preview: {latest.preview}...", kind=UIEventKind.SESSION)
 
         if args.prompt:
             _run_once(agent, args.prompt, ui_bus)
             return
 
-        run_repl(agent, config, ui_bus)
+        run_repl(agent, config, ui_bus, current_session_id, sessions_dir)
     finally:
         if mcp_manager:
             _cleanup_mcp(mcp_manager)
