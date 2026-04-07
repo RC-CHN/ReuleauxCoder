@@ -16,9 +16,9 @@ def handle_command(
     ui_bus: UIEventBus,
     sessions_dir: Path | None = None,
 ):
-    if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
+    if user_input.lower() in ("/quit", "/exit"):
         if agent.messages:
-            sid = save_session(agent.messages, config.model, current_session_id, sessions_dir)
+            sid = save_session(agent.messages, config.model, current_session_id, sessions_dir, is_exit=True)
             ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
         return {"action": "exit", "session_id": current_session_id}
 

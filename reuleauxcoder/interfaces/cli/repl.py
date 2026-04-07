@@ -1,5 +1,6 @@
 """Interactive REPL loop."""
 
+import time
 from pathlib import Path
 
 from prompt_toolkit import prompt as pt_prompt
@@ -19,12 +20,16 @@ def run_repl(
     ui_bus: UIEventBus,
     current_session_id: str = None,
     sessions_dir: Path | None = None,
+    session_exit_time: str | None = None,
 ) -> None:
     ensure_user_dirs()
     show_banner(config.model, config.base_url, __version__)
 
     hist_path = str(get_history_file())
     history = FileHistory(hist_path)
+    
+    # Track if this is the first message after resume
+    first_message_after_resume = session_exit_time is not None
 
     while True:
         try:
@@ -32,12 +37,19 @@ def run_repl(
         except (EOFError, KeyboardInterrupt):
             ui_bus.info("\nBye!")
             if agent.messages:
-                sid = save_session(agent.messages, config.model, current_session_id, sessions_dir)
+                sid = save_session(agent.messages, config.model, current_session_id, sessions_dir, is_exit=True)
                 ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
             break
 
         if not user_input:
             continue
+
+        # Inject resume context before first user message
+        if first_message_after_resume:
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+            resume_prefix = f"[SESSION_RESUME] User returned to the session at {current_time} (last left at {session_exit_time}).\n\n"
+            user_input = resume_prefix + user_input
+            first_message_after_resume = False
 
         result = handle_command(
             user_input, agent, config, current_session_id, ui_bus, sessions_dir

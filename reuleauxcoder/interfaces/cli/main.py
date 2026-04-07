@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 from reuleauxcoder.domain.agent.agent import Agent
@@ -10,7 +11,7 @@ from reuleauxcoder.interfaces.cli.repl import run_repl
 from reuleauxcoder.interfaces.events import AgentEventBridge, UIEventBus, UIEventKind
 from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.llm.client import LLM
-from reuleauxcoder.services.sessions.manager import load_session, get_latest_session
+from reuleauxcoder.services.sessions.manager import load_session, get_latest_session, get_exit_time
 
 
 def _init_mcp(mcp_servers, agent: Agent, ui_bus: UIEventBus):
@@ -87,6 +88,7 @@ def main():
 
     try:
         current_session_id = None
+        session_exit_time = None
         sessions_dir = Path(config.session_dir) if config.session_dir else None
         
         if args.resume:
@@ -94,6 +96,7 @@ def main():
             if loaded:
                 agent.state.messages, _loaded_model = loaded
                 current_session_id = args.resume
+                session_exit_time = get_exit_time(agent.state.messages)
                 ui_bus.success(f"Resumed session: {args.resume}", kind=UIEventKind.SESSION)
             else:
                 ui_bus.error(f"Session '{args.resume}' not found.", kind=UIEventKind.SESSION)
@@ -106,6 +109,7 @@ def main():
                 if loaded:
                     agent.state.messages, _loaded_model = loaded
                     current_session_id = latest.id
+                    session_exit_time = get_exit_time(agent.state.messages)
                     ui_bus.info(
                         f"Auto-resumed latest session: {latest.id} ({latest.saved_at})",
                         kind=UIEventKind.SESSION,
@@ -117,7 +121,7 @@ def main():
             _run_once(agent, args.prompt, ui_bus)
             return
 
-        run_repl(agent, config, ui_bus, current_session_id, sessions_dir)
+        run_repl(agent, config, ui_bus, current_session_id, sessions_dir, session_exit_time)
     finally:
         if mcp_manager:
             _cleanup_mcp(mcp_manager)
