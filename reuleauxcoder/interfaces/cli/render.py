@@ -6,6 +6,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.interfaces.events import UIEvent, UIEventKind, UIEventLevel
 
 console = Console()
 
@@ -29,6 +30,16 @@ class CLIRenderer:
             self.finalize_response(event.data.get("response", ""))
         elif event.event_type == AgentEventType.ERROR:
             self._render_error(event.error_message)
+
+    def on_ui_event(self, event: UIEvent) -> None:
+        """Handle a UI bus event."""
+        if event.kind == UIEventKind.AGENT:
+            agent_event = event.data.get("agent_event")
+            if isinstance(agent_event, AgentEvent):
+                self.on_event(agent_event)
+            return
+
+        self._render_notification(event)
 
     def _render_token(self, token: str) -> None:
         """Render a streaming token."""
@@ -68,6 +79,25 @@ class CLIRenderer:
         """Render an error message."""
         if message:
             self.console.print(f"[red]{message}[/red]")
+
+    def _render_notification(self, event: UIEvent) -> None:
+        """Render a generic UI notification event."""
+        style = {
+            UIEventLevel.INFO: None,
+            UIEventLevel.SUCCESS: "green",
+            UIEventLevel.WARNING: "yellow",
+            UIEventLevel.ERROR: "red",
+            UIEventLevel.DEBUG: "dim",
+        }[event.level]
+
+        if self._streamed_tokens:
+            print()
+            self._streamed_tokens.clear()
+
+        if style:
+            self.console.print(f"[{style}]{event.message}[/{style}]")
+        else:
+            self.console.print(event.message)
 
     def finalize_response(self, response: str) -> None:
         """Finalize response rendering (for non-streamed or final output)."""

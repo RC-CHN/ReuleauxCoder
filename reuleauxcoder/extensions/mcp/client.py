@@ -1,9 +1,15 @@
 """MCP client - connects to MCP servers and calls their tools."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
 import shutil
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reuleauxcoder.interfaces.events import UIEventBus
 
 from reuleauxcoder.extensions.mcp.models import MCPToolInfo
 
@@ -11,8 +17,9 @@ from reuleauxcoder.extensions.mcp.models import MCPToolInfo
 class MCPClient:
     """Async client for communicating with an MCP server via stdio."""
 
-    def __init__(self, config):
+    def __init__(self, config, ui_bus: "UIEventBus | None" = None):
         self.config = config
+        self._ui_bus = ui_bus
         self._process: asyncio.subprocess.Process | None = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -25,6 +32,16 @@ class MCPClient:
     @property
     def tools(self) -> list[MCPToolInfo]:
         return self._tools
+
+    def _emit(self, level: str, message: str) -> None:
+        """Emit a UI event if bus is available."""
+        if not self._ui_bus:
+            return
+        from reuleauxcoder.interfaces.events import UIEventKind
+
+        method = getattr(self._ui_bus, level, None)
+        if method:
+            method(f"[MCP] {message}", kind=UIEventKind.MCP)
 
     async def connect(self) -> bool:
         cmd = shutil.which(self.config.command)
@@ -40,7 +57,7 @@ class MCPClient:
                     break
 
         if not cmd:
-            print(f"[MCP] Cannot find command: {self.config.command}")
+            self._emit("error", f"Cannot find command: {self.config.command}")
             return False
 
         env = os.environ.copy()
@@ -59,7 +76,7 @@ class MCPClient:
             self._reader = self._process.stdout
             self._writer = self._process.stdin
         except Exception as e:
-            print(f"[MCP] Failed to start server '{self.config.name}': {e}")
+            self._emit("error", f"Failed to start server '{self.config.name}': {e}")
             return False
 
         self._receive_task = asyncio.create_task(self._receive_loop())
@@ -75,7 +92,7 @@ class MCPClient:
             )
 
             if not result:
-                print(f"[MCP] Failed to initialize server '{self.config.name}'")
+                self._emit("error", f"Failed to initialize server '{self.config.name}'")
                 return False
 
             await self._notify("notifications/initialized", {})
@@ -94,12 +111,12 @@ class MCPClient:
                     )
 
             self._initialized = True
-            print(
-                f"[MCP] Connected to '{self.config.name}' with {len(self._tools)} tools"
+            self._emit(
+                "success", f"Connected to '{self.config.name}' with {len(self._tools)} tools"
             )
             return True
         except Exception as e:
-            print(f"[MCP] Initialization error: {e}")
+            self._emit("error", f"Initialization error: {e}")
             return False
 
     async def disconnect(self):
@@ -191,14 +208,14 @@ class MCPClient:
             await self._writer.drain()
         except Exception as e:
             self._pending_requests.pop(request_id, None)
-            print(f"[MCP] Send error: {e}")
+            self._emit("error", f"Send error: {e}")
             return None
 
         try:
             return await asyncio.wait_for(future, timeout=30.0)
         except asyncio.TimeoutError:
             self._pending_requests.pop(request_id, None)
-            print(f"[MCP] Request timeout: {method}")
+            self._emit("warning", f"Request timeout: {method}")
             return None
 
     async def _notify(self, method: str, params: dict):
@@ -216,7 +233,7 @@ class MCPClient:
             self._writer.write(line.encode())
             await self._writer.drain()
         except Exception as e:
-            print(f"[MCP] Notify error: {e}")
+            self._emit("error", f"Notify error: {e}")
 
     async def _receive_loop(self):
         if not self._reader:
@@ -253,8 +270,8 @@ class MCPClient:
                         level = params.get("level", "info")
                         data = params.get("data", "")
                         if level in ("error", "warning"):
-                            print(f"[MCP/{self.config.name}] {level}: {data}")
+                            self._emit(level, f"[{self.config.name}] {data}")
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"[MCP] Receive error: {e}")
+            self._emit("error", f"Receive error: {e}")

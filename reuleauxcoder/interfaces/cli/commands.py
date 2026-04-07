@@ -2,14 +2,21 @@
 
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.services.sessions.manager import list_sessions, save_session
-from reuleauxcoder.interfaces.cli.render import console, show_help
+from reuleauxcoder.interfaces.cli.render import show_help
+from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 
 
-def handle_command(user_input: str, agent, config, current_session_id: str | None):
+def handle_command(
+    user_input: str,
+    agent,
+    config,
+    current_session_id: str | None,
+    ui_bus: UIEventBus,
+):
     if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
         if agent.messages:
             sid = save_session(agent.messages, config.model, current_session_id)
-            console.print(f"[dim]Session auto-saved: {sid}[/dim]")
+            ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
         return {"action": "exit", "session_id": current_session_id}
 
     if user_input == "/help":
@@ -18,14 +25,14 @@ def handle_command(user_input: str, agent, config, current_session_id: str | Non
 
     if user_input == "/reset":
         agent.reset()
-        console.print("[yellow]Conversation reset.[/yellow]")
+        ui_bus.warning("Conversation reset.")
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/tokens":
         p = agent.llm.total_prompt_tokens
         c = agent.llm.total_completion_tokens
-        console.print(
-            f"Tokens used this session: [cyan]{p}[/cyan] prompt + [cyan]{c}[/cyan] completion = [bold]{p + c}[/bold] total"
+        ui_bus.info(
+            f"Tokens used this session: {p} prompt + {c} completion = {p + c} total"
         )
         return {"action": "continue", "session_id": current_session_id}
 
@@ -34,7 +41,7 @@ def handle_command(user_input: str, agent, config, current_session_id: str | Non
         if new_model:
             agent.llm.model = new_model
             config.model = new_model
-            console.print(f"Switched to [cyan]{new_model}[/cyan]")
+            ui_bus.success(f"Switched to {new_model}")
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/compact":
@@ -42,30 +49,31 @@ def handle_command(user_input: str, agent, config, current_session_id: str | Non
         compressed = agent.context.maybe_compress(agent.messages, agent.llm)
         after = estimate_tokens(agent.messages)
         if compressed:
-            console.print(
-                f"[green]Compressed: {before} → {after} tokens ({len(agent.messages)} messages)[/green]"
+            ui_bus.success(
+                f"Compressed: {before} → {after} tokens ({len(agent.messages)} messages)"
             )
         else:
-            console.print(
-                f"[dim]Nothing to compress ({before} tokens, {len(agent.messages)} messages)[/dim]"
+            ui_bus.info(
+                f"Nothing to compress ({before} tokens, {len(agent.messages)} messages)"
             )
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/save":
         sid = save_session(agent.messages, config.model, current_session_id)
         current_session_id = sid
-        console.print(f"[green]Session saved: {sid}[/green]")
-        console.print(f"Resume with: rcoder -r {sid}")
+        ui_bus.success(f"Session saved: {sid}", kind=UIEventKind.SESSION)
+        ui_bus.info(f"Resume with: rcoder -r {sid}", kind=UIEventKind.SESSION)
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/sessions":
         sessions = list_sessions()
         if not sessions:
-            console.print("[dim]No saved sessions.[/dim]")
+            ui_bus.info("No saved sessions.", kind=UIEventKind.SESSION)
         else:
             for s in sessions:
-                console.print(
-                    f"  [cyan]{s.id}[/cyan] ({s.model}, {s.saved_at}) {s.preview}"
+                ui_bus.info(
+                    f"  {s.id} ({s.model}, {s.saved_at}) {s.preview}",
+                    kind=UIEventKind.SESSION,
                 )
         return {"action": "continue", "session_id": current_session_id}
 

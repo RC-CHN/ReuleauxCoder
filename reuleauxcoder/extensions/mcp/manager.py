@@ -1,8 +1,14 @@
 """MCP manager - manages MCP servers and tool aggregation."""
 
+from __future__ import annotations
+
 import asyncio
 import threading
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reuleauxcoder.interfaces.events import UIEventBus
 
 from reuleauxcoder.extensions.mcp.adapter import MCPTool
 from reuleauxcoder.extensions.mcp.client import MCPClient
@@ -11,7 +17,8 @@ from reuleauxcoder.extensions.mcp.client import MCPClient
 class MCPManager:
     """Manages connections to multiple MCP servers and aggregates their tools."""
 
-    def __init__(self):
+    def __init__(self, ui_bus: "UIEventBus | None" = None):
+        self._ui_bus = ui_bus
         self._clients: list[MCPClient] = []
         self._tools: list[MCPTool] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -49,12 +56,15 @@ class MCPManager:
         if not self._started:
             self.start()
 
-        client = MCPClient(config)
+        client = MCPClient(config, ui_bus=self._ui_bus)
         future = asyncio.run_coroutine_threadsafe(client.connect(), self._loop)
         try:
             success = future.result(timeout=30.0)
         except Exception as e:
-            print(f"[MCP] Connection error: {e}")
+            if self._ui_bus:
+                from reuleauxcoder.interfaces.events import UIEventKind
+
+                self._ui_bus.error(f"Connection error: {e}", kind=UIEventKind.MCP)
             return False
 
         if success:
