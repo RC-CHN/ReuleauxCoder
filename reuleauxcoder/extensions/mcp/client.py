@@ -119,6 +119,29 @@ class MCPClient:
             self._emit("error", f"Initialization error: {e}")
             return False
 
+    def is_connected(self) -> bool:
+        """Check if the MCP server is still connected."""
+        if not self._initialized:
+            return False
+        if not self._process or self._process.returncode is not None:
+            return False
+        if not self._writer or not self._reader:
+            return False
+        return True
+
+    async def reconnect(self) -> bool:
+        """Disconnect and reconnect to the MCP server."""
+        self._emit("warning", f"Attempting to reconnect to '{self.config.name}'...")
+        await self.disconnect()
+        # Clear tools since they'll be re-fetched on connect
+        self._tools = []
+        success = await self.connect()
+        if success:
+            self._emit("success", f"Reconnected to '{self.config.name}'")
+        else:
+            self._emit("error", f"Failed to reconnect to '{self.config.name}'")
+        return success
+
     async def disconnect(self):
         if self._receive_task:
             self._receive_task.cancel()
@@ -142,9 +165,20 @@ class MCPClient:
         self._writer = None
         self._initialized = False
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
+    async def call_tool(self, name: str, arguments: dict, _retry: bool = False) -> str:
         if not self._initialized:
+            # Try reconnect once if not initialized
+            if not _retry:
+                if await self.reconnect():
+                    return await self.call_tool(name, arguments, _retry=True)
             return "Error: MCP client not connected"
+
+        # Check if process is still alive
+        if not self.is_connected():
+            if not _retry:
+                if await self.reconnect():
+                    return await self.call_tool(name, arguments, _retry=True)
+            return "Error: MCP server connection lost"
 
         try:
             result = await self._request(
@@ -156,6 +190,10 @@ class MCPClient:
             )
 
             if not result:
+                # No response - might be connection issue, try reconnect
+                if not _retry:
+                    if await self.reconnect():
+                        return await self.call_tool(name, arguments, _retry=True)
                 return "Error: No response from MCP server"
 
             content = result.get("content", [])
@@ -183,6 +221,10 @@ class MCPClient:
                 return f"Error: {result_text}"
             return result_text or "(no output)"
         except Exception as e:
+            # Exception during call - try reconnect once
+            if not _retry:
+                if await self.reconnect():
+                    return await self.call_tool(name, arguments, _retry=True)
             return f"Error calling MCP tool: {e}"
 
     async def _request(self, method: str, params: dict) -> dict | None:
