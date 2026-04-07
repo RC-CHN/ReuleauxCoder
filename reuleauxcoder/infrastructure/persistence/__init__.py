@@ -1,5 +1,3 @@
-"""Persistence infrastructure - JSON session storage."""
+"""Persistence infrastructure."""
 
-from reuleauxcoder.infrastructure.persistence.json_sessions import JSONSessionStore
-
-__all__ = ["JSONSessionStore"]
+__all__ = []
