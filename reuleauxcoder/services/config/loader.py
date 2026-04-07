@@ -1,4 +1,4 @@
-"""Configuration loader - loads config.yaml."""
+"""Configuration loader - loads config.yaml with global + workspace merge."""
 
 from pathlib import Path
 from typing import Optional
@@ -9,43 +9,86 @@ from reuleauxcoder.domain.config.schema import DEFAULTS
 
 
 class ConfigLoader:
-    """Loads configuration from config.yaml."""
+    """Loads configuration from config.yaml.
 
-    DEFAULT_CONFIG_PATH = Path("config.yaml")
-    USER_CONFIG_PATH = Path.home() / ".reuleauxcoder" / "config.yaml"
+    Configuration priority (later overrides earlier):
+    1. Global config: ~/.rcoder/config.yaml
+    2. Workspace config: ./.rcoder/config.yaml
+    3. Explicit path: --config argument
+    """
+
+    GLOBAL_CONFIG_PATH = Path.home() / ".rcoder" / "config.yaml"
+    WORKSPACE_CONFIG_PATH = Path.cwd() / ".rcoder" / "config.yaml"
 
     def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path
 
-    def find_config(self) -> Optional[Path]:
-        """Find the config file to use."""
-        if self.config_path:
-            return self.config_path
+    def _load_yaml(self, path: Path) -> dict:
+        """Load YAML file, return empty dict if not exists or invalid."""
+        if not path.exists():
+            return {}
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+                return data if data else {}
+        except (yaml.YAMLError, IOError):
+            return {}
 
-        # Check current directory first
-        if self.DEFAULT_CONFIG_PATH.exists():
-            return self.DEFAULT_CONFIG_PATH
-
-        # Check user config directory
-        if self.USER_CONFIG_PATH.exists():
-            return self.USER_CONFIG_PATH
-
-        return None
+    def _merge_dicts(self, base: dict, override: dict) -> dict:
+        """Merge two dicts, override takes priority.
+        
+        For nested dicts, merge recursively.
+        For MCP servers, merge by name (override wins for same name).
+        """
+        result = dict(base)
+        
+        for key, value in override.items():
+            if key == "mcp" and "servers" in value:
+                # Special handling for MCP servers: merge by name
+                result_mcp = result.get("mcp", {})
+                result_servers = result_mcp.get("servers", {})
+                override_servers = value.get("servers", {})
+                # Merge servers, override wins for same name
+                merged_servers = {**result_servers, **override_servers}
+                result["mcp"] = {"servers": merged_servers}
+            elif isinstance(value, dict) and key in result and isinstance(result[key], dict):
+                # Recursively merge nested dicts
+                result[key] = self._merge_dicts(result[key], value)
+            else:
+                # Override wins
+                result[key] = value
+        
+        return result
 
     def load(self) -> Config:
-        """Load configuration from YAML file."""
-        config_path = self.find_config()
-
-        if config_path is None:
+        """Load configuration with global + workspace merge."""
+        # Start with defaults
+        config_data = {}
+        
+        # Load global config
+        global_data = self._load_yaml(self.GLOBAL_CONFIG_PATH)
+        if global_data:
+            config_data = self._merge_dicts(config_data, global_data)
+        
+        # Load workspace config (overrides global)
+        workspace_data = self._load_yaml(self.WORKSPACE_CONFIG_PATH)
+        if workspace_data:
+            config_data = self._merge_dicts(config_data, workspace_data)
+        
+        # Load explicit config path (overrides everything)
+        if self.config_path:
+            explicit_data = self._load_yaml(self.config_path)
+            if explicit_data:
+                config_data = self._merge_dicts(config_data, explicit_data)
+        
+        # Check if we have any config at all
+        if not config_data:
             raise FileNotFoundError(
                 "No config.yaml found. "
-                "Create one in the current directory or in ~/.reuleauxcoder/"
+                "Create one in ~/.rcoder/ (global) or ./.rcoder/ (workspace)"
             )
 
-        with open(config_path) as f:
-            data = yaml.safe_load(f) or {}
-
-        return self._parse_config(data)
+        return self._parse_config(config_data)
 
     def _parse_config(self, data: dict) -> Config:
         """Parse YAML data into Config model."""

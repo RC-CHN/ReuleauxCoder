@@ -6,28 +6,31 @@ from pathlib import Path
 def get_sessions_dir() -> Path:
     """Get the default sessions directory.
     
-    Default: current working directory / .reuleauxcoder / sessions
+    Default: current working directory / .rcoder / sessions
     Falls back to user home directory if cwd is not writable.
     """
-    cwd_sessions = Path.cwd() / ".reuleauxcoder" / "sessions"
+    cwd_sessions = Path.cwd() / ".rcoder" / "sessions"
     # Check if we can write to cwd
-    cwd_reuleaux = Path.cwd() / ".reuleauxcoder"
+    cwd_rcoder = Path.cwd() / ".rcoder"
     try:
-        cwd_reuleaux.mkdir(parents=True, exist_ok=True)
+        cwd_rcoder.mkdir(parents=True, exist_ok=True)
         return cwd_sessions
     except (PermissionError, OSError):
         # Fall back to home directory
-        return Path.home() / ".reuleauxcoder" / "sessions"
+        return Path.home() / ".rcoder" / "sessions"
 
 
 def get_history_file() -> Path:
-    """Get the default history file path."""
-    return Path.home() / ".reuleauxcoder" / "history"
+    """Get the default history file path.
+    
+    Default: current working directory / .rcoder / history
+    """
+    return Path.cwd() / ".rcoder" / "history"
 
 
 def get_user_config_dir() -> Path:
     """Get the user config directory."""
-    return Path.home() / ".reuleauxcoder"
+    return Path.home() / ".rcoder"
 
 
 def ensure_user_dirs() -> None:

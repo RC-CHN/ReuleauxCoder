@@ -12,10 +12,10 @@ CONFIG_SCHEMA = {
     },
     "session": {
         "auto_save": "bool (default: true)",
-        "dir": "string (optional, default: ~/.reuleauxcoder/sessions)",
+        "dir": "string (optional, default: ./.rcoder/sessions, fallback ~/.rcoder/sessions)",
     },
     "cli": {
-        "history_file": "string (optional, default: ~/.reuleauxcoder/history)",
+        "history_file": "string (optional, default: ~/.rcoder/history)",
     },
     "mcp": {
         "servers": {

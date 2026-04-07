@@ -2,9 +2,10 @@
 
 from reuleauxcoder.domain.config.schema import DEFAULTS
 
-# Session defaults
-SESSION_DIR_DEFAULT = "~/.reuleauxcoder/sessions"
-HISTORY_FILE_DEFAULT = "~/.reuleauxcoder/history"
+# Session defaults (actual defaults computed at runtime in paths.py)
+# These are fallback values when workspace is not writable
+SESSION_DIR_DEFAULT = "~/.rcoder/sessions"
+HISTORY_FILE_DEFAULT = "~/.rcoder/history"
 
 # Agent defaults
 MAX_CONTEXT_TOKENS_DEFAULT = 128_000
