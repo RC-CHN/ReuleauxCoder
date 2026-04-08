@@ -43,9 +43,24 @@ class MCPManager:
 
     def stop(self):
         if self._loop and self._loop.is_running():
+            # Schedule stop on the loop
             self._loop.call_soon_threadsafe(self._loop.stop)
+        
+        # Wait for thread to finish
         if self._thread:
             self._thread.join(timeout=2.0)
+        
+        # Properly close the loop to avoid __del__ errors
+        if self._loop and not self._loop.is_running():
+            try:
+                # Close async generators and shutdown default executor
+                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+                self._loop.close()
+            except Exception:
+                pass
+        
+        self._loop = None
+        self._thread = None
         self._started = False
 
     @property

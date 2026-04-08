@@ -150,14 +150,38 @@ class MCPClient:
                 await self._receive_task
             except asyncio.CancelledError:
                 pass
+            finally:
+                self._receive_task = None
 
-        if self._process:
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.cancel()
+        self._pending_requests.clear()
+
+        writer = self._writer
+        process = self._process
+
+        if writer is not None:
             try:
-                self._process.terminate()
-                await asyncio.wait_for(self._process.wait(), timeout=2.0)
+                writer.close()
+            except Exception:
+                pass
+            wait_closed = getattr(writer, "wait_closed", None)
+            if callable(wait_closed):
+                try:
+                    await asyncio.wait_for(wait_closed(), timeout=1.0)
+                except Exception:
+                    pass
+
+        if process:
+            try:
+                if process.returncode is None:
+                    process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=2.0)
             except Exception:
                 try:
-                    self._process.kill()
+                    process.kill()
+                    await asyncio.wait_for(process.wait(), timeout=1.0)
                 except Exception:
                     pass
 
