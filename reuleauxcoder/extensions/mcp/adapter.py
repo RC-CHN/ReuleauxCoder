@@ -11,6 +11,8 @@ from reuleauxcoder.extensions.tools.base import Tool
 class MCPTool(Tool):
     """Wraps an MCP tool as an internal Tool instance."""
 
+    tool_source = "mcp"
+
     def __init__(
         self, client: MCPClient, tool_info: MCPToolInfo, loop: asyncio.AbstractEventLoop
     ):
@@ -20,6 +22,7 @@ class MCPTool(Tool):
         self.name = tool_info.name
         self.description = tool_info.description
         self.parameters = tool_info.input_schema
+        self.server_name = tool_info.server_name
 
     def execute(self, **kwargs) -> str:
         if self._loop is None or not self._loop.is_running():

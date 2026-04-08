@@ -2,10 +2,17 @@
 
 from pathlib import Path
 
+from reuleauxcoder.domain.config.models import ApprovalRuleConfig
 from reuleauxcoder.domain.context.manager import estimate_tokens
+from reuleauxcoder.domain.hooks import HookPoint
+from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
+from reuleauxcoder.services.config.approval_store import save_approval_config
 from reuleauxcoder.services.sessions.manager import list_sessions, save_session
 from reuleauxcoder.interfaces.cli.render import show_help
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+
+
+VALID_APPROVAL_ACTIONS = {"allow", "warn", "require_approval", "deny"}
 
 
 def handle_command(
@@ -80,4 +87,200 @@ def handle_command(
                 )
         return {"action": "continue", "session_id": current_session_id}
 
+    if user_input == "/approval" or user_input == "/approval show":
+        _show_approval_rules(config, ui_bus, agent)
+        return {"action": "continue", "session_id": current_session_id}
+
+    if user_input.startswith("/approval set "):
+        result = _handle_approval_set(user_input[14:].strip(), agent, config, ui_bus)
+        if result:
+            return {"action": "continue", "session_id": current_session_id}
+
     return {"action": "chat", "session_id": current_session_id}
+
+
+def _show_approval_rules(config, ui_bus: UIEventBus, agent=None) -> None:
+    ui_bus.info(
+        f"Approval default_mode: {config.approval.default_mode}",
+        kind=UIEventKind.COMMAND,
+    )
+    if not config.approval.rules:
+        ui_bus.info("No approval rules configured.", kind=UIEventKind.COMMAND)
+    else:
+        ui_bus.info("Configured rules:", kind=UIEventKind.COMMAND)
+        for idx, rule in enumerate(config.approval.rules, 1):
+            parts = []
+            if rule.tool_source:
+                parts.append(f"source={rule.tool_source}")
+            if rule.mcp_server:
+                parts.append(f"mcp_server={rule.mcp_server}")
+            if rule.tool_name:
+                parts.append(f"tool={rule.tool_name}")
+            if rule.effect_class:
+                parts.append(f"effect={rule.effect_class}")
+            if rule.profile:
+                parts.append(f"profile={rule.profile}")
+            scope = ", ".join(parts) if parts else "<default match>"
+            ui_bus.info(
+                f"  {idx}. {scope} -> {rule.action}",
+                kind=UIEventKind.COMMAND,
+            )
+
+    if agent is None:
+        return
+
+    mcp_tools_by_server: dict[str, list[str]] = {}
+    for tool in getattr(agent, "tools", []):
+        if getattr(tool, "tool_source", None) != "mcp":
+            continue
+        server_name = getattr(tool, "server_name", None) or "unknown"
+        mcp_tools_by_server.setdefault(server_name, []).append(tool.name)
+
+    if not mcp_tools_by_server:
+        return
+
+    ui_bus.info("MCP effective policy view:", kind=UIEventKind.COMMAND)
+    for server_name in sorted(mcp_tools_by_server):
+        server_rule = _find_matching_rule(
+            config.approval.rules,
+            ApprovalRuleConfig(tool_source="mcp", mcp_server=server_name, action=config.approval.default_mode),
+        )
+        server_action = server_rule.action if server_rule else _resolve_mcp_server_action(config, server_name)
+        server_source = (
+            "configured at server level"
+            if server_rule is not None
+            else "inherited from generic mcp/default"
+        )
+        ui_bus.info(
+            f"  MCP server {server_name} -> {server_action}",
+            kind=UIEventKind.COMMAND,
+        )
+        ui_bus.info(
+            f"    [dim]{server_source}[/dim]",
+            kind=UIEventKind.COMMAND,
+        )
+
+        for tool_name in sorted(mcp_tools_by_server[server_name]):
+            tool_rule = _find_matching_rule(
+                config.approval.rules,
+                ApprovalRuleConfig(
+                    tool_source="mcp",
+                    mcp_server=server_name,
+                    tool_name=tool_name,
+                    action=config.approval.default_mode,
+                ),
+            )
+            tool_action = tool_rule.action if tool_rule else server_action
+            tool_source = (
+                "configured at tool level"
+                if tool_rule is not None
+                else f"inherited from server {server_name}"
+            )
+            ui_bus.info(
+                f"    - {tool_name} -> {tool_action}",
+                kind=UIEventKind.COMMAND,
+            )
+            ui_bus.info(
+                f"      [dim]{tool_source}[/dim]",
+                kind=UIEventKind.COMMAND,
+            )
+
+
+def _handle_approval_set(spec: str, agent, config, ui_bus: UIEventBus) -> bool:
+    parts = spec.split()
+    if len(parts) < 2:
+        ui_bus.error(
+            "Usage: /approval set <target> <allow|warn|require_approval|deny>",
+            kind=UIEventKind.COMMAND,
+        )
+        return True
+
+    target = parts[0]
+    action = parts[1]
+    if action not in VALID_APPROVAL_ACTIONS:
+        ui_bus.error(
+            "approval action must be one of allow, warn, require_approval, deny",
+            kind=UIEventKind.COMMAND,
+        )
+        return True
+
+    rule = _parse_approval_target(target, action)
+    if rule is None:
+        ui_bus.error(
+            "target must be one of tool:<name>, mcp, mcp:<server>, or mcp:<server>:<tool>",
+            kind=UIEventKind.COMMAND,
+        )
+        return True
+
+    config.approval.rules = [r for r in config.approval.rules if not _same_rule_target(r, rule)]
+    config.approval.rules.append(rule)
+    path = save_approval_config(config.approval)
+    _refresh_approval_runtime(agent, config)
+    ui_bus.success(
+        f"Updated approval rule and saved to {path}",
+        kind=UIEventKind.COMMAND,
+    )
+    return True
+
+
+def _parse_approval_target(target: str, action: str) -> ApprovalRuleConfig | None:
+    if target == "mcp":
+        return ApprovalRuleConfig(tool_source="mcp", action=action)
+    if target.startswith("tool:"):
+        return ApprovalRuleConfig(tool_name=target[5:], action=action)
+    if target.startswith("mcp:"):
+        rest = target[4:]
+        if not rest:
+            return None
+        if ":" in rest:
+            server, tool_name = rest.split(":", 1)
+            if not server or not tool_name:
+                return None
+            return ApprovalRuleConfig(
+                tool_source="mcp",
+                mcp_server=server,
+                tool_name=tool_name,
+                action=action,
+            )
+        return ApprovalRuleConfig(tool_source="mcp", mcp_server=rest, action=action)
+    return None
+
+
+def _same_rule_target(left: ApprovalRuleConfig, right: ApprovalRuleConfig) -> bool:
+    return (
+        left.tool_name == right.tool_name
+        and left.tool_source == right.tool_source
+        and left.mcp_server == right.mcp_server
+        and left.effect_class == right.effect_class
+        and left.profile == right.profile
+    )
+
+
+def _resolve_mcp_server_action(config, server_name: str) -> str:
+    tool_rule = _find_matching_rule(
+        config.approval.rules,
+        ApprovalRuleConfig(tool_source="mcp", mcp_server=server_name, action=config.approval.default_mode),
+    )
+    if tool_rule is not None:
+        return tool_rule.action
+    generic_rule = _find_matching_rule(
+        config.approval.rules,
+        ApprovalRuleConfig(tool_source="mcp", action=config.approval.default_mode),
+    )
+    if generic_rule is not None:
+        return generic_rule.action
+    return config.approval.default_mode
+
+
+def _find_matching_rule(rules: list[ApprovalRuleConfig], target: ApprovalRuleConfig) -> ApprovalRuleConfig | None:
+    for rule in rules:
+        if _same_rule_target(rule, target):
+            return rule
+    return None
+
+
+def _refresh_approval_runtime(agent, config) -> None:
+    hooks = agent.hook_registry._hooks.get(HookPoint.BEFORE_TOOL_EXECUTE, [])
+    for hook in hooks:
+        if isinstance(hook, ToolPolicyGuardHook):
+            hook.update_approval_config(config.approval)

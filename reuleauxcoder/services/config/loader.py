@@ -114,6 +114,7 @@ class ConfigLoader:
             ApprovalRuleConfig(
                 tool_name=rule.get("tool_name"),
                 tool_source=rule.get("tool_source"),
+                mcp_server=rule.get("mcp_server"),
                 effect_class=rule.get("effect_class"),
                 profile=rule.get("profile"),
                 action=rule.get("action", "require_approval"),

@@ -16,6 +16,7 @@ CONFIG_SCHEMA = {
             {
                 "tool_name": "string (optional)",
                 "tool_source": "string (optional)",
+                "mcp_server": "string (optional)",
                 "effect_class": "string (optional)",
                 "profile": "string (optional)",
                 "action": "string (required, one of allow/warn/require_approval/deny)",
@@ -62,6 +63,7 @@ DEFAULTS = {
         {"tool_name": "edit_file", "action": "require_approval"},
         {"tool_name": "bash", "action": "require_approval"},
         {"tool_name": "agent", "action": "require_approval"},
+        {"tool_source": "mcp", "mcp_server": "filesystem", "action": "warn"},
         {"tool_source": "mcp", "action": "require_approval"},
     ],
     "tool_output_max_chars": 12_000,

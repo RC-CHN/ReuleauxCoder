@@ -107,6 +107,7 @@ class MCPClient:
                             input_schema=t.get(
                                 "inputSchema", {"type": "object", "properties": {}}
                             ),
+                            server_name=self.config.name,
                         )
                     )
 

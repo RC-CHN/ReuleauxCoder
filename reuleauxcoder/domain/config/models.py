@@ -44,6 +44,7 @@ class ApprovalRuleConfig:
 
     tool_name: Optional[str] = None
     tool_source: Optional[str] = None
+    mcp_server: Optional[str] = None
     effect_class: Optional[str] = None
     profile: Optional[str] = None
     action: ApprovalAction = "require_approval"

@@ -31,6 +31,10 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
             ApprovalPolicyEngine(approval_config) if approval_config is not None else None
         )
 
+    def update_approval_config(self, approval_config: ApprovalConfig) -> None:
+        """Replace approval config for live runtime updates."""
+        self.approval_engine = ApprovalPolicyEngine(approval_config)
+
     def run(self, context: BeforeToolExecuteContext) -> GuardDecision:
         tool_call = context.tool_call
         if tool_call is None:
@@ -49,10 +53,14 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
                 return decision
 
         if self.approval_engine is not None:
+            metadata = context.metadata or {}
             approval_context = ToolApprovalContext(
                 tool_call=tool_call,
                 tool_name=tool_call.name,
-                tool_source=_infer_tool_source(tool_call.name),
+                tool_source=metadata.get("tool_source", _infer_tool_source(tool_call.name)),
+                mcp_server=metadata.get("mcp_server"),
+                tool_description=metadata.get("tool_description"),
+                tool_schema=metadata.get("tool_schema"),
             )
             match = self.approval_engine.evaluate(approval_context)
             if match.action == "deny":

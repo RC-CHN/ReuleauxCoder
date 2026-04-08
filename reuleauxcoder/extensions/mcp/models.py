@@ -10,3 +10,4 @@ class MCPToolInfo:
     name: str
     description: str
     input_schema: dict
+    server_name: str | None = None

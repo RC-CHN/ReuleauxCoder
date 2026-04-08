@@ -27,6 +27,16 @@ approval:
     - tool_name: "agent"
       action: "require_approval"
     - tool_source: "mcp"
+      mcp_server: "filesystem"
+      action: "warn"
+    - tool_source: "mcp"
+      mcp_server: "filesystem"
+      tool_name: "write_file"
+      action: "require_approval"
+    - tool_source: "mcp"
+      mcp_server: "postgres"
+      action: "require_approval"
+    - tool_source: "mcp"
       action: "require_approval"
 
 tool_output:

@@ -25,10 +25,22 @@ class ToolExecutor:
 
     def execute(self, tc: "ToolCall") -> str:
         """Execute a single tool call."""
+        tool = self.agent.get_tool(tc.name)
+        if tool is None:
+            from reuleauxcoder.extensions.tools.registry import get_tool
+
+            tool = get_tool(tc.name)
+
         before_context = BeforeToolExecuteContext(
             hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
             tool_call=tc,
             round_index=self.agent.state.current_round,
+            metadata={
+                "tool_source": getattr(tool, "tool_source", "builtin" if tool is not None else "unknown"),
+                "mcp_server": getattr(tool, "server_name", None),
+                "tool_description": getattr(tool, "description", None),
+                "tool_schema": getattr(tool, "parameters", None),
+            },
         )
 
         guard_decisions = self.agent.hook_registry.run_guards(
