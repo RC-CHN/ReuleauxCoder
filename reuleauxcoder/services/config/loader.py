@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Optional
 import yaml
 
-from reuleauxcoder.domain.config.models import Config, MCPServerConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    ApprovalRuleConfig,
+    Config,
+    MCPServerConfig,
+)
 from reuleauxcoder.domain.config.schema import DEFAULTS
 
 
@@ -93,6 +98,7 @@ class ConfigLoader:
     def _parse_config(self, data: dict) -> Config:
         """Parse YAML data into Config model."""
         app_config = data.get("app", {})
+        approval_config = data.get("approval", {})
         tool_output_config = data.get("tool_output", {})
         session_config = data.get("session", {})
         cli_config = data.get("cli", {})
@@ -103,6 +109,17 @@ class ConfigLoader:
         servers_data = mcp_config.get("servers", {})
         for name, server_data in servers_data.items():
             mcp_servers.append(MCPServerConfig.from_dict(name, server_data))
+
+        approval_rules = [
+            ApprovalRuleConfig(
+                tool_name=rule.get("tool_name"),
+                tool_source=rule.get("tool_source"),
+                effect_class=rule.get("effect_class"),
+                profile=rule.get("profile"),
+                action=rule.get("action", "require_approval"),
+            )
+            for rule in approval_config.get("rules", DEFAULTS["approval_rules"])
+        ]
 
         return Config(
             model=app_config.get("model", DEFAULTS["model"]),
@@ -125,6 +142,12 @@ class ConfigLoader:
             ),
             tool_output_store_dir=tool_output_config.get(
                 "store_dir", DEFAULTS["tool_output_store_dir"]
+            ),
+            approval=ApprovalConfig(
+                default_mode=approval_config.get(
+                    "default_mode", DEFAULTS["approval_default_mode"]
+                ),
+                rules=approval_rules,
             ),
             session_auto_save=session_config.get(
                 "auto_save", DEFAULTS["session_auto_save"]

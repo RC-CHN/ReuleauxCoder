@@ -79,6 +79,7 @@ class GuardDecision:
     allowed: bool
     reason: str | None = None
     warning: str | None = None
+    requires_approval: bool = False
 
     @classmethod
     def allow(cls) -> "GuardDecision":
@@ -91,3 +92,7 @@ class GuardDecision:
     @classmethod
     def warn(cls, warning: str) -> "GuardDecision":
         return cls(allowed=True, warning=warning)
+
+    @classmethod
+    def require_approval(cls, reason: str | None = None) -> "GuardDecision":
+        return cls(allowed=True, reason=reason, requires_approval=True)

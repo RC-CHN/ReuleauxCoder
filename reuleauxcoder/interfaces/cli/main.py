@@ -9,6 +9,7 @@ This module handles CLI-specific concerns:
 import sys
 from pathlib import Path
 
+from reuleauxcoder.interfaces.cli.approval import CLIApprovalProvider
 from reuleauxcoder.interfaces.cli.args import parse_args
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.repl import run_repl
@@ -40,6 +41,7 @@ def main():
     # Initialize application using shared entrypoint
     runner = AppRunner(options)
     ctx = runner.initialize()
+    ctx.agent.approval_provider = CLIApprovalProvider(ctx.ui_bus)
     
     # Add CLI renderer and bridge agent events onto the UI bus
     renderer = CLIRenderer()

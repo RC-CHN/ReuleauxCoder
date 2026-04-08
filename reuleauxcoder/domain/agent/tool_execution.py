@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.llm.models import ToolCall
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeToolExecuteContext,
@@ -37,6 +38,24 @@ class ToolExecutor:
         denied = next((d for d in guard_decisions if not d.allowed), None)
         if denied is not None:
             return denied.reason or f"Tool '{tc.name}' blocked by guard hook"
+
+        approval_required = next((d for d in guard_decisions if d.requires_approval), None)
+        if approval_required is not None:
+            provider = self.agent.approval_provider
+            if provider is None:
+                return (
+                    approval_required.reason
+                    or f"Tool '{tc.name}' requires approval, but no approval provider is configured"
+                )
+            decision = provider.request_approval(
+                ApprovalRequest(
+                    tool_name=tc.name,
+                    tool_args=dict(tc.arguments),
+                    reason=approval_required.reason,
+                )
+            )
+            if not decision.approved:
+                return decision.reason or f"Tool '{tc.name}' denied by approval provider"
 
         before_context = self.agent.hook_registry.run_transforms(
             HookPoint.BEFORE_TOOL_EXECUTE,

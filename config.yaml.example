@@ -9,6 +9,26 @@ app:
   temperature: 0.0
   max_context_tokens: 128000
 
+approval:
+  default_mode: "require_approval"
+  rules:
+    - tool_name: "read_file"
+      action: "allow"
+    - tool_name: "glob"
+      action: "allow"
+    - tool_name: "grep"
+      action: "allow"
+    - tool_name: "write_file"
+      action: "require_approval"
+    - tool_name: "edit_file"
+      action: "require_approval"
+    - tool_name: "bash"
+      action: "require_approval"
+    - tool_name: "agent"
+      action: "require_approval"
+    - tool_source: "mcp"
+      action: "require_approval"
+
 tool_output:
   max_chars: 12000
   max_lines: 120

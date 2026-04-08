@@ -122,7 +122,7 @@ class AppRunner:
         # Register hooks
         agent.register_hook(
             HookPoint.BEFORE_TOOL_EXECUTE,
-            ToolPolicyGuardHook(priority=100),
+            ToolPolicyGuardHook(approval_config=config.approval, priority=100),
         )
         agent.register_hook(
             HookPoint.AFTER_TOOL_EXECUTE,

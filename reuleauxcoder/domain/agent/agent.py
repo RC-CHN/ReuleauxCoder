@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 
 if TYPE_CHECKING:
+    from reuleauxcoder.domain.approval import ApprovalProvider
     from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.extensions.tools.base import Tool
     from reuleauxcoder.domain.context.manager import ContextManager
@@ -36,6 +37,7 @@ class Agent:
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
         hook_registry: HookRegistry | None = None,
+        approval_provider: "ApprovalProvider" | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else []
@@ -54,6 +56,7 @@ class Agent:
         self.hook_registry = hook_registry or HookRegistry()
 
         # Execution components
+        self.approval_provider = approval_provider
         self._loop = AgentLoop(self)
         self._executor = ToolExecutor(self)
 

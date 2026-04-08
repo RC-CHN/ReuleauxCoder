@@ -1,7 +1,7 @@
 """Configuration models - domain layer configuration abstractions."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Literal, Optional
 
 
 @dataclass
@@ -35,6 +35,28 @@ class MCPServerConfig:
         )
 
 
+ApprovalAction = Literal["allow", "warn", "require_approval", "deny"]
+
+
+@dataclass
+class ApprovalRuleConfig:
+    """User-configurable approval rule."""
+
+    tool_name: Optional[str] = None
+    tool_source: Optional[str] = None
+    effect_class: Optional[str] = None
+    profile: Optional[str] = None
+    action: ApprovalAction = "require_approval"
+
+
+@dataclass
+class ApprovalConfig:
+    """Approval policy configuration."""
+
+    default_mode: ApprovalAction = "require_approval"
+    rules: list[ApprovalRuleConfig] = field(default_factory=list)
+
+
 @dataclass
 class Config:
     """Main configuration model for ReuleauxCoder."""
@@ -60,6 +82,9 @@ class Config:
     # CLI settings
     history_file: Optional[str] = None
 
+    # Approval settings
+    approval: ApprovalConfig = field(default_factory=ApprovalConfig)
+
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""
         errors = []
@@ -73,6 +98,14 @@ class Config:
             errors.append("tool_output_max_chars must be positive")
         if self.tool_output_max_lines < 1:
             errors.append("tool_output_max_lines must be positive")
+        valid_actions = {"allow", "warn", "require_approval", "deny"}
+        if self.approval.default_mode not in valid_actions:
+            errors.append("approval.default_mode must be one of allow, warn, require_approval, deny")
+        for i, rule in enumerate(self.approval.rules):
+            if rule.action not in valid_actions:
+                errors.append(
+                    f"approval.rules[{i}].action must be one of allow, warn, require_approval, deny"
+                )
         return errors
 
     def is_valid(self) -> bool:
