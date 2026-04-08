@@ -26,6 +26,7 @@ dependencies = [
     "rich>=13.0",
     "prompt_toolkit>=3.0",
     "pyyaml>=6.0",
+    "textual>=8.2.3",
 ]
 
 [tool.hatch.build.targets.wheel]
