@@ -28,8 +28,13 @@ def run_repl(
     hist_path = str(get_history_file())
     history = FileHistory(hist_path)
     
-    # Track if this is the first message after resume
-    first_message_after_resume = session_exit_time is not None
+    pending_resume_prefix: str | None = None
+    if session_exit_time is not None:
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        pending_resume_prefix = (
+            f"[SESSION_RESUME] User returned to the session at {current_time} "
+            f"(last left at {session_exit_time}).\n\n"
+        )
 
     while True:
         try:
@@ -49,13 +54,6 @@ def run_repl(
         if not user_input:
             continue
 
-        # Inject resume context before first user message
-        if first_message_after_resume:
-            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-            resume_prefix = f"[SESSION_RESUME] User returned to the session at {current_time} (last left at {session_exit_time}).\n\n"
-            user_input = resume_prefix + user_input
-            first_message_after_resume = False
-
         result = handle_command(
             user_input, agent, config, current_session_id, ui_bus, sessions_dir
         )
@@ -65,8 +63,13 @@ def run_repl(
         if result["action"] == "continue":
             continue
 
+        chat_input = user_input
+        if pending_resume_prefix is not None:
+            chat_input = pending_resume_prefix + chat_input
+            pending_resume_prefix = None
+
         try:
-            agent.chat(user_input)
+            agent.chat(chat_input)
         except KeyboardInterrupt:
             ui_bus.warning("Interrupted.")
         except Exception as e:
