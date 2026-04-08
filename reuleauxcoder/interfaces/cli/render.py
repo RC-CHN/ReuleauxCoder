@@ -69,11 +69,7 @@ class CLIRenderer:
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""
-        try:
-            syntax = Syntax(result, "diff", theme="monokai", line_numbers=False)
-            self.console.print(Panel(syntax, border_style="green", padding=(0, 1)))
-        except Exception:
-            self.console.print(f"[dim]{result[:500]}[/dim]")
+        render_diff_panel(result, self.console)
 
     def _render_error(self, message: str | None) -> None:
         """Render an error message."""
@@ -160,3 +156,14 @@ def show_warning(text: str) -> None:
 
 def show_info(text: str) -> None:
     console.print(text)
+
+
+
+def render_diff_panel(result: str, target_console: Console | None = None) -> None:
+    """Render a diff with syntax highlighting into the given console."""
+    out = target_console or console
+    try:
+        syntax = Syntax(result, "diff", theme="monokai", line_numbers=False)
+        out.print(Panel(syntax, border_style="green", padding=(0, 1)))
+    except Exception:
+        out.print(f"[dim]{result[:500]}[/dim]")
