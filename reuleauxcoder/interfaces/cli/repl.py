@@ -11,7 +11,7 @@ from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs, get_history_
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.render import show_banner
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
-from reuleauxcoder.services.sessions.manager import save_session
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
 def run_repl(
@@ -37,7 +37,12 @@ def run_repl(
         except (EOFError, KeyboardInterrupt):
             ui_bus.info("\nBye!")
             if agent.messages:
-                sid = save_session(agent.messages, config.model, current_session_id, sessions_dir, is_exit=True)
+                sid = SessionStore(sessions_dir).save(
+                    agent.messages,
+                    config.model,
+                    current_session_id,
+                    is_exit=True,
+                )
                 ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
             break
 

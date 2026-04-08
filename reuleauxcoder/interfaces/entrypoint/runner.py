@@ -21,9 +21,9 @@ from reuleauxcoder.domain.hooks.builtin import ToolOutputTruncationHook, ToolPol
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.llm.client import LLM
-from reuleauxcoder.services.sessions.manager import load_session, get_latest_session, get_exit_time
 
 
 @dataclass
@@ -150,29 +150,30 @@ class AppRunner:
         session_exit_time = None
         sessions_dir = Path(config.session_dir) if config.session_dir else None
         
+        session_store = SessionStore(sessions_dir)
         if self.options.resume_session_id:
-            loaded = load_session(self.options.resume_session_id, sessions_dir)
+            loaded = session_store.load(self.options.resume_session_id)
             if loaded:
                 agent.state.messages, _loaded_model = loaded
                 current_session_id = self.options.resume_session_id
-                session_exit_time = get_exit_time(agent.state.messages)
+                session_exit_time = session_store.get_exit_time(agent.state.messages)
                 ui_bus.success(
-                    f"Resumed session: {self.options.resume_session_id}", 
+                    f"Resumed session: {self.options.resume_session_id}",
                     kind=UIEventKind.SESSION
                 )
             else:
                 ui_bus.error(
-                    f"Session '{self.options.resume_session_id}' not found.", 
+                    f"Session '{self.options.resume_session_id}' not found.",
                     kind=UIEventKind.SESSION
                 )
         elif self.options.auto_resume_latest:
-            latest = get_latest_session(sessions_dir)
+            latest = session_store.get_latest()
             if latest:
-                loaded = load_session(latest.id, sessions_dir)
+                loaded = session_store.load(latest.id)
                 if loaded:
                     agent.state.messages, _loaded_model = loaded
                     current_session_id = latest.id
-                    session_exit_time = get_exit_time(agent.state.messages)
+                    session_exit_time = session_store.get_exit_time(agent.state.messages)
                     ui_bus.info(
                         f"Auto-resumed latest session: {latest.id} ({latest.saved_at})",
                         kind=UIEventKind.SESSION,

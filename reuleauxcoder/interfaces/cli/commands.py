@@ -6,8 +6,8 @@ from reuleauxcoder.domain.config.models import ApprovalRuleConfig
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
-from reuleauxcoder.services.config.approval_store import save_approval_config
-from reuleauxcoder.services.sessions.manager import list_sessions, save_session
+from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.render import show_help
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 
@@ -25,7 +25,12 @@ def handle_command(
 ):
     if user_input.lower() in ("/quit", "/exit"):
         if agent.messages:
-            sid = save_session(agent.messages, config.model, current_session_id, sessions_dir, is_exit=True)
+            sid = SessionStore(sessions_dir).save(
+                agent.messages,
+                config.model,
+                current_session_id,
+                is_exit=True,
+            )
             ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
         return {"action": "exit", "session_id": current_session_id}
 
@@ -69,14 +74,18 @@ def handle_command(
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/save":
-        sid = save_session(agent.messages, config.model, current_session_id, sessions_dir)
+        sid = SessionStore(sessions_dir).save(
+            agent.messages,
+            config.model,
+            current_session_id,
+        )
         current_session_id = sid
         ui_bus.success(f"Session saved: {sid}", kind=UIEventKind.SESSION)
         ui_bus.info(f"Resume with: rcoder -r {sid}", kind=UIEventKind.SESSION)
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/sessions":
-        sessions = list_sessions(sessions_dir)
+        sessions = SessionStore(sessions_dir).list()
         if not sessions:
             ui_bus.info("No saved sessions.", kind=UIEventKind.SESSION)
         else:
@@ -214,7 +223,7 @@ def _handle_approval_set(spec: str, agent, config, ui_bus: UIEventBus) -> bool:
 
     config.approval.rules = [r for r in config.approval.rules if not _same_rule_target(r, rule)]
     config.approval.rules.append(rule)
-    path = save_approval_config(config.approval)
+    path = WorkspaceConfigStore().save_approval_config(config.approval)
     _refresh_approval_runtime(agent, config)
     ui_bus.success(
         f"Updated approval rule and saved to {path}",
