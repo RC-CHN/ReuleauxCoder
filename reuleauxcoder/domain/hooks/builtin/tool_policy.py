@@ -25,7 +25,12 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
         approval_config: ApprovalConfig | None = None,
         priority: int = 0,
     ):
-        super().__init__(name="tool_policy_guard", priority=priority, extension_name="core")
+        GuardHook.__init__(
+            self,
+            name="tool_policy_guard",
+            priority=priority,
+            extension_name="core",
+        )
         self.policies = policies or DEFAULT_TOOL_POLICIES
         self.approval_engine = (
             ApprovalPolicyEngine(approval_config) if approval_config is not None else None
