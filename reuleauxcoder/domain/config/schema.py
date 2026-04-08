@@ -10,6 +10,12 @@ CONFIG_SCHEMA = {
         "temperature": "float (default: 0.0)",
         "max_context_tokens": "int (default: 128000)",
     },
+    "tool_output": {
+        "max_chars": "int (default: 12000)",
+        "max_lines": "int (default: 120)",
+        "store_full_output": "bool (default: true)",
+        "store_dir": "string (optional, default: ./.rcoder/tool-outputs, fallback ~/.rcoder/tool-outputs)",
+    },
     "session": {
         "auto_save": "bool (default: true)",
         "dir": "string (optional, default: ./.rcoder/sessions, fallback ~/.rcoder/sessions)",
@@ -35,6 +41,10 @@ DEFAULTS = {
     "max_tokens": 4096,
     "temperature": 0.0,
     "max_context_tokens": 128_000,
+    "tool_output_max_chars": 12_000,
+    "tool_output_max_lines": 120,
+    "tool_output_store_full": True,
+    "tool_output_store_dir": None,
     "session_auto_save": True,
     "session_dir": None,  # Will be computed at runtime
     "history_file": None,  # Will be computed at runtime

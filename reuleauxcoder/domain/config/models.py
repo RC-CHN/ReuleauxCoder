@@ -47,6 +47,12 @@ class Config:
     max_context_tokens: int = 128_000
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
 
+    # Tool output settings
+    tool_output_max_chars: int = 12_000
+    tool_output_max_lines: int = 120
+    tool_output_store_full: bool = True
+    tool_output_store_dir: Optional[str] = None
+
     # Session settings
     session_auto_save: bool = True
     session_dir: Optional[str] = None
@@ -63,6 +69,10 @@ class Config:
             errors.append("max_tokens must be positive")
         if self.temperature < 0 or self.temperature > 2:
             errors.append("temperature must be between 0 and 2")
+        if self.tool_output_max_chars < 1:
+            errors.append("tool_output_max_chars must be positive")
+        if self.tool_output_max_lines < 1:
+            errors.append("tool_output_max_lines must be positive")
         return errors
 
     def is_valid(self) -> bool:

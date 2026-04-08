@@ -3,11 +3,16 @@
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Any, Optional
 
-from openai import OpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
+from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
 
+from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.hooks.types import (
+    AfterLLMResponseContext,
+    BeforeLLMRequestContext,
+    HookPoint,
+)
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
 
 
@@ -36,9 +41,13 @@ class LLM:
         messages: list[dict],
         tools: Optional[list[dict]] = None,
         on_token: Optional[Callable[[str], None]] = None,
+        hook_registry: HookRegistry | None = None,
+        session_id: str | None = None,
+        trace_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
-        params: dict = {
+        params: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
@@ -48,6 +57,27 @@ class LLM:
 
         if tools:
             params["tools"] = tools
+
+        before_context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            request_params=dict(params),
+            messages=list(messages),
+            tools=list(tools) if tools else [],
+            model=self.model,
+            session_id=session_id,
+            trace_id=trace_id,
+            metadata=dict(metadata or {}),
+        )
+
+        if hook_registry is not None:
+            guard_decisions = hook_registry.run_guards(HookPoint.BEFORE_LLM_REQUEST, before_context)
+            denied = next((d for d in guard_decisions if not d.allowed), None)
+            if denied is not None:
+                raise RuntimeError(denied.reason or "LLM request blocked by guard hook")
+            before_context = hook_registry.run_transforms(HookPoint.BEFORE_LLM_REQUEST, before_context)
+            hook_registry.run_observers(HookPoint.BEFORE_LLM_REQUEST, before_context)
+
+        params = dict(before_context.request_params)
 
         # stream_options is an OpenAI extension
         try:
@@ -109,13 +139,29 @@ class LLM:
         self.total_prompt_tokens += prompt_tok
         self.total_completion_tokens += completion_tok
 
-        return LLMResponse(
+        response = LLMResponse(
             content="".join(content_parts),
             tool_calls=parsed,
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
             tokens=tokens,
         )
+
+        after_context = AfterLLMResponseContext(
+            hook_point=HookPoint.AFTER_LLM_RESPONSE,
+            request_params=dict(params),
+            response=response,
+            model=self.model,
+            session_id=session_id,
+            trace_id=trace_id,
+            metadata=dict(before_context.metadata),
+        )
+
+        if hook_registry is not None:
+            after_context = hook_registry.run_transforms(HookPoint.AFTER_LLM_RESPONSE, after_context)
+            hook_registry.run_observers(HookPoint.AFTER_LLM_RESPONSE, after_context)
+
+        return after_context.response or response
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
         """Retry on transient errors with exponential backoff."""

@@ -9,7 +9,8 @@ class ReadFileTool(Tool):
     name = "read_file"
     description = (
         "Read a file's contents with line numbers. "
-        "Always read a file before editing it."
+        "Always read a file before editing it. "
+        "For large files, prefer paged reads with offset/limit; use override=true only when you intentionally need the full file."
     )
     parameters = {
         "type": "object",
@@ -26,11 +27,21 @@ class ReadFileTool(Tool):
                 "type": "integer",
                 "description": "Max lines to read. Default 2000.",
             },
+            "override": {
+                "type": "boolean",
+                "description": "If true, ignore offset/limit and read the full file. Default false.",
+            },
         },
         "required": ["file_path"],
     }
 
-    def execute(self, file_path: str, offset: int = 1, limit: int = 2000) -> str:
+    def execute(
+        self,
+        file_path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        override: bool = False,
+    ) -> str:
         try:
             p = Path(file_path).expanduser().resolve()
             if not p.exists():
@@ -42,13 +53,17 @@ class ReadFileTool(Tool):
             lines = text.splitlines()
             total = len(lines)
 
+            if override:
+                numbered = [f"{i + 1}\t{ln}" for i, ln in enumerate(lines)]
+                return "\n".join(numbered) or "(empty file)"
+
             start = max(0, offset - 1)
             chunk = lines[start : start + limit]
             numbered = [f"{start + i + 1}\t{ln}" for i, ln in enumerate(chunk)]
             result = "\n".join(numbered)
 
             if total > start + limit:
-                result += f"\n... ({total} lines total, showing {start + 1}-{start + len(chunk)})"
+                result += f"\n... ({total} lines total, showing {start + 1}-{start + len(chunk)}; use override=true to read full file)"
             return result or "(empty file)"
         except Exception as e:
             return f"Error: {e}"

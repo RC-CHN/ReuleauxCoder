@@ -1,6 +1,7 @@
 """Core agent - the main agent class."""
 
 from __future__ import annotations
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 
@@ -12,6 +13,7 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
+from reuleauxcoder.domain.hooks import HookBase, HookPoint, HookRegistry
 
 
 @dataclass
@@ -33,6 +35,7 @@ class Agent:
         tools: Optional[List["Tool"]] = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
+        hook_registry: HookRegistry | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else []
@@ -46,6 +49,9 @@ class Agent:
         from reuleauxcoder.domain.context.manager import ContextManager
 
         self.context = ContextManager(max_tokens=max_context_tokens)
+
+        # Hook runtime
+        self.hook_registry = hook_registry or HookRegistry()
 
         # Execution components
         self._loop = AgentLoop(self)
@@ -65,6 +71,14 @@ class Agent:
                 handler(event)
             except Exception:
                 pass  # Don't let handler errors break execution
+
+    def register_hook(self, hook_point: HookPoint, hook: HookBase[object]) -> None:
+        """Register a hook on the agent-scoped hook registry."""
+        self.hook_registry.register(hook_point, hook)
+
+    def list_hooks(self, hook_point: HookPoint | None = None) -> dict[str, list[str]]:
+        """List registered hooks from the agent-scoped hook registry."""
+        return self.hook_registry.list_hooks(hook_point)
 
     def add_tools(self, tools: List["Tool"]) -> None:
         """Add additional tools."""

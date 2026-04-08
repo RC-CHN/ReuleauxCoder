@@ -93,6 +93,7 @@ class ConfigLoader:
     def _parse_config(self, data: dict) -> Config:
         """Parse YAML data into Config model."""
         app_config = data.get("app", {})
+        tool_output_config = data.get("tool_output", {})
         session_config = data.get("session", {})
         cli_config = data.get("cli", {})
         mcp_config = data.get("mcp", {})
@@ -113,6 +114,18 @@ class ConfigLoader:
                 "max_context_tokens", DEFAULTS["max_context_tokens"]
             ),
             mcp_servers=mcp_servers,
+            tool_output_max_chars=tool_output_config.get(
+                "max_chars", DEFAULTS["tool_output_max_chars"]
+            ),
+            tool_output_max_lines=tool_output_config.get(
+                "max_lines", DEFAULTS["tool_output_max_lines"]
+            ),
+            tool_output_store_full=tool_output_config.get(
+                "store_full_output", DEFAULTS["tool_output_store_full"]
+            ),
+            tool_output_store_dir=tool_output_config.get(
+                "store_dir", DEFAULTS["tool_output_store_dir"]
+            ),
             session_auto_save=session_config.get(
                 "auto_save", DEFAULTS["session_auto_save"]
             ),

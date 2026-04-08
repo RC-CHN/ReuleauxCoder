@@ -41,6 +41,7 @@ class AgentLoop:
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
                 on_token=lambda token: self.agent._emit_event(AgentEvent.stream_token(token)),
+                hook_registry=self.agent.hook_registry,
             )
 
             # Update token counts

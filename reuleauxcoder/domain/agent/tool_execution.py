@@ -9,6 +9,11 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.llm.models import ToolCall
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.hooks.types import (
+    AfterToolExecuteContext,
+    BeforeToolExecuteContext,
+    HookPoint,
+)
 
 
 class ToolExecutor:
@@ -19,25 +24,58 @@ class ToolExecutor:
 
     def execute(self, tc: "ToolCall") -> str:
         """Execute a single tool call."""
+        before_context = BeforeToolExecuteContext(
+            hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
+            tool_call=tc,
+            round_index=self.agent.state.current_round,
+        )
+
+        guard_decisions = self.agent.hook_registry.run_guards(
+            HookPoint.BEFORE_TOOL_EXECUTE,
+            before_context,
+        )
+        denied = next((d for d in guard_decisions if not d.allowed), None)
+        if denied is not None:
+            return denied.reason or f"Tool '{tc.name}' blocked by guard hook"
+
+        before_context = self.agent.hook_registry.run_transforms(
+            HookPoint.BEFORE_TOOL_EXECUTE,
+            before_context,
+        )
+        self.agent.hook_registry.run_observers(HookPoint.BEFORE_TOOL_EXECUTE, before_context)
+
+        tool_call = before_context.tool_call or tc
+
         # First check agent's tools, then fall back to global registry
-        tool = self.agent.get_tool(tc.name)
+        tool = self.agent.get_tool(tool_call.name)
         if tool is None:
             from reuleauxcoder.extensions.tools.registry import get_tool
 
-            tool = get_tool(tc.name)
+            tool = get_tool(tool_call.name)
 
         if tool is None:
-            return f"Error: unknown tool '{tc.name}'"
+            return f"Error: unknown tool '{tool_call.name}'"
 
         try:
-            result = tool.execute(**tc.arguments)
-            self.agent._emit_event(AgentEvent.tool_call_end(tc.name, result))
-            return result
+            result = tool.execute(**tool_call.arguments)
+            after_context = AfterToolExecuteContext(
+                hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+                tool_call=tool_call,
+                result=result,
+                round_index=self.agent.state.current_round,
+            )
+            after_context = self.agent.hook_registry.run_transforms(
+                HookPoint.AFTER_TOOL_EXECUTE,
+                after_context,
+            )
+            self.agent.hook_registry.run_observers(HookPoint.AFTER_TOOL_EXECUTE, after_context)
+            self.agent._emit_event(AgentEvent.tool_call_end(tool_call.name, after_context.result))
+            return after_context.result
         except TypeError as e:
-            return f"Error: bad arguments for {tc.name}: {e}"
+            return f"Error: bad arguments for {tool_call.name}: {e}"
         except Exception as e:
-            self.agent._emit_event(AgentEvent.error(f"Error executing {tc.name}: {e}"))
-            return f"Error executing {tc.name}: {e}"
+            self.agent._emit_event(AgentEvent.error(f"Error executing {tool_call.name}: {e}"))
+            return f"Error executing {tool_call.name}: {e}"
 
     def execute_parallel(self, tool_calls: List["ToolCall"]) -> List[str]:
         """Execute multiple tool calls in parallel."""

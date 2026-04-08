@@ -9,6 +9,12 @@ app:
   temperature: 0.0
   max_context_tokens: 128000
 
+tool_output:
+  max_chars: 12000
+  max_lines: 120
+  store_full_output: true
+  store_dir: "/home/pan/proj/ReuleauxCoder/.rcoder/tool-outputs"
+
 session:
   auto_save: true
   dir: "/home/pan/.reuleauxcoder/sessions"

@@ -3,6 +3,8 @@ import time
 from pathlib import Path
 
 from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.hooks import HookPoint
+from reuleauxcoder.domain.hooks.builtin import ToolOutputTruncationHook
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
 from reuleauxcoder.interfaces.cli.args import parse_args
@@ -75,6 +77,17 @@ def main():
     agent = Agent(
         llm=llm, tools=list(ALL_TOOLS), max_context_tokens=config.max_context_tokens
     )
+    agent.register_hook(
+        HookPoint.AFTER_TOOL_EXECUTE,
+        ToolOutputTruncationHook(
+            max_chars=config.tool_output_max_chars,
+            max_lines=config.tool_output_max_lines,
+            store_full_output=config.tool_output_store_full,
+            store_dir=config.tool_output_store_dir,
+            priority=0,
+        ),
+    )
+
     for tool in agent.tools:
         if tool.name == "agent":
             tool._parent_agent = agent
