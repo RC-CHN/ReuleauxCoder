@@ -97,11 +97,24 @@ class UIEventBus:
 
     def __init__(self):
         self._handlers: list[Callable[[UIEvent], None]] = []
+        self._history: list[UIEvent] = []
 
-    def subscribe(self, handler: Callable[[UIEvent], None]) -> None:
+    def subscribe(
+        self,
+        handler: Callable[[UIEvent], None],
+        *,
+        replay_history: bool = True,
+    ) -> None:
         self._handlers.append(handler)
+        if replay_history:
+            for event in self._history:
+                try:
+                    handler(event)
+                except Exception:
+                    pass
 
     def emit(self, event: UIEvent) -> None:
+        self._history.append(event)
         for handler in self._handlers:
             try:
                 handler(event)

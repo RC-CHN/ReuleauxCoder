@@ -41,8 +41,10 @@ def main():
     runner = AppRunner(options)
     ctx = runner.initialize()
     
-    # Add CLI renderer
+    # Add CLI renderer and bridge agent events onto the UI bus
     renderer = CLIRenderer()
+    bridge = AgentEventBridge(ctx.ui_bus)
+    ctx.agent.add_event_handler(bridge.on_agent_event)
     ctx.ui_bus.subscribe(renderer.on_ui_event)
     
     # Check for API key
