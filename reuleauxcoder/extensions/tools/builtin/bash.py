@@ -1,25 +1,11 @@
 """Shell command execution with safety checks."""
 
 import os
-import re
 import subprocess
 
 from reuleauxcoder.extensions.tools.base import Tool
 
 _cwd: str | None = None
-
-_DANGEROUS_PATTERNS = [
-    (r"\brm\s+(-\w*)?-r\w*\s+(/|~|\$HOME)", "recursive delete on home/root"),
-    (r"\brm\s+(-\w*)?-rf\s", "force recursive delete"),
-    (r"\bmkfs\b", "format filesystem"),
-    (r"\bdd\s+.*of=/dev/", "raw disk write"),
-    (r">\s*/dev/sd[a-z]", "overwrite block device"),
-    (r"\bchmod\s+(-R\s+)?777\s+/", "chmod 777 on root"),
-    (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
-    (r"\bcurl\b.*\|\s*(sudo\s+)?bash", "pipe curl to bash"),
-    (r"\bwget\b.*\|\s*(sudo\s+)?bash", "pipe wget to bash"),
-]
-
 
 class BashTool(Tool):
     name = "bash"
@@ -44,10 +30,6 @@ class BashTool(Tool):
 
     def execute(self, command: str, timeout: int = 120) -> str:
         global _cwd
-        warning = _check_dangerous(command)
-        if warning:
-            return f"⚠ Blocked: {warning}\nCommand: {command}\nIf intentional, modify the command to be more specific."
-
         cwd = _cwd or os.getcwd()
 
         try:
@@ -79,13 +61,6 @@ class BashTool(Tool):
             return f"Error: timed out after {timeout}s"
         except Exception as e:
             return f"Error running command: {e}"
-
-
-def _check_dangerous(cmd: str) -> str | None:
-    for pattern, reason in _DANGEROUS_PATTERNS:
-        if re.search(pattern, cmd):
-            return reason
-    return None
 
 
 def _update_cwd(command: str, current_cwd: str) -> None:

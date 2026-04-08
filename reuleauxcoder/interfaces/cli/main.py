@@ -4,7 +4,7 @@ from pathlib import Path
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.hooks import HookPoint
-from reuleauxcoder.domain.hooks.builtin import ToolOutputTruncationHook
+from reuleauxcoder.domain.hooks.builtin import ToolOutputTruncationHook, ToolPolicyGuardHook
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
 from reuleauxcoder.interfaces.cli.args import parse_args
@@ -76,6 +76,10 @@ def main():
     )
     agent = Agent(
         llm=llm, tools=list(ALL_TOOLS), max_context_tokens=config.max_context_tokens
+    )
+    agent.register_hook(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        ToolPolicyGuardHook(priority=100),
     )
     agent.register_hook(
         HookPoint.AFTER_TOOL_EXECUTE,
