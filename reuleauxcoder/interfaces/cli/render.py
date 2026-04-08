@@ -126,7 +126,7 @@ def show_banner(model: str, base_url: str | None, version: str) -> None:
             f"[bold]ReuleauxCoder[/bold] v{version}\n"
             f"Model: [cyan]{model}[/cyan]"
             + (f"  Base: [dim]{base_url}[/dim]" if base_url else "")
-            + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit.",
+            + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]/quit[/bold] to exit.",
             border_style="blue",
         )
     )
@@ -143,7 +143,7 @@ def show_help() -> None:
             "  /compact       Compress conversation context\n"
             "  /save          Save session to disk\n"
             "  /sessions      List saved sessions\n"
-            "  quit           Exit ReuleauxCoder",
+            "  /quit           Exit ReuleauxCoder",
             title="ReuleauxCoder Help",
             border_style="dim",
         )
