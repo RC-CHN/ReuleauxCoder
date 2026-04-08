@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import copy
 from typing import Any, cast
 
 from reuleauxcoder.domain.hooks.base import GuardHook, HookBase, ObserverHook, TransformHook
@@ -82,6 +83,13 @@ class HookRegistry:
         if kind is HookKind.TRANSFORM:
             return [h for h in hooks if isinstance(h, TransformHook)]
         return [h for h in hooks if isinstance(h, ObserverHook)]
+
+    def clone(self) -> "HookRegistry":
+        """Create an isolated copy of the registry and registered hooks."""
+        cloned = HookRegistry()
+        for hook_point, hooks in self._hooks.items():
+            cloned._hooks[hook_point] = [copy(hook) for hook in hooks]
+        return cloned
 
     @staticmethod
     def _sorted_hooks(hooks: list[HookBase[Any]]) -> list[HookBase[Any]]:

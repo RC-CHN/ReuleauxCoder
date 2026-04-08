@@ -36,6 +36,7 @@ class AgentTool(Tool):
             tools=[t for t in parent.tools if t.name != "agent"],
             max_context_tokens=parent.context.max_tokens,
             max_rounds=20,
+            hook_registry=parent.hook_registry.clone(),
         )
 
         try:
