@@ -25,6 +25,7 @@ class CLIApprovalProvider(ApprovalProvider):
         )
         if request.reason:
             self.ui_bus.info(f"Reason: {request.reason}", kind=UIEventKind.COMMAND)
+
         diff_text = self._build_preview_diff(request)
         if diff_text is not None:
             title = "Proposed file diff:" if request.tool_name == "write_file" else "Proposed edit diff:"

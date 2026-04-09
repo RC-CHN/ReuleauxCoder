@@ -31,6 +31,7 @@ class AgentEvent:
     tool_name: Optional[str] = None
     tool_args: Optional[dict] = None
     tool_result: Optional[str] = None
+    tool_success: Optional[bool] = None
 
     # Error specific fields
     error_message: Optional[str] = None
@@ -61,7 +62,13 @@ class AgentEvent:
         )
 
     @classmethod
-    def tool_call_end(cls, tool_name: str, result: str) -> "AgentEvent":
+    def tool_call_end(
+        cls,
+        tool_name: str,
+        result: str,
+        *,
+        success: bool = True,
+    ) -> "AgentEvent":
         """Create a tool call end event."""
         return cls(
             event_type=AgentEventType.TOOL_CALL_END,
@@ -69,6 +76,7 @@ class AgentEvent:
             tool_result=result[:500]
             if len(result) > 500
             else result,  # Truncate for events
+            tool_success=success,
         )
 
     @classmethod

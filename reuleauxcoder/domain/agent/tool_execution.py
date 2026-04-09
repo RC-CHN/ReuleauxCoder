@@ -49,16 +49,27 @@ class ToolExecutor:
         )
         denied = next((d for d in guard_decisions if not d.allowed), None)
         if denied is not None:
-            return denied.reason or f"Tool '{tc.name}' blocked by guard hook"
+            message = denied.reason or f"Tool '{tc.name}' blocked by guard hook"
+            self.agent._emit_event(AgentEvent.tool_call_end(tc.name, message, success=False))
+            return message
+
+        preflight_error = tool.preflight_validate(**tc.arguments) if tool is not None else None
+        if preflight_error:
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(tc.name, preflight_error, success=False)
+            )
+            return preflight_error
 
         approval_required = next((d for d in guard_decisions if d.requires_approval), None)
         if approval_required is not None:
             provider = self.agent.approval_provider
             if provider is None:
-                return (
+                message = (
                     approval_required.reason
                     or f"Tool '{tc.name}' requires approval, but no approval provider is configured"
                 )
+                self.agent._emit_event(AgentEvent.tool_call_end(tc.name, message, success=False))
+                return message
             decision = provider.request_approval(
                 ApprovalRequest(
                     tool_name=tc.name,
@@ -67,7 +78,9 @@ class ToolExecutor:
                 )
             )
             if not decision.approved:
-                return decision.reason or f"Tool '{tc.name}' denied by approval provider"
+                message = decision.reason or f"Tool '{tc.name}' denied by approval provider"
+                self.agent._emit_event(AgentEvent.tool_call_end(tc.name, message, success=False))
+                return message
 
         before_context = self.agent.hook_registry.run_transforms(
             HookPoint.BEFORE_TOOL_EXECUTE,
@@ -85,7 +98,11 @@ class ToolExecutor:
             tool = get_tool(tool_call.name)
 
         if tool is None:
-            return f"Error: unknown tool '{tool_call.name}'"
+            message = f"Error: unknown tool '{tool_call.name}'"
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+            )
+            return message
 
         try:
             result = tool.execute(**tool_call.arguments)
@@ -103,10 +120,17 @@ class ToolExecutor:
             self.agent._emit_event(AgentEvent.tool_call_end(tool_call.name, after_context.result))
             return after_context.result
         except TypeError as e:
-            return f"Error: bad arguments for {tool_call.name}: {e}"
+            message = f"Error: bad arguments for {tool_call.name}: {e}"
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+            )
+            return message
         except Exception as e:
-            self.agent._emit_event(AgentEvent.error(f"Error executing {tool_call.name}: {e}"))
-            return f"Error executing {tool_call.name}: {e}"
+            message = f"Error executing {tool_call.name}: {e}"
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+            )
+            return message
 
     def execute_parallel(self, tool_calls: List["ToolCall"]) -> List[str]:
         """Execute multiple tool calls in parallel."""

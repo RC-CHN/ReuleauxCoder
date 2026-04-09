@@ -30,7 +30,11 @@ class CLIRenderer:
         elif event.event_type == AgentEventType.TOOL_CALL_START:
             self._render_tool_start(event.tool_name, event.tool_args)
         elif event.event_type == AgentEventType.TOOL_CALL_END:
-            self._render_tool_end(event.tool_name, event.tool_result)
+            self._render_tool_end(
+                event.tool_name,
+                event.tool_result,
+                success=event.tool_success if event.tool_success is not None else True,
+            )
         elif event.event_type == AgentEventType.CHAT_END:
             self.finalize_response(event.data.get("response", ""))
         elif event.event_type == AgentEventType.ERROR:
@@ -94,7 +98,7 @@ class CLIRenderer:
         args_str = brief(args) if args else ""
         self.console.print(f"[dim]> {name}({args_str})[/dim]")
 
-    def _render_tool_end(self, name: str, result: str | None) -> None:
+    def _render_tool_end(self, name: str, result: str | None, success: bool = True) -> None:
         """Render tool call result."""
         if not result:
             return
@@ -104,7 +108,8 @@ class CLIRenderer:
         else:
             # Truncate long results
             display = result[:500] + "..." if len(result) > 500 else result
-            self.console.print(f"[dim]{display}[/dim]")
+            style = "dim" if success else "red"
+            self.console.print(f"[{style}]{display}[/{style}]")
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""

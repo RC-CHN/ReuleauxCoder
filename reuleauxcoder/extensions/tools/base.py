@@ -10,6 +10,13 @@ class Tool(ABC):
     description: str
     parameters: dict
 
+    def preflight_validate(self, **kwargs) -> str | None:
+        """Optional lightweight validation before approval/execution.
+
+        Return an error string to short-circuit execution, or None if valid.
+        """
+        return None
+
     @abstractmethod
     def execute(self, **kwargs) -> str:
         """Run the tool and return a text result."""

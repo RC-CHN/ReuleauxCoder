@@ -32,27 +32,18 @@ class EditFileTool(Tool):
         "required": ["file_path", "old_string", "new_string"],
     }
 
+    def preflight_validate(self, file_path: str, old_string: str, new_string: str) -> str | None:
+        """Fast validation so invalid edit requests can be rejected before approval."""
+        return _validate_edit_request(file_path, old_string, new_string)
+
     def execute(self, file_path: str, old_string: str, new_string: str) -> str:
         try:
+            validation_error = self.preflight_validate(file_path=file_path, old_string=old_string, new_string=new_string)
+            if validation_error:
+                return validation_error
+
             p = Path(file_path).expanduser().resolve()
-            if not p.exists():
-                return f"Error: {file_path} not found"
-
             content = p.read_text()
-            occurrences = content.count(old_string)
-
-            if occurrences == 0:
-                preview = content[:500] + ("..." if len(content) > 500 else "")
-                return (
-                    f"Error: old_string not found in {file_path}.\n"
-                    f"File starts with:\n{preview}"
-                )
-            if occurrences > 1:
-                return (
-                    f"Error: old_string appears {occurrences} times in {file_path}. "
-                    f"Include more surrounding lines to make it unique."
-                )
-
             new_content = content.replace(old_string, new_string, 1)
             p.write_text(new_content)
 
@@ -60,6 +51,31 @@ class EditFileTool(Tool):
             return f"Edited {file_path}\n{diff}"
         except Exception as e:
             return f"Error: {e}"
+
+
+def _validate_edit_request(file_path: str, old_string: str, new_string: str) -> str | None:
+    if not isinstance(file_path, str):
+        return "Error: edit_file requires a valid string file_path"
+    if not isinstance(old_string, str) or not isinstance(new_string, str):
+        return "Error: edit_file requires string old_string and new_string"
+
+    p = Path(file_path).expanduser().resolve()
+    if not p.exists():
+        return f"Error: {file_path} not found"
+
+    content = p.read_text()
+    occurrences = content.count(old_string)
+    if occurrences == 0:
+        return (
+            f"Error: old_string not found in {file_path}. "
+            "Include exact text with enough surrounding context."
+        )
+    if occurrences > 1:
+        return (
+            f"Error: old_string appears {occurrences} times in {file_path}. "
+            "Include more surrounding lines to make it unique."
+        )
+    return None
 
 
 def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
