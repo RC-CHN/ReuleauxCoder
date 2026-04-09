@@ -14,15 +14,11 @@ from reuleauxcoder.interfaces.cli.args import parse_args
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.repl import run_repl
 from reuleauxcoder.interfaces.entrypoint import AppRunner, AppOptions
-from reuleauxcoder.interfaces.events import AgentEventBridge, UIEventBus
+from reuleauxcoder.interfaces.events import AgentEventBridge
 
 
-def _run_once(agent, prompt: str, ui_bus: UIEventBus):
+def _run_once(agent, prompt: str):
     """Run a single prompt and exit."""
-    renderer = CLIRenderer()
-    bridge = AgentEventBridge(ui_bus)
-    agent.add_event_handler(bridge.on_agent_event)
-    ui_bus.subscribe(renderer.on_ui_event)
     agent.chat(prompt)
 
 
@@ -57,7 +53,7 @@ def main():
     try:
         # One-shot mode
         if args.prompt:
-            _run_once(ctx.agent, args.prompt, ctx.ui_bus)
+            _run_once(ctx.agent, args.prompt)
             return
         
         # Interactive REPL mode
