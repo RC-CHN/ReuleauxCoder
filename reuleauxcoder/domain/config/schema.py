@@ -2,13 +2,26 @@
 
 # Expected YAML structure for config.yaml
 CONFIG_SCHEMA = {
+    "models": {
+        "active": "string (optional, defaults to first profile key)",
+        "profiles": {
+            "profile_name": {
+                "model": "string (required)",
+                "api_key": "string (required)",
+                "base_url": "string (optional)",
+                "max_tokens": "int (default: 4096)",
+                "temperature": "float (default: 0.0)",
+                "max_context_tokens": "int (default: 128000)",
+            }
+        },
+    },
     "app": {
-        "model": "string (default: gpt-4o)",
-        "api_key": "string (required)",
-        "base_url": "string (optional)",
-        "max_tokens": "int (default: 4096)",
-        "temperature": "float (default: 0.0)",
-        "max_context_tokens": "int (default: 128000)",
+        "model": "string (legacy, auto-migrated)",
+        "api_key": "string (legacy, auto-migrated)",
+        "base_url": "string (legacy, auto-migrated)",
+        "max_tokens": "int (legacy, auto-migrated)",
+        "temperature": "float (legacy, auto-migrated)",
+        "max_context_tokens": "int (legacy, auto-migrated)",
     },
     "approval": {
         "default_mode": "string (default: require_approval, one of allow/warn/require_approval/deny)",

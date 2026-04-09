@@ -38,6 +38,43 @@ class MCPServerConfig:
         )
 
 
+@dataclass
+class ModelProfileConfig:
+    """Named model/runtime profile used by ``/model`` switching."""
+
+    name: str
+    model: str
+    api_key: str
+    base_url: Optional[str] = None
+    max_tokens: int = 4096
+    temperature: float = 0.0
+    max_context_tokens: int = 128_000
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary format for serialization."""
+        return {
+            "model": self.model,
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "max_context_tokens": self.max_context_tokens,
+        }
+
+    @classmethod
+    def from_dict(cls, name: str, d: dict) -> "ModelProfileConfig":
+        """Create from dictionary format."""
+        return cls(
+            name=name,
+            model=d.get("model", "gpt-4o"),
+            api_key=d.get("api_key", ""),
+            base_url=d.get("base_url"),
+            max_tokens=d.get("max_tokens", 4096),
+            temperature=d.get("temperature", 0.0),
+            max_context_tokens=d.get("max_context_tokens", 128_000),
+        )
+
+
 ApprovalAction = Literal["allow", "warn", "require_approval", "deny"]
 
 
@@ -72,6 +109,8 @@ class Config:
     temperature: float = 0.0
     max_context_tokens: int = 128_000
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
+    model_profiles: dict[str, ModelProfileConfig] = field(default_factory=dict)
+    active_model_profile: Optional[str] = None
 
     # Tool output settings
     tool_output_max_chars: int = 12_000
@@ -103,6 +142,17 @@ class Config:
         if self.tool_output_max_lines < 1:
             errors.append("tool_output_max_lines must be positive")
         valid_actions = {"allow", "warn", "require_approval", "deny"}
+        if self.active_model_profile and self.active_model_profile not in self.model_profiles:
+            errors.append("active_model_profile must exist in model_profiles")
+        for name, profile in self.model_profiles.items():
+            if not profile.api_key:
+                errors.append(f"model_profiles[{name}].api_key is required")
+            if profile.max_tokens < 1:
+                errors.append(f"model_profiles[{name}].max_tokens must be positive")
+            if profile.max_context_tokens < 1:
+                errors.append(f"model_profiles[{name}].max_context_tokens must be positive")
+            if profile.temperature < 0 or profile.temperature > 2:
+                errors.append(f"model_profiles[{name}].temperature must be between 0 and 2")
         if self.approval.default_mode not in valid_actions:
             errors.append("approval.default_mode must be one of allow, warn, require_approval, deny")
         for i, rule in enumerate(self.approval.rules):

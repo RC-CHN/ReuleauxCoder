@@ -74,12 +74,17 @@ def handle_command(
         )
         return {"action": "continue", "session_id": current_session_id}
 
+    if user_input == "/model":
+        _show_model_profiles(config, ui_bus)
+        return {"action": "continue", "session_id": current_session_id}
+
     if user_input.startswith("/model "):
-        new_model = user_input[7:].strip()
-        if new_model:
-            agent.llm.model = new_model
-            config.model = new_model
-            ui_bus.success(f"Switched to {new_model}")
+        target = user_input[7:].strip()
+        if target in {"", "ls", "list", "show"}:
+            _show_model_profiles(config, ui_bus)
+            return {"action": "continue", "session_id": current_session_id}
+
+        _switch_model_profile(target, agent, config, ui_bus)
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/compact":
@@ -503,3 +508,64 @@ def _is_disabled_mcp_rule(config, rule: ApprovalRuleConfig) -> bool:
     if server is None:
         return False
     return not bool(getattr(server, "enabled", True))
+
+
+def _show_model_profiles(config, ui_bus: UIEventBus) -> None:
+    profiles = getattr(config, "model_profiles", {}) or {}
+    active = getattr(config, "active_model_profile", None)
+
+    if not profiles:
+        ui_bus.warning(
+            "No model profiles configured. Add models.profiles in config.yaml.",
+            kind=UIEventKind.COMMAND,
+        )
+        ui_bus.info(
+            f"Current runtime model={config.model}, base_url={config.base_url}, max_tokens={config.max_tokens}, temperature={config.temperature}, max_context_tokens={config.max_context_tokens}",
+            kind=UIEventKind.COMMAND,
+        )
+        return
+
+    ui_bus.info("Model profiles:", kind=UIEventKind.COMMAND)
+    for name in sorted(profiles):
+        p = profiles[name]
+        marker = "*" if active == name else " "
+        api_hint = "***" if getattr(p, "api_key", "") else "(empty)"
+        ui_bus.info(
+            f"  {marker} {name}: model={p.model}, base_url={p.base_url}, max_tokens={p.max_tokens}, temperature={p.temperature}, max_context_tokens={p.max_context_tokens}, api_key={api_hint}",
+            kind=UIEventKind.COMMAND,
+        )
+
+
+def _switch_model_profile(profile_name: str, agent, config, ui_bus: UIEventBus) -> None:
+    profiles = getattr(config, "model_profiles", {}) or {}
+    profile = profiles.get(profile_name)
+    if profile is None:
+        ui_bus.error(
+            f"Unknown model profile '{profile_name}'. Use /model to list available profiles.",
+            kind=UIEventKind.COMMAND,
+        )
+        return
+
+    agent.llm.reconfigure(
+        model=profile.model,
+        api_key=profile.api_key,
+        base_url=profile.base_url,
+        temperature=profile.temperature,
+        max_tokens=profile.max_tokens,
+    )
+    config.model = profile.model
+    config.api_key = profile.api_key
+    config.base_url = profile.base_url
+    config.temperature = profile.temperature
+    config.max_tokens = profile.max_tokens
+    config.max_context_tokens = profile.max_context_tokens
+    config.active_model_profile = profile_name
+
+    agent.context.reconfigure(profile.max_context_tokens)
+
+    path = WorkspaceConfigStore().save_active_model_profile(profile_name)
+
+    ui_bus.success(
+        f"Switched model profile to '{profile_name}' ({profile.model}) and saved to {path}",
+        kind=UIEventKind.COMMAND,
+    )

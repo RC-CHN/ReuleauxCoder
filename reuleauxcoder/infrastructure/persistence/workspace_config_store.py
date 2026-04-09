@@ -34,6 +34,18 @@ class WorkspaceConfigStore:
         save_yaml_config(self._path, data)
         return self._path
 
+    def save_active_model_profile(self, profile_name: str) -> Path:
+        """Persist active model profile into workspace ``config.yaml``."""
+        try:
+            data = load_yaml_config(self._path)
+        except FileNotFoundError:
+            data = {}
+
+        models_data = data.setdefault("models", {})
+        models_data["active"] = profile_name
+        save_yaml_config(self._path, data)
+        return self._path
+
     def save_mcp_server_config(self, server: MCPServerConfig) -> Path:
         """Persist a single MCP server config into workspace ``config.yaml``."""
         try:

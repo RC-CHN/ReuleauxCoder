@@ -4,13 +4,16 @@ from pathlib import Path
 from typing import Optional
 import yaml
 
+from reuleauxcoder.compat import migrate_legacy_config
 from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
     Config,
     MCPServerConfig,
+    ModelProfileConfig,
 )
 from reuleauxcoder.domain.config.schema import DEFAULTS
+from reuleauxcoder.infrastructure.yaml.loader import save_yaml_config
 
 
 class ConfigLoader:
@@ -93,7 +96,10 @@ class ConfigLoader:
                 "Create one in ~/.rcoder/ (global) or ./.rcoder/ (workspace)"
             )
 
-        return self._parse_config(config_data)
+        migrated_data, changed = migrate_legacy_config(config_data)
+        if changed:
+            save_yaml_config(self.WORKSPACE_CONFIG_PATH, migrated_data)
+        return self._parse_config(migrated_data)
 
     def _parse_config(self, data: dict) -> Config:
         """Parse YAML data into Config model."""
@@ -103,12 +109,31 @@ class ConfigLoader:
         session_config = data.get("session", {})
         cli_config = data.get("cli", {})
         mcp_config = data.get("mcp", {})
+        models_config = data.get("models", {})
 
         # Parse MCP servers
         mcp_servers = []
         servers_data = mcp_config.get("servers", {})
         for name, server_data in servers_data.items():
             mcp_servers.append(MCPServerConfig.from_dict(name, server_data))
+
+        # Parse model profiles
+        model_profiles: dict[str, ModelProfileConfig] = {}
+        profiles_data = models_config.get("profiles", {})
+        for name, profile_data in profiles_data.items():
+            if not isinstance(profile_data, dict):
+                continue
+            model_profiles[name] = ModelProfileConfig.from_dict(name, profile_data)
+
+        active_model_profile = models_config.get("active")
+        if not isinstance(active_model_profile, str) or active_model_profile not in model_profiles:
+            active_model_profile = next(iter(model_profiles.keys()), None)
+
+        active_profile = (
+            model_profiles.get(active_model_profile)
+            if isinstance(active_model_profile, str)
+            else None
+        )
 
         approval_rules = [
             ApprovalRuleConfig(
@@ -123,15 +148,39 @@ class ConfigLoader:
         ]
 
         return Config(
-            model=app_config.get("model", DEFAULTS["model"]),
-            api_key=app_config.get("api_key", ""),
-            base_url=app_config.get("base_url"),
-            max_tokens=app_config.get("max_tokens", DEFAULTS["max_tokens"]),
-            temperature=app_config.get("temperature", DEFAULTS["temperature"]),
-            max_context_tokens=app_config.get(
-                "max_context_tokens", DEFAULTS["max_context_tokens"]
+            model=(
+                active_profile.model
+                if active_profile is not None
+                else app_config.get("model", DEFAULTS["model"])
+            ),
+            api_key=(
+                active_profile.api_key
+                if active_profile is not None
+                else app_config.get("api_key", "")
+            ),
+            base_url=(
+                active_profile.base_url
+                if active_profile is not None
+                else app_config.get("base_url")
+            ),
+            max_tokens=(
+                active_profile.max_tokens
+                if active_profile is not None
+                else app_config.get("max_tokens", DEFAULTS["max_tokens"])
+            ),
+            temperature=(
+                active_profile.temperature
+                if active_profile is not None
+                else app_config.get("temperature", DEFAULTS["temperature"])
+            ),
+            max_context_tokens=(
+                active_profile.max_context_tokens
+                if active_profile is not None
+                else app_config.get("max_context_tokens", DEFAULTS["max_context_tokens"])
             ),
             mcp_servers=mcp_servers,
+            model_profiles=model_profiles,
+            active_model_profile=active_model_profile,
             tool_output_max_chars=tool_output_config.get(
                 "max_chars", DEFAULTS["tool_output_max_chars"]
             ),

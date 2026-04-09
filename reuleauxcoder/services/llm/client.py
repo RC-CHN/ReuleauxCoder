@@ -36,6 +36,21 @@ class LLM:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
 
+    def reconfigure(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        base_url: Optional[str],
+        temperature: float,
+        max_tokens: int,
+    ) -> None:
+        """Hot-swap runtime model/client settings."""
+        self.model = model
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
     def chat(
         self,
         messages: list[dict],

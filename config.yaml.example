@@ -1,13 +1,21 @@
-app:
-  # Required
-  api_key: "your-api-key-here"
+models:
+  # active 可省略；省略时默认使用 profiles 里的第一个
+  profiles:
+    glm-5:
+      model: "glm-5"
+      api_key: "your-api-key-here"
+      base_url: "https://api.openai.com/v1"
+      max_tokens: 4096
+      temperature: 0.0
+      max_context_tokens: 128000
 
-  # Model settings
-  model: "gpt-4o"
-  base_url: "https://api.openai.com/v1"
-  max_tokens: 4096
-  temperature: 0.0
-  max_context_tokens: 128000
+    gpt-5.3-codex:
+      model: "gpt-5.3-codex"
+      api_key: "your-api-key-here"
+      base_url: "https://api.openai.com/v1"
+      max_tokens: 4096
+      temperature: 0.0
+      max_context_tokens: 400000
 
 approval:
   default_mode: "require_approval"

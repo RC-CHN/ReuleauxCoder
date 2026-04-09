@@ -29,6 +29,13 @@ class ContextManager:
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
         self._collapse_at = int(max_tokens * 0.90)  # 90% -> hard collapse
 
+    def reconfigure(self, max_tokens: int) -> None:
+        """Update context budget and recompute layer thresholds."""
+        self.max_tokens = max_tokens
+        self._snip_at = int(max_tokens * 0.50)
+        self._summarize_at = int(max_tokens * 0.70)
+        self._collapse_at = int(max_tokens * 0.90)
+
     def maybe_compress(
         self,
         messages: list[dict],
