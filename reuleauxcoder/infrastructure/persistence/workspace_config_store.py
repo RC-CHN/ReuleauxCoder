@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
+from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, MCPServerConfig
 from reuleauxcoder.infrastructure.yaml.loader import load_yaml_config, save_yaml_config
 from reuleauxcoder.services.config.loader import ConfigLoader
 
@@ -31,6 +31,19 @@ class WorkspaceConfigStore:
             "default_mode": approval.default_mode,
             "rules": [self.approval_rule_to_dict(rule) for rule in approval.rules],
         }
+        save_yaml_config(self._path, data)
+        return self._path
+
+    def save_mcp_server_config(self, server: MCPServerConfig) -> Path:
+        """Persist a single MCP server config into workspace ``config.yaml``."""
+        try:
+            data = load_yaml_config(self._path)
+        except FileNotFoundError:
+            data = {}
+
+        mcp_data = data.setdefault("mcp", {})
+        servers = mcp_data.setdefault("servers", {})
+        servers[server.name] = server.to_dict()
         save_yaml_config(self._path, data)
         return self._path
 

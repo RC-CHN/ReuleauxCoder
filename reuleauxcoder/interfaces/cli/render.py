@@ -132,14 +132,19 @@ def show_help() -> None:
     console.print(
         Panel(
             "[bold]Commands:[/bold]\n"
-            "  /help          Show this help\n"
-            "  /reset         Clear conversation history\n"
-            "  /model <name>  Switch model mid-conversation\n"
-            "  /tokens        Show token usage\n"
-            "  /compact       Compress conversation context\n"
-            "  /save          Save session to disk\n"
-            "  /sessions      List saved sessions\n"
-            "  /quit           Exit ReuleauxCoder",
+            "  /help             Show this help\n"
+            "  /reset            Clear conversation history\n"
+            "  /model <name>     Switch model mid-conversation\n"
+            "  /tokens           Show token usage\n"
+            "  /compact          Compress conversation context\n"
+            "  /save             Save session to disk\n"
+            "  /sessions         List saved sessions\n"
+            "  /approval show    Show approval rules\n"
+            "  /approval set ... Update approval rules\n"
+            "  /mcp show         Show MCP server status\n"
+            "  /mcp enable <s>   Enable one MCP server\n"
+            "  /mcp disable <s>  Disable one MCP server\n"
+            "  /quit             Exit ReuleauxCoder",
             title="ReuleauxCoder Help",
             border_style="dim",
         )

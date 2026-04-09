@@ -144,6 +144,7 @@ class AppRunner:
         mcp_manager = None
         if config.mcp_servers:
             mcp_manager = self._init_mcp(config.mcp_servers, agent, ui_bus)
+        setattr(agent, "mcp_manager", mcp_manager)
         
         # Session management
         current_session_id = None
@@ -209,18 +210,19 @@ class AppRunner:
         manager = MCPManager(ui_bus=ui_bus)
         manager.start()
         
-        for server_config in mcp_servers:
+        enabled_servers = [s for s in mcp_servers if getattr(s, "enabled", True)]
+        for server_config in enabled_servers:
             success = manager.connect_server(server_config)
             if not success:
                 ui_bus.warning(
                     f"Warning: Failed to connect to MCP server '{server_config.name}'",
                     kind=UIEventKind.MCP,
                 )
-        
+
         if manager.tools:
             agent.add_tools(manager.tools)
             ui_bus.success(
-                f"Loaded {len(manager.tools)} MCP tools from {len(mcp_servers)} server(s)",
+                f"Loaded {len(manager.tools)} MCP tools from {len(enabled_servers)} enabled server(s)",
                 kind=UIEventKind.MCP,
             )
         

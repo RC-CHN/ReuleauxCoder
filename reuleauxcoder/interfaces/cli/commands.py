@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from reuleauxcoder.domain.config.models import ApprovalRuleConfig
+from reuleauxcoder.domain.config.models import ApprovalRuleConfig, MCPServerConfig
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
@@ -105,6 +105,30 @@ def handle_command(
         if result:
             return {"action": "continue", "session_id": current_session_id}
 
+    if user_input == "/mcp" or user_input == "/mcp show":
+        _show_mcp_servers(config, ui_bus, agent)
+        return {"action": "continue", "session_id": current_session_id}
+
+    if user_input.startswith("/mcp enable "):
+        _handle_mcp_toggle(
+            user_input[len("/mcp enable ") :].strip(),
+            enabled=True,
+            agent=agent,
+            config=config,
+            ui_bus=ui_bus,
+        )
+        return {"action": "continue", "session_id": current_session_id}
+
+    if user_input.startswith("/mcp disable "):
+        _handle_mcp_toggle(
+            user_input[len("/mcp disable ") :].strip(),
+            enabled=False,
+            agent=agent,
+            config=config,
+            ui_bus=ui_bus,
+        )
+        return {"action": "continue", "session_id": current_session_id}
+
     return {"action": "chat", "session_id": current_session_id}
 
 
@@ -117,7 +141,13 @@ def _show_approval_rules(config, ui_bus: UIEventBus, agent=None) -> None:
         ui_bus.info("No approval rules configured.", kind=UIEventKind.COMMAND)
     else:
         ui_bus.info("Configured rules:", kind=UIEventKind.COMMAND)
-        for idx, rule in enumerate(config.approval.rules, 1):
+        visible_rules: list[ApprovalRuleConfig] = []
+        for rule in config.approval.rules:
+            if _is_disabled_mcp_rule(config, rule):
+                continue
+            visible_rules.append(rule)
+
+        for idx, rule in enumerate(visible_rules, 1):
             parts = []
             if rule.tool_source:
                 parts.append(f"source={rule.tool_source}")
@@ -293,3 +323,103 @@ def _refresh_approval_runtime(agent, config) -> None:
     for hook in hooks:
         if isinstance(hook, ToolPolicyGuardHook):
             hook.update_approval_config(config.approval)
+
+
+def _show_mcp_servers(config, ui_bus: UIEventBus, agent=None) -> None:
+    servers = list(getattr(config, "mcp_servers", []) or [])
+    if not servers:
+        ui_bus.info("No MCP servers configured.", kind=UIEventKind.MCP)
+        return
+
+    manager = getattr(agent, "mcp_manager", None) if agent is not None else None
+    runtime_connected = set(getattr(manager, "connected_servers", set()) or set())
+
+    ui_bus.info("MCP servers:", kind=UIEventKind.MCP)
+    for server in servers:
+        enabled_mark = "enabled" if getattr(server, "enabled", True) else "disabled"
+        runtime_mark = "connected" if server.name in runtime_connected else "disconnected"
+        ui_bus.info(
+            f"  - {server.name}: {enabled_mark}, runtime={runtime_mark}",
+            kind=UIEventKind.MCP,
+        )
+
+
+def _handle_mcp_toggle(
+    server_name: str,
+    *,
+    enabled: bool,
+    agent,
+    config,
+    ui_bus: UIEventBus,
+) -> None:
+    if not server_name:
+        action = "enable" if enabled else "disable"
+        ui_bus.error(f"Usage: /mcp {action} <server>", kind=UIEventKind.MCP)
+        return
+
+    server = _find_mcp_server(config.mcp_servers, server_name)
+    if server is None:
+        ui_bus.error(f"MCP server '{server_name}' not found in config.", kind=UIEventKind.MCP)
+        return
+
+    if bool(server.enabled) == enabled:
+        state = "enabled" if enabled else "disabled"
+        ui_bus.info(f"MCP server '{server_name}' is already {state}.", kind=UIEventKind.MCP)
+        return
+
+    server.enabled = enabled
+    path = WorkspaceConfigStore().save_mcp_server_config(server)
+
+    manager = getattr(agent, "mcp_manager", None)
+    if manager is None:
+        if enabled:
+            ui_bus.warning(
+                "MCP manager is not initialized; change is saved and will apply on next startup.",
+                kind=UIEventKind.MCP,
+            )
+        else:
+            ui_bus.info(
+                "MCP manager is not initialized; disable state is saved.",
+                kind=UIEventKind.MCP,
+            )
+        ui_bus.success(f"Saved MCP server '{server_name}' to {path}", kind=UIEventKind.MCP)
+        return
+
+    ok = manager.connect_server(server) if enabled else manager.disconnect_server(server_name)
+    _refresh_mcp_runtime_tools(agent)
+
+    state = "enabled" if enabled else "disabled"
+    if ok:
+        ui_bus.success(
+            f"MCP server '{server_name}' {state} and saved to {path}",
+            kind=UIEventKind.MCP,
+        )
+    else:
+        ui_bus.warning(
+            f"MCP server '{server_name}' state saved to {path}, but runtime {state} failed.",
+            kind=UIEventKind.MCP,
+        )
+
+
+def _find_mcp_server(servers: list[MCPServerConfig], server_name: str) -> MCPServerConfig | None:
+    for server in servers:
+        if server.name == server_name:
+            return server
+    return None
+
+
+def _refresh_mcp_runtime_tools(agent) -> None:
+    manager = getattr(agent, "mcp_manager", None)
+    manager_tools = list(getattr(manager, "tools", []) or [])
+    non_mcp_tools = [t for t in getattr(agent, "tools", []) if getattr(t, "tool_source", None) != "mcp"]
+    agent.tools = non_mcp_tools + manager_tools
+
+
+def _is_disabled_mcp_rule(config, rule: ApprovalRuleConfig) -> bool:
+    if rule.tool_source != "mcp" or not rule.mcp_server:
+        return False
+
+    server = _find_mcp_server(getattr(config, "mcp_servers", []), rule.mcp_server)
+    if server is None:
+        return False
+    return not bool(getattr(server, "enabled", True))

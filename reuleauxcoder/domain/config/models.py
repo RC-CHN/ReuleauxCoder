@@ -13,6 +13,7 @@ class MCPServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     cwd: Optional[str] = None
+    enabled: bool = True
 
     def to_dict(self) -> dict:
         """Convert to dictionary format for serialization."""
@@ -21,6 +22,7 @@ class MCPServerConfig:
             "args": self.args,
             "env": self.env,
             "cwd": self.cwd,
+            "enabled": self.enabled,
         }
 
     @classmethod
@@ -32,6 +34,7 @@ class MCPServerConfig:
             args=d.get("args", []),
             env=d.get("env", {}),
             cwd=d.get("cwd"),
+            enabled=d.get("enabled", True),
         )
 
 

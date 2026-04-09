@@ -62,6 +62,7 @@ mcp:
         - "/home/pan/proj/ReuleauxCoder"
       env: {}
       cwd: null
+      enabled: true
 
     github:
       command: "npx"
@@ -71,6 +72,7 @@ mcp:
       env:
         GITHUB_TOKEN: "your-github-token-here"
       cwd: null
+      enabled: true
 
     postgres:
       command: "uvx"
@@ -79,3 +81,4 @@ mcp:
       env:
         DATABASE_URL: "postgresql://user:pass@localhost/db"
       cwd: null
+      enabled: false
