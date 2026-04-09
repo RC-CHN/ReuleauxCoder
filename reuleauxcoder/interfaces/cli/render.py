@@ -1,6 +1,9 @@
 """CLI rendering - event-driven UI renderer."""
 
+import time
+
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -17,6 +20,8 @@ class CLIRenderer:
     def __init__(self):
         self.console = console
         self._streamed_tokens: list[str] = []
+        self._live_markdown: Live | None = None
+        self._last_markdown_refresh: float = 0.0
 
     def on_event(self, event: AgentEvent) -> None:
         """Handle an agent event."""
@@ -42,15 +47,49 @@ class CLIRenderer:
         self._render_notification(event)
 
     def _render_token(self, token: str) -> None:
-        """Render a streaming token."""
+        """Render a streaming token with live markdown updates."""
         self._streamed_tokens.append(token)
-        print(token, end="", flush=True)
+        self._ensure_live_markdown()
+        self._refresh_live_markdown()
+
+    def _ensure_live_markdown(self) -> None:
+        """Start live markdown renderer if needed."""
+        if self._live_markdown is None:
+            initial = Markdown("".join(self._streamed_tokens))
+            self._live_markdown = Live(
+                initial,
+                console=self.console,
+                refresh_per_second=12,
+                transient=True,
+            )
+            self._live_markdown.start()
+            self._last_markdown_refresh = 0.0
+
+    def _refresh_live_markdown(self, force: bool = False) -> None:
+        """Refresh live markdown render with throttling."""
+        if self._live_markdown is None:
+            return
+
+        now = time.monotonic()
+        if force or (now - self._last_markdown_refresh >= 0.08):
+            self._live_markdown.update(Markdown("".join(self._streamed_tokens)), refresh=True)
+            self._last_markdown_refresh = now
+
+    def _stop_live_markdown(self, render_final: bool = False) -> None:
+        """Stop live markdown renderer and optionally render final markdown."""
+        if self._live_markdown is not None:
+            self._refresh_live_markdown(force=True)
+            self._live_markdown.stop()
+            self._live_markdown = None
+
+        if render_final and self._streamed_tokens:
+            self.render_markdown("".join(self._streamed_tokens))
 
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
-        # If we were streaming, add a newline before tool info
+        # If we were streaming, finalize markdown before tool info
         if self._streamed_tokens:
-            print()
+            self._stop_live_markdown(render_final=True)
             self._streamed_tokens.clear()
         args_str = brief(args) if args else ""
         self.console.print(f"[dim]> {name}({args_str})[/dim]")
@@ -87,7 +126,7 @@ class CLIRenderer:
         }[event.level]
 
         if self._streamed_tokens:
-            print()
+            self._stop_live_markdown(render_final=True)
             self._streamed_tokens.clear()
 
         if style:
@@ -98,7 +137,7 @@ class CLIRenderer:
     def finalize_response(self, response: str) -> None:
         """Finalize response rendering (for non-streamed or final output)."""
         if self._streamed_tokens:
-            print()  # End the streamed line
+            self._stop_live_markdown(render_final=True)
             self._streamed_tokens.clear()
         elif response:
             self.render_markdown(response)
