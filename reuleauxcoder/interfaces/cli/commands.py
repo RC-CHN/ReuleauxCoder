@@ -40,7 +40,30 @@ def handle_command(
 
     if user_input == "/reset":
         agent.reset()
-        ui_bus.warning("Conversation reset.")
+        ui_bus.warning("Conversation reset (in-memory only, does not delete saved sessions).")
+        return {"action": "continue", "session_id": current_session_id}
+
+    if user_input == "/new":
+        previous_session_id = current_session_id
+        if agent.messages:
+            previous_session_id = SessionStore(sessions_dir).save(
+                agent.messages,
+                config.model,
+                current_session_id,
+            )
+            ui_bus.info(
+                f"Previous session auto-saved: {previous_session_id}",
+                kind=UIEventKind.SESSION,
+            )
+
+        agent.reset()
+        current_session_id = None
+        ui_bus.success("Started a new conversation.", kind=UIEventKind.SESSION)
+        if previous_session_id:
+            ui_bus.info(
+                f"Resume previous with: /session {previous_session_id}",
+                kind=UIEventKind.SESSION,
+            )
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/tokens":

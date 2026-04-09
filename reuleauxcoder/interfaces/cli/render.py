@@ -133,7 +133,8 @@ def show_help() -> None:
         Panel(
             "[bold]Commands:[/bold]\n"
             "  /help             Show this help\n"
-            "  /reset            Clear conversation history\n"
+            "  /reset            Clear current in-memory conversation only\n"
+            "  /new              Start a new conversation (auto-save previous)\n"
             "  /model <name>     Switch model mid-conversation\n"
             "  /tokens           Show token usage\n"
             "  /compact          Compress conversation context\n"
