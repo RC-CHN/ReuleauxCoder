@@ -2,6 +2,7 @@
 
 import time
 
+from rich import box
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -96,7 +97,16 @@ class CLIRenderer:
             self._stop_live_markdown(render_final=True)
             self._streamed_tokens.clear()
         args_str = brief(args) if args else ""
-        self.console.print(f"[dim]> {name}({args_str})[/dim]")
+        call_text = f"{name}({args_str})" if args_str else f"{name}()"
+        self.console.print(
+            Panel(
+                f"[bold cyan]{call_text}[/bold cyan]",
+                title="TOOL CALL",
+                border_style="cyan",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            )
+        )
 
     def _render_tool_end(self, name: str, result: str | None, success: bool = True) -> None:
         """Render tool call result."""
@@ -106,10 +116,35 @@ class CLIRenderer:
         if name == "edit_file" and "---" in result:
             self._render_diff(result)
         else:
-            # Truncate long results
-            display = result[:500] + "..." if len(result) > 500 else result
-            style = "dim" if success else "red"
-            self.console.print(f"[{style}]{display}[/{style}]")
+            display = self._compact_tool_output(name, result)
+            if success:
+                self.console.print(f"[dim]{display}[/dim]")
+            else:
+                self.console.print(
+                    Panel(
+                        f"[red]{display}[/red]",
+                        title=f"TOOL ERROR · {name}",
+                        border_style="red",
+                        box=box.ROUNDED,
+                        padding=(0, 1),
+                    )
+                )
+
+    def _compact_tool_output(self, tool_name: str, result: str) -> str:
+        """Compact noisy tool output for terminal readability."""
+        text = result[:1200] + "..." if len(result) > 1200 else result
+        lines = text.splitlines()
+        if not lines:
+            return text
+
+        # read_file output is usually the noisiest; collapse more aggressively
+        max_lines = 5 if tool_name == "read_file" else 20
+        if len(lines) <= max_lines:
+            return text
+
+        kept = "\n".join(lines[:max_lines])
+        omitted = len(lines) - max_lines
+        return f"{kept}\n... ({omitted} more lines hidden)"
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""
@@ -122,22 +157,28 @@ class CLIRenderer:
 
     def _render_notification(self, event: UIEvent) -> None:
         """Render a generic UI notification event."""
-        style = {
-            UIEventLevel.INFO: None,
+        border_style = {
+            UIEventLevel.INFO: "blue",
             UIEventLevel.SUCCESS: "green",
             UIEventLevel.WARNING: "yellow",
             UIEventLevel.ERROR: "red",
-            UIEventLevel.DEBUG: "dim",
+            UIEventLevel.DEBUG: "bright_black",
         }[event.level]
 
         if self._streamed_tokens:
             self._stop_live_markdown(render_final=True)
             self._streamed_tokens.clear()
 
-        if style:
-            self.console.print(f"[{style}]{event.message}[/{style}]")
-        else:
-            self.console.print(event.message)
+        title = f"{event.kind.value.upper()} · {event.level.value.upper()}"
+        self.console.print(
+            Panel(
+                event.message,
+                title=title,
+                border_style=border_style,
+                box=box.ROUNDED,
+                padding=(0, 1),
+            )
+        )
 
     def finalize_response(self, response: str) -> None:
         """Finalize response rendering (for non-streamed or final output)."""
