@@ -96,6 +96,22 @@ def handle_command(
                 )
         return {"action": "continue", "session_id": current_session_id}
 
+    if user_input.startswith("/session "):
+        resumed_session_id, resumed_exit_time = _handle_session_resume(
+            user_input[len("/session ") :].strip(),
+            agent,
+            config,
+            ui_bus,
+            sessions_dir,
+        )
+        if resumed_session_id is not None:
+            return {
+                "action": "continue",
+                "session_id": resumed_session_id,
+                "session_exit_time": resumed_exit_time,
+            }
+        return {"action": "continue", "session_id": current_session_id}
+
     if user_input == "/approval" or user_input == "/approval show":
         _show_approval_rules(config, ui_bus, agent)
         return {"action": "continue", "session_id": current_session_id}
@@ -130,6 +146,47 @@ def handle_command(
         return {"action": "continue", "session_id": current_session_id}
 
     return {"action": "chat", "session_id": current_session_id}
+
+
+def _handle_session_resume(
+    target: str,
+    agent,
+    config,
+    ui_bus: UIEventBus,
+    sessions_dir: Path | None,
+) -> tuple[str | None, str | None]:
+    if not target:
+        ui_bus.error("Usage: /session <session_id|latest>", kind=UIEventKind.SESSION)
+        return None, None
+
+    store = SessionStore(sessions_dir)
+    session_id = target
+    if target == "latest":
+        latest = store.get_latest()
+        if latest is None:
+            ui_bus.error("No saved sessions.", kind=UIEventKind.SESSION)
+            return None, None
+        session_id = latest.id
+
+    loaded = store.load(session_id)
+    if loaded is None:
+        ui_bus.error(f"Session '{session_id}' not found.", kind=UIEventKind.SESSION)
+        return None, None
+
+    messages, loaded_model = loaded
+    agent.state.messages = list(messages)
+
+    if loaded_model and loaded_model != config.model:
+        agent.llm.model = loaded_model
+        config.model = loaded_model
+        ui_bus.info(
+            f"Model switched to session model: {loaded_model}",
+            kind=UIEventKind.SESSION,
+        )
+
+    exit_time = store.get_exit_time(messages)
+    ui_bus.success(f"Resumed session: {session_id}", kind=UIEventKind.SESSION)
+    return session_id, exit_time
 
 
 def _show_approval_rules(config, ui_bus: UIEventBus, agent=None) -> None:

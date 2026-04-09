@@ -139,6 +139,8 @@ def show_help() -> None:
             "  /compact          Compress conversation context\n"
             "  /save             Save session to disk\n"
             "  /sessions         List saved sessions\n"
+            "  /session <id>     Resume a saved session in current process\n"
+            "  /session latest   Resume latest saved session\n"
             "  /approval show    Show approval rules\n"
             "  /approval set ... Update approval rules\n"
             "  /mcp show         Show MCP server status\n"
