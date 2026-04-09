@@ -68,18 +68,31 @@ class AgentLoop:
                     }
                 )
             else:
-                # Parallel execution - emit all start events first
-                for tc in resp.tool_calls:
-                    self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
-                results = self.agent._executor.execute_parallel(resp.tool_calls)
-                for tc, result in zip(resp.tool_calls, results):
-                    self.agent.state.messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": result,
-                        }
-                    )
+                # If approval is interactive, run sequentially to keep terminal UX stable.
+                if self.agent.approval_provider is not None:
+                    for tc in resp.tool_calls:
+                        self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
+                        result = self.agent._executor.execute(tc)
+                        self.agent.state.messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": result,
+                            }
+                        )
+                else:
+                    # No interactive approval needed: keep parallel execution.
+                    for tc in resp.tool_calls:
+                        self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
+                    results = self.agent._executor.execute_parallel(resp.tool_calls)
+                    for tc, result in zip(resp.tool_calls, results):
+                        self.agent.state.messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": result,
+                            }
+                        )
 
             # Compress if tool outputs are big
             self.agent.context.maybe_compress(

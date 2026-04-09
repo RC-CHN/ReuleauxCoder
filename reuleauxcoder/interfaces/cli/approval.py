@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import difflib
+import threading
 from pathlib import Path
-
-from prompt_toolkit import prompt as pt_prompt
 
 from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalProvider, ApprovalRequest
 from reuleauxcoder.interfaces.cli.render import render_diff_panel
@@ -17,33 +16,36 @@ class CLIApprovalProvider(ApprovalProvider):
 
     def __init__(self, ui_bus: UIEventBus):
         self.ui_bus = ui_bus
+        self._approval_lock = threading.Lock()
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-        self.ui_bus.warning(
-            f"Approval required for tool '{request.tool_name}' ({request.tool_source})",
-            kind=UIEventKind.COMMAND,
-        )
-        if request.reason:
-            self.ui_bus.info(f"Reason: {request.reason}", kind=UIEventKind.COMMAND)
-
-        diff_text = self._build_preview_diff(request)
-        if diff_text is not None:
-            title = "Proposed file diff:" if request.tool_name == "write_file" else "Proposed edit diff:"
-            self.ui_bus.info(title, kind=UIEventKind.COMMAND)
-            render_diff_panel(diff_text)
-        elif request.tool_args:
-            self.ui_bus.info(
-                f"Args: {request.tool_args}",
+        # Approval can be requested from parallel tool threads; serialize terminal I/O.
+        with self._approval_lock:
+            self.ui_bus.warning(
+                f"Approval required for tool '{request.tool_name}' ({request.tool_source})",
                 kind=UIEventKind.COMMAND,
             )
+            if request.reason:
+                self.ui_bus.info(f"Reason: {request.reason}", kind=UIEventKind.COMMAND)
 
-        while True:
-            answer = pt_prompt("Approve tool execution? [y/n]: ").strip().lower()
-            if answer in {"y", "yes"}:
-                return ApprovalDecision.allow_once("approved in CLI")
-            if answer in {"n", "no"}:
-                return ApprovalDecision.deny_once("denied in CLI")
-            self.ui_bus.warning("Please enter 'y' or 'n'.", kind=UIEventKind.COMMAND)
+            diff_text = self._build_preview_diff(request)
+            if diff_text is not None:
+                title = "Proposed file diff:" if request.tool_name == "write_file" else "Proposed edit diff:"
+                self.ui_bus.info(title, kind=UIEventKind.COMMAND)
+                render_diff_panel(diff_text)
+            elif request.tool_args:
+                self.ui_bus.info(
+                    f"Args: {request.tool_args}",
+                    kind=UIEventKind.COMMAND,
+                )
+
+            while True:
+                answer = input("Approve tool execution? [y/n]: ").strip().lower()
+                if answer in {"y", "yes"}:
+                    return ApprovalDecision.allow_once("approved in CLI")
+                if answer in {"n", "no"}:
+                    return ApprovalDecision.deny_once("denied in CLI")
+                self.ui_bus.warning("Please enter 'y' or 'n'.", kind=UIEventKind.COMMAND)
 
     def _build_preview_diff(self, request: ApprovalRequest) -> str | None:
         """Build a readable preview diff for file-changing approvals when possible."""
