@@ -2,13 +2,16 @@
 
 from pathlib import Path
 
+from rich.markdown import Markdown
+from rich.panel import Panel
+
 from reuleauxcoder.domain.config.models import ApprovalRuleConfig, MCPServerConfig
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
-from reuleauxcoder.interfaces.cli.render import show_help
+from reuleauxcoder.interfaces.cli.render import console, show_help
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 
 
@@ -514,26 +517,54 @@ def _show_model_profiles(config, ui_bus: UIEventBus) -> None:
     profiles = getattr(config, "model_profiles", {}) or {}
     active = getattr(config, "active_model_profile", None)
 
-    if not profiles:
-        ui_bus.warning(
-            "No model profiles configured. Add models.profiles in config.yaml.",
-            kind=UIEventKind.COMMAND,
-        )
-        ui_bus.info(
-            f"Current runtime model={config.model}, base_url={config.base_url}, max_tokens={config.max_tokens}, temperature={config.temperature}, max_context_tokens={config.max_context_tokens}",
-            kind=UIEventKind.COMMAND,
-        )
-        return
+    # Build markdown text
+    lines = []
 
-    ui_bus.info("Model profiles:", kind=UIEventKind.COMMAND)
-    for name in sorted(profiles):
-        p = profiles[name]
-        marker = "*" if active == name else " "
-        api_hint = "***" if getattr(p, "api_key", "") else "(empty)"
-        ui_bus.info(
-            f"  {marker} {name}: model={p.model}, base_url={p.base_url}, max_tokens={p.max_tokens}, temperature={p.temperature}, max_context_tokens={p.max_context_tokens}, api_key={api_hint}",
-            kind=UIEventKind.COMMAND,
-        )
+    # Current active profile/provider
+    if active:
+        lines.append(f"**Current active profile:** `{active}`")
+    else:
+        lines.append(f"**Current provider:** `{config.model}`")
+        if config.base_url:
+            lines.append(f"  - base_url: `{config.base_url}`")
+
+    lines.append("")
+
+    if not profiles:
+        lines.append("> No model profiles configured. Add `models.profiles` in config.yaml.")
+        lines.append("")
+        lines.append("**Runtime config:**")
+        lines.append(f"  - max_tokens: {config.max_tokens}")
+        lines.append(f"  - temperature: {config.temperature}")
+        lines.append(f"  - max_context_tokens: {config.max_context_tokens}")
+    else:
+        lines.append("**Model profiles:**")
+        lines.append("")
+        for name in sorted(profiles):
+            p = profiles[name]
+            marker = " ✓" if active == name else ""
+            api_key = getattr(p, "api_key", "")
+            # Show last 4 chars of api_key
+            if api_key and len(api_key) >= 4:
+                api_hint = f"...{api_key[-4:]}"
+            elif api_key:
+                api_hint = f"...{api_key}"
+            else:
+                api_hint = "(empty)"
+
+            lines.append(f"- **{name}**{marker}")
+            lines.append(f"  - model: `{p.model}`")
+            if p.base_url:
+                lines.append(f"  - base_url: `{p.base_url}`")
+            lines.append(f"  - max_tokens: {p.max_tokens}")
+            lines.append(f"  - temperature: {p.temperature}")
+            lines.append(f"  - max_context_tokens: {p.max_context_tokens}")
+            lines.append(f"  - api_key: `{api_hint}`")
+            lines.append("")
+
+    # Render as a single panel with markdown
+    text = "\n".join(lines)
+    console.print(Panel(Markdown(text), title="Model Profiles", border_style="blue"))
 
 
 def _switch_model_profile(profile_name: str, agent, config, ui_bus: UIEventBus) -> None:
