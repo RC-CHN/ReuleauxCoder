@@ -11,6 +11,7 @@ from pathlib import Path
 
 from reuleauxcoder.interfaces.cli.approval import CLIApprovalProvider
 from reuleauxcoder.interfaces.cli.args import parse_args
+from reuleauxcoder.interfaces.cli.interactor import CLIUIInteractor
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.repl import run_repl
 from reuleauxcoder.interfaces.entrypoint import AppRunner, AppOptions
@@ -37,7 +38,9 @@ def main():
     # Initialize application using shared entrypoint
     runner = AppRunner(options)
     ctx = runner.initialize()
-    ctx.agent.approval_provider = CLIApprovalProvider(ctx.ui_bus)
+    ctx.ui_interactor = CLIUIInteractor(ctx.ui_bus)
+    setattr(ctx.agent, "ui_interactor", ctx.ui_interactor)
+    ctx.agent.approval_provider = CLIApprovalProvider(ctx.ui_interactor)
     
     # Add CLI renderer and bridge agent events onto the UI bus
     renderer = CLIRenderer()

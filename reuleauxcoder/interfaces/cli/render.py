@@ -49,6 +49,10 @@ class CLIRenderer:
                 self.on_event(agent_event)
             return
 
+        if event.kind == UIEventKind.VIEW:
+            if self._render_view_event(event):
+                return
+
         self._render_notification(event)
 
     def _render_token(self, token: str) -> None:
@@ -179,6 +183,22 @@ class CLIRenderer:
                 padding=(0, 1),
             )
         )
+
+    def _render_view_event(self, event: UIEvent) -> bool:
+        """Render known structured view events in the CLI."""
+        view_type = event.data.get("view_type")
+        payload = event.data.get("payload") or {}
+        if view_type == "model_profiles":
+            markdown_text = payload.get("markdown")
+            if isinstance(markdown_text, str) and markdown_text:
+                if self._streamed_tokens:
+                    self._stop_live_markdown(render_final=True)
+                    self._streamed_tokens.clear()
+                self.console.print(
+                    Panel(Markdown(markdown_text), title="Model Profiles", border_style="blue")
+                )
+                return True
+        return False
 
     def finalize_response(self, response: str) -> None:
         """Finalize response rendering (for non-streamed or final output)."""

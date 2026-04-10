@@ -2,16 +2,14 @@
 
 from pathlib import Path
 
-from rich.markdown import Markdown
-from rich.panel import Panel
-
+from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
 from reuleauxcoder.domain.config.models import ApprovalRuleConfig, MCPServerConfig
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
-from reuleauxcoder.interfaces.cli.render import console, show_help
+from reuleauxcoder.interfaces.cli.render import show_help
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 
 
@@ -81,18 +79,22 @@ def handle_command(
         )
         return {"action": "continue", "session_id": current_session_id}
 
-    if user_input == "/model":
-        _show_model_profiles(config, ui_bus)
-        return {"action": "continue", "session_id": current_session_id}
-
-    if user_input.startswith("/model "):
-        target = user_input[7:].strip()
-        if target in {"", "ls", "list", "show"}:
-            _show_model_profiles(config, ui_bus)
-            return {"action": "continue", "session_id": current_session_id}
-
-        _switch_model_profile(target, agent, config, ui_bus)
-        return {"action": "continue", "session_id": current_session_id}
+    parsed_command = parse_command(user_input)
+    if parsed_command is not None:
+        result = dispatch_command(
+            parsed_command,
+            CommandContext(
+                agent=agent,
+                config=config,
+                ui_bus=ui_bus,
+                ui_interactor=getattr(agent, "ui_interactor", None),
+            ),
+        )
+        return {
+            "action": result.action,
+            "session_id": current_session_id,
+            "session_exit_time": result.session_exit_time,
+        }
 
     if user_input == "/compact":
         before = estimate_tokens(agent.messages)
@@ -519,92 +521,3 @@ def _is_disabled_mcp_rule(config, rule: ApprovalRuleConfig) -> bool:
     if server is None:
         return False
     return not bool(getattr(server, "enabled", True))
-
-
-def _show_model_profiles(config, ui_bus: UIEventBus) -> None:
-    profiles = getattr(config, "model_profiles", {}) or {}
-    active = getattr(config, "active_model_profile", None)
-
-    # Build markdown text
-    lines = []
-
-    # Current active profile/provider
-    if active:
-        lines.append(f"**Current active profile:** `{active}`")
-    else:
-        lines.append(f"**Current provider:** `{config.model}`")
-        if config.base_url:
-            lines.append(f"  - base_url: `{config.base_url}`")
-
-    lines.append("")
-
-    if not profiles:
-        lines.append("> No model profiles configured. Add `models.profiles` in config.yaml.")
-        lines.append("")
-        lines.append("**Runtime config:**")
-        lines.append(f"  - max_tokens: {config.max_tokens}")
-        lines.append(f"  - temperature: {config.temperature}")
-        lines.append(f"  - max_context_tokens: {config.max_context_tokens}")
-    else:
-        lines.append("**Model profiles:**")
-        lines.append("")
-        for name in sorted(profiles):
-            p = profiles[name]
-            marker = " ✓" if active == name else ""
-            api_key = getattr(p, "api_key", "")
-            # Show last 4 chars of api_key
-            if api_key and len(api_key) >= 4:
-                api_hint = f"...{api_key[-4:]}"
-            elif api_key:
-                api_hint = f"...{api_key}"
-            else:
-                api_hint = "(empty)"
-
-            lines.append(f"- **{name}**{marker}")
-            lines.append(f"  - model: `{p.model}`")
-            if p.base_url:
-                lines.append(f"  - base_url: `{p.base_url}`")
-            lines.append(f"  - max_tokens: {p.max_tokens}")
-            lines.append(f"  - temperature: {p.temperature}")
-            lines.append(f"  - max_context_tokens: {p.max_context_tokens}")
-            lines.append(f"  - api_key: `{api_hint}`")
-            lines.append("")
-
-    # Render as a single panel with markdown
-    text = "\n".join(lines)
-    console.print(Panel(Markdown(text), title="Model Profiles", border_style="blue"))
-
-
-def _switch_model_profile(profile_name: str, agent, config, ui_bus: UIEventBus) -> None:
-    profiles = getattr(config, "model_profiles", {}) or {}
-    profile = profiles.get(profile_name)
-    if profile is None:
-        ui_bus.error(
-            f"Unknown model profile '{profile_name}'. Use /model to list available profiles.",
-            kind=UIEventKind.COMMAND,
-        )
-        return
-
-    agent.llm.reconfigure(
-        model=profile.model,
-        api_key=profile.api_key,
-        base_url=profile.base_url,
-        temperature=profile.temperature,
-        max_tokens=profile.max_tokens,
-    )
-    config.model = profile.model
-    config.api_key = profile.api_key
-    config.base_url = profile.base_url
-    config.temperature = profile.temperature
-    config.max_tokens = profile.max_tokens
-    config.max_context_tokens = profile.max_context_tokens
-    config.active_model_profile = profile_name
-
-    agent.context.reconfigure(profile.max_context_tokens)
-
-    path = WorkspaceConfigStore().save_active_model_profile(profile_name)
-
-    ui_bus.success(
-        f"Switched model profile to '{profile_name}' ({profile.model}) and saved to {path}",
-        kind=UIEventKind.COMMAND,
-    )

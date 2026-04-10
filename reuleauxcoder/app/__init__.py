@@ -1,6 +1,3 @@
-"""Application layer - orchestrates use cases and runtime."""
+"""Application layer package for shared command and use-case orchestration."""
 
-from reuleauxcoder.app.bootstrap import Bootstrap
-from reuleauxcoder.app.runner import Runner
-
-__all__ = ["Bootstrap", "Runner"]
+__all__: list[str] = []

@@ -21,6 +21,7 @@ from reuleauxcoder.domain.hooks.builtin import ToolOutputTruncationHook, ToolPol
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.interfaces.interactions import UIInteractor
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.llm.client import LLM
@@ -41,6 +42,9 @@ class AppContext:
     
     ui_bus: UIEventBus
     """UI event bus for cross-component communication."""
+
+    ui_interactor: UIInteractor | None = None
+    """Optional UI interactor for synchronous interface prompts."""
     
     mcp_manager: MCPManager | None = None
     """MCP manager if MCP servers are configured."""
@@ -197,6 +201,7 @@ class AppRunner:
             llm=llm,
             agent=agent,
             ui_bus=ui_bus,
+            ui_interactor=None,
             mcp_manager=mcp_manager,
             current_session_id=current_session_id,
             session_exit_time=session_exit_time,

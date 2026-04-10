@@ -27,7 +27,10 @@ class UIEventKind(Enum):
     SYSTEM = "system"
     COMMAND = "command"
     SESSION = "session"
+    MODEL = "model"
     MCP = "mcp"
+    APPROVAL = "approval"
+    VIEW = "view"
     AGENT = "agent"
 
 
@@ -148,6 +151,50 @@ class UIEventBus:
     def debug(self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any) -> None:
         self.emit(UIEvent.debug(message, kind=kind, **data))
 
+    def open_view(
+        self,
+        view_type: str,
+        *,
+        title: str,
+        payload: dict[str, Any] | None = None,
+        focus: bool = True,
+        reuse_key: str | None = None,
+    ) -> None:
+        """Broadcast a structured request for the UI to open a view/panel/tab."""
+        self.emit(
+            UIEvent.info(
+                f"Open view: {title}",
+                kind=UIEventKind.VIEW,
+                action="open",
+                view_type=view_type,
+                title=title,
+                payload=payload or {},
+                focus=focus,
+                reuse_key=reuse_key,
+            )
+        )
+
+    def refresh_view(
+        self,
+        view_type: str,
+        *,
+        title: str | None = None,
+        payload: dict[str, Any] | None = None,
+        reuse_key: str | None = None,
+    ) -> None:
+        """Broadcast a structured request for the UI to refresh a view."""
+        self.emit(
+            UIEvent.info(
+                f"Refresh view: {title or view_type}",
+                kind=UIEventKind.VIEW,
+                action="refresh",
+                view_type=view_type,
+                title=title or view_type,
+                payload=payload or {},
+                reuse_key=reuse_key,
+            )
+        )
+
 
 class AgentEventBridge:
     """Republish domain-level agent events onto the UI event bus."""
@@ -168,6 +215,15 @@ class AgentEventBridge:
                 message=event.event_type.value,
                 level=level,
                 kind=UIEventKind.AGENT,
-                data={"agent_event": event},
+                data={
+                    "agent_event": event,
+                    "event_type": event.event_type.value,
+                    "tool_name": event.tool_name,
+                    "tool_args": event.tool_args,
+                    "tool_result": event.tool_result,
+                    "tool_success": event.tool_success,
+                    "error_message": event.error_message,
+                },
             )
         )
+
