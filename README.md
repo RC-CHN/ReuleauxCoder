@@ -24,17 +24,49 @@ uv run rcoder
 
 ## Commands
 
+```text
+/help             Show help
+/reset            Clear current in-memory conversation only
+/new              Start a new conversation (auto-save previous)
+/model            List model profiles and current active profile
+/model <profile>  Switch to a configured model profile
+/tokens           Show token usage
+/compact          Compress conversation context
+/save             Save session to disk
+/sessions         List saved sessions
+/session <id>     Resume a saved session in current process
+/session latest   Resume the latest saved session
+/approval show    Show approval rules
+/approval set ... Update approval rules
+/mcp show         Show MCP server status
+/mcp enable <s>   Enable one MCP server
+/mcp disable <s>  Disable one MCP server
+/quit             Exit
+/exit             Exit
 ```
-/help        Show help
-/reset       Clear conversation history
-/model       Switch model mid-conversation
-/tokens      Show token usage
-/compact     Compress conversation context
-/save        Save session to disk
-/sessions    List saved sessions
-quit         Exit
+
+### Command Notes
+
+- `/reset` only clears the current in-memory conversation. It does not delete saved sessions.
+- `/new` starts a fresh conversation and auto-saves the previous one first.
+- `/model` lists configured model profiles from `config.yaml`; `/model <profile>` switches to one and persists the active profile.
+- `/session <id>` resumes a saved session in the current process; `rcoder -r <id>` resumes directly on startup.
+- `/approval set` currently supports targets like `tool:<name>`, `mcp`, `mcp:<server>`, and `mcp:<server>:<tool>` with actions `allow`, `warn`, `require_approval`, or `deny`.
+- `/mcp enable <server>` and `/mcp disable <server>` update workspace config and try to apply the change at runtime.
+
+## CLI Options
+
+```bash
+rcoder [-c CONFIG] [-m MODEL] [-p PROMPT] [-r ID]
 ```
+
+- `-c, --config`: path to `config.yaml`
+- `-m, --model`: override model from config
+- `-p, --prompt`: one-shot prompt mode (non-interactive)
+- `-r, --resume`: resume a saved session by ID
+- `-v, --version`: show version
 
 ## License
 
 AGPL-3.0-or-later
+
