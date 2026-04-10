@@ -32,6 +32,7 @@ class UIEventKind(Enum):
     APPROVAL = "approval"
     VIEW = "view"
     AGENT = "agent"
+    CONTEXT = "context"
 
 
 @dataclass

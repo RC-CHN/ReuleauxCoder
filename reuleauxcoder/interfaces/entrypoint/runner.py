@@ -122,6 +122,7 @@ class AppRunner:
             tools=list(ALL_TOOLS), 
             max_context_tokens=config.max_context_tokens
         )
+        agent.context._ui_bus = ui_bus
         
         # Register hooks
         agent.register_hook(

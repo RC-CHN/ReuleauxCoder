@@ -1,10 +1,11 @@
 """Context manager - manages conversation context and compression."""
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
+    from reuleauxcoder.interfaces.events import UIEventBus
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -22,8 +23,9 @@ def estimate_tokens(messages: list[dict]) -> int:
 class ContextManager:
     """Manages conversation context with multi-layer compression."""
 
-    def __init__(self, max_tokens: int = 128_000):
+    def __init__(self, max_tokens: int = 128_000, ui_bus: "UIEventBus | None" = None):
         self.max_tokens = max_tokens
+        self._ui_bus = ui_bus
         # Layer thresholds (fraction of max_tokens)
         self._snip_at = int(max_tokens * 0.50)  # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
@@ -45,34 +47,55 @@ class ContextManager:
 
         Returns True if any compression happened.
         """
-        current = estimate_tokens(messages)
+        before_tokens = estimate_tokens(messages)
+        before_message_count = len(messages)
+        before_snapshot = self._snapshot_messages(messages)
         compressed = False
+        applied_layers: list[str] = []
+
+        current = before_tokens
 
         # Layer 1: snip verbose tool outputs
         if current > self._snip_at:
             if self._snip_tool_outputs(messages):
                 compressed = True
+                applied_layers.append("snip_tool_outputs")
                 current = estimate_tokens(messages)
 
         # Layer 2: LLM-powered summarization of old turns
         if current > self._summarize_at and len(messages) > 10:
             if self._summarize_old(messages, llm, keep_recent=8):
                 compressed = True
+                applied_layers.append("summarize_old")
                 current = estimate_tokens(messages)
 
         # Layer 3: hard collapse - last resort
         if current > self._collapse_at and len(messages) > 4:
             self._hard_collapse(messages, llm)
             compressed = True
+            applied_layers.append("hard_collapse")
+            current = estimate_tokens(messages)
+
+        if compressed:
+            self._emit_compression_events(
+                before_tokens=before_tokens,
+                before_message_count=before_message_count,
+                before_snapshot=before_snapshot,
+                after_messages=messages,
+                applied_layers=applied_layers,
+            )
 
         return compressed
 
     @staticmethod
     def _snip_tool_outputs(messages: list[dict]) -> bool:
-        """Layer 1: Truncate tool results over 1500 chars."""
+        """Layer 1: Truncate older tool results over 1500 chars, keeping recent tool outputs intact."""
         changed = False
-        for m in messages:
-            if m.get("role") != "tool":
+        tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+        protected = set(tool_indices[-10:])
+
+        for i, m in enumerate(messages):
+            if i in protected or m.get("role") != "tool":
                 continue
             content = m.get("content", "")
             if len(content) <= 1500:
@@ -176,6 +199,121 @@ class ContextManager:
 
         # Fallback: extract key lines
         return self._extract_key_info(messages)
+
+    def _emit_compression_events(
+        self,
+        *,
+        before_tokens: int,
+        before_message_count: int,
+        before_snapshot: list[dict[str, Any]],
+        after_messages: list[dict],
+        applied_layers: list[str],
+    ) -> None:
+        """Push UI events describing context compression lifecycle."""
+        if not self._ui_bus:
+            return
+
+        after_tokens = estimate_tokens(after_messages)
+        after_message_count = len(after_messages)
+        after_snapshot = self._snapshot_messages(after_messages)
+        strategy = self._describe_strategy(applied_layers)
+        delta_tokens = after_tokens - before_tokens
+        delta_messages = after_message_count - before_message_count
+
+        self._ui_bus.info(
+            f"Context auto-compression triggered at {before_tokens} tokens / {before_message_count} messages.",
+            kind=self._context_event_kind(),
+            phase="before",
+            trigger_tokens=before_tokens,
+            trigger_message_count=before_message_count,
+            max_tokens=self.max_tokens,
+            thresholds={
+                "snip_at": self._snip_at,
+                "summarize_at": self._summarize_at,
+                "collapse_at": self._collapse_at,
+            },
+            strategy=strategy,
+            applied_layers=applied_layers,
+            context_snapshot=before_snapshot,
+        )
+        self._ui_bus.success(
+            (
+                "Context auto-compression completed: "
+                f"{before_tokens} → {after_tokens} tokens, "
+                f"{before_message_count} → {after_message_count} messages."
+            ),
+            kind=self._context_event_kind(),
+            phase="after",
+            strategy=strategy,
+            applied_layers=applied_layers,
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+            token_delta=delta_tokens,
+            before_message_count=before_message_count,
+            after_message_count=after_message_count,
+            message_delta=delta_messages,
+            before_context=before_snapshot,
+            after_context=after_snapshot,
+        )
+
+    @staticmethod
+    def _snapshot_messages(messages: list[dict], max_items: int = 12, max_chars: int = 240) -> list[dict[str, Any]]:
+        """Create a compact, UI-friendly snapshot of current context."""
+        if len(messages) <= max_items:
+            selected = list(enumerate(messages))
+        else:
+            head_count = max_items // 2
+            tail_count = max_items - head_count
+            selected = list(enumerate(messages[:head_count]))
+            selected.append((-1, {"role": "meta", "content": f"... {len(messages) - max_items} messages omitted ..."}))
+            selected.extend((len(messages) - tail_count + i, msg) for i, msg in enumerate(messages[-tail_count:]))
+
+        snapshot: list[dict[str, Any]] = []
+        for index, msg in selected:
+            role = msg.get("role", "?")
+            content = (msg.get("content", "") or "").replace("\r", "")
+            if len(content) > max_chars:
+                content = content[: max_chars - 3] + "..."
+            item: dict[str, Any] = {
+                "index": index,
+                "role": role,
+                "content": content,
+            }
+            if msg.get("tool_call_id"):
+                item["tool_call_id"] = msg["tool_call_id"]
+            if msg.get("tool_calls"):
+                item["tool_calls"] = msg["tool_calls"]
+            snapshot.append(item)
+        return snapshot
+
+    def _describe_strategy(self, applied_layers: list[str]) -> dict[str, Any]:
+        """Describe configured compression policy and actual applied layers."""
+        return {
+            "policy": [
+                {
+                    "layer": "snip_tool_outputs",
+                    "threshold": self._snip_at,
+                    "description": "When context usage exceeds 50% of the budget, truncate older verbose tool outputs.",
+                },
+                {
+                    "layer": "summarize_old",
+                    "threshold": self._summarize_at,
+                    "description": "When context usage exceeds 70% of the budget and enough history exists, summarize older conversation and keep the most recent 8 messages.",
+                },
+                {
+                    "layer": "hard_collapse",
+                    "threshold": self._collapse_at,
+                    "description": "When context usage exceeds 90% of the budget, perform a hard collapse and keep only the summary plus the most recent tail messages.",
+                },
+            ],
+            "applied_layers": applied_layers,
+        }
+
+    @staticmethod
+    def _context_event_kind():
+        from reuleauxcoder.interfaces.events import UIEventKind
+
+        return UIEventKind.CONTEXT
 
     @staticmethod
     def _flatten(messages: list[dict]) -> str:
