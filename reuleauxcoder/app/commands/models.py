@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from reuleauxcoder.interfaces.events import UIEvent
@@ -44,7 +45,63 @@ class SwitchModelCommand:
     profile_name: str
 
 
-Command = ShowModelCommand | SwitchModelCommand
+@dataclass(slots=True)
+class ListSessionsCommand:
+    """List saved sessions."""
+
+    limit: int = 20
+
+
+@dataclass(slots=True)
+class ResumeSessionCommand:
+    """Resume a saved session by ID or alias."""
+
+    target: str
+
+
+@dataclass(slots=True)
+class SaveSessionCommand:
+    """Persist the current session to disk."""
+
+    current_session_id: str | None = None
+
+
+@dataclass(slots=True)
+class NewSessionCommand:
+    """Start a new conversation, auto-saving the previous one if needed."""
+
+    current_session_id: str | None = None
+
+
+@dataclass(slots=True)
+class ShowTokensCommand:
+    """Show token usage and current context window budget."""
+
+
+@dataclass(slots=True)
+class ShowApprovalCommand:
+    """Show approval rules and effective policy resolution."""
+
+
+@dataclass(slots=True)
+class SetApprovalRuleCommand:
+    """Set or replace one approval rule via textual target/action syntax."""
+
+    target: str
+    action: str
+
+
+Command = (
+    ShowModelCommand
+    | SwitchModelCommand
+    | ListSessionsCommand
+    | ResumeSessionCommand
+    | SaveSessionCommand
+    | NewSessionCommand
+    | ShowTokensCommand
+    | ShowApprovalCommand
+    | SetApprovalRuleCommand
+)
 
 
 @dataclass(slots=True)
@@ -55,3 +112,5 @@ class CommandContext:
     config: Any
     ui_bus: Any
     ui_interactor: UIInteractor | None = None
+    sessions_dir: Path | None = None
+

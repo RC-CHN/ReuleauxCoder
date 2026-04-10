@@ -198,6 +198,64 @@ class CLIRenderer:
                     Panel(Markdown(markdown_text), title="Model Profiles", border_style="blue")
                 )
                 return True
+        if view_type == "sessions":
+            sessions = payload.get("sessions") or []
+            if self._streamed_tokens:
+                self._stop_live_markdown(render_final=True)
+                self._streamed_tokens.clear()
+            if not sessions:
+                self.console.print(
+                    Panel("No saved sessions.", title="Saved Sessions", border_style="blue")
+                )
+                return True
+            lines = []
+            for s in sessions:
+                lines.append(
+                    f"- `{s.get('id', '')}` ({s.get('model', '')}, {s.get('saved_at', '')}) {s.get('preview', '')}"
+                )
+            self.console.print(
+                Panel(Markdown("\n".join(lines)), title="Saved Sessions", border_style="blue")
+            )
+            return True
+        if view_type == "approval_rules":
+            markdown_text = payload.get("markdown")
+            if isinstance(markdown_text, str) and markdown_text:
+                if self._streamed_tokens:
+                    self._stop_live_markdown(render_final=True)
+                    self._streamed_tokens.clear()
+                self.console.print(
+                    Panel(Markdown(markdown_text), title="Approval Rules", border_style="blue")
+                )
+                return True
+        if view_type == "token_usage":
+            markdown_text = payload.get("markdown")
+            if isinstance(markdown_text, str) and markdown_text:
+                if self._streamed_tokens:
+                    self._stop_live_markdown(render_final=True)
+                    self._streamed_tokens.clear()
+                self.console.print(
+                    Panel(Markdown(markdown_text), title="Token Usage", border_style="blue")
+                )
+                return True
+        if view_type == "mcp_servers":
+            servers = payload.get("servers") or []
+            if self._streamed_tokens:
+                self._stop_live_markdown(render_final=True)
+                self._streamed_tokens.clear()
+            if not servers:
+                self.console.print(
+                    Panel("No MCP servers configured.", title="MCP Servers", border_style="blue")
+                )
+                return True
+            lines = []
+            for server in servers:
+                enabled_mark = "enabled" if server.get("enabled") else "disabled"
+                runtime_mark = "connected" if server.get("runtime_connected") else "disconnected"
+                lines.append(f"- **{server.get('name', '')}**: {enabled_mark}, runtime={runtime_mark}")
+            self.console.print(
+                Panel(Markdown("\n".join(lines)), title="MCP Servers", border_style="blue")
+            )
+            return True
         return False
 
     def finalize_response(self, response: str) -> None:
