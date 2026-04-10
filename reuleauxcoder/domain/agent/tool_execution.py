@@ -74,6 +74,7 @@ class ToolExecutor:
                 ApprovalRequest(
                     tool_name=tc.name,
                     tool_args=dict(tc.arguments),
+                    tool_source=getattr(tool, "tool_source", "builtin_tool") if tool is not None else "unknown",
                     reason=approval_required.reason,
                 )
             )
