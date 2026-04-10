@@ -33,6 +33,8 @@ class Session:
     model: str
     saved_at: str
     messages: list[dict] = field(default_factory=list)
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
 
     @classmethod
     def create_new(cls, model: str) -> "Session":
@@ -53,6 +55,8 @@ class Session:
             model=d.get("model", "?"),
             saved_at=d.get("saved_at", "?"),
             messages=d.get("messages", []),
+            total_prompt_tokens=d.get("total_prompt_tokens", 0),
+            total_completion_tokens=d.get("total_completion_tokens", 0),
         )
 
     def to_dict(self) -> dict:
@@ -62,6 +66,8 @@ class Session:
             "model": self.model,
             "saved_at": self.saved_at,
             "messages": self.messages,
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
         }
 
     def get_preview(self) -> str:

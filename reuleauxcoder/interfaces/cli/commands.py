@@ -33,6 +33,8 @@ def handle_command(
                 config.model,
                 current_session_id,
                 is_exit=True,
+                total_prompt_tokens=agent.state.total_prompt_tokens,
+                total_completion_tokens=agent.state.total_completion_tokens,
             )
             ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
         return {"action": "exit", "session_id": current_session_id}
@@ -53,6 +55,8 @@ def handle_command(
                 agent.messages,
                 config.model,
                 current_session_id,
+                total_prompt_tokens=agent.state.total_prompt_tokens,
+                total_completion_tokens=agent.state.total_completion_tokens,
             )
             ui_bus.info(
                 f"Previous session auto-saved: {previous_session_id}",
@@ -70,8 +74,8 @@ def handle_command(
         return {"action": "continue", "session_id": current_session_id}
 
     if user_input == "/tokens":
-        p = agent.llm.total_prompt_tokens
-        c = agent.llm.total_completion_tokens
+        p = agent.state.total_prompt_tokens
+        c = agent.state.total_completion_tokens
         ui_bus.info(
             f"Tokens used this session: {p} prompt + {c} completion = {p + c} total"
         )
@@ -109,6 +113,8 @@ def handle_command(
             agent.messages,
             config.model,
             current_session_id,
+            total_prompt_tokens=agent.state.total_prompt_tokens,
+            total_completion_tokens=agent.state.total_completion_tokens,
         )
         current_session_id = sid
         ui_bus.success(f"Session saved: {sid}", kind=UIEventKind.SESSION)
@@ -204,8 +210,10 @@ def _handle_session_resume(
         ui_bus.error(f"Session '{session_id}' not found.", kind=UIEventKind.SESSION)
         return None, None
 
-    messages, loaded_model = loaded
+    messages, loaded_model, prompt_tokens, completion_tokens = loaded
     agent.state.messages = list(messages)
+    agent.state.total_prompt_tokens = prompt_tokens
+    agent.state.total_completion_tokens = completion_tokens
 
     if loaded_model and loaded_model != config.model:
         agent.llm.model = loaded_model

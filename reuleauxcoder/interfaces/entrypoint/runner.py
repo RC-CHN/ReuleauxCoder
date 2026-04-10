@@ -155,7 +155,12 @@ class AppRunner:
         if self.options.resume_session_id:
             loaded = session_store.load(self.options.resume_session_id)
             if loaded:
-                agent.state.messages, _loaded_model = loaded
+                (
+                    agent.state.messages,
+                    _loaded_model,
+                    agent.state.total_prompt_tokens,
+                    agent.state.total_completion_tokens,
+                ) = loaded
                 current_session_id = self.options.resume_session_id
                 session_exit_time = session_store.get_exit_time(agent.state.messages)
                 ui_bus.success(
@@ -172,7 +177,12 @@ class AppRunner:
             if latest:
                 loaded = session_store.load(latest.id)
                 if loaded:
-                    agent.state.messages, _loaded_model = loaded
+                    (
+                        agent.state.messages,
+                        _loaded_model,
+                        agent.state.total_prompt_tokens,
+                        agent.state.total_completion_tokens,
+                    ) = loaded
                     current_session_id = latest.id
                     session_exit_time = session_store.get_exit_time(agent.state.messages)
                     ui_bus.info(

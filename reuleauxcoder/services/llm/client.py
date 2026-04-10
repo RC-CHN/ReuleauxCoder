@@ -32,10 +32,6 @@ class LLM:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        # Token tracking
-        self.total_prompt_tokens = 0
-        self.total_completion_tokens = 0
-
     def reconfigure(
         self,
         *,
@@ -149,10 +145,6 @@ class LLM:
             except (json.JSONDecodeError, KeyError):
                 args = {}
             parsed.append(ToolCall(id=raw["id"], name=raw["name"], arguments=args))
-
-        # Update token counts
-        self.total_prompt_tokens += prompt_tok
-        self.total_completion_tokens += completion_tok
 
         response = LLMResponse(
             content="".join(content_parts),

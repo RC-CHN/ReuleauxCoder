@@ -29,6 +29,8 @@ class SessionStore:
         model: str,
         session_id: Optional[str] = None,
         is_exit: bool = False,
+        total_prompt_tokens: int = 0,
+        total_completion_tokens: int = 0,
     ) -> str:
         """Save conversation to disk and return the session ID."""
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -51,20 +53,27 @@ class SessionStore:
             model=model,
             saved_at=time.strftime("%Y-%m-%d %H:%M:%S"),
             messages=saved_messages,
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
         )
         path = self._get_session_path(session_id)
         path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2))
         return session_id
 
-    def load(self, session_id: str) -> tuple[list[dict], str] | None:
-        """Load a saved session and return ``(messages, model)``."""
+    def load(self, session_id: str) -> tuple[list[dict], str, int, int] | None:
+        """Load a saved session and return ``(messages, model, prompt_tokens, completion_tokens)``."""
         path = self._get_session_path(session_id)
         if not path.exists():
             return None
 
         data = json.loads(path.read_text())
         session = Session.from_dict(data)
-        return session.messages, session.model
+        return (
+            session.messages,
+            session.model,
+            session.total_prompt_tokens,
+            session.total_completion_tokens,
+        )
 
     def list(self, limit: int = 20) -> list[SessionMetadata]:
         """List available sessions, newest first."""

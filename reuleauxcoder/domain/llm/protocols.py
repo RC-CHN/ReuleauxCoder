@@ -9,8 +9,6 @@ class LLMProtocol(Protocol):
     """Protocol defining the interface for LLM implementations."""
 
     model: str
-    total_prompt_tokens: int
-    total_completion_tokens: int
 
     def chat(
         self,

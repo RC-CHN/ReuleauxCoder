@@ -13,6 +13,8 @@ def save_session(
     session_id: Optional[str] = None,
     sessions_dir: Optional[Path] = None,
     is_exit: bool = False,
+    total_prompt_tokens: int = 0,
+    total_completion_tokens: int = 0,
 ) -> str:
     """Save conversation to disk. Returns the session ID."""
     return SessionStore(sessions_dir).save(
@@ -20,14 +22,16 @@ def save_session(
         model=model,
         session_id=session_id,
         is_exit=is_exit,
+        total_prompt_tokens=total_prompt_tokens,
+        total_completion_tokens=total_completion_tokens,
     )
 
 
 def load_session(
     session_id: str,
     sessions_dir: Optional[Path] = None,
-) -> Optional[Tuple[list[dict], str]]:
-    """Load a saved session. Returns ``(messages, model)`` or ``None``."""
+) -> Optional[Tuple[list[dict], str, int, int]]:
+    """Load a saved session. Returns ``(messages, model, prompt_tokens, completion_tokens)`` or ``None``."""
     return SessionStore(sessions_dir).load(session_id)
 
 

@@ -47,6 +47,8 @@ def run_repl(
                     config.model,
                     current_session_id,
                     is_exit=True,
+                    total_prompt_tokens=agent.state.total_prompt_tokens,
+                    total_completion_tokens=agent.state.total_completion_tokens,
                 )
                 ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
             break
