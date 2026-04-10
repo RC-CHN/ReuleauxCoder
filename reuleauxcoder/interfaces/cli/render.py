@@ -188,6 +188,16 @@ class CLIRenderer:
         """Render known structured view events in the CLI."""
         view_type = event.data.get("view_type")
         payload = event.data.get("payload") or {}
+        if view_type == "help":
+            markdown_text = payload.get("markdown")
+            if isinstance(markdown_text, str) and markdown_text:
+                if self._streamed_tokens:
+                    self._stop_live_markdown(render_final=True)
+                    self._streamed_tokens.clear()
+                self.console.print(
+                    Panel(Markdown(markdown_text), title="Help", border_style="blue")
+                )
+                return True
         if view_type == "model_profiles":
             markdown_text = payload.get("markdown")
             if isinstance(markdown_text, str) and markdown_text:
@@ -287,33 +297,6 @@ def show_banner(model: str, base_url: str | None, version: str) -> None:
             + (f"  Base: [dim]{base_url}[/dim]" if base_url else "")
             + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]/quit[/bold] to exit.",
             border_style="blue",
-        )
-    )
-
-
-def show_help() -> None:
-    console.print(
-        Panel(
-            "[bold]Commands:[/bold]\n"
-            "  /help             Show this help\n"
-            "  /reset            Clear current in-memory conversation only\n"
-            "  /new              Start a new conversation (auto-save previous)\n"
-            "  /model            List model profiles and current active profile\n"
-            "  /model <profile>  Switch to a configured model profile\n"
-            "  /tokens           Show token usage\n"
-            "  /compact          Compress conversation context\n"
-            "  /save             Save session to disk\n"
-            "  /sessions         List saved sessions\n"
-            "  /session <id>     Resume a saved session in current process\n"
-            "  /session latest   Resume latest saved session\n"
-            "  /approval show    Show approval rules\n"
-            "  /approval set ... Update approval rules\n"
-            "  /mcp show         Show MCP server status\n"
-            "  /mcp enable <s>   Enable one MCP server\n"
-            "  /mcp disable <s>  Disable one MCP server\n"
-            "  /quit             Exit ReuleauxCoder",
-            title="ReuleauxCoder Help",
-            border_style="dim",
         )
     )
 

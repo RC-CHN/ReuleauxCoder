@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from reuleauxcoder.app.commands.models import (
     Command,
+    CompactContextCommand,
+    ExitCommand,
     ListSessionsCommand,
     NewSessionCommand,
+    ResetConversationCommand,
     ResumeSessionCommand,
     SaveSessionCommand,
     SetApprovalRuleCommand,
     ShowApprovalCommand,
+    ShowHelpCommand,
     ShowMCPServersCommand,
     ShowModelCommand,
     ShowTokensCommand,
@@ -20,6 +24,19 @@ from reuleauxcoder.app.commands.models import (
 
 def parse_command(user_input: str, *, current_session_id: str | None = None) -> Command | None:
     """Parse a slash command into a structured command object."""
+    lowered = user_input.lower()
+    if lowered in {"/quit", "/exit"}:
+        return ExitCommand(current_session_id=current_session_id)
+
+    if user_input == "/help":
+        return ShowHelpCommand()
+
+    if user_input == "/reset":
+        return ResetConversationCommand()
+
+    if user_input == "/compact":
+        return CompactContextCommand()
+
     if user_input == "/model":
         return ShowModelCommand()
 

@@ -34,6 +34,28 @@ class CommandResult:
 
 
 @dataclass(slots=True)
+class ShowHelpCommand:
+    """Show user-facing command help."""
+
+
+@dataclass(slots=True)
+class ExitCommand:
+    """Exit the current interface, auto-saving if needed."""
+
+    current_session_id: str | None = None
+
+
+@dataclass(slots=True)
+class ResetConversationCommand:
+    """Clear current in-memory conversation only."""
+
+
+@dataclass(slots=True)
+class CompactContextCommand:
+    """Compact the current conversation context."""
+
+
+@dataclass(slots=True)
 class ShowModelCommand:
     """Show configured model profiles and current active profile."""
 
@@ -105,7 +127,11 @@ class ToggleMCPServerCommand:
 
 
 Command = (
-    ShowModelCommand
+    ShowHelpCommand
+    | ExitCommand
+    | ResetConversationCommand
+    | CompactContextCommand
+    | ShowModelCommand
     | SwitchModelCommand
     | ListSessionsCommand
     | ResumeSessionCommand

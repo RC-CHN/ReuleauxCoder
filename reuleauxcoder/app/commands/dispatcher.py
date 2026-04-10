@@ -11,17 +11,27 @@ from reuleauxcoder.app.commands.handlers.sessions import (
     handle_resume_session,
     handle_save_session,
 )
-from reuleauxcoder.app.commands.handlers.system import handle_show_tokens
+from reuleauxcoder.app.commands.handlers.system import (
+    handle_compact_context,
+    handle_exit,
+    handle_reset_conversation,
+    handle_show_help,
+    handle_show_tokens,
+)
 from reuleauxcoder.app.commands.models import (
     Command,
     CommandContext,
     CommandResult,
+    CompactContextCommand,
+    ExitCommand,
     ListSessionsCommand,
     NewSessionCommand,
+    ResetConversationCommand,
     ResumeSessionCommand,
     SaveSessionCommand,
     SetApprovalRuleCommand,
     ShowApprovalCommand,
+    ShowHelpCommand,
     ShowMCPServersCommand,
     ShowModelCommand,
     ShowTokensCommand,
@@ -32,6 +42,14 @@ from reuleauxcoder.app.commands.models import (
 
 def dispatch_command(command: Command, ctx: CommandContext) -> CommandResult:
     """Dispatch a structured command to its shared handler."""
+    if isinstance(command, ShowHelpCommand):
+        return handle_show_help(command, ctx)
+    if isinstance(command, ExitCommand):
+        return handle_exit(command, ctx)
+    if isinstance(command, ResetConversationCommand):
+        return handle_reset_conversation(command, ctx)
+    if isinstance(command, CompactContextCommand):
+        return handle_compact_context(command, ctx)
     if isinstance(command, ShowModelCommand):
         return handle_show_model(ctx)
     if isinstance(command, SwitchModelCommand):
