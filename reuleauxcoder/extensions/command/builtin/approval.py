@@ -1,14 +1,12 @@
-"""Shared handlers for approval-related commands."""
+"""Builtin approval command extension registration and handlers."""
 
 from __future__ import annotations
 
-from reuleauxcoder.app.commands.models import (
-    CommandContext,
-    CommandResult,
-    OpenViewRequest,
-    SetApprovalRuleCommand,
-    ShowApprovalCommand,
-)
+from dataclasses import dataclass
+
+from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.app.runtime.approval import (
     VALID_APPROVAL_ACTIONS,
     build_approval_view,
@@ -16,12 +14,33 @@ from reuleauxcoder.app.runtime.approval import (
     refresh_approval_runtime,
     same_rule_target,
 )
+from reuleauxcoder.extensions.command.builtin.common import EmptyCommand, TEXT_REQUIRED, UI_TARGETS, slash_trigger
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
-def handle_show_approval(command: ShowApprovalCommand, ctx: CommandContext) -> CommandResult:
-    """Build and publish the structured approval view."""
+@dataclass(frozen=True, slots=True)
+class SetApprovalRuleCommand:
+    target: str
+    action: str
+
+
+def _parse_show_approval(user_input: str, parse_ctx):
+    if user_input in {"/approval", "/approval show"}:
+        return EmptyCommand()
+    return None
+
+
+def _parse_set_approval(user_input: str, parse_ctx):
+    if user_input.startswith("/approval set "):
+        spec = user_input[len("/approval set ") :].strip().split()
+        if len(spec) >= 2:
+            return SetApprovalRuleCommand(target=spec[0], action=spec[1])
+        return SetApprovalRuleCommand(target="", action="")
+    return None
+
+
+def _handle_show_approval(command, ctx) -> CommandResult:
     view = build_approval_view(ctx.config, ctx.agent)
     payload = view.to_payload()
     ctx.ui_bus.open_view(
@@ -44,8 +63,7 @@ def handle_show_approval(command: ShowApprovalCommand, ctx: CommandContext) -> C
     )
 
 
-def handle_set_approval_rule(command: SetApprovalRuleCommand, ctx: CommandContext) -> CommandResult:
-    """Update one approval rule and refresh runtime config."""
+def _handle_set_approval_rule(command, ctx) -> CommandResult:
     if command.action not in VALID_APPROVAL_ACTIONS:
         ctx.ui_bus.error(
             "approval action must be one of allow, warn, require_approval, deny",
@@ -85,3 +103,30 @@ def handle_set_approval_rule(command: SetApprovalRuleCommand, ctx: CommandContex
     )
 
     return CommandResult(action="continue", payload={"saved_path": str(path)})
+
+
+def register_actions(registry: ActionRegistry) -> None:
+    registry.register_many(
+        [
+            ActionSpec(
+                action_id="approval.show",
+                feature_id="approval",
+                description="Show approval rules",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/approval show"),),
+                parser=_parse_show_approval,
+                handler=_handle_show_approval,
+            ),
+            ActionSpec(
+                action_id="approval.set",
+                feature_id="approval",
+                description="Set approval rule",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/approval set <target> <action>"),),
+                parser=_parse_set_approval,
+                handler=_handle_set_approval_rule,
+            ),
+        ]
+    )

@@ -11,11 +11,12 @@ from pathlib import Path
 
 from reuleauxcoder.interfaces.cli.approval import CLIApprovalProvider
 from reuleauxcoder.interfaces.cli.args import parse_args
-from reuleauxcoder.interfaces.cli.interactor import CLIUIInteractor
+from reuleauxcoder.interfaces.cli.registration import create_cli_registration
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.repl import run_repl
 from reuleauxcoder.interfaces.entrypoint import AppRunner, AppOptions
 from reuleauxcoder.interfaces.events import AgentEventBridge
+from reuleauxcoder.interfaces.ui_registry import UIRegistry
 
 
 def _run_once(agent, prompt: str):
@@ -26,7 +27,7 @@ def _run_once(agent, prompt: str):
 def main():
     """CLI main entry point."""
     args = parse_args()
-    
+
     # Build options from CLI args
     options = AppOptions(
         config_path=Path(args.config) if args.config else None,
@@ -34,36 +35,41 @@ def main():
         resume_session_id=args.resume,
         auto_resume_latest=True,
     )
-    
+
     # Initialize application using shared entrypoint
     runner = AppRunner(options)
     ctx = runner.initialize()
-    ctx.ui_interactor = CLIUIInteractor(ctx.ui_bus)
-    setattr(ctx.agent, "ui_interactor", ctx.ui_interactor)
-    ctx.agent.approval_provider = CLIApprovalProvider(ctx.ui_interactor)
-    
+
+    ui_registry = UIRegistry([create_cli_registration(ctx.ui_bus)])
+    cli_ui = ui_registry.require("cli")
+
+    ctx.ui_interactor = cli_ui.interactor
+    setattr(ctx.agent, "ui_interactor", cli_ui.interactor)
+    ctx.agent.approval_provider = CLIApprovalProvider(cli_ui.interactor)
+
     # Add CLI renderer and bridge agent events onto the UI bus
-    renderer = CLIRenderer()
+    renderer = CLIRenderer(view_registry=cli_ui.view_registry)
     bridge = AgentEventBridge(ctx.ui_bus)
     ctx.agent.add_event_handler(bridge.on_agent_event)
     ctx.ui_bus.subscribe(renderer.on_ui_event)
-    
+
     # Check for API key
     if not ctx.config.api_key:
         ctx.ui_bus.error("No API key found in config.yaml.")
         sys.exit(1)
-    
+
     try:
         # One-shot mode
         if args.prompt:
             _run_once(ctx.agent, args.prompt)
             return
-        
+
         # Interactive REPL mode
         run_repl(
             ctx.agent,
             ctx.config,
             ctx.ui_bus,
+            cli_ui.profile,
             ctx.current_session_id,
             ctx.sessions_dir,
             ctx.session_exit_time,

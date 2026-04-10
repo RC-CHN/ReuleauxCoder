@@ -1,13 +1,17 @@
-"""Command models and shared execution result types."""
+"""Shared command/action runtime models."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from reuleauxcoder.interfaces.events import UIEvent
 from reuleauxcoder.interfaces.interactions import UIInteractor
+from reuleauxcoder.interfaces.ui_registry import UIProfile
+
+if TYPE_CHECKING:
+    from reuleauxcoder.app.commands.registry import ActionRegistry
 
 
 @dataclass(slots=True)
@@ -34,126 +38,13 @@ class CommandResult:
 
 
 @dataclass(slots=True)
-class ShowHelpCommand:
-    """Show user-facing command help."""
-
-
-@dataclass(slots=True)
-class ExitCommand:
-    """Exit the current interface, auto-saving if needed."""
-
-    current_session_id: str | None = None
-
-
-@dataclass(slots=True)
-class ResetConversationCommand:
-    """Clear current in-memory conversation only."""
-
-
-@dataclass(slots=True)
-class CompactContextCommand:
-    """Compact the current conversation context."""
-
-    force_strategy: Literal["snip", "summarize", "collapse"] | None = None
-
-
-@dataclass(slots=True)
-class ShowModelCommand:
-    """Show configured model profiles and current active profile."""
-
-
-@dataclass(slots=True)
-class SwitchModelCommand:
-    """Switch the runtime to a configured model profile."""
-
-    profile_name: str
-
-
-@dataclass(slots=True)
-class ListSessionsCommand:
-    """List saved sessions."""
-
-    limit: int = 20
-
-
-@dataclass(slots=True)
-class ResumeSessionCommand:
-    """Resume a saved session by ID or alias."""
-
-    target: str
-
-
-@dataclass(slots=True)
-class SaveSessionCommand:
-    """Persist the current session to disk."""
-
-    current_session_id: str | None = None
-
-
-@dataclass(slots=True)
-class NewSessionCommand:
-    """Start a new conversation, auto-saving the previous one if needed."""
-
-    current_session_id: str | None = None
-
-
-@dataclass(slots=True)
-class ShowTokensCommand:
-    """Show token usage and current context window budget."""
-
-
-@dataclass(slots=True)
-class ShowApprovalCommand:
-    """Show approval rules and effective policy resolution."""
-
-
-@dataclass(slots=True)
-class SetApprovalRuleCommand:
-    """Set or replace one approval rule via textual target/action syntax."""
-
-    target: str
-    action: str
-
-
-@dataclass(slots=True)
-class ShowMCPServersCommand:
-    """Show configured MCP servers and current runtime state."""
-
-
-@dataclass(slots=True)
-class ToggleMCPServerCommand:
-    """Enable or disable one MCP server."""
-
-    server_name: str
-    enabled: bool
-
-
-Command = (
-    ShowHelpCommand
-    | ExitCommand
-    | ResetConversationCommand
-    | CompactContextCommand
-    | ShowModelCommand
-    | SwitchModelCommand
-    | ListSessionsCommand
-    | ResumeSessionCommand
-    | SaveSessionCommand
-    | NewSessionCommand
-    | ShowTokensCommand
-    | ShowApprovalCommand
-    | SetApprovalRuleCommand
-    | ShowMCPServersCommand
-    | ToggleMCPServerCommand
-)
-
-
-@dataclass(slots=True)
 class CommandContext:
     """Shared runtime context passed to command handlers."""
 
     agent: Any
     config: Any
     ui_bus: Any
+    ui_profile: UIProfile | None = None
+    action_registry: ActionRegistry | None = None
     ui_interactor: UIInteractor | None = None
     sessions_dir: Path | None = None
-

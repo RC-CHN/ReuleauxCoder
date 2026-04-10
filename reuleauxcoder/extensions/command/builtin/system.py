@@ -1,24 +1,74 @@
-"""Shared handlers for general runtime/status commands."""
+"""Builtin system command extension registration and handlers."""
 
 from __future__ import annotations
 
-from reuleauxcoder.app.commands.models import (
-    CommandContext,
-    CommandResult,
-    CompactContextCommand,
-    ExitCommand,
-    OpenViewRequest,
-    ResetConversationCommand,
-    ShowHelpCommand,
-    ShowTokensCommand,
-)
+from dataclasses import dataclass
+
+from reuleauxcoder.app.commands.help import build_help_markdown
+from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.domain.context.manager import estimate_tokens
+from reuleauxcoder.extensions.command.builtin.common import EmptyCommand, TEXT_REQUIRED, UI_TARGETS, slash_trigger
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
+_FORCE_COMPACT_STRATEGIES = {"snip", "summarize", "collapse"}
 
-def handle_show_help(command: ShowHelpCommand, ctx: CommandContext) -> CommandResult:
-    """Show help in a structured view."""
-    payload = {"markdown": _build_help_markdown()}
+
+@dataclass(frozen=True, slots=True)
+class ExitCommand:
+    current_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompactContextCommand:
+    force_strategy: str | None = None
+
+
+def _parse_help(user_input: str, parse_ctx):
+    if user_input == "/help":
+        return EmptyCommand()
+    return None
+
+
+def _parse_exit(user_input: str, parse_ctx):
+    if user_input.lower() in {"/quit", "/exit"}:
+        return ExitCommand(current_session_id=parse_ctx.current_session_id)
+    return None
+
+
+def _parse_reset(user_input: str, parse_ctx):
+    if user_input == "/reset":
+        return EmptyCommand()
+    return None
+
+
+def _parse_compact(user_input: str, parse_ctx):
+    lowered = user_input.lower()
+    if user_input == "/compact":
+        return CompactContextCommand()
+    if lowered.startswith("/compact force "):
+        strategy = lowered[len("/compact force ") :].strip()
+        if strategy in _FORCE_COMPACT_STRATEGIES:
+            return CompactContextCommand(force_strategy=strategy)
+        return CompactContextCommand(force_strategy="")
+    return None
+
+
+def _parse_tokens(user_input: str, parse_ctx):
+    if user_input == "/tokens":
+        return EmptyCommand()
+    return None
+
+
+def _handle_show_help(command, ctx) -> CommandResult:
+    if ctx.ui_profile is None:
+        markdown = "No active UI profile; help unavailable."
+    elif ctx.action_registry is None:
+        markdown = "No action registry available; help unavailable."
+    else:
+        markdown = build_help_markdown(ctx.ui_profile, ctx.action_registry)
+    payload = {"markdown": markdown}
     ctx.ui_bus.open_view("help", title="ReuleauxCoder Help", payload=payload, reuse_key="help")
     return CommandResult(
         action="continue",
@@ -29,8 +79,7 @@ def handle_show_help(command: ShowHelpCommand, ctx: CommandContext) -> CommandRe
     )
 
 
-def handle_exit(command: ExitCommand, ctx: CommandContext) -> CommandResult:
-    """Exit the interface, auto-saving current conversation if needed."""
+def _handle_exit(command, ctx) -> CommandResult:
     if ctx.agent.messages:
         sid = SessionStore(ctx.sessions_dir).save(
             ctx.agent.messages,
@@ -44,16 +93,13 @@ def handle_exit(command: ExitCommand, ctx: CommandContext) -> CommandResult:
     return CommandResult(action="exit", session_id=command.current_session_id)
 
 
-def handle_reset_conversation(command: ResetConversationCommand, ctx: CommandContext) -> CommandResult:
-    """Clear current in-memory conversation only."""
+def _handle_reset(command, ctx) -> CommandResult:
     ctx.agent.reset()
     ctx.ui_bus.warning("Conversation reset (in-memory only, does not delete saved sessions).")
     return CommandResult(action="continue")
 
 
-
-def handle_compact_context(command: CompactContextCommand, ctx: CommandContext) -> CommandResult:
-    """Compress current conversation context."""
+def _handle_compact(command, ctx) -> CommandResult:
     before = estimate_tokens(ctx.agent.messages)
 
     if command.force_strategy == "":
@@ -86,8 +132,7 @@ def handle_compact_context(command: CompactContextCommand, ctx: CommandContext) 
     return CommandResult(action="continue")
 
 
-def handle_show_tokens(command: ShowTokensCommand, ctx: CommandContext) -> CommandResult:
-    """Show token usage summary for the session and current context window."""
+def _handle_tokens(command, ctx) -> CommandResult:
     prompt_tokens = ctx.agent.state.total_prompt_tokens
     completion_tokens = ctx.agent.state.total_completion_tokens
     lifetime_total = prompt_tokens + completion_tokens
@@ -148,32 +193,6 @@ def handle_show_tokens(command: ShowTokensCommand, ctx: CommandContext) -> Comma
     )
 
 
-def _build_help_markdown() -> str:
-    return "\n".join(
-        [
-            "**Commands:**",
-            "- `/help` — Show this help",
-            "- `/reset` — Clear current in-memory conversation only",
-            "- `/new` — Start a new conversation (auto-save previous)",
-            "- `/model` — List model profiles and current active profile",
-            "- `/model <profile>` — Switch to a configured model profile",
-            "- `/tokens` — Show token usage",
-            "- `/compact` — Compress conversation context",
-            "- `/compact force <snip|summarize|collapse>` — Force one compression strategy",
-            "- `/save` — Save session to disk",
-            "- `/sessions` — List saved sessions",
-            "- `/session <id>` — Resume a saved session in current process",
-            "- `/session latest` — Resume latest saved session",
-            "- `/approval show` — Show approval rules",
-            "- `/approval set ...` — Update approval rules",
-            "- `/mcp show` — Show MCP server status",
-            "- `/mcp enable <s>` — Enable one MCP server",
-            "- `/mcp disable <s>` — Disable one MCP server",
-            "- `/quit` — Exit ReuleauxCoder",
-        ]
-    )
-
-
 def _build_tokens_markdown(
     *,
     prompt_tokens: int,
@@ -213,3 +232,60 @@ def _build_tokens_markdown(
         lines.extend(thresholds)
 
     return "\n".join(lines)
+
+
+def register_actions(registry: ActionRegistry) -> None:
+    registry.register_many(
+        [
+            ActionSpec(
+                action_id="system.help",
+                feature_id="system",
+                description="Show command help",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/help"),),
+                parser=_parse_help,
+                handler=_handle_show_help,
+            ),
+            ActionSpec(
+                action_id="system.exit",
+                feature_id="system",
+                description="Exit interface",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/quit"),),
+                parser=_parse_exit,
+                handler=_handle_exit,
+            ),
+            ActionSpec(
+                action_id="system.reset",
+                feature_id="system",
+                description="Reset in-memory conversation",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/reset"),),
+                parser=_parse_reset,
+                handler=_handle_reset,
+            ),
+            ActionSpec(
+                action_id="system.compact",
+                feature_id="system",
+                description="Compact conversation context",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/compact"),),
+                parser=_parse_compact,
+                handler=_handle_compact,
+            ),
+            ActionSpec(
+                action_id="system.tokens",
+                feature_id="system",
+                description="Show token usage",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/tokens"),),
+                parser=_parse_tokens,
+                handler=_handle_tokens,
+            ),
+        ]
+    )

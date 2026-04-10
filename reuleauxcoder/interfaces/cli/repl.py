@@ -8,16 +8,18 @@ from prompt_toolkit.history import FileHistory
 
 from reuleauxcoder import __version__
 from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs, get_history_file
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.render import show_banner
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
-from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+from reuleauxcoder.interfaces.ui_registry import UIProfile
 
 
 def run_repl(
     agent,
     config,
     ui_bus: UIEventBus,
+    ui_profile: UIProfile,
     current_session_id: str = None,
     sessions_dir: Path | None = None,
     session_exit_time: str | None = None,
@@ -27,7 +29,7 @@ def run_repl(
 
     hist_path = str(get_history_file())
     history = FileHistory(hist_path)
-    
+
     pending_resume_prefix: str | None = None
     if session_exit_time is not None:
         current_time = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -57,7 +59,13 @@ def run_repl(
             continue
 
         result = handle_command(
-            user_input, agent, config, current_session_id, ui_bus, sessions_dir
+            user_input,
+            agent,
+            config,
+            current_session_id,
+            ui_bus,
+            ui_profile,
+            sessions_dir,
         )
         current_session_id = result["session_id"]
 

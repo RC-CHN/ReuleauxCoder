@@ -1,20 +1,42 @@
-"""Shared handlers for the `/model` command family."""
+"""Builtin model command extension registration and handlers."""
 
 from __future__ import annotations
 
-from reuleauxcoder.app.commands.models import (
-    CommandContext,
-    CommandResult,
-    OpenViewRequest,
-    SwitchModelCommand,
-)
+from dataclasses import dataclass
+
+from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.extensions.command.builtin.common import TEXT_REQUIRED, UI_TARGETS, EmptyCommand, slash_trigger
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
-def handle_show_model(ctx: CommandContext) -> CommandResult:
-    """Build and publish model profile information."""
-    payload = build_model_profiles_payload(ctx.config)
+@dataclass(frozen=True, slots=True)
+class SwitchModelCommand:
+    profile_name: str
+
+
+def _parse_show_model(user_input: str, parse_ctx):
+    if user_input == "/model":
+        return EmptyCommand()
+    if user_input.startswith("/model "):
+        target = user_input[7:].strip()
+        if target in {"", "ls", "list", "show"}:
+            return EmptyCommand()
+    return None
+
+
+def _parse_switch_model(user_input: str, parse_ctx):
+    if user_input.startswith("/model "):
+        target = user_input[7:].strip()
+        if target and target not in {"ls", "list", "show"}:
+            return SwitchModelCommand(profile_name=target)
+    return None
+
+
+def _handle_show_model(command, ctx) -> CommandResult:
+    payload = _build_model_profiles_payload(ctx.config)
 
     ctx.ui_bus.open_view(
         "model_profiles",
@@ -37,8 +59,7 @@ def handle_show_model(ctx: CommandContext) -> CommandResult:
     )
 
 
-def handle_switch_model(command: SwitchModelCommand, ctx: CommandContext) -> CommandResult:
-    """Switch to a configured model profile and persist the selection."""
+def _handle_switch_model(command, ctx) -> CommandResult:
     profile_name = command.profile_name
     profiles = getattr(ctx.config, "model_profiles", {}) or {}
     profile = profiles.get(profile_name)
@@ -77,7 +98,7 @@ def handle_switch_model(command: SwitchModelCommand, ctx: CommandContext) -> Com
         saved_path=str(path),
     )
 
-    payload = build_model_profiles_payload(ctx.config)
+    payload = _build_model_profiles_payload(ctx.config)
     ctx.ui_bus.refresh_view(
         "model_profiles",
         title="Model Profiles",
@@ -88,8 +109,7 @@ def handle_switch_model(command: SwitchModelCommand, ctx: CommandContext) -> Com
     return CommandResult(action="continue", payload=payload)
 
 
-def build_model_profiles_payload(config) -> dict:
-    """Build a structured payload for model profile presentation."""
+def _build_model_profiles_payload(config) -> dict:
     profiles = getattr(config, "model_profiles", {}) or {}
     active = getattr(config, "active_model_profile", None)
 
@@ -154,3 +174,30 @@ def build_model_profiles_payload(config) -> dict:
         "markdown": "\n".join(lines),
         "profiles": profile_items,
     }
+
+
+def register_actions(registry: ActionRegistry) -> None:
+    registry.register_many(
+        [
+            ActionSpec(
+                action_id="model.show",
+                feature_id="model",
+                description="Show model profiles",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/model"),),
+                parser=_parse_show_model,
+                handler=_handle_show_model,
+            ),
+            ActionSpec(
+                action_id="model.switch",
+                feature_id="model",
+                description="Switch active model profile",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/model <profile>"),),
+                parser=_parse_switch_model,
+                handler=_handle_switch_model,
+            ),
+        ]
+    )

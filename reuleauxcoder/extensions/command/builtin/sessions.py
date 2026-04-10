@@ -1,22 +1,62 @@
-"""Shared handlers for session-related command families."""
+"""Builtin sessions command extension registration and handlers."""
 
 from __future__ import annotations
 
-from reuleauxcoder.app.commands.models import (
-    CommandContext,
-    CommandResult,
-    ListSessionsCommand,
-    NewSessionCommand,
-    OpenViewRequest,
-    ResumeSessionCommand,
-    SaveSessionCommand,
-)
+from dataclasses import dataclass
+
+from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.extensions.command.builtin.common import TEXT_REQUIRED, UI_TARGETS, slash_trigger
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
-def handle_list_sessions(command: ListSessionsCommand, ctx: CommandContext) -> CommandResult:
-    """List saved sessions and publish a structured sessions view."""
+@dataclass(frozen=True, slots=True)
+class ListSessionsCommand:
+    limit: int = 20
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeSessionCommand:
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class SaveSessionCommand:
+    current_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NewSessionCommand:
+    current_session_id: str | None = None
+
+
+def _parse_list_sessions(user_input: str, parse_ctx):
+    if user_input == "/sessions":
+        return ListSessionsCommand()
+    return None
+
+
+def _parse_resume_session(user_input: str, parse_ctx):
+    if user_input.startswith("/session "):
+        return ResumeSessionCommand(target=user_input[len("/session ") :].strip())
+    return None
+
+
+def _parse_save_session(user_input: str, parse_ctx):
+    if user_input == "/save":
+        return SaveSessionCommand(current_session_id=parse_ctx.current_session_id)
+    return None
+
+
+def _parse_new_session(user_input: str, parse_ctx):
+    if user_input == "/new":
+        return NewSessionCommand(current_session_id=parse_ctx.current_session_id)
+    return None
+
+
+def _handle_list_sessions(command, ctx) -> CommandResult:
     store = SessionStore(ctx.sessions_dir)
     sessions = store.list(limit=command.limit)
     payload = {
@@ -57,8 +97,7 @@ def handle_list_sessions(command: ListSessionsCommand, ctx: CommandContext) -> C
     )
 
 
-def handle_resume_session(command: ResumeSessionCommand, ctx: CommandContext) -> CommandResult:
-    """Resume a saved session by ID or `latest`."""
+def _handle_resume_session(command, ctx) -> CommandResult:
     if not command.target:
         ctx.ui_bus.error("Usage: /session <session_id|latest>", kind=UIEventKind.SESSION)
         return CommandResult(action="continue")
@@ -102,8 +141,7 @@ def handle_resume_session(command: ResumeSessionCommand, ctx: CommandContext) ->
     )
 
 
-def handle_save_session(command: SaveSessionCommand, ctx: CommandContext) -> CommandResult:
-    """Persist the current in-memory conversation."""
+def _handle_save_session(command, ctx) -> CommandResult:
     store = SessionStore(ctx.sessions_dir)
     session_id = store.save(
         ctx.agent.messages,
@@ -117,8 +155,7 @@ def handle_save_session(command: SaveSessionCommand, ctx: CommandContext) -> Com
     return CommandResult(action="continue", session_id=session_id, payload={"session_id": session_id})
 
 
-def handle_new_session(command: NewSessionCommand, ctx: CommandContext) -> CommandResult:
-    """Start a new conversation, auto-saving the previous one when needed."""
+def _handle_new_session(command, ctx) -> CommandResult:
     previous_session_id = command.current_session_id
     if ctx.agent.messages:
         sid = SessionStore(ctx.sessions_dir).save(
@@ -140,3 +177,50 @@ def handle_new_session(command: NewSessionCommand, ctx: CommandContext) -> Comma
             session_id=previous_session_id,
         )
     return CommandResult(action="continue", session_id=None, session_exit_time=None)
+
+
+def register_actions(registry: ActionRegistry) -> None:
+    registry.register_many(
+        [
+            ActionSpec(
+                action_id="sessions.list",
+                feature_id="sessions",
+                description="List saved sessions",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/sessions"),),
+                parser=_parse_list_sessions,
+                handler=_handle_list_sessions,
+            ),
+            ActionSpec(
+                action_id="sessions.resume",
+                feature_id="sessions",
+                description="Resume a session",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/session <id|latest>"),),
+                parser=_parse_resume_session,
+                handler=_handle_resume_session,
+            ),
+            ActionSpec(
+                action_id="sessions.save",
+                feature_id="sessions",
+                description="Save current session",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/save"),),
+                parser=_parse_save_session,
+                handler=_handle_save_session,
+            ),
+            ActionSpec(
+                action_id="sessions.new",
+                feature_id="sessions",
+                description="Start a new session",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/new"),),
+                parser=_parse_new_session,
+                handler=_handle_new_session,
+            ),
+        ]
+    )
