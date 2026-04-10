@@ -54,6 +54,8 @@ class ResetConversationCommand:
 class CompactContextCommand:
     """Compact the current conversation context."""
 
+    force_strategy: Literal["snip", "summarize", "collapse"] | None = None
+
 
 @dataclass(slots=True)
 class ShowModelCommand:

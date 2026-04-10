@@ -22,6 +22,9 @@ from reuleauxcoder.app.commands.models import (
 )
 
 
+_FORCE_COMPACT_STRATEGIES = {"snip", "summarize", "collapse"}
+
+
 def parse_command(user_input: str, *, current_session_id: str | None = None) -> Command | None:
     """Parse a slash command into a structured command object."""
     lowered = user_input.lower()
@@ -36,6 +39,12 @@ def parse_command(user_input: str, *, current_session_id: str | None = None) -> 
 
     if user_input == "/compact":
         return CompactContextCommand()
+
+    if lowered.startswith("/compact force "):
+        strategy = lowered[len("/compact force ") :].strip()
+        if strategy in _FORCE_COMPACT_STRATEGIES:
+            return CompactContextCommand(force_strategy=strategy)
+        return CompactContextCommand(force_strategy="")
 
     if user_input == "/model":
         return ShowModelCommand()

@@ -55,6 +55,28 @@ def handle_reset_conversation(command: ResetConversationCommand, ctx: CommandCon
 def handle_compact_context(command: CompactContextCommand, ctx: CommandContext) -> CommandResult:
     """Compress current conversation context."""
     before = estimate_tokens(ctx.agent.messages)
+
+    if command.force_strategy == "":
+        ctx.ui_bus.warning("Invalid compact strategy. Use: /compact force <snip|summarize|collapse>")
+        return CommandResult(action="continue")
+
+    if command.force_strategy:
+        compressed = ctx.agent.context.force_compress(
+            ctx.agent.messages,
+            command.force_strategy,
+            ctx.agent.llm,
+        )
+        after = estimate_tokens(ctx.agent.messages)
+        if compressed:
+            ctx.ui_bus.success(
+                f"Forced {command.force_strategy}: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
+            )
+        else:
+            ctx.ui_bus.info(
+                f"Forced {command.force_strategy}: no change ({before} tokens, {len(ctx.agent.messages)} messages)"
+            )
+        return CommandResult(action="continue")
+
     compressed = ctx.agent.context.maybe_compress(ctx.agent.messages, ctx.agent.llm)
     after = estimate_tokens(ctx.agent.messages)
     if compressed:
@@ -137,6 +159,7 @@ def _build_help_markdown() -> str:
             "- `/model <profile>` — Switch to a configured model profile",
             "- `/tokens` — Show token usage",
             "- `/compact` — Compress conversation context",
+            "- `/compact force <snip|summarize|collapse>` — Force one compression strategy",
             "- `/save` — Save session to disk",
             "- `/sessions` — List saved sessions",
             "- `/session <id>` — Resume a saved session in current process",

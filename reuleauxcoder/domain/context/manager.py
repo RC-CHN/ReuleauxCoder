@@ -87,6 +87,24 @@ class ContextManager:
 
         return compressed
 
+    def force_compress(
+        self,
+        messages: list[dict],
+        strategy: str,
+        llm: Optional["LLM"] = None,
+    ) -> bool:
+        """Force one specific compression strategy regardless of thresholds."""
+        if strategy == "snip":
+            return self._snip_tool_outputs(messages)
+        if strategy == "summarize":
+            return self._summarize_old(messages, llm, keep_recent=8)
+        if strategy == "collapse":
+            if len(messages) <= 4:
+                return False
+            self._hard_collapse(messages, llm)
+            return True
+        return False
+
     @staticmethod
     def _snip_tool_outputs(messages: list[dict]) -> bool:
         """Layer 1: Truncate older tool results over 1500 chars, keeping recent tool outputs intact."""
