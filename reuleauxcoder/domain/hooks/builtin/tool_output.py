@@ -34,7 +34,7 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         if tool_call is None:
             return context
 
-        if self._is_archive_override_read(tool_call.name, tool_call.arguments):
+        if self._is_override_read(tool_call.name, tool_call.arguments):
             return context
 
         result = context.result
@@ -59,8 +59,7 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         if archive_path is not None:
             summary_lines.append(f"Full output saved to: {archive_path}")
             summary_lines.append(
-                "To recover the full archived output, call read_file on that path with override=true. "
-                "For normal large files, prefer offset/limit paging instead of override=true."
+                "To recover the full archived output, call read_file on that path with override=true."
             )
 
         context.result = (
@@ -80,19 +79,5 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         path.write_text(content)
         return path
 
-    def _is_archive_override_read(self, tool_name: str, arguments: dict) -> bool:
-        if tool_name != "read_file":
-            return False
-        if arguments.get("override") is not True:
-            return False
-
-        file_path = arguments.get("file_path")
-        if not isinstance(file_path, str) or not file_path:
-            return False
-
-        try:
-            candidate = Path(file_path).expanduser().resolve()
-            candidate.relative_to(self.output_dir.resolve())
-            return True
-        except Exception:
-            return False
+    def _is_override_read(self, tool_name: str, arguments: dict) -> bool:
+        return tool_name == "read_file" and arguments.get("override") is True
