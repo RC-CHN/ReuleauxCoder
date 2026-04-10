@@ -91,6 +91,19 @@ class SetApprovalRuleCommand:
     action: str
 
 
+@dataclass(slots=True)
+class ShowMCPServersCommand:
+    """Show configured MCP servers and current runtime state."""
+
+
+@dataclass(slots=True)
+class ToggleMCPServerCommand:
+    """Enable or disable one MCP server."""
+
+    server_name: str
+    enabled: bool
+
+
 Command = (
     ShowModelCommand
     | SwitchModelCommand
@@ -101,6 +114,8 @@ Command = (
     | ShowTokensCommand
     | ShowApprovalCommand
     | SetApprovalRuleCommand
+    | ShowMCPServersCommand
+    | ToggleMCPServerCommand
 )
 
 

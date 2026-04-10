@@ -10,9 +10,11 @@ from reuleauxcoder.app.commands.models import (
     SaveSessionCommand,
     SetApprovalRuleCommand,
     ShowApprovalCommand,
+    ShowMCPServersCommand,
     ShowModelCommand,
     ShowTokensCommand,
     SwitchModelCommand,
+    ToggleMCPServerCommand,
 )
 
 
@@ -50,5 +52,20 @@ def parse_command(user_input: str, *, current_session_id: str | None = None) -> 
         if len(spec) >= 2:
             return SetApprovalRuleCommand(target=spec[0], action=spec[1])
         return SetApprovalRuleCommand(target="", action="")
+
+    if user_input == "/mcp" or user_input == "/mcp show":
+        return ShowMCPServersCommand()
+
+    if user_input.startswith("/mcp enable "):
+        return ToggleMCPServerCommand(
+            server_name=user_input[len("/mcp enable ") :].strip(),
+            enabled=True,
+        )
+
+    if user_input.startswith("/mcp disable "):
+        return ToggleMCPServerCommand(
+            server_name=user_input[len("/mcp disable ") :].strip(),
+            enabled=False,
+        )
 
     return None

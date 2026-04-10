@@ -4,7 +4,6 @@ from pathlib import Path
 
 from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
 from reuleauxcoder.domain.context.manager import estimate_tokens
-from reuleauxcoder.extensions.mcp.runtime import build_mcp_servers_view, toggle_mcp_server
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.render import show_help
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
@@ -72,69 +71,4 @@ def handle_command(
             )
         return {"action": "continue", "session_id": current_session_id}
 
-    if user_input == "/mcp" or user_input == "/mcp show":
-        _show_mcp_servers(config, ui_bus, agent)
-        return {"action": "continue", "session_id": current_session_id}
-
-    if user_input.startswith("/mcp enable "):
-        _handle_mcp_toggle(
-            user_input[len("/mcp enable ") :].strip(),
-            enabled=True,
-            agent=agent,
-            config=config,
-            ui_bus=ui_bus,
-        )
-        return {"action": "continue", "session_id": current_session_id}
-
-    if user_input.startswith("/mcp disable "):
-        _handle_mcp_toggle(
-            user_input[len("/mcp disable ") :].strip(),
-            enabled=False,
-            agent=agent,
-            config=config,
-            ui_bus=ui_bus,
-        )
-        return {"action": "continue", "session_id": current_session_id}
-
     return {"action": "chat", "session_id": current_session_id}
-
-
-def _show_mcp_servers(config, ui_bus: UIEventBus, agent=None) -> None:
-    view = build_mcp_servers_view(config, agent)
-    if not view.servers:
-        ui_bus.info("No MCP servers configured.", kind=UIEventKind.MCP)
-        return
-
-    ui_bus.open_view(
-        "mcp_servers",
-        title="MCP Servers",
-        payload=view.to_payload(),
-        reuse_key="mcp_servers",
-    )
-
-
-def _handle_mcp_toggle(
-    server_name: str,
-    *,
-    enabled: bool,
-    agent,
-    config,
-    ui_bus: UIEventBus,
-) -> None:
-    result = toggle_mcp_server(server_name, enabled=enabled, agent=agent, config=config)
-    if result.error:
-        ui_bus.error(result.error, kind=UIEventKind.MCP, server_name=result.server_name)
-        return
-    if result.message and result.already_in_desired_state:
-        ui_bus.info(result.message, kind=UIEventKind.MCP, server_name=result.server_name)
-        return
-    if result.warning:
-        ui_bus.warning(result.warning, kind=UIEventKind.MCP, server_name=result.server_name)
-    if result.message:
-        ui_bus.success(
-            result.message,
-            kind=UIEventKind.MCP,
-            server_name=result.server_name,
-            enabled=result.enabled,
-            saved_path=str(result.saved_path) if result.saved_path else None,
-        )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from reuleauxcoder.app.commands.handlers.approval import handle_set_approval_rule, handle_show_approval
+from reuleauxcoder.app.commands.handlers.mcp import handle_show_mcp_servers, handle_toggle_mcp_server
 from reuleauxcoder.app.commands.handlers.model import handle_show_model, handle_switch_model
 from reuleauxcoder.app.commands.handlers.sessions import (
     handle_list_sessions,
@@ -21,9 +22,11 @@ from reuleauxcoder.app.commands.models import (
     SaveSessionCommand,
     SetApprovalRuleCommand,
     ShowApprovalCommand,
+    ShowMCPServersCommand,
     ShowModelCommand,
     ShowTokensCommand,
     SwitchModelCommand,
+    ToggleMCPServerCommand,
 )
 
 
@@ -47,4 +50,8 @@ def dispatch_command(command: Command, ctx: CommandContext) -> CommandResult:
         return handle_show_approval(command, ctx)
     if isinstance(command, SetApprovalRuleCommand):
         return handle_set_approval_rule(command, ctx)
+    if isinstance(command, ShowMCPServersCommand):
+        return handle_show_mcp_servers(command, ctx)
+    if isinstance(command, ToggleMCPServerCommand):
+        return handle_toggle_mcp_server(command, ctx)
     return CommandResult(action="continue")
