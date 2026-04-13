@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from rich.markdown import Markdown
+from rich.panel import Panel
+
 from reuleauxcoder.app.commands.matchers import match_template
 from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
 from reuleauxcoder.app.commands.module_registry import register_command_module
@@ -12,7 +15,9 @@ from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import TEXT_REQUIRED, UI_TARGETS, non_empty_text, slash_trigger
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+from reuleauxcoder.interfaces.cli.views.common import stop_stream_and_clear
 from reuleauxcoder.interfaces.events import UIEventKind
+from reuleauxcoder.interfaces.view_registration import register_view
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +69,26 @@ def _parse_new_session(user_input: str, parse_ctx):
     if match_template(user_input, "/new") is not None:
         return NewSessionCommand(current_session_id=parse_ctx.current_session_id)
     return None
+
+
+@register_view(view_type="sessions", ui_targets={"cli"})
+def render_sessions_view(renderer, event) -> bool:
+    payload = event.data.get("payload") or {}
+    sessions = payload.get("sessions") or []
+    stop_stream_and_clear(renderer)
+    if not sessions:
+        renderer.console.print(Panel("No saved sessions.", title="Saved Sessions", border_style="blue"))
+        return True
+
+    lines = []
+    for session in sessions:
+        lines.append(
+            f"- `{session.get('id', '')}` ({session.get('model', '')}, {session.get('saved_at', '')}) {session.get('preview', '')}"
+        )
+    renderer.console.print(
+        Panel(Markdown("\n".join(lines)), title="Saved Sessions", border_style="blue")
+    )
+    return True
 
 
 def _handle_list_sessions(command, ctx) -> CommandResult:

@@ -17,7 +17,9 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEventKind
+from reuleauxcoder.interfaces.view_registration import register_view
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +73,17 @@ def _build_reload_message(result) -> str:
     if result.missing:
         parts.append(f"{len(result.missing)} missing")
     return "Skills reloaded: " + ", ".join(parts) + "."
+
+
+@register_view(view_type="skills", ui_targets={"cli"})
+def render_skills_view(renderer, event) -> bool:
+    payload = event.data.get("payload") or {}
+    markdown = payload.get("markdown")
+    return isinstance(markdown, str) and render_markdown_panel(
+        renderer,
+        markdown_text=markdown,
+        title="Skills",
+    )
 
 
 def _build_skills_payload(ctx) -> dict[str, object]:

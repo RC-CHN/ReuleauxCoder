@@ -1,5 +1,4 @@
-"""CLI interface - terminal interaction."""
+"""CLI interface package."""
 
-from reuleauxcoder.interfaces.cli.main import main
+__all__: list[str] = []
 
-__all__ = ["main"]

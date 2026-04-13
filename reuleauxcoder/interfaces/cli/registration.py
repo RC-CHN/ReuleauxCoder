@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from reuleauxcoder.interfaces.cli.interactor import CLIUIInteractor
-from reuleauxcoder.interfaces.cli.views.registry import CLI_VIEW_REGISTRY
+from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.events import UIEventBus
 from reuleauxcoder.interfaces.ui_registry import UICapability, UIProfile, UIRegistration
 
@@ -26,6 +26,6 @@ def create_cli_registration(ui_bus: UIEventBus) -> UIRegistration:
     """Build the CLI UI registration for the current process."""
     return UIRegistration(
         profile=CLI_PROFILE,
-        view_registry=CLI_VIEW_REGISTRY,
+        view_registry=create_cli_view_registry(),
         interactor=CLIUIInteractor(ui_bus),
     )

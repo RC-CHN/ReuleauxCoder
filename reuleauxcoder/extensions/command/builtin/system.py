@@ -20,6 +20,8 @@ from reuleauxcoder.app.commands.shared import (
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
+from reuleauxcoder.interfaces.view_registration import register_view
 
 _FORCE_COMPACT_STRATEGIES = {"snip", "summarize", "collapse"}
 
@@ -72,6 +74,28 @@ def _parse_tokens(user_input: str, parse_ctx):
     if match_template(user_input, "/tokens") is not None:
         return EmptyCommand()
     return None
+
+
+@register_view(view_type="help", ui_targets={"cli"})
+def render_help_view(renderer, event) -> bool:
+    payload = event.data.get("payload") or {}
+    markdown = payload.get("markdown")
+    return isinstance(markdown, str) and render_markdown_panel(
+        renderer,
+        markdown_text=markdown,
+        title="Help",
+    )
+
+
+@register_view(view_type="token_usage", ui_targets={"cli"})
+def render_token_usage_view(renderer, event) -> bool:
+    payload = event.data.get("payload") or {}
+    markdown = payload.get("markdown")
+    return isinstance(markdown, str) and render_markdown_panel(
+        renderer,
+        markdown_text=markdown,
+        title="Token Usage",
+    )
 
 
 def _handle_show_help(command, ctx) -> CommandResult:

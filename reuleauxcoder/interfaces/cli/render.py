@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
-from reuleauxcoder.interfaces.cli.views.registry import CLI_VIEW_REGISTRY
+from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.events import UIEvent, UIEventKind, UIEventLevel
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
 
@@ -26,7 +26,7 @@ class CLIRenderer:
         self._streamed_tokens: list[str] = []
         self._live_markdown: Live | None = None
         self._last_markdown_refresh: float = 0.0
-        self.view_registry = view_registry or CLI_VIEW_REGISTRY
+        self.view_registry = view_registry or create_cli_view_registry()
         self._prev_sigwinch_handler = None
         self._install_resize_handler()
 
