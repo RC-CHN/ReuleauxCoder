@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.shared import (
+    EmptyCommand,
+    TEXT_REQUIRED,
+    UI_TARGETS,
+    non_empty_text,
+    slash_trigger,
+)
 from reuleauxcoder.app.commands.specs import ActionSpec
-from reuleauxcoder.extensions.command.builtin.common import TEXT_REQUIRED, UI_TARGETS, EmptyCommand, slash_trigger
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -18,21 +26,22 @@ class SwitchModelCommand:
 
 
 def _parse_show_model(user_input: str, parse_ctx):
-    if user_input == "/model":
+    if matches_any(user_input, ("/model", "/model ls", "/model list", "/model show")):
         return EmptyCommand()
-    if user_input.startswith("/model "):
-        target = user_input[7:].strip()
-        if target in {"", "ls", "list", "show"}:
-            return EmptyCommand()
     return None
 
 
 def _parse_switch_model(user_input: str, parse_ctx):
-    if user_input.startswith("/model "):
-        target = user_input[7:].strip()
-        if target and target not in {"ls", "list", "show"}:
-            return SwitchModelCommand(profile_name=target)
-    return None
+    captures = match_template(user_input, "/model {profile+}")
+    if captures is None:
+        return None
+
+    try:
+        profile = non_empty_text(reject=frozenset({"ls", "list", "show"})).parse(captures["profile"])
+    except ParamParseError:
+        return None
+
+    return SwitchModelCommand(profile_name=profile)
 
 
 def _handle_show_model(command, ctx) -> CommandResult:

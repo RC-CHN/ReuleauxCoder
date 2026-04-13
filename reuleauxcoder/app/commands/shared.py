@@ -1,9 +1,10 @@
-"""Action spec helpers for builtin command extensions."""
+"""Shared helpers for declarative command actions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from reuleauxcoder.app.commands.params import EnumParam, StrParam
 from reuleauxcoder.app.commands.specs import TriggerKind, TriggerSpec
 from reuleauxcoder.interfaces.ui_registry import UICapability
 
@@ -24,3 +25,13 @@ def slash_trigger(value: str) -> TriggerSpec:
         ui_targets=frozenset({"cli"}),
         required_capabilities=TEXT_REQUIRED,
     )
+
+
+def non_empty_text(*, lower: bool = False, reject: frozenset[str] = frozenset()) -> StrParam:
+    """Common non-empty text parameter parser."""
+    return StrParam(non_empty=True, lower=lower, reject=reject)
+
+
+def enum_text(values: set[str] | frozenset[str], *, case_insensitive: bool = True) -> EnumParam:
+    """Common enum text parameter parser."""
+    return EnumParam(values=frozenset(values), case_insensitive=case_insensitive)

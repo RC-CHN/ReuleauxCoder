@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -36,7 +37,7 @@ class SessionStore:
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
 
         if not session_id:
-            session_id = f"session_{int(time.time())}"
+            session_id = self.generate_session_id()
 
         saved_messages = list(messages)
         if is_exit:
@@ -59,6 +60,11 @@ class SessionStore:
         path = self._get_session_path(session_id)
         path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2))
         return session_id
+
+    @staticmethod
+    def generate_session_id() -> str:
+        """Generate a new session ID."""
+        return f"session_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
 
     def load(self, session_id: str) -> tuple[list[dict], str, int, int] | None:
         """Load a saved session and return ``(messages, model, prompt_tokens, completion_tokens)``."""

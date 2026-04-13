@@ -5,11 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.help import build_help_markdown
+from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.shared import (
+    EmptyCommand,
+    TEXT_REQUIRED,
+    UI_TARGETS,
+    enum_text,
+    slash_trigger,
+)
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.domain.context.manager import estimate_tokens
-from reuleauxcoder.extensions.command.builtin.common import EmptyCommand, TEXT_REQUIRED, UI_TARGETS, slash_trigger
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 _FORCE_COMPACT_STRATEGIES = {"snip", "summarize", "collapse"}
@@ -26,37 +34,41 @@ class CompactContextCommand:
 
 
 def _parse_help(user_input: str, parse_ctx):
-    if user_input == "/help":
+    if match_template(user_input, "/help") is not None:
         return EmptyCommand()
     return None
 
 
 def _parse_exit(user_input: str, parse_ctx):
-    if user_input.lower() in {"/quit", "/exit"}:
+    if matches_any(user_input, ("/quit", "/exit"), case_insensitive=True):
         return ExitCommand(current_session_id=parse_ctx.current_session_id)
     return None
 
 
 def _parse_reset(user_input: str, parse_ctx):
-    if user_input == "/reset":
+    if match_template(user_input, "/reset") is not None:
         return EmptyCommand()
     return None
 
 
 def _parse_compact(user_input: str, parse_ctx):
-    lowered = user_input.lower()
-    if user_input == "/compact":
+    if match_template(user_input, "/compact") is not None:
         return CompactContextCommand()
-    if lowered.startswith("/compact force "):
-        strategy = lowered[len("/compact force ") :].strip()
-        if strategy in _FORCE_COMPACT_STRATEGIES:
-            return CompactContextCommand(force_strategy=strategy)
+
+    captures = match_template(user_input, "/compact force {strategy}", case_insensitive=True)
+    if captures is None:
+        return None
+
+    try:
+        strategy = enum_text(_FORCE_COMPACT_STRATEGIES, case_insensitive=True).parse(captures["strategy"])
+    except ParamParseError:
         return CompactContextCommand(force_strategy="")
-    return None
+
+    return CompactContextCommand(force_strategy=strategy)
 
 
 def _parse_tokens(user_input: str, parse_ctx):
-    if user_input == "/tokens":
+    if match_template(user_input, "/tokens") is not None:
         return EmptyCommand()
     return None
 

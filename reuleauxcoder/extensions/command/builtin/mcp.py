@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.shared import (
+    EmptyCommand,
+    TEXT_REQUIRED,
+    UI_TARGETS,
+    non_empty_text,
+    slash_trigger,
+)
 from reuleauxcoder.app.commands.specs import ActionSpec
-from reuleauxcoder.extensions.command.builtin.common import EmptyCommand, TEXT_REQUIRED, UI_TARGETS, slash_trigger
 from reuleauxcoder.extensions.mcp.runtime import build_mcp_servers_view, toggle_mcp_server
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -19,21 +27,35 @@ class ToggleMCPServerCommand:
 
 
 def _parse_show_mcp(user_input: str, parse_ctx):
-    if user_input in {"/mcp", "/mcp show"}:
+    if matches_any(user_input, ("/mcp", "/mcp show")):
         return EmptyCommand()
     return None
 
 
 def _parse_enable_mcp(user_input: str, parse_ctx):
-    if user_input.startswith("/mcp enable "):
-        return ToggleMCPServerCommand(server_name=user_input[len("/mcp enable ") :].strip(), enabled=True)
-    return None
+    captures = match_template(user_input, "/mcp enable {server+}")
+    if captures is None:
+        return None
+
+    try:
+        server_name = non_empty_text().parse(captures["server"])
+    except ParamParseError:
+        return None
+
+    return ToggleMCPServerCommand(server_name=server_name, enabled=True)
 
 
 def _parse_disable_mcp(user_input: str, parse_ctx):
-    if user_input.startswith("/mcp disable "):
-        return ToggleMCPServerCommand(server_name=user_input[len("/mcp disable ") :].strip(), enabled=False)
-    return None
+    captures = match_template(user_input, "/mcp disable {server+}")
+    if captures is None:
+        return None
+
+    try:
+        server_name = non_empty_text().parse(captures["server"])
+    except ParamParseError:
+        return None
+
+    return ToggleMCPServerCommand(server_name=server_name, enabled=False)
 
 
 def _handle_show_mcp_servers(command, ctx) -> CommandResult:

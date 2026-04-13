@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.shared import (
+    EmptyCommand,
+    TEXT_REQUIRED,
+    UI_TARGETS,
+    non_empty_text,
+    slash_trigger,
+)
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.app.runtime.approval import (
     VALID_APPROVAL_ACTIONS,
@@ -14,7 +23,6 @@ from reuleauxcoder.app.runtime.approval import (
     refresh_approval_runtime,
     same_rule_target,
 )
-from reuleauxcoder.extensions.command.builtin.common import EmptyCommand, TEXT_REQUIRED, UI_TARGETS, slash_trigger
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -26,18 +34,23 @@ class SetApprovalRuleCommand:
 
 
 def _parse_show_approval(user_input: str, parse_ctx):
-    if user_input in {"/approval", "/approval show"}:
+    if matches_any(user_input, ("/approval", "/approval show")):
         return EmptyCommand()
     return None
 
 
 def _parse_set_approval(user_input: str, parse_ctx):
-    if user_input.startswith("/approval set "):
-        spec = user_input[len("/approval set ") :].strip().split()
-        if len(spec) >= 2:
-            return SetApprovalRuleCommand(target=spec[0], action=spec[1])
+    captures = match_template(user_input, "/approval set {target} {action}")
+    if captures is None:
+        return None
+
+    try:
+        target = non_empty_text().parse(captures["target"])
+        action = non_empty_text().parse(captures["action"])
+    except ParamParseError:
         return SetApprovalRuleCommand(target="", action="")
-    return None
+
+    return SetApprovalRuleCommand(target=target, action=action)
 
 
 def _handle_show_approval(command, ctx) -> CommandResult:
