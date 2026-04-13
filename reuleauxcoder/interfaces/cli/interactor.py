@@ -108,9 +108,14 @@ class CLIUIInteractor:
                     self.ui_bus.info(str(content), kind=UIEventKind.APPROVAL)
 
             while True:
-                answer = input(
-                    f"{request.approve_label}/{request.reject_label}? [y/n]: "
-                ).strip().lower()
+                try:
+                    answer = input(
+                        f"{request.approve_label}/{request.reject_label}? [y/n]: "
+                    ).strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    self.ui_bus.warning("Interrupted.", kind=UIEventKind.APPROVAL)
+                    return ReviewResponse(approved=False, cancelled=True, reason="approval interrupted")
+
                 if answer in {"y", "yes"}:
                     return ReviewResponse(approved=True)
                 if answer in {"n", "no"}:

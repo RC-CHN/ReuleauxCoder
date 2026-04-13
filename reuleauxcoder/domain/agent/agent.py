@@ -63,6 +63,50 @@ class Agent:
         # Event handlers
         self._event_handlers: List[Callable[[AgentEvent], None]] = []
 
+    def _collect_pending_tool_calls(self) -> list[tuple[str, str]]:
+        """Collect assistant tool calls that do not yet have matching tool outputs."""
+        completed_ids = {
+            msg.get("tool_call_id")
+            for msg in self.state.messages
+            if msg.get("role") == "tool" and msg.get("tool_call_id")
+        }
+
+        pending: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for msg in self.state.messages:
+            if msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                tc_id = tc.get("id")
+                fn = tc.get("function") or {}
+                tc_name = fn.get("name") or "unknown_tool"
+                if not tc_id or tc_id in completed_ids or tc_id in seen:
+                    continue
+                pending.append((tc_id, tc_name))
+                seen.add(tc_id)
+
+        return pending
+
+    def reconcile_pending_tool_calls(self, reason: str | None = None) -> int:
+        """Append fallback tool outputs for any dangling assistant tool calls.
+
+        Returns the number of synthetic tool results appended.
+        """
+        pending = self._collect_pending_tool_calls()
+        if not pending:
+            return 0
+
+        suffix = f" {reason}" if reason else ""
+        for tc_id, tc_name in pending:
+            self.state.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "content": f"Tool '{tc_name}' interrupted before returning output.{suffix}",
+                }
+            )
+        return len(pending)
+
     def add_event_handler(self, handler: Callable[[AgentEvent], None]) -> None:
         """Add an event handler."""
         self._event_handlers.append(handler)
@@ -96,13 +140,21 @@ class Agent:
 
     def chat(self, user_input: str) -> str:
         """Process one user message."""
+        # Repair stale dangling tool calls (e.g. after previous crash/interruption)
+        self.reconcile_pending_tool_calls(reason="Recovered from previous interrupted turn.")
+
         self._emit_event(AgentEvent.chat_start(user_input))
 
         # Add user message
         self.state.messages.append({"role": "user", "content": user_input})
 
         # Run the loop
-        result = self._loop.run()
+        try:
+            result = self._loop.run()
+        except BaseException as e:
+            # Ensure tool-call/response parity before bubbling the failure upward.
+            self.reconcile_pending_tool_calls(reason=f"Interrupted due to {type(e).__name__}.")
+            raise
 
         self._emit_event(AgentEvent.chat_end(result))
         return result

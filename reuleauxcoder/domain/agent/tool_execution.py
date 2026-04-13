@@ -70,14 +70,20 @@ class ToolExecutor:
                 )
                 self.agent._emit_event(AgentEvent.tool_call_end(tc.name, message, success=False))
                 return message
-            decision = provider.request_approval(
-                ApprovalRequest(
-                    tool_name=tc.name,
-                    tool_args=dict(tc.arguments),
-                    tool_source=getattr(tool, "tool_source", "builtin_tool") if tool is not None else "unknown",
-                    reason=approval_required.reason,
+            try:
+                decision = provider.request_approval(
+                    ApprovalRequest(
+                        tool_name=tc.name,
+                        tool_args=dict(tc.arguments),
+                        tool_source=getattr(tool, "tool_source", "builtin_tool") if tool is not None else "unknown",
+                        reason=approval_required.reason,
+                    )
                 )
-            )
+            except (KeyboardInterrupt, EOFError):
+                message = f"Tool '{tc.name}' approval interrupted by user"
+                self.agent._emit_event(AgentEvent.tool_call_end(tc.name, message, success=False))
+                return message
+
             if not decision.approved:
                 message = decision.reason or f"Tool '{tc.name}' denied by approval provider"
                 self.agent._emit_event(AgentEvent.tool_call_end(tc.name, message, success=False))
