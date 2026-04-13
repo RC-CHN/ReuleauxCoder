@@ -9,6 +9,7 @@ from reuleauxcoder.interfaces.cli.views.markdown_views import (
     render_help_view,
     render_mode_profiles_view,
     render_model_profiles_view,
+    render_skills_view,
     render_token_usage_view,
 )
 
@@ -20,6 +21,7 @@ CLI_VIEW_RENDERER_SPECS = [
     ViewRendererSpec(view_type="sessions", render=render_sessions_view),
     ViewRendererSpec(view_type="approval_rules", render=render_approval_rules_view),
     ViewRendererSpec(view_type="token_usage", render=render_token_usage_view),
+    ViewRendererSpec(view_type="skills", render=render_skills_view),
     ViewRendererSpec(view_type="mcp_servers", render=render_mcp_servers_view),
 ]
 

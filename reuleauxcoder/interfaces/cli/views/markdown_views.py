@@ -54,3 +54,13 @@ def render_token_usage_view(renderer, event: UIEvent) -> bool:
         markdown_text=markdown_text,
         title="Token Usage",
     )
+
+
+def render_skills_view(renderer, event: UIEvent) -> bool:
+    payload = event.data.get("payload") or {}
+    markdown_text = payload.get("markdown")
+    return isinstance(markdown_text, str) and render_markdown_panel(
+        renderer,
+        markdown_text=markdown_text,
+        title="Skills",
+    )
