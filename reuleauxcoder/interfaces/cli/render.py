@@ -1,5 +1,6 @@
 """CLI rendering - event-driven UI renderer."""
 
+import signal
 import time
 
 from rich import box
@@ -26,6 +27,33 @@ class CLIRenderer:
         self._live_markdown: Live | None = None
         self._last_markdown_refresh: float = 0.0
         self.view_registry = view_registry or CLI_VIEW_REGISTRY
+        self._prev_sigwinch_handler = None
+        self._install_resize_handler()
+
+    def close(self) -> None:
+        """Release terminal handlers/resources held by the renderer."""
+        self._stop_live_markdown(render_final=False)
+        if self._prev_sigwinch_handler is not None:
+            signal.signal(signal.SIGWINCH, self._prev_sigwinch_handler)
+            self._prev_sigwinch_handler = None
+
+    def _install_resize_handler(self) -> None:
+        """Refresh live content when terminal size changes."""
+        if not hasattr(signal, "SIGWINCH"):
+            return
+
+        self._prev_sigwinch_handler = signal.getsignal(signal.SIGWINCH)
+
+        def _on_resize(signum, frame):
+            try:
+                if self._live_markdown is not None:
+                    self._refresh_live_markdown(force=True)
+            finally:
+                previous = self._prev_sigwinch_handler
+                if callable(previous):
+                    previous(signum, frame)
+
+        signal.signal(signal.SIGWINCH, _on_resize)
 
     def on_event(self, event: AgentEvent) -> None:
         """Handle an agent event."""

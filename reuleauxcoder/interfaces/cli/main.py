@@ -56,6 +56,7 @@ def main():
     # Check for API key
     if not ctx.config.api_key:
         ctx.ui_bus.error("No API key found in config.yaml.")
+        renderer.close()
         sys.exit(1)
 
     try:
@@ -75,4 +76,5 @@ def main():
             ctx.session_exit_time,
         )
     finally:
+        renderer.close()
         runner.cleanup()
