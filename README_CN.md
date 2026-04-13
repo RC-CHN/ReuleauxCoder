@@ -30,6 +30,10 @@ uv run rcoder
 /new              开启新对话（会自动保存上一段对话）
 /model            列出模型配置与当前激活配置
 /model <profile>  切换到指定模型配置
+/skills           查看已发现的 skills
+/skills reload    重新扫描 skills
+/skills enable <n>  启用一个 skill
+/skills disable <n> 禁用一个 skill
 /tokens           显示 token 使用量
 /compact          压缩当前对话上下文
 /save             保存会话到磁盘
@@ -50,6 +54,7 @@ uv run rcoder
 - `/reset` 只会清空当前内存中的对话，不会删除已保存的会话。
 - `/new` 会先自动保存上一段对话，再开启一段新的对话。
 - `/model` 会列出 `config.yaml` 中配置的模型档案；`/model <profile>` 会切换并持久化当前激活档案。
+- `/skills` 会展示当前发现的 skills；`/skills reload` 会重新扫描工作区和用户目录；`/skills enable|disable <name>` 会把状态持久化到工作区配置。
 - `/session <id>` 会在当前进程中恢复会话；也可以用 `rcoder -r <id>` 在启动时直接恢复。
 - `/approval set` 当前支持的目标格式包括 `tool:<name>`、`mcp`、`mcp:<server>`、`mcp:<server>:<tool>`；动作支持 `allow`、`warn`、`require_approval`、`deny`。
 - `/mcp enable <server>` 与 `/mcp disable <server>` 会更新工作区配置，并尝试在运行时立即生效。

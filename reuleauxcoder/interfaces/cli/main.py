@@ -74,6 +74,7 @@ def main():
             ctx.current_session_id,
             ctx.sessions_dir,
             ctx.session_exit_time,
+            ctx.skills_service,
         )
     finally:
         renderer.close()

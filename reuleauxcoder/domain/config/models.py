@@ -127,6 +127,16 @@ class ApprovalConfig:
 
 
 @dataclass
+class SkillsConfig:
+    """Skills discovery/runtime configuration."""
+
+    enabled: bool = True
+    scan_project: bool = True
+    scan_user: bool = True
+    disabled: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     """Main configuration model for ReuleauxCoder."""
 
@@ -159,6 +169,9 @@ class Config:
 
     # Approval settings
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)
+
+    # Skills settings
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
 
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""

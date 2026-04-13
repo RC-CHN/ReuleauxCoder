@@ -23,6 +23,7 @@ def run_repl(
     current_session_id: str = None,
     sessions_dir: Path | None = None,
     session_exit_time: str | None = None,
+    skills_service=None,
 ) -> None:
     ensure_user_dirs()
     show_banner(config.model, config.base_url, __version__)
@@ -67,6 +68,7 @@ def run_repl(
             ui_bus,
             ui_profile,
             sessions_dir,
+            skills_service,
         )
         prev_session_id = current_session_id
         current_session_id = result["session_id"]

@@ -30,6 +30,10 @@ uv run rcoder
 /new              Start a new conversation (auto-save previous)
 /model            List model profiles and current active profile
 /model <profile>  Switch to a configured model profile
+/skills           Show discovered skills
+/skills reload    Reload skills from disk
+/skills enable <n>  Enable one skill
+/skills disable <n> Disable one skill
 /tokens           Show token usage
 /compact          Compress conversation context
 /save             Save session to disk
@@ -50,6 +54,7 @@ uv run rcoder
 - `/reset` only clears the current in-memory conversation. It does not delete saved sessions.
 - `/new` starts a fresh conversation and auto-saves the previous one first.
 - `/model` lists configured model profiles from `config.yaml`; `/model <profile>` switches to one and persists the active profile.
+- `/skills` shows discovered skills; `/skills reload` rescans workspace/user skill directories; `/skills enable|disable <name>` persists skill state in workspace config.
 - `/session <id>` resumes a saved session in the current process; `rcoder -r <id>` resumes directly on startup.
 - `/approval set` currently supports targets like `tool:<name>`, `mcp`, `mcp:<server>`, and `mcp:<server>:<tool>` with actions `allow`, `warn`, `require_approval`, or `deny`.
 - `/mcp enable <server>` and `/mcp disable <server>` update workspace config and try to apply the change at runtime.

@@ -11,6 +11,7 @@ def system_prompt(
     blocked_tools: list[str] | None = None,
     mode_switch_hints: list[str] | None = None,
     available_modes: list[tuple[str, str]] | None = None,
+    skills_catalog: str = "",
 ) -> str:
     """Generate the system prompt for the agent."""
     cwd = os.getcwd()
@@ -39,6 +40,9 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 7. **Respect existing style.** Match the project's coding conventions.
 8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
 """
+
+    if skills_catalog:
+        base += "\n" + skills_catalog.rstrip() + "\n"
 
     # Keep mode-specific directives appended at the end to minimize cache churn.
     mode_lines: list[str] = []

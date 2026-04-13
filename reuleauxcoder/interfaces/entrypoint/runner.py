@@ -16,9 +16,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolOutputTruncationHook, ToolPolicyGuardHook
 from reuleauxcoder.extensions.mcp.manager import MCPManager
+from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.interactions import UIInteractor
@@ -27,11 +29,11 @@ from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.llm.client import LLM
 
 
-def _default_load_config(path: Path | None):
+def _default_load_config(path: Path | None) -> Config:
     return ConfigLoader.from_path(path)
 
 
-def _default_create_llm(config: Any) -> LLM:
+def _default_create_llm(config: Config) -> LLM:
     return LLM(
         model=config.model,
         api_key=config.api_key,
@@ -45,7 +47,7 @@ def _default_load_tools() -> list[Any]:
     return list(ALL_TOOLS)
 
 
-def _default_create_agent(llm: LLM, tools: list[Any], config: Any) -> Agent:
+def _default_create_agent(llm: LLM, tools: list[Any], config: Config) -> Agent:
     return Agent(
         llm=llm,
         tools=tools,
@@ -71,11 +73,11 @@ class AppDependencies:
     any component construction without a heavy DI framework.
     """
 
-    load_config: Callable[[Path | None], Any] = _default_load_config
+    load_config: Callable[[Path | None], Config] = _default_load_config
     create_ui_bus: Callable[[], UIEventBus] = UIEventBus
-    create_llm: Callable[[Any], LLM] = _default_create_llm
+    create_llm: Callable[[Config], LLM] = _default_create_llm
     load_tools: Callable[[], list[Any]] = _default_load_tools
-    create_agent: Callable[[LLM, list[Any], Any], Agent] = _default_create_agent
+    create_agent: Callable[[LLM, list[Any], Config], Agent] = _default_create_agent
     create_session_store: Callable[[Path | None], SessionStore] = _default_create_session_store
     create_mcp_manager: Callable[[UIEventBus], MCPManager] = _default_create_mcp_manager
 
@@ -84,7 +86,7 @@ class AppDependencies:
 class AppContext:
     """Context object containing all initialized application components."""
 
-    config: Any
+    config: Config
     """Loaded configuration."""
 
     llm: LLM
@@ -101,6 +103,9 @@ class AppContext:
 
     mcp_manager: MCPManager | None = None
     """MCP manager if MCP servers are configured."""
+
+    skills_service: SkillsService | None = None
+    """Skills service for discovery, reload, and catalog rendering."""
 
     current_session_id: str | None = None
     """Current session ID if resuming a session."""
@@ -158,6 +163,7 @@ class AppRunner:
             AppContext with all initialized components.
         """
         config, ui_bus, llm, agent = self._build_core()
+        skills_service = self._init_skills(config, agent, ui_bus)
         mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
         current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
 
@@ -168,12 +174,13 @@ class AppRunner:
             ui_bus=ui_bus,
             ui_interactor=None,
             mcp_manager=mcp_manager,
+            skills_service=skills_service,
             current_session_id=current_session_id,
             session_exit_time=session_exit_time,
             sessions_dir=sessions_dir,
         )
 
-    def _build_core(self) -> tuple[Any, UIEventBus, LLM, Agent]:
+    def _build_core(self) -> tuple[Config, UIEventBus, LLM, Agent]:
         """Build config + ui bus + llm + agent, with runtime hooks initialized."""
         config = self.dependencies.load_config(self.options.config_path)
         ui_bus = self.dependencies.create_ui_bus()
@@ -190,7 +197,7 @@ class AppRunner:
         self._wire_agent_tool_parent(agent)
         return config, ui_bus, llm, agent
 
-    def _register_hooks(self, agent: Agent, config: Any) -> None:
+    def _register_hooks(self, agent: Agent, config: Config) -> None:
         """Register default runtime hooks on the agent."""
         agent.register_hook(
             HookPoint.BEFORE_TOOL_EXECUTE,
@@ -216,7 +223,7 @@ class AppRunner:
 
     def _attach_mcp_if_configured(
         self,
-        config: Any,
+        config: Config,
         agent: Agent,
         ui_bus: UIEventBus,
     ) -> MCPManager | None:
@@ -227,9 +234,45 @@ class AppRunner:
         setattr(agent, "mcp_manager", mcp_manager)
         return mcp_manager
 
+    def _init_skills(self, config: Config, agent: Agent, ui_bus: UIEventBus) -> SkillsService:
+        """Initialize skills service and attach stable catalog to the agent."""
+        skills_service = SkillsService(
+            workspace_dir=Path.cwd(),
+            home_dir=Path.home(),
+            enabled=config.skills.enabled,
+            scan_project=config.skills.scan_project,
+            scan_user=config.skills.scan_user,
+            disabled_names=list(config.skills.disabled),
+        )
+        reload_result = skills_service.reload()
+        setattr(agent, "skills_service", skills_service)
+        setattr(agent, "skills_catalog", reload_result.catalog)
+
+        if not config.skills.enabled:
+            ui_bus.info("Skills disabled by config.", kind=UIEventKind.SYSTEM)
+            return skills_service
+
+        ui_bus.info(
+            f"Skills loaded: {len(reload_result.all_skills)} discovered, {len(reload_result.active_skills)} active.",
+            kind=UIEventKind.SYSTEM,
+        )
+        if reload_result.added:
+            ui_bus.info(
+                "Skills added: " + ", ".join(reload_result.added),
+                kind=UIEventKind.SYSTEM,
+            )
+        for name in reload_result.removed:
+            ui_bus.warning(f"Skill removed: {name}", kind=UIEventKind.SYSTEM)
+        for name in reload_result.missing:
+            ui_bus.warning(f"Skill not found and skipped: {name}", kind=UIEventKind.SYSTEM)
+        for diagnostic in reload_result.diagnostics:
+            emit = ui_bus.warning if diagnostic.level == "warning" else ui_bus.error
+            emit(diagnostic.message, kind=UIEventKind.SYSTEM)
+        return skills_service
+
     def _restore_session(
         self,
-        config: Any,
+        config: Config,
         agent: Agent,
         ui_bus: UIEventBus,
     ) -> tuple[str | None, str | None, Path | None]:

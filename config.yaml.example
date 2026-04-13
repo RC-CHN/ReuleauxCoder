@@ -69,6 +69,12 @@ session:
 cli:
   history_file: "/home/pan/.reuleauxcoder/history"
 
+skills:
+  enabled: true
+  scan_project: true
+  scan_user: true
+  disabled: []
+
 mcp:
   servers:
     filesystem:

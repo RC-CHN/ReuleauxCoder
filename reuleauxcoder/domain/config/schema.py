@@ -60,6 +60,12 @@ CONFIG_SCHEMA = {
     "cli": {
         "history_file": "string (optional, default: ~/.rcoder/history)",
     },
+    "skills": {
+        "enabled": "bool (default: true)",
+        "scan_project": "bool (default: true)",
+        "scan_user": "bool (default: true)",
+        "disabled": ["skill-name", "..."],
+    },
     "mcp": {
         "servers": {
             "server_name": {

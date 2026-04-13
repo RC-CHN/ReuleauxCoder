@@ -41,6 +41,7 @@ class AgentLoop:
             blocked_tools=blocked_tools,
             mode_switch_hints=suggested_modes,
             available_modes=available_modes,
+            skills_catalog=getattr(self.agent, "skills_catalog", ""),
         )
         return [{"role": "system", "content": system}] + self.agent.state.messages
 
