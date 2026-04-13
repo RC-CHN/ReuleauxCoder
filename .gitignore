@@ -15,3 +15,4 @@ venv/
 dist/
 .pytest_cache/
 .rcoder/
+docs/rfc/

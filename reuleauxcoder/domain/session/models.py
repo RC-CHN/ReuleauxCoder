@@ -1,8 +1,6 @@
 """Session domain models."""
 
 from dataclasses import dataclass, field
-from typing import Optional
-import time
 
 
 @dataclass
@@ -37,17 +35,6 @@ class Session:
     total_completion_tokens: int = 0
 
     @classmethod
-    def create_new(cls, model: str) -> "Session":
-        """Create a new session with auto-generated ID."""
-        session_id = f"session_{int(time.time())}"
-        return cls(
-            id=session_id,
-            model=model,
-            saved_at=time.strftime("%Y-%m-%d %H:%M:%S"),
-            messages=[],
-        )
-
-    @classmethod
     def from_dict(cls, d: dict) -> "Session":
         """Create from dictionary."""
         return cls(
@@ -76,3 +63,4 @@ class Session:
             if m.get("role") == "user" and m.get("content"):
                 return m["content"][:80]
         return ""
+

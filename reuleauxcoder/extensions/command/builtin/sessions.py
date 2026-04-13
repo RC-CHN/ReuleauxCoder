@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template
 from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import TEXT_REQUIRED, UI_TARGETS, non_empty_text, slash_trigger
@@ -195,6 +196,7 @@ def _handle_new_session(command, ctx) -> CommandResult:
     return CommandResult(action="continue", session_id=new_session_id, session_exit_time=None)
 
 
+@register_command_module
 def register_actions(registry: ActionRegistry) -> None:
     registry.register_many(
         [
