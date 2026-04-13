@@ -15,6 +15,7 @@ class ParsedAction:
 
     command: object
     action: ActionSpec
+    registry: "ActionRegistry"
 
 
 class ActionRegistry:
@@ -51,7 +52,7 @@ class ActionRegistry:
                 continue
             parsed = action.parser(user_input, parse_ctx)
             if parsed is not None:
-                return ParsedAction(command=parsed, action=action)
+                return ParsedAction(command=parsed, action=action, registry=self)
         return None
 
     def dispatch(self, parsed: ParsedAction, ctx: CommandContext) -> CommandResult:

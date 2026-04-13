@@ -3,7 +3,6 @@
 from pathlib import Path
 
 from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
-from reuleauxcoder.app.commands.actions import ACTION_REGISTRY
 from reuleauxcoder.interfaces.events import UIEventBus
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 
@@ -30,7 +29,7 @@ def handle_command(
                 config=config,
                 ui_bus=ui_bus,
                 ui_profile=ui_profile,
-                action_registry=ACTION_REGISTRY,
+                action_registry=parsed_action.registry,
                 ui_interactor=getattr(agent, "ui_interactor", None),
                 sessions_dir=sessions_dir,
             ),
