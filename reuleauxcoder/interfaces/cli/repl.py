@@ -67,6 +67,7 @@ def run_repl(
             ui_profile,
             sessions_dir,
         )
+        prev_session_id = current_session_id
         current_session_id = result["session_id"]
 
         resumed_exit_time = result.get("session_exit_time")
@@ -76,6 +77,9 @@ def run_repl(
                 f"[SESSION_RESUME] User returned to the session at {current_time} "
                 f"(last left at {resumed_exit_time}).\n\n"
             )
+        elif result["action"] == "continue" and current_session_id != prev_session_id:
+            # Session switched/reset (e.g. /new, /session): stale resume marker should not leak.
+            pending_resume_prefix = None
 
         if result["action"] == "exit":
             break

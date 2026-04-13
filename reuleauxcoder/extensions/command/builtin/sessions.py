@@ -129,6 +129,7 @@ def _handle_resume_session(command, ctx) -> CommandResult:
     ctx.agent.state.messages = list(messages)
     ctx.agent.state.total_prompt_tokens = prompt_tokens
     ctx.agent.state.total_completion_tokens = completion_tokens
+    ctx.agent.state.current_round = 0
 
     if loaded_model and loaded_model != ctx.config.model:
         ctx.agent.llm.model = loaded_model
