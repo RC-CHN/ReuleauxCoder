@@ -26,6 +26,16 @@ def render_model_profiles_view(renderer, event: UIEvent) -> bool:
     )
 
 
+def render_mode_profiles_view(renderer, event: UIEvent) -> bool:
+    payload = event.data.get("payload") or {}
+    markdown_text = payload.get("markdown")
+    return isinstance(markdown_text, str) and render_markdown_panel(
+        renderer,
+        markdown_text=markdown_text,
+        title="Modes",
+    )
+
+
 def render_approval_rules_view(renderer, event: UIEvent) -> bool:
     payload = event.data.get("payload") or {}
     markdown_text = payload.get("markdown")

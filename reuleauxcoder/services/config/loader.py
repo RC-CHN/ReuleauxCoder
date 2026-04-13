@@ -1,5 +1,6 @@
 """Configuration loader - loads config.yaml with global + workspace merge."""
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 import yaml
@@ -10,10 +11,11 @@ from reuleauxcoder.domain.config.models import (
     ApprovalRuleConfig,
     Config,
     MCPServerConfig,
+    ModeConfig,
     ModelProfileConfig,
 )
-from reuleauxcoder.domain.config.schema import DEFAULTS
-from reuleauxcoder.infrastructure.yaml.loader import save_yaml_config
+from reuleauxcoder.domain.config.schema import BUILTIN_MODES, DEFAULTS, DEFAULT_ACTIVE_MODE
+from reuleauxcoder.infrastructure.yaml.loader import save_yaml_config, load_yaml_config
 
 
 class ConfigLoader:
@@ -44,62 +46,94 @@ class ConfigLoader:
 
     def _merge_dicts(self, base: dict, override: dict) -> dict:
         """Merge two dicts, override takes priority.
-        
+
         For nested dicts, merge recursively.
-        For MCP servers, merge by name (override wins for same name).
+        For profile maps (MCP/model/mode), merge by key (override wins for same key).
         """
         result = dict(base)
-        
+
         for key, value in override.items():
-            if key == "mcp" and "servers" in value:
-                # Special handling for MCP servers: merge by name
-                result_mcp = result.get("mcp", {})
-                result_servers = result_mcp.get("servers", {})
-                override_servers = value.get("servers", {})
-                # Merge servers, override wins for same name
-                merged_servers = {**result_servers, **override_servers}
-                result["mcp"] = {"servers": merged_servers}
+            if key in {"mcp", "models", "modes"} and isinstance(value, dict):
+                result_section = result.get(key, {})
+
+                # Merge `*.active` scalar fields with override priority
+                if "active" in value:
+                    result_section["active"] = value.get("active")
+
+                # Merge profile maps by name/key, override wins for same key
+                if "servers" in value and isinstance(value.get("servers"), dict):
+                    base_servers = result_section.get("servers", {})
+                    result_section["servers"] = {**base_servers, **value["servers"]}
+                if "profiles" in value and isinstance(value.get("profiles"), dict):
+                    base_profiles = result_section.get("profiles", {})
+                    override_profiles = value["profiles"]
+                    merged_profiles = dict(base_profiles)
+                    for profile_name, profile_value in override_profiles.items():
+                        if (
+                            isinstance(profile_value, dict)
+                            and isinstance(base_profiles.get(profile_name), dict)
+                        ):
+                            merged_profiles[profile_name] = self._merge_dicts(
+                                base_profiles[profile_name],
+                                profile_value,
+                            )
+                        else:
+                            merged_profiles[profile_name] = profile_value
+                    result_section["profiles"] = merged_profiles
+
+                result[key] = result_section
             elif isinstance(value, dict) and key in result and isinstance(result[key], dict):
                 # Recursively merge nested dicts
                 result[key] = self._merge_dicts(result[key], value)
             else:
                 # Override wins
                 result[key] = value
-        
+
         return result
 
     def load(self) -> Config:
         """Load configuration with global + workspace merge."""
-        # Start with defaults
-        config_data = {}
-        
+        # Start with builtin mode defaults
+        config_data = {
+            "modes": {
+                "active": DEFAULT_ACTIVE_MODE,
+                "profiles": dict(BUILTIN_MODES),
+            }
+        }
+
         # Load global config
         global_data = self._load_yaml(self.GLOBAL_CONFIG_PATH)
         if global_data:
             config_data = self._merge_dicts(config_data, global_data)
-        
+
         # Load workspace config (overrides global)
         workspace_data = self._load_yaml(self.WORKSPACE_CONFIG_PATH)
         if workspace_data:
             config_data = self._merge_dicts(config_data, workspace_data)
-        
+
         # Load explicit config path (overrides everything)
         if self.config_path:
             explicit_data = self._load_yaml(self.config_path)
             if explicit_data:
                 config_data = self._merge_dicts(config_data, explicit_data)
-        
-        # Check if we have any config at all
-        if not config_data:
+
+        # Require explicit model/runtime config even if builtin modes are present
+        has_runtime_config = any(
+            key in config_data and config_data.get(key)
+            for key in ("models", "app")
+        )
+        if not has_runtime_config:
             raise FileNotFoundError(
                 "No config.yaml found. "
                 "Create one in ~/.rcoder/ (global) or ./.rcoder/ (workspace)"
             )
 
-        migrated_data, changed = migrate_legacy_config(config_data)
-        if changed:
-            save_yaml_config(self.WORKSPACE_CONFIG_PATH, migrated_data)
-        return self._parse_config(migrated_data)
+        migrated_data, _ = migrate_legacy_config(config_data)
+        self._bootstrap_workspace_snapshot(migrated_data, workspace_data)
+
+        config = self._parse_config(migrated_data)
+        self._backfill_workspace_modes(config)
+        return config
 
     def _parse_config(self, data: dict) -> Config:
         """Parse YAML data into Config model."""
@@ -110,6 +144,7 @@ class ConfigLoader:
         cli_config = data.get("cli", {})
         mcp_config = data.get("mcp", {})
         models_config = data.get("models", {})
+        modes_config = data.get("modes", {})
 
         # Parse MCP servers
         mcp_servers = []
@@ -134,6 +169,18 @@ class ConfigLoader:
             if isinstance(active_model_profile, str)
             else None
         )
+
+        # Parse modes (builtin modes already merged during load())
+        modes: dict[str, ModeConfig] = {}
+        mode_profiles_data = modes_config.get("profiles", {})
+        for name, mode_data in mode_profiles_data.items():
+            if not isinstance(mode_data, dict):
+                continue
+            modes[name] = ModeConfig.from_dict(name, mode_data)
+
+        active_mode = modes_config.get("active")
+        if not isinstance(active_mode, str) or active_mode not in modes:
+            active_mode = DEFAULT_ACTIVE_MODE if DEFAULT_ACTIVE_MODE in modes else next(iter(modes.keys()), None)
 
         approval_rules = [
             ApprovalRuleConfig(
@@ -181,6 +228,8 @@ class ConfigLoader:
             mcp_servers=mcp_servers,
             model_profiles=model_profiles,
             active_model_profile=active_model_profile,
+            modes=modes,
+            active_mode=active_mode,
             tool_output_max_chars=tool_output_config.get(
                 "max_chars", DEFAULTS["tool_output_max_chars"]
             ),
@@ -205,6 +254,57 @@ class ConfigLoader:
             session_dir=session_config.get("dir"),
             history_file=cli_config.get("history_file"),
         )
+
+    def _backfill_workspace_modes(self, config: Config) -> None:
+        """Backfill builtin mode defaults into workspace config for discoverability."""
+        path = self.WORKSPACE_CONFIG_PATH
+
+        try:
+            workspace_data = load_yaml_config(path)
+        except FileNotFoundError:
+            workspace_data = {}
+
+        modes_data = workspace_data.get("modes")
+        profiles_data = modes_data.get("profiles") if isinstance(modes_data, dict) else None
+        has_active = isinstance(modes_data, dict) and isinstance(modes_data.get("active"), str)
+
+        needs_write = not isinstance(profiles_data, dict) or not profiles_data or not has_active
+        if not needs_write:
+            return
+
+        workspace_data.setdefault("modes", {})["active"] = config.active_mode or DEFAULT_ACTIVE_MODE
+        workspace_data["modes"]["profiles"] = {
+            name: {
+                "description": mode.description,
+                "tools": list(mode.tools),
+                "prompt_append": mode.prompt_append,
+                "allowed_subagent_modes": list(mode.allowed_subagent_modes),
+            }
+            for name, mode in sorted(config.modes.items())
+        }
+        save_yaml_config(path, workspace_data)
+
+    def _bootstrap_workspace_snapshot(self, merged_data: dict, workspace_data: dict) -> None:
+        """Write merged config snapshot into workspace once for single-file editing."""
+        modes_data = workspace_data.get("modes") if isinstance(workspace_data, dict) else None
+        profiles_data = modes_data.get("profiles") if isinstance(modes_data, dict) else None
+        has_active_mode = isinstance(modes_data, dict) and isinstance(modes_data.get("active"), str)
+
+        meta_data = workspace_data.get("meta") if isinstance(workspace_data, dict) else None
+        bootstrapped = isinstance(meta_data, dict) and bool(meta_data.get("workspace_bootstrapped"))
+
+        needs_bootstrap = (
+            not workspace_data
+            or not isinstance(profiles_data, dict)
+            or not profiles_data
+            or not has_active_mode
+        )
+        if bootstrapped or not needs_bootstrap:
+            return
+
+        snapshot = deepcopy(merged_data)
+        snapshot.setdefault("meta", {})["workspace_bootstrapped"] = True
+        save_yaml_config(self.WORKSPACE_CONFIG_PATH, snapshot)
 
     @classmethod
     def from_path(cls, path: Optional[Path] = None) -> Config:

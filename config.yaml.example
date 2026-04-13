@@ -17,6 +17,15 @@ models:
       temperature: 0.0
       max_context_tokens: 400000
 
+modes:
+  active: "coder"
+  profiles:
+    planner:
+      description: "Planning-first mode; keep implementation changes minimal unless asked."
+      tools: ["read_file", "glob", "grep"]
+      prompt_append: "Focus on architecture, trade-offs, and actionable implementation plans."
+      allowed_subagent_modes: ["coder", "debugger"]
+
 approval:
   default_mode: "require_approval"
   rules:

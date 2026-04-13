@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
+from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.hooks import HookBase, HookPoint, HookRegistry
 
 
@@ -38,11 +39,17 @@ class Agent:
         max_rounds: int = 50,
         hook_registry: HookRegistry | None = None,
         approval_provider: "ApprovalProvider" | None = None,
+        available_modes: dict[str, ModeConfig] | None = None,
+        active_mode: str | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else []
         self.max_context_tokens = max_context_tokens
         self.max_rounds = max_rounds
+
+        # Mode state
+        self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
+        self.active_mode: str | None = None
 
         # State
         self.state = AgentState()
@@ -62,6 +69,12 @@ class Agent:
 
         # Event handlers
         self._event_handlers: List[Callable[[AgentEvent], None]] = []
+
+        # Activate initial mode if available
+        if self.available_modes:
+            default_mode = active_mode or next(iter(self.available_modes.keys()), None)
+            if default_mode in self.available_modes:
+                self.active_mode = default_mode
 
     def _collect_pending_tool_calls(self) -> list[tuple[str, str]]:
         """Collect assistant tool calls that do not yet have matching tool outputs."""
@@ -106,6 +119,59 @@ class Agent:
                 }
             )
         return len(pending)
+
+    def get_active_mode_config(self) -> ModeConfig | None:
+        """Return active mode config if mode is enabled."""
+        if not self.active_mode:
+            return None
+        return self.available_modes.get(self.active_mode)
+
+    def set_mode(self, mode_name: str) -> None:
+        """Switch active mode.
+
+        Raises:
+            ValueError: If mode does not exist.
+        """
+        if mode_name not in self.available_modes:
+            raise ValueError(f"Unknown mode: {mode_name}")
+        self.active_mode = mode_name
+
+    def get_active_tools(self) -> list["Tool"]:
+        """Return tools visible to the LLM in current mode."""
+        mode = self.get_active_mode_config()
+        if mode is None:
+            return self.tools
+
+        if not mode.tools or "*" in mode.tools:
+            return self.tools
+
+        allowed = set(mode.tools)
+        return [tool for tool in self.tools if tool.name in allowed]
+
+    def get_blocked_tools(self) -> list["Tool"]:
+        """Return tools hidden/blocked by current mode."""
+        mode = self.get_active_mode_config()
+        if mode is None or not mode.tools or "*" in mode.tools:
+            return []
+        allowed = set(mode.tools)
+        return [tool for tool in self.tools if tool.name not in allowed]
+
+    def suggest_modes_for_tool(self, tool_name: str) -> list[str]:
+        """Return mode names that allow the given tool."""
+        suggestions: list[str] = []
+        for mode_name, mode in self.available_modes.items():
+            if not mode.tools or "*" in mode.tools or tool_name in set(mode.tools):
+                suggestions.append(mode_name)
+        return suggestions
+
+    def is_tool_allowed_in_mode(self, tool_name: str) -> bool:
+        """Return whether a tool can execute in current mode."""
+        mode = self.get_active_mode_config()
+        if mode is None:
+            return True
+        if not mode.tools or "*" in mode.tools:
+            return True
+        return tool_name in set(mode.tools)
 
     def add_event_handler(self, handler: Callable[[AgentEvent], None]) -> None:
         """Add an event handler."""

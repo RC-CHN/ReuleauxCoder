@@ -31,6 +31,7 @@ class Session:
     model: str
     saved_at: str
     messages: list[dict] = field(default_factory=list)
+    active_mode: str | None = None
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
 
@@ -42,6 +43,7 @@ class Session:
             model=d.get("model", "?"),
             saved_at=d.get("saved_at", "?"),
             messages=d.get("messages", []),
+            active_mode=d.get("active_mode"),
             total_prompt_tokens=d.get("total_prompt_tokens", 0),
             total_completion_tokens=d.get("total_completion_tokens", 0),
         )
@@ -53,6 +55,7 @@ class Session:
             "model": self.model,
             "saved_at": self.saved_at,
             "messages": self.messages,
+            "active_mode": self.active_mode,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
         }

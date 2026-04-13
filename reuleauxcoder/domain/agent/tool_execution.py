@@ -60,6 +60,20 @@ class ToolExecutor:
             )
             return preflight_error
 
+        if not self.agent.is_tool_allowed_in_mode(tc.name):
+            mode_name = self.agent.active_mode or "default"
+            suggested_modes = self.agent.suggest_modes_for_tool(tc.name)
+            if suggested_modes:
+                suggestions = ", ".join(f"/mode switch {name}" for name in suggested_modes)
+                message = (
+                    f"Tool '{tc.name}' is not available in current mode '{mode_name}'. "
+                    f"Ask user to switch mode first: {suggestions}"
+                )
+            else:
+                message = f"Tool '{tc.name}' is not available in current mode '{mode_name}'"
+            self.agent._emit_event(AgentEvent.tool_call_end(tc.name, message, success=False))
+            return message
+
         approval_required = next((d for d in guard_decisions if d.requires_approval), None)
         if approval_required is not None:
             provider = self.agent.approval_provider

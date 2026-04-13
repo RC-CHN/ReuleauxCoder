@@ -32,6 +32,7 @@ class SessionStore:
         is_exit: bool = False,
         total_prompt_tokens: int = 0,
         total_completion_tokens: int = 0,
+        active_mode: str | None = None,
     ) -> str:
         """Save conversation to disk and return the session ID."""
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,7 @@ class SessionStore:
             model=model,
             saved_at=time.strftime("%Y-%m-%d %H:%M:%S"),
             messages=saved_messages,
+            active_mode=active_mode,
             total_prompt_tokens=total_prompt_tokens,
             total_completion_tokens=total_completion_tokens,
         )
@@ -66,8 +68,8 @@ class SessionStore:
         """Generate a new session ID."""
         return f"session_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
 
-    def load(self, session_id: str) -> tuple[list[dict], str, int, int] | None:
-        """Load a saved session and return ``(messages, model, prompt_tokens, completion_tokens)``."""
+    def load(self, session_id: str) -> tuple[list[dict], str, int, int, str | None] | None:
+        """Load a saved session and return ``(messages, model, prompt_tokens, completion_tokens, active_mode)``."""
         path = self._get_session_path(session_id)
         if not path.exists():
             return None
@@ -79,6 +81,7 @@ class SessionStore:
             session.model,
             session.total_prompt_tokens,
             session.total_completion_tokens,
+            session.active_mode,
         )
 
     def list(self, limit: int = 20) -> list[SessionMetadata]:

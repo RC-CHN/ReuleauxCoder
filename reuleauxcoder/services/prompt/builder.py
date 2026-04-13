@@ -4,13 +4,20 @@ import os
 import platform
 
 
-def system_prompt(tools) -> str:
+def system_prompt(
+    tools,
+    mode_name: str | None = None,
+    mode_prompt_append: str = "",
+    blocked_tools: list[str] | None = None,
+    mode_switch_hints: list[str] | None = None,
+    available_modes: list[tuple[str, str]] | None = None,
+) -> str:
     """Generate the system prompt for the agent."""
     cwd = os.getcwd()
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
 
-    return f"""\
+    base = f"""\
 You are ReuleauxCoder, an AI coding assistant running in the user's terminal.
 You help with software engineering: writing code, fixing bugs, refactoring, explaining code, running commands, and more.
 
@@ -32,3 +39,49 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 7. **Respect existing style.** Match the project's coding conventions.
 8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
 """
+
+    # Keep mode-specific directives appended at the end to minimize cache churn.
+    mode_lines: list[str] = []
+    if mode_name or mode_prompt_append:
+        mode_lines.extend(["", "# Active Mode"])
+        if mode_name:
+            mode_lines.append(f"- {mode_name}")
+        if mode_prompt_append:
+            mode_lines.extend(["", "# Mode Instructions", mode_prompt_append])
+
+    if blocked_tools:
+        mode_lines.extend(["", "# Mode Tool Boundaries"])
+        mode_lines.append(
+            "The following tools are unavailable in this mode and must not be called: "
+            + ", ".join(f"`{name}`" for name in sorted(blocked_tools))
+            + "."
+        )
+
+    if mode_switch_hints:
+        mode_lines.extend(["", "# Mode Switch Hints"])
+        mode_lines.append(
+            "If a task requires unavailable capabilities, ask the user to switch mode with "
+            "`/mode switch <name>` before proceeding. Suggested modes: "
+            + ", ".join(f"`{name}`" for name in mode_switch_hints)
+            + "."
+        )
+
+    if available_modes:
+        mode_lines.extend(["", "# Available Modes"])
+        mode_lines.append("When mode mismatch blocks progress, request user mode switch explicitly.")
+        for mode, desc in available_modes:
+            if mode == mode_name:
+                prefix = "- *"
+                suffix = "* (active)"
+            else:
+                prefix = "- "
+                suffix = ""
+            if desc:
+                mode_lines.append(f"{prefix}`{mode}`: {desc}{suffix}")
+            else:
+                mode_lines.append(f"{prefix}`{mode}`{suffix}")
+
+    if not mode_lines:
+        return base
+
+    return base + "\n".join(mode_lines) + "\n"

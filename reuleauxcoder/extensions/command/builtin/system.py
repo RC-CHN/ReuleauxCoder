@@ -101,6 +101,7 @@ def _handle_exit(command, ctx) -> CommandResult:
             is_exit=True,
             total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
             total_completion_tokens=ctx.agent.state.total_completion_tokens,
+            active_mode=getattr(ctx.agent, "active_mode", None),
         )
         ctx.ui_bus.info(f"Session auto-saved: {sid}")
     return CommandResult(action="exit", session_id=command.current_session_id)

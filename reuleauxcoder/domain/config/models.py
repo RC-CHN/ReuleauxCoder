@@ -75,6 +75,34 @@ class ModelProfileConfig:
         )
 
 
+@dataclass
+class ModeConfig:
+    """Configuration for one agent mode."""
+
+    name: str
+    description: str = ""
+    tools: list[str] = field(default_factory=list)
+    prompt_append: str = ""
+    allowed_subagent_modes: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, name: str, d: dict) -> "ModeConfig":
+        """Create from dictionary format."""
+        tools = d.get("tools", [])
+        allowed_subagent_modes = d.get("allowed_subagent_modes", [])
+        return cls(
+            name=name,
+            description=d.get("description", "") or "",
+            tools=[str(t) for t in tools] if isinstance(tools, list) else [],
+            prompt_append=d.get("prompt_append", "") or "",
+            allowed_subagent_modes=(
+                [str(m) for m in allowed_subagent_modes]
+                if isinstance(allowed_subagent_modes, list)
+                else []
+            ),
+        )
+
+
 ApprovalAction = Literal["allow", "warn", "require_approval", "deny"]
 
 
@@ -111,6 +139,10 @@ class Config:
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     model_profiles: dict[str, ModelProfileConfig] = field(default_factory=dict)
     active_model_profile: Optional[str] = None
+
+    # Mode settings
+    modes: dict[str, ModeConfig] = field(default_factory=dict)
+    active_mode: Optional[str] = None
 
     # Tool output settings
     tool_output_max_chars: int = 12_000
@@ -153,6 +185,13 @@ class Config:
                 errors.append(f"model_profiles[{name}].max_context_tokens must be positive")
             if profile.temperature < 0 or profile.temperature > 2:
                 errors.append(f"model_profiles[{name}].temperature must be between 0 and 2")
+
+        if self.active_mode and self.active_mode not in self.modes:
+            errors.append("active_mode must exist in modes")
+        for mode_name, mode in self.modes.items():
+            if not mode.name:
+                errors.append(f"modes[{mode_name}] must have a name")
+
         if self.approval.default_mode not in valid_actions:
             errors.append("approval.default_mode must be one of allow, warn, require_approval, deny")
         for i, rule in enumerate(self.approval.rules):

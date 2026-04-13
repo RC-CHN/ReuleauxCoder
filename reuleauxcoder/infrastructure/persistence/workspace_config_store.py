@@ -46,6 +46,18 @@ class WorkspaceConfigStore:
         save_yaml_config(self._path, data)
         return self._path
 
+    def save_active_mode(self, mode_name: str) -> Path:
+        """Persist active mode into workspace ``config.yaml``."""
+        try:
+            data = load_yaml_config(self._path)
+        except FileNotFoundError:
+            data = {}
+
+        modes_data = data.setdefault("modes", {})
+        modes_data["active"] = mode_name
+        save_yaml_config(self._path, data)
+        return self._path
+
     def save_mcp_server_config(self, server: MCPServerConfig) -> Path:
         """Persist a single MCP server config into workspace ``config.yaml``."""
         try:

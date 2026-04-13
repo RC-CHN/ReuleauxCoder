@@ -51,6 +51,7 @@ def run_repl(
                     is_exit=True,
                     total_prompt_tokens=agent.state.total_prompt_tokens,
                     total_completion_tokens=agent.state.total_completion_tokens,
+                    active_mode=getattr(agent, "active_mode", None),
                 )
                 ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
             break

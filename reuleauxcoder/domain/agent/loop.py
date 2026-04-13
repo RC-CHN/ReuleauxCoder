@@ -18,12 +18,35 @@ class AgentLoop:
 
     def _full_messages(self) -> list[dict]:
         """Get full messages including system prompt."""
-        system = system_prompt(self.agent.tools)
+        mode = self.agent.get_active_mode_config()
+        active_tools = self.agent.get_active_tools()
+        blocked = self.agent.get_blocked_tools()
+        blocked_tools = [tool.name for tool in blocked]
+
+        suggested_modes: list[str] = []
+        for tool in blocked:
+            for mode_name in self.agent.suggest_modes_for_tool(tool.name):
+                if mode_name != self.agent.active_mode and mode_name not in suggested_modes:
+                    suggested_modes.append(mode_name)
+
+        available_modes = [
+            (name, mode_cfg.description)
+            for name, mode_cfg in sorted(self.agent.available_modes.items())
+        ]
+
+        system = system_prompt(
+            active_tools,
+            mode_name=self.agent.active_mode,
+            mode_prompt_append=mode.prompt_append if mode is not None else "",
+            blocked_tools=blocked_tools,
+            mode_switch_hints=suggested_modes,
+            available_modes=available_modes,
+        )
         return [{"role": "system", "content": system}] + self.agent.state.messages
 
     def _tool_schemas(self) -> list[dict]:
         """Get tool schemas for LLM."""
-        return [t.schema() for t in self.agent.tools]
+        return [t.schema() for t in self.agent.get_active_tools()]
 
     def run(self) -> str:
         """Run the conversation loop."""

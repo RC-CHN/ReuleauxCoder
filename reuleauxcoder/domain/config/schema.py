@@ -15,6 +15,17 @@ CONFIG_SCHEMA = {
             }
         },
     },
+    "modes": {
+        "active": "string (optional, default: coder)",
+        "profiles": {
+            "mode_name": {
+                "description": "string (optional)",
+                "tools": "list of strings (optional, default: all tools)",
+                "prompt_append": "string (optional)",
+                "allowed_subagent_modes": "list of strings (optional)",
+            }
+        },
+    },
     "app": {
         "model": "string (legacy, auto-migrated)",
         "api_key": "string (legacy, auto-migrated)",
@@ -60,6 +71,40 @@ CONFIG_SCHEMA = {
         }
     },
 }
+
+# Default values for configuration
+BUILTIN_MODES = {
+    "coder": {
+        "description": "Default coding mode with full tool access.",
+        "tools": ["*"],
+        "prompt_append": (
+            "Prioritize making concrete code changes and verifying them with commands/tests "
+            "when appropriate."
+        ),
+        "allowed_subagent_modes": ["planner", "debugger", "coder"],
+    },
+    "planner": {
+        "description": "Planning-first mode; focus on analysis and implementation plans.",
+        "tools": ["read_file", "glob", "grep"],
+        "prompt_append": (
+            "Focus on analysis, architecture, and step-by-step plans. Avoid file mutations "
+            "unless explicitly requested."
+        ),
+        "allowed_subagent_modes": ["coder", "debugger"],
+    },
+    "debugger": {
+        "description": "Debugging mode focused on diagnosis and verification.",
+        "tools": ["read_file", "glob", "grep", "bash"],
+        "prompt_append": (
+            "Focus on root-cause analysis, minimal repro steps, and targeted fixes with "
+            "clear verification."
+        ),
+        "allowed_subagent_modes": ["coder", "planner"],
+    },
+}
+
+DEFAULT_ACTIVE_MODE = "coder"
+
 
 # Default values for configuration
 DEFAULTS = {

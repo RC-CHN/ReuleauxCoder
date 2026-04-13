@@ -126,11 +126,15 @@ def _handle_resume_session(command, ctx) -> CommandResult:
         ctx.ui_bus.error(f"Session '{session_id}' not found.", kind=UIEventKind.SESSION)
         return CommandResult(action="continue")
 
-    messages, loaded_model, prompt_tokens, completion_tokens = loaded
+    messages, loaded_model, prompt_tokens, completion_tokens, loaded_mode = loaded
     ctx.agent.state.messages = list(messages)
     ctx.agent.state.total_prompt_tokens = prompt_tokens
     ctx.agent.state.total_completion_tokens = completion_tokens
     ctx.agent.state.current_round = 0
+
+    if loaded_mode and loaded_mode in getattr(ctx.agent, "available_modes", {}):
+        ctx.agent.active_mode = loaded_mode
+        ctx.config.active_mode = loaded_mode
 
     if loaded_model and loaded_model != ctx.config.model:
         ctx.agent.llm.model = loaded_model
@@ -160,6 +164,7 @@ def _handle_save_session(command, ctx) -> CommandResult:
         command.current_session_id,
         total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
         total_completion_tokens=ctx.agent.state.total_completion_tokens,
+        active_mode=getattr(ctx.agent, "active_mode", None),
     )
     ctx.ui_bus.success(f"Session saved: {session_id}", kind=UIEventKind.SESSION, session_id=session_id)
     ctx.ui_bus.info(f"Resume with: rcoder -r {session_id}", kind=UIEventKind.SESSION, session_id=session_id)
@@ -176,6 +181,7 @@ def _handle_new_session(command, ctx) -> CommandResult:
             previous_session_id,
             total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
             total_completion_tokens=ctx.agent.state.total_completion_tokens,
+            active_mode=getattr(ctx.agent, "active_mode", None),
         )
         previous_session_id = sid
         ctx.ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid)

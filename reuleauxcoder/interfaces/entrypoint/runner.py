@@ -50,6 +50,8 @@ def _default_create_agent(llm: LLM, tools: list[Any], config: Any) -> Agent:
         llm=llm,
         tools=tools,
         max_context_tokens=config.max_context_tokens,
+        available_modes=getattr(config, "modes", {}) or {},
+        active_mode=getattr(config, "active_mode", None),
     )
 
 
@@ -245,7 +247,11 @@ class AppRunner:
                     _loaded_model,
                     agent.state.total_prompt_tokens,
                     agent.state.total_completion_tokens,
+                    loaded_mode,
                 ) = loaded
+                if loaded_mode and loaded_mode in getattr(agent, "available_modes", {}):
+                    agent.active_mode = loaded_mode
+                    config.active_mode = loaded_mode
                 current_session_id = self.options.resume_session_id
                 session_exit_time = session_store.get_exit_time(agent.state.messages)
                 ui_bus.success(
@@ -267,7 +273,11 @@ class AppRunner:
                         _loaded_model,
                         agent.state.total_prompt_tokens,
                         agent.state.total_completion_tokens,
+                        loaded_mode,
                     ) = loaded
+                    if loaded_mode and loaded_mode in getattr(agent, "available_modes", {}):
+                        agent.active_mode = loaded_mode
+                        config.active_mode = loaded_mode
                     current_session_id = latest.id
                     session_exit_time = session_store.get_exit_time(agent.state.messages)
                     ui_bus.info(
