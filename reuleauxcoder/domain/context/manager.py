@@ -89,6 +89,10 @@ Here's an example of how your output should be structured:
 Please provide your summary based on the conversation so far, following this structure and ensuring precision and thoroughness in your response.
 """
 
+SNIP_DEBOUNCE_TOKENS = 2_000
+SUMMARIZE_DEBOUNCE_TOKENS = 4_000
+KEEP_RECENT_USER_TURNS = 20
+
 
 class ContextManager:
     """Manages conversation context with multi-layer compression."""
@@ -96,6 +100,8 @@ class ContextManager:
     def __init__(self, max_tokens: int = 128_000, ui_bus: "UIEventBus | None" = None):
         self.max_tokens = max_tokens
         self._ui_bus = ui_bus
+        self._last_compact_tokens = 0
+        self._last_compact_strategy: str | None = None
         # Layer thresholds (fraction of max_tokens)
         self._snip_at = int(max_tokens * 0.50)  # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
@@ -124,29 +130,38 @@ class ContextManager:
         applied_layers: list[str] = []
 
         current = before_tokens
+        delta_since_last_compact = current - self._last_compact_tokens
 
-        # Layer 1: snip verbose tool outputs
-        if current > self._snip_at:
-            if self._snip_tool_outputs(messages):
-                compressed = True
-                applied_layers.append("snip_tool_outputs")
-                current = estimate_tokens(messages)
-
-        # Layer 2: LLM-powered summarization of old turns
-        if current > self._summarize_at and len(messages) > 10:
-            if self._summarize_old(messages, llm, keep_recent=8):
-                compressed = True
-                applied_layers.append("summarize_old")
-                current = estimate_tokens(messages)
-
-        # Layer 3: hard collapse - last resort
         if current > self._collapse_at and len(messages) > 4:
             self._hard_collapse(messages, llm)
             compressed = True
             applied_layers.append("hard_collapse")
+            self._last_compact_strategy = "collapse"
             current = estimate_tokens(messages)
+        else:
+            if current > self._snip_at and delta_since_last_compact >= SNIP_DEBOUNCE_TOKENS:
+                if self._snip_tool_outputs(messages):
+                    compressed = True
+                    applied_layers.append("snip_tool_outputs")
+                    self._last_compact_strategy = "snip"
+                    current = estimate_tokens(messages)
+
+            if current > self._summarize_at and delta_since_last_compact >= SUMMARIZE_DEBOUNCE_TOKENS:
+                if self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS):
+                    compressed = True
+                    applied_layers.append("summarize_old")
+                    self._last_compact_strategy = "summarize"
+                    current = estimate_tokens(messages)
+
+                if current > self._collapse_at and len(messages) > 4:
+                    self._hard_collapse(messages, llm)
+                    compressed = True
+                    applied_layers.append("hard_collapse")
+                    self._last_compact_strategy = "collapse"
+                    current = estimate_tokens(messages)
 
         if compressed:
+            self._last_compact_tokens = current
             self._emit_compression_events(
                 before_tokens=before_tokens,
                 before_message_count=before_message_count,
@@ -165,13 +180,23 @@ class ContextManager:
     ) -> bool:
         """Force one specific compression strategy regardless of thresholds."""
         if strategy == "snip":
-            return self._snip_tool_outputs(messages)
+            changed = self._snip_tool_outputs(messages)
+            if changed:
+                self._last_compact_tokens = estimate_tokens(messages)
+                self._last_compact_strategy = "snip"
+            return changed
         if strategy == "summarize":
-            return self._summarize_old(messages, llm, keep_recent=8)
+            changed = self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS)
+            if changed:
+                self._last_compact_tokens = estimate_tokens(messages)
+                self._last_compact_strategy = "summarize"
+            return changed
         if strategy == "collapse":
             if len(messages) <= 4:
                 return False
             self._hard_collapse(messages, llm)
+            self._last_compact_tokens = estimate_tokens(messages)
+            self._last_compact_strategy = "collapse"
             return True
         return False
 
@@ -205,14 +230,15 @@ class ContextManager:
         self,
         messages: list[dict],
         llm: Optional["LLM"],
-        keep_recent: int = 8,
+        keep_recent_user_turns: int = 20,
     ) -> bool:
-        """Layer 2: Summarize old conversation."""
-        if len(messages) <= keep_recent:
+        """Layer 2: Summarize old conversation while keeping recent user turns intact."""
+        split_index = self._find_recent_user_turn_boundary(messages, keep_recent_user_turns)
+        if split_index <= 0 or split_index >= len(messages):
             return False
 
-        old = messages[:-keep_recent]
-        tail = messages[-keep_recent:]
+        old = messages[:split_index]
+        tail = messages[split_index:]
 
         summary = self._get_summary(old, llm)
 
@@ -231,6 +257,17 @@ class ContextManager:
         )
         messages.extend(tail)
         return True
+
+    @staticmethod
+    def _find_recent_user_turn_boundary(messages: list[dict], keep_recent_user_turns: int) -> int:
+        """Return the split index that keeps the most recent N user turns and everything after them."""
+        if keep_recent_user_turns <= 0:
+            return len(messages)
+
+        user_turn_starts = [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
+        if len(user_turn_starts) <= keep_recent_user_turns:
+            return 0
+        return user_turn_starts[-keep_recent_user_turns]
 
     def _hard_collapse(
         self,
@@ -380,7 +417,7 @@ class ContextManager:
                 {
                     "layer": "summarize_old",
                     "threshold": self._summarize_at,
-                    "description": "When context usage exceeds 70% of the budget and enough history exists, summarize older conversation and keep the most recent 8 messages.",
+                    "description": "When context usage exceeds 70% of the budget and enough history exists, summarize older conversation and keep the most recent 20 user turns.",
                 },
                 {
                     "layer": "hard_collapse",
