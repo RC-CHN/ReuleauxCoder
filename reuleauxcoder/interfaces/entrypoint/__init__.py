@@ -4,6 +4,11 @@ This module provides shared initialization logic that can be reused
 by different interfaces (CLI, TUI, VSCode extension, etc.).
 """
 
-from reuleauxcoder.interfaces.entrypoint.runner import AppRunner, AppContext, AppOptions
+from reuleauxcoder.interfaces.entrypoint.runner import (
+    AppContext,
+    AppDependencies,
+    AppOptions,
+    AppRunner,
+)
 
-__all__ = ["AppRunner", "AppContext", "AppOptions"]
+__all__ = ["AppRunner", "AppContext", "AppOptions", "AppDependencies"]

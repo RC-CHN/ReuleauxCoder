@@ -11,7 +11,7 @@ Different interfaces (CLI, TUI, VSCode extension) can reuse this logic
 and only need to implement their own UI-specific rendering.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,34 +27,85 @@ from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.llm.client import LLM
 
 
+def _default_load_config(path: Path | None):
+    return ConfigLoader.from_path(path)
+
+
+def _default_create_llm(config: Any) -> LLM:
+    return LLM(
+        model=config.model,
+        api_key=config.api_key,
+        base_url=config.base_url,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+    )
+
+
+def _default_load_tools() -> list[Any]:
+    return list(ALL_TOOLS)
+
+
+def _default_create_agent(llm: LLM, tools: list[Any], config: Any) -> Agent:
+    return Agent(
+        llm=llm,
+        tools=tools,
+        max_context_tokens=config.max_context_tokens,
+    )
+
+
+def _default_create_session_store(sessions_dir: Path | None) -> SessionStore:
+    return SessionStore(sessions_dir)
+
+
+def _default_create_mcp_manager(ui_bus: UIEventBus) -> MCPManager:
+    return MCPManager(ui_bus=ui_bus)
+
+
+@dataclass
+class AppDependencies:
+    """Lightweight dependency providers for AppRunner.
+
+    Keep defaults production-safe while allowing tests/entrypoints to override
+    any component construction without a heavy DI framework.
+    """
+
+    load_config: Callable[[Path | None], Any] = _default_load_config
+    create_ui_bus: Callable[[], UIEventBus] = UIEventBus
+    create_llm: Callable[[Any], LLM] = _default_create_llm
+    load_tools: Callable[[], list[Any]] = _default_load_tools
+    create_agent: Callable[[LLM, list[Any], Any], Agent] = _default_create_agent
+    create_session_store: Callable[[Path | None], SessionStore] = _default_create_session_store
+    create_mcp_manager: Callable[[UIEventBus], MCPManager] = _default_create_mcp_manager
+
+
 @dataclass
 class AppContext:
     """Context object containing all initialized application components."""
-    
+
     config: Any
     """Loaded configuration."""
-    
+
     llm: LLM
     """Initialized LLM client."""
-    
+
     agent: Agent
     """Initialized Agent with tools and hooks."""
-    
+
     ui_bus: UIEventBus
     """UI event bus for cross-component communication."""
 
     ui_interactor: UIInteractor | None = None
     """Optional UI interactor for synchronous interface prompts."""
-    
+
     mcp_manager: MCPManager | None = None
     """MCP manager if MCP servers are configured."""
-    
+
     current_session_id: str | None = None
     """Current session ID if resuming a session."""
-    
+
     session_exit_time: str | None = None
     """Exit time of resumed session."""
-    
+
     sessions_dir: Path | None = None
     """Directory for session storage."""
 
@@ -62,23 +113,23 @@ class AppContext:
 @dataclass
 class AppOptions:
     """Options for application initialization."""
-    
+
     config_path: Path | None = None
     """Path to config.yaml file."""
-    
+
     model: str | None = None
     """Override model from config."""
-    
+
     resume_session_id: str | None = None
     """Session ID to resume."""
-    
+
     auto_resume_latest: bool = True
     """Whether to auto-resume the latest session."""
 
 
 class AppRunner:
     """Application runner that handles initialization and cleanup.
-    
+
     Usage:
         runner = AppRunner(options)
         ctx = runner.initialize()
@@ -88,43 +139,57 @@ class AppRunner:
         finally:
             runner.cleanup()
     """
-    
-    def __init__(self, options: AppOptions | None = None):
+
+    def __init__(
+        self,
+        options: AppOptions | None = None,
+        dependencies: AppDependencies | None = None,
+    ):
         self.options = options or AppOptions()
+        self.dependencies = dependencies or AppDependencies()
         self._mcp_manager: MCPManager | None = None
-    
+
     def initialize(self) -> AppContext:
         """Initialize all application components and return context.
-        
+
         Returns:
             AppContext with all initialized components.
         """
-        # Load configuration
-        config = ConfigLoader.from_path(self.options.config_path)
-        ui_bus = UIEventBus()
-        
-        # Override model if specified
+        config, ui_bus, llm, agent = self._build_core()
+        mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
+        current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
+
+        return AppContext(
+            config=config,
+            llm=llm,
+            agent=agent,
+            ui_bus=ui_bus,
+            ui_interactor=None,
+            mcp_manager=mcp_manager,
+            current_session_id=current_session_id,
+            session_exit_time=session_exit_time,
+            sessions_dir=sessions_dir,
+        )
+
+    def _build_core(self) -> tuple[Any, UIEventBus, LLM, Agent]:
+        """Build config + ui bus + llm + agent, with runtime hooks initialized."""
+        config = self.dependencies.load_config(self.options.config_path)
+        ui_bus = self.dependencies.create_ui_bus()
+
         if self.options.model:
             config.model = self.options.model
-        
-        # Initialize LLM
-        llm = LLM(
-            model=config.model,
-            api_key=config.api_key,
-            base_url=config.base_url,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
-        
-        # Initialize Agent
-        agent = Agent(
-            llm=llm, 
-            tools=list(ALL_TOOLS), 
-            max_context_tokens=config.max_context_tokens
-        )
+
+        llm = self.dependencies.create_llm(config)
+        tools = self.dependencies.load_tools()
+        agent = self.dependencies.create_agent(llm, tools, config)
         agent.context._ui_bus = ui_bus
-        
-        # Register hooks
+
+        self._register_hooks(agent, config)
+        self._wire_agent_tool_parent(agent)
+        return config, ui_bus, llm, agent
+
+    def _register_hooks(self, agent: Agent, config: Any) -> None:
+        """Register default runtime hooks on the agent."""
         agent.register_hook(
             HookPoint.BEFORE_TOOL_EXECUTE,
             ToolPolicyGuardHook(approval_config=config.approval, priority=100),
@@ -139,24 +204,39 @@ class AppRunner:
                 priority=0,
             ),
         )
-        
-        # Set parent agent for agent tool
+
+    @staticmethod
+    def _wire_agent_tool_parent(agent: Agent) -> None:
+        """Inject parent agent into the nested agent tool if present."""
         for tool in agent.tools:
             if tool.name == "agent":
                 tool._parent_agent = agent
-        
-        # Initialize MCP if configured
+
+    def _attach_mcp_if_configured(
+        self,
+        config: Any,
+        agent: Agent,
+        ui_bus: UIEventBus,
+    ) -> MCPManager | None:
+        """Initialize and attach MCP runtime if servers are configured."""
         mcp_manager = None
         if config.mcp_servers:
             mcp_manager = self._init_mcp(config.mcp_servers, agent, ui_bus)
         setattr(agent, "mcp_manager", mcp_manager)
-        
-        # Session management
+        return mcp_manager
+
+    def _restore_session(
+        self,
+        config: Any,
+        agent: Agent,
+        ui_bus: UIEventBus,
+    ) -> tuple[str | None, str | None, Path | None]:
+        """Restore requested/latest session and return session runtime metadata."""
         current_session_id = None
         session_exit_time = None
         sessions_dir = Path(config.session_dir) if config.session_dir else None
-        
-        session_store = SessionStore(sessions_dir)
+
+        session_store = self.dependencies.create_session_store(sessions_dir)
         if self.options.resume_session_id:
             loaded = session_store.load(self.options.resume_session_id)
             if loaded:
@@ -170,12 +250,12 @@ class AppRunner:
                 session_exit_time = session_store.get_exit_time(agent.state.messages)
                 ui_bus.success(
                     f"Resumed session: {self.options.resume_session_id}",
-                    kind=UIEventKind.SESSION
+                    kind=UIEventKind.SESSION,
                 )
             else:
                 ui_bus.error(
                     f"Session '{self.options.resume_session_id}' not found.",
-                    kind=UIEventKind.SESSION
+                    kind=UIEventKind.SESSION,
                 )
         elif self.options.auto_resume_latest:
             latest = session_store.get_latest()
@@ -195,37 +275,25 @@ class AppRunner:
                         kind=UIEventKind.SESSION,
                     )
                     if latest.preview:
-                        ui_bus.info(f"  Preview: {latest.preview}...", kind=UIEventKind.SESSION)
-        
-        return AppContext(
-            config=config,
-            llm=llm,
-            agent=agent,
-            ui_bus=ui_bus,
-            ui_interactor=None,
-            mcp_manager=mcp_manager,
-            current_session_id=current_session_id,
-            session_exit_time=session_exit_time,
-            sessions_dir=sessions_dir,
-        )
-    
+                        ui_bus.info(
+                            f"  Preview: {latest.preview}...",
+                            kind=UIEventKind.SESSION,
+                        )
+
+        return current_session_id, session_exit_time, sessions_dir
+
     def cleanup(self) -> None:
         """Clean up resources (MCP connections, etc.)."""
         if self._mcp_manager:
             self._mcp_manager.disconnect_all()
             self._mcp_manager.stop()
             self._mcp_manager = None
-    
-    def _init_mcp(
-        self, 
-        mcp_servers: list, 
-        agent: Agent, 
-        ui_bus: UIEventBus
-    ) -> MCPManager:
+
+    def _init_mcp(self, mcp_servers: list, agent: Agent, ui_bus: UIEventBus) -> MCPManager:
         """Initialize MCP manager and connect to servers."""
-        manager = MCPManager(ui_bus=ui_bus)
+        manager = self.dependencies.create_mcp_manager(ui_bus)
         manager.start()
-        
+
         enabled_servers = [s for s in mcp_servers if getattr(s, "enabled", True)]
         for server_config in enabled_servers:
             success = manager.connect_server(server_config)
@@ -241,6 +309,6 @@ class AppRunner:
                 f"Loaded {len(manager.tools)} MCP tools from {len(enabled_servers)} enabled server(s)",
                 kind=UIEventKind.MCP,
             )
-        
+
         self._mcp_manager = manager
         return manager
