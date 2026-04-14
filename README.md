@@ -8,6 +8,23 @@ Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/
 
 ## Install
 
+### Install from GitHub Release (recommended)
+
+Install [`pipx`](https://pipx.pypa.io/stable/installation/) first, then install the release wheel globally:
+
+```bash
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.1.0/reuleauxcoder-0.1.0-py3-none-any.whl
+```
+
+After installation, you can run:
+
+```bash
+rcoder --version
+rcoder
+```
+
+### Run from source
+
 ```bash
 uv sync
 ```
@@ -15,10 +32,11 @@ uv sync
 ## Quick Start
 
 ```bash
-# Copy the example config
-cp config.yaml.example config.yaml
+# Copy the example config to the workspace config location
+mkdir -p .rcoder
+cp config.yaml.example .rcoder/config.yaml
 
-# Edit config.yaml with your API key and model
+# Edit .rcoder/config.yaml with your API key and model
 uv run rcoder
 ```
 

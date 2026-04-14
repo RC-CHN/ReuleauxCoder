@@ -1,21 +1,24 @@
 models:
-  # active 可省略；省略时默认使用 profiles 里的第一个
+  # Optional: choose the active main/sub profile explicitly.
+  # If omitted, the first profile is used for main and sub defaults to main.
+  # active_main: "gpt-4.1"
+  # active_sub: "gpt-4.1-mini"
   profiles:
-    glm-5:
-      model: "glm-5"
+    gpt-4.1:
+      model: "gpt-4.1"
       api_key: "your-api-key-here"
       base_url: "https://api.openai.com/v1"
       max_tokens: 4096
       temperature: 0.0
       max_context_tokens: 128000
 
-    gpt-5.3-codex:
-      model: "gpt-5.3-codex"
+    gpt-4.1-mini:
+      model: "gpt-4.1-mini"
       api_key: "your-api-key-here"
       base_url: "https://api.openai.com/v1"
       max_tokens: 4096
       temperature: 0.0
-      max_context_tokens: 400000
+      max_context_tokens: 128000
 
 modes:
   active: "coder"
@@ -24,7 +27,7 @@ modes:
       description: "Planning-first mode; keep implementation changes minimal unless asked."
       tools: ["read_file", "glob", "grep"]
       prompt_append: "Focus on architecture, trade-offs, and actionable implementation plans."
-      allowed_subagent_modes: ["coder", "debugger"]
+      allowed_subagent_modes: ["explore"]
 
 approval:
   default_mode: "require_approval"
@@ -44,30 +47,21 @@ approval:
     - tool_name: "agent"
       action: "require_approval"
     - tool_source: "mcp"
-      mcp_server: "filesystem"
-      action: "warn"
-    - tool_source: "mcp"
-      mcp_server: "filesystem"
-      tool_name: "write_file"
-      action: "require_approval"
-    - tool_source: "mcp"
-      mcp_server: "postgres"
-      action: "require_approval"
-    - tool_source: "mcp"
       action: "require_approval"
 
-tool_output:
-  max_chars: 12000
-  max_lines: 120
-  store_full_output: true
-  store_dir: "/home/pan/proj/ReuleauxCoder/.rcoder/tool-outputs"
-
-session:
-  auto_save: true
-  dir: "/home/pan/.reuleauxcoder/sessions"
-
-cli:
-  history_file: "/home/pan/.reuleauxcoder/history"
+# Optional output/session/history settings. Omit to use defaults.
+# tool_output:
+#   max_chars: 12000
+#   max_lines: 120
+#   store_full_output: true
+#   # store_dir: ".rcoder/tool-outputs"
+#
+# session:
+#   auto_save: true
+#   # dir: ".rcoder/sessions"
+#
+# cli:
+#   # history_file: "~/.rcoder/history"
 
 skills:
   enabled: true
@@ -75,33 +69,35 @@ skills:
   scan_user: true
   disabled: []
 
-mcp:
-  servers:
-    filesystem:
-      command: "npx"
-      args:
-        - "-y"
-        - "@modelcontextprotocol/server-filesystem"
-        - "/home/pan/proj/ReuleauxCoder"
-      env: {}
-      cwd: null
-      enabled: true
-
-    github:
-      command: "npx"
-      args:
-        - "-y"
-        - "@modelcontextprotocol/server-github"
-      env:
-        GITHUB_TOKEN: "your-github-token-here"
-      cwd: null
-      enabled: true
-
-    postgres:
-      command: "uvx"
-      args:
-        - "mcp-server-postgres"
-      env:
-        DATABASE_URL: "postgresql://user:pass@localhost/db"
-      cwd: null
-      enabled: false
+# Optional MCP server examples.
+# Uncomment and adjust paths/tokens for your environment.
+# mcp:
+#   servers:
+#     filesystem:
+#       command: "npx"
+#       args:
+#         - "-y"
+#         - "@modelcontextprotocol/server-filesystem"
+#         - "/path/to/your/project"
+#       env: {}
+#       cwd: null
+#       enabled: true
+#
+#     github:
+#       command: "npx"
+#       args:
+#         - "-y"
+#         - "@modelcontextprotocol/server-github"
+#       env:
+#         GITHUB_TOKEN: "your-github-token-here"
+#       cwd: null
+#       enabled: true
+#
+#     postgres:
+#       command: "uvx"
+#       args:
+#         - "mcp-server-postgres"
+#       env:
+#         DATABASE_URL: "postgresql://user:pass@localhost/db"
+#       cwd: null
+#       enabled: false

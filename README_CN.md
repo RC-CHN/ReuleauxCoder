@@ -8,6 +8,23 @@
 
 ## 安装
 
+### 从 GitHub Release 安装（推荐）
+
+先安装 [`pipx`](https://pipx.pypa.io/stable/installation/)，再用 release 中的 wheel 进行全局安装：
+
+```bash
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.1.0/reuleauxcoder-0.1.0-py3-none-any.whl
+```
+
+安装完成后可以直接运行：
+
+```bash
+rcoder --version
+rcoder
+```
+
+### 从源码运行
+
 ```bash
 uv sync
 ```
@@ -15,10 +32,11 @@ uv sync
 ## 快速开始
 
 ```bash
-# 复制示例配置
-cp config.yaml.example config.yaml
+# 将示例配置复制到工作区配置目录
+mkdir -p .rcoder
+cp config.yaml.example .rcoder/config.yaml
 
-# 在 config.yaml 中填入你的 API key 和模型
+# 在 .rcoder/config.yaml 中填入你的 API key 和模型
 uv run rcoder
 ```
 
