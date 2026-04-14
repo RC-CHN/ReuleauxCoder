@@ -28,7 +28,20 @@ def discover_skills(
     if scan_project:
         roots.append(("project", workspace_dir / ".rcoder" / "skills"))
 
+    # Avoid scanning the same physical path twice (e.g. workspace == home).
+    unique_roots: list[tuple[str, Path]] = []
+    seen_roots: set[str] = set()
     for scope, root in roots:
+        try:
+            root_key = str(root.resolve(strict=False))
+        except OSError:
+            root_key = str(root)
+        if root_key in seen_roots:
+            continue
+        seen_roots.add(root_key)
+        unique_roots.append((scope, root))
+
+    for scope, root in unique_roots:
         if not root.exists() or not root.is_dir():
             continue
 

@@ -64,6 +64,23 @@ def test_discover_skills_marks_disabled_names(tmp_path: Path) -> None:
     assert missing == ()
 
 
+def test_discover_skills_deduplicates_identical_user_and_project_roots(tmp_path: Path) -> None:
+    # Simulate environments where workspace and home resolve to the same location.
+    shared_root = tmp_path
+    _write_skill(shared_root / ".rcoder" / "skills", "same-root-skill", "same-root-skill")
+
+    skills, diagnostics, missing = discover_skills(
+        workspace_dir=shared_root,
+        home_dir=shared_root,
+        scan_user=True,
+        scan_project=True,
+    )
+
+    assert [skill.name for skill in skills] == ["same-root-skill"]
+    assert diagnostics == ()
+    assert missing == ()
+
+
 def test_discover_skills_ignores_missing_skill_md_files(tmp_path: Path) -> None:
     workspace_dir = tmp_path / "workspace"
     home_dir = tmp_path / "home"
