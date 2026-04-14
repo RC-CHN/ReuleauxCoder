@@ -15,8 +15,8 @@ class BashDangerousCommandPolicy(ToolPolicy):
     """Block obviously dangerous shell commands before execution."""
 
     patterns: tuple[tuple[str, str], ...] = (
-        (r"\brm\s+(-\w*)?-r\w*\s+(/|~|\$HOME)", "recursive delete on home/root"),
         (r"\brm\s+(-\w*)?-rf\s", "force recursive delete"),
+        (r"\brm\s+(-\w*)?-r\w*\s+(/\s|~(?:/|\s|$)|\$HOME(?:/|\s|$))", "recursive delete on home/root"),
         (r"\bmkfs\b", "format filesystem"),
         (r"\bdd\s+.*of=/dev/", "raw disk write"),
         (r">\s*/dev/sd[a-z]", "overwrite block device"),
