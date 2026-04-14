@@ -34,7 +34,7 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         if tool_call is None:
             return context
 
-        if self._is_override_read(tool_call.name, tool_call.arguments):
+        if self._should_bypass_truncation(tool_call.name, tool_call.arguments):
             return context
 
         result = context.result
@@ -79,5 +79,34 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         path.write_text(content)
         return path
 
+    def _should_bypass_truncation(self, tool_name: str, arguments: dict) -> bool:
+        return self._is_override_read(tool_name, arguments) or self._is_skills_markdown_read(
+            tool_name, arguments
+        )
+
     def _is_override_read(self, tool_name: str, arguments: dict) -> bool:
         return tool_name == "read_file" and arguments.get("override") is True
+
+    def _is_skills_markdown_read(self, tool_name: str, arguments: dict) -> bool:
+        if tool_name != "read_file":
+            return False
+        file_path = arguments.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return False
+
+        try:
+            resolved = Path(file_path).expanduser().resolve()
+        except OSError:
+            return False
+
+        if resolved.suffix.lower() != ".md":
+            return False
+
+        roots = [
+            (Path.home() / ".rcoder" / "skills").resolve(strict=False),
+            (Path.cwd() / ".rcoder" / "skills").resolve(strict=False),
+        ]
+        for root in roots:
+            if resolved == root or resolved.is_relative_to(root):
+                return True
+        return False
