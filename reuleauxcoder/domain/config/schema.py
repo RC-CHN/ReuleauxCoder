@@ -68,6 +68,9 @@ CONFIG_SCHEMA = {
         "scan_user": "bool (default: true)",
         "disabled": ["skill-name", "..."],
     },
+    "prompt": {
+        "system_append": "string (optional, appended to system prompt as user/workspace instructions)",
+    },
     "mcp": {
         "servers": {
             "server_name": {

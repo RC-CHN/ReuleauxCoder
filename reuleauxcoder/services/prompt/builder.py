@@ -8,6 +8,7 @@ def system_prompt(
     tools,
     mode_name: str | None = None,
     mode_prompt_append: str = "",
+    user_system_append: str = "",
     blocked_tools: list[str] | None = None,
     mode_switch_hints: list[str] | None = None,
     available_modes: list[tuple[str, str]] | None = None,
@@ -43,6 +44,9 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 
     if skills_catalog:
         base += "\n" + skills_catalog.rstrip() + "\n"
+
+    if user_system_append:
+        base += "\n# User Instructions\n" + user_system_append.rstrip() + "\n"
 
     # Keep mode-specific directives appended at the end to minimize cache churn.
     mode_lines: list[str] = []

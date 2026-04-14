@@ -49,6 +49,12 @@ approval:
     - tool_source: "mcp"
       action: "require_approval"
 
+# Optional user/workspace-level system prompt injection.
+# prompt:
+#   system_append: |
+#     Always answer in Chinese unless explicitly requested otherwise.
+#     Keep responses concise and actionable.
+
 # Optional output/session/history settings. Omit to use defaults.
 # tool_output:
 #   max_chars: 12000

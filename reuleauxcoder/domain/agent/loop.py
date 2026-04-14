@@ -38,6 +38,11 @@ class AgentLoop:
             active_tools,
             mode_name=self.agent.active_mode,
             mode_prompt_append=mode.prompt_append if mode is not None else "",
+            user_system_append=(
+                getattr(getattr(self.agent, "runtime_config", None), "prompt", None).system_append
+                if getattr(getattr(self.agent, "runtime_config", None), "prompt", None) is not None
+                else ""
+            ),
             blocked_tools=blocked_tools,
             mode_switch_hints=suggested_modes,
             available_modes=available_modes,

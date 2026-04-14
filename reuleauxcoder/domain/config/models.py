@@ -137,6 +137,13 @@ class SkillsConfig:
 
 
 @dataclass
+class PromptConfig:
+    """User/workspace prompt customization."""
+
+    system_append: str = ""
+
+
+@dataclass
 class Config:
     """Main configuration model for ReuleauxCoder."""
 
@@ -174,6 +181,9 @@ class Config:
 
     # Skills settings
     skills: SkillsConfig = field(default_factory=SkillsConfig)
+
+    # Prompt settings
+    prompt: PromptConfig = field(default_factory=PromptConfig)
 
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""

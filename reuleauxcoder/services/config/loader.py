@@ -13,6 +13,7 @@ from reuleauxcoder.domain.config.models import (
     MCPServerConfig,
     ModeConfig,
     ModelProfileConfig,
+    PromptConfig,
     SkillsConfig,
 )
 from reuleauxcoder.domain.config.schema import BUILTIN_MODES, DEFAULTS, DEFAULT_ACTIVE_MODE
@@ -147,6 +148,7 @@ class ConfigLoader:
         models_config = data.get("models", {})
         modes_config = data.get("modes", {})
         skills_config = data.get("skills", {})
+        prompt_config = data.get("prompt", {})
 
         # Parse MCP servers
         mcp_servers = []
@@ -266,6 +268,9 @@ class ConfigLoader:
                 scan_project=skills_config.get("scan_project", True),
                 scan_user=skills_config.get("scan_user", True),
                 disabled=[str(name) for name in skills_config.get("disabled", []) if str(name).strip()],
+            ),
+            prompt=PromptConfig(
+                system_append=str(prompt_config.get("system_append", "") or ""),
             ),
             session_auto_save=session_config.get(
                 "auto_save", DEFAULTS["session_auto_save"]

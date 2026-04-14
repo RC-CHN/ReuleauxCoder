@@ -81,6 +81,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
                 "rules": [{"tool_name": "bash", "action": "deny"}],
             },
             "skills": {"enabled": True, "scan_project": False, "disabled": ["demo"]},
+            "prompt": {"system_append": "Always answer in Chinese."},
         }
     )
 
@@ -95,6 +96,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.approval.rules[0].tool_name == "bash"
     assert config.skills.scan_project is False
     assert config.skills.disabled == ["demo"]
+    assert config.prompt.system_append == "Always answer in Chinese."
 
 
 def test_parse_config_falls_back_when_active_profile_missing() -> None:
