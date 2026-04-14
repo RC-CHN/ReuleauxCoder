@@ -67,6 +67,8 @@ class CLIRenderer:
                 event.tool_result,
                 success=event.tool_success if event.tool_success is not None else True,
             )
+        elif event.event_type == AgentEventType.SUBAGENT_COMPLETED:
+            self._render_subagent_completed(event.data)
         elif event.event_type == AgentEventType.CHAT_END:
             self.finalize_response(event.data.get("response", ""))
         elif event.event_type == AgentEventType.ERROR:
@@ -164,6 +166,23 @@ class CLIRenderer:
                         padding=(0, 1),
                     )
                 )
+
+    def _render_subagent_completed(self, data: dict) -> None:
+        """Render a concise sub-agent completion notification."""
+        job_id = data.get("job_id", "?")
+        mode = data.get("mode", "?")
+        status = data.get("status", "?")
+        title = f"SUBAGENT · {status.upper()}"
+        body = f"id={job_id} mode={mode}"
+        self.console.print(
+            Panel(
+                body,
+                title=title,
+                border_style="magenta",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            )
+        )
 
     def _compact_tool_output(self, tool_name: str, result: str) -> str:
         """Compact noisy tool output for terminal readability."""

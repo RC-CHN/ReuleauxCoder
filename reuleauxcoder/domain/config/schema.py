@@ -3,7 +3,9 @@
 # Expected YAML structure for config.yaml
 CONFIG_SCHEMA = {
     "models": {
-        "active": "string (optional, defaults to first profile key)",
+        "active": "string (optional, legacy alias of active_main, defaults to first profile key)",
+        "active_main": "string (optional, defaults to active or first profile key)",
+        "active_sub": "string (optional, defaults to active_main)",
         "profiles": {
             "profile_name": {
                 "model": "string (required)",
@@ -87,7 +89,7 @@ BUILTIN_MODES = {
             "Prioritize making concrete code changes and verifying them with commands/tests "
             "when appropriate."
         ),
-        "allowed_subagent_modes": ["planner", "debugger", "coder"],
+        "allowed_subagent_modes": ["explore", "execute", "verify"],
     },
     "planner": {
         "description": "Planning-first mode; focus on analysis and implementation plans.",
@@ -96,7 +98,7 @@ BUILTIN_MODES = {
             "Focus on analysis, architecture, and step-by-step plans. Avoid file mutations "
             "unless explicitly requested."
         ),
-        "allowed_subagent_modes": ["coder", "debugger"],
+        "allowed_subagent_modes": ["explore"],
     },
     "debugger": {
         "description": "Debugging mode focused on diagnosis and verification.",
@@ -105,7 +107,7 @@ BUILTIN_MODES = {
             "Focus on root-cause analysis, minimal repro steps, and targeted fixes with "
             "clear verification."
         ),
-        "allowed_subagent_modes": ["coder", "planner"],
+        "allowed_subagent_modes": ["explore", "verify"],
     },
 }
 

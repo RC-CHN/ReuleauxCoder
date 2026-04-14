@@ -191,6 +191,7 @@ class AppRunner:
         llm = self.dependencies.create_llm(config)
         tools = self.dependencies.load_tools()
         agent = self.dependencies.create_agent(llm, tools, config)
+        setattr(agent, "runtime_config", config)
         agent.context._ui_bus = ui_bus
 
         self._register_hooks(agent, config)

@@ -208,7 +208,11 @@ class AgentEventBridge:
         level = UIEventLevel.INFO
         if event.event_type == AgentEventType.ERROR:
             level = UIEventLevel.ERROR
-        elif event.event_type in (AgentEventType.TOOL_CALL_START, AgentEventType.TOOL_CALL_END):
+        elif event.event_type in (
+            AgentEventType.TOOL_CALL_START,
+            AgentEventType.TOOL_CALL_END,
+            AgentEventType.SUBAGENT_COMPLETED,
+        ):
             level = UIEventLevel.DEBUG
 
         self.bus.emit(

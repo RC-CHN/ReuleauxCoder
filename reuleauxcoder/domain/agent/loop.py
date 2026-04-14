@@ -58,6 +58,9 @@ class AgentLoop:
         )
 
         for round_num in range(self.agent.max_rounds):
+            if self.agent.stop_requested():
+                return "(stopped by cancellation request)"
+
             self.agent.state.current_round = round_num
 
             # Call LLM
@@ -80,6 +83,9 @@ class AgentLoop:
             # Tool calls -> execute
             self.agent.state.messages.append(resp.message)
 
+            if self.agent.stop_requested():
+                return "(stopped by cancellation request)"
+
             if len(resp.tool_calls) == 1:
                 tc = resp.tool_calls[0]
                 self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
@@ -95,6 +101,8 @@ class AgentLoop:
                 # If approval is interactive, run sequentially to keep terminal UX stable.
                 if self.agent.approval_provider is not None:
                     for tc in resp.tool_calls:
+                        if self.agent.stop_requested():
+                            return "(stopped by cancellation request)"
                         self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
                         result = self.agent._executor.execute(tc)
                         self.agent.state.messages.append(
@@ -106,6 +114,8 @@ class AgentLoop:
                         )
                 else:
                     # No interactive approval needed: keep parallel execution.
+                    if self.agent.stop_requested():
+                        return "(stopped by cancellation request)"
                     for tc in resp.tool_calls:
                         self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
                     results = self.agent._executor.execute_parallel(resp.tool_calls)
@@ -124,4 +134,19 @@ class AgentLoop:
                 self.agent.llm,
             )
 
-        return "(reached maximum tool-call rounds)"
+        summary_prompt = (
+            "Maximum tool-call rounds reached. Do not call any tools. "
+            "Briefly summarize the current findings/status, list any blockers or incomplete work, "
+            "and end the task."
+        )
+        self.agent.state.messages.append({"role": "user", "content": summary_prompt})
+        summary_resp = self.agent.llm.chat(
+            messages=self._full_messages(),
+            tools=None,
+            on_token=lambda token: self.agent._emit_event(AgentEvent.stream_token(token)),
+            hook_registry=self.agent.hook_registry,
+        )
+        self.agent.state.total_prompt_tokens += summary_resp.prompt_tokens
+        self.agent.state.total_completion_tokens += summary_resp.completion_tokens
+        self.agent.state.messages.append(summary_resp.message)
+        return summary_resp.content or "(reached maximum tool-call rounds)"

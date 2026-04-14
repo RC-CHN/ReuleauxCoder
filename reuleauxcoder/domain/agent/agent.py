@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
+import threading
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.approval import ApprovalProvider
@@ -53,6 +54,7 @@ class Agent:
 
         # State
         self.state = AgentState()
+        self._stop_event = threading.Event()
 
         # Context manager
         from reuleauxcoder.domain.context.manager import ContextManager
@@ -111,6 +113,8 @@ class Agent:
 
         suffix = f" {reason}" if reason else ""
         for tc_id, tc_name in pending:
+            if not tc_id:
+                continue
             self.state.messages.append(
                 {
                     "role": "tool",
@@ -118,7 +122,19 @@ class Agent:
                     "content": f"Tool '{tc_name}' interrupted before returning output.{suffix}",
                 }
             )
-        return len(pending)
+        return len([tc_id for tc_id, _ in pending if tc_id])
+
+    def request_stop(self) -> None:
+        """Request cooperative stop for the current/next agent loop iteration."""
+        self._stop_event.set()
+
+    def clear_stop_request(self) -> None:
+        """Clear any pending cooperative stop request."""
+        self._stop_event.clear()
+
+    def stop_requested(self) -> bool:
+        """Return True when cooperative stop has been requested."""
+        return self._stop_event.is_set()
 
     def get_active_mode_config(self) -> ModeConfig | None:
         """Return active mode config if mode is enabled."""
@@ -204,8 +220,63 @@ class Agent:
                 return t
         return None
 
+    def _inject_completed_subagent_jobs(self) -> int:
+        """Inject completed background sub-agent summaries into parent history."""
+        try:
+            from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
+
+            manager = get_subagent_manager(self)
+        except Exception:
+            return 0
+
+        injected = 0
+        for job in manager.drain_completed_for_parent():
+            if job.status == "completed":
+                content = (
+                    "[Background sub-agent completed]\n"
+                    f"id={job.id}\n"
+                    f"mode={job.mode}\n"
+                    f"task={job.task}\n\n"
+                    f"{job.result or '(empty)'}\n"
+                    "[/Background sub-agent completed]"
+                )
+                self.state.messages.append({"role": "assistant", "content": content})
+                self._emit_event(AgentEvent.subagent_completed(
+                    job_id=job.id,
+                    mode=job.mode,
+                    task=job.task,
+                    status=job.status,
+                    result=job.result,
+                ))
+                self._emit_event(AgentEvent.tool_call_end("agent", content, success=True))
+            else:
+                error_text = (
+                    "[Background sub-agent failed]\n"
+                    f"id={job.id}\n"
+                    f"mode={job.mode}\n"
+                    f"task={job.task}\n\n"
+                    f"{job.error or 'unknown error'}\n"
+                    "[/Background sub-agent failed]"
+                )
+                self.state.messages.append({"role": "assistant", "content": error_text})
+                self._emit_event(AgentEvent.subagent_completed(
+                    job_id=job.id,
+                    mode=job.mode,
+                    task=job.task,
+                    status=job.status,
+                    error=job.error,
+                ))
+                self._emit_event(AgentEvent.tool_call_end("agent", error_text, success=False))
+            injected += 1
+        return injected
+
     def chat(self, user_input: str) -> str:
         """Process one user message."""
+        self.clear_stop_request()
+
+        # Inject completed background sub-agent results before each new user turn.
+        self._inject_completed_subagent_jobs()
+
         # Repair stale dangling tool calls (e.g. after previous crash/interruption)
         self.reconcile_pending_tool_calls(reason="Recovered from previous interrupted turn.")
 

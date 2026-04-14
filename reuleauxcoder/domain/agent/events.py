@@ -14,6 +14,7 @@ class AgentEventType(Enum):
     STREAM_TOKEN = "stream_token"
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_END = "tool_call_end"
+    SUBAGENT_COMPLETED = "subagent_completed"
     COMPRESSION_START = "compression_start"
     COMPRESSION_END = "compression_end"
     ERROR = "error"
@@ -77,6 +78,30 @@ class AgentEvent:
             if len(result) > 500
             else result,  # Truncate for events
             tool_success=success,
+        )
+
+    @classmethod
+    def subagent_completed(
+        cls,
+        *,
+        job_id: str,
+        mode: str,
+        task: str,
+        status: str,
+        result: str | None = None,
+        error: str | None = None,
+    ) -> "AgentEvent":
+        """Create a sub-agent completion event."""
+        return cls(
+            event_type=AgentEventType.SUBAGENT_COMPLETED,
+            data={
+                "job_id": job_id,
+                "mode": mode,
+                "task": task,
+                "status": status,
+                "result": result,
+                "error": error,
+            },
         )
 
     @classmethod

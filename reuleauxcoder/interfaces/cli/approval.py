@@ -24,11 +24,23 @@ class CLIApprovalProvider(ApprovalProvider):
         elif request.tool_args:
             sections.append({"id": "args", "title": "Arguments", "kind": "json", "content": request.tool_args})
 
+        subagent_summary = ""
+        if request.metadata.get("is_subagent"):
+            sub_mode = request.metadata.get("subagent_mode") or "unknown"
+            sub_task = str(request.metadata.get("subagent_task") or "").strip()
+            if len(sub_task) > 200:
+                sub_task = sub_task[:180] + "..."
+            subagent_summary = (
+                f"\nSource: sub-agent (mode={sub_mode})"
+                + (f"\nSub-agent task: {sub_task}" if sub_task else "")
+            )
+
         response = self.ui_interactor.review(
             ReviewRequest(
                 title=f"Approval required: {request.tool_name}",
                 summary=(
                     f"Tool '{request.tool_name}' from source '{request.tool_source}' requires approval."
+                    f"{subagent_summary}"
                 ),
                 sections=sections,
                 metadata={

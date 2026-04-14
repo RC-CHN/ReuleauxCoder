@@ -35,7 +35,7 @@ class WorkspaceConfigStore:
         return self._path
 
     def save_active_model_profile(self, profile_name: str) -> Path:
-        """Persist active model profile into workspace ``config.yaml``."""
+        """Persist active main model profile into workspace ``config.yaml``."""
         try:
             data = load_yaml_config(self._path)
         except FileNotFoundError:
@@ -43,6 +43,19 @@ class WorkspaceConfigStore:
 
         models_data = data.setdefault("models", {})
         models_data["active"] = profile_name
+        models_data["active_main"] = profile_name
+        save_yaml_config(self._path, data)
+        return self._path
+
+    def save_active_sub_model_profile(self, profile_name: str) -> Path:
+        """Persist active sub-agent model profile into workspace ``config.yaml``."""
+        try:
+            data = load_yaml_config(self._path)
+        except FileNotFoundError:
+            data = {}
+
+        models_data = data.setdefault("models", {})
+        models_data["active_sub"] = profile_name
         save_yaml_config(self._path, data)
         return self._path
 

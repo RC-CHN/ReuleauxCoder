@@ -162,13 +162,22 @@ class ConfigLoader:
                 continue
             model_profiles[name] = ModelProfileConfig.from_dict(name, profile_data)
 
-        active_model_profile = models_config.get("active")
-        if not isinstance(active_model_profile, str) or active_model_profile not in model_profiles:
-            active_model_profile = next(iter(model_profiles.keys()), None)
+        active_main_model_profile = models_config.get("active_main")
+        if not isinstance(active_main_model_profile, str) or active_main_model_profile not in model_profiles:
+            active_main_model_profile = models_config.get("active")
+        if not isinstance(active_main_model_profile, str) or active_main_model_profile not in model_profiles:
+            active_main_model_profile = next(iter(model_profiles.keys()), None)
+
+        active_sub_model_profile = models_config.get("active_sub")
+        if not isinstance(active_sub_model_profile, str) or active_sub_model_profile not in model_profiles:
+            active_sub_model_profile = active_main_model_profile
+
+        # Backward compatibility alias: active_model_profile tracks main profile.
+        active_model_profile = active_main_model_profile
 
         active_profile = (
-            model_profiles.get(active_model_profile)
-            if isinstance(active_model_profile, str)
+            model_profiles.get(active_main_model_profile)
+            if isinstance(active_main_model_profile, str)
             else None
         )
 
@@ -230,6 +239,8 @@ class ConfigLoader:
             mcp_servers=mcp_servers,
             model_profiles=model_profiles,
             active_model_profile=active_model_profile,
+            active_main_model_profile=active_main_model_profile,
+            active_sub_model_profile=active_sub_model_profile,
             modes=modes,
             active_mode=active_mode,
             tool_output_max_chars=tool_output_config.get(

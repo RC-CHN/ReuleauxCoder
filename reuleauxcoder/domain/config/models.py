@@ -149,6 +149,8 @@ class Config:
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     model_profiles: dict[str, ModelProfileConfig] = field(default_factory=dict)
     active_model_profile: Optional[str] = None
+    active_main_model_profile: Optional[str] = None
+    active_sub_model_profile: Optional[str] = None
 
     # Mode settings
     modes: dict[str, ModeConfig] = field(default_factory=dict)
@@ -189,6 +191,10 @@ class Config:
         valid_actions = {"allow", "warn", "require_approval", "deny"}
         if self.active_model_profile and self.active_model_profile not in self.model_profiles:
             errors.append("active_model_profile must exist in model_profiles")
+        if self.active_main_model_profile and self.active_main_model_profile not in self.model_profiles:
+            errors.append("active_main_model_profile must exist in model_profiles")
+        if self.active_sub_model_profile and self.active_sub_model_profile not in self.model_profiles:
+            errors.append("active_sub_model_profile must exist in model_profiles")
         for name, profile in self.model_profiles.items():
             if not profile.api_key:
                 errors.append(f"model_profiles[{name}].api_key is required")
