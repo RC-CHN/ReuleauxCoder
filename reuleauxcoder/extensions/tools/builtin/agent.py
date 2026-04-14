@@ -12,25 +12,29 @@ class AgentTool(Tool):
         "Spawn one or more sub-agents to handle complex sub-tasks independently. "
         "Each sub-agent has isolated context and tool access. "
         "Provide either 'task' or 'tasks', but not both. "
+        "Batch 'tasks' requires mode='explore' and run_in_background=true. "
         "Optionally set 'model' to 'sub' or 'main'. "
         "'sub' uses the configured default sub-agent model; 'main' uses the configured main-agent model. "
         "If omitted or invalid, 'sub' is used. "
-        "Batch submission supports parallel explore jobs only (up to 4 runtime workers) "
-        "and currently requires mode=explore with run_in_background=true."
+        "parallel_explore sets the runtime explore parallelism cap (1-4)."
     )
     parameters = {
         "type": "object",
         "properties": {
             "task": {
                 "type": "string",
-                "description": "Single sub-agent task. Mutually exclusive with 'tasks'.",
+                "description": (
+                    "Single sub-agent task. Use this for one job only. "
+                    "Mutually exclusive with 'tasks' - do not provide both."
+                ),
             },
             "tasks": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Batch tasks. Mutually exclusive with 'task'. "
-                    "Currently requires mode=explore and run_in_background=true."
+                    "Batch tasks for parallel/background explore jobs. "
+                    "Mutually exclusive with 'task' - do not provide both. "
+                    "Requires mode='explore' and run_in_background=true."
                 ),
             },
             "mode": {
@@ -74,6 +78,29 @@ class AgentTool(Tool):
 
     _parent_agent = None
 
+    def preflight_validate(self, **kwargs) -> str | None:
+        task = kwargs.get("task")
+        tasks = kwargs.get("tasks")
+        mode = kwargs.get("mode", "explore")
+        run_in_background = kwargs.get("run_in_background", False)
+
+        single_task = (task or "").strip() if isinstance(task, str) else ""
+        batch_tasks = [item.strip() for item in (tasks or []) if isinstance(item, str) and item.strip()]
+
+        if not single_task and not batch_tasks:
+            return "Error: provide either 'task' or non-empty 'tasks'."
+
+        if single_task and batch_tasks:
+            return "Error: use either 'task' or 'tasks', not both."
+
+        if batch_tasks and (mode != "explore" or not run_in_background):
+            return (
+                "Error: batch 'tasks' currently requires mode='explore' "
+                "and run_in_background=true."
+            )
+
+        return None
+
     def execute(
         self,
         task: str | None = None,
@@ -108,11 +135,14 @@ class AgentTool(Tool):
         single_task = (task or "").strip() if isinstance(task, str) else ""
         batch_tasks = [item.strip() for item in (tasks or []) if isinstance(item, str) and item.strip()]
 
-        if not single_task and not batch_tasks:
-            return "Error: provide either 'task' or non-empty 'tasks'."
-
-        if single_task and batch_tasks:
-            return "Error: use either 'task' or 'tasks', not both."
+        validation_error = self.preflight_validate(
+            task=task,
+            tasks=tasks,
+            mode=mode,
+            run_in_background=run_in_background,
+        )
+        if validation_error:
+            return validation_error
 
         if batch_tasks:
             if mode != "explore" or not run_in_background:
