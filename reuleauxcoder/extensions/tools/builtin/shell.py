@@ -10,8 +10,8 @@ from reuleauxcoder.infrastructure.platform import get_platform_info, ShellType
 _cwd: str | None = None
 
 
-class BashTool(Tool):
-    name = "bash"
+class ShellTool(Tool):
+    name = "shell"
     description = (
         "Execute a shell command. Returns stdout, stderr, and exit code. "
         "Use this for running tests, installing packages, git operations, etc."

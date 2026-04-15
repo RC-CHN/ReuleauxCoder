@@ -105,8 +105,8 @@ class PlatformInfo:
 
         if self._is_windows:
             # Windows common paths
-            localappdata = Path.home().parent / "AppData" / "Local"
-            roaming = Path.home().parent / "AppData" / "Roaming"
+            localappdata = Path.home() / "AppData" / "Local"
+            roaming = Path.home() / "AppData" / "Roaming"
 
             paths.extend([
                 localappdata / "Programs",

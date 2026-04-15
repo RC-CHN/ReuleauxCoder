@@ -8,9 +8,9 @@ def test_agent_event_chat_start_contains_user_input() -> None:
 
 
 def test_agent_event_tool_call_start_contains_name_and_args() -> None:
-    event = AgentEvent.tool_call_start("bash", {"command": "ls"})
+    event = AgentEvent.tool_call_start("shell", {"command": "ls"})
     assert event.event_type is AgentEventType.TOOL_CALL_START
-    assert event.tool_name == "bash"
+    assert event.tool_name == "shell"
     assert event.tool_args == {"command": "ls"}
 
 

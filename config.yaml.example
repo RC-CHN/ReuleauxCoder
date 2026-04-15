@@ -49,7 +49,7 @@ approval:
       action: "require_approval"
     - tool_name: "edit_file"
       action: "require_approval"
-    - tool_name: "bash"
+    - tool_name: "shell"
       action: "require_approval"
     - tool_name: "agent"
       action: "require_approval"

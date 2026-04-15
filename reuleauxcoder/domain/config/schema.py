@@ -107,7 +107,7 @@ BUILTIN_MODES = {
     },
     "debugger": {
         "description": "Debugging mode focused on diagnosis and verification.",
-        "tools": ["read_file", "glob", "grep", "bash"],
+        "tools": ["read_file", "glob", "grep", "shell"],
         "prompt_append": (
             "Focus on root-cause analysis, minimal repro steps, and targeted fixes with "
             "clear verification."
@@ -132,7 +132,7 @@ DEFAULTS = {
         {"tool_name": "grep", "action": "allow"},
         {"tool_name": "write_file", "action": "require_approval"},
         {"tool_name": "edit_file", "action": "require_approval"},
-        {"tool_name": "bash", "action": "require_approval"},
+        {"tool_name": "shell", "action": "require_approval"},
         {"tool_name": "agent", "action": "require_approval"},
         {"tool_source": "mcp", "mcp_server": "filesystem", "action": "warn"},
         {"tool_source": "mcp", "action": "require_approval"},

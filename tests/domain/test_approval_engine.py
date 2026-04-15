@@ -3,7 +3,7 @@ from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfi
 from reuleauxcoder.domain.llm.models import ToolCall
 
 
-def _ctx(*, tool_name: str = "bash", tool_source: str = "builtin", mcp_server=None, effect_class=None, profile=None):
+def _ctx(*, tool_name: str = "shell", tool_source: str = "builtin", mcp_server=None, effect_class=None, profile=None):
     return ToolApprovalContext(
         tool_call=ToolCall(id="1", name=tool_name, arguments={}),
         tool_name=tool_name,
@@ -43,7 +43,7 @@ def test_approval_engine_matches_profile_and_effect_class() -> None:
     config = ApprovalConfig(
         default_mode="require_approval",
         rules=[
-            ApprovalRuleConfig(tool_name="bash", profile="coder", effect_class="filesystem_write", action="deny")
+            ApprovalRuleConfig(tool_name="shell", profile="coder", effect_class="filesystem_write", action="deny")
         ],
     )
     engine = ApprovalPolicyEngine(config)

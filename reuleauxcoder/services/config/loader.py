@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 import yaml
 
-from reuleauxcoder.compat import migrate_legacy_config
+from reuleauxcoder.compat import migrate_bash_to_shell, migrate_legacy_config
 from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
@@ -131,6 +131,7 @@ class ConfigLoader:
             )
 
         migrated_data, _ = migrate_legacy_config(config_data)
+        migrated_data, _ = migrate_bash_to_shell(migrated_data)
         self._bootstrap_workspace_snapshot(migrated_data, workspace_data)
 
         config = self._parse_config(migrated_data)

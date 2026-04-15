@@ -4,7 +4,7 @@ from typing import Optional
 
 from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.extensions.tools.builtin.agent import AgentTool
-from reuleauxcoder.extensions.tools.builtin.bash import BashTool
+from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
 from reuleauxcoder.extensions.tools.builtin.grep import GrepTool
@@ -12,7 +12,7 @@ from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 
 ALL_TOOLS = [
-    BashTool(),
+    ShellTool(),
     ReadFileTool(),
     WriteFileTool(),
     EditFileTool(),

@@ -79,12 +79,12 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
             "modes": {
                 "active": "coder",
                 "profiles": {
-                    "coder": {"description": "Code mode", "tools": ["bash", "read_file"]}
+                    "coder": {"description": "Code mode", "tools": ["shell", "read_file"]}
                 },
             },
             "approval": {
                 "default_mode": "warn",
-                "rules": [{"tool_name": "bash", "action": "deny"}],
+                "rules": [{"tool_name": "shell", "action": "deny"}],
             },
             "skills": {"enabled": True, "scan_project": False, "disabled": ["demo"]},
             "prompt": {"system_append": "Always answer in Chinese."},
@@ -97,9 +97,9 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.active_main_model_profile == "main"
     assert config.active_sub_model_profile == "sub"
     assert config.active_mode == "coder"
-    assert config.modes["coder"].tools == ["bash", "read_file"]
+    assert config.modes["coder"].tools == ["shell", "read_file"]
     assert config.approval.default_mode == "warn"
-    assert config.approval.rules[0].tool_name == "bash"
+    assert config.approval.rules[0].tool_name == "shell"
     assert config.skills.scan_project is False
     assert config.skills.disabled == ["demo"]
     assert config.prompt.system_append == "Always answer in Chinese."

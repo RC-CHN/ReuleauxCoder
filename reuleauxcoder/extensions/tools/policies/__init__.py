@@ -1,14 +1,14 @@
 """Tool policies - safety and execution policies."""
 
 from reuleauxcoder.extensions.tools.policies.base import ToolPolicy
-from reuleauxcoder.extensions.tools.policies.bash import BashDangerousCommandPolicy
+from reuleauxcoder.extensions.tools.policies.shell import ShellDangerousCommandPolicy
 
 DEFAULT_TOOL_POLICIES: tuple[ToolPolicy, ...] = (
-    BashDangerousCommandPolicy(),
+    ShellDangerousCommandPolicy(),
 )
 
 __all__ = [
     "ToolPolicy",
-    "BashDangerousCommandPolicy",
+    "ShellDangerousCommandPolicy",
     "DEFAULT_TOOL_POLICIES",
 ]

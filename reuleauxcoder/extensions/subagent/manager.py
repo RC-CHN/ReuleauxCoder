@@ -360,8 +360,8 @@ def _create_subagent_llm(parent_agent, model_profile_name: str | None):
 def _filter_subagent_tools(parent_agent, mode: str):
     mode_allowlist = {
         "explore": {"read_file", "glob", "grep"},
-        "execute": {"read_file", "glob", "grep", "edit_file", "write_file", "bash"},
-        "verify": {"read_file", "glob", "grep", "bash"},
+        "execute": {"read_file", "glob", "grep", "edit_file", "write_file", "shell"},
+        "verify": {"read_file", "glob", "grep", "shell"},
     }
     allowed = mode_allowlist[mode]
     return [tool for tool in parent_agent.tools if tool.name in allowed and tool.name != "agent"]

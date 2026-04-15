@@ -30,14 +30,14 @@ def test_mode_config_from_dict_normalizes_invalid_fields() -> None:
         "coder",
         {
             "description": None,
-            "tools": ["bash", 123],
+            "tools": ["shell", 123],
             "prompt_append": None,
             "allowed_subagent_modes": "explore",
         },
     )
     assert mode.name == "coder"
     assert mode.description == ""
-    assert mode.tools == ["bash", "123"]
+    assert mode.tools == ["shell", "123"]
     assert mode.prompt_append == ""
     assert mode.allowed_subagent_modes == []
 

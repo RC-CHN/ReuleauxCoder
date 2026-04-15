@@ -67,3 +67,42 @@ def migrate_legacy_config(data: dict) -> tuple[dict, bool]:
             changed = True
 
     return migrated, changed
+
+
+def migrate_bash_to_shell(data: dict) -> tuple[dict, bool]:
+    """Migrate legacy ``bash`` builtin tool references to ``shell``.
+
+    Affects:
+    - ``modes.profiles.*.tools`` arrays
+    - ``approval.rules.*.tool_name`` values
+
+    Returns ``(migrated_data, changed)``.
+    """
+    migrated = deepcopy(data)
+    changed = False
+
+    # Migrate mode tool lists
+    modes = migrated.get("modes")
+    if isinstance(modes, dict):
+        profiles = modes.get("profiles")
+        if isinstance(profiles, dict):
+            for profile in profiles.values():
+                if isinstance(profile, dict):
+                    tools = profile.get("tools")
+                    if isinstance(tools, list):
+                        new_tools = ["shell" if t == "bash" else t for t in tools]
+                        if new_tools != tools:
+                            profile["tools"] = new_tools
+                            changed = True
+
+    # Migrate approval rules
+    approval = migrated.get("approval")
+    if isinstance(approval, dict):
+        rules = approval.get("rules")
+        if isinstance(rules, list):
+            for rule in rules:
+                if isinstance(rule, dict) and rule.get("tool_name") == "bash":
+                    rule["tool_name"] = "shell"
+                    changed = True
+
+    return migrated, changed

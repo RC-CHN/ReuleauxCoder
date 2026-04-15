@@ -27,7 +27,7 @@ def test_persist_llm_error_diagnostic_writes_json(tmp_path: Path, monkeypatch) -
             "stream": True,
             "temperature": 0,
             "max_tokens": 128,
-            "tools": [{"type": "function", "function": {"name": "bash"}}],
+            "tools": [{"type": "function", "function": {"name": "shell"}}],
         },
         raw_messages=[{"role": "user", "content": "hello"}],
         sanitized_messages=[{"role": "user", "content": "hello"}],

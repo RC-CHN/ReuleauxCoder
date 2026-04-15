@@ -72,9 +72,9 @@ def test_agent_event_bridge_maps_tool_events_to_debug_level() -> None:
     seen = []
     bus.subscribe(lambda event: seen.append(event), replay_history=False)
 
-    AgentEventBridge(bus).on_agent_event(AgentEvent.tool_call_start("bash", {"command": "ls"}))
+    AgentEventBridge(bus).on_agent_event(AgentEvent.tool_call_start("shell", {"command": "ls"}))
 
     event = seen[0]
     assert event.kind is UIEventKind.AGENT
     assert event.level is UIEventLevel.DEBUG
-    assert event.data["tool_name"] == "bash"
+    assert event.data["tool_name"] == "shell"

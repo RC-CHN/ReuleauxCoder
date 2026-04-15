@@ -11,12 +11,12 @@ from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfi
 
 
 def test_parse_approval_target_supports_tool_and_mcp_targets() -> None:
-    tool_rule = parse_approval_target("tool:bash", "deny")
+    tool_rule = parse_approval_target("tool:shell", "deny")
     mcp_rule = parse_approval_target("mcp:server1:search", "warn")
     generic_mcp_rule = parse_approval_target("mcp", "allow")
 
     assert tool_rule is not None
-    assert tool_rule.tool_name == "bash"
+    assert tool_rule.tool_name == "shell"
     assert tool_rule.action == "deny"
 
     assert mcp_rule is not None
@@ -34,7 +34,7 @@ def test_parse_approval_target_rejects_invalid_target_or_action() -> None:
     assert parse_approval_target("unknown", "allow") is None
     assert parse_approval_target("mcp:", "allow") is None
     assert parse_approval_target("mcp:server:", "allow") is None
-    assert parse_approval_target("tool:bash", "invalid") is None
+    assert parse_approval_target("tool:shell", "invalid") is None
 
 
 def test_same_rule_target_and_find_matching_rule() -> None:
@@ -67,7 +67,7 @@ def test_is_disabled_mcp_rule_checks_server_enabled_flag() -> None:
         mcp_servers=[MCPServerConfig(name="server1", command="cmd", enabled=False)]
     )
     rule = ApprovalRuleConfig(tool_source="mcp", mcp_server="server1", action="deny")
-    non_mcp_rule = ApprovalRuleConfig(tool_name="bash", action="deny")
+    non_mcp_rule = ApprovalRuleConfig(tool_name="shell", action="deny")
 
     assert is_disabled_mcp_rule(config, rule) is True
     assert is_disabled_mcp_rule(config, non_mcp_rule) is False

@@ -85,7 +85,7 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
 
 
 BUILTIN_TOOL_NAMES = {
-    "bash",
+    "shell",
     "read_file",
     "write_file",
     "edit_file",
