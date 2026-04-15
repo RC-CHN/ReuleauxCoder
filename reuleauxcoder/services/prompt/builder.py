@@ -3,6 +3,8 @@
 import os
 import platform
 
+from reuleauxcoder.infrastructure.platform import get_platform_info
+
 
 def system_prompt(
     tools,
@@ -18,6 +20,7 @@ def system_prompt(
     cwd = os.getcwd()
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
+    shell = get_platform_info().get_preferred_shell()
 
     base = f"""\
 You are ReuleauxCoder, an AI coding assistant running in the user's terminal.
@@ -27,6 +30,7 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 - Working directory: {cwd}
 - OS: {uname.system} {uname.release} ({uname.machine})
 - Python: {platform.python_version()}
+- Shell: {shell.value}
 
 # Tools
 {tool_list}

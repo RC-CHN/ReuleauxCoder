@@ -275,11 +275,18 @@ def brief(kwargs: dict, maxlen: int = 80) -> str:
 
 
 def show_banner(model: str, base_url: str | None, version: str) -> None:
+    from reuleauxcoder.infrastructure.platform import get_platform_info
+
+    platform_info = get_platform_info()
+    shell = platform_info.get_preferred_shell()
+    platform_line = f"Platform: [yellow]{platform_info.system.upper()}[/yellow]  Shell: [yellow]{shell.value}[/yellow]"
+
     console.print(
         Panel(
             f"[bold]ReuleauxCoder[/bold] v{version}\n"
             f"Model: [cyan]{model}[/cyan]"
             + (f"  Base: [dim]{base_url}[/dim]" if base_url else "")
+            + f"\n{platform_line}"
             + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]/quit[/bold] to exit.",
             border_style="blue",
         )

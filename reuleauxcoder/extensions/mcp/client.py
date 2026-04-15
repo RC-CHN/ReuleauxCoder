@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 from reuleauxcoder import __version__
 from reuleauxcoder.extensions.mcp.models import MCPToolInfo
+from reuleauxcoder.infrastructure.platform import get_platform_info
 
 
 class MCPClient:
@@ -47,11 +48,7 @@ class MCPClient:
     async def connect(self) -> bool:
         cmd = shutil.which(self.config.command)
         if not cmd:
-            for prefix in [
-                "/usr/local/bin",
-                "/usr/bin",
-                os.path.expanduser("~/.local/bin"),
-            ]:
+            for prefix in get_platform_info().get_bin_paths():
                 candidate = os.path.join(prefix, self.config.command)
                 if os.path.exists(candidate):
                     cmd = candidate
