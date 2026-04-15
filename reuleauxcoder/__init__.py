@@ -3,7 +3,12 @@
 Reinventing the wheel, but only for those who prefer it non-circular.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("reuleauxcoder")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
 
 from reuleauxcoder.domain.agent import Agent
 from reuleauxcoder.services.llm.client import LLM

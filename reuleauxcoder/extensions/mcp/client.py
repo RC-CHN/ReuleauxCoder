@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reuleauxcoder.interfaces.events import UIEventBus
 
+from reuleauxcoder import __version__
 from reuleauxcoder.extensions.mcp.models import MCPToolInfo
 
 
@@ -87,7 +88,7 @@ class MCPClient:
                 {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "clientInfo": {"name": "reuleauxcoder", "version": "0.1.0"},
+                    "clientInfo": {"name": "reuleauxcoder", "version": __version__},
                 },
             )
 
