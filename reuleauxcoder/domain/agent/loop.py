@@ -1,13 +1,17 @@
 """Agent loop - the main conversation loop."""
 
 from __future__ import annotations
+
+import os
+import platform
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.agent.agent import Agent
 
-from reuleauxcoder.services.prompt.builder import system_prompt
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.infrastructure.platform import get_platform_info
+from reuleauxcoder.services.prompt.builder import system_prompt
 
 
 class AgentLoop:
@@ -16,8 +20,23 @@ class AgentLoop:
     def __init__(self, agent: "Agent"):
         self.agent = agent
 
+    def _runtime_tail_message(self) -> dict:
+        """Build ephemeral runtime context appended only at send time."""
+        uname = platform.uname()
+        shell = get_platform_info().get_preferred_shell()
+        content = (
+            "[Runtime Context]\n"
+            "This is ephemeral runtime state for the current turn. "
+            "Do not treat it as persisted conversation history or a new user request.\n"
+            f"- Working directory: {os.getcwd()}\n"
+            f"- OS: {uname.system} {uname.release} ({uname.machine})\n"
+            f"- Python: {platform.python_version()}\n"
+            f"- Shell: {shell.value}"
+        )
+        return {"role": "system", "content": content}
+
     def _full_messages(self) -> list[dict]:
-        """Get full messages including system prompt."""
+        """Get full messages including system prompt and ephemeral runtime tail."""
         mode = self.agent.get_active_mode_config()
         active_tools = self.agent.get_active_tools()
         blocked = self.agent.get_blocked_tools()
@@ -48,7 +67,11 @@ class AgentLoop:
             available_modes=available_modes,
             skills_catalog=getattr(self.agent, "skills_catalog", ""),
         )
-        return [{"role": "system", "content": system}] + self.agent.state.messages
+        return [
+            {"role": "system", "content": system},
+            *self.agent.state.messages,
+            self._runtime_tail_message(),
+        ]
 
     def _tool_schemas(self) -> list[dict]:
         """Get tool schemas for LLM."""
