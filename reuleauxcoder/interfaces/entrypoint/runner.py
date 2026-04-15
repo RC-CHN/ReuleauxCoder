@@ -192,6 +192,7 @@ class AppRunner:
         tools = self.dependencies.load_tools()
         agent = self.dependencies.create_agent(llm, tools, config)
         setattr(agent, "runtime_config", config)
+        setattr(agent, "current_session_id", None)
         agent.context._ui_bus = ui_bus
 
         self._register_hooks(agent, config)
@@ -297,6 +298,7 @@ class AppRunner:
                     agent.active_mode = loaded_mode
                     config.active_mode = loaded_mode
                 current_session_id = self.options.resume_session_id
+                setattr(agent, "current_session_id", current_session_id)
                 session_exit_time = session_store.get_exit_time(agent.state.messages)
                 ui_bus.success(
                     f"Resumed session: {self.options.resume_session_id}",
@@ -323,6 +325,7 @@ class AppRunner:
                         agent.active_mode = loaded_mode
                         config.active_mode = loaded_mode
                     current_session_id = latest.id
+                    setattr(agent, "current_session_id", current_session_id)
                     session_exit_time = session_store.get_exit_time(agent.state.messages)
                     ui_bus.info(
                         f"Auto-resumed latest session: {latest.id} ({latest.saved_at})",

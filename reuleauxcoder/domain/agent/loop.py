@@ -74,6 +74,12 @@ class AgentLoop:
                 tools=self._tool_schemas(),
                 on_token=lambda token: self.agent._emit_event(AgentEvent.stream_token(token)),
                 hook_registry=self.agent.hook_registry,
+                session_id=getattr(self.agent, "current_session_id", None),
+                metadata={
+                    "round_index": round_num,
+                    "active_mode": self.agent.active_mode,
+                    "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
+                },
             )
 
             # Update token counts
@@ -150,6 +156,13 @@ class AgentLoop:
             tools=None,
             on_token=lambda token: self.agent._emit_event(AgentEvent.stream_token(token)),
             hook_registry=self.agent.hook_registry,
+            session_id=getattr(self.agent, "current_session_id", None),
+            metadata={
+                "round_index": self.agent.state.current_round,
+                "active_mode": self.agent.active_mode,
+                "summary_phase": True,
+                "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
+            },
         )
         self.agent.state.total_prompt_tokens += summary_resp.prompt_tokens
         self.agent.state.total_completion_tokens += summary_resp.completion_tokens

@@ -7,7 +7,7 @@ from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
 
 from reuleauxcoder import __version__
-from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs, get_history_file
+from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.render import show_banner
@@ -28,8 +28,9 @@ def run_repl(
     ensure_user_dirs()
     show_banner(config.model, config.base_url, __version__)
 
-    hist_path = str(get_history_file())
-    history = FileHistory(hist_path)
+    hist_path = str(Path(config.history_file).expanduser()) if getattr(config, "history_file", None) else None
+    history = FileHistory(hist_path) if hist_path else FileHistory(str(Path.cwd() / ".rcoder" / "history"))
+    setattr(agent, "current_session_id", current_session_id)
 
     pending_resume_prefix: str | None = None
     if session_exit_time is not None:
@@ -72,6 +73,7 @@ def run_repl(
         )
         prev_session_id = current_session_id
         current_session_id = result["session_id"]
+        setattr(agent, "current_session_id", current_session_id)
 
         resumed_exit_time = result.get("session_exit_time")
         if resumed_exit_time is not None:
@@ -99,4 +101,19 @@ def run_repl(
         except KeyboardInterrupt:
             ui_bus.warning("Interrupted.")
         except Exception as e:
-            ui_bus.error(f"Error: {e}")
+            diagnostic_path = getattr(e, "llm_diagnostic_path", None)
+            if diagnostic_path and current_session_id:
+                SessionStore(sessions_dir).append_system_message(
+                    current_session_id,
+                    config.model,
+                    f"[LLM_ERROR_DIAGNOSTIC] path={diagnostic_path} error={type(e).__name__}: {e}",
+                    active_mode=getattr(agent, "active_mode", None),
+                )
+            if diagnostic_path:
+                ui_bus.error(
+                    f"Error: {e}\nDiagnostic saved to: {diagnostic_path}",
+                    kind=UIEventKind.SYSTEM,
+                    diagnostic_path=diagnostic_path,
+                )
+            else:
+                ui_bus.error(f"Error: {e}")

@@ -63,6 +63,30 @@ class SessionStore:
         path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2))
         return session_id
 
+    def append_system_message(self, session_id: str, model: str, content: str, *, active_mode: str | None = None) -> None:
+        """Append a system message to an existing session, creating it if needed."""
+        loaded = self.load(session_id)
+        if loaded is None:
+            self.save(
+                messages=[{"role": "system", "content": content}],
+                model=model,
+                session_id=session_id,
+                active_mode=active_mode,
+            )
+            return
+
+        messages, loaded_model, prompt_tokens, completion_tokens, loaded_mode = loaded
+        updated_messages = list(messages)
+        updated_messages.append({"role": "system", "content": content})
+        self.save(
+            messages=updated_messages,
+            model=loaded_model or model,
+            session_id=session_id,
+            total_prompt_tokens=prompt_tokens,
+            total_completion_tokens=completion_tokens,
+            active_mode=loaded_mode or active_mode,
+        )
+
     @staticmethod
     def generate_session_id() -> str:
         """Generate a new session ID."""
@@ -118,14 +142,13 @@ class SessionStore:
         for msg in reversed(messages):
             if msg.get("role") != "system":
                 continue
-            content = msg.get("content", "")
-            if not content.startswith("[SESSION_EXIT]"):
-                continue
-            match = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", content)
+            content = msg.get("content", "") or ""
+            match = re.search(r"\[SESSION_EXIT\].* at (.+?)\.$", content)
             if match:
                 return match.group(1)
         return None
 
     def _get_session_path(self, session_id: str) -> Path:
-        """Return the JSON file path for a session ID."""
-        return self._sessions_dir / f"{session_id}.json"
+        """Map session ID to JSON file path."""
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)
+        return self._sessions_dir / f"{safe_id}.json"

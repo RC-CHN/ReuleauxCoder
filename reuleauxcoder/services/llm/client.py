@@ -14,6 +14,7 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
 )
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
+from reuleauxcoder.services.llm.diagnostics import persist_llm_error_diagnostic
 
 
 def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
@@ -96,6 +97,7 @@ class LLM:
     ):
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
 
@@ -111,6 +113,7 @@ class LLM:
         """Hot-swap runtime model/client settings."""
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
 
@@ -125,6 +128,7 @@ class LLM:
         metadata: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
+        raw_messages = [dict(msg) for msg in messages]
         messages = _sanitize_messages_for_llm(messages)
         params: dict[str, Any] = {
             "model": self.model,
@@ -158,86 +162,102 @@ class LLM:
 
         params = dict(before_context.request_params)
 
-        # stream_options is an OpenAI extension
         try:
-            params["stream_options"] = {"include_usage": True}
-            stream = self._call_with_retry(params)
-        except Exception:
-            params.pop("stream_options", None)
-            stream = self._call_with_retry(params)
-
-        # Accumulate response
-        content_parts: list[str] = []
-        tokens: list[str] = []  # Collect streamed tokens
-        tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
-        prompt_tok = 0
-        completion_tok = 0
-
-        for chunk in stream:
-            # Usage info comes in the final chunk
-            if chunk.usage:
-                prompt_tok = chunk.usage.prompt_tokens
-                completion_tok = chunk.usage.completion_tokens
-
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-
-            # Accumulate text
-            if delta.content:
-                content_parts.append(delta.content)
-                tokens.append(delta.content)
-                if on_token is not None:
-                    on_token(delta.content)
-
-            # Accumulate tool calls across chunks
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tc_map:
-                        tc_map[idx] = {"id": "", "name": "", "args": ""}
-                    if tc_delta.id:
-                        tc_map[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tc_map[idx]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tc_map[idx]["args"] += tc_delta.function.arguments
-
-        # Parse accumulated tool calls
-        parsed: list[ToolCall] = []
-        for idx in sorted(tc_map):
-            raw = tc_map[idx]
-            tool_call_id = raw.get("id") or f"tool_call_{idx}"
+            # stream_options is an OpenAI extension
             try:
-                args = json.loads(raw["args"])
-            except (json.JSONDecodeError, KeyError):
-                args = {}
-            parsed.append(ToolCall(id=tool_call_id, name=raw["name"], arguments=args))
+                params["stream_options"] = {"include_usage": True}
+                stream = self._call_with_retry(params)
+            except Exception:
+                params.pop("stream_options", None)
+                stream = self._call_with_retry(params)
 
-        response = LLMResponse(
-            content="".join(content_parts),
-            tool_calls=parsed,
-            prompt_tokens=prompt_tok,
-            completion_tokens=completion_tok,
-            tokens=tokens,
-        )
+            # Accumulate response
+            content_parts: list[str] = []
+            tokens: list[str] = []  # Collect streamed tokens
+            tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
+            prompt_tok = 0
+            completion_tok = 0
 
-        after_context = AfterLLMResponseContext(
-            hook_point=HookPoint.AFTER_LLM_RESPONSE,
-            request_params=dict(params),
-            response=response,
-            model=self.model,
-            session_id=session_id,
-            trace_id=trace_id,
-            metadata=dict(before_context.metadata),
-        )
+            for chunk in stream:
+                # Usage info comes in the final chunk
+                if chunk.usage:
+                    prompt_tok = chunk.usage.prompt_tokens
+                    completion_tok = chunk.usage.completion_tokens
 
-        if hook_registry is not None:
-            after_context = hook_registry.run_transforms(HookPoint.AFTER_LLM_RESPONSE, after_context)
-            hook_registry.run_observers(HookPoint.AFTER_LLM_RESPONSE, after_context)
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
 
-        return after_context.response or response
+                # Accumulate text
+                if delta.content:
+                    content_parts.append(delta.content)
+                    tokens.append(delta.content)
+                    if on_token is not None:
+                        on_token(delta.content)
+
+                # Accumulate tool calls across chunks
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tc_map:
+                            tc_map[idx] = {"id": "", "name": "", "args": ""}
+                        if tc_delta.id:
+                            tc_map[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tc_map[idx]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tc_map[idx]["args"] += tc_delta.function.arguments
+
+            # Parse accumulated tool calls
+            parsed: list[ToolCall] = []
+            for idx in sorted(tc_map):
+                raw = tc_map[idx]
+                tool_call_id = raw.get("id") or f"tool_call_{idx}"
+                try:
+                    args = json.loads(raw["args"])
+                except (json.JSONDecodeError, KeyError):
+                    args = {}
+                parsed.append(ToolCall(id=tool_call_id, name=raw["name"], arguments=args))
+
+            response = LLMResponse(
+                content="".join(content_parts),
+                tool_calls=parsed,
+                prompt_tokens=prompt_tok,
+                completion_tokens=completion_tok,
+                tokens=tokens,
+            )
+
+            after_context = AfterLLMResponseContext(
+                hook_point=HookPoint.AFTER_LLM_RESPONSE,
+                request_params=dict(params),
+                response=response,
+                model=self.model,
+                session_id=session_id,
+                trace_id=trace_id,
+                metadata=dict(before_context.metadata),
+            )
+
+            if hook_registry is not None:
+                after_context = hook_registry.run_transforms(HookPoint.AFTER_LLM_RESPONSE, after_context)
+                hook_registry.run_observers(HookPoint.AFTER_LLM_RESPONSE, after_context)
+
+            return after_context.response or response
+        except Exception as e:
+            diagnostic_path = persist_llm_error_diagnostic(
+                model=self.model,
+                base_url=self.base_url,
+                session_id=session_id,
+                request_params=params,
+                raw_messages=raw_messages,
+                sanitized_messages=messages,
+                error=e,
+                metadata=dict(before_context.metadata),
+            )
+            setattr(e, "llm_diagnostic_path", str(diagnostic_path))
+            if session_id:
+                before_context.metadata["llm_error_diagnostic_path"] = str(diagnostic_path)
+            raise
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
         """Retry on transient errors with exponential backoff."""

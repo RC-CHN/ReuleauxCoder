@@ -41,6 +41,24 @@ def test_session_store_save_with_exit_appends_exit_marker(tmp_path: Path) -> Non
     assert store.get_exit_time(loaded_messages) is not None
 
 
+def test_session_store_append_system_message_updates_existing_session(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(messages=[{"role": "user", "content": "hello"}], model="gpt-4o")
+
+    store.append_system_message(
+        session_id,
+        "gpt-4o",
+        "[LLM_ERROR_DIAGNOSTIC] path=/tmp/demo.json error=BadRequestError: boom",
+        active_mode="coder",
+    )
+
+    loaded = store.load(session_id)
+    assert loaded is not None
+    loaded_messages = loaded[0]
+    assert loaded_messages[-1]["role"] == "system"
+    assert "[LLM_ERROR_DIAGNOSTIC]" in loaded_messages[-1]["content"]
+
+
 def test_session_store_list_ignores_invalid_json_and_returns_latest_first(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     first_id = store.save(messages=[{"role": "user", "content": "first"}], model="m1")

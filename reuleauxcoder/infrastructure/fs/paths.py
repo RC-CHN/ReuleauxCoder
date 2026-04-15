@@ -5,7 +5,7 @@ from pathlib import Path
 
 def get_sessions_dir() -> Path:
     """Get the default sessions directory.
-    
+
     Default: current working directory / .rcoder / sessions
     Falls back to user home directory if cwd is not writable.
     """
@@ -22,7 +22,7 @@ def get_sessions_dir() -> Path:
 
 def get_history_file() -> Path:
     """Get the default history file path.
-    
+
     Default: current working directory / .rcoder / history
     """
     return Path.cwd() / ".rcoder" / "history"
@@ -56,8 +56,23 @@ def get_tool_outputs_dir(configured_dir: str | None = None) -> Path:
         return home_outputs
 
 
+def get_diagnostics_dir() -> Path:
+    """Get the diagnostics dump directory."""
+    cwd_diagnostics = Path.cwd() / ".rcoder" / "diagnostics"
+    cwd_rcoder = Path.cwd() / ".rcoder"
+    try:
+        cwd_rcoder.mkdir(parents=True, exist_ok=True)
+        cwd_diagnostics.mkdir(parents=True, exist_ok=True)
+        return cwd_diagnostics
+    except (PermissionError, OSError):
+        home_diagnostics = Path.home() / ".rcoder" / "diagnostics"
+        home_diagnostics.mkdir(parents=True, exist_ok=True)
+        return home_diagnostics
+
+
 def ensure_user_dirs() -> None:
     """Ensure all user directories exist."""
     get_user_config_dir().mkdir(parents=True, exist_ok=True)
     get_sessions_dir().mkdir(parents=True, exist_ok=True)
     get_tool_outputs_dir().mkdir(parents=True, exist_ok=True)
+    get_diagnostics_dir().mkdir(parents=True, exist_ok=True)
