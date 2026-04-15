@@ -11,6 +11,11 @@ models:
       max_tokens: 4096
       temperature: 0.0
       max_context_tokens: 128000
+      # Keep provider-returned reasoning_content in history for later rounds.
+      preserve_reasoning_content: true
+      # For stricter gateways, inject an empty reasoning_content on assistant tool-call
+      # messages if a previous round/history entry is missing it.
+      backfill_reasoning_content_for_tool_calls: false
 
     gpt-4.1-mini:
       model: "gpt-4.1-mini"
@@ -19,6 +24,8 @@ models:
       max_tokens: 4096
       temperature: 0.0
       max_context_tokens: 128000
+      preserve_reasoning_content: true
+      backfill_reasoning_content_for_tool_calls: false
 
 modes:
   active: "coder"

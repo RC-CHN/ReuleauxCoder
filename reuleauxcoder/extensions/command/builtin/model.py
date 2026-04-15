@@ -136,6 +136,8 @@ def _handle_switch_model(command, ctx) -> CommandResult:
         base_url=profile.base_url,
         temperature=profile.temperature,
         max_tokens=profile.max_tokens,
+        preserve_reasoning_content=profile.preserve_reasoning_content,
+        backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
     )
     ctx.config.model = profile.model
     ctx.config.api_key = profile.api_key

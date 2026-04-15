@@ -21,6 +21,8 @@ def test_model_profile_config_from_dict_uses_defaults() -> None:
     assert profile.api_key == ""
     assert profile.max_tokens == 4096
     assert profile.temperature == 0.0
+    assert profile.preserve_reasoning_content is True
+    assert profile.backfill_reasoning_content_for_tool_calls is False
 
 
 def test_mode_config_from_dict_normalizes_invalid_fields() -> None:

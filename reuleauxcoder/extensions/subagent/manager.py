@@ -350,6 +350,8 @@ def _create_subagent_llm(parent_agent, model_profile_name: str | None):
                 base_url=profile.base_url,
                 temperature=profile.temperature,
                 max_tokens=profile.max_tokens,
+                preserve_reasoning_content=profile.preserve_reasoning_content,
+                backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
             ), profile_name
 
     return parent_agent.llm, None

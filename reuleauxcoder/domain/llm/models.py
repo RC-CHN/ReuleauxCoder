@@ -18,6 +18,7 @@ class LLMResponse:
     """Response from the LLM including content and tool calls."""
 
     content: str = ""
+    reasoning_content: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -27,6 +28,8 @@ class LLMResponse:
     def message(self) -> dict:
         """Convert to OpenAI message format for appending to history."""
         msg: dict = {"role": "assistant", "content": self.content or None}
+        if self.reasoning_content is not None:
+            msg["reasoning_content"] = self.reasoning_content
         if self.tool_calls:
             msg["tool_calls"] = [
                 {

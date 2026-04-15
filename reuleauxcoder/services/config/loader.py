@@ -238,6 +238,16 @@ class ConfigLoader:
                 if active_profile is not None
                 else app_config.get("max_context_tokens", DEFAULTS["max_context_tokens"])
             ),
+            preserve_reasoning_content=(
+                active_profile.preserve_reasoning_content
+                if active_profile is not None
+                else app_config.get("preserve_reasoning_content", True)
+            ),
+            backfill_reasoning_content_for_tool_calls=(
+                active_profile.backfill_reasoning_content_for_tool_calls
+                if active_profile is not None
+                else app_config.get("backfill_reasoning_content_for_tool_calls", False)
+            ),
             mcp_servers=mcp_servers,
             model_profiles=model_profiles,
             active_model_profile=active_model_profile,

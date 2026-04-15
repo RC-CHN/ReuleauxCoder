@@ -17,14 +17,22 @@ from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
 from reuleauxcoder.services.llm.diagnostics import persist_llm_error_diagnostic
 
 
-def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
+def _sanitize_messages_for_llm(
+    messages: list[dict],
+    *,
+    preserve_reasoning_content: bool = True,
+    backfill_reasoning_content_for_tool_calls: bool = False,
+) -> list[dict]:
     """Repair/trim malformed tool-call history before sending to the LLM."""
     sanitized: list[dict] = []
     tool_call_names: dict[str, str] = {}
     seen_tool_outputs: set[str] = set()
+    effective_backfill = preserve_reasoning_content and backfill_reasoning_content_for_tool_calls
 
     for msg_index, msg in enumerate(messages):
         item = dict(msg)
+        if not preserve_reasoning_content:
+            item.pop("reasoning_content", None)
         if item.get("role") != "assistant":
             sanitized.append(item)
             continue
@@ -48,6 +56,8 @@ def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
             repaired_tool_calls.append(tc_item)
 
         item["tool_calls"] = repaired_tool_calls
+        if effective_backfill and "reasoning_content" not in item:
+            item["reasoning_content"] = ""
         sanitized.append(item)
 
     final_messages: list[dict] = []
@@ -94,12 +104,16 @@ class LLM:
         base_url: Optional[str] = None,
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        preserve_reasoning_content: bool = True,
+        backfill_reasoning_content_for_tool_calls: bool = False,
     ):
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.preserve_reasoning_content = preserve_reasoning_content
+        self.backfill_reasoning_content_for_tool_calls = backfill_reasoning_content_for_tool_calls
 
     def reconfigure(
         self,
@@ -109,6 +123,8 @@ class LLM:
         base_url: Optional[str],
         temperature: float,
         max_tokens: int,
+        preserve_reasoning_content: bool | None = None,
+        backfill_reasoning_content_for_tool_calls: bool | None = None,
     ) -> None:
         """Hot-swap runtime model/client settings."""
         self.model = model
@@ -116,6 +132,10 @@ class LLM:
         self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
+        if preserve_reasoning_content is not None:
+            self.preserve_reasoning_content = preserve_reasoning_content
+        if backfill_reasoning_content_for_tool_calls is not None:
+            self.backfill_reasoning_content_for_tool_calls = backfill_reasoning_content_for_tool_calls
 
     def chat(
         self,
@@ -129,7 +149,11 @@ class LLM:
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
         raw_messages = [dict(msg) for msg in messages]
-        messages = _sanitize_messages_for_llm(messages)
+        messages = _sanitize_messages_for_llm(
+            messages,
+            preserve_reasoning_content=self.preserve_reasoning_content,
+            backfill_reasoning_content_for_tool_calls=self.backfill_reasoning_content_for_tool_calls,
+        )
         params: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -173,6 +197,7 @@ class LLM:
 
             # Accumulate response
             content_parts: list[str] = []
+            reasoning_parts: list[str] = []
             tokens: list[str] = []  # Collect streamed tokens
             tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
             prompt_tok = 0
@@ -194,6 +219,9 @@ class LLM:
                     tokens.append(delta.content)
                     if on_token is not None:
                         on_token(delta.content)
+
+                if self.preserve_reasoning_content and getattr(delta, "reasoning_content", None):
+                    reasoning_parts.append(delta.reasoning_content)
 
                 # Accumulate tool calls across chunks
                 if delta.tool_calls:
@@ -222,6 +250,7 @@ class LLM:
 
             response = LLMResponse(
                 content="".join(content_parts),
+                reasoning_content=("".join(reasoning_parts) if self.preserve_reasoning_content else None),
                 tool_calls=parsed,
                 prompt_tokens=prompt_tok,
                 completion_tokens=completion_tok,

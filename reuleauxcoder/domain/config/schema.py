@@ -14,6 +14,8 @@ CONFIG_SCHEMA = {
                 "max_tokens": "int (default: 4096)",
                 "temperature": "float (default: 0.0)",
                 "max_context_tokens": "int (default: 128000)",
+                "preserve_reasoning_content": "bool (default: true, persist/round-trip provider reasoning_content)",
+                "backfill_reasoning_content_for_tool_calls": "bool (default: false, inject empty reasoning_content for assistant tool calls when missing)",
             }
         },
     },

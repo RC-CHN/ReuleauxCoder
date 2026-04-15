@@ -40,6 +40,10 @@ def _default_create_llm(config: Config) -> LLM:
         base_url=config.base_url,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
+        preserve_reasoning_content=getattr(config, "preserve_reasoning_content", True),
+        backfill_reasoning_content_for_tool_calls=getattr(
+            config, "backfill_reasoning_content_for_tool_calls", False
+        ),
     )
 
 

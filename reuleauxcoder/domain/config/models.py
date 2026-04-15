@@ -49,6 +49,8 @@ class ModelProfileConfig:
     max_tokens: int = 4096
     temperature: float = 0.0
     max_context_tokens: int = 128_000
+    preserve_reasoning_content: bool = True
+    backfill_reasoning_content_for_tool_calls: bool = False
 
     def to_dict(self) -> dict:
         """Convert to dictionary format for serialization."""
@@ -59,6 +61,8 @@ class ModelProfileConfig:
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "max_context_tokens": self.max_context_tokens,
+            "preserve_reasoning_content": self.preserve_reasoning_content,
+            "backfill_reasoning_content_for_tool_calls": self.backfill_reasoning_content_for_tool_calls,
         }
 
     @classmethod
@@ -72,6 +76,10 @@ class ModelProfileConfig:
             max_tokens=d.get("max_tokens", 4096),
             temperature=d.get("temperature", 0.0),
             max_context_tokens=d.get("max_context_tokens", 128_000),
+            preserve_reasoning_content=d.get("preserve_reasoning_content", True),
+            backfill_reasoning_content_for_tool_calls=d.get(
+                "backfill_reasoning_content_for_tool_calls", False
+            ),
         )
 
 
@@ -153,6 +161,8 @@ class Config:
     max_tokens: int = 4096
     temperature: float = 0.0
     max_context_tokens: int = 128_000
+    preserve_reasoning_content: bool = True
+    backfill_reasoning_content_for_tool_calls: bool = False
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     model_profiles: dict[str, ModelProfileConfig] = field(default_factory=dict)
     active_model_profile: Optional[str] = None

@@ -66,7 +66,13 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
                 "active_main": "main",
                 "active_sub": "sub",
                 "profiles": {
-                    "main": {"model": "gpt-main", "api_key": "main-key", "temperature": 0.1},
+                    "main": {
+                        "model": "gpt-main",
+                        "api_key": "main-key",
+                        "temperature": 0.1,
+                        "preserve_reasoning_content": True,
+                        "backfill_reasoning_content_for_tool_calls": True,
+                    },
                     "sub": {"model": "gpt-sub", "api_key": "sub-key", "temperature": 0.2},
                 },
             },
@@ -97,6 +103,8 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.skills.scan_project is False
     assert config.skills.disabled == ["demo"]
     assert config.prompt.system_append == "Always answer in Chinese."
+    assert config.preserve_reasoning_content is True
+    assert config.backfill_reasoning_content_for_tool_calls is True
 
 
 def test_parse_config_falls_back_when_active_profile_missing() -> None:
