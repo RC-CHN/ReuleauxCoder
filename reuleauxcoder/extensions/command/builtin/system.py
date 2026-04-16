@@ -185,6 +185,13 @@ def _handle_tokens(command, ctx) -> CommandResult:
     else:
         context_percent = None
 
+    # Compression wall-hit state
+    snip_hit_count = getattr(ctx.agent.context, "_snip_hit_count", 0)
+    summarize_hit_count = getattr(ctx.agent.context, "_summarize_hit_count", 0)
+    snip_exhausted = getattr(ctx.agent.context, "_snip_exhausted", False)
+    summarize_exhausted = getattr(ctx.agent.context, "_summarize_exhausted", False)
+    max_hits = getattr(ctx.agent.context, "_max_hits", 3)
+
     payload = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -196,6 +203,11 @@ def _handle_tokens(command, ctx) -> CommandResult:
         "snip_at": getattr(ctx.agent.context, "_snip_at", None),
         "summarize_at": getattr(ctx.agent.context, "_summarize_at", None),
         "collapse_at": getattr(ctx.agent.context, "_collapse_at", None),
+        "snip_hit_count": snip_hit_count,
+        "summarize_hit_count": summarize_hit_count,
+        "snip_exhausted": snip_exhausted,
+        "summarize_exhausted": summarize_exhausted,
+        "max_hits": max_hits,
         "markdown": _build_tokens_markdown(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -207,6 +219,11 @@ def _handle_tokens(command, ctx) -> CommandResult:
             snip_at=getattr(ctx.agent.context, "_snip_at", None),
             summarize_at=getattr(ctx.agent.context, "_summarize_at", None),
             collapse_at=getattr(ctx.agent.context, "_collapse_at", None),
+            snip_hit_count=snip_hit_count,
+            summarize_hit_count=summarize_hit_count,
+            snip_exhausted=snip_exhausted,
+            summarize_exhausted=summarize_exhausted,
+            max_hits=max_hits,
         ),
     }
 
@@ -243,6 +260,11 @@ def _build_tokens_markdown(
     snip_at: int | None,
     summarize_at: int | None,
     collapse_at: int | None,
+    snip_hit_count: int,
+    summarize_hit_count: int,
+    snip_exhausted: bool,
+    summarize_exhausted: bool,
+    max_hits: int,
 ) -> str:
     lines = [
         "**Session usage:**",
@@ -268,6 +290,14 @@ def _build_tokens_markdown(
         lines.append("")
         lines.append("**Compression thresholds:**")
         lines.extend(thresholds)
+
+    # Wall-hit counters
+    lines.append("")
+    lines.append("**Compression wall-hit state:**")
+    snip_status = f"exhausted" if snip_exhausted else f"{snip_hit_count}/{max_hits} hits"
+    summarize_status = f"exhausted" if summarize_exhausted else f"{summarize_hit_count}/{max_hits} hits"
+    lines.append(f"- layer 1 (snip): `{snip_status}`")
+    lines.append(f"- layer 2 (summarize): `{summarize_status}`")
 
     return "\n".join(lines)
 
