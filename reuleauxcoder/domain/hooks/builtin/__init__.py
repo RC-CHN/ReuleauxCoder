@@ -2,5 +2,6 @@
 
 from reuleauxcoder.domain.hooks.builtin.tool_output import ToolOutputTruncationHook
 from reuleauxcoder.domain.hooks.builtin.tool_policy import ToolPolicyGuardHook
+from reuleauxcoder.domain.hooks.builtin.project_context import ProjectContextHook
 
-__all__ = ["ToolOutputTruncationHook", "ToolPolicyGuardHook"]
+__all__ = ["ToolOutputTruncationHook", "ToolPolicyGuardHook", "ProjectContextHook"]

@@ -72,6 +72,7 @@ def discover_hook_specs() -> list[HookSpec]:
     from reuleauxcoder.domain.hooks.builtin import (
         ToolOutputTruncationHook,
         ToolPolicyGuardHook,
+        ProjectContextHook,
     )
 
     return list(_HOOK_SPECS)
