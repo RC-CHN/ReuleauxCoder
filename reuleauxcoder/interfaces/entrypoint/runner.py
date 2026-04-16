@@ -17,8 +17,7 @@ from typing import Any, Callable
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
-from reuleauxcoder.domain.hooks import HookPoint
-from reuleauxcoder.domain.hooks.builtin import ToolOutputTruncationHook, ToolPolicyGuardHook
+from reuleauxcoder.domain.hooks import HookPoint, discover_hook_specs, instantiate_hooks
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
@@ -206,21 +205,11 @@ class AppRunner:
         return config, ui_bus, llm, agent
 
     def _register_hooks(self, agent: Agent, config: Config) -> None:
-        """Register default runtime hooks on the agent."""
-        agent.register_hook(
-            HookPoint.BEFORE_TOOL_EXECUTE,
-            ToolPolicyGuardHook(approval_config=config.approval, priority=100),
-        )
-        agent.register_hook(
-            HookPoint.AFTER_TOOL_EXECUTE,
-            ToolOutputTruncationHook(
-                max_chars=config.tool_output_max_chars,
-                max_lines=config.tool_output_max_lines,
-                store_full_output=config.tool_output_store_full,
-                store_dir=config.tool_output_store_dir,
-                priority=0,
-            ),
-        )
+        """Register hooks discovered via decorator mechanism."""
+        specs = discover_hook_specs()
+        hooks = instantiate_hooks(specs, config)
+        for hook_point, hook in hooks:
+            agent.register_hook(hook_point, hook)
 
     @staticmethod
     def _wire_agent_tool_parent(agent: Agent) -> None:

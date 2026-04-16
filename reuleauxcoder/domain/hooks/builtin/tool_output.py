@@ -5,12 +5,18 @@ from __future__ import annotations
 import time
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reuleauxcoder.domain.config.models import Config
 
 from reuleauxcoder.domain.hooks.base import TransformHook
-from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext
+from reuleauxcoder.domain.hooks.discovery import register_hook
+from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.infrastructure.fs.paths import get_tool_outputs_dir
 
 
+@register_hook(HookPoint.AFTER_TOOL_EXECUTE, priority=0)
 class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
     """Archive oversized tool output and replace it with a truncated summary."""
 
@@ -28,6 +34,17 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         self.max_lines = max_lines
         self.store_full_output = store_full_output
         self.output_dir = get_tool_outputs_dir(store_dir)
+
+    @classmethod
+    def create_from_config(cls, config: "Config") -> "ToolOutputTruncationHook":
+        """Create hook instance from config."""
+        return cls(
+            max_chars=config.tool_output_max_chars,
+            max_lines=config.tool_output_max_lines,
+            store_full_output=config.tool_output_store_full,
+            store_dir=config.tool_output_store_dir,
+            priority=0,
+        )
 
     def run(self, context: AfterToolExecuteContext) -> AfterToolExecuteContext:
         tool_call = context.tool_call

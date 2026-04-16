@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reuleauxcoder.domain.config.models import Config
 
 from reuleauxcoder.domain.approval_engine import ApprovalPolicyEngine, ToolApprovalContext
 from reuleauxcoder.domain.config.models import ApprovalConfig
 from reuleauxcoder.domain.hooks.base import GuardHook
-from reuleauxcoder.domain.hooks.types import BeforeToolExecuteContext, GuardDecision
+from reuleauxcoder.domain.hooks.discovery import register_hook
+from reuleauxcoder.domain.hooks.types import BeforeToolExecuteContext, GuardDecision, HookPoint
 from reuleauxcoder.extensions.tools.policies import DEFAULT_TOOL_POLICIES, ToolPolicy
 
 
+@register_hook(HookPoint.BEFORE_TOOL_EXECUTE, priority=100)
 @dataclass(slots=True)
 class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
     """Run configured tool policies before a tool executes."""
@@ -23,7 +29,7 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
         *,
         policies: tuple[ToolPolicy, ...] | None = None,
         approval_config: ApprovalConfig | None = None,
-        priority: int = 0,
+        priority: int = 100,
     ):
         GuardHook.__init__(
             self,
@@ -35,6 +41,11 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
         self.approval_engine = (
             ApprovalPolicyEngine(approval_config) if approval_config is not None else None
         )
+
+    @classmethod
+    def create_from_config(cls, config: "Config") -> "ToolPolicyGuardHook":
+        """Create hook instance from config."""
+        return cls(approval_config=config.approval, priority=100)
 
     def update_approval_config(self, approval_config: ApprovalConfig) -> None:
         """Replace approval config for live runtime updates."""
