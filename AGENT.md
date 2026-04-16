@@ -82,10 +82,8 @@ Manages conversation context and token limits.
 Intercept execution at defined points.
 
 Hook points:
-- `BEFORE_TOOL_EXECUTE`: Before tool execution
-- `AFTER_TOOL_EXECUTE`: After tool execution
-- `BEFORE_LLM_REQUEST`: Before LLM request
-- `AFTER_LLM_RESPONSE`: After LLM response
+- **LLM/Tools**: `BEFORE_TOOL_EXECUTE`, `AFTER_TOOL_EXECUTE`, `BEFORE_LLM_REQUEST`, `AFTER_LLM_RESPONSE`
+- **Lifecycle**: `RUNNER_STARTUP`, `RUNNER_SHUTDOWN`, `SESSION_START`, `SESSION_SAVE`
 
 Hook types:
 - `GuardHook`: Decide whether execution may continue (returns `GuardDecision`)
@@ -93,9 +91,10 @@ Hook types:
 - `ObserverHook`: Inspect execution without mutation (returns None)
 
 Built-in hooks:
-- `ToolPolicyGuardHook`: Evaluate tool policies before execution
-- `ToolOutputTruncationHook`: Truncate and archive oversized output
-- `ProjectContextHook`: Inject AGENT.md and similar files
+- `ToolPolicyGuardHook` (`BEFORE_TOOL_EXECUTE`): Evaluate tool policies before execution
+- `ToolOutputTruncationHook` (`AFTER_TOOL_EXECUTE`): Truncate and archive oversized output
+- `ProjectContextHook` (`BEFORE_LLM_REQUEST`): Inject AGENT.md and similar files into messages
+- `ProjectContextStartupNotifier` (`RUNNER_STARTUP`): Notify UI when project context files are found
 
 Use `@register_hook(HookPoint, priority)` decorator for self-contained hook definitions.
 

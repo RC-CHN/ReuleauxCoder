@@ -14,6 +14,7 @@ from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import TEXT_REQUIRED, UI_TARGETS, non_empty_text, slash_trigger
 from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.domain.hooks import HookPoint, SessionSaveContext
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.views.common import stop_stream_and_clear
 from reuleauxcoder.interfaces.events import UIEventKind
@@ -191,6 +192,7 @@ def _handle_save_session(command, ctx) -> CommandResult:
         total_completion_tokens=ctx.agent.state.total_completion_tokens,
         active_mode=getattr(ctx.agent, "active_mode", None),
     )
+    _emit_session_save_hooks(ctx.agent, session_id)
     ctx.ui_bus.success(f"Session saved: {session_id}", kind=UIEventKind.SESSION, session_id=session_id)
     ctx.ui_bus.info(f"Resume with: rcoder -r {session_id}", kind=UIEventKind.SESSION, session_id=session_id)
     return CommandResult(action="continue", session_id=session_id, payload={"session_id": session_id})
@@ -209,6 +211,7 @@ def _handle_new_session(command, ctx) -> CommandResult:
             active_mode=getattr(ctx.agent, "active_mode", None),
         )
         previous_session_id = sid
+        _emit_session_save_hooks(ctx.agent, sid)
         ctx.ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid)
 
     new_session_id = store.generate_session_id()
@@ -273,3 +276,16 @@ def register_actions(registry: ActionRegistry) -> None:
             ),
         ]
     )
+
+
+def _emit_session_save_hooks(agent, session_id: str) -> None:
+    """Emit SESSION_SAVE lifecycle hooks."""
+    context = SessionSaveContext(
+        hook_point=HookPoint.SESSION_SAVE,
+        session_id=session_id,
+    )
+    for decision in agent.hook_registry.run_guards(HookPoint.SESSION_SAVE, context):
+        if not decision.allowed:
+            break
+    agent.hook_registry.run_transforms(HookPoint.SESSION_SAVE, context)
+    agent.hook_registry.run_observers(HookPoint.SESSION_SAVE, context)

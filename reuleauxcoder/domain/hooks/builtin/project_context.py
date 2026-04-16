@@ -8,9 +8,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
 
-from reuleauxcoder.domain.hooks.base import TransformHook
+from reuleauxcoder.domain.hooks.base import ObserverHook, TransformHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
-from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
+from reuleauxcoder.domain.hooks.types import (
+    BeforeLLMRequestContext,
+    HookPoint,
+    RunnerStartupContext,
+)
 
 
 # Candidate filenames to search for project context, in priority order
@@ -47,7 +51,7 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
         return cls(priority=50)
 
     def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
-        content = self._load_project_context()
+        content, filename = self._load_project_context()
         if content:
             # Insert after system prompt (index 0), before conversation history
             # This ensures stable prefix for KV cache matching
@@ -57,18 +61,22 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
             })
         return context
 
-    def _load_project_context(self) -> str | None:
-        """Load the first found project context file from cwd."""
+    def _load_project_context(self) -> tuple[str | None, str | None]:
+        """Load the first found project context file from cwd.
+
+        Returns:
+            Tuple of (content, filename) or (None, None) if no file found.
+        """
         cwd = Path.cwd()
         for filename in self.context_files:
             candidate = cwd / filename
             if candidate.exists() and candidate.is_file():
                 try:
-                    return candidate.read_text(encoding="utf-8").strip()
+                    return candidate.read_text(encoding="utf-8").strip(), filename
                 except OSError:
                     # Skip files that can't be read
                     continue
-        return None
+        return None, None
 
     def _format_message(self, content: str) -> str:
         """Format project context as a system message."""
@@ -78,3 +86,37 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
             "It provides project-specific instructions and conventions.\n"
             f"{content}"
         )
+
+
+@register_hook(HookPoint.RUNNER_STARTUP, priority=0)
+class ProjectContextStartupNotifier(ObserverHook[RunnerStartupContext]):
+    """Notify the UI when project context files are found at startup."""
+
+    def __init__(self, *, priority: int = 0):
+        super().__init__(
+            name="project_context_startup_notifier",
+            priority=priority,
+            extension_name="core",
+        )
+
+    @classmethod
+    def create_from_config(cls, config: "Config") -> "ProjectContextStartupNotifier":
+        """Create hook instance from config."""
+        return cls(priority=0)
+
+    def run(self, context: RunnerStartupContext) -> None:
+        cwd = Path.cwd()
+        for filename in DEFAULT_CONTEXT_FILES:
+            candidate = cwd / filename
+            if candidate.exists() and candidate.is_file():
+                ui_bus = context.metadata.get("ui_bus") if context.metadata else None
+                if ui_bus is not None:
+                    try:
+                        from reuleauxcoder.interfaces.events import UIEventKind
+                        ui_bus.info(
+                            f"Loaded project context: {filename}",
+                            kind=UIEventKind.CONTEXT,
+                        )
+                    except Exception:
+                        pass
+                break

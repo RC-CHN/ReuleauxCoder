@@ -73,6 +73,7 @@ def discover_hook_specs() -> list[HookSpec]:
         ToolOutputTruncationHook,
         ToolPolicyGuardHook,
         ProjectContextHook,
+        ProjectContextStartupNotifier,
     )
 
     return list(_HOOK_SPECS)

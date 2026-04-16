@@ -24,6 +24,10 @@ class HookPoint(str, Enum):
     AFTER_TOOL_EXECUTE = "after_tool_execute"
     BEFORE_LLM_REQUEST = "before_llm_request"
     AFTER_LLM_RESPONSE = "after_llm_response"
+    RUNNER_STARTUP = "runner_startup"
+    RUNNER_SHUTDOWN = "runner_shutdown"
+    SESSION_START = "session_start"
+    SESSION_SAVE = "session_save"
 
 
 @dataclass(slots=True)
@@ -70,6 +74,35 @@ class AfterLLMResponseContext(HookContext):
     request_params: dict[str, Any] = field(default_factory=dict)
     response: LLMResponse | None = None
     model: str | None = None
+
+
+@dataclass(slots=True)
+class RunnerStartupContext(HookContext):
+    """Context when the application runner finishes startup."""
+
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class RunnerShutdownContext(HookContext):
+    """Context when the application runner begins shutdown."""
+
+    pass
+
+
+@dataclass(slots=True)
+class SessionStartContext(HookContext):
+    """Context when a new session starts."""
+
+    pass
+
+
+@dataclass(slots=True)
+class SessionSaveContext(HookContext):
+    """Context when a session is being saved."""
+
+    session_id: str | None = None
+    session_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

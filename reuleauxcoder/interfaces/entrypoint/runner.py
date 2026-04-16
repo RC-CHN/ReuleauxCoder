@@ -17,7 +17,15 @@ from typing import Any, Callable
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
-from reuleauxcoder.domain.hooks import HookPoint, discover_hook_specs, instantiate_hooks
+from reuleauxcoder.domain.hooks import (
+    HookPoint,
+    RunnerShutdownContext,
+    RunnerStartupContext,
+    SessionSaveContext,
+    SessionStartContext,
+    discover_hook_specs,
+    instantiate_hooks,
+)
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
@@ -171,7 +179,7 @@ class AppRunner:
         mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
         current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
 
-        return AppContext(
+        app_ctx = AppContext(
             config=config,
             llm=llm,
             agent=agent,
@@ -183,6 +191,24 @@ class AppRunner:
             session_exit_time=session_exit_time,
             sessions_dir=sessions_dir,
         )
+        self._run_lifecycle_hooks(
+            agent,
+            HookPoint.RUNNER_STARTUP,
+            RunnerStartupContext(
+                hook_point=HookPoint.RUNNER_STARTUP,
+                metadata={"ui_bus": ui_bus},
+            ),
+        )
+        self._run_lifecycle_hooks(
+            agent,
+            HookPoint.SESSION_START,
+            SessionStartContext(
+                hook_point=HookPoint.SESSION_START,
+                session_id=current_session_id,
+                metadata={"ui_bus": ui_bus},
+            ),
+        )
+        return app_ctx
 
     def _build_core(self) -> tuple[Config, UIEventBus, LLM, Agent]:
         """Build config + ui bus + llm + agent, with runtime hooks initialized."""
@@ -334,12 +360,33 @@ class AppRunner:
 
         return current_session_id, session_exit_time, sessions_dir
 
-    def cleanup(self) -> None:
+    def cleanup(self, agent: Agent | None = None) -> None:
         """Clean up resources (MCP connections, etc.)."""
+        if agent is not None:
+            self._run_lifecycle_hooks(
+                agent,
+                HookPoint.RUNNER_SHUTDOWN,
+                RunnerShutdownContext(hook_point=HookPoint.RUNNER_SHUTDOWN),
+            )
         if self._mcp_manager:
             self._mcp_manager.disconnect_all()
             self._mcp_manager.stop()
             self._mcp_manager = None
+
+    @staticmethod
+    def _run_lifecycle_hooks(
+        agent: Agent,
+        hook_point: HookPoint,
+        context: "RunnerStartupContext | RunnerShutdownContext | SessionStartContext | SessionSaveContext",
+    ) -> None:
+        """Run hooks for a lifecycle event without mutating control flow."""
+        # Guards are informational for lifecycle hooks; log but don't block
+        for decision in agent.hook_registry.run_guards(hook_point, context):
+            if not decision.allowed:
+                # Lifecycle guards should not block startup/shutdown
+                break
+        agent.hook_registry.run_transforms(hook_point, context)
+        agent.hook_registry.run_observers(hook_point, context)
 
     def _init_mcp(self, mcp_servers: list, agent: Agent, ui_bus: UIEventBus) -> MCPManager:
         """Initialize MCP manager and connect to servers."""
