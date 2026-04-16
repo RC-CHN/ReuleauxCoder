@@ -13,7 +13,7 @@ Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/
 Install [`pipx`](https://pipx.pypa.io/stable/installation/) first, then install the release wheel globally:
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.1.3/reuleauxcoder-0.1.3-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.1.4/reuleauxcoder-0.1.4-py3-none-any.whl
 ```
 
 After installation, you can run:
