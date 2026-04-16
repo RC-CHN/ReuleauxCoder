@@ -1,7 +1,11 @@
 """CLI rendering - event-driven UI renderer."""
 
+from dataclasses import dataclass, field
+from typing import Literal
+
 from rich import box
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -13,19 +17,56 @@ from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
 console = Console()
 
 
+@dataclass
+class _ContentBlock:
+    kind: Literal["text"] = "text"
+    text_parts: list[str] = field(default_factory=list)
+    rendered_length: int = 0
+
+    def append(self, text: str) -> None:
+        self.text_parts.append(text)
+
+    @property
+    def text(self) -> str:
+        return "".join(self.text_parts)
+
+    @property
+    def pending_text(self) -> str:
+        return self.text[self.rendered_length :]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.text_parts
+
+
+@dataclass
+class _ToolCallBlock:
+    name: str
+    args: dict | None
+    result: str | None = None
+    success: bool = True
+
+
+@dataclass
+class _NotificationBlock:
+    level: UIEventLevel
+    kind: UIEventKind
+    message: str
+
+
 class CLIRenderer:
     """Event-driven CLI renderer - subscribes to agent events."""
 
     def __init__(self, view_registry: ViewRendererRegistry | None = None):
         self.console = console
-        self._streamed_tokens: list[str] = []
-        self._stream_has_output = False
+        self._active_content_block: _ContentBlock | None = None
+        self._completed_blocks: list[_ContentBlock | _ToolCallBlock | _NotificationBlock] = []
         self.view_registry = view_registry or create_cli_view_registry()
 
     def close(self) -> None:
         """Release terminal handlers/resources held by the renderer."""
-        self._streamed_tokens.clear()
-        self._stream_has_output = False
+        self._active_content_block = None
+        self._completed_blocks.clear()
 
     def on_event(self, event: AgentEvent) -> None:
         """Handle an agent event."""
@@ -64,23 +105,54 @@ class CLIRenderer:
         self._render_notification(event)
 
     def _render_token(self, token: str) -> None:
-        """Render streamed tokens immediately as plain text."""
-        self._streamed_tokens.append(token)
-        self._stream_has_output = True
-        self.render_markdown(token)
+        """Append streamed content and flush complete markdown paragraphs."""
+        if self._active_content_block is None:
+            self._active_content_block = _ContentBlock()
+        self._active_content_block.append(token)
+        self._flush_completed_paragraphs()
 
-    def _finish_stream_line(self) -> None:
-        """Ensure subsequent structured output starts on a fresh line."""
-        if self._stream_has_output and self._streamed_tokens:
-            if not self._streamed_tokens[-1].endswith("\n"):
-                self.render_markdown("\n")
-        self._streamed_tokens.clear()
-        self._stream_has_output = False
+    def _flush_completed_paragraphs(self) -> None:
+        """Render completed paragraphs from the active content block."""
+        block = self._active_content_block
+        if block is None:
+            return
+
+        pending = block.pending_text
+        cutoff = pending.rfind("\n\n")
+        if cutoff < 0:
+            return
+
+        flush_text = pending[: cutoff + 2]
+        if flush_text:
+            self.render_content_markdown(flush_text)
+            block.rendered_length += len(flush_text)
+
+    def _flush_remaining_content(self) -> None:
+        """Render any remaining buffered content from the active block."""
+        block = self._active_content_block
+        if block is None:
+            return
+
+        pending = block.pending_text
+        if pending:
+            self.render_content_markdown(pending)
+            block.rendered_length = len(block.text)
+
+    def _close_active_content_block(self) -> None:
+        """Finalize the active content block before structured output."""
+        block = self._active_content_block
+        if block is None:
+            return
+        self._flush_remaining_content()
+        if not block.is_empty and not block.text.endswith("\n"):
+            self.render_plain_text("\n")
+        self._completed_blocks.append(block)
+        self._active_content_block = None
 
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
-        if self._stream_has_output:
-            self._finish_stream_line()
+        self._close_active_content_block()
+        self._completed_blocks.append(_ToolCallBlock(name=name, args=args))
         args_str = brief(args) if args else ""
         call_text = f"{name}({args_str})" if args_str else f"{name}()"
         self.console.print(
@@ -95,6 +167,7 @@ class CLIRenderer:
 
     def _render_tool_end(self, name: str, result: str | None, success: bool = True) -> None:
         """Render tool call result."""
+        self._completed_blocks.append(_ToolCallBlock(name=name, args=None, result=result, success=success))
         if not result:
             return
         # Special rendering for edit_file with diff
@@ -167,8 +240,10 @@ class CLIRenderer:
             UIEventLevel.DEBUG: "bright_black",
         }[event.level]
 
-        if self._stream_has_output:
-            self._finish_stream_line()
+        self._close_active_content_block()
+        self._completed_blocks.append(
+            _NotificationBlock(level=event.level, kind=event.kind, message=event.message)
+        )
 
         title = f"{event.kind.value.upper()} · {event.level.value.upper()}"
         self.console.print(
@@ -202,14 +277,29 @@ class CLIRenderer:
 
     def finalize_response(self, response: str, *, render_response: bool = True) -> None:
         """Finalize response rendering for agent output."""
-        if self._stream_has_output:
-            self._finish_stream_line()
+        if self._active_content_block is not None:
+            self._close_active_content_block()
         elif response and render_response:
-            self.render_markdown(response)
+            block = _ContentBlock()
+            block.append(response)
+            block.rendered_length = len(response)
+            self._completed_blocks.append(block)
+            self.render_content_markdown(response)
+
+    def render_content_markdown(self, text: str) -> None:
+        """Render assistant content as markdown, falling back to plain text."""
+        try:
+            self.console.print(Markdown(text), end="")
+        except Exception:
+            self.render_plain_text(text)
+
+    def render_plain_text(self, text: str) -> None:
+        """Render raw text without markdown parsing."""
+        self.console.print(text, end="")
 
     def render_markdown(self, text: str) -> None:
-        """Render agent output as plain text."""
-        self.console.print(text, end="")
+        """Backward-compatible plain text output hook used by tests."""
+        self.render_plain_text(text)
 
 
 def brief(kwargs: dict, maxlen: int = 80) -> str:

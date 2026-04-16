@@ -8,9 +8,9 @@ from rich.panel import Panel
 
 def stop_stream_and_clear(renderer) -> None:
     """Finalize any active stream before rendering a structured view."""
-    if renderer._streamed_tokens:
-        renderer._stop_live_markdown(render_final=True)
-        renderer._streamed_tokens.clear()
+    close_active = getattr(renderer, "_close_active_content_block", None)
+    if callable(close_active):
+        close_active()
 
 
 def render_markdown_panel(renderer, *, markdown_text: str, title: str, border_style: str = "blue") -> bool:
