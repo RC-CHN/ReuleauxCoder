@@ -175,7 +175,8 @@ def _handle_tokens(command, ctx) -> CommandResult:
     completion_tokens = ctx.agent.state.total_completion_tokens
     lifetime_total = prompt_tokens + completion_tokens
 
-    current_context_tokens = estimate_tokens(ctx.agent.messages)
+    # Current context is always estimated locally from persisted/runtime prompt pieces.
+    current_context_tokens = ctx.agent.context.get_context_tokens(ctx.agent.messages)
     max_context_tokens = getattr(ctx.agent.context, "max_tokens", None) or getattr(
         ctx.config, "max_context_tokens", 0
     )
@@ -248,6 +249,20 @@ def _handle_tokens(command, ctx) -> CommandResult:
     )
 
 
+def _format_percent(value: float | None) -> str:
+    return f"{value:.1f}%" if value is not None else "n/a"
+
+
+def _build_usage_bar(current: int, maximum: int, width: int = 24) -> str:
+    if maximum <= 0:
+        return "`[unknown]`"
+    ratio = max(0.0, min(1.0, current / maximum))
+    filled = int(ratio * width)
+    bar = "█" * filled + "·" * (width - filled)
+    return f"`[{bar}] {_format_percent(ratio * 100)}`"
+
+
+
 def _build_tokens_markdown(
     *,
     prompt_tokens: int,
@@ -266,38 +281,48 @@ def _build_tokens_markdown(
     summarize_exhausted: bool,
     max_hits: int,
 ) -> str:
+    usage_bar = _build_usage_bar(current_context_tokens, max_context_tokens)
+    remaining_tokens = max(max_context_tokens - current_context_tokens, 0) if max_context_tokens else None
+
     lines = [
-        "**Session usage:**",
-        f"- prompt: `{prompt_tokens}`",
-        f"- completion: `{completion_tokens}`",
-        f"- total: `{lifetime_total}`",
+        "**Session usage (provider-reported):**",
+        f"- prompt tokens: `{prompt_tokens}`",
+        f"- completion tokens: `{completion_tokens}`",
+        f"- lifetime total: `{lifetime_total}`",
+        "- note: these are cumulative usage stats reported by the model provider.",
         "",
-        "**Current context window:**",
+        "**Current context window (local estimate):**",
         f"- estimated current context: `{current_context_tokens}` tokens",
         f"- max context: `{max_context_tokens}` tokens",
-        f"- usage: `{context_percent if context_percent is not None else 'n/a'}%`",
-        f"- messages in context: `{message_count}`",
+        f"- remaining before hard limit: `{remaining_tokens if remaining_tokens is not None else 'n/a'}` tokens",
+        f"- usage: `{_format_percent(context_percent)}`",
+        f"- visual: {usage_bar}",
+        f"- messages currently in context: `{message_count}`",
+        "- note: current context is estimated locally from persisted messages and runtime prompt pieces.",
     ]
 
     thresholds = []
     if snip_at is not None:
-        thresholds.append(f"- snip tool outputs at: `{snip_at}`")
+        threshold_pct = round((snip_at / max_context_tokens) * 100, 1) if max_context_tokens else None
+        thresholds.append(f"- layer 1 / snip tool outputs: `{snip_at}` tokens ({_format_percent(threshold_pct)})")
     if summarize_at is not None:
-        thresholds.append(f"- summarize old turns at: `{summarize_at}`")
+        threshold_pct = round((summarize_at / max_context_tokens) * 100, 1) if max_context_tokens else None
+        thresholds.append(f"- layer 2 / summarize old turns: `{summarize_at}` tokens ({_format_percent(threshold_pct)})")
     if collapse_at is not None:
-        thresholds.append(f"- hard collapse at: `{collapse_at}`")
+        threshold_pct = round((collapse_at / max_context_tokens) * 100, 1) if max_context_tokens else None
+        thresholds.append(f"- layer 3 / hard collapse: `{collapse_at}` tokens ({_format_percent(threshold_pct)})")
     if thresholds:
         lines.append("")
         lines.append("**Compression thresholds:**")
         lines.extend(thresholds)
 
-    # Wall-hit counters
     lines.append("")
     lines.append("**Compression wall-hit state:**")
-    snip_status = f"exhausted" if snip_exhausted else f"{snip_hit_count}/{max_hits} hits"
-    summarize_status = f"exhausted" if summarize_exhausted else f"{summarize_hit_count}/{max_hits} hits"
+    snip_status = "exhausted" if snip_exhausted else f"{snip_hit_count}/{max_hits} hits"
+    summarize_status = "exhausted" if summarize_exhausted else f"{summarize_hit_count}/{max_hits} hits"
     lines.append(f"- layer 1 (snip): `{snip_status}`")
     lines.append(f"- layer 2 (summarize): `{summarize_status}`")
+    lines.append("- meaning: a layer is marked `exhausted` after repeated attempts stop producing enough reduction.")
 
     return "\n".join(lines)
 

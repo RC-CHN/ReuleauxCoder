@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from reuleauxcoder.domain.context.manager import ensure_message_token_counts
 from reuleauxcoder.domain.session.models import Session, SessionMetadata
 from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 
@@ -40,15 +41,16 @@ class SessionStore:
         if not session_id:
             session_id = self.generate_session_id()
 
-        saved_messages = list(messages)
+        saved_messages = [dict(message) for message in messages]
+        ensure_message_token_counts(saved_messages)
         if is_exit:
             exit_time = time.strftime("%Y-%m-%d %H:%M:%S")
-            saved_messages.append(
-                {
-                    "role": "system",
-                    "content": f"[SESSION_EXIT] User left the session at {exit_time}.",
-                }
-            )
+            exit_message = {
+                "role": "system",
+                "content": f"[SESSION_EXIT] User left the session at {exit_time}.",
+            }
+            ensure_message_token_counts([exit_message])
+            saved_messages.append(exit_message)
 
         session = Session(
             id=session_id,
@@ -100,8 +102,13 @@ class SessionStore:
 
         data = json.loads(path.read_text())
         session = Session.from_dict(data)
+        updated_messages = [dict(message) for message in session.messages]
+        ensure_message_token_counts(updated_messages)
+        if updated_messages != session.messages:
+            session.messages = updated_messages
+            path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2))
         return (
-            session.messages,
+            updated_messages,
             session.model,
             session.total_prompt_tokens,
             session.total_completion_tokens,

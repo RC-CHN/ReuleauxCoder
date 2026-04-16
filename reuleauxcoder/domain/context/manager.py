@@ -7,17 +7,85 @@ if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.interfaces.events import UIEventBus
 
+# Tiktoken encoder cache
+_tiktoken_encoder = None
+TOKEN_FUDGE_FACTOR = 1.1  # Same as Roo-Code
+MESSAGE_TOKEN_KEY = "_rc_token_count"
 
-def estimate_tokens(messages: list[dict]) -> int:
-    """Estimate token count for messages."""
+
+def _get_tiktoken_encoder():
+    """Get or create tiktoken encoder (o200k_base for modern models)."""
+    global _tiktoken_encoder
+    if _tiktoken_encoder is None:
+        try:
+            import tiktoken
+            _tiktoken_encoder = tiktoken.get_encoding("o200k_base")
+        except Exception:
+            _tiktoken_encoder = None
+    return _tiktoken_encoder
+
+
+def _estimate_message_tokens_chars(message: dict) -> int:
+    """Estimate token count for a single message using chars/3 (fallback)."""
+    total = 0
+    if message.get("content"):
+        total += len(str(message["content"])) // 3
+    if message.get("tool_calls"):
+        total += len(str(message["tool_calls"])) // 3
+    return total
+
+
+def estimate_message_tokens(message: dict, *, refresh: bool = False) -> int:
+    """Estimate token count for a single message and cache it on the message."""
+    cached = message.get(MESSAGE_TOKEN_KEY)
+    if not refresh and isinstance(cached, int):
+        return cached
+
+    encoder = _get_tiktoken_encoder()
+    if encoder is None:
+        total = _estimate_message_tokens_chars(message)
+    else:
+        total = 0
+        if message.get("content"):
+            try:
+                total += len(encoder.encode(str(message["content"])))
+            except Exception:
+                total += len(str(message["content"])) // 3
+        if message.get("tool_calls"):
+            try:
+                total += len(encoder.encode(str(message["tool_calls"])))
+            except Exception:
+                total += len(str(message["tool_calls"])) // 3
+        total = int(total * TOKEN_FUDGE_FACTOR)
+
+    message[MESSAGE_TOKEN_KEY] = total
+    return total
+
+
+def ensure_message_token_counts(messages: list[dict], *, refresh: bool = False) -> int:
+    """Ensure messages have cached token counts and return the total."""
+    total = 0
+    for message in messages:
+        total += estimate_message_tokens(message, refresh=refresh)
+    return total
+
+
+def estimate_tokens_tiktoken(messages: list[dict]) -> int:
+    """Estimate token count using per-message cached counts with tiktoken fallback."""
+    return ensure_message_token_counts(messages)
+
+
+def estimate_tokens_chars(messages: list[dict]) -> int:
+    """Estimate token count using chars/3 (fallback)."""
     total = 0
     for m in messages:
-        if m.get("content"):
-            # ~3.5 chars/token for mixed en/zh content
-            total += len(m["content"]) // 3
-        if m.get("tool_calls"):
-            total += len(str(m["tool_calls"])) // 3
+        total += _estimate_message_tokens_chars(m)
     return total
+
+
+def estimate_tokens(messages: list[dict]) -> int:
+    """Estimate token count for messages using cached message counts."""
+    return ensure_message_token_counts(messages)
 
 
 SUMMARY_SYSTEM_PROMPT = """\
@@ -113,6 +181,10 @@ class ContextManager:
         self._summarize_hit_count = 0
         self._max_hits = 3
 
+    def get_context_tokens(self, messages: list[dict]) -> int:
+        """Get current locally-estimated context token count."""
+        return estimate_tokens(messages)
+
     def _reset_compression_state(self) -> None:
         """Reset all compression wall-hit counters and exhausted flags."""
         self._snip_exhausted = False
@@ -137,7 +209,7 @@ class ContextManager:
 
         Returns True if any compression happened.
         """
-        before_tokens = estimate_tokens(messages)
+        before_tokens = self.get_context_tokens(messages)
         before_message_count = len(messages)
         before_snapshot = self._snapshot_messages(messages)
         compressed = False
@@ -152,7 +224,7 @@ class ContextManager:
             applied_layers.append("hard_collapse")
             self._last_compact_strategy = "collapse"
             self._reset_compression_state()
-            current = estimate_tokens(messages)
+            current = self.get_context_tokens(messages)
 
         # Layer 2: Summarize old conversation
         elif current > self._summarize_at:
@@ -163,7 +235,7 @@ class ContextManager:
                     compressed = True
                     applied_layers.append("summarize_old")
                     self._last_compact_strategy = "summarize"
-                    current = estimate_tokens(messages)
+                    current = self.get_context_tokens(messages)
 
                     if current <= self._summarize_at:
                         # Successfully reduced below threshold
@@ -184,7 +256,7 @@ class ContextManager:
                         compressed = True
                         applied_layers.append("snip_tool_outputs")
                         self._last_compact_strategy = "snip"
-                        current = estimate_tokens(messages)
+                        current = self.get_context_tokens(messages)
 
                         if current <= self._snip_at:
                             # Successfully reduced below threshold
@@ -205,7 +277,7 @@ class ContextManager:
                         compressed = True
                         applied_layers.append("summarize_old")
                         self._last_compact_strategy = "summarize"
-                        current = estimate_tokens(messages)
+                        current = self.get_context_tokens(messages)
 
                         if current <= self._summarize_at:
                             self._reset_compression_state()
@@ -224,7 +296,7 @@ class ContextManager:
                 compressed = True
                 applied_layers.append("snip_tool_outputs")
                 self._last_compact_strategy = "snip"
-                current = estimate_tokens(messages)
+                current = self.get_context_tokens(messages)
 
                 if current <= self._snip_at:
                     self._reset_compression_state()

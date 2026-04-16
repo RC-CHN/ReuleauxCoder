@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
@@ -18,7 +19,9 @@ def test_session_store_save_and_load_roundtrip(tmp_path: Path) -> None:
     loaded = store.load(session_id)
     assert loaded is not None
     loaded_messages, model, prompt_tokens, completion_tokens, active_mode = loaded
-    assert loaded_messages == messages
+    assert loaded_messages[0]["role"] == messages[0]["role"]
+    assert loaded_messages[0]["content"] == messages[0]["content"]
+    assert isinstance(loaded_messages[0].get(MESSAGE_TOKEN_KEY), int)
     assert model == "gpt-4o"
     assert prompt_tokens == 12
     assert completion_tokens == 34
@@ -38,6 +41,7 @@ def test_session_store_save_with_exit_appends_exit_marker(tmp_path: Path) -> Non
     loaded_messages = loaded[0]
     assert loaded_messages[-1]["role"] == "system"
     assert loaded_messages[-1]["content"].startswith("[SESSION_EXIT]")
+    assert isinstance(loaded_messages[-1].get(MESSAGE_TOKEN_KEY), int)
     assert store.get_exit_time(loaded_messages) is not None
 
 
@@ -57,6 +61,27 @@ def test_session_store_append_system_message_updates_existing_session(tmp_path: 
     loaded_messages = loaded[0]
     assert loaded_messages[-1]["role"] == "system"
     assert "[LLM_ERROR_DIAGNOSTIC]" in loaded_messages[-1]["content"]
+    assert isinstance(loaded_messages[-1].get(MESSAGE_TOKEN_KEY), int)
+
+
+def test_session_store_load_backfills_missing_message_token_counts(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(messages=[{"role": "user", "content": "hello"}], model="gpt-4o")
+    path = tmp_path / f"{session_id}.json"
+
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["messages"][0].pop(MESSAGE_TOKEN_KEY, None)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    loaded = store.load(session_id)
+    assert loaded is not None
+    loaded_messages = loaded[0]
+    assert isinstance(loaded_messages[0].get(MESSAGE_TOKEN_KEY), int)
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(persisted["messages"][0].get(MESSAGE_TOKEN_KEY), int)
 
 
 def test_session_store_list_ignores_invalid_json_and_returns_latest_first(tmp_path: Path) -> None:
