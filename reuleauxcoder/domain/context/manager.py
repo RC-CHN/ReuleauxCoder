@@ -91,7 +91,7 @@ Please provide your summary based on the conversation so far, following this str
 
 SNIP_DEBOUNCE_TOKENS = 2_000
 SUMMARIZE_DEBOUNCE_TOKENS = 4_000
-KEEP_RECENT_USER_TURNS = 20
+KEEP_RECENT_USER_TURNS = 40
 
 
 class ContextManager:
@@ -106,6 +106,19 @@ class ContextManager:
         self._snip_at = int(max_tokens * 0.50)  # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
         self._collapse_at = int(max_tokens * 0.90)  # 90% -> hard collapse
+        # Wall-hit counters for progressive compression
+        self._snip_exhausted = False
+        self._summarize_exhausted = False
+        self._snip_hit_count = 0
+        self._summarize_hit_count = 0
+        self._max_hits = 3
+
+    def _reset_compression_state(self) -> None:
+        """Reset all compression wall-hit counters and exhausted flags."""
+        self._snip_exhausted = False
+        self._summarize_exhausted = False
+        self._snip_hit_count = 0
+        self._summarize_hit_count = 0
 
     def reconfigure(self, max_tokens: int) -> None:
         """Update context budget and recompute layer thresholds."""
@@ -113,6 +126,7 @@ class ContextManager:
         self._snip_at = int(max_tokens * 0.50)
         self._summarize_at = int(max_tokens * 0.70)
         self._collapse_at = int(max_tokens * 0.90)
+        self._reset_compression_state()
 
     def maybe_compress(
         self,
@@ -130,35 +144,102 @@ class ContextManager:
         applied_layers: list[str] = []
 
         current = before_tokens
-        delta_since_last_compact = current - self._last_compact_tokens
 
+        # Layer 3: Hard collapse - unconditional fallback
         if current > self._collapse_at and len(messages) > 4:
             self._hard_collapse(messages, llm)
             compressed = True
             applied_layers.append("hard_collapse")
             self._last_compact_strategy = "collapse"
+            self._reset_compression_state()
             current = estimate_tokens(messages)
-        else:
-            if current > self._snip_at and delta_since_last_compact >= SNIP_DEBOUNCE_TOKENS:
-                if self._snip_tool_outputs(messages):
-                    compressed = True
-                    applied_layers.append("snip_tool_outputs")
-                    self._last_compact_strategy = "snip"
-                    current = estimate_tokens(messages)
 
-            if current > self._summarize_at and delta_since_last_compact >= SUMMARIZE_DEBOUNCE_TOKENS:
-                if self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS):
+        # Layer 2: Summarize old conversation
+        elif current > self._summarize_at:
+            # If snip is exhausted or summarize is near exhausted, go straight to summarize
+            if self._snip_exhausted or self._summarize_hit_count >= self._max_hits - 1:
+                changed = self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS)
+                if changed:
                     compressed = True
                     applied_layers.append("summarize_old")
                     self._last_compact_strategy = "summarize"
                     current = estimate_tokens(messages)
 
-                if current > self._collapse_at and len(messages) > 4:
-                    self._hard_collapse(messages, llm)
-                    compressed = True
-                    applied_layers.append("hard_collapse")
-                    self._last_compact_strategy = "collapse"
-                    current = estimate_tokens(messages)
+                    if current <= self._summarize_at:
+                        # Successfully reduced below threshold
+                        self._reset_compression_state()
+                    else:
+                        # Summarize didn't help enough
+                        self._summarize_hit_count += 1
+                        if self._summarize_hit_count >= self._max_hits:
+                            self._summarize_exhausted = True
+                else:
+                    # Summarize couldn't run (no LLM or not enough messages) - mark exhausted
+                    self._summarize_exhausted = True
+            else:
+                # Try snip first (layer 1)
+                if current > self._snip_at and not self._snip_exhausted:
+                    snip_changed = self._snip_tool_outputs(messages)
+                    if snip_changed:
+                        compressed = True
+                        applied_layers.append("snip_tool_outputs")
+                        self._last_compact_strategy = "snip"
+                        current = estimate_tokens(messages)
+
+                        if current <= self._snip_at:
+                            # Successfully reduced below threshold
+                            self._reset_compression_state()
+                        else:
+                            # Snip didn't help enough
+                            self._snip_hit_count += 1
+                            if self._snip_hit_count >= self._max_hits:
+                                self._snip_exhausted = True
+                    else:
+                        # Snip had nothing to compress
+                        self._snip_exhausted = True
+
+                # After snip attempt, check if we still need summarize
+                if current > self._summarize_at and not self._summarize_exhausted:
+                    summarize_changed = self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS)
+                    if summarize_changed:
+                        compressed = True
+                        applied_layers.append("summarize_old")
+                        self._last_compact_strategy = "summarize"
+                        current = estimate_tokens(messages)
+
+                        if current <= self._summarize_at:
+                            self._reset_compression_state()
+                        else:
+                            self._summarize_hit_count += 1
+                            if self._summarize_hit_count >= self._max_hits:
+                                self._summarize_exhausted = True
+                    else:
+                        # Summarize couldn't run
+                        self._summarize_exhausted = True
+
+        # Layer 1: Snip tool outputs (when below summarize threshold)
+        elif current > self._snip_at and not self._snip_exhausted:
+            changed = self._snip_tool_outputs(messages)
+            if changed:
+                compressed = True
+                applied_layers.append("snip_tool_outputs")
+                self._last_compact_strategy = "snip"
+                current = estimate_tokens(messages)
+
+                if current <= self._snip_at:
+                    self._reset_compression_state()
+                else:
+                    # Snip ran but didn't reduce enough
+                    self._snip_hit_count += 1
+                    if self._snip_hit_count >= self._max_hits:
+                        self._snip_exhausted = True
+            else:
+                # Snip had nothing to compress - mark as exhausted immediately
+                self._snip_exhausted = True
+
+        # Context is healthy - reset state
+        if current <= self._snip_at:
+            self._reset_compression_state()
 
         if compressed:
             self._last_compact_tokens = current
