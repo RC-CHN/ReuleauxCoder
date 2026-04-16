@@ -144,4 +144,5 @@ DEFAULTS = {
     "session_auto_save": True,
     "session_dir": None,  # Will be computed at runtime
     "history_file": None,  # Will be computed at runtime
+    "llm_debug_trace": False,
 }

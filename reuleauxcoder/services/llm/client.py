@@ -3,6 +3,7 @@
 import json
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Optional
 
 from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
@@ -14,7 +15,69 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
 )
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
-from reuleauxcoder.services.llm.diagnostics import persist_llm_error_diagnostic
+from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
+from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.services.llm.diagnostics import persist_llm_error_diagnostic, snapshot_messages
+
+
+MAX_DEBUG_CONTENT_CHARS = 400
+MAX_DEBUG_STREAM_EVENTS = 200
+
+
+def _mask_api_key(api_key: str) -> str:
+    if not api_key:
+        return ""
+    if len(api_key) <= 8:
+        return "*" * len(api_key)
+    return f"{api_key[:4]}...{api_key[-4:]}"
+
+
+def _trim_text(value: Any, limit: int = MAX_DEBUG_CONTENT_CHARS) -> str:
+    text = str(value)
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _extract_stream_event(chunk: Any) -> list[dict[str, Any]]:
+    """Extract readable, ordered stream events from a chunk."""
+    events: list[dict[str, Any]] = []
+    choices = getattr(chunk, "choices", None) or []
+    delta = choices[0].delta if choices else None
+    if delta is not None:
+        content = getattr(delta, "content", None)
+        if content:
+            events.append({"type": "content", "text": str(content)})
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            events.append({"type": "reasoning", "text": str(reasoning)})
+        tool_calls = getattr(delta, "tool_calls", None) or []
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            name = getattr(function, "name", None) if function is not None else None
+            arguments = getattr(function, "arguments", None) if function is not None else None
+            if name:
+                events.append({"type": "tool_name", "text": str(name), "index": getattr(tool_call, "index", None)})
+            if arguments:
+                events.append({"type": "tool_arguments", "text": str(arguments), "index": getattr(tool_call, "index", None)})
+    usage = getattr(chunk, "usage", None)
+    if usage is not None:
+        events.append(
+            {
+                "type": "usage",
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+            }
+        )
+    return events
+
+
+def _persist_debug_trace(payload: dict[str, Any], *, session_id: str | None, trace_id: str | None) -> Path:
+    diagnostics_dir = get_diagnostics_dir()
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    session_slug = session_id or "no_session"
+    trace_slug = trace_id or "no_trace"
+    path = diagnostics_dir / f"llm_trace_{timestamp}_{session_slug}_{trace_slug}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def _sanitize_messages_for_llm(
@@ -106,14 +169,19 @@ class LLM:
         max_tokens: int = 4096,
         preserve_reasoning_content: bool = True,
         backfill_reasoning_content_for_tool_calls: bool = False,
+        debug_trace: bool = False,
+        ui_bus: UIEventBus | None = None,
     ):
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.api_key = api_key
         self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.preserve_reasoning_content = preserve_reasoning_content
         self.backfill_reasoning_content_for_tool_calls = backfill_reasoning_content_for_tool_calls
+        self.debug_trace = debug_trace
+        self.ui_bus = ui_bus
 
     def reconfigure(
         self,
@@ -125,10 +193,12 @@ class LLM:
         max_tokens: int,
         preserve_reasoning_content: bool | None = None,
         backfill_reasoning_content_for_tool_calls: bool | None = None,
+        debug_trace: bool | None = None,
     ) -> None:
         """Hot-swap runtime model/client settings."""
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.api_key = api_key
         self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -136,6 +206,13 @@ class LLM:
             self.preserve_reasoning_content = preserve_reasoning_content
         if backfill_reasoning_content_for_tool_calls is not None:
             self.backfill_reasoning_content_for_tool_calls = backfill_reasoning_content_for_tool_calls
+        if debug_trace is not None:
+            self.debug_trace = debug_trace
+
+    def _emit_debug(self, message: str, **data: Any) -> None:
+        """Emit a debug UI event when a bus is attached."""
+        if self.ui_bus is not None:
+            self.ui_bus.debug(message, kind=UIEventKind.AGENT, **data)
 
     def chat(
         self,
@@ -186,11 +263,15 @@ class LLM:
 
         params = dict(before_context.request_params)
 
+        debug_stream_events: list[dict[str, Any]] = []
+        debug_stream_options_enabled = False
+
         try:
             # stream_options is an OpenAI extension
             try:
                 params["stream_options"] = {"include_usage": True}
                 stream = self._call_with_retry(params)
+                debug_stream_options_enabled = True
             except Exception:
                 params.pop("stream_options", None)
                 stream = self._call_with_retry(params)
@@ -204,6 +285,11 @@ class LLM:
             completion_tok = 0
 
             for chunk in stream:
+                if self.debug_trace and len(debug_stream_events) < MAX_DEBUG_STREAM_EVENTS:
+                    debug_stream_events.extend(_extract_stream_event(chunk))
+                    if len(debug_stream_events) > MAX_DEBUG_STREAM_EVENTS:
+                        debug_stream_events = debug_stream_events[:MAX_DEBUG_STREAM_EVENTS]
+
                 # Usage info comes in the final chunk
                 if chunk.usage:
                     prompt_tok = chunk.usage.prompt_tokens
@@ -256,6 +342,54 @@ class LLM:
                 completion_tokens=completion_tok,
                 tokens=tokens,
             )
+
+            if self.debug_trace:
+                trace_payload = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "session_id": session_id,
+                    "trace_id": trace_id,
+                    "model": self.model,
+                    "base_url": self.base_url,
+                    "api_key_hint": _mask_api_key(self.api_key),
+                    "request": {
+                        "temperature": params.get("temperature"),
+                        "max_tokens": params.get("max_tokens"),
+                        "stream": params.get("stream"),
+                        "stream_options": params.get("stream_options"),
+                        "stream_options_enabled": debug_stream_options_enabled,
+                        "tool_count": len(params.get("tools") or []),
+                    },
+                    "messages": {
+                        "raw_count": len(raw_messages),
+                        "sanitized_count": len(messages),
+                        "raw_tail": snapshot_messages(raw_messages),
+                        "sanitized_tail": snapshot_messages(messages),
+                    },
+                    "stream": {
+                        "event_count": len(debug_stream_events),
+                        "events": debug_stream_events,
+                    },
+                    "response": {
+                        "content": _trim_text(response.content or "", 1000),
+                        "reasoning_content": _trim_text(response.reasoning_content or "", 1000),
+                        "tool_calls": [
+                            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                            for tc in response.tool_calls
+                        ],
+                        "usage": {
+                            "prompt_tokens": response.prompt_tokens,
+                            "completion_tokens": response.completion_tokens,
+                        },
+                    },
+                    "metadata": dict(before_context.metadata),
+                }
+                trace_path = _persist_debug_trace(trace_payload, session_id=session_id, trace_id=trace_id)
+                self._emit_debug(
+                    f"LLM trace saved: {trace_path}",
+                    trace_path=str(trace_path),
+                    session_id=session_id,
+                    trace_id=trace_id,
+                )
 
             after_context = AfterLLMResponseContext(
                 hook_point=HookPoint.AFTER_LLM_RESPONSE,

@@ -36,6 +36,11 @@ class CompactContextCommand:
     force_strategy: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DebugCommand:
+    enabled: bool
+
+
 def _parse_help(user_input: str, parse_ctx):
     if match_template(user_input, "/help") is not None:
         return EmptyCommand()
@@ -73,6 +78,14 @@ def _parse_compact(user_input: str, parse_ctx):
 def _parse_tokens(user_input: str, parse_ctx):
     if match_template(user_input, "/tokens") is not None:
         return EmptyCommand()
+    return None
+
+
+def _parse_debug(user_input: str, parse_ctx):
+    if match_template(user_input, "/debug on", case_insensitive=True) is not None:
+        return DebugCommand(enabled=True)
+    if match_template(user_input, "/debug off", case_insensitive=True) is not None:
+        return DebugCommand(enabled=False)
     return None
 
 
@@ -249,6 +262,14 @@ def _handle_tokens(command, ctx) -> CommandResult:
     )
 
 
+def _handle_debug(command, ctx) -> CommandResult:
+    ctx.config.llm_debug_trace = command.enabled
+    ctx.agent.llm.debug_trace = command.enabled
+    state = "on" if command.enabled else "off"
+    ctx.ui_bus.info(f"LLM debug trace: {state}")
+    return CommandResult(action="continue", payload={"llm_debug_trace": command.enabled})
+
+
 def _format_percent(value: float | None) -> str:
     return f"{value:.1f}%" if value is not None else "n/a"
 
@@ -380,6 +401,16 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/tokens"),),
                 parser=_parse_tokens,
                 handler=_handle_tokens,
+            ),
+            ActionSpec(
+                action_id="system.debug",
+                feature_id="system",
+                description="Toggle LLM debug trace",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/debug"),),
+                parser=_parse_debug,
+                handler=_handle_debug,
             ),
         ]
     )

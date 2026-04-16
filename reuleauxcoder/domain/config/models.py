@@ -185,6 +185,7 @@ class Config:
 
     # CLI settings
     history_file: Optional[str] = None
+    llm_debug_trace: bool = False
 
     # Approval settings
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)

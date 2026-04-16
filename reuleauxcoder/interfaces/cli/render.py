@@ -1,12 +1,7 @@
 """CLI rendering - event-driven UI renderer."""
 
-import signal
-import time
-
 from rich import box
 from rich.console import Console
-from rich.live import Live
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -24,36 +19,13 @@ class CLIRenderer:
     def __init__(self, view_registry: ViewRendererRegistry | None = None):
         self.console = console
         self._streamed_tokens: list[str] = []
-        self._live_markdown: Live | None = None
-        self._last_markdown_refresh: float = 0.0
+        self._stream_has_output = False
         self.view_registry = view_registry or create_cli_view_registry()
-        self._prev_sigwinch_handler = None
-        self._install_resize_handler()
 
     def close(self) -> None:
         """Release terminal handlers/resources held by the renderer."""
-        self._stop_live_markdown(render_final=False)
-        if self._prev_sigwinch_handler is not None:
-            signal.signal(signal.SIGWINCH, self._prev_sigwinch_handler)
-            self._prev_sigwinch_handler = None
-
-    def _install_resize_handler(self) -> None:
-        """Refresh live content when terminal size changes."""
-        if not hasattr(signal, "SIGWINCH"):
-            return
-
-        self._prev_sigwinch_handler = signal.getsignal(signal.SIGWINCH)
-
-        def _on_resize(signum, frame):
-            try:
-                if self._live_markdown is not None:
-                    self._refresh_live_markdown(force=True)
-            finally:
-                previous = self._prev_sigwinch_handler
-                if callable(previous):
-                    previous(signum, frame)
-
-        signal.signal(signal.SIGWINCH, _on_resize)
+        self._streamed_tokens.clear()
+        self._stream_has_output = False
 
     def on_event(self, event: AgentEvent) -> None:
         """Handle an agent event."""
@@ -70,10 +42,10 @@ class CLIRenderer:
         elif event.event_type == AgentEventType.SUBAGENT_COMPLETED:
             self._render_subagent_completed(event.data)
         elif event.event_type == AgentEventType.CHAT_END:
-            if event.data.get("render_response", True):
-                self.finalize_response(event.data.get("response", ""))
-            else:
-                self.finalize_response("")
+            self.finalize_response(
+                event.data.get("response", ""),
+                render_response=event.data.get("render_response", True),
+            )
         elif event.event_type == AgentEventType.ERROR:
             self._render_error(event.error_message)
 
@@ -92,50 +64,23 @@ class CLIRenderer:
         self._render_notification(event)
 
     def _render_token(self, token: str) -> None:
-        """Render a streaming token with live markdown updates."""
+        """Render streamed tokens immediately as plain text."""
         self._streamed_tokens.append(token)
-        self._ensure_live_markdown()
-        self._refresh_live_markdown()
+        self._stream_has_output = True
+        self.render_markdown(token)
 
-    def _ensure_live_markdown(self) -> None:
-        """Start live markdown renderer if needed."""
-        if self._live_markdown is None:
-            initial = Markdown("".join(self._streamed_tokens))
-            self._live_markdown = Live(
-                initial,
-                console=self.console,
-                refresh_per_second=12,
-                transient=True,
-            )
-            self._live_markdown.start()
-            self._last_markdown_refresh = 0.0
-
-    def _refresh_live_markdown(self, force: bool = False) -> None:
-        """Refresh live markdown render with throttling."""
-        if self._live_markdown is None:
-            return
-
-        now = time.monotonic()
-        if force or (now - self._last_markdown_refresh >= 0.08):
-            self._live_markdown.update(Markdown("".join(self._streamed_tokens)), refresh=True)
-            self._last_markdown_refresh = now
-
-    def _stop_live_markdown(self, render_final: bool = False) -> None:
-        """Stop live markdown renderer and optionally render final markdown."""
-        if self._live_markdown is not None:
-            self._refresh_live_markdown(force=True)
-            self._live_markdown.stop()
-            self._live_markdown = None
-
-        if render_final and self._streamed_tokens:
-            self.render_markdown("".join(self._streamed_tokens))
+    def _finish_stream_line(self) -> None:
+        """Ensure subsequent structured output starts on a fresh line."""
+        if self._stream_has_output and self._streamed_tokens:
+            if not self._streamed_tokens[-1].endswith("\n"):
+                self.render_markdown("\n")
+        self._streamed_tokens.clear()
+        self._stream_has_output = False
 
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
-        # If we were streaming, finalize markdown before tool info
-        if self._streamed_tokens:
-            self._stop_live_markdown(render_final=True)
-            self._streamed_tokens.clear()
+        if self._stream_has_output:
+            self._finish_stream_line()
         args_str = brief(args) if args else ""
         call_text = f"{name}({args_str})" if args_str else f"{name}()"
         self.console.print(
@@ -222,9 +167,8 @@ class CLIRenderer:
             UIEventLevel.DEBUG: "bright_black",
         }[event.level]
 
-        if self._streamed_tokens:
-            self._stop_live_markdown(render_final=True)
-            self._streamed_tokens.clear()
+        if self._stream_has_output:
+            self._finish_stream_line()
 
         title = f"{event.kind.value.upper()} · {event.level.value.upper()}"
         self.console.print(
@@ -256,17 +200,16 @@ class CLIRenderer:
 
         return spec.render(self, event)
 
-    def finalize_response(self, response: str) -> None:
-        """Finalize response rendering (for non-streamed or final output)."""
-        if self._streamed_tokens:
-            self._stop_live_markdown(render_final=True)
-            self._streamed_tokens.clear()
-        elif response:
+    def finalize_response(self, response: str, *, render_response: bool = True) -> None:
+        """Finalize response rendering for agent output."""
+        if self._stream_has_output:
+            self._finish_stream_line()
+        elif response and render_response:
             self.render_markdown(response)
 
     def render_markdown(self, text: str) -> None:
-        """Render markdown text."""
-        self.console.print(Markdown(text))
+        """Render agent output as plain text."""
+        self.console.print(text, end="")
 
 
 def brief(kwargs: dict, maxlen: int = 80) -> str:

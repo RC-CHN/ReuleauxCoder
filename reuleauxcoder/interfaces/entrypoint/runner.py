@@ -44,6 +44,7 @@ def _default_create_llm(config: Config) -> LLM:
         backfill_reasoning_content_for_tool_calls=getattr(
             config, "backfill_reasoning_content_for_tool_calls", False
         ),
+        debug_trace=getattr(config, "llm_debug_trace", False),
     )
 
 
@@ -193,6 +194,7 @@ class AppRunner:
             config.model = self.options.model
 
         llm = self.dependencies.create_llm(config)
+        llm.ui_bus = ui_bus
         tools = self.dependencies.load_tools()
         agent = self.dependencies.create_agent(llm, tools, config)
         setattr(agent, "runtime_config", config)

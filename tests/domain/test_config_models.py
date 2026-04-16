@@ -95,3 +95,8 @@ def test_config_is_valid_for_minimal_valid_configuration() -> None:
         approval=ApprovalConfig(default_mode="allow"),
     )
     assert config.is_valid() is True
+
+
+def test_config_supports_llm_debug_trace_flag() -> None:
+    config = Config(api_key="key", llm_debug_trace=True)
+    assert config.llm_debug_trace is True

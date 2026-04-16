@@ -288,6 +288,7 @@ class ConfigLoader:
             ),
             session_dir=session_config.get("dir"),
             history_file=cli_config.get("history_file"),
+            llm_debug_trace=bool(app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])),
         )
 
     def _backfill_workspace_modes(self, config: Config) -> None:
