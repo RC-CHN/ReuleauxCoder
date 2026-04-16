@@ -48,6 +48,7 @@ class AgentLoop:
             for mode_name in self.agent.suggest_modes_for_tool(tool.name):
                 if mode_name != self.agent.active_mode and mode_name not in suggested_modes:
                     suggested_modes.append(mode_name)
+        suggested_modes.sort()  # Ensure deterministic order for prompt caching
 
         available_modes = [
             (name, mode_cfg.description)
