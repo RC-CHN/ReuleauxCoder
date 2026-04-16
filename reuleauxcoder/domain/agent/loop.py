@@ -19,6 +19,7 @@ class AgentLoop:
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
+        self.last_response_streamed = False
 
     def _runtime_tail_message(self) -> dict:
         """Build ephemeral runtime context appended only at send time."""
@@ -91,11 +92,17 @@ class AgentLoop:
 
             self.agent.state.current_round = round_num
 
-            # Call LLM
+            streamed_output = False
+
+            def _on_token(token: str) -> None:
+                nonlocal streamed_output
+                streamed_output = True
+                self.agent._emit_event(AgentEvent.stream_token(token))
+
             resp = self.agent.llm.chat(
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
-                on_token=lambda token: self.agent._emit_event(AgentEvent.stream_token(token)),
+                on_token=_on_token,
                 hook_registry=self.agent.hook_registry,
                 session_id=getattr(self.agent, "current_session_id", None),
                 metadata={
@@ -111,6 +118,7 @@ class AgentLoop:
 
             # No tool calls -> done
             if not resp.tool_calls:
+                self.last_response_streamed = streamed_output
                 self.agent.state.messages.append(resp.message)
                 return resp.content
 
@@ -174,10 +182,17 @@ class AgentLoop:
             "and end the task."
         )
         self.agent.state.messages.append({"role": "user", "content": summary_prompt})
+        summary_streamed = False
+
+        def _on_summary_token(token: str) -> None:
+            nonlocal summary_streamed
+            summary_streamed = True
+            self.agent._emit_event(AgentEvent.stream_token(token))
+
         summary_resp = self.agent.llm.chat(
             messages=self._full_messages(),
             tools=None,
-            on_token=lambda token: self.agent._emit_event(AgentEvent.stream_token(token)),
+            on_token=_on_summary_token,
             hook_registry=self.agent.hook_registry,
             session_id=getattr(self.agent, "current_session_id", None),
             metadata={
@@ -187,6 +202,7 @@ class AgentLoop:
                 "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
             },
         )
+        self.last_response_streamed = summary_streamed
         self.agent.state.total_prompt_tokens += summary_resp.prompt_tokens
         self.agent.state.total_completion_tokens += summary_resp.completion_tokens
         self.agent.state.messages.append(summary_resp.message)

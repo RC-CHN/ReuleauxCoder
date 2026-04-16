@@ -46,11 +46,11 @@ class AgentEvent:
         )
 
     @classmethod
-    def chat_end(cls, response: str) -> "AgentEvent":
+    def chat_end(cls, response: str, *, render_response: bool = True) -> "AgentEvent":
         """Create a chat end event."""
         return cls(
             event_type=AgentEventType.CHAT_END,
-            data={"response": response},
+            data={"response": response, "render_response": render_response},
         )
 
     @classmethod

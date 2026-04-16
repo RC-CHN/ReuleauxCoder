@@ -293,7 +293,12 @@ class Agent:
             self.reconcile_pending_tool_calls(reason=f"Interrupted due to {type(e).__name__}.")
             raise
 
-        self._emit_event(AgentEvent.chat_end(result))
+        self._emit_event(
+            AgentEvent.chat_end(
+                result,
+                render_response=not getattr(self._loop, "last_response_streamed", False),
+            )
+        )
         return result
 
     def reset(self) -> None:

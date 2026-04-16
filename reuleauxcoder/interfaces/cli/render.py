@@ -70,7 +70,10 @@ class CLIRenderer:
         elif event.event_type == AgentEventType.SUBAGENT_COMPLETED:
             self._render_subagent_completed(event.data)
         elif event.event_type == AgentEventType.CHAT_END:
-            self.finalize_response(event.data.get("response", ""))
+            if event.data.get("render_response", True):
+                self.finalize_response(event.data.get("response", ""))
+            else:
+                self.finalize_response("")
         elif event.event_type == AgentEventType.ERROR:
             self._render_error(event.error_message)
 
