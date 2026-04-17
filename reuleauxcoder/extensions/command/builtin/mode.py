@@ -17,7 +17,6 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
-from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
 from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.interfaces.view_registration import register_view
@@ -122,14 +121,11 @@ def _handle_switch_mode(command, ctx) -> CommandResult:
         return CommandResult(action="continue")
 
     ctx.agent.set_mode(mode_name)
-    ctx.config.active_mode = mode_name
-    path = WorkspaceConfigStore().save_active_mode(mode_name)
 
     ctx.ui_bus.success(
-        f"Switched mode to '{mode_name}' and saved to {path}",
+        f"Switched session mode to '{mode_name}'",
         kind=UIEventKind.COMMAND,
         mode_name=mode_name,
-        saved_path=str(path),
     )
 
     payload = _build_mode_profiles_payload(ctx.config, getattr(ctx.agent, "active_mode", None))
@@ -215,7 +211,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="mode.show",
                 feature_id="mode",
-                description="Show available modes",
+                description="Show available modes and the current session mode",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/mode"),),
@@ -225,7 +221,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="mode.current",
                 feature_id="mode",
-                description="Show current mode",
+                description="[session] Show the current session mode",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/mode current"), slash_trigger("/mode now")),
@@ -235,7 +231,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="mode.switch",
                 feature_id="mode",
-                description="Switch active mode",
+                description="[session] Switch the active session mode",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/mode switch <name>"), slash_trigger("/mode <name>")),

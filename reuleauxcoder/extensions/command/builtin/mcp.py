@@ -86,7 +86,21 @@ def render_mcp_servers_view(renderer, event) -> bool:
     return True
 
 
+def _is_local_runtime(ctx) -> bool:
+    for tool in getattr(ctx.agent, "tools", []) or []:
+        backend_id = getattr(tool, "backend_id", None)
+        if callable(backend_id):
+            backend_id = backend_id()
+        if backend_id is not None:
+            return backend_id == "local"
+    return True
+
+
 def _handle_show_mcp_servers(command, ctx) -> CommandResult:
+    if not _is_local_runtime(ctx):
+        ctx.ui_bus.error("MCP commands are only available in local runtime.", kind=UIEventKind.MCP)
+        return CommandResult(action="continue", payload={"markdown": "MCP local-only."})
+
     view = build_mcp_servers_view(ctx.config, ctx.agent)
     payload = view.to_payload()
     if not view.servers:
@@ -114,6 +128,10 @@ def _handle_show_mcp_servers(command, ctx) -> CommandResult:
 
 
 def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
+    if not _is_local_runtime(ctx):
+        ctx.ui_bus.error("MCP commands are only available in local runtime.", kind=UIEventKind.MCP)
+        return CommandResult(action="continue", payload={"markdown": "MCP local-only."})
+
     result = toggle_mcp_server(
         command.server_name,
         enabled=command.enabled,
@@ -157,7 +175,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="mcp.show",
                 feature_id="mcp",
-                description="Show MCP servers",
+                description="[global][local-only] Show MCP servers and runtime connection state",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/mcp show"),),
@@ -167,7 +185,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="mcp.enable",
                 feature_id="mcp",
-                description="Enable MCP server",
+                description="[global][local-only] Enable an MCP server in workspace config",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/mcp enable <server>"),),
@@ -177,7 +195,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="mcp.disable",
                 feature_id="mcp",
-                description="Disable MCP server",
+                description="[global][local-only] Disable an MCP server in workspace config",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/mcp disable <server>"),),

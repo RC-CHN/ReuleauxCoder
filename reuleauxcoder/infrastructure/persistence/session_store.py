@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Optional
 
 from reuleauxcoder.domain.context.manager import ensure_message_token_counts
-from reuleauxcoder.domain.session.models import Session, SessionMetadata
+from reuleauxcoder.domain.session.models import Session, SessionMetadata, SessionRuntimeState
 from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
+
+DEFAULT_SESSION_FINGERPRINT = "local"
 
 
 class SessionStore:
@@ -34,6 +36,8 @@ class SessionStore:
         total_prompt_tokens: int = 0,
         total_completion_tokens: int = 0,
         active_mode: str | None = None,
+        runtime_state: SessionRuntimeState | None = None,
+        fingerprint: str = DEFAULT_SESSION_FINGERPRINT,
     ) -> str:
         """Save conversation to disk and return the session ID."""
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -52,20 +56,37 @@ class SessionStore:
             ensure_message_token_counts([exit_message])
             saved_messages.append(exit_message)
 
+        effective_runtime = runtime_state or SessionRuntimeState(model=model, active_mode=active_mode)
+        if effective_runtime.model is None:
+            effective_runtime.model = model
+        if effective_runtime.active_mode is None:
+            effective_runtime.active_mode = active_mode
+
         session = Session(
             id=session_id,
-            model=model,
+            model=effective_runtime.model or model,
             saved_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            fingerprint=fingerprint or DEFAULT_SESSION_FINGERPRINT,
             messages=saved_messages,
-            active_mode=active_mode,
+            active_mode=effective_runtime.active_mode or active_mode,
             total_prompt_tokens=total_prompt_tokens,
             total_completion_tokens=total_completion_tokens,
+            runtime_state=effective_runtime,
         )
         path = self._get_session_path(session_id)
         path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2))
         return session_id
 
-    def append_system_message(self, session_id: str, model: str, content: str, *, active_mode: str | None = None) -> None:
+    def append_system_message(
+        self,
+        session_id: str,
+        model: str,
+        content: str,
+        *,
+        active_mode: str | None = None,
+        runtime_state: SessionRuntimeState | None = None,
+        fingerprint: str = DEFAULT_SESSION_FINGERPRINT,
+    ) -> None:
         """Append a system message to an existing session, creating it if needed."""
         loaded = self.load(session_id)
         if loaded is None:
@@ -74,19 +95,22 @@ class SessionStore:
                 model=model,
                 session_id=session_id,
                 active_mode=active_mode,
+                runtime_state=runtime_state,
+                fingerprint=fingerprint,
             )
             return
 
-        messages, loaded_model, prompt_tokens, completion_tokens, loaded_mode = loaded
-        updated_messages = list(messages)
+        updated_messages = list(loaded.messages)
         updated_messages.append({"role": "system", "content": content})
         self.save(
             messages=updated_messages,
-            model=loaded_model or model,
+            model=loaded.model or model,
             session_id=session_id,
-            total_prompt_tokens=prompt_tokens,
-            total_completion_tokens=completion_tokens,
-            active_mode=loaded_mode or active_mode,
+            total_prompt_tokens=loaded.total_prompt_tokens,
+            total_completion_tokens=loaded.total_completion_tokens,
+            active_mode=loaded.active_mode or active_mode,
+            runtime_state=runtime_state or loaded.runtime_state,
+            fingerprint=loaded.fingerprint or fingerprint,
         )
 
     @staticmethod
@@ -94,8 +118,8 @@ class SessionStore:
         """Generate a new session ID."""
         return f"session_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
 
-    def load(self, session_id: str) -> tuple[list[dict], str, int, int, str | None] | None:
-        """Load a saved session and return ``(messages, model, prompt_tokens, completion_tokens, active_mode)``."""
+    def load(self, session_id: str) -> Session | None:
+        """Load a saved session."""
         path = self._get_session_path(session_id)
         if not path.exists():
             return None
@@ -104,18 +128,21 @@ class SessionStore:
         session = Session.from_dict(data)
         updated_messages = [dict(message) for message in session.messages]
         ensure_message_token_counts(updated_messages)
-        if updated_messages != session.messages:
-            session.messages = updated_messages
+        session.messages = updated_messages
+        if session.runtime_state.model is None:
+            session.runtime_state.model = session.model
+        if session.runtime_state.active_mode is None:
+            session.runtime_state.active_mode = session.active_mode
+        if updated_messages != data.get("messages"):
             path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2))
-        return (
-            updated_messages,
-            session.model,
-            session.total_prompt_tokens,
-            session.total_completion_tokens,
-            session.active_mode,
-        )
+        return session
 
-    def list(self, limit: int = 20) -> list[SessionMetadata]:
+    def list(
+        self,
+        limit: int = 20,
+        *,
+        fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT,
+    ) -> list[SessionMetadata]:
         """List available sessions, newest first."""
         if not self._sessions_dir.exists():
             return []
@@ -125,12 +152,15 @@ class SessionStore:
             try:
                 data = json.loads(file_path.read_text())
                 session = Session.from_dict(data)
+                if fingerprint is not None and session.fingerprint != fingerprint:
+                    continue
                 sessions.append(
                     SessionMetadata(
                         id=session.id or file_path.stem,
                         model=session.model,
                         saved_at=session.saved_at,
                         preview=session.get_preview(),
+                        fingerprint=session.fingerprint,
                     )
                 )
             except (json.JSONDecodeError, KeyError):
@@ -138,9 +168,9 @@ class SessionStore:
 
         return sessions[:limit]
 
-    def get_latest(self) -> SessionMetadata | None:
+    def get_latest(self, *, fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT) -> SessionMetadata | None:
         """Return the most recent session metadata, if any."""
-        sessions = self.list(limit=1)
+        sessions = self.list(limit=1, fingerprint=fingerprint)
         return sessions[0] if sessions else None
 
     @staticmethod

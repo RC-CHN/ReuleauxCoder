@@ -18,6 +18,11 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.runtime.session_state import (
+    build_session_runtime_state,
+    get_session_fingerprint,
+    restore_config_runtime_defaults,
+)
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
@@ -133,12 +138,14 @@ def _handle_exit(command, ctx) -> CommandResult:
     if ctx.agent.messages:
         sid = SessionStore(ctx.sessions_dir).save(
             ctx.agent.messages,
-            ctx.config.model,
+            getattr(ctx.agent.llm, "model", ctx.config.model),
             command.current_session_id,
             is_exit=True,
             total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
             total_completion_tokens=ctx.agent.state.total_completion_tokens,
             active_mode=getattr(ctx.agent, "active_mode", None),
+            runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
+            fingerprint=get_session_fingerprint(ctx.config, ctx.agent),
         )
         ctx.ui_bus.info(f"Session auto-saved: {sid}")
     return CommandResult(action="exit", session_id=command.current_session_id)
@@ -146,6 +153,7 @@ def _handle_exit(command, ctx) -> CommandResult:
 
 def _handle_reset(command, ctx) -> CommandResult:
     ctx.agent.reset()
+    restore_config_runtime_defaults(ctx.config, ctx.agent)
     ctx.ui_bus.warning("Conversation reset (in-memory only, does not delete saved sessions).")
     return CommandResult(action="continue")
 
@@ -263,10 +271,9 @@ def _handle_tokens(command, ctx) -> CommandResult:
 
 
 def _handle_debug(command, ctx) -> CommandResult:
-    ctx.config.llm_debug_trace = command.enabled
     ctx.agent.llm.debug_trace = command.enabled
     state = "on" if command.enabled else "off"
-    ctx.ui_bus.info(f"LLM debug trace: {state}")
+    ctx.ui_bus.info(f"LLM debug trace for this session: {state}")
     return CommandResult(action="continue", payload={"llm_debug_trace": command.enabled})
 
 
@@ -355,7 +362,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="system.help",
                 feature_id="system",
-                description="Show command help",
+                description="Show command help and scope annotations",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/help"),),
@@ -365,7 +372,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="system.exit",
                 feature_id="system",
-                description="Exit interface",
+                description="Exit the interface after auto-saving the current session",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/quit"),),
@@ -375,7 +382,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="system.reset",
                 feature_id="system",
-                description="Reset in-memory conversation",
+                description="[session] Reset in-memory conversation and session runtime overrides",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/reset"),),
@@ -385,7 +392,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="system.compact",
                 feature_id="system",
-                description="Compact conversation context",
+                description="[session] Compact the current conversation context",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/compact"),),
@@ -395,7 +402,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="system.tokens",
                 feature_id="system",
-                description="Show token usage",
+                description="[session] Show token usage for the current session",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/tokens"),),
@@ -405,7 +412,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="system.debug",
                 feature_id="system",
-                description="Toggle LLM debug trace",
+                description="[session] Toggle LLM debug trace for the current session",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/debug"),),

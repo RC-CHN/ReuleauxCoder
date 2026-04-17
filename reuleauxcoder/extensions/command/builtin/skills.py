@@ -185,7 +185,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="skills.show",
                 feature_id="skills",
-                description="Show available skills",
+                description="Show available skills and global enable/disable state",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/skills"),),
@@ -195,7 +195,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="skills.reload",
                 feature_id="skills",
-                description="Reload skills from disk",
+                description="[global] Reload skills from disk into the current process",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/skills reload"),),
@@ -205,7 +205,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="skills.enable",
                 feature_id="skills",
-                description="Enable a skill",
+                description="[global] Enable a skill in workspace config",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/skills enable <name>"),),
@@ -215,7 +215,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="skills.disable",
                 feature_id="skills",
-                description="Disable a skill",
+                description="[global] Disable a skill in workspace config",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/skills disable <name>"),),

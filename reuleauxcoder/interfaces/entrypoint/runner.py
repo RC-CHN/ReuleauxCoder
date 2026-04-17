@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from reuleauxcoder.app.runtime.session_state import (
+    apply_session_runtime_state,
+    get_session_fingerprint,
+    restore_config_runtime_defaults,
+)
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.hooks import (
@@ -231,6 +236,7 @@ class AppRunner:
         agent = self.dependencies.create_agent(llm, tools, config)
         setattr(agent, "runtime_config", config)
         setattr(agent, "current_session_id", None)
+        setattr(agent, "session_fingerprint", get_session_fingerprint(config, agent))
         agent.context._ui_bus = ui_bus
 
         self._register_hooks(agent, config)
@@ -310,24 +316,22 @@ class AppRunner:
         current_session_id = None
         session_exit_time = None
         sessions_dir = Path(config.session_dir) if config.session_dir else None
+        current_fingerprint = get_session_fingerprint(config, agent)
 
         session_store = self.dependencies.create_session_store(sessions_dir)
         if self.options.resume_session_id:
             loaded = session_store.load(self.options.resume_session_id)
             if loaded:
-                (
-                    agent.state.messages,
-                    _loaded_model,
-                    agent.state.total_prompt_tokens,
-                    agent.state.total_completion_tokens,
-                    loaded_mode,
-                ) = loaded
-                if loaded_mode and loaded_mode in getattr(agent, "available_modes", {}):
-                    agent.active_mode = loaded_mode
-                    config.active_mode = loaded_mode
+                if loaded.fingerprint != current_fingerprint:
+                    ui_bus.warning(
+                        f"Session '{self.options.resume_session_id}' belongs to fingerprint '{loaded.fingerprint}', current fingerprint is '{current_fingerprint}'.",
+                        kind=UIEventKind.SESSION,
+                    )
+                apply_session_runtime_state(loaded, config, agent)
+                setattr(agent, "session_fingerprint", loaded.fingerprint)
                 current_session_id = self.options.resume_session_id
                 setattr(agent, "current_session_id", current_session_id)
-                session_exit_time = session_store.get_exit_time(agent.state.messages)
+                session_exit_time = session_store.get_exit_time(loaded.messages)
                 ui_bus.success(
                     f"Resumed session: {self.options.resume_session_id}",
                     kind=UIEventKind.SESSION,
@@ -338,23 +342,15 @@ class AppRunner:
                     kind=UIEventKind.SESSION,
                 )
         elif self.options.auto_resume_latest:
-            latest = session_store.get_latest()
+            latest = session_store.get_latest(fingerprint=current_fingerprint)
             if latest:
                 loaded = session_store.load(latest.id)
                 if loaded:
-                    (
-                        agent.state.messages,
-                        _loaded_model,
-                        agent.state.total_prompt_tokens,
-                        agent.state.total_completion_tokens,
-                        loaded_mode,
-                    ) = loaded
-                    if loaded_mode and loaded_mode in getattr(agent, "available_modes", {}):
-                        agent.active_mode = loaded_mode
-                        config.active_mode = loaded_mode
+                    apply_session_runtime_state(loaded, config, agent)
+                    setattr(agent, "session_fingerprint", loaded.fingerprint)
                     current_session_id = latest.id
                     setattr(agent, "current_session_id", current_session_id)
-                    session_exit_time = session_store.get_exit_time(agent.state.messages)
+                    session_exit_time = session_store.get_exit_time(loaded.messages)
                     ui_bus.info(
                         f"Auto-resumed latest session: {latest.id} ({latest.saved_at})",
                         kind=UIEventKind.SESSION,
@@ -364,6 +360,8 @@ class AppRunner:
                             f"  Preview: {latest.preview}...",
                             kind=UIEventKind.SESSION,
                         )
+        else:
+            restore_config_runtime_defaults(config, agent)
 
         return current_session_id, session_exit_time, sessions_dir
 

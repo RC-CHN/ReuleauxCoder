@@ -58,13 +58,26 @@ Pluggable extension system.
 - **skills/**: Skills system (`SkillsService`, discovery, catalog)
 - **subagent/**: Sub-agent management (`SubagentManager`, jobs, approval)
 
-## Key Components
+## Current Runtime Architecture (Phase 1)
+
+The project now treats a saved session as a **runtime overlay on top of fixed config defaults**, not as a full replacement for `config.yaml`.
+
+High-level layering:
+- `Config` (`domain/config/models.py`) provides workspace defaults.
+- Live runtime state lives on the host agent / LLM / context manager.
+- `SessionRuntimeState` (`domain/session/models.py`) captures the session-scoped overrides that should persist across save/resume.
+- `session_store.py` persists conversations plus runtime overlay metadata and a `fingerprint`.
+- `app/runtime/session_state.py` is the bridge that:
+  - snapshots live runtime into `SessionRuntimeState`
+  - restores config defaults for a fresh session
+  - reapplies persisted session-scoped overrides when resuming
 
 ### Agent (`domain/agent/agent.py`)
 The main orchestrator that coordinates LLM and tools.
 - Manages conversation state (`messages`, `tokens`, `rounds`)
+- Owns live runtime fields such as `active_mode`
+- Carries session-scoped overlays like active model profile selections and approval overrides
 - Registers and executes hooks
-- Handles mode switching
 
 ### AgentLoop (`domain/agent/loop.py`)
 Manages the conversation loop.
@@ -77,6 +90,55 @@ Manages conversation context and token limits.
 - Token counting with tiktoken (o200k_base encoding)
 - Context compression when approaching limits
 - Wall hit detection for context boundaries
+- Runtime `reconfigure()` is used when a resumed or switched model changes context budget
+
+### Session Model and Persistence
+
+#### Session domain types (`domain/session/models.py`)
+Saved sessions persist:
+- conversation messages
+- token counters
+- saved timestamp / preview metadata
+- `fingerprint`
+- `SessionRuntimeState`
+
+`SessionRuntimeState` currently captures:
+- active mode
+- main model runtime identity
+- active main model profile
+- active sub model profile
+- LLM debug trace
+- approval default mode and approval rules
+- execution-target / remote-binding placeholders for later phases
+
+#### Session store (`infrastructure/persistence/session_store.py`)
+`SessionStore` is the JSON persistence layer for sessions.
+- `save()` writes messages + runtime overlay + fingerprint
+- `list()` and `get_latest()` are fingerprint-aware by default
+- `load()` backfills missing token metadata for older sessions
+- `append_system_message()` keeps diagnostics attached to the same saved session
+
+Fingerprint rules in the current implementation:
+- default local fingerprint is `local`
+- `/sessions` only shows current-fingerprint sessions by default
+- `/sessions all` shows all fingerprints
+- auto-resume latest only searches within current fingerprint
+- manual `/session <id>` may cross fingerprints, but must warn
+
+### Session runtime bridge (`app/runtime/session_state.py`)
+This module centralizes Phase 1 runtime/session semantics.
+
+Key responsibilities:
+- `build_session_runtime_state(...)`
+  - snapshot current live runtime into serializable session state
+- `restore_config_runtime_defaults(...)`
+  - reset a fresh/live agent back to config defaults
+  - restore default mode, default approval config, default model routing
+- `apply_session_runtime_state(...)`
+  - restore saved messages and token counters
+  - reapply saved mode / model / debug / approval overrides
+
+This split is important: config remains the baseline, while session state is a layered override.
 
 ### Hook System (`domain/hooks/`)
 Intercept execution at defined points.
@@ -111,7 +173,10 @@ Blocks are sorted by `(zone, order, key)` for deterministic output.
 Application initialization and dependency injection.
 - Uses `AppDependencies` for customizable component construction
 - Auto-discovers hooks via `discover_hook_specs()` + `instantiate_hooks()`
-- Manages MCP servers, skills service, session store
+- Manages MCP servers, skills service, and session restore/save lifecycle
+- Computes the current session fingerprint from runtime/config
+- Auto-resume latest is fingerprint-scoped
+- Manual resume by explicit session id is allowed to cross fingerprints with warning
 
 ## Configuration (`config.yaml`)
 
@@ -139,9 +204,41 @@ Key sections:
 2. Implement `name`, `description`, `schema()`, `execute()`
 3. Add to `ALL_TOOLS` list in `extensions/tools/registry.py`
 
+### Slash command scope conventions (Phase 1)
+Slash command metadata should explicitly communicate scope in `ActionSpec.description` when the command mutates runtime or config.
+
+Scope labels used in help text:
+- `[session]`: affects only the current live session/runtime overlay; should not mutate workspace config
+- `[global]`: persists workspace-level defaults/config and may also refresh current runtime
+- `[local-only]`: only valid when running against local runtime/host capabilities
+- `[session-index]`: operates on saved session inventory and fingerprint-visible session lookup
+
+Canonical Phase 1 expectations:
+- `/model use-main`, `/model use-sub`, `/model <profile>`: `[session]`
+- `/model set-main`, `/model set-sub`: `[global]`
+- `/approval set`: `[session]`
+- `/approval set-global`: `[global]`
+- `/mode ...`: `[session]`
+- `/debug`, `/reset`, `/compact`, `/tokens`: `[session]`
+- `/skills ...`: `[global]`
+- `/mcp ...`: `[global][local-only]`
+- `/sessions`, `/session latest|<id>`: `[session-index]` and fingerprint-aware
+- `/save`, `/new`: `[session]`
+- `/jobs ...`: `[session]`
+
+Session runtime state currently restored by saved sessions includes:
+- message history and token counters
+- active mode
+- active main/sub model profiles
+- LLM debug trace
+- approval runtime overrides
+- session fingerprint
+
 ### Adding a new slash command
 1. Create handler in `extensions/command/builtin/`
 2. Register in command dispatcher
+3. If the command changes state, annotate scope in `ActionSpec.description`
+4. Keep session-vs-global semantics aligned with the Phase 1 conventions above
 
 ### Adding a new hook
 1. Create class inheriting from `GuardHook`, `TransformHook`, or `ObserverHook`

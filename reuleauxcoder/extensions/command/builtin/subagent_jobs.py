@@ -197,7 +197,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="subagent.jobs.list",
                 feature_id="subagent",
-                description="List sub-agent background jobs",
+                description="[session] List sub-agent background jobs spawned from this session runtime",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/jobs"),),
@@ -207,7 +207,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="subagent.jobs.get",
                 feature_id="subagent",
-                description="Show sub-agent job details",
+                description="[session] Show sub-agent job details for this session runtime",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/jobs get <id>"),),
@@ -217,7 +217,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="subagent.jobs.wait",
                 feature_id="subagent",
-                description="Wait for sub-agent job completion",
+                description="[session] Wait for a sub-agent job started from this session runtime",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(slash_trigger("/jobs wait <id>"),),
