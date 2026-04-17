@@ -140,10 +140,11 @@ def _handle_set_approval_rule(command, ctx) -> CommandResult:
     if rule is None:
         return CommandResult(action="continue")
 
-    approval = get_runtime_approval_config(ctx.config, ctx.agent)
-    approval.rules = [existing for existing in approval.rules if not same_rule_target(existing, rule)]
-    approval.rules.append(rule)
-    refresh_approval_runtime(ctx.agent, approval)
+    session_rules = list(getattr(ctx.agent, "session_approval_rules", []) or [])
+    session_rules = [existing for existing in session_rules if not same_rule_target(existing, rule)]
+    session_rules.append(rule)
+    setattr(ctx.agent, "session_approval_rules", session_rules)
+    refresh_approval_runtime(ctx.agent, get_runtime_approval_config(ctx.config, ctx.agent))
 
     payload = _build_approval_payload(ctx)
     ctx.ui_bus.success(
@@ -172,7 +173,6 @@ def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
     ]
     ctx.config.approval.rules.append(rule)
     path = WorkspaceConfigStore().save_approval_config(ctx.config.approval)
-    setattr(ctx.agent, "session_approval_config", None)
     approval = get_runtime_approval_config(ctx.config, ctx.agent)
     refresh_approval_runtime(ctx.agent, approval)
 

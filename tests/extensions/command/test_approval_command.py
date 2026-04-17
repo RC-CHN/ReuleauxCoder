@@ -34,10 +34,10 @@ def test_set_approval_rule_is_session_scoped() -> None:
     )
 
     assert ctx.config.approval.rules == []
-    approval = getattr(ctx.agent, "session_approval_config")
-    assert len(approval.rules) == 1
-    assert approval.rules[0].tool_name == "shell"
-    assert approval.rules[0].action == "deny"
+    session_rules = getattr(ctx.agent, "session_approval_rules")
+    assert len(session_rules) == 1
+    assert session_rules[0].tool_name == "shell"
+    assert session_rules[0].action == "deny"
     assert result.payload["rules"][0]["tool_name"] == "shell"
     assert any(
         event.level == UIEventLevel.SUCCESS and event.message == "Updated session approval rule"
@@ -68,10 +68,7 @@ def test_set_global_approval_rule_updates_config_and_runtime(monkeypatch) -> Non
     assert len(ctx.config.approval.rules) == 1
     assert ctx.config.approval.rules[0].tool_name == "shell"
     assert ctx.config.approval.rules[0].action == "warn"
-    approval = getattr(ctx.agent, "session_approval_config")
-    assert len(approval.rules) == 1
-    assert approval.rules[0].tool_name == "shell"
-    assert approval.rules[0].action == "warn"
+    assert getattr(ctx.agent, "session_approval_rules", []) == []
     assert result.payload["saved_path"] == "/tmp/config.yaml"
     assert any(
         event.level == UIEventLevel.SUCCESS and "Updated global approval rule" in event.message

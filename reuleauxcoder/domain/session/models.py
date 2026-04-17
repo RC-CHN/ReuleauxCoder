@@ -37,7 +37,6 @@ class SessionRuntimeState:
     llm_debug_trace: bool | None = None
     active_main_model_profile: str | None = None
     active_sub_model_profile: str | None = None
-    approval_default_mode: str | None = None
     approval_rules: list[dict[str, Any]] = field(default_factory=list)
     execution_target: str | None = None
     remote_binding: dict[str, Any] = field(default_factory=dict)
@@ -58,7 +57,6 @@ class SessionRuntimeState:
             llm_debug_trace=payload.get("llm_debug_trace"),
             active_main_model_profile=payload.get("active_main_model_profile"),
             active_sub_model_profile=payload.get("active_sub_model_profile"),
-            approval_default_mode=payload.get("approval_default_mode"),
             approval_rules=[dict(rule) for rule in approval_rules if isinstance(rule, dict)],
             execution_target=payload.get("execution_target"),
             remote_binding=dict(remote_binding),

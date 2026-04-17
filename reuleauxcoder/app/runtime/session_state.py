@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from reuleauxcoder.app.runtime.approval import refresh_approval_runtime
+from reuleauxcoder.app.runtime.approval import refresh_approval_runtime, same_rule_target
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, Config
 from reuleauxcoder.domain.session.models import Session, SessionRuntimeState
@@ -16,10 +16,29 @@ def get_session_fingerprint(config: Config, agent: Agent) -> str:
     ) or DEFAULT_SESSION_FINGERPRINT
 
 
-def _clone_approval_config(approval: ApprovalConfig) -> ApprovalConfig:
-    return ApprovalConfig(
-        default_mode=approval.default_mode,
-        rules=[
+def _clone_approval_rules(rules: list[ApprovalRuleConfig]) -> list[ApprovalRuleConfig]:
+    return [
+        ApprovalRuleConfig(
+            tool_name=rule.tool_name,
+            tool_source=rule.tool_source,
+            mcp_server=rule.mcp_server,
+            effect_class=rule.effect_class,
+            profile=rule.profile,
+            action=rule.action,
+        )
+        for rule in rules
+    ]
+
+
+def merge_approval_config(
+    baseline: ApprovalConfig,
+    session_rules: list[ApprovalRuleConfig] | None,
+) -> ApprovalConfig:
+    """Merge baseline approval config with session-scoped rule overrides."""
+    merged_rules = _clone_approval_rules(baseline.rules)
+    for rule in session_rules or []:
+        merged_rules = [existing for existing in merged_rules if not same_rule_target(existing, rule)]
+        merged_rules.append(
             ApprovalRuleConfig(
                 tool_name=rule.tool_name,
                 tool_source=rule.tool_source,
@@ -28,24 +47,19 @@ def _clone_approval_config(approval: ApprovalConfig) -> ApprovalConfig:
                 profile=rule.profile,
                 action=rule.action,
             )
-            for rule in approval.rules
-        ],
-    )
+        )
+    return ApprovalConfig(default_mode=baseline.default_mode, rules=merged_rules)
 
 
 def get_runtime_approval_config(config: Config, agent: Agent) -> ApprovalConfig:
-    """Return the live approval config, preferring session overrides."""
-    approval = getattr(agent, "session_approval_config", None)
-    if isinstance(approval, ApprovalConfig):
-        return approval
-    approval = _clone_approval_config(config.approval)
-    setattr(agent, "session_approval_config", approval)
-    return approval
+    """Return the effective approval config from baseline + session rule overrides."""
+    session_rules = getattr(agent, "session_approval_rules", None)
+    return merge_approval_config(config.approval, session_rules)
 
 
 def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeState:
     """Capture session-scoped runtime overrides from the live host runtime."""
-    approval = get_runtime_approval_config(config, agent)
+    session_rules = getattr(agent, "session_approval_rules", None) or []
     return SessionRuntimeState(
         model=getattr(agent.llm, "model", None) or getattr(config, "model", None),
         active_mode=getattr(agent, "active_mode", None),
@@ -53,7 +67,6 @@ def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeS
         active_main_model_profile=getattr(agent, "active_main_model_profile", None),
         active_sub_model_profile=getattr(agent, "active_sub_model_profile", None)
         or getattr(config, "active_sub_model_profile", None),
-        approval_default_mode=approval.default_mode,
         approval_rules=[
             {
                 "tool_name": rule.tool_name,
@@ -63,7 +76,7 @@ def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeS
                 "profile": rule.profile,
                 "action": rule.action,
             }
-            for rule in approval.rules
+            for rule in session_rules
         ],
     )
 
@@ -91,8 +104,8 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
         agent.llm.debug_trace = getattr(config, "llm_debug_trace", False)
     setattr(agent, "active_main_model_profile", main_profile_name)
     setattr(agent, "active_sub_model_profile", getattr(config, "active_sub_model_profile", None))
-    setattr(agent, "session_approval_config", _clone_approval_config(config.approval))
-    refresh_approval_runtime(agent, get_runtime_approval_config(config, agent))
+    setattr(agent, "session_approval_rules", [])
+    refresh_approval_runtime(agent, config.approval)
 
     default_mode = getattr(config, "active_mode", None)
     if default_mode and default_mode in getattr(agent, "available_modes", {}):
@@ -119,23 +132,20 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
     if loaded_debug is not None:
         agent.llm.debug_trace = loaded_debug
 
-    if runtime.approval_default_mode is not None or runtime.approval_rules:
-        session_approval = ApprovalConfig(
-            default_mode=runtime.approval_default_mode or config.approval.default_mode,
-            rules=[
-                ApprovalRuleConfig(
-                    tool_name=rule.get("tool_name"),
-                    tool_source=rule.get("tool_source"),
-                    mcp_server=rule.get("mcp_server"),
-                    effect_class=rule.get("effect_class"),
-                    profile=rule.get("profile"),
-                    action=rule.get("action", config.approval.default_mode),
-                )
-                for rule in runtime.approval_rules
-            ],
-        )
-        setattr(agent, "session_approval_config", session_approval)
-        refresh_approval_runtime(agent, session_approval)
+    if runtime.approval_rules:
+        session_rules = [
+            ApprovalRuleConfig(
+                tool_name=rule.get("tool_name"),
+                tool_source=rule.get("tool_source"),
+                mcp_server=rule.get("mcp_server"),
+                effect_class=rule.get("effect_class"),
+                profile=rule.get("profile"),
+                action=rule.get("action", config.approval.default_mode),
+            )
+            for rule in runtime.approval_rules
+        ]
+        setattr(agent, "session_approval_rules", session_rules)
+        refresh_approval_runtime(agent, merge_approval_config(config.approval, session_rules))
 
     main_profile = runtime.active_main_model_profile
     profiles = getattr(config, "model_profiles", {}) or {}

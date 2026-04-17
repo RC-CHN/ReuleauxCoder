@@ -123,7 +123,6 @@ def test_restore_session_manual_resume_warns_on_cross_fingerprint_and_restores_r
             model="remote-model",
             active_mode="debugger",
             llm_debug_trace=True,
-            approval_default_mode="warn",
             approval_rules=[{"tool_name": "shell", "action": "deny"}],
         ),
     )
@@ -139,8 +138,7 @@ def test_restore_session_manual_resume_warns_on_cross_fingerprint_and_restores_r
     assert agent.active_mode == "debugger"
     assert agent.llm.model == "remote-model"
     assert agent.llm.debug_trace is True
-    assert getattr(agent, "session_approval_config").default_mode == "warn"
-    assert [(rule.tool_name, rule.action) for rule in getattr(agent, "session_approval_config").rules] == [
+    assert [(rule.tool_name, rule.action) for rule in getattr(agent, "session_approval_rules")] == [
         ("shell", "deny")
     ]
     assert any(
