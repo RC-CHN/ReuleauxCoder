@@ -1,15 +1,18 @@
 """Shell command execution with safety checks."""
 
+from __future__ import annotations
+
 import os
 import re
 import subprocess
 
-from reuleauxcoder.extensions.tools.base import Tool
-from reuleauxcoder.infrastructure.platform import get_platform_info, ShellType
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.registry import register_tool
+from reuleauxcoder.infrastructure.platform import ShellType, get_platform_info
 
-_cwd: str | None = None
 
-
+@register_tool
 class ShellTool(Tool):
     name = "shell"
     description = (
@@ -31,9 +34,16 @@ class ShellTool(Tool):
         "required": ["command"],
     }
 
+    def __init__(self, backend: ToolBackend | None = None):
+        super().__init__(backend or LocalToolBackend())
+        self._cwd: str | None = None
+
     def execute(self, command: str, timeout: int = 120) -> str:
-        global _cwd
-        cwd = _cwd or os.getcwd()
+        return self.run_backend(command=command, timeout=timeout)
+
+    @backend_handler("local")
+    def _execute_local(self, command: str, timeout: int = 120) -> str:
+        cwd = self._cwd or os.getcwd()
         platform_info = get_platform_info()
         shell = platform_info.get_preferred_shell()
 
@@ -54,7 +64,7 @@ class ShellTool(Tool):
                 )
 
             if proc.returncode == 0:
-                _update_cwd(command, cwd, platform_info.is_windows)
+                self._update_cwd(command, cwd, platform_info.is_windows)
 
             out = proc.stdout
             if proc.stderr:
@@ -80,7 +90,6 @@ class ShellTool(Tool):
         platform_info = get_platform_info()
         shell_cmd = platform_info.get_shell_executable()
 
-        # PowerShell 5.x doesn't support &&, so normalize to ;
         normalized = command.replace("&&", ";")
 
         proc = subprocess.run(
@@ -92,38 +101,30 @@ class ShellTool(Tool):
         )
         return proc
 
+    def _update_cwd(self, command: str, current_cwd: str, is_windows: bool = False) -> None:
+        if is_windows:
+            parts = re.split(r"[;]|\n", command)
+        else:
+            parts = re.split(r"&&|;|\n", command)
 
-def _update_cwd(command: str, current_cwd: str, is_windows: bool = False) -> None:
-    global _cwd
-    # Split by common command separators
-    if is_windows:
-        parts = re.split(r"[;]|\n", command)
-    else:
-        parts = re.split(r"&&|;|\n", command)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
 
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
+            target: str | None = None
+            if part.startswith("cd "):
+                target = part[3:].strip().strip("'\"")
+            elif part.lower().startswith("set-location "):
+                target = part[13:].strip().strip("'\"")
+            elif part.lower().startswith("chdir "):
+                target = part[6:].strip().strip("'\"")
+            elif len(part) > 3 and part.lower().startswith("sl "):
+                target = part[3:].strip().strip("'\"")
 
-        target: str | None = None
-
-        # Unix bash style: cd <dir>
-        if part.startswith("cd "):
-            target = part[3:].strip().strip("'\"")
-        # PowerShell style: cd <dir>, Set-Location <dir>, sl <dir>
-        elif part.lower().startswith("set-location "):
-            target = part[13:].strip().strip("'\"")
-        elif part.lower().startswith("chdir "):
-            target = part[6:].strip().strip("'\"")
-        elif len(part) > 3 and part.lower().startswith("cd "):
-            target = part[3:].strip().strip("'\"")
-        elif len(part) > 3 and part.lower().startswith("sl "):
-            target = part[3:].strip().strip("'\"")
-
-        if target:
-            new_dir = os.path.normpath(
-                os.path.join(current_cwd, os.path.expanduser(target))
-            )
-            if os.path.isdir(new_dir):
-                _cwd = new_dir
+            if target:
+                new_dir = os.path.normpath(
+                    os.path.join(current_cwd, os.path.expanduser(target))
+                )
+                if os.path.isdir(new_dir):
+                    self._cwd = new_dir

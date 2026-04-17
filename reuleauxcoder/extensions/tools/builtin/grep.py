@@ -1,9 +1,13 @@
 """Content search with regex support."""
 
+from __future__ import annotations
+
 import re
 from pathlib import Path
 
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.registry import register_tool
 
 _SKIP_DIRS = {
     ".git",
@@ -17,6 +21,7 @@ _SKIP_DIRS = {
 }
 
 
+@register_tool
 class GrepTool(Tool):
     name = "grep"
     description = (
@@ -42,7 +47,14 @@ class GrepTool(Tool):
         "required": ["pattern"],
     }
 
+    def __init__(self, backend: ToolBackend | None = None):
+        super().__init__(backend or LocalToolBackend())
+
     def execute(self, pattern: str, path: str = ".", include: str | None = None) -> str:
+        return self.run_backend(pattern=pattern, path=path, include=include)
+
+    @backend_handler("local")
+    def _execute_local(self, pattern: str, path: str = ".", include: str | None = None) -> str:
         try:
             regex = re.compile(pattern)
         except re.error as e:

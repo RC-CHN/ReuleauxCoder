@@ -1,11 +1,16 @@
 """File creation / overwrite."""
 
+from __future__ import annotations
+
 import difflib
 from pathlib import Path
 
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.registry import register_tool
 
 
+@register_tool
 class WriteFileTool(Tool):
     name = "write_file"
     description = (
@@ -27,7 +32,14 @@ class WriteFileTool(Tool):
         "required": ["file_path", "content"],
     }
 
+    def __init__(self, backend: ToolBackend | None = None):
+        super().__init__(backend or LocalToolBackend())
+
     def execute(self, file_path: str, content: str) -> str:
+        return self.run_backend(file_path=file_path, content=content)
+
+    @backend_handler("local")
+    def _execute_local(self, file_path: str, content: str) -> str:
         try:
             p = Path(file_path).expanduser().resolve()
             old_content = p.read_text() if p.exists() else ""
@@ -40,6 +52,8 @@ class WriteFileTool(Tool):
             return f"Wrote {n_lines} lines to {file_path}\n{diff}"
         except Exception as e:
             return f"Error: {e}"
+
+
 def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
     old_lines = old.splitlines(keepends=True)
     new_lines = new.splitlines(keepends=True)

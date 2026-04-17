@@ -1,10 +1,15 @@
 """File pattern matching."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.registry import register_tool
 
 
+@register_tool
 class GlobTool(Tool):
     name = "glob"
     description = (
@@ -26,7 +31,14 @@ class GlobTool(Tool):
         "required": ["pattern"],
     }
 
+    def __init__(self, backend: ToolBackend | None = None):
+        super().__init__(backend or LocalToolBackend())
+
     def execute(self, pattern: str, path: str = ".") -> str:
+        return self.run_backend(pattern=pattern, path=path)
+
+    @backend_handler("local")
+    def _execute_local(self, pattern: str, path: str = ".") -> str:
         try:
             base = Path(path).expanduser().resolve()
             if not base.is_dir():

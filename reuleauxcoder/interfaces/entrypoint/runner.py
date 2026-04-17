@@ -28,7 +28,8 @@ from reuleauxcoder.domain.hooks import (
 )
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.skills.service import SkillsService
-from reuleauxcoder.extensions.tools.registry import ALL_TOOLS
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.registry import build_tools
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.interactions import UIInteractor
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
@@ -55,8 +56,12 @@ def _default_create_llm(config: Config) -> LLM:
     )
 
 
-def _default_load_tools() -> list[Any]:
-    return list(ALL_TOOLS)
+def _default_create_tool_backend(config: Config, ui_bus: UIEventBus) -> ToolBackend:
+    return LocalToolBackend()
+
+
+def _default_load_tools(tool_backend: ToolBackend) -> list[Any]:
+    return build_tools(tool_backend)
 
 
 def _default_create_agent(llm: LLM, tools: list[Any], config: Config) -> Agent:
@@ -88,7 +93,8 @@ class AppDependencies:
     load_config: Callable[[Path | None], Config] = _default_load_config
     create_ui_bus: Callable[[], UIEventBus] = UIEventBus
     create_llm: Callable[[Config], LLM] = _default_create_llm
-    load_tools: Callable[[], list[Any]] = _default_load_tools
+    create_tool_backend: Callable[[Config, UIEventBus], ToolBackend] = _default_create_tool_backend
+    load_tools: Callable[[ToolBackend], list[Any]] = _default_load_tools
     create_agent: Callable[[LLM, list[Any], Config], Agent] = _default_create_agent
     create_session_store: Callable[[Path | None], SessionStore] = _default_create_session_store
     create_mcp_manager: Callable[[UIEventBus], MCPManager] = _default_create_mcp_manager
@@ -220,7 +226,8 @@ class AppRunner:
 
         llm = self.dependencies.create_llm(config)
         llm.ui_bus = ui_bus
-        tools = self.dependencies.load_tools()
+        tool_backend = self.dependencies.create_tool_backend(config, ui_bus)
+        tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
         setattr(agent, "runtime_config", config)
         setattr(agent, "current_session_id", None)

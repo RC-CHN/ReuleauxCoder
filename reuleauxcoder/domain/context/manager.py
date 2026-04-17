@@ -159,7 +159,7 @@ Please provide your summary based on the conversation so far, following this str
 
 SNIP_DEBOUNCE_TOKENS = 2_000
 SUMMARIZE_DEBOUNCE_TOKENS = 4_000
-KEEP_RECENT_USER_TURNS = 10
+KEEP_RECENT_USER_TURNS = 5
 
 
 class ContextManager:

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.registry import register_tool
 
 
+@register_tool
 class AgentTool(Tool):
     name = "agent"
     description = (
@@ -78,6 +81,9 @@ class AgentTool(Tool):
 
     _parent_agent = None
 
+    def __init__(self, backend: ToolBackend | None = None):
+        super().__init__(backend or LocalToolBackend())
+
     def preflight_validate(self, **kwargs) -> str | None:
         task = kwargs.get("task")
         tasks = kwargs.get("tasks")
@@ -99,6 +105,9 @@ class AgentTool(Tool):
                 "and run_in_background=true."
             )
 
+        if not get_subagent_manager(self._parent_agent).is_valid_mode(mode) if self._parent_agent is not None else False:
+            return f"Error: unsupported sub-agent mode '{mode}'."
+
         return None
 
     def execute(
@@ -115,108 +124,77 @@ class AgentTool(Tool):
         if self._parent_agent is None:
             return "Error: agent tool not initialized (no parent agent)"
 
-        parent = self._parent_agent
-        manager = get_subagent_manager(parent)
-        effective_max_rounds = max(1, int(max_rounds or manager.default_max_rounds))
-        effective_timeout_seconds = max(1, int(timeout_seconds or 300))
-
-        if parallel_explore is not None:
-            manager.set_runtime_parallel_explore(parallel_explore)
-
-        if not manager.is_valid_mode(mode):
-            return f"Error: unknown sub-agent mode '{mode}'. Use explore|execute|verify."
-
-        if not _is_subagent_mode_allowed(parent, mode):
-            current_mode = getattr(parent, "active_mode", None) or "default"
-            return (
-                f"Sub-agent mode '{mode}' is not allowed in current mode '{current_mode}'."
-            )
-
-        single_task = (task or "").strip() if isinstance(task, str) else ""
-        batch_tasks = [item.strip() for item in (tasks or []) if isinstance(item, str) and item.strip()]
-
-        validation_error = self.preflight_validate(
+        return self.run_backend(
             task=task,
             tasks=tasks,
             mode=mode,
             run_in_background=run_in_background,
+            max_rounds=max_rounds,
+            timeout_seconds=timeout_seconds,
+            parallel_explore=parallel_explore,
+            model=model,
         )
-        if validation_error:
-            return validation_error
 
-        if batch_tasks:
-            if mode != "explore" or not run_in_background:
-                return (
-                    "Error: batch 'tasks' currently requires mode='explore' "
-                    "and run_in_background=true."
-                )
+    @backend_handler("local")
+    def _execute_local(
+        self,
+        task: str | None = None,
+        tasks: list[str] | None = None,
+        mode: str = "explore",
+        run_in_background: bool = False,
+        max_rounds: int = 50,
+        timeout_seconds: int = 300,
+        parallel_explore: int | None = None,
+        model: str | None = None,
+    ) -> str:
+        parent = self._parent_agent
+        if parent is None:
+            return "Error: agent tool not initialized (no parent agent)"
 
-            try:
-                job_ids: list[str] = []
-                for item in batch_tasks:
-                    job_id = manager.submit_background(
-                        parent_agent=parent,
-                        task=item,
-                        mode=mode,
-                        max_rounds=effective_max_rounds,
-                        timeout_seconds=effective_timeout_seconds,
-                        parallel_explore=parallel_explore,
-                        model_profile_name=model,
-                    )
-                    job_ids.append(job_id)
-                return (
-                    f"[Sub-agent batch queued] count={len(job_ids)} mode={mode} "
-                    f"max_rounds={effective_max_rounds} timeout_s={effective_timeout_seconds} "
-                    f"parallel_explore={manager.runtime_parallel_explore} "
-                    f"model={model or 'sub-default'} "
-                    f"job_ids={','.join(job_ids)}"
-                )
-            except Exception as e:
-                return f"Sub-agent batch error: {e}"
+        manager = get_subagent_manager(parent)
+        effective_max_rounds = max(1, int(max_rounds or manager.default_max_rounds))
+        effective_timeout = max(1, int(timeout_seconds or 300))
+        model_route = (model or "sub").strip().lower()
+        if model_route not in {"sub", "main"}:
+            model_route = "sub"
 
-        try:
+        single_task = (task or "").strip() if isinstance(task, str) else ""
+        if single_task:
             if run_in_background:
                 job_id = manager.submit_background(
                     parent_agent=parent,
                     task=single_task,
                     mode=mode,
                     max_rounds=effective_max_rounds,
-                    timeout_seconds=effective_timeout_seconds,
+                    timeout_seconds=effective_timeout,
                     parallel_explore=parallel_explore,
-                    model_profile_name=model,
+                    model_profile_name=model_route,
                 )
-                return (
-                    f"[Sub-agent queued] mode={mode} max_rounds={effective_max_rounds} "
-                    f"timeout_s={effective_timeout_seconds} "
-                    f"parallel_explore={manager.runtime_parallel_explore} "
-                    f"model={model or 'sub-default'} "
-                    f"job_id={job_id}"
-                )
+                return f"Sub-agent job started in background: {job_id}"
 
             return manager.run_sync(
                 parent_agent=parent,
                 task=single_task,
                 mode=mode,
                 max_rounds=effective_max_rounds,
-                timeout_seconds=effective_timeout_seconds,
-                model_profile_name=model,
+                timeout_seconds=effective_timeout,
+                model_profile_name=model_route,
             )
-        except Exception as e:
-            return f"Sub-agent error: {e}"
 
+        task_list = [item.strip() for item in (tasks or []) if isinstance(item, str) and item.strip()]
+        if not task_list:
+            return "Error: provide either 'task' or non-empty 'tasks'."
 
-def _is_subagent_mode_allowed(parent_agent, sub_mode: str) -> bool:
-    active_mode = parent_agent.get_active_mode_config()
-    if active_mode is None:
-        return True
-
-    allowed = list(getattr(active_mode, "allowed_subagent_modes", []) or [])
-    if not allowed:
-        return True
-
-    # Backward compatibility: early configs used main-agent mode names here.
-    legacy_tokens = {"coder", "planner", "debugger"}
-    if any(token in legacy_tokens for token in allowed):
-        return True
-
-    return sub_mode in set(allowed)
+        job_ids: list[str] = []
+        for item in task_list:
+            job_id = manager.submit_background(
+                parent_agent=parent,
+                task=item,
+                mode=mode,
+                max_rounds=effective_max_rounds,
+                timeout_seconds=effective_timeout,
+                parallel_explore=parallel_explore,
+                model_profile_name=model_route,
+            )
+            job_ids.append(job_id)
+        return f"Started {len(job_ids)} background sub-agent jobs: {', '.join(job_ids)}"

@@ -1,11 +1,16 @@
 """Search-and-replace file editing."""
 
+from __future__ import annotations
+
 import difflib
 from pathlib import Path
 
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.registry import register_tool
 
 
+@register_tool
 class EditFileTool(Tool):
     name = "edit_file"
     description = (
@@ -32,16 +37,30 @@ class EditFileTool(Tool):
         "required": ["file_path", "old_string", "new_string"],
     }
 
+    def __init__(self, backend: ToolBackend | None = None):
+        super().__init__(backend or LocalToolBackend())
+
     def preflight_validate(self, file_path: str, old_string: str, new_string: str) -> str | None:
         """Fast validation so invalid edit requests can be rejected before approval."""
         return _validate_edit_request(file_path, old_string, new_string)
 
     def execute(self, file_path: str, old_string: str, new_string: str) -> str:
-        try:
-            validation_error = self.preflight_validate(file_path=file_path, old_string=old_string, new_string=new_string)
-            if validation_error:
-                return validation_error
+        validation_error = self.preflight_validate(
+            file_path=file_path,
+            old_string=old_string,
+            new_string=new_string,
+        )
+        if validation_error:
+            return validation_error
+        return self.run_backend(
+            file_path=file_path,
+            old_string=old_string,
+            new_string=new_string,
+        )
 
+    @backend_handler("local")
+    def _execute_local(self, file_path: str, old_string: str, new_string: str) -> str:
+        try:
             p = Path(file_path).expanduser().resolve()
             content = p.read_text()
             new_content = content.replace(old_string, new_string, 1)
