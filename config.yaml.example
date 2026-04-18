@@ -62,6 +62,17 @@ approval:
 #     Always answer in Chinese unless explicitly requested otherwise.
 #     Keep responses concise and actionable.
 
+# Optional context compression settings. Omit to use defaults.
+# context:
+#   # Number of recent tool calls to protect from snipping.
+#   snip_keep_recent_tools: 5
+#   # Min content length (chars) to trigger tool output snip.
+#   snip_threshold_chars: 1500
+#   # Min line count to trigger tool output snip.
+#   snip_min_lines: 6
+#   # Number of recent user turns to protect during LLM summarize.
+#   summarize_keep_recent_turns: 5
+
 # Optional output/session/history settings. Omit to use defaults.
 # tool_output:
 #   max_chars: 12000

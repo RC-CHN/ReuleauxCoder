@@ -73,6 +73,12 @@ CONFIG_SCHEMA = {
     "prompt": {
         "system_append": "string (optional, appended to system prompt as user/workspace instructions)",
     },
+    "context": {
+        "snip_keep_recent_tools": "int (default: 5, number of recent tool calls to protect from snipping)",
+        "snip_threshold_chars": "int (default: 1500, min content length to trigger snip)",
+        "snip_min_lines": "int (default: 6, min line count to trigger snip)",
+        "summarize_keep_recent_turns": "int (default: 5, number of recent user turns to protect during summarize)",
+    },
     "mcp": {
         "servers": {
             "server_name": {
@@ -145,4 +151,8 @@ DEFAULTS = {
     "session_dir": None,  # Will be computed at runtime
     "history_file": None,  # Will be computed at runtime
     "llm_debug_trace": False,
+    "snip_keep_recent_tools": 5,
+    "snip_threshold_chars": 1500,
+    "snip_min_lines": 6,
+    "summarize_keep_recent_turns": 5,
 }

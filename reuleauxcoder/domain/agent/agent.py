@@ -59,7 +59,17 @@ class Agent:
         # Context manager
         from reuleauxcoder.domain.context.manager import ContextManager
 
-        self.context = ContextManager(max_tokens=max_context_tokens)
+        context_cfg = getattr(config, "context", None)
+        if context_cfg:
+            self.context = ContextManager(
+                max_tokens=max_context_tokens,
+                snip_keep_recent_tools=context_cfg.snip_keep_recent_tools,
+                snip_threshold_chars=context_cfg.snip_threshold_chars,
+                snip_min_lines=context_cfg.snip_min_lines,
+                summarize_keep_recent_turns=context_cfg.summarize_keep_recent_turns,
+            )
+        else:
+            self.context = ContextManager(max_tokens=max_context_tokens)
 
         # Hook runtime
         self.hook_registry = hook_registry or HookRegistry()

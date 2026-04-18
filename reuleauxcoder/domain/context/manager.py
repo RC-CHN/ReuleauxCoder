@@ -159,21 +159,35 @@ Please provide your summary based on the conversation so far, following this str
 
 SNIP_DEBOUNCE_TOKENS = 2_000
 SUMMARIZE_DEBOUNCE_TOKENS = 4_000
-KEEP_RECENT_USER_TURNS = 5
 
 
 class ContextManager:
     """Manages conversation context with multi-layer compression."""
 
-    def __init__(self, max_tokens: int = 128_000, ui_bus: "UIEventBus | None" = None):
+    def __init__(
+        self,
+        max_tokens: int = 128_000,
+        ui_bus: "UIEventBus | None" = None,
+        snip_keep_recent_tools: int = 5,
+        snip_threshold_chars: int = 1500,
+        snip_min_lines: int = 6,
+        summarize_keep_recent_turns: int = 5,
+    ):
         self.max_tokens = max_tokens
         self._ui_bus = ui_bus
-        self._last_compact_tokens = 0
-        self._last_compact_strategy: str | None = None
+        # Snip configuration
+        self._snip_keep_recent_tools = snip_keep_recent_tools
+        self._snip_threshold_chars = snip_threshold_chars
+        self._snip_min_lines = snip_min_lines
+        # Summarize configuration
+        self._summarize_keep_recent_turns = summarize_keep_recent_turns
         # Layer thresholds (fraction of max_tokens)
         self._snip_at = int(max_tokens * 0.50)  # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
         self._collapse_at = int(max_tokens * 0.90)  # 90% -> hard collapse
+        # State tracking
+        self._last_compact_tokens = 0
+        self._last_compact_strategy: str | None = None
         # Wall-hit counters for progressive compression
         self._snip_exhausted = False
         self._summarize_exhausted = False
@@ -230,7 +244,7 @@ class ContextManager:
         elif current > self._summarize_at:
             # If snip is exhausted or summarize is near exhausted, go straight to summarize
             if self._snip_exhausted or self._summarize_hit_count >= self._max_hits - 1:
-                changed = self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS)
+                changed = self._summarize_old(messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns)
                 if changed:
                     compressed = True
                     applied_layers.append("summarize_old")
@@ -272,7 +286,7 @@ class ContextManager:
 
                 # After snip attempt, check if we still need summarize
                 if current > self._summarize_at and not self._summarize_exhausted:
-                    summarize_changed = self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS)
+                    summarize_changed = self._summarize_old(messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns)
                     if summarize_changed:
                         compressed = True
                         applied_layers.append("summarize_old")
@@ -339,7 +353,7 @@ class ContextManager:
                 self._last_compact_strategy = "snip"
             return changed
         if strategy == "summarize":
-            changed = self._summarize_old(messages, llm, keep_recent_user_turns=KEEP_RECENT_USER_TURNS)
+            changed = self._summarize_old(messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns)
             if changed:
                 self._last_compact_tokens = estimate_tokens(messages)
                 self._last_compact_strategy = "summarize"
@@ -353,21 +367,20 @@ class ContextManager:
             return True
         return False
 
-    @staticmethod
-    def _snip_tool_outputs(messages: list[dict]) -> bool:
-        """Layer 1: Truncate older tool results over 1500 chars, keeping recent tool outputs intact."""
+    def _snip_tool_outputs(self, messages: list[dict]) -> bool:
+        """Layer 1: Truncate older tool results over threshold, keeping recent tool outputs intact."""
         changed = False
         tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-        protected = set(tool_indices[-10:])
+        protected = set(tool_indices[-self._snip_keep_recent_tools:])
 
         for i, m in enumerate(messages):
             if i in protected or m.get("role") != "tool":
                 continue
             content = m.get("content", "")
-            if len(content) <= 1500:
+            if len(content) <= self._snip_threshold_chars:
                 continue
             lines = content.splitlines()
-            if len(lines) <= 6:
+            if len(lines) <= self._snip_min_lines:
                 continue
             # Keep first 3 + last 3 lines
             snipped = (

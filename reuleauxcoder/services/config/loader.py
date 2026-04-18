@@ -10,6 +10,7 @@ from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
     Config,
+    ContextConfig,
     MCPServerConfig,
     ModeConfig,
     ModelProfileConfig,
@@ -150,6 +151,7 @@ class ConfigLoader:
         modes_config = data.get("modes", {})
         skills_config = data.get("skills", {})
         prompt_config = data.get("prompt", {})
+        context_config = data.get("context", {})
 
         # Parse MCP servers
         mcp_servers = []
@@ -282,6 +284,20 @@ class ConfigLoader:
             ),
             prompt=PromptConfig(
                 system_append=str(prompt_config.get("system_append", "") or ""),
+            ),
+            context=ContextConfig(
+                snip_keep_recent_tools=context_config.get(
+                    "snip_keep_recent_tools", DEFAULTS["snip_keep_recent_tools"]
+                ),
+                snip_threshold_chars=context_config.get(
+                    "snip_threshold_chars", DEFAULTS["snip_threshold_chars"]
+                ),
+                snip_min_lines=context_config.get(
+                    "snip_min_lines", DEFAULTS["snip_min_lines"]
+                ),
+                summarize_keep_recent_turns=context_config.get(
+                    "summarize_keep_recent_turns", DEFAULTS["summarize_keep_recent_turns"]
+                ),
             ),
             session_auto_save=session_config.get(
                 "auto_save", DEFAULTS["session_auto_save"]
