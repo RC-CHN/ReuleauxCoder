@@ -158,7 +158,10 @@ class RemoteRelayHTTPService:
                 qs = parse_qs(parsed.query)
                 ttl_sec = int(qs.get("ttl_sec", ["300"])[0])
                 token = qs.get("token", [None])[0] or service.issue_bootstrap_token(ttl_sec=ttl_sec)
-                script = generate_bootstrap_script(service.base_url, token)
+                host_header = self.headers.get("Host")
+                forwarded_proto = self.headers.get("X-Forwarded-Proto", "http")
+                request_base_url = f"{forwarded_proto}://{host_header}" if host_header else service.base_url
+                script = generate_bootstrap_script(request_base_url, token)
                 self._send_text(HTTPStatus.OK, script, "text/x-shellscript; charset=utf-8")
 
             def _handle_artifact(self, path: str) -> None:
