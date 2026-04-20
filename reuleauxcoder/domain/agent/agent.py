@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.extensions.tools.base import Tool
     from reuleauxcoder.domain.context.manager import ContextManager
+    from reuleauxcoder.domain.config.models import Config
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
@@ -36,6 +37,7 @@ class Agent:
         self,
         llm: "LLM",
         tools: Optional[List["Tool"]] = None,
+        config: "Config" | None = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
         hook_registry: HookRegistry | None = None,
@@ -45,6 +47,7 @@ class Agent:
     ):
         self.llm = llm
         self.tools = tools if tools is not None else []
+        self.config = config
         self.max_context_tokens = max_context_tokens
         self.max_rounds = max_rounds
 
