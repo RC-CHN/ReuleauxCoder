@@ -15,6 +15,7 @@ from reuleauxcoder.domain.config.models import (
     ModeConfig,
     ModelProfileConfig,
     PromptConfig,
+    RemoteExecConfig,
     SkillsConfig,
 )
 from reuleauxcoder.domain.config.schema import BUILTIN_MODES, DEFAULTS, DEFAULT_ACTIVE_MODE
@@ -152,6 +153,7 @@ class ConfigLoader:
         skills_config = data.get("skills", {})
         prompt_config = data.get("prompt", {})
         context_config = data.get("context", {})
+        remote_exec_config = data.get("remote_exec", {})
 
         # Parse MCP servers
         mcp_servers = []
@@ -298,6 +300,17 @@ class ConfigLoader:
                 summarize_keep_recent_turns=context_config.get(
                     "summarize_keep_recent_turns", DEFAULTS["summarize_keep_recent_turns"]
                 ),
+            ),
+            remote_exec=RemoteExecConfig(
+                enabled=bool(remote_exec_config.get("enabled", False)),
+                host_mode=bool(remote_exec_config.get("host_mode", False)),
+                relay_bind=str(remote_exec_config.get("relay_bind", "127.0.0.1:8765")),
+                bootstrap_token_ttl_sec=int(remote_exec_config.get("bootstrap_token_ttl_sec", 300)),
+                peer_token_ttl_sec=int(remote_exec_config.get("peer_token_ttl_sec", 3600)),
+                heartbeat_interval_sec=int(remote_exec_config.get("heartbeat_interval_sec", 10)),
+                heartbeat_timeout_sec=int(remote_exec_config.get("heartbeat_timeout_sec", 30)),
+                default_tool_timeout_sec=int(remote_exec_config.get("default_tool_timeout_sec", 30)),
+                shell_timeout_sec=int(remote_exec_config.get("shell_timeout_sec", 120)),
             ),
             session_auto_save=session_config.get(
                 "auto_save", DEFAULTS["session_auto_save"]

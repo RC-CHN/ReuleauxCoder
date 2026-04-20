@@ -81,7 +81,6 @@ def _default_create_agent(llm: LLM, tools: list[Any], config: Config) -> Agent:
     return Agent(
         llm=llm,
         tools=tools,
-        config=config,
         max_context_tokens=config.max_context_tokens,
         available_modes=getattr(config, "modes", {}) or {},
         active_mode=getattr(config, "active_mode", None),

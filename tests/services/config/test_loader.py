@@ -107,6 +107,38 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.backfill_reasoning_content_for_tool_calls is True
 
 
+def test_parse_config_reads_remote_exec_settings() -> None:
+    loader = ConfigLoader()
+    config = loader._parse_config(
+        {
+            "app": {"api_key": "key"},
+            "models": {"profiles": {"main": {"model": "gpt-main", "api_key": "main-key"}}},
+            "modes": {"profiles": {"coder": {}}},
+            "remote_exec": {
+                "enabled": True,
+                "host_mode": True,
+                "relay_bind": "0.0.0.0:9999",
+                "bootstrap_token_ttl_sec": 111,
+                "peer_token_ttl_sec": 222,
+                "heartbeat_interval_sec": 7,
+                "heartbeat_timeout_sec": 21,
+                "default_tool_timeout_sec": 44,
+                "shell_timeout_sec": 155,
+            },
+        }
+    )
+
+    assert config.remote_exec.enabled is True
+    assert config.remote_exec.host_mode is True
+    assert config.remote_exec.relay_bind == "0.0.0.0:9999"
+    assert config.remote_exec.bootstrap_token_ttl_sec == 111
+    assert config.remote_exec.peer_token_ttl_sec == 222
+    assert config.remote_exec.heartbeat_interval_sec == 7
+    assert config.remote_exec.heartbeat_timeout_sec == 21
+    assert config.remote_exec.default_tool_timeout_sec == 44
+    assert config.remote_exec.shell_timeout_sec == 155
+
+
 def test_parse_config_falls_back_when_active_profile_missing() -> None:
     loader = ConfigLoader()
     config = loader._parse_config(

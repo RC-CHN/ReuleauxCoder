@@ -1,4 +1,4 @@
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, Config, MCPServerConfig, ModeConfig, ModelProfileConfig
+from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, Config, MCPServerConfig, ModeConfig, ModelProfileConfig, RemoteExecConfig
 
 
 def test_mcp_server_config_roundtrip() -> None:
@@ -100,3 +100,11 @@ def test_config_is_valid_for_minimal_valid_configuration() -> None:
 def test_config_supports_llm_debug_trace_flag() -> None:
     config = Config(api_key="key", llm_debug_trace=True)
     assert config.llm_debug_trace is True
+
+
+def test_remote_exec_config_defaults() -> None:
+    config = Config(api_key="key")
+    assert isinstance(config.remote_exec, RemoteExecConfig)
+    assert config.remote_exec.enabled is False
+    assert config.remote_exec.host_mode is False
+    assert config.remote_exec.relay_bind == "127.0.0.1:8765"
