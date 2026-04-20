@@ -33,6 +33,7 @@ class UIEventKind(Enum):
     VIEW = "view"
     AGENT = "agent"
     CONTEXT = "context"
+    REMOTE = "remote"
 
 
 @dataclass

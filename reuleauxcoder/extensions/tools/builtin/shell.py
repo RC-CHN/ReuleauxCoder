@@ -41,6 +41,14 @@ class ShellTool(Tool):
     def execute(self, command: str, timeout: int = 120) -> str:
         return self.run_backend(command=command, timeout=timeout)
 
+    @backend_handler("remote_relay")
+    def _execute_remote(self, command: str, timeout: int = 120) -> str:
+        if not isinstance(command, str) or not command:
+            return "Error: shell command must be a non-empty string"
+        if not isinstance(timeout, int) or timeout < 1:
+            return "Error: timeout must be a positive integer"
+        return self.backend.exec_tool("shell", {"command": command, "timeout": timeout})
+
     @backend_handler("local")
     def _execute_local(self, command: str, timeout: int = 120) -> str:
         cwd = self._cwd or os.getcwd()

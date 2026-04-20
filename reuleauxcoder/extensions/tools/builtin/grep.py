@@ -53,6 +53,16 @@ class GrepTool(Tool):
     def execute(self, pattern: str, path: str = ".", include: str | None = None) -> str:
         return self.run_backend(pattern=pattern, path=path, include=include)
 
+    @backend_handler("remote_relay")
+    def _execute_remote(self, pattern: str, path: str = ".", include: str | None = None) -> str:
+        if not isinstance(pattern, str) or not pattern:
+            return "Error: pattern must be a non-empty string"
+        if not isinstance(path, str) or not path:
+            return "Error: path must be a non-empty string"
+        if include is not None and not isinstance(include, str):
+            return "Error: include must be a string when provided"
+        return self.backend.exec_tool("grep", {"pattern": pattern, "path": path, "include": include})
+
     @backend_handler("local")
     def _execute_local(self, pattern: str, path: str = ".", include: str | None = None) -> str:
         try:

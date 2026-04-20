@@ -12,7 +12,12 @@ and only need to implement their own UI-specific rendering.
 """
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import threading
 from typing import Any, Callable
 
 from reuleauxcoder.app.runtime.session_state import (
@@ -32,8 +37,11 @@ from reuleauxcoder.domain.hooks import (
     instantiate_hooks,
 )
 from reuleauxcoder.extensions.mcp.manager import MCPManager
+from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
+from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
+from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
-from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.registry import build_tools
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.interactions import UIInteractor
@@ -88,6 +96,80 @@ def _default_create_mcp_manager(ui_bus: UIEventBus) -> MCPManager:
     return MCPManager(ui_bus=ui_bus)
 
 
+def _default_create_remote_relay_server(config: Config) -> RelayServer | None:
+    if not getattr(config, "remote_exec", None) or not config.remote_exec.enabled:
+        return None
+    if not config.remote_exec.host_mode:
+        return None
+    return RelayServer(
+        heartbeat_interval_sec=config.remote_exec.heartbeat_interval_sec,
+        heartbeat_timeout_sec=config.remote_exec.heartbeat_timeout_sec,
+        default_tool_timeout_sec=config.remote_exec.default_tool_timeout_sec,
+        shell_timeout_sec=config.remote_exec.shell_timeout_sec,
+    )
+
+
+def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[str, str, str], tuple[bytes, str] | None]:
+    repo_root = Path(__file__).resolve().parents[3]
+    agent_dir = repo_root / "reuleauxcoder-agent"
+    build_dir = Path(tempfile.mkdtemp(prefix="rcoder-peer-build-"))
+    build_lock = threading.Lock()
+    cache: dict[tuple[str, str], Path] = {}
+
+    def provide(os_name: str, arch: str, artifact_name: str) -> tuple[bytes, str] | None:
+        if artifact_name != "rcoder-peer":
+            return None
+        if os_name not in {"linux", "darwin", "windows"}:
+            return None
+        if arch not in {"amd64", "arm64"}:
+            return None
+
+        target_key = (os_name, arch)
+        with build_lock:
+            binary_path = cache.get(target_key)
+            if binary_path is None or not binary_path.exists():
+                output_name = artifact_name + (".exe" if os_name == "windows" else "")
+                binary_path = build_dir / f"{os_name}-{arch}-{output_name}"
+                env = dict(os.environ)
+                env["GOOS"] = os_name
+                env["GOARCH"] = arch
+                subprocess.run(
+                    ["go", "build", "-o", str(binary_path), "./cmd/reuleauxcoder-agent"],
+                    cwd=agent_dir,
+                    env=env,
+                    check=True,
+                    timeout=180,
+                )
+                cache[target_key] = binary_path
+                ui_bus.info(
+                    f"Built peer artifact for {os_name}/{arch}: {binary_path.name}",
+                    kind=UIEventKind.REMOTE,
+                    os=os_name,
+                    arch=arch,
+                )
+        return binary_path.read_bytes(), "application/octet-stream"
+
+    setattr(provide, "_build_dir", build_dir)
+    return provide
+
+
+def _default_create_remote_http_service(
+    config: Config,
+    relay_server: RelayServer,
+    ui_bus: UIEventBus,
+) -> RemoteRelayHTTPService | None:
+    if not getattr(config, "remote_exec", None) or not config.remote_exec.enabled:
+        return None
+    if not config.remote_exec.host_mode:
+        return None
+    return RemoteRelayHTTPService(
+        relay_server=relay_server,
+        bind=config.remote_exec.relay_bind,
+        ui_bus=ui_bus,
+        artifact_provider=_default_create_remote_artifact_provider(ui_bus),
+    )
+
+
 @dataclass
 class AppDependencies:
     """Lightweight dependency providers for AppRunner.
@@ -104,6 +186,10 @@ class AppDependencies:
     create_agent: Callable[[LLM, list[Any], Config], Agent] = _default_create_agent
     create_session_store: Callable[[Path | None], SessionStore] = _default_create_session_store
     create_mcp_manager: Callable[[UIEventBus], MCPManager] = _default_create_mcp_manager
+    create_remote_relay_server: Callable[[Config], RelayServer | None] = _default_create_remote_relay_server
+    create_remote_http_service: Callable[[Config, RelayServer, UIEventBus], RemoteRelayHTTPService | None] = (
+        _default_create_remote_http_service
+    )
 
 
 @dataclass
@@ -157,6 +243,9 @@ class AppOptions:
     auto_resume_latest: bool = True
     """Whether to auto-resume the latest session."""
 
+    server_mode: bool = False
+    """Whether to run as a dedicated remote relay host."""
+
 
 class AppRunner:
     """Application runner that handles initialization and cleanup.
@@ -179,6 +268,8 @@ class AppRunner:
         self.options = options or AppOptions()
         self.dependencies = dependencies or AppDependencies()
         self._mcp_manager: MCPManager | None = None
+        self._relay_server: RelayServer | None = None
+        self._relay_http_service: RemoteRelayHTTPService | None = None
 
     def initialize(self) -> AppContext:
         """Initialize all application components and return context.
@@ -186,7 +277,10 @@ class AppRunner:
         Returns:
             AppContext with all initialized components.
         """
-        config, ui_bus, llm, agent = self._build_core()
+        config = self.dependencies.load_config(self.options.config_path)
+        ui_bus = self.dependencies.create_ui_bus()
+        self._init_remote_relay(config, ui_bus)
+        config, ui_bus, llm, agent = self._build_core(config, ui_bus)
         skills_service = self._init_skills(config, agent, ui_bus)
         mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
         current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
@@ -222,17 +316,21 @@ class AppRunner:
         )
         return app_ctx
 
-    def _build_core(self) -> tuple[Config, UIEventBus, LLM, Agent]:
+    def _build_core(
+        self,
+        config: Config,
+        ui_bus: UIEventBus,
+    ) -> tuple[Config, UIEventBus, LLM, Agent]:
         """Build config + ui bus + llm + agent, with runtime hooks initialized."""
-        config = self.dependencies.load_config(self.options.config_path)
-        ui_bus = self.dependencies.create_ui_bus()
-
         if self.options.model:
             config.model = self.options.model
 
         llm = self.dependencies.create_llm(config)
         llm.ui_bus = ui_bus
         tool_backend = self.dependencies.create_tool_backend(config, ui_bus)
+        # If relay server was started, prefer remote backend when a peer is available
+        if self._relay_server is not None:
+            tool_backend = RemoteRelayToolBackend(relay_server=self._relay_server)
         tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
         setattr(agent, "runtime_config", config)
@@ -243,6 +341,56 @@ class AppRunner:
         self._register_hooks(agent, config)
         self._wire_agent_tool_parent(agent)
         return config, ui_bus, llm, agent
+
+    def _init_remote_relay(self, config: Config, ui_bus: UIEventBus) -> None:
+        """Initialize remote relay server if enabled and host_mode."""
+        try:
+            relay = self.dependencies.create_remote_relay_server(config)
+        except Exception as e:
+            ui_bus.warning(
+                f"Remote relay initialization failed: {e}", kind=UIEventKind.REMOTE
+            )
+            return
+        if relay is None:
+            return
+        try:
+            relay.start()
+            self._relay_server = relay
+        except Exception as e:
+            ui_bus.warning(
+                f"Remote relay server failed to start: {e}", kind=UIEventKind.REMOTE
+            )
+            return
+
+        try:
+            http_service = self.dependencies.create_remote_http_service(config, relay, ui_bus)
+        except Exception as e:
+            relay.stop()
+            self._relay_server = None
+            ui_bus.warning(
+                f"Remote relay HTTP service initialization failed: {e}", kind=UIEventKind.REMOTE
+            )
+            return
+
+        if http_service is not None:
+            try:
+                http_service.start()
+                self._relay_http_service = http_service
+            except Exception as e:
+                relay.stop()
+                self._relay_server = None
+                self._relay_http_service = None
+                ui_bus.warning(
+                    f"Remote relay HTTP service failed to start: {e}", kind=UIEventKind.REMOTE
+                )
+                return
+
+        ui_bus.success(
+            "Remote relay server started.",
+            kind=UIEventKind.REMOTE,
+            bind=getattr(config.remote_exec, "relay_bind", None),
+            base_url=self._relay_http_service.base_url if self._relay_http_service else None,
+        )
 
     def _register_hooks(self, agent: Agent, config: Config) -> None:
         """Register hooks discovered via decorator mechanism."""
@@ -367,13 +515,29 @@ class AppRunner:
         return current_session_id, session_exit_time, sessions_dir
 
     def cleanup(self, agent: Agent | None = None) -> None:
-        """Clean up resources (MCP connections, etc.)."""
+        """Clean up resources (MCP connections, remote relay, etc.)."""
         if agent is not None:
             self._run_lifecycle_hooks(
                 agent,
                 HookPoint.RUNNER_SHUTDOWN,
                 RunnerShutdownContext(hook_point=HookPoint.RUNNER_SHUTDOWN),
             )
+        if self._relay_http_service is not None:
+            artifact_provider = getattr(self._relay_http_service, "artifact_provider", None)
+            build_dir = getattr(artifact_provider, "_build_dir", None) if artifact_provider is not None else None
+            self._relay_http_service.stop()
+            self._relay_http_service = None
+            if isinstance(build_dir, Path):
+                shutil.rmtree(build_dir, ignore_errors=True)
+        if self._relay_server is not None:
+            # best-effort cleanup for any connected peers
+            for peer in self._relay_server.registry.list_online():
+                try:
+                    self._relay_server.request_cleanup(peer.peer_id, timeout_sec=5)
+                except Exception:
+                    pass
+            self._relay_server.stop()
+            self._relay_server = None
         if self._mcp_manager:
             self._mcp_manager.disconnect_all()
             self._mcp_manager.stop()

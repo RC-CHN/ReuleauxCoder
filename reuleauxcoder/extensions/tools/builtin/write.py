@@ -38,6 +38,14 @@ class WriteFileTool(Tool):
     def execute(self, file_path: str, content: str) -> str:
         return self.run_backend(file_path=file_path, content=content)
 
+    @backend_handler("remote_relay")
+    def _execute_remote(self, file_path: str, content: str) -> str:
+        if not isinstance(file_path, str) or not file_path:
+            return "Error: file_path must be a non-empty string"
+        if not isinstance(content, str):
+            return "Error: content must be a string"
+        return self.backend.exec_tool("write_file", {"file_path": file_path, "content": content})
+
     @backend_handler("local")
     def _execute_local(self, file_path: str, content: str) -> str:
         try:

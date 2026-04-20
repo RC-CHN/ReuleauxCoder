@@ -57,6 +57,27 @@ class ReadFileTool(Tool):
             override=override,
         )
 
+    @backend_handler("remote_relay")
+    def _execute_remote(
+        self,
+        file_path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        override: bool = False,
+    ) -> str:
+        if not isinstance(file_path, str) or not file_path:
+            return "Error: file_path must be a non-empty string"
+        if not isinstance(offset, int) or offset < 1:
+            return "Error: offset must be a positive integer"
+        if not isinstance(limit, int) or limit < 1:
+            return "Error: limit must be a positive integer"
+        if not isinstance(override, bool):
+            return "Error: override must be a boolean"
+        return self.backend.exec_tool(
+            "read_file",
+            {"file_path": file_path, "offset": offset, "limit": limit, "override": override},
+        )
+
     @backend_handler("local")
     def _execute_local(
         self,

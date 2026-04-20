@@ -15,6 +15,11 @@ def parse_args():
     parser.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
     parser.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
     parser.add_argument(
+        "--server",
+        action="store_true",
+        help="Run as a dedicated remote relay host",
+    )
+    parser.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {__version__}"
     )
     return parser.parse_args()

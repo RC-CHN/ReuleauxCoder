@@ -33,6 +33,11 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["reuleauxcoder"]
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
 

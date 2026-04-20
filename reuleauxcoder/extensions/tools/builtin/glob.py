@@ -37,6 +37,14 @@ class GlobTool(Tool):
     def execute(self, pattern: str, path: str = ".") -> str:
         return self.run_backend(pattern=pattern, path=path)
 
+    @backend_handler("remote_relay")
+    def _execute_remote(self, pattern: str, path: str = ".") -> str:
+        if not isinstance(pattern, str) or not pattern:
+            return "Error: pattern must be a non-empty string"
+        if not isinstance(path, str) or not path:
+            return "Error: path must be a non-empty string"
+        return self.backend.exec_tool("glob", {"pattern": pattern, "path": path})
+
     @backend_handler("local")
     def _execute_local(self, pattern: str, path: str = ".") -> str:
         try:

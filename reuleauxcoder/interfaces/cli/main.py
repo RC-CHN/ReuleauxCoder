@@ -7,6 +7,7 @@ This module handles CLI-specific concerns:
 """
 
 import sys
+import time
 from pathlib import Path
 
 from reuleauxcoder.interfaces.cli.approval import CLIApprovalProvider
@@ -34,6 +35,7 @@ def main():
         model=args.model,
         resume_session_id=args.resume,
         auto_resume_latest=True,
+        server_mode=args.server,
     )
 
     # Initialize application using shared entrypoint
@@ -43,15 +45,28 @@ def main():
     ui_registry = UIRegistry([create_cli_registration(ctx.ui_bus)])
     cli_ui = ui_registry.require("cli")
 
+    renderer = CLIRenderer(view_registry=cli_ui.view_registry)
+    ctx.ui_bus.subscribe(renderer.on_ui_event)
+
+    if args.server:
+        ctx.ui_bus.info("Remote relay host mode active. Press Ctrl+C to stop.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            renderer.close()
+            runner.cleanup()
+        return
+
     ctx.ui_interactor = cli_ui.interactor
     setattr(ctx.agent, "ui_interactor", cli_ui.interactor)
     ctx.agent.approval_provider = CLIApprovalProvider(cli_ui.interactor)
 
     # Add CLI renderer and bridge agent events onto the UI bus
-    renderer = CLIRenderer(view_registry=cli_ui.view_registry)
     bridge = AgentEventBridge(ctx.ui_bus)
     ctx.agent.add_event_handler(bridge.on_agent_event)
-    ctx.ui_bus.subscribe(renderer.on_ui_event)
 
     # Check for API key
     if not ctx.config.api_key:

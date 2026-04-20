@@ -162,6 +162,21 @@ class ContextConfig:
 
 
 @dataclass
+class RemoteExecConfig:
+    """Remote execution relay configuration."""
+
+    enabled: bool = False
+    host_mode: bool = False
+    relay_bind: str = "127.0.0.1:8765"
+    bootstrap_token_ttl_sec: int = 300
+    peer_token_ttl_sec: int = 3600
+    heartbeat_interval_sec: int = 10
+    heartbeat_timeout_sec: int = 30
+    default_tool_timeout_sec: int = 30
+    shell_timeout_sec: int = 120
+
+
+@dataclass
 class Config:
     """Main configuration model for ReuleauxCoder."""
 
@@ -208,6 +223,9 @@ class Config:
 
     # Context compression settings
     context: ContextConfig = field(default_factory=ContextConfig)
+
+    # Remote execution settings
+    remote_exec: RemoteExecConfig = field(default_factory=RemoteExecConfig)
 
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""
