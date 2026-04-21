@@ -368,6 +368,121 @@ class TestRemoteRelayHTTPService:
             service.stop()
             relay.stop()
 
+    def test_chat_endpoint_allows_concurrent_requests_across_peers(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+
+        def chat_handler(peer_id: str, prompt: str) -> ChatResponse:
+            time.sleep(0.3)
+            return ChatResponse(response=f"{peer_id}:{prompt}")
+
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            chat_handler=chat_handler,
+        )
+        service.start()
+        try:
+            _, register_a = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {"bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60), "cwd": "/tmp/a"},
+            )
+            _, register_b = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {"bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60), "cwd": "/tmp/b"},
+            )
+
+            token_a = register_a["payload"]["peer_token"]
+            token_b = register_b["payload"]["peer_token"]
+            results: dict[str, dict] = {}
+
+            def run_chat(label: str, token: str) -> None:
+                _, body = _json_request(
+                    "POST",
+                    f"{service.base_url}/remote/chat",
+                    {"peer_token": token, "prompt": label},
+                )
+                results[label] = body
+
+            started = time.time()
+            t1 = threading.Thread(target=run_chat, args=("p1", token_a))
+            t2 = threading.Thread(target=run_chat, args=("p2", token_b))
+            t1.start()
+            t2.start()
+            t1.join(timeout=3)
+            t2.join(timeout=3)
+            elapsed = time.time() - started
+
+            assert "p1" in results and "p2" in results
+            assert elapsed < 0.55
+        finally:
+            service.stop()
+            relay.stop()
+
+    def test_disconnect_aborts_active_stream_chat_session(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+
+        def stream_chat_handler(_peer_id: str, _prompt: str, session) -> None:
+            # Wait long enough so test can force disconnect first.
+            session.wait_approval("hold", timeout_sec=2)
+
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            stream_chat_handler=stream_chat_handler,
+        )
+        service.start()
+        try:
+            _, register_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/peer",
+                },
+            )
+            peer_token = register_body["payload"]["peer_token"]
+
+            _, start_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/start",
+                {
+                    "peer_token": peer_token,
+                    "prompt": "long-run",
+                },
+            )
+            chat_id = start_body["chat_id"]
+
+            status, _ = _json_request(
+                "POST",
+                f"{service.base_url}/remote/disconnect",
+                {"peer_token": peer_token, "reason": "test_disconnect"},
+            )
+            assert status == 200
+
+            _, stream_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/stream",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": chat_id,
+                    "cursor": 0,
+                    "timeout_sec": 1,
+                },
+            )
+            assert stream_body["done"] is True
+            event_types = [event["type"] for event in stream_body["events"]]
+            assert "chat_start" in event_types
+            assert "error" in event_types
+        finally:
+            service.stop()
+            relay.stop()
+
     def test_default_artifact_provider_builds_real_agent_binary(self) -> None:
         provider = _default_create_remote_artifact_provider(UIEventBus())
         try:

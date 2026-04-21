@@ -45,6 +45,8 @@ class _RemoteChatSession:
     running: bool = False
     seq_next: int = 1
     approval_waiters: dict[str, dict[str, Any]] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
     cond: threading.Condition = field(default_factory=threading.Condition)
 
     def append_event(self, event_type: str, payload: dict[str, Any] | None = None) -> int:
@@ -81,6 +83,13 @@ class _RemoteChatSession:
         with self.cond:
             self.running = False
             self.done = True
+            self.finished_at = time.time()
+            for waiter in self.approval_waiters.values():
+                if waiter.get("done"):
+                    continue
+                waiter["done"] = True
+                waiter["decision"] = "deny_once"
+                waiter["reason"] = "chat_closed"
             self.cond.notify_all()
 
     def register_approval(self, approval_id: str) -> None:
@@ -112,7 +121,18 @@ class _RemoteChatSession:
                 self.cond.wait(timeout=remaining)
             decision = str(waiter.get("decision", "deny_once"))
             reason = waiter.get("reason")
+            self.approval_waiters.pop(approval_id, None)
             return decision, reason if isinstance(reason, str) else None
+
+    def cancel_pending_approvals(self, reason: str) -> None:
+        with self.cond:
+            for waiter in self.approval_waiters.values():
+                if waiter.get("done"):
+                    continue
+                waiter["done"] = True
+                waiter["decision"] = "deny_once"
+                waiter["reason"] = reason
+            self.cond.notify_all()
 
 
 class RemoteRelayHTTPService:
@@ -138,9 +158,11 @@ class RemoteRelayHTTPService:
         self._thread: threading.Thread | None = None
         self._queues: dict[str, queue.Queue[RelayEnvelope]] = {}
         self._queues_lock = threading.Lock()
-        self._chat_lock = threading.Lock()
+        self._peer_chat_locks: dict[str, threading.Lock] = {}
+        self._peer_chat_locks_lock = threading.Lock()
         self._chat_sessions: dict[str, _RemoteChatSession] = {}
         self._chat_sessions_lock = threading.Lock()
+        self._chat_session_ttl_sec = 300.0
         self.relay_server._send_fn = self._enqueue_outbound
 
     @property
@@ -187,14 +209,39 @@ class RemoteRelayHTTPService:
         self.stream_chat_handler = handler
 
     def _create_chat_session(self, peer_id: str) -> _RemoteChatSession:
+        self._gc_chat_sessions()
         session = _RemoteChatSession(chat_id=str(uuid.uuid4()), peer_id=peer_id)
         with self._chat_sessions_lock:
             self._chat_sessions[session.chat_id] = session
         return session
 
+    def _gc_chat_sessions(self) -> None:
+        now = time.time()
+        with self._chat_sessions_lock:
+            stale_ids = [
+                chat_id
+                for chat_id, session in self._chat_sessions.items()
+                if session.done and session.finished_at is not None and now - session.finished_at > self._chat_session_ttl_sec
+            ]
+            for chat_id in stale_ids:
+                self._chat_sessions.pop(chat_id, None)
+
     def _get_chat_session(self, chat_id: str) -> _RemoteChatSession | None:
+        self._gc_chat_sessions()
         with self._chat_sessions_lock:
             return self._chat_sessions.get(chat_id)
+
+    def _get_peer_chat_lock(self, peer_id: str) -> threading.Lock:
+        with self._peer_chat_locks_lock:
+            return self._peer_chat_locks.setdefault(peer_id, threading.Lock())
+
+    def _abort_peer_chat_sessions(self, peer_id: str, reason: str) -> None:
+        with self._chat_sessions_lock:
+            peer_sessions = [session for session in self._chat_sessions.values() if session.peer_id == peer_id and not session.done]
+        for session in peer_sessions:
+            session.cancel_pending_approvals(reason)
+            session.append_event("error", {"message": reason})
+            session.mark_done()
 
     def _enqueue_outbound(self, peer_id: str, envelope: RelayEnvelope) -> None:
         with self._queues_lock:
@@ -419,7 +466,7 @@ class RemoteRelayHTTPService:
                     )
                     return
 
-                with service._chat_lock:
+                with service._get_peer_chat_lock(peer_id):
                     try:
                         response = service.chat_handler(peer_id, req.prompt)
                     except Exception as exc:
@@ -451,7 +498,7 @@ class RemoteRelayHTTPService:
                 session.mark_running()
 
                 def _run_chat() -> None:
-                    with service._chat_lock:
+                    with service._get_peer_chat_lock(peer_id):
                         try:
                             service.stream_chat_handler(peer_id, req.prompt, session)
                         except Exception as exc:
@@ -521,6 +568,7 @@ class RemoteRelayHTTPService:
                     self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
                     return
                 notice = DisconnectNotice(reason=payload.get("reason", "peer_initiated"))
+                service._abort_peer_chat_sessions(peer_id, f"peer_disconnected: {notice.reason}")
                 service.relay_server.handle_inbound(
                     peer_id,
                     RelayEnvelope(type="disconnect", peer_id=peer_id, payload=notice.to_dict()),

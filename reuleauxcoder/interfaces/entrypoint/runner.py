@@ -427,8 +427,6 @@ class AppRunner:
         sessions_dir = Path(config.session_dir) if config and getattr(config, "session_dir", None) else None
         skills_service = getattr(agent, "skills_service", None)
         session_store = self.dependencies.create_session_store(sessions_dir)
-        peer_session_ids: dict[str, str] = {}
-        active_peer_fingerprint: str | None = None
 
         def _peer_fingerprint(peer_id: str) -> str:
             peer = relay_server.registry.get(peer_id)
@@ -440,118 +438,92 @@ class AppRunner:
                     machine_key = str(host_info.get("hostname") or host_info.get("machine_id") or peer_id)
             return f"remote:{machine_key}:{workspace_root or '.'}"
 
-        def _save_session_for_fingerprint(fingerprint: str) -> str | None:
+        def _create_peer_agent(peer_id: str, remote_stream_handler: Callable[[str, Any], None] | None = None) -> Agent:
             if config is None:
-                return None
-            if not getattr(agent, "messages", None):
-                return getattr(agent, "current_session_id", None)
-            sid = session_store.save(
-                agent.messages,
-                getattr(agent.llm, "model", config.model),
-                getattr(agent, "current_session_id", None),
-                total_prompt_tokens=agent.state.total_prompt_tokens,
-                total_completion_tokens=agent.state.total_completion_tokens,
-                active_mode=getattr(agent, "active_mode", None),
-                runtime_state=build_session_runtime_state(config, agent),
-                fingerprint=fingerprint,
-            )
-            setattr(agent, "current_session_id", sid)
-            return sid
+                return agent
 
-        def _activate_peer_session(peer_id: str) -> None:
-            nonlocal active_peer_fingerprint
-            if config is None:
-                return
+            peer_llm = self.dependencies.create_llm(config)
+            peer_llm.ui_bus = ui_bus
+            peer_backend = RemoteRelayToolBackend(relay_server=relay_server, ui_bus=ui_bus)
+            peer_tools = self.dependencies.load_tools(peer_backend)
+            peer_agent = self.dependencies.create_agent(peer_llm, peer_tools, config)
+            setattr(peer_agent, "runtime_config", config)
+            setattr(peer_agent, "skills_service", skills_service)
+            setattr(peer_agent, "skills_catalog", getattr(agent, "skills_catalog", ""))
+            self._register_hooks(peer_agent, config)
+            self._wire_agent_tool_parent(peer_agent)
 
-            fingerprint = _peer_fingerprint(peer_id)
-            if active_peer_fingerprint != fingerprint:
-                if active_peer_fingerprint and getattr(agent, "messages", None):
-                    _save_session_for_fingerprint(active_peer_fingerprint)
-                latest = session_store.get_latest(fingerprint=fingerprint)
-                if latest:
-                    loaded = session_store.load(latest.id)
-                    if loaded is not None:
-                        apply_session_runtime_state(loaded, config, agent)
-                        setattr(agent, "current_session_id", latest.id)
-                    else:
-                        agent.reset()
-                        restore_config_runtime_defaults(config, agent)
-                        setattr(agent, "current_session_id", session_store.generate_session_id())
-                else:
-                    agent.reset()
-                    restore_config_runtime_defaults(config, agent)
-                    setattr(agent, "current_session_id", session_store.generate_session_id())
-
-            active_peer_fingerprint = fingerprint
-            setattr(agent, "session_fingerprint", fingerprint)
-            current_id = getattr(agent, "current_session_id", None)
-            if current_id:
-                peer_session_ids[peer_id] = current_id
-
-        def _bind_peer_context(
-            peer_id: str,
-            remote_stream_handler: Callable[[str, Any], None] | None = None,
-        ) -> tuple[list[tuple[ExecutionContext, str | None, object | None]], str | None]:
-            bound_contexts: list[tuple[ExecutionContext, str | None, object | None]] = []
             peer = relay_server.registry.get(peer_id)
             workspace_root = peer.workspace_root if peer is not None else None
-            for tool in agent.tools:
+            for tool in peer_agent.tools:
                 backend = getattr(tool, "backend", None)
                 if getattr(backend, "backend_id", None) != "remote_relay":
                     continue
                 context = getattr(backend, "context", None)
                 if not isinstance(context, ExecutionContext):
                     continue
-                bound_contexts.append(
-                    (context, context.peer_id, getattr(context, "remote_stream_handler", None))
-                )
                 context.peer_id = peer_id
                 context.remote_stream_handler = remote_stream_handler
                 if workspace_root:
                     context.workspace_root = workspace_root
-            previous_fingerprint = getattr(agent, "session_fingerprint", None)
-            setattr(agent, "session_fingerprint", _peer_fingerprint(peer_id))
-            return bound_contexts, previous_fingerprint
 
-        def _restore_peer_context(
-            bound_contexts: list[tuple[ExecutionContext, str | None, object | None]],
-            previous_fingerprint: str | None,
-        ) -> None:
-            for context, prev_peer_id, prev_stream_handler in bound_contexts:
-                context.peer_id = prev_peer_id
-                context.remote_stream_handler = prev_stream_handler
-            setattr(agent, "session_fingerprint", previous_fingerprint)
+            fingerprint = _peer_fingerprint(peer_id)
+            setattr(peer_agent, "session_fingerprint", fingerprint)
+
+            latest = session_store.get_latest(fingerprint=fingerprint)
+            if latest:
+                loaded = session_store.load(latest.id)
+                if loaded is not None:
+                    apply_session_runtime_state(loaded, config, peer_agent)
+                    setattr(peer_agent, "current_session_id", latest.id)
+                    return peer_agent
+
+            restore_config_runtime_defaults(config, peer_agent)
+            setattr(peer_agent, "current_session_id", session_store.generate_session_id())
+            return peer_agent
+
+        def _save_peer_session(peer_agent: Agent, peer_id: str) -> None:
+            if config is None or not getattr(peer_agent, "messages", None):
+                return
+            sid = session_store.save(
+                peer_agent.messages,
+                getattr(peer_agent.llm, "model", config.model),
+                getattr(peer_agent, "current_session_id", None),
+                total_prompt_tokens=peer_agent.state.total_prompt_tokens,
+                total_completion_tokens=peer_agent.state.total_completion_tokens,
+                active_mode=getattr(peer_agent, "active_mode", None),
+                runtime_state=build_session_runtime_state(config, peer_agent),
+                fingerprint=_peer_fingerprint(peer_id),
+            )
+            setattr(peer_agent, "current_session_id", sid)
 
         def _chat(peer_id: str, prompt: str) -> ChatResponse:
-            _activate_peer_session(peer_id)
-            bound_contexts, previous_fingerprint = _bind_peer_context(peer_id)
+            peer_agent = _create_peer_agent(peer_id)
             try:
-                response = agent.chat(prompt)
-                peer_session_ids[peer_id] = getattr(agent, "current_session_id", None) or ""
+                response = peer_agent.chat(prompt)
+                _save_peer_session(peer_agent, peer_id)
                 return ChatResponse(response=response)
             except Exception as exc:
+                _save_peer_session(peer_agent, peer_id)
                 return ChatResponse(response="", error=str(exc))
-            finally:
-                _restore_peer_context(bound_contexts, previous_fingerprint)
 
         def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
-            _activate_peer_session(peer_id)
+            peer_agent = _create_peer_agent(peer_id)
+
             if prompt.strip().startswith("/") and config is not None:
                 command_bus = UIEventBus()
                 command_result = handle_command(
                     prompt.strip(),
-                    agent,
+                    peer_agent,
                     config,
-                    getattr(agent, "current_session_id", None),
+                    getattr(peer_agent, "current_session_id", None),
                     command_bus,
                     CLI_PROFILE,
                     sessions_dir,
                     skills_service,
                 )
                 if command_result["action"] != "chat":
-                    setattr(agent, "current_session_id", command_result["session_id"])
-                    if command_result["session_id"]:
-                        peer_session_ids[peer_id] = command_result["session_id"]
+                    setattr(peer_agent, "current_session_id", command_result["session_id"])
 
                     command_console = Console(record=True, force_terminal=True, color_system="truecolor")
                     command_renderer = CLIRenderer(console_override=command_console)
@@ -573,6 +545,7 @@ class AppRunner:
                                 "content": "Exit command received. Use Ctrl+C to terminate remote peer.\n",
                             },
                         )
+                    _save_peer_session(peer_agent, peer_id)
                     remote_session.append_event("chat_end", {"response": ""})
                     return
 
@@ -680,25 +653,25 @@ class AppRunner:
                 renderer.on_event(event)
                 _flush_output()
 
-            previous_approval = agent.approval_provider
-            bound_contexts, previous_fingerprint = _bind_peer_context(peer_id, _on_remote_stream)
-            agent.add_event_handler(_on_agent_event)
-            agent.approval_provider = _RemoteApprovalProvider()
+            previous_approval = peer_agent.approval_provider
+            peer_agent.add_event_handler(_on_agent_event)
+            peer_agent.approval_provider = _RemoteApprovalProvider()
             try:
-                result = agent.chat(prompt)
+                result = peer_agent.chat(prompt)
                 _flush_output()
+                _save_peer_session(peer_agent, peer_id)
                 remote_session.append_event("chat_end", {"response": result})
             except Exception as exc:
                 _flush_output()
+                _save_peer_session(peer_agent, peer_id)
                 remote_session.append_event("error", {"message": str(exc)})
             finally:
-                agent.approval_provider = previous_approval
+                peer_agent.approval_provider = previous_approval
                 try:
-                    agent._event_handlers.remove(_on_agent_event)
+                    peer_agent._event_handlers.remove(_on_agent_event)
                 except ValueError:
                     pass
                 renderer.close()
-                _restore_peer_context(bound_contexts, previous_fingerprint)
 
         self._relay_http_service.set_chat_handler(_chat)
         self._relay_http_service.set_stream_chat_handler(_stream_chat)
