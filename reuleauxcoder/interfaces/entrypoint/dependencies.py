@@ -150,6 +150,8 @@ def _default_create_remote_http_service(
         bind=config.remote_exec.relay_bind,
         ui_bus=ui_bus,
         artifact_provider=_default_create_remote_artifact_provider(ui_bus),
+        bootstrap_access_secret=config.remote_exec.bootstrap_access_secret,
+        bootstrap_token_ttl_sec=config.remote_exec.bootstrap_token_ttl_sec,
     )
 
 

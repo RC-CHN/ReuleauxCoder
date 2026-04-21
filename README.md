@@ -42,11 +42,34 @@ uv run rcoder
 
 ## Remote Bootstrap (Host/Peer)
 
-After starting host mode on machine A with `rcoder --server`, you can bootstrap a peer on machine B with:
+Configure remote relay in `.rcoder/config.yaml` on machine A:
+
+```yaml
+remote_exec:
+  enabled: true
+  host_mode: true
+  relay_bind: 127.0.0.1:8765
+  bootstrap_access_secret: <long-random-secret>
+  bootstrap_token_ttl_sec: 120
+  peer_token_ttl_sec: 3600
+```
+
+Then start host mode with:
 
 ```bash
-curl -fsSL http://<A_IP>:<port>/remote/bootstrap.sh | sh
+rcoder --server
 ```
+
+> Note: `--server` is still required. It enables server mode, but the relay now listens exactly on the configured `relay_bind` address.
+
+After that, you can bootstrap a peer on machine B with:
+
+```bash
+curl -fsSL https://<HOST>/remote/bootstrap.sh \
+  -H "X-RC-Bootstrap-Secret: $RC_BOOTSTRAP_SECRET" | sh
+```
+
+The bootstrap access secret is checked over HTTPS before the server issues a short-lived one-time bootstrap token embedded into the returned script.
 
 > Note: the bootstrap script now includes TTY fallback handling. Even when executed via a pipe (`curl | sh`), it will try to attach interactive mode via `/dev/tty`; if no TTY is available, it automatically falls back to non-interactive mode and keeps the peer online.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
+import secrets
 import threading
 import time
 import uuid
@@ -147,6 +148,8 @@ class RemoteRelayHTTPService:
         artifact_provider: callable | None = None,
         chat_handler: Callable[[str, str], ChatResponse] | None = None,
         stream_chat_handler: Callable[[str, str, _RemoteChatSession], None] | None = None,
+        bootstrap_access_secret: str = "",
+        bootstrap_token_ttl_sec: int = 300,
     ) -> None:
         self.relay_server = relay_server
         self.bind = bind
@@ -154,6 +157,8 @@ class RemoteRelayHTTPService:
         self.artifact_provider = artifact_provider
         self.chat_handler = chat_handler
         self.stream_chat_handler = stream_chat_handler
+        self.bootstrap_access_secret = bootstrap_access_secret
+        self.bootstrap_token_ttl_sec = bootstrap_token_ttl_sec
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._queues: dict[str, queue.Queue[RelayEnvelope]] = {}
@@ -330,9 +335,16 @@ class RemoteRelayHTTPService:
                 self.wfile.write(data)
 
             def _handle_bootstrap(self, parsed) -> None:
-                qs = parse_qs(parsed.query)
-                ttl_sec = int(qs.get("ttl_sec", ["300"])[0])
-                token = qs.get("token", [None])[0] or service.issue_bootstrap_token(ttl_sec=ttl_sec)
+                del parsed
+                configured_secret = service.bootstrap_access_secret
+                presented_secret = self.headers.get("X-RC-Bootstrap-Secret", "")
+                if not configured_secret:
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "bootstrap_disabled"})
+                    return
+                if not secrets.compare_digest(presented_secret, configured_secret):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "invalid_bootstrap_secret"})
+                    return
+                token = service.issue_bootstrap_token(ttl_sec=service.bootstrap_token_ttl_sec)
                 host_header = self.headers.get("Host")
                 forwarded_proto = self.headers.get("X-Forwarded-Proto", "http")
                 request_base_url = f"{forwarded_proto}://{host_header}" if host_header else service.base_url

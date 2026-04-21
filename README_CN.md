@@ -42,11 +42,34 @@ uv run rcoder
 
 ## 远端 Bootstrap（Host/Peer）
 
-当你在 A 机启动 `rcoder --server` 后，可以在 B 机用一条命令拉起 peer：
+先在 A 机的 `.rcoder/config.yaml` 中配置 remote relay：
+
+```yaml
+remote_exec:
+  enabled: true
+  host_mode: true
+  relay_bind: 127.0.0.1:8765
+  bootstrap_access_secret: <长随机字符串>
+  bootstrap_token_ttl_sec: 120
+  peer_token_ttl_sec: 3600
+```
+
+然后用下面命令启动 host 模式：
 
 ```bash
-curl -fsSL http://<A机IP>:<端口>/remote/bootstrap.sh | sh
+rcoder --server
 ```
+
+> 注意：`--server` 仍然是必须的。它会开启 server mode，但 relay 实际监听地址会严格按 `relay_bind` 配置生效。
+
+之后可以在 B 机通过一条命令拉起 peer：
+
+```bash
+curl -fsSL https://<HOST>/remote/bootstrap.sh \
+  -H "X-RC-Bootstrap-Secret: $RC_BOOTSTRAP_SECRET" | sh
+```
+
+服务端会先通过 HTTPS 校验 `Bootstrap Access Secret`，校验通过后才会签发一个短期、一次性的 bootstrap token，并嵌入返回的脚本中。
 
 > 注意：脚本已内置 TTY 兜底处理。即使通过 pipe 执行（`curl | sh`），也会优先尝试从 `/dev/tty` 进入 `--interactive`；若无可用 TTY，则自动降级为非交互模式并保持 peer 在线。
 

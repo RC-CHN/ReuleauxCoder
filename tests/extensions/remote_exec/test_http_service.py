@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -11,6 +12,13 @@ import time
 from pathlib import Path
 from urllib import request
 from urllib.error import HTTPError
+
+import pytest
+
+
+_URLOPEN = request.build_opener(request.ProxyHandler({})).open
+
+_GO_AVAILABLE = shutil.which("go") is not None
 
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse, CleanupResult, ExecToolResult
@@ -39,13 +47,14 @@ def _json_request(method: str, url: str, payload: dict | None = None) -> tuple[i
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = request.Request(url, data=data, headers=headers, method=method)
-    with request.urlopen(req, timeout=5) as resp:
+    with _URLOPEN(req, timeout=5) as resp:
         body = resp.read().decode("utf-8")
         return resp.status, json.loads(body) if body else {}
 
 
-def _text_request(url: str) -> tuple[int, str]:
-    with request.urlopen(url, timeout=5) as resp:
+def _text_request(url: str, headers: dict[str, str] | None = None) -> tuple[int, str]:
+    req = request.Request(url, headers=headers or {}, method="GET")
+    with _URLOPEN(req, timeout=5) as resp:
         return resp.status, resp.read().decode("utf-8")
 
 
@@ -83,16 +92,29 @@ class TestRemoteRelayHTTPService:
             )
             if (os_name, arch, name) == ("linux", "amd64", "rcoder-peer")
             else None,
+            bootstrap_access_secret="top-secret",
+            bootstrap_token_ttl_sec=60,
         )
         service.start()
         try:
-            status, script = _text_request(f"{service.base_url}/remote/bootstrap.sh")
+            try:
+                _text_request(f"{service.base_url}/remote/bootstrap.sh")
+                raise AssertionError("bootstrap should require secret")
+            except HTTPError as exc:
+                assert exc.code == 403
+                body = json.loads(exc.read().decode("utf-8"))
+                assert body["error"] == "invalid_bootstrap_secret"
+
+            status, script = _text_request(
+                f"{service.base_url}/remote/bootstrap.sh",
+                headers={"X-RC-Bootstrap-Secret": "top-secret"},
+            )
             assert status == 200
             assert "rcoder-peer" in script
             assert service.base_url in script
             assert "/remote/artifacts/{os}/{arch}/rcoder-peer" in script
 
-            with request.urlopen(
+            with _URLOPEN(
                 f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer", timeout=5
             ) as resp:
                 assert resp.status == 200
@@ -321,7 +343,7 @@ class TestRemoteRelayHTTPService:
                 method="POST",
             )
             try:
-                request.urlopen(req, timeout=5)
+                _URLOPEN(req, timeout=5)
                 assert False, "expected HTTPError"
             except HTTPError as exc:
                 assert exc.code == 403
@@ -577,7 +599,7 @@ class TestRemoteRelayHTTPService:
                 method="POST",
             )
             try:
-                request.urlopen(bad_chat_req, timeout=5)
+                _URLOPEN(bad_chat_req, timeout=5)
                 assert False, "expected HTTPError"
             except HTTPError as exc:
                 assert exc.code == 404
@@ -598,7 +620,7 @@ class TestRemoteRelayHTTPService:
                 method="POST",
             )
             try:
-                request.urlopen(bad_approval_req, timeout=5)
+                _URLOPEN(bad_approval_req, timeout=5)
                 assert False, "expected HTTPError"
             except HTTPError as exc:
                 assert exc.code == 404
@@ -608,6 +630,7 @@ class TestRemoteRelayHTTPService:
             service.stop()
             relay.stop()
 
+    @pytest.mark.skipif(not _GO_AVAILABLE, reason="go toolchain is not installed")
     def test_default_artifact_provider_builds_real_agent_binary(self) -> None:
         provider = _default_create_remote_artifact_provider(UIEventBus())
         try:
@@ -618,6 +641,7 @@ class TestRemoteRelayHTTPService:
         finally:
             _cleanup_provider_build_dir(provider)
 
+    @pytest.mark.skipif(not _GO_AVAILABLE, reason="go toolchain is not installed")
     def test_go_agent_end_to_end_with_http_host(self, tmp_path: Path) -> None:
         relay = RelayServer()
         relay.start()

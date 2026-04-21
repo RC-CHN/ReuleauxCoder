@@ -305,6 +305,7 @@ class ConfigLoader:
                 enabled=bool(remote_exec_config.get("enabled", False)),
                 host_mode=bool(remote_exec_config.get("host_mode", False)),
                 relay_bind=str(remote_exec_config.get("relay_bind", "127.0.0.1:8765")),
+                bootstrap_access_secret=str(remote_exec_config.get("bootstrap_access_secret", "")),
                 bootstrap_token_ttl_sec=int(remote_exec_config.get("bootstrap_token_ttl_sec", 300)),
                 peer_token_ttl_sec=int(remote_exec_config.get("peer_token_ttl_sec", 3600)),
                 heartbeat_interval_sec=int(remote_exec_config.get("heartbeat_interval_sec", 10)),

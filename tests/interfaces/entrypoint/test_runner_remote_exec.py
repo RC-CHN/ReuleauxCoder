@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from urllib import request
-from urllib.request import urlopen
+
+
+_URLOPEN = request.build_opener(request.ProxyHandler({})).open
 
 from reuleauxcoder.domain.config.models import Config, ContextConfig, ModeConfig, RemoteExecConfig
 from reuleauxcoder.domain.hooks.registry import HookRegistry
@@ -37,7 +39,7 @@ def _json_request(method: str, url: str, payload: dict | None = None) -> tuple[i
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = request.Request(url, data=data, headers=headers, method=method)
-    with request.urlopen(req, timeout=5) as resp:
+    with _URLOPEN(req, timeout=5) as resp:
         body = resp.read().decode("utf-8")
         return resp.status, json.loads(body) if body else {}
 
@@ -268,9 +270,15 @@ class TestRunnerRemoteExec:
 
     def test_server_mode_smoke_bootstrap_endpoint(self, tmp_path: Path) -> None:
         relay_bind = "127.0.0.1:18765"
+        bootstrap_secret = "runner-secret"
         config = Config(
             api_key="key",
-            remote_exec=RemoteExecConfig(enabled=True, host_mode=True, relay_bind=relay_bind),
+            remote_exec=RemoteExecConfig(
+                enabled=True,
+                host_mode=True,
+                relay_bind=relay_bind,
+                bootstrap_access_secret=bootstrap_secret,
+            ),
         )
         runner = AppRunner(
             options=AppOptions(server_mode=True),
@@ -284,7 +292,12 @@ class TestRunnerRemoteExec:
             assert runner._relay_http_service is not None
             assert isinstance(runner._relay_http_service, RemoteRelayHTTPService)
 
-            with urlopen(f"http://{relay_bind}/remote/bootstrap.sh", timeout=5) as resp:
+            req = request.Request(
+                f"http://{relay_bind}/remote/bootstrap.sh",
+                headers={"X-RC-Bootstrap-Secret": bootstrap_secret},
+                method="GET",
+            )
+            with _URLOPEN(req, timeout=5) as resp:
                 body = resp.read().decode("utf-8")
                 content_type = resp.headers.get_content_type()
 

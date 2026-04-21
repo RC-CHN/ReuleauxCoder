@@ -84,6 +84,21 @@ approval:
 #   auto_save: true
 #   # dir: ".rcoder/sessions"
 #
+# Optional remote relay settings.
+# Use `rcoder --server` to start host mode; the service will listen exactly on
+# the configured relay_bind address.
+# remote_exec:
+#   enabled: true
+#   host_mode: true
+#   relay_bind: "127.0.0.1:8765"
+#   bootstrap_access_secret: "replace-with-a-long-random-secret"
+#   bootstrap_token_ttl_sec: 120
+#   peer_token_ttl_sec: 3600
+#   heartbeat_interval_sec: 10
+#   heartbeat_timeout_sec: 30
+#   default_tool_timeout_sec: 30
+#   shell_timeout_sec: 120
+#
 # cli:
 #   # history_file: "~/.rcoder/history"
 

@@ -66,9 +66,6 @@ class AppRunner:
         if self.options.server_mode:
             config.remote_exec.enabled = True
             config.remote_exec.host_mode = True
-            host, sep, port = config.remote_exec.relay_bind.rpartition(":")
-            if sep and host and port:
-                config.remote_exec.relay_bind = f"0.0.0.0:{port}"
         ui_bus = self.dependencies.create_ui_bus()
         self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
