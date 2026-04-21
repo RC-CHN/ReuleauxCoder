@@ -39,6 +39,7 @@ from reuleauxcoder.domain.hooks import (
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
+from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend, ToolBackend
@@ -286,6 +287,7 @@ class AppRunner:
         ui_bus = self.dependencies.create_ui_bus()
         self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
+        self._bind_remote_chat_handler(agent)
         skills_service = self._init_skills(config, agent, ui_bus)
         mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
         current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
@@ -335,7 +337,7 @@ class AppRunner:
         tool_backend = self.dependencies.create_tool_backend(config, ui_bus)
         # If relay server was started, prefer remote backend when a peer is available
         if self._relay_server is not None:
-            tool_backend = RemoteRelayToolBackend(relay_server=self._relay_server)
+            tool_backend = RemoteRelayToolBackend(relay_server=self._relay_server, ui_bus=ui_bus)
         tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
         setattr(agent, "runtime_config", config)
@@ -396,6 +398,34 @@ class AppRunner:
             bind=getattr(config.remote_exec, "relay_bind", None),
             base_url=self._relay_http_service.base_url if self._relay_http_service else None,
         )
+
+    def _bind_remote_chat_handler(self, agent: Agent) -> None:
+        """Bind /remote/chat handler so interactive peer sessions can proxy host agent chat."""
+        if self._relay_http_service is None:
+            return
+
+        def _chat(peer_id: str, prompt: str) -> ChatResponse:
+            bound_contexts: list[tuple[ExecutionContext, str | None]] = []
+            for tool in agent.tools:
+                backend = getattr(tool, "backend", None)
+                if getattr(backend, "backend_id", None) != "remote_relay":
+                    continue
+                context = getattr(backend, "context", None)
+                if not isinstance(context, ExecutionContext):
+                    continue
+                bound_contexts.append((context, context.peer_id))
+                context.peer_id = peer_id
+
+            try:
+                response = agent.chat(prompt)
+                return ChatResponse(response=response)
+            except Exception as exc:
+                return ChatResponse(response="", error=str(exc))
+            finally:
+                for context, prev_peer_id in bound_contexts:
+                    context.peer_id = prev_peer_id
+
+        self._relay_http_service.set_chat_handler(_chat)
 
     def _register_hooks(self, agent: Agent, config: Config) -> None:
         """Register hooks discovered via decorator mechanism."""

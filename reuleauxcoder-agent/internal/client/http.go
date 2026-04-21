@@ -55,6 +55,14 @@ func (c *HTTPClient) Disconnect(ctx context.Context, req protocol.DisconnectRequ
 	return c.postJSON(ctx, "/remote/disconnect", req, nil)
 }
 
+func (c *HTTPClient) Chat(ctx context.Context, req protocol.ChatRequest) (protocol.ChatResponse, error) {
+	var resp protocol.ChatResponse
+	if err := c.postJSON(ctx, "/remote/chat", req, &resp); err != nil {
+		return protocol.ChatResponse{}, err
+	}
+	return resp, nil
+}
+
 func (c *HTTPClient) postJSON(ctx context.Context, path string, reqBody any, out any) error {
 	buf, err := json.Marshal(reqBody)
 	if err != nil {

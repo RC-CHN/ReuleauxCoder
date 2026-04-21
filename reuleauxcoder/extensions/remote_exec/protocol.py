@@ -117,6 +117,36 @@ class Heartbeat:
 
 
 # ---------------------------------------------------------------------------
+# Chat proxy (interactive peer -> host agent)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ChatRequest:
+    peer_token: str
+    prompt: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"peer_token": self.peer_token, "prompt": self.prompt}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ChatRequest":
+        return cls(peer_token=d["peer_token"], prompt=d["prompt"])
+
+
+@dataclass
+class ChatResponse:
+    response: str
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"response": self.response, "error": self.error}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ChatResponse":
+        return cls(response=d.get("response", ""), error=d.get("error"))
+
+
+# ---------------------------------------------------------------------------
 # Tool execution
 # ---------------------------------------------------------------------------
 

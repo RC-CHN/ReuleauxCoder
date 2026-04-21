@@ -27,6 +27,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterRequest,
     RegisterResponse,
     RelayEnvelope,
+    ToolStreamChunk,
 )
 
 
@@ -60,6 +61,7 @@ class RelayServer:
         self._thread: threading.Thread | None = None
         self._pending: dict[str, asyncio.Future] = {}
         self._pending_peer_ids: dict[str, str] = {}
+        self._stream_handlers: dict[str, Callable[[ToolStreamChunk], None]] = {}
         self._lock = threading.Lock()
         self._prune_task: asyncio.Task | None = None
         self._shutdown_event = threading.Event()
@@ -160,12 +162,24 @@ class RelayServer:
             if peer:
                 self._registry.update_heartbeat(peer)
 
+        elif msg_type == "tool_stream":
+            if req_id:
+                chunk = ToolStreamChunk.from_dict(payload)
+                with self._lock:
+                    handler = self._stream_handlers.get(req_id)
+                if handler is not None:
+                    try:
+                        handler(chunk)
+                    except Exception:
+                        pass
+
         elif msg_type == "tool_result":
             result = ExecToolResult.from_dict(payload)
             if req_id:
                 with self._lock:
                     fut = self._pending.pop(req_id, None)
                     self._pending_peer_ids.pop(req_id, None)
+                    self._stream_handlers.pop(req_id, None)
                 if fut is not None and not fut.done():
                     fut.set_result(result)
 
@@ -189,6 +203,7 @@ class RelayServer:
                 with self._lock:
                     fut = self._pending.pop(req_id, None)
                     self._pending_peer_ids.pop(req_id, None)
+                    self._stream_handlers.pop(req_id, None)
                 if fut is not None and not fut.done():
                     fut.set_exception(
                         PeerDisconnectedError(peer_id or "unknown")
@@ -205,6 +220,7 @@ class RelayServer:
         peer_id: str,
         request: ExecToolRequest,
         timeout_sec: int | None = None,
+        stream_handler: Callable[[ToolStreamChunk], None] | None = None,
     ) -> ExecToolResult:
         """Send a tool execution request to a peer and wait for the result."""
         if self._loop is None:
@@ -234,7 +250,13 @@ class RelayServer:
         )
 
         future = asyncio.run_coroutine_threadsafe(
-            self._send_and_wait(req_id, peer_id, envelope, effective_timeout),
+            self._send_and_wait(
+                req_id,
+                peer_id,
+                envelope,
+                effective_timeout,
+                stream_handler=stream_handler,
+            ),
             self._loop,
         )
         return future.result()
@@ -275,11 +297,14 @@ class RelayServer:
         peer_id: str,
         envelope: RelayEnvelope,
         timeout_sec: float,
+        stream_handler: Callable[[ToolStreamChunk], None] | None = None,
     ) -> Any:
         fut = self._loop.create_future()
         with self._lock:
             self._pending[req_id] = fut
             self._pending_peer_ids[req_id] = peer_id
+            if stream_handler is not None:
+                self._stream_handlers[req_id] = stream_handler
         try:
             self._send(peer_id, envelope)
             return await asyncio.wait_for(fut, timeout=timeout_sec)
@@ -289,6 +314,7 @@ class RelayServer:
             with self._lock:
                 self._pending.pop(req_id, None)
                 self._pending_peer_ids.pop(req_id, None)
+                self._stream_handlers.pop(req_id, None)
 
     def _send(self, peer_id: str, envelope: RelayEnvelope) -> None:
         if self._send_fn is not None:
@@ -308,6 +334,7 @@ class RelayServer:
             for req_id, _ in pending:
                 self._pending.pop(req_id, None)
                 self._pending_peer_ids.pop(req_id, None)
+                self._stream_handlers.pop(req_id, None)
         for _, fut in pending:
             if fut.done():
                 continue

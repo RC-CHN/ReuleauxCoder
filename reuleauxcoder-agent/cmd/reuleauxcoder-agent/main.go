@@ -17,6 +17,7 @@ func main() {
 		cwd            string
 		workspaceRoot  string
 		pollInterval   time.Duration
+		interactive    bool
 	)
 
 	flag.StringVar(&host, "host", "", "Remote relay host base URL")
@@ -24,6 +25,7 @@ func main() {
 	flag.StringVar(&cwd, "cwd", "", "Working directory for remote tool execution")
 	flag.StringVar(&workspaceRoot, "workspace-root", "", "Workspace root reported to host")
 	flag.DurationVar(&pollInterval, "poll-interval", 500*time.Millisecond, "Polling interval when no work is available")
+	flag.BoolVar(&interactive, "interactive", false, "Run interactive chat loop proxied through host")
 	flag.Parse()
 
 	if host == "" {
@@ -41,6 +43,7 @@ func main() {
 		CWD:            cwd,
 		WorkspaceRoot:  workspaceRoot,
 		PollInterval:   pollInterval,
+		Interactive:    interactive,
 	})
 	if err := r.Run(context.Background()); err != nil {
 		log.Printf("agent exited with error: %v", err)

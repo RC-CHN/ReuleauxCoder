@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
@@ -26,7 +28,11 @@ var skipDirs = map[string]struct{}{
 	"build":        {},
 }
 
-func Execute(req protocol.ExecToolRequest, currentCWD string) protocol.ExecToolResult {
+func Execute(
+	req protocol.ExecToolRequest,
+	currentCWD string,
+	onStream func(protocol.ToolStreamChunk),
+) protocol.ExecToolResult {
 	cwd := currentCWD
 	if req.CWD != nil && *req.CWD != "" {
 		cwd = *req.CWD
@@ -34,7 +40,7 @@ func Execute(req protocol.ExecToolRequest, currentCWD string) protocol.ExecToolR
 
 	switch req.ToolName {
 	case "shell":
-		return runShell(req.Args, cwd, req.TimeoutSec)
+		return runShell(req.Args, cwd, req.TimeoutSec, onStream)
 	case "read_file":
 		return readFile(req.Args, cwd)
 	case "write_file":
@@ -50,7 +56,12 @@ func Execute(req protocol.ExecToolRequest, currentCWD string) protocol.ExecToolR
 	}
 }
 
-func runShell(args map[string]any, cwd string, timeoutSec int) protocol.ExecToolResult {
+func runShell(
+	args map[string]any,
+	cwd string,
+	timeoutSec int,
+	onStream func(protocol.ToolStreamChunk),
+) protocol.ExecToolResult {
 	command, ok := args["command"].(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return errorResult("REMOTE_TOOL_ERROR", "shell command must be a non-empty string")
@@ -67,21 +78,64 @@ func runShell(args map[string]any, cwd string, timeoutSec int) protocol.ExecTool
 
 	cmd := exec.CommandContext(ctx, "sh", "-lc", command)
 	cmd.Dir = cwd
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return errorResult("REMOTE_TOOL_ERROR", err.Error())
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return errorResult("REMOTE_TOOL_ERROR", err.Error())
+	}
+
+	if err := cmd.Start(); err != nil {
+		return errorResult("REMOTE_TOOL_ERROR", err.Error())
+	}
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	readStream := func(r io.Reader, kind string, target *bytes.Buffer) {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := r.Read(buf)
+			if n > 0 {
+				chunk := string(buf[:n])
+				mu.Lock()
+				target.WriteString(chunk)
+				mu.Unlock()
+				if onStream != nil {
+					onStream(protocol.ToolStreamChunk{ChunkType: kind, Data: chunk})
+				}
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					return
+				}
+				return
+			}
+		}
+	}
+
+	wg.Add(2)
+	go readStream(stdoutPipe, "stdout", &stdoutBuf)
+	go readStream(stderrPipe, "stderr", &stderrBuf)
+
+	err = cmd.Wait()
+	wg.Wait()
+
 	if ctx.Err() == context.DeadlineExceeded {
 		return errorResult("REMOTE_TIMEOUT", fmt.Sprintf("Remote execution timed out after %ds", timeoutSec))
 	}
 
-	out := stdout.String()
-	if stderr.Len() > 0 {
+	out := stdoutBuf.String()
+	if stderrBuf.Len() > 0 {
 		if out != "" {
 			out += "\n"
 		}
-		out += "[stderr]\n" + stderr.String()
+		out += "[stderr]\n" + stderrBuf.String()
 	}
 	exitCode := 0
 	if err != nil {

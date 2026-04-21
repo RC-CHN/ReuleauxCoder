@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ type Config struct {
 	CWD            string
 	WorkspaceRoot  string
 	PollInterval   time.Duration
+	Interactive    bool
 }
 
 type Runner struct {
@@ -87,15 +90,39 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	go r.heartbeatLoop(childCtx, registerResp.PeerToken, heartbeatInterval)
 
+	if r.cfg.Interactive {
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- r.runPollLoop(childCtx, registerResp.PeerToken, cwd, pollInterval)
+		}()
+
+		if err := r.runInteractiveLoop(childCtx, registerResp.PeerToken); err != nil {
+			return err
+		}
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil && childCtx.Err() == nil {
+				return err
+			}
+		default:
+		}
+		return nil
+	}
+
+	return r.runPollLoop(childCtx, registerResp.PeerToken, cwd, pollInterval)
+}
+
+func (r *Runner) runPollLoop(ctx context.Context, peerToken, cwd string, pollInterval time.Duration) error {
 	for {
 		select {
-		case <-childCtx.Done():
+		case <-ctx.Done():
 			return nil
 		default:
 		}
 
-		pollCtx, cancelPoll := context.WithTimeout(childCtx, 30*time.Second)
-		env, err := r.client.Poll(pollCtx, protocol.PollRequest{PeerToken: registerResp.PeerToken})
+		pollCtx, cancelPoll := context.WithTimeout(ctx, 30*time.Second)
+		env, err := r.client.Poll(pollCtx, protocol.PollRequest{PeerToken: peerToken})
 		cancelPoll()
 		if err != nil {
 			return fmt.Errorf("poll failed: %w", err)
@@ -108,7 +135,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		case "exec_tool":
 			execReq, err := protocol.DecodeExecToolRequest(env.Payload)
 			if err != nil {
-				if sendErr := r.sendToolResult(childCtx, registerResp.PeerToken, env.RequestID, protocol.ExecToolResult{
+				if sendErr := r.sendToolResult(ctx, peerToken, env.RequestID, protocol.ExecToolResult{
 					OK:           false,
 					ErrorCode:    "REMOTE_TOOL_ERROR",
 					ErrorMessage: err.Error(),
@@ -117,18 +144,65 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 				continue
 			}
-			result := tools.Execute(execReq, cwd)
-			if sendErr := r.sendToolResult(childCtx, registerResp.PeerToken, env.RequestID, result); sendErr != nil {
+			result := tools.Execute(execReq, cwd, func(chunk protocol.ToolStreamChunk) {
+				if sendErr := r.sendToolStream(ctx, peerToken, env.RequestID, chunk); sendErr != nil {
+					log.Printf("stream send failed: %v", sendErr)
+				}
+			})
+			if sendErr := r.sendToolResult(ctx, peerToken, env.RequestID, result); sendErr != nil {
 				return sendErr
 			}
 		case "cleanup":
 			cleanup := protocol.CleanupResult{OK: true, RemovedItems: []string{}}
-			if err := r.sendCleanupResult(childCtx, registerResp.PeerToken, env.RequestID, cleanup); err != nil {
+			if err := r.sendCleanupResult(ctx, peerToken, env.RequestID, cleanup); err != nil {
 				return err
 			}
 		default:
 			log.Printf("ignoring unsupported envelope type=%s", env.Type)
 			time.Sleep(pollInterval)
+		}
+	}
+}
+
+func (r *Runner) runInteractiveLoop(ctx context.Context, peerToken string) error {
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		fmt.Print("You > ")
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return err
+			}
+			return nil
+		}
+		userInput := strings.TrimSpace(scanner.Text())
+		if userInput == "" {
+			continue
+		}
+		if userInput == "/quit" || userInput == "/exit" {
+			return nil
+		}
+
+		chatCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		resp, err := r.client.Chat(chatCtx, protocol.ChatRequest{
+			PeerToken: peerToken,
+			Prompt:    userInput,
+		})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("chat failed: %w", err)
+		}
+		if strings.TrimSpace(resp.Error) != "" {
+			fmt.Printf("Error: %s\n", resp.Error)
+			continue
+		}
+		if resp.Response != "" {
+			fmt.Printf("%s\n", resp.Response)
 		}
 	}
 }
@@ -162,6 +236,17 @@ func (r *Runner) sendToolResult(ctx context.Context, peerToken, requestID string
 		RequestID: requestID,
 		Type:      "tool_result",
 		Payload:   mapFromStruct(result),
+	})
+}
+
+func (r *Runner) sendToolStream(ctx context.Context, peerToken, requestID string, chunk protocol.ToolStreamChunk) error {
+	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return r.client.SendResult(sendCtx, protocol.ResultRequest{
+		PeerToken: peerToken,
+		RequestID: requestID,
+		Type:      "tool_stream",
+		Payload:   mapFromStruct(chunk),
 	})
 }
 

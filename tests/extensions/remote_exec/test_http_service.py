@@ -13,7 +13,7 @@ from urllib import request
 from urllib.error import HTTPError
 
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
-from reuleauxcoder.extensions.remote_exec.protocol import CleanupResult, ExecToolResult
+from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse, CleanupResult, ExecToolResult
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
@@ -327,6 +327,43 @@ class TestRemoteRelayHTTPService:
                 assert exc.code == 403
                 body = json.loads(exc.read().decode("utf-8"))
                 assert body["type"] == "register_rejected"
+        finally:
+            service.stop()
+            relay.stop()
+
+    def test_chat_endpoint_routes_to_host_chat_handler(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            chat_handler=lambda peer_id, prompt: ChatResponse(response=f"{peer_id}:{prompt}"),
+        )
+        service.start()
+        try:
+            _, register_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/peer",
+                },
+            )
+            peer_id = register_body["payload"]["peer_id"]
+            peer_token = register_body["payload"]["peer_token"]
+
+            status, chat_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat",
+                {
+                    "peer_token": peer_token,
+                    "prompt": "hello",
+                },
+            )
+            assert status == 200
+            assert chat_body["response"] == f"{peer_id}:hello"
+            assert chat_body.get("error") in (None, "")
         finally:
             service.stop()
             relay.stop()

@@ -58,6 +58,16 @@ type DisconnectRequest struct {
 	Reason    string `json:"reason"`
 }
 
+type ChatRequest struct {
+	PeerToken string `json:"peer_token"`
+	Prompt    string `json:"prompt"`
+}
+
+type ChatResponse struct {
+	Response string `json:"response"`
+	Error    string `json:"error,omitempty"`
+}
+
 type ExecToolRequest struct {
 	ToolName   string         `json:"tool_name"`
 	Args       map[string]any `json:"args"`
@@ -71,6 +81,12 @@ type ExecToolResult struct {
 	ErrorCode    string         `json:"error_code,omitempty"`
 	ErrorMessage string         `json:"error_message,omitempty"`
 	Meta         map[string]any `json:"meta,omitempty"`
+}
+
+type ToolStreamChunk struct {
+	ChunkType string         `json:"chunk_type"`
+	Data      string         `json:"data,omitempty"`
+	Meta      map[string]any `json:"meta,omitempty"`
 }
 
 type CleanupResult struct {

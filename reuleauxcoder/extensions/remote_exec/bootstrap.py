@@ -36,7 +36,7 @@ ARTIFACT_URL="${HOST}${ARTIFACT_PATH}"
 curl -fsSL "$ARTIFACT_URL" -o "$BIN"
 chmod +x "$BIN"
 
-exec "$BIN" --host "$HOST" --bootstrap-token "$TOKEN"
+exec "$BIN" --host "$HOST" --bootstrap-token "$TOKEN" --interactive
 """
 
 

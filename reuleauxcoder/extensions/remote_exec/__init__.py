@@ -18,6 +18,8 @@ from reuleauxcoder.extensions.remote_exec.errors import (
 )
 from reuleauxcoder.extensions.remote_exec.peer_registry import PeerInfo, PeerRegistry
 from reuleauxcoder.extensions.remote_exec.protocol import (
+    ChatRequest,
+    ChatResponse,
     CleanupRequest,
     CleanupResult,
     DisconnectNotice,
@@ -46,6 +48,8 @@ __all__ = [
     "RemoteToolError",
     "PeerInfo",
     "PeerRegistry",
+    "ChatRequest",
+    "ChatResponse",
     "CleanupRequest",
     "CleanupResult",
     "DisconnectNotice",

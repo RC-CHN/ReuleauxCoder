@@ -98,6 +98,10 @@ class CLIRenderer:
                 self.on_event(agent_event)
             return
 
+        if event.kind == UIEventKind.REMOTE and event.data.get("remote_stream"):
+            self._render_remote_stream(event)
+            return
+
         if event.kind == UIEventKind.VIEW:
             if self._render_view_event(event):
                 return
@@ -229,6 +233,14 @@ class CLIRenderer:
         """Render an error message."""
         if message:
             self.console.print(f"[red]{message}[/red]")
+
+    def _render_remote_stream(self, event: UIEvent) -> None:
+        """Render raw remote stream chunk directly to terminal."""
+        chunk = event.data.get("chunk")
+        if not isinstance(chunk, str) or not chunk:
+            return
+        self._close_active_content_block()
+        self.render_plain_text(chunk)
 
     def _render_notification(self, event: UIEvent) -> None:
         """Render a generic UI notification event."""
