@@ -57,8 +57,13 @@ class _NotificationBlock:
 class CLIRenderer:
     """Event-driven CLI renderer - subscribes to agent events."""
 
-    def __init__(self, view_registry: ViewRendererRegistry | None = None):
-        self.console = console
+    def __init__(
+        self,
+        view_registry: ViewRendererRegistry | None = None,
+        *,
+        console_override: Console | None = None,
+    ):
+        self.console = console_override or console
         self._active_content_block: _ContentBlock | None = None
         self._completed_blocks: list[_ContentBlock | _ToolCallBlock | _NotificationBlock] = []
         self.view_registry = view_registry or create_cli_view_registry()

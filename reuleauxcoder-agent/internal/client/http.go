@@ -63,6 +63,30 @@ func (c *HTTPClient) Chat(ctx context.Context, req protocol.ChatRequest) (protoc
 	return resp, nil
 }
 
+func (c *HTTPClient) ChatStart(ctx context.Context, req protocol.ChatStartRequest) (protocol.ChatStartResponse, error) {
+	var resp protocol.ChatStartResponse
+	if err := c.postJSON(ctx, "/remote/chat/start", req, &resp); err != nil {
+		return protocol.ChatStartResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *HTTPClient) ChatStream(ctx context.Context, req protocol.ChatStreamRequest) (protocol.ChatStreamResponse, error) {
+	var resp protocol.ChatStreamResponse
+	if err := c.postJSON(ctx, "/remote/chat/stream", req, &resp); err != nil {
+		return protocol.ChatStreamResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *HTTPClient) ApprovalReply(ctx context.Context, req protocol.ApprovalReplyRequest) (protocol.ApprovalReplyResponse, error) {
+	var resp protocol.ApprovalReplyResponse
+	if err := c.postJSON(ctx, "/remote/approval/reply", req, &resp); err != nil {
+		return protocol.ApprovalReplyResponse{}, err
+	}
+	return resp, nil
+}
+
 func (c *HTTPClient) postJSON(ctx context.Context, path string, reqBody any, out any) error {
 	buf, err := json.Marshal(reqBody)
 	if err != nil {

@@ -13,6 +13,7 @@ class ExecutionContext:
     cwd: str | None = None
     workspace_root: str | None = None
     execution_target: str = "local"
+    remote_stream_handler: object | None = None
 
 
 class ToolBackend:

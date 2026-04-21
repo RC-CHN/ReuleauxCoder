@@ -73,19 +73,28 @@ class RemoteRelayToolBackend(ToolBackend):
         return f"Error [{result.error_code or 'REMOTE_TOOL_ERROR'}]: {error_msg}"
 
     def _build_stream_handler(self, tool_name: str):
-        if tool_name != "shell" or self.ui_bus is None:
+        remote_stream_handler = getattr(self.context, "remote_stream_handler", None)
+        if tool_name != "shell" and remote_stream_handler is None:
+            return None
+        if tool_name == "shell" and self.ui_bus is None and not callable(remote_stream_handler):
             return None
 
         def _handle(chunk: ToolStreamChunk) -> None:
             if not chunk.data:
                 return
-            self.ui_bus.info(
-                "",
-                kind=UIEventKind.REMOTE,
-                remote_stream=True,
-                tool_name=tool_name,
-                stream=chunk.chunk_type,
-                chunk=chunk.data,
-            )
+            if callable(remote_stream_handler):
+                try:
+                    remote_stream_handler(tool_name, chunk)
+                except Exception:
+                    pass
+            if tool_name == "shell" and self.ui_bus is not None:
+                self.ui_bus.info(
+                    "",
+                    kind=UIEventKind.REMOTE,
+                    remote_stream=True,
+                    tool_name=tool_name,
+                    stream=chunk.chunk_type,
+                    chunk=chunk.data,
+                )
 
         return _handle

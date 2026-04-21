@@ -40,6 +40,16 @@ cp config.yaml.example .rcoder/config.yaml
 uv run rcoder
 ```
 
+## 远端 Bootstrap（Host/Peer）
+
+当你在 A 机启动 `rcoder --server` 后，可以在 B 机用一条命令拉起 peer：
+
+```bash
+curl -fsSL http://<A机IP>:<端口>/remote/bootstrap.sh | sh
+```
+
+> 注意：脚本已内置 TTY 兜底处理。即使通过 pipe 执行（`curl | sh`），也会优先尝试从 `/dev/tty` 进入 `--interactive`；若无可用 TTY，则自动降级为非交互模式并保持 peer 在线。
+
 ## 命令
 
 ```text

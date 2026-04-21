@@ -40,6 +40,16 @@ cp config.yaml.example .rcoder/config.yaml
 uv run rcoder
 ```
 
+## Remote Bootstrap (Host/Peer)
+
+After starting host mode on machine A with `rcoder --server`, you can bootstrap a peer on machine B with:
+
+```bash
+curl -fsSL http://<A_IP>:<port>/remote/bootstrap.sh | sh
+```
+
+> Note: the bootstrap script now includes TTY fallback handling. Even when executed via a pipe (`curl | sh`), it will try to attach interactive mode via `/dev/tty`; if no TTY is available, it automatically falls back to non-interactive mode and keeps the peer online.
+
 ## Commands
 
 ```text

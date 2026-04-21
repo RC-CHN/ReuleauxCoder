@@ -16,8 +16,14 @@ from urllib.parse import parse_qs, urlparse
 from reuleauxcoder.extensions.remote_exec.bootstrap import generate_bootstrap_script
 from reuleauxcoder.extensions.remote_exec.errors import RegisterRejectedError
 from reuleauxcoder.extensions.remote_exec.protocol import (
+    ApprovalReplyRequest,
+    ApprovalReplyResponse,
     ChatRequest,
     ChatResponse,
+    ChatStartRequest,
+    ChatStartResponse,
+    ChatStreamRequest,
+    ChatStreamResponse,
     CleanupResult,
     DisconnectNotice,
     ExecToolResult,
@@ -120,17 +126,21 @@ class RemoteRelayHTTPService:
         ui_bus: UIEventBus | None = None,
         artifact_provider: callable | None = None,
         chat_handler: Callable[[str, str], ChatResponse] | None = None,
+        stream_chat_handler: Callable[[str, str, _RemoteChatSession], None] | None = None,
     ) -> None:
         self.relay_server = relay_server
         self.bind = bind
         self.ui_bus = ui_bus
         self.artifact_provider = artifact_provider
         self.chat_handler = chat_handler
+        self.stream_chat_handler = stream_chat_handler
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._queues: dict[str, queue.Queue[RelayEnvelope]] = {}
         self._queues_lock = threading.Lock()
         self._chat_lock = threading.Lock()
+        self._chat_sessions: dict[str, _RemoteChatSession] = {}
+        self._chat_sessions_lock = threading.Lock()
         self.relay_server._send_fn = self._enqueue_outbound
 
     @property
@@ -168,8 +178,23 @@ class RemoteRelayHTTPService:
         return self.relay_server.issue_bootstrap_token(ttl_sec=ttl_sec)
 
     def set_chat_handler(self, handler: Callable[[str, str], ChatResponse] | None) -> None:
-        """Set host-side chat handler used by interactive remote peers."""
         self.chat_handler = handler
+
+    def set_stream_chat_handler(
+        self,
+        handler: Callable[[str, str, _RemoteChatSession], None] | None,
+    ) -> None:
+        self.stream_chat_handler = handler
+
+    def _create_chat_session(self, peer_id: str) -> _RemoteChatSession:
+        session = _RemoteChatSession(chat_id=str(uuid.uuid4()), peer_id=peer_id)
+        with self._chat_sessions_lock:
+            self._chat_sessions[session.chat_id] = session
+        return session
+
+    def _get_chat_session(self, chat_id: str) -> _RemoteChatSession | None:
+        with self._chat_sessions_lock:
+            return self._chat_sessions.get(chat_id)
 
     def _enqueue_outbound(self, peer_id: str, envelope: RelayEnvelope) -> None:
         with self._queues_lock:
@@ -220,6 +245,15 @@ class RemoteRelayHTTPService:
                     return
                 if parsed.path == "/remote/chat":
                     self._handle_chat()
+                    return
+                if parsed.path == "/remote/chat/start":
+                    self._handle_chat_start()
+                    return
+                if parsed.path == "/remote/chat/stream":
+                    self._handle_chat_stream()
+                    return
+                if parsed.path == "/remote/approval/reply":
+                    self._handle_approval_reply()
                     return
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
@@ -379,7 +413,10 @@ class RemoteRelayHTTPService:
                     return
 
                 if service.chat_handler is None:
-                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, ChatResponse(response="", error="chat_unavailable").to_dict())
+                    self._send_json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        ChatResponse(response="", error="chat_unavailable").to_dict(),
+                    )
                     return
 
                 with service._chat_lock:
@@ -389,6 +426,92 @@ class RemoteRelayHTTPService:
                         response = ChatResponse(response="", error=str(exc))
 
                 self._send_json(HTTPStatus.OK, response.to_dict())
+
+            def _handle_chat_start(self) -> None:
+                payload = self._read_json()
+                try:
+                    req = ChatStartRequest.from_dict(payload)
+                except Exception:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_start_request"})
+                    return
+
+                peer_id = service.relay_server.token_manager.verify_peer_token(req.peer_token)
+                if peer_id is None:
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    return
+                if service.stream_chat_handler is None:
+                    self._send_json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        ChatStartResponse(chat_id="", error="chat_stream_unavailable").to_dict(),
+                    )
+                    return
+
+                session = service._create_chat_session(peer_id)
+                session.append_event("chat_start", {"prompt": req.prompt})
+                session.mark_running()
+
+                def _run_chat() -> None:
+                    with service._chat_lock:
+                        try:
+                            service.stream_chat_handler(peer_id, req.prompt, session)
+                        except Exception as exc:
+                            session.append_event("error", {"message": str(exc)})
+                        finally:
+                            session.mark_done()
+
+                threading.Thread(target=_run_chat, daemon=True).start()
+                self._send_json(HTTPStatus.OK, ChatStartResponse(chat_id=session.chat_id).to_dict())
+
+            def _handle_chat_stream(self) -> None:
+                payload = self._read_json()
+                try:
+                    req = ChatStreamRequest.from_dict(payload)
+                except Exception:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_stream_request"})
+                    return
+
+                peer_id = service.relay_server.token_manager.verify_peer_token(req.peer_token)
+                if peer_id is None:
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    return
+                session = service._get_chat_session(req.chat_id)
+                if session is None or session.peer_id != peer_id:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "chat_not_found"})
+                    return
+
+                events, done, next_cursor = session.wait_events(req.cursor, req.timeout_sec)
+                self._send_json(
+                    HTTPStatus.OK,
+                    ChatStreamResponse(events=events, done=done, next_cursor=next_cursor).to_dict(),
+                )
+
+            def _handle_approval_reply(self) -> None:
+                payload = self._read_json()
+                try:
+                    req = ApprovalReplyRequest.from_dict(payload)
+                except Exception:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_approval_reply_request"})
+                    return
+
+                peer_id = service.relay_server.token_manager.verify_peer_token(req.peer_token)
+                if peer_id is None:
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    return
+                session = service._get_chat_session(req.chat_id)
+                if session is None or session.peer_id != peer_id:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        ApprovalReplyResponse(ok=False, error="chat_not_found").to_dict(),
+                    )
+                    return
+                ok = session.resolve_approval(req.approval_id, req.decision, req.reason)
+                if not ok:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        ApprovalReplyResponse(ok=False, error="approval_not_found").to_dict(),
+                    )
+                    return
+                self._send_json(HTTPStatus.OK, ApprovalReplyResponse(ok=True).to_dict())
 
             def _handle_disconnect(self) -> None:
                 payload = self._read_json()

@@ -36,7 +36,18 @@ ARTIFACT_URL="${HOST}${ARTIFACT_PATH}"
 curl -fsSL "$ARTIFACT_URL" -o "$BIN"
 chmod +x "$BIN"
 
-exec "$BIN" --host "$HOST" --bootstrap-token "$TOKEN" --interactive
+# Keep interactive mode working when script is executed via pipe, e.g.
+#   curl .../remote/bootstrap.sh | sh
+if [ -t 0 ]; then
+  exec "$BIN" --host "$HOST" --bootstrap-token "$TOKEN" --interactive
+fi
+
+if [ -r /dev/tty ]; then
+  exec "$BIN" --host "$HOST" --bootstrap-token "$TOKEN" --interactive </dev/tty
+fi
+
+echo "[bootstrap] no TTY available; starting peer in non-interactive mode" >&2
+exec "$BIN" --host "$HOST" --bootstrap-token "$TOKEN"
 """
 
 

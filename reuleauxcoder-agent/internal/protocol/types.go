@@ -68,6 +68,51 @@ type ChatResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
+type ChatStartRequest struct {
+	PeerToken   string `json:"peer_token"`
+	Prompt      string `json:"prompt"`
+	SessionHint string `json:"session_hint,omitempty"`
+}
+
+type ChatStartResponse struct {
+	ChatID string `json:"chat_id"`
+	Error  string `json:"error,omitempty"`
+}
+
+type ChatStreamRequest struct {
+	PeerToken  string  `json:"peer_token"`
+	ChatID     string  `json:"chat_id"`
+	Cursor     int     `json:"cursor"`
+	TimeoutSec float64 `json:"timeout_sec,omitempty"`
+}
+
+type ChatEvent struct {
+	ChatID  string         `json:"chat_id"`
+	Seq     int            `json:"seq"`
+	Type    string         `json:"type"`
+	Payload map[string]any `json:"payload,omitempty"`
+}
+
+type ChatStreamResponse struct {
+	Events     []ChatEvent `json:"events,omitempty"`
+	Done       bool        `json:"done"`
+	NextCursor int         `json:"next_cursor"`
+	Error      string      `json:"error,omitempty"`
+}
+
+type ApprovalReplyRequest struct {
+	PeerToken  string `json:"peer_token"`
+	ChatID     string `json:"chat_id"`
+	ApprovalID string `json:"approval_id"`
+	Decision   string `json:"decision"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+type ApprovalReplyResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
 type ExecToolRequest struct {
 	ToolName   string         `json:"tool_name"`
 	Args       map[string]any `json:"args"`

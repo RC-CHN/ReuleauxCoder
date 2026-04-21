@@ -12,20 +12,27 @@ and only need to implement their own UI-specific rendering.
 """
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 from typing import Any, Callable
+
+from rich.console import Console
 
 from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
+    build_session_runtime_state,
     get_session_fingerprint,
     restore_config_runtime_defaults,
 )
 from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalProvider, ApprovalRequest
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.hooks import (
     HookPoint,
@@ -290,7 +297,12 @@ class AppRunner:
         self._bind_remote_chat_handler(agent)
         skills_service = self._init_skills(config, agent, ui_bus)
         mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
-        current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
+        sessions_dir = Path(config.session_dir) if config.session_dir else None
+        if self.options.server_mode:
+            restore_config_runtime_defaults(config, agent)
+            current_session_id, session_exit_time = None, None
+        else:
+            current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
 
         app_ctx = AppContext(
             config=config,
@@ -400,12 +412,89 @@ class AppRunner:
         )
 
     def _bind_remote_chat_handler(self, agent: Agent) -> None:
-        """Bind /remote/chat handler so interactive peer sessions can proxy host agent chat."""
-        if self._relay_http_service is None:
+        """Bind remote chat handlers for interactive peers."""
+        if self._relay_http_service is None or self._relay_server is None:
             return
 
-        def _chat(peer_id: str, prompt: str) -> ChatResponse:
-            bound_contexts: list[tuple[ExecutionContext, str | None]] = []
+        from reuleauxcoder.interfaces.cli.approval import CLIApprovalProvider
+        from reuleauxcoder.interfaces.cli.commands import handle_command
+        from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
+        from reuleauxcoder.interfaces.cli.render import CLIRenderer
+
+        relay_server = self._relay_server
+        config = getattr(agent, "runtime_config", None)
+        ui_bus = getattr(agent.context, "_ui_bus", None)
+        sessions_dir = Path(config.session_dir) if config and getattr(config, "session_dir", None) else None
+        skills_service = getattr(agent, "skills_service", None)
+        session_store = self.dependencies.create_session_store(sessions_dir)
+        peer_session_ids: dict[str, str] = {}
+        active_peer_fingerprint: str | None = None
+
+        def _peer_fingerprint(peer_id: str) -> str:
+            peer = relay_server.registry.get(peer_id)
+            workspace_root = peer.workspace_root if peer is not None else "."
+            machine_key = peer_id
+            if peer is not None:
+                host_info = peer.meta.get("host_info_min") if isinstance(peer.meta, dict) else None
+                if isinstance(host_info, dict):
+                    machine_key = str(host_info.get("hostname") or host_info.get("machine_id") or peer_id)
+            return f"remote:{machine_key}:{workspace_root or '.'}"
+
+        def _save_session_for_fingerprint(fingerprint: str) -> str | None:
+            if config is None:
+                return None
+            if not getattr(agent, "messages", None):
+                return getattr(agent, "current_session_id", None)
+            sid = session_store.save(
+                agent.messages,
+                getattr(agent.llm, "model", config.model),
+                getattr(agent, "current_session_id", None),
+                total_prompt_tokens=agent.state.total_prompt_tokens,
+                total_completion_tokens=agent.state.total_completion_tokens,
+                active_mode=getattr(agent, "active_mode", None),
+                runtime_state=build_session_runtime_state(config, agent),
+                fingerprint=fingerprint,
+            )
+            setattr(agent, "current_session_id", sid)
+            return sid
+
+        def _activate_peer_session(peer_id: str) -> None:
+            nonlocal active_peer_fingerprint
+            if config is None:
+                return
+
+            fingerprint = _peer_fingerprint(peer_id)
+            if active_peer_fingerprint != fingerprint:
+                if active_peer_fingerprint and getattr(agent, "messages", None):
+                    _save_session_for_fingerprint(active_peer_fingerprint)
+                latest = session_store.get_latest(fingerprint=fingerprint)
+                if latest:
+                    loaded = session_store.load(latest.id)
+                    if loaded is not None:
+                        apply_session_runtime_state(loaded, config, agent)
+                        setattr(agent, "current_session_id", latest.id)
+                    else:
+                        agent.reset()
+                        restore_config_runtime_defaults(config, agent)
+                        setattr(agent, "current_session_id", session_store.generate_session_id())
+                else:
+                    agent.reset()
+                    restore_config_runtime_defaults(config, agent)
+                    setattr(agent, "current_session_id", session_store.generate_session_id())
+
+            active_peer_fingerprint = fingerprint
+            setattr(agent, "session_fingerprint", fingerprint)
+            current_id = getattr(agent, "current_session_id", None)
+            if current_id:
+                peer_session_ids[peer_id] = current_id
+
+        def _bind_peer_context(
+            peer_id: str,
+            remote_stream_handler: Callable[[str, Any], None] | None = None,
+        ) -> tuple[list[tuple[ExecutionContext, str | None, object | None]], str | None]:
+            bound_contexts: list[tuple[ExecutionContext, str | None, object | None]] = []
+            peer = relay_server.registry.get(peer_id)
+            workspace_root = peer.workspace_root if peer is not None else None
             for tool in agent.tools:
                 backend = getattr(tool, "backend", None)
                 if getattr(backend, "backend_id", None) != "remote_relay":
@@ -413,19 +502,206 @@ class AppRunner:
                 context = getattr(backend, "context", None)
                 if not isinstance(context, ExecutionContext):
                     continue
-                bound_contexts.append((context, context.peer_id))
+                bound_contexts.append(
+                    (context, context.peer_id, getattr(context, "remote_stream_handler", None))
+                )
                 context.peer_id = peer_id
+                context.remote_stream_handler = remote_stream_handler
+                if workspace_root:
+                    context.workspace_root = workspace_root
+            previous_fingerprint = getattr(agent, "session_fingerprint", None)
+            setattr(agent, "session_fingerprint", _peer_fingerprint(peer_id))
+            return bound_contexts, previous_fingerprint
 
+        def _restore_peer_context(
+            bound_contexts: list[tuple[ExecutionContext, str | None, object | None]],
+            previous_fingerprint: str | None,
+        ) -> None:
+            for context, prev_peer_id, prev_stream_handler in bound_contexts:
+                context.peer_id = prev_peer_id
+                context.remote_stream_handler = prev_stream_handler
+            setattr(agent, "session_fingerprint", previous_fingerprint)
+
+        def _chat(peer_id: str, prompt: str) -> ChatResponse:
+            _activate_peer_session(peer_id)
+            bound_contexts, previous_fingerprint = _bind_peer_context(peer_id)
             try:
                 response = agent.chat(prompt)
+                peer_session_ids[peer_id] = getattr(agent, "current_session_id", None) or ""
                 return ChatResponse(response=response)
             except Exception as exc:
                 return ChatResponse(response="", error=str(exc))
             finally:
-                for context, prev_peer_id in bound_contexts:
-                    context.peer_id = prev_peer_id
+                _restore_peer_context(bound_contexts, previous_fingerprint)
+
+        def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
+            _activate_peer_session(peer_id)
+            if prompt.strip().startswith("/") and config is not None:
+                command_bus = UIEventBus()
+                command_result = handle_command(
+                    prompt.strip(),
+                    agent,
+                    config,
+                    getattr(agent, "current_session_id", None),
+                    command_bus,
+                    CLI_PROFILE,
+                    sessions_dir,
+                    skills_service,
+                )
+                if command_result["action"] != "chat":
+                    setattr(agent, "current_session_id", command_result["session_id"])
+                    if command_result["session_id"]:
+                        peer_session_ids[peer_id] = command_result["session_id"]
+
+                    command_console = Console(record=True, force_terminal=True, color_system="truecolor")
+                    command_renderer = CLIRenderer(console_override=command_console)
+                    for event in getattr(command_bus, "_history", []):
+                        command_renderer.on_ui_event(event)
+                    rendered = command_console.export_text(clear=True, styles=True)
+                    command_renderer.close()
+                    if rendered:
+                        remote_session.append_event(
+                            "output",
+                            {"format": "terminal", "content": rendered},
+                        )
+
+                    if command_result["action"] == "exit":
+                        remote_session.append_event(
+                            "output",
+                            {
+                                "format": "plain",
+                                "content": "Exit command received. Use Ctrl+C to terminate remote peer.\n",
+                            },
+                        )
+                    remote_session.append_event("chat_end", {"response": ""})
+                    return
+
+            ansi_console = Console(record=True, force_terminal=True, color_system="truecolor")
+            renderer = CLIRenderer(console_override=ansi_console)
+            preview_builder = CLIApprovalProvider(ui_interactor=None)  # type: ignore[arg-type]
+
+            def _flush_output() -> None:
+                rendered = ansi_console.export_text(clear=True, styles=True)
+                if rendered:
+                    remote_session.append_event(
+                        "output",
+                        {"format": "terminal", "content": rendered},
+                    )
+
+            class _RemoteApprovalProvider(ApprovalProvider):
+                def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
+                    approval_id = str(uuid.uuid4())
+                    remote_session.register_approval(approval_id)
+                    diff_text = preview_builder._build_preview_diff(request)
+                    sections: list[dict[str, Any]] = []
+                    if diff_text is not None:
+                        title = (
+                            "Proposed file diff"
+                            if request.tool_name == "write_file"
+                            else "Proposed edit diff"
+                        )
+                        sections.append(
+                            {"id": "diff", "title": title, "kind": "diff", "content": diff_text}
+                        )
+                    elif request.tool_args:
+                        sections.append(
+                            {"id": "args", "title": "Arguments", "kind": "json", "content": request.tool_args}
+                        )
+                    payload = {
+                        "approval_id": approval_id,
+                        "tool_name": request.tool_name,
+                        "tool_source": request.tool_source,
+                        "reason": request.reason,
+                        "sections": sections,
+                        "format": "markdown",
+                        "content": "\n\n".join(
+                            part
+                            for part in [
+                                f"## Approval required: {request.tool_name}",
+                                (
+                                    f"Tool `{request.tool_name}` from source `{request.tool_source}` requires approval."
+                                ),
+                                request.reason or "",
+                                (
+                                    f"```json\n{json.dumps(request.tool_args, ensure_ascii=False, indent=2)}\n```"
+                                    if request.tool_args and diff_text is None
+                                    else ""
+                                ),
+                                f"```diff\n{diff_text}\n```" if diff_text else "",
+                            ]
+                            if part
+                        ),
+                    }
+                    remote_session.append_event("approval_request", payload)
+                    decision, reason = remote_session.wait_approval(approval_id)
+                    remote_session.append_event(
+                        "approval_resolved",
+                        {
+                            "approval_id": approval_id,
+                            "decision": decision,
+                            "reason": reason,
+                        },
+                    )
+                    if decision == "allow_once":
+                        return ApprovalDecision.allow_once(reason)
+                    return ApprovalDecision.deny_once(reason)
+
+            def _on_remote_stream(tool_name: str, chunk: Any) -> None:
+                remote_session.append_event(
+                    "tool_call_stream",
+                    {
+                        "tool_name": tool_name,
+                        "format": "plain",
+                        "stream": getattr(chunk, "chunk_type", "stdout"),
+                        "content": getattr(chunk, "data", ""),
+                    },
+                )
+
+            def _on_agent_event(event: AgentEvent) -> None:
+                if event.event_type == AgentEventType.TOOL_CALL_START:
+                    remote_session.append_event(
+                        "tool_call_start",
+                        {"tool_name": event.tool_name, "tool_args": event.tool_args or {}},
+                    )
+                elif event.event_type == AgentEventType.TOOL_CALL_END:
+                    remote_session.append_event(
+                        "tool_call_end",
+                        {
+                            "tool_name": event.tool_name,
+                            "tool_success": event.tool_success,
+                            "tool_result": event.tool_result or "",
+                        },
+                    )
+                elif event.event_type == AgentEventType.ERROR:
+                    remote_session.append_event(
+                        "error",
+                        {"message": event.error_message or "unknown error"},
+                    )
+                renderer.on_event(event)
+                _flush_output()
+
+            previous_approval = agent.approval_provider
+            bound_contexts, previous_fingerprint = _bind_peer_context(peer_id, _on_remote_stream)
+            agent.add_event_handler(_on_agent_event)
+            agent.approval_provider = _RemoteApprovalProvider()
+            try:
+                result = agent.chat(prompt)
+                _flush_output()
+                remote_session.append_event("chat_end", {"response": result})
+            except Exception as exc:
+                _flush_output()
+                remote_session.append_event("error", {"message": str(exc)})
+            finally:
+                agent.approval_provider = previous_approval
+                try:
+                    agent._event_handlers.remove(_on_agent_event)
+                except ValueError:
+                    pass
+                renderer.close()
+                _restore_peer_context(bound_contexts, previous_fingerprint)
 
         self._relay_http_service.set_chat_handler(_chat)
+        self._relay_http_service.set_stream_chat_handler(_stream_chat)
 
     def _register_hooks(self, agent: Agent, config: Config) -> None:
         """Register hooks discovered via decorator mechanism."""

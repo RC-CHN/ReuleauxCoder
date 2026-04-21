@@ -16,6 +16,7 @@ import (
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/client"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/tools"
+	"github.com/charmbracelet/glamour"
 )
 
 type Config struct {
@@ -28,14 +29,25 @@ type Config struct {
 }
 
 type Runner struct {
-	cfg    Config
-	client *client.HTTPClient
+	cfg       Config
+	client    *client.HTTPClient
+	scanner   *bufio.Scanner
+	mdRender  *glamour.TermRenderer
 }
 
 func New(cfg Config) *Runner {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(100),
+	)
+	if err != nil {
+		log.Printf("markdown renderer init failed: %v", err)
+	}
 	return &Runner{
-		cfg:    cfg,
-		client: client.New(cfg.Host),
+		cfg:      cfg,
+		client:   client.New(cfg.Host),
+		scanner:  bufio.NewScanner(os.Stdin),
+		mdRender: renderer,
 	}
 }
 
@@ -165,7 +177,6 @@ func (r *Runner) runPollLoop(ctx context.Context, peerToken, cwd string, pollInt
 }
 
 func (r *Runner) runInteractiveLoop(ctx context.Context, peerToken string) error {
-	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		select {
 		case <-ctx.Done():
@@ -174,37 +185,177 @@ func (r *Runner) runInteractiveLoop(ctx context.Context, peerToken string) error
 		}
 
 		fmt.Print("You > ")
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
+		if !r.scanner.Scan() {
+			if err := r.scanner.Err(); err != nil {
 				return err
 			}
 			return nil
 		}
-		userInput := strings.TrimSpace(scanner.Text())
+		userInput := strings.TrimSpace(r.scanner.Text())
 		if userInput == "" {
 			continue
 		}
 		if userInput == "/quit" || userInput == "/exit" {
 			return nil
 		}
+		if err := r.runRemoteChat(ctx, peerToken, userInput); err != nil {
+			return err
+		}
+	}
+}
 
-		chatCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		resp, err := r.client.Chat(chatCtx, protocol.ChatRequest{
-			PeerToken: peerToken,
-			Prompt:    userInput,
+func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) error {
+	chatCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	startResp, err := r.client.ChatStart(chatCtx, protocol.ChatStartRequest{
+		PeerToken: peerToken,
+		Prompt:    prompt,
+	})
+	cancel()
+	if err != nil {
+		return fmt.Errorf("chat start failed: %w", err)
+	}
+	if strings.TrimSpace(startResp.Error) != "" {
+		return fmt.Errorf("chat start failed: %s", startResp.Error)
+	}
+	if strings.TrimSpace(startResp.ChatID) == "" {
+		return fmt.Errorf("chat start failed: empty chat id")
+	}
+
+	cursor := 0
+	for {
+		streamCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+		streamResp, err := r.client.ChatStream(streamCtx, protocol.ChatStreamRequest{
+			PeerToken:  peerToken,
+			ChatID:     startResp.ChatID,
+			Cursor:     cursor,
+			TimeoutSec: 30,
 		})
 		cancel()
 		if err != nil {
-			return fmt.Errorf("chat failed: %w", err)
+			return fmt.Errorf("chat stream failed: %w", err)
 		}
-		if strings.TrimSpace(resp.Error) != "" {
-			fmt.Printf("Error: %s\n", resp.Error)
-			continue
+		if strings.TrimSpace(streamResp.Error) != "" {
+			return fmt.Errorf("chat stream failed: %s", streamResp.Error)
 		}
-		if resp.Response != "" {
-			fmt.Printf("%s\n", resp.Response)
+		for _, event := range streamResp.Events {
+			if err := r.handleChatEvent(ctx, peerToken, startResp.ChatID, event); err != nil {
+				return err
+			}
+		}
+		cursor = streamResp.NextCursor
+		if streamResp.Done {
+			return nil
 		}
 	}
+}
+
+func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, event protocol.ChatEvent) error {
+	switch event.Type {
+	case "chat_start":
+		return nil
+	case "output":
+		r.renderOutputEvent(event.Payload)
+	case "tool_call_stream":
+		r.renderToolStream(event.Payload)
+	case "approval_request":
+		return r.handleApprovalRequest(ctx, peerToken, chatID, event.Payload)
+	case "approval_resolved":
+		return nil
+	case "tool_call_start":
+		if name, _ := event.Payload["tool_name"].(string); name != "" {
+			fmt.Printf("\n[tool] %s\n", name)
+		}
+	case "tool_call_end":
+		return nil
+	case "chat_end":
+		if response, _ := event.Payload["response"].(string); strings.TrimSpace(response) != "" {
+			fmt.Println()
+		}
+	case "error":
+		msg, _ := event.Payload["message"].(string)
+		if msg == "" {
+			msg = "unknown error"
+		}
+		fmt.Fprintf(os.Stderr, "\nError: %s\n", msg)
+	}
+	return nil
+}
+
+func (r *Runner) handleApprovalRequest(ctx context.Context, peerToken, chatID string, payload map[string]any) error {
+	r.renderOutputEvent(payload)
+
+	approvalID, _ := payload["approval_id"].(string)
+	if approvalID == "" {
+		return fmt.Errorf("approval request missing approval_id")
+	}
+
+	fmt.Print("Approve? [y/N]: ")
+	decision := "deny_once"
+	if r.scanner.Scan() {
+		answer := strings.ToLower(strings.TrimSpace(r.scanner.Text()))
+		if answer == "y" || answer == "yes" || answer == "a" || answer == "allow" {
+			decision = "allow_once"
+		}
+	} else if err := r.scanner.Err(); err != nil {
+		return err
+	}
+
+	replyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	replyResp, err := r.client.ApprovalReply(replyCtx, protocol.ApprovalReplyRequest{
+		PeerToken:  peerToken,
+		ChatID:     chatID,
+		ApprovalID: approvalID,
+		Decision:   decision,
+	})
+	if err != nil {
+		return fmt.Errorf("approval reply failed: %w", err)
+	}
+	if !replyResp.OK {
+		return fmt.Errorf("approval reply failed: %s", replyResp.Error)
+	}
+	return nil
+}
+
+func (r *Runner) renderOutputEvent(payload map[string]any) {
+	format, _ := payload["format"].(string)
+	content, _ := payload["content"].(string)
+	if content == "" {
+		return
+	}
+
+	switch format {
+	case "markdown":
+		if r.mdRender != nil {
+			rendered, err := r.mdRender.Render(content)
+			if err == nil {
+				fmt.Print(rendered)
+				return
+			}
+		}
+		fmt.Print(content)
+	case "plain", "terminal", "":
+		fmt.Print(content)
+	default:
+		fmt.Print(content)
+	}
+
+	if newline, ok := payload["newline"].(bool); ok && newline {
+		fmt.Print("\n")
+	}
+}
+
+func (r *Runner) renderToolStream(payload map[string]any) {
+	content, _ := payload["content"].(string)
+	if content == "" {
+		return
+	}
+	stream, _ := payload["stream"].(string)
+	if stream == "stderr" {
+		fmt.Fprint(os.Stderr, content)
+		return
+	}
+	fmt.Print(content)
 }
 
 func (r *Runner) heartbeatLoop(ctx context.Context, peerToken string, interval time.Duration) {
