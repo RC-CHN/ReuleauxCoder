@@ -48,7 +48,9 @@ def main():
     renderer = CLIRenderer(view_registry=cli_ui.view_registry)
     ctx.ui_bus.subscribe(renderer.on_ui_event)
 
-    if args.server:
+    remote_exec = getattr(ctx.config, "remote_exec", None)
+    is_host_mode = remote_exec and remote_exec.enabled and remote_exec.host_mode
+    if args.server or is_host_mode:
         ctx.ui_bus.info("Remote relay host mode active. Press Ctrl+C to stop.")
         try:
             while True:
