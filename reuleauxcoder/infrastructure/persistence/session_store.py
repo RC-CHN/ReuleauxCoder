@@ -6,6 +6,7 @@ import json
 import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -147,26 +148,33 @@ class SessionStore:
         if not self._sessions_dir.exists():
             return []
 
-        sessions: list[SessionMetadata] = []
-        for file_path in sorted(self._sessions_dir.glob("*.json"), reverse=True):
+        ranked_sessions: list[tuple[datetime, SessionMetadata]] = []
+        for file_path in self._sessions_dir.glob("*.json"):
             try:
                 data = json.loads(file_path.read_text())
                 session = Session.from_dict(data)
                 if fingerprint is not None and session.fingerprint != fingerprint:
                     continue
-                sessions.append(
-                    SessionMetadata(
-                        id=session.id or file_path.stem,
-                        model=session.model,
-                        saved_at=session.saved_at,
-                        preview=session.get_preview(),
-                        fingerprint=session.fingerprint,
-                    )
+
+                metadata = SessionMetadata(
+                    id=session.id or file_path.stem,
+                    model=session.model,
+                    saved_at=session.saved_at,
+                    preview=session.get_preview(),
+                    fingerprint=session.fingerprint,
                 )
+
+                try:
+                    rank_time = datetime.strptime(session.saved_at, "%Y-%m-%d %H:%M:%S")
+                except (TypeError, ValueError):
+                    rank_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+
+                ranked_sessions.append((rank_time, metadata))
             except (json.JSONDecodeError, KeyError):
                 continue
 
-        return sessions[:limit]
+        ranked_sessions.sort(key=lambda item: item[0], reverse=True)
+        return [metadata for _, metadata in ranked_sessions[:limit]]
 
     def get_latest(self, *, fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT) -> SessionMetadata | None:
         """Return the most recent session metadata, if any."""

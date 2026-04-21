@@ -108,6 +108,20 @@ def test_session_store_list_filters_by_fingerprint(tmp_path: Path) -> None:
     assert store.get_latest(fingerprint="remote:abc") is not None
 
 
+def test_session_store_get_latest_prefers_recently_updated_session(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    first_id = store.save(messages=[{"role": "user", "content": "first"}], model="m1", fingerprint="local")
+    second_id = store.save(messages=[{"role": "user", "content": "second"}], model="m2", fingerprint="local")
+
+    # Update the older session after the newer one was created.
+    store.save(messages=[{"role": "user", "content": "first-updated"}], model="m1", session_id=first_id, fingerprint="local")
+
+    latest = store.get_latest(fingerprint="local")
+    assert latest is not None
+    assert latest.id == first_id
+    assert latest.id != second_id
+
+
 def test_session_store_get_exit_time_returns_none_without_marker() -> None:
     messages = [{"role": "user", "content": "hello"}]
     assert SessionStore.get_exit_time(messages) is None
