@@ -108,13 +108,14 @@ Saved sessions persist:
 - active main model profile
 - active sub model profile
 - LLM debug trace
-- approval default mode and approval rules
+- session-scoped approval rule overrides (baseline approval default mode still comes from config)
 - execution-target / remote-binding placeholders for later phases
 
 #### Session store (`infrastructure/persistence/session_store.py`)
 `SessionStore` is the JSON persistence layer for sessions.
-- `save()` writes messages + runtime overlay + fingerprint
+- `save()` writes messages + runtime overlay + fingerprint and refreshes `saved_at`
 - `list()` and `get_latest()` are fingerprint-aware by default
+- latest ordering is based on most recently updated save time (`saved_at`), with file mtime fallback
 - `load()` backfills missing token metadata for older sessions
 - `append_system_message()` keeps diagnostics attached to the same saved session
 
@@ -175,8 +176,22 @@ Application initialization and dependency injection.
 - Auto-discovers hooks via `discover_hook_specs()` + `instantiate_hooks()`
 - Manages MCP servers, skills service, and session restore/save lifecycle
 - Computes the current session fingerprint from runtime/config
-- Auto-resume latest is fingerprint-scoped
+- Auto-resume latest is fingerprint-scoped and resolves "latest" by most recently saved/updated session
 - Manual resume by explicit session id is allowed to cross fingerprints with warning
+
+### Remote Exec Relay (host/peer)
+Current remote execution flow is event-stream based and keeps rendering ownership on the host runtime.
+
+- Transport endpoints (host HTTP service):
+  - `POST /remote/chat/start`: create chat session and enqueue `chat_start`
+  - `POST /remote/chat/stream`: long-poll event stream by cursor
+  - `POST /remote/approval/reply`: resolve pending approval decisions
+- Stream events include:
+  - `chat_start`, `output`, `approval_request`, `approval_resolved`, `chat_end`, `error`
+- Rendering model:
+  - Host-side CLI renderer (`CLIRenderer`) is reused to produce terminal-formatted output chunks
+  - Peer side prints host-provided terminal/plain chunks directly, with markdown fallback only when needed
+- Slash commands in remote streaming mode are rendered through host `CLIRenderer` before being emitted as `output`, ensuring view panels (e.g. `/help`, `/model`, `/tokens`) are preserved remotely.
 
 ## Configuration (`config.yaml`)
 
