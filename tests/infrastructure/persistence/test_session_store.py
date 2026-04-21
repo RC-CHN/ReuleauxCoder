@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
@@ -130,3 +131,45 @@ def test_session_store_get_exit_time_returns_none_without_marker() -> None:
 def test_session_store_load_missing_returns_none(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     assert store.load("missing") is None
+
+
+def test_session_store_concurrent_save_keeps_sessions_readable(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(messages=[{"role": "user", "content": "seed"}], model="m1", fingerprint="local")
+
+    def update_existing(index: int) -> None:
+        store.save(
+            messages=[{"role": "user", "content": f"existing-{index}"}],
+            model="m1",
+            session_id=session_id,
+            fingerprint="local",
+        )
+
+    def create_new(index: int) -> None:
+        store.save(
+            messages=[{"role": "user", "content": f"new-{index}"}],
+            model="m2",
+            fingerprint="remote:abc",
+        )
+
+    threads = [threading.Thread(target=update_existing, args=(i,)) for i in range(4)] + [
+        threading.Thread(target=create_new, args=(i,)) for i in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    loaded = store.load(session_id)
+    assert loaded is not None
+    assert loaded.messages[0]["content"].startswith("existing-")
+
+    local_latest = store.get_latest(fingerprint="local")
+    remote_latest = store.get_latest(fingerprint="remote:abc")
+    assert local_latest is not None
+    assert local_latest.id == session_id
+    assert remote_latest is not None
+    assert remote_latest.fingerprint == "remote:abc"
+
+    listed = store.list(limit=20, fingerprint=None)
+    assert len(listed) >= 5

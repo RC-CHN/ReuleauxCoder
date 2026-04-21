@@ -483,6 +483,131 @@ class TestRemoteRelayHTTPService:
             service.stop()
             relay.stop()
 
+    def test_approval_reply_routes_to_matching_chat_session_only(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+
+        def stream_chat_handler(_peer_id: str, _prompt: str, session) -> None:
+            approval_id = "approval-1"
+            session.register_approval(approval_id)
+            session.append_event(
+                "approval_request",
+                {
+                    "approval_id": approval_id,
+                    "tool_name": "shell",
+                    "tool_source": "builtin",
+                    "reason": "need approval",
+                },
+            )
+            decision, reason = session.wait_approval(approval_id, timeout_sec=2)
+            session.append_event(
+                "approval_resolved",
+                {"approval_id": approval_id, "decision": decision, "reason": reason},
+            )
+
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            stream_chat_handler=stream_chat_handler,
+        )
+        service.start()
+        try:
+            _, register_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/peer",
+                },
+            )
+            peer_token = register_body["payload"]["peer_token"]
+
+            _, start_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "approve me"},
+            )
+            chat_id = start_body["chat_id"]
+
+            _, stream_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/stream",
+                {"peer_token": peer_token, "chat_id": chat_id, "cursor": 0, "timeout_sec": 1},
+            )
+            approval_events = [event for event in stream_body["events"] if event["type"] == "approval_request"]
+            assert approval_events
+            approval_id = approval_events[0]["payload"]["approval_id"]
+
+            status, reply_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/approval/reply",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": chat_id,
+                    "approval_id": approval_id,
+                    "decision": "allow_once",
+                    "reason": "ok",
+                },
+            )
+            assert status == 200
+            assert reply_body["ok"] is True
+
+            _, resolved_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/stream",
+                {"peer_token": peer_token, "chat_id": chat_id, "cursor": stream_body["next_cursor"], "timeout_sec": 1},
+            )
+            resolved_events = [event for event in resolved_body["events"] if event["type"] == "approval_resolved"]
+            assert resolved_events
+            assert resolved_events[0]["payload"]["decision"] == "allow_once"
+            assert resolved_body["done"] is True
+
+            bad_chat_req = request.Request(
+                f"{service.base_url}/remote/approval/reply",
+                data=json.dumps(
+                    {
+                        "peer_token": peer_token,
+                        "chat_id": "missing-chat",
+                        "approval_id": approval_id,
+                        "decision": "allow_once",
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                request.urlopen(bad_chat_req, timeout=5)
+                assert False, "expected HTTPError"
+            except HTTPError as exc:
+                assert exc.code == 404
+                body = json.loads(exc.read().decode("utf-8"))
+                assert body["error"] == "chat_not_found"
+
+            bad_approval_req = request.Request(
+                f"{service.base_url}/remote/approval/reply",
+                data=json.dumps(
+                    {
+                        "peer_token": peer_token,
+                        "chat_id": chat_id,
+                        "approval_id": "missing-approval",
+                        "decision": "allow_once",
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                request.urlopen(bad_approval_req, timeout=5)
+                assert False, "expected HTTPError"
+            except HTTPError as exc:
+                assert exc.code == 404
+                body = json.loads(exc.read().decode("utf-8"))
+                assert body["error"] == "approval_not_found"
+        finally:
+            service.stop()
+            relay.stop()
+
     def test_default_artifact_provider_builds_real_agent_binary(self) -> None:
         provider = _default_create_remote_artifact_provider(UIEventBus())
         try:

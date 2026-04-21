@@ -69,7 +69,7 @@ class SessionStore:
             session = Session(
                 id=session_id,
                 model=effective_runtime.model or model,
-                saved_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                saved_at=datetime.now().isoformat(timespec="microseconds"),
                 fingerprint=fingerprint or DEFAULT_SESSION_FINGERPRINT,
                 messages=saved_messages,
                 active_mode=effective_runtime.active_mode or active_mode,
@@ -154,7 +154,7 @@ class SessionStore:
             if not self._sessions_dir.exists():
                 return []
 
-            ranked_sessions: list[tuple[tuple[datetime, int, str], SessionMetadata]] = []
+            ranked_sessions: list[tuple[tuple[int, datetime, str], SessionMetadata]] = []
             for file_path in self._sessions_dir.glob("*.json"):
                 try:
                     data = json.loads(file_path.read_text())
@@ -172,11 +172,14 @@ class SessionStore:
 
                     stat = file_path.stat()
                     try:
-                        rank_time = datetime.strptime(session.saved_at, "%Y-%m-%d %H:%M:%S")
+                        saved_at_rank = datetime.fromisoformat(session.saved_at)
                     except (TypeError, ValueError):
-                        rank_time = datetime.fromtimestamp(stat.st_mtime)
+                        try:
+                            saved_at_rank = datetime.strptime(session.saved_at, "%Y-%m-%d %H:%M:%S")
+                        except (TypeError, ValueError):
+                            saved_at_rank = datetime.fromtimestamp(0)
 
-                    ranked_sessions.append(((rank_time, stat.st_mtime_ns, metadata.id), metadata))
+                    ranked_sessions.append(((stat.st_mtime_ns, saved_at_rank, metadata.id), metadata))
                 except (json.JSONDecodeError, KeyError):
                     continue
 
