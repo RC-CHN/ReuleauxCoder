@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -94,9 +95,22 @@ def _default_create_remote_relay_server(config: Config) -> RelayServer | None:
 def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[str, str, str], tuple[bytes, str] | None]:
     repo_root = Path(__file__).resolve().parents[3]
     agent_dir = repo_root / "reuleauxcoder-agent"
+    artifact_root = repo_root / "artifacts" / "remote"
     build_dir = Path(tempfile.mkdtemp(prefix="rcoder-peer-build-"))
     build_lock = threading.Lock()
     cache: dict[tuple[str, str], Path] = {}
+
+    def _find_prebuilt_binary(os_name: str, arch: str, artifact_name: str) -> Path | None:
+        output_name = artifact_name + (".exe" if os_name == "windows" else "")
+        candidates = [
+            artifact_root / os_name / arch / output_name,
+            artifact_root / f"{os_name}-{arch}" / output_name,
+            repo_root / output_name,
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
 
     def provide(os_name: str, arch: str, artifact_name: str) -> tuple[bytes, str] | None:
         if artifact_name != "rcoder-peer":
@@ -105,6 +119,22 @@ def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[st
             return None
         if arch not in {"amd64", "arm64"}:
             return None
+
+        prebuilt_binary = _find_prebuilt_binary(os_name, arch, artifact_name)
+        if prebuilt_binary is not None:
+            ui_bus.info(
+                f"Using prebuilt peer artifact for {os_name}/{arch}: {prebuilt_binary.name}",
+                kind=UIEventKind.REMOTE,
+                os=os_name,
+                arch=arch,
+                source="prebuilt",
+            )
+            return prebuilt_binary.read_bytes(), "application/octet-stream"
+
+        if shutil.which("go") is None:
+            raise RuntimeError(
+                "peer artifact unavailable: no prebuilt binary found and local 'go' toolchain is not installed"
+            )
 
         target_key = (os_name, arch)
         with build_lock:
@@ -128,10 +158,12 @@ def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[st
                     kind=UIEventKind.REMOTE,
                     os=os_name,
                     arch=arch,
+                    source="built",
                 )
         return binary_path.read_bytes(), "application/octet-stream"
 
     setattr(provide, "_build_dir", build_dir)
+    setattr(provide, "_artifact_root", artifact_root)
     return provide
 
 

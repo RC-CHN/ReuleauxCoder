@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 from urllib import request
 from urllib.error import HTTPError
 
@@ -630,6 +631,36 @@ class TestRemoteRelayHTTPService:
             service.stop()
             relay.stop()
 
+    def test_default_artifact_provider_prefers_prebuilt_binary(self, tmp_path: Path) -> None:
+        provider = _default_create_remote_artifact_provider(UIEventBus())
+        artifact_root = getattr(provider, "_artifact_root")
+        prebuilt_path = artifact_root / "linux" / "amd64" / "rcoder-peer"
+        prebuilt_path.parent.mkdir(parents=True, exist_ok=True)
+        prebuilt_path.write_bytes(b"prebuilt-peer")
+        try:
+            with patch("reuleauxcoder.interfaces.entrypoint.dependencies.subprocess.run") as mock_run:
+                content, content_type = provider("linux", "amd64", "rcoder-peer") or (None, None)
+            assert content == b"prebuilt-peer"
+            assert content_type == "application/octet-stream"
+            mock_run.assert_not_called()
+        finally:
+            _cleanup_provider_build_dir(provider)
+            prebuilt_path.unlink(missing_ok=True)
+            for parent in [prebuilt_path.parent, prebuilt_path.parent.parent, artifact_root]:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
+
+    def test_default_artifact_provider_raises_without_prebuilt_or_go(self) -> None:
+        provider = _default_create_remote_artifact_provider(UIEventBus())
+        try:
+            with patch("reuleauxcoder.interfaces.entrypoint.dependencies.shutil.which", return_value=None):
+                with pytest.raises(RuntimeError, match="no prebuilt binary found"):
+                    provider("linux", "amd64", "rcoder-peer")
+        finally:
+            _cleanup_provider_build_dir(provider)
+
     @pytest.mark.skipif(not _GO_AVAILABLE, reason="go toolchain is not installed")
     def test_default_artifact_provider_builds_real_agent_binary(self) -> None:
         provider = _default_create_remote_artifact_provider(UIEventBus())
@@ -640,6 +671,31 @@ class TestRemoteRelayHTTPService:
             assert len(content) > 0
         finally:
             _cleanup_provider_build_dir(provider)
+
+    def test_artifact_endpoint_returns_clear_error_when_unavailable(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            artifact_provider=lambda _os_name, _arch, _name: (_ for _ in ()).throw(
+                RuntimeError("peer artifact unavailable: no prebuilt binary found and local 'go' toolchain is not installed")
+            ),
+        )
+        service.start()
+        try:
+            try:
+                _URLOPEN(f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer", timeout=5)
+                assert False, "expected HTTPError"
+            except HTTPError as exc:
+                assert exc.code == 404
+                body = json.loads(exc.read().decode("utf-8"))
+                assert body["error"] == "artifact_unavailable"
+                assert "no prebuilt binary found" in body["message"]
+        finally:
+            service.stop()
+            relay.stop()
 
     @pytest.mark.skipif(not _GO_AVAILABLE, reason="go toolchain is not installed")
     def test_go_agent_end_to_end_with_http_host(self, tmp_path: Path) -> None:

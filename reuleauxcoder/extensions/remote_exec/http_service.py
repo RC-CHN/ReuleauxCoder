@@ -364,7 +364,14 @@ class RemoteRelayHTTPService:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
                     return
                 os_name, arch, artifact_name = parts
-                artifact = service.artifact_provider(os_name, arch, artifact_name)
+                try:
+                    artifact = service.artifact_provider(os_name, arch, artifact_name)
+                except RuntimeError as exc:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"error": "artifact_unavailable", "message": str(exc)},
+                    )
+                    return
                 if artifact is None:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "artifact_unavailable"})
                     return
