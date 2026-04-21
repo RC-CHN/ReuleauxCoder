@@ -22,7 +22,9 @@ import threading
 import uuid
 from typing import Any, Callable
 
+from rich import box
 from rich.console import Console
+from rich.panel import Panel
 
 from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
@@ -509,6 +511,29 @@ class AppRunner:
 
         def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
             peer_agent = _create_peer_agent(peer_id)
+
+            startup_console = Console(record=True, force_terminal=True, color_system="truecolor")
+            startup_console.print(
+                Panel(
+                    (
+                        f"[bold]Peer[/bold]: {peer_id}\n"
+                        f"[bold]Session[/bold]: {getattr(peer_agent, 'current_session_id', '-') or '-'}\n"
+                        f"[bold]Fingerprint[/bold]: {_peer_fingerprint(peer_id)}\n"
+                        f"[bold]Mode[/bold]: {getattr(peer_agent, 'active_mode', '-') or '-'}\n"
+                        f"[bold]Model[/bold]: {getattr(getattr(peer_agent, 'llm', None), 'model', '-') or '-'}"
+                    ),
+                    title="REMOTE PEER READY",
+                    border_style="green",
+                    box=box.ROUNDED,
+                    padding=(0, 1),
+                )
+            )
+            startup_rendered = startup_console.export_text(clear=True, styles=True)
+            if startup_rendered:
+                remote_session.append_event(
+                    "output",
+                    {"format": "terminal", "content": startup_rendered},
+                )
 
             if prompt.strip().startswith("/") and config is not None:
                 command_bus = UIEventBus()
