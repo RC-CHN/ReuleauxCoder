@@ -1,0 +1,16 @@
+services:
+  rcoder-host:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: reuleauxcoder-host:latest
+    container_name: reuleauxcoder-host
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8765:8765"
+    volumes:
+      - ../.rcoder/sessions:/app/.rcoder/sessions
+    tty: true
+    stdin_open: true

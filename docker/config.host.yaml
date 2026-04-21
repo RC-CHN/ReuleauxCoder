@@ -1,0 +1,50 @@
+models:
+  active: host-main
+  active_main: host-main
+  profiles:
+    host-main:
+      model: ${RCODER_MODEL}
+      api_key: ${RCODER_API_KEY}
+      base_url: ${RCODER_BASE_URL}
+      max_tokens: 4096
+      temperature: 0.0
+      max_context_tokens: 128000
+      preserve_reasoning_content: true
+      backfill_reasoning_content_for_tool_calls: false
+
+modes:
+  active: coder
+  profiles:
+    coder:
+      description: Default coding mode with full tool access.
+      tools:
+        - '*'
+      prompt_append: Prioritize making concrete code changes and verifying them with commands/tests when appropriate.
+      allowed_subagent_modes:
+        - planner
+        - debugger
+        - coder
+
+remote_exec:
+  enabled: true
+  host_mode: true
+  relay_bind: 0.0.0.0:8765
+  bootstrap_access_secret: ${RCODER_BOOTSTRAP_ACCESS_SECRET}
+  bootstrap_token_ttl_sec: 120
+  peer_token_ttl_sec: 3600
+  heartbeat_interval_sec: 10
+  heartbeat_timeout_sec: 30
+  default_tool_timeout_sec: 30
+  shell_timeout_sec: 120
+
+session:
+  auto_save: false
+
+skills:
+  enabled: true
+  scan_project: true
+  scan_user: false
+  disabled: []
+
+meta:
+  workspace_bootstrapped: true
