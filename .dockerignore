@@ -29,3 +29,15 @@ artifacts/*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Secrets
+.env
+.env.*
+docker/.env
+docker/.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519

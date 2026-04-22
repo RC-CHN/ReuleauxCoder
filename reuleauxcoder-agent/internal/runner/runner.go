@@ -71,8 +71,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		WorkspaceRoot:  workspaceRoot,
 		Capabilities:   []string{"shell", "read_file", "write_file", "edit_file", "glob", "grep"},
 		HostInfoMin: map[string]any{
-			"os":   runtimeOS(),
-			"arch": runtimeArch(),
+			"os":       runtimeOS(),
+			"arch":     runtimeArch(),
+			"hostname": runtimeHostname(),
 		},
 	})
 	if err != nil {
@@ -431,4 +432,12 @@ func runtimeOS() string {
 
 func runtimeArch() string {
 	return runtime.GOARCH
+}
+
+func runtimeHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return hostname
 }
