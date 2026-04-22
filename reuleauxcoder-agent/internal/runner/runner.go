@@ -79,6 +79,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("register failed: %w", err)
 	}
 	log.Printf("registered peer_id=%s", registerResp.PeerID)
+	fmt.Printf("\n=== REMOTE PEER CONNECTED ===\nPeer: %s\nWorkspace: %s\nHost: %s\n============================\n\n", registerResp.PeerID, workspaceRoot, r.cfg.Host)
 
 	heartbeatInterval := time.Duration(registerResp.HeartbeatIntervalSec) * time.Second
 	if heartbeatInterval <= 0 {

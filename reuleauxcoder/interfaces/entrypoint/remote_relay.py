@@ -90,6 +90,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     sessions_dir = Path(config.session_dir) if config and getattr(config, "session_dir", None) else None
     skills_service: SkillsService | None = getattr(agent, "skills_service", None)
     session_store = runner.dependencies.create_session_store(sessions_dir)
+    startup_announced: set[tuple[str, str, str]] = set()
 
     def _peer_fingerprint(peer_id: str) -> str:
         peer = relay_server.registry.get(peer_id)
@@ -176,25 +177,31 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
         peer_agent = _create_peer_agent(peer_id)
 
-        startup_console = Console(record=True, force_terminal=True, color_system="truecolor")
-        startup_console.print(
-            Panel(
-                (
-                    f"[bold]Peer[/bold]: {peer_id}\n"
-                    f"[bold]Session[/bold]: {getattr(peer_agent, 'current_session_id', '-') or '-'}\n"
-                    f"[bold]Fingerprint[/bold]: {_peer_fingerprint(peer_id)}\n"
-                    f"[bold]Mode[/bold]: {getattr(peer_agent, 'active_mode', '-') or '-'}\n"
-                    f"[bold]Model[/bold]: {getattr(getattr(peer_agent, 'llm', None), 'model', '-') or '-'}"
-                ),
-                title="REMOTE PEER READY",
-                border_style="green",
-                box=box.ROUNDED,
-                padding=(0, 1),
+        session_id = getattr(peer_agent, "current_session_id", "-") or "-"
+        peer_info = relay_server.registry.get(peer_id)
+        connection_marker = f"{getattr(peer_info, 'connected_at', 0):.6f}" if peer_info is not None else "0"
+        startup_key = (peer_id, str(session_id), connection_marker)
+        if startup_key not in startup_announced:
+            startup_console = Console(record=True, force_terminal=True, color_system="truecolor")
+            startup_console.print(
+                Panel(
+                    (
+                        f"[bold]Peer[/bold]: {peer_id}\n"
+                        f"[bold]Session[/bold]: {session_id}\n"
+                        f"[bold]Fingerprint[/bold]: {_peer_fingerprint(peer_id)}\n"
+                        f"[bold]Mode[/bold]: {getattr(peer_agent, 'active_mode', '-') or '-'}\n"
+                        f"[bold]Model[/bold]: {getattr(getattr(peer_agent, 'llm', None), 'model', '-') or '-'}"
+                    ),
+                    title="REMOTE PEER READY",
+                    border_style="green",
+                    box=box.ROUNDED,
+                    padding=(0, 1),
+                )
             )
-        )
-        startup_rendered = startup_console.export_text(clear=True, styles=True)
-        if startup_rendered:
-            remote_session.append_event("output", {"format": "terminal", "content": startup_rendered})
+            startup_rendered = startup_console.export_text(clear=True, styles=True)
+            if startup_rendered:
+                remote_session.append_event("output", {"format": "terminal", "content": startup_rendered})
+            startup_announced.add(startup_key)
 
         if prompt.strip().startswith("/") and config is not None:
             command_bus = UIEventBus()
