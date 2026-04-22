@@ -13,6 +13,14 @@ reuleauxcoder/
 ├── extensions/      # Extension system (pluggable features)
 ├── app/             # Application layer (use case orchestration)
 └── compat/          # Compatibility handling
+
+reuleauxcoder-agent/  # Go binary for remote peer execution
+├── cmd/reuleauxcoder-agent/main.go    # CLI entrypoint
+├── internal/
+│   ├── client/http.go                 # HTTP client for relay protocol
+│   ├── runner/runner.go               # Main loop (register/heartbeat/poll/execute)
+│   ├── protocol/types.go              # Protocol type definitions
+│   └── tools/execute.go               # Local tool execution (shell/read/write/edit/glob/grep)
 ```
 
 ## Layer Responsibilities
@@ -53,10 +61,20 @@ User-facing interfaces.
 Pluggable extension system.
 
 - **tools/**: Built-in tools (`shell`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent`)
+  - `Tool` base class with `name`, `description`, `parameters`, `execute()`, `preflight_validate()`
+  - `@backend_handler("backend_id")` decorator for local/remote dispatch
+  - `ExecutionContext` carries `peer_id`, `cwd`, `workspace_root`, `remote_stream_handler`
+  - `ShellDangerousCommandPolicy` blocks rm -rf, fork bombs, curl|bash, etc.
 - **command/**: Slash commands (`/model`, `/skills`, `/mcp`, `/sessions`, `/mode`, `/approval`)
 - **mcp/**: MCP server integration (`MCPManager`, `MCPClient`, `MCPTool`)
+  - `MCPManager` runs independent asyncio event loop in background thread
+  - `MCPClient` is stdio JSON-RPC client with reconnect-once behavior
+  - Remote tools wrapped as `MCPTool` with schema translation
 - **skills/**: Skills system (`SkillsService`, discovery, catalog)
 - **subagent/**: Sub-agent management (`SubagentManager`, jobs, approval)
+  - `ThreadPoolExecutor(max_workers=4)` caps parallel explore jobs
+  - `SubagentJob` tracks status, timing, result/error
+  - `DelegatingSubagentApprovalProvider` uses parent LLM as secondary judge
 
 ## Current Runtime Architecture (Phase 1)
 
@@ -161,6 +179,37 @@ Built-in hooks:
 
 Use `@register_hook(HookPoint, priority)` decorator for self-contained hook definitions.
 
+### Tool Execution Pipeline (`domain/agent/tool_execution.py`)
+`ToolExecutor.execute(tool_call)` follows a 10-step pipeline:
+
+1. **Resolve tool** from agent-local list, fallback to global registry
+2. **Build context** `BeforeToolExecuteContext` with metadata (source, server, schema, round)
+3. **Guard hooks** (`BEFORE_TOOL_EXECUTE`) — fail-closed, first explicit deny stops execution
+4. **Preflight validation** (`tool.preflight_validate`) — early argument checks
+5. **Mode restrictions** — `is_tool_allowed_in_mode`, with mode-switch suggestions
+6. **Approval check** — if guard marked `requires_approval`, call `approval_provider.request_approval()`
+7. **Transform hooks** — modify args before execution
+8. **Observer hooks** — pre-execution observation
+9. **Execute tool** — run with transformed args
+10. **Post-processing** — wrap in `AfterToolExecuteContext`, run transforms/observers, return result
+
+Parallel execution: `execute_parallel()` uses `ThreadPoolExecutor(max_workers=8)` for multiple tool calls without approval provider.
+
+### Backend Dispatch (`extensions/tools/backend.py`)
+Tools support multiple execution backends:
+
+- `@backend_handler("backend_id")` decorator registers handlers per backend
+- `Tool.run_backend(...)` picks handler for current `backend_id`, falls back to `"local"`
+- `LocalToolBackend` (`backend_id="local"`): direct local execution
+- `RemoteRelayToolBackend` (`backend_id="remote"`): forwards to relay server
+
+`ExecutionContext` carries runtime hints:
+- `peer_id`: remote peer identifier
+- `cwd`: current working directory
+- `workspace_root`: workspace root path
+- `execution_target`: "local" or "remote"
+- `remote_stream_handler`: callback for streaming output chunks
+
 ### Prompt Builder (`services/prompt/builder.py`)
 Constructs system prompt with cache-friendly ordering.
 
@@ -192,6 +241,33 @@ Current remote execution flow is event-stream based and keeps rendering ownershi
   - Host-side CLI renderer (`CLIRenderer`) is reused to produce terminal-formatted output chunks
   - Peer side prints host-provided terminal/plain chunks directly, with markdown fallback only when needed
 - Slash commands in remote streaming mode are rendered through host `CLIRenderer` before being emitted as `output`, ensuring view panels (e.g. `/help`, `/model`, `/tokens`) are preserved remotely.
+
+### Go Agent (`reuleauxcoder-agent/`)
+Standalone Go binary for remote peer execution:
+
+**Entrypoint** (`cmd/reuleauxcoder-agent/main.go`):
+- CLI flags: `--host`, `--bootstrap-token`, `--cwd`, `--workspace-root`, `--poll-interval`, `--interactive`
+- Registers with relay server using bootstrap token
+- Runs heartbeat loop + poll loop for task dispatch
+
+**Runner** (`internal/runner/runner.go`):
+- `Register()` → obtain `peer_id` + `peer_token`
+- Background heartbeat loop at configured interval
+- Poll loop: long-poll for `RelayEnvelope` tasks
+- Interactive mode: stdin chat proxied through host
+
+**Protocol** (`internal/protocol/types.go`):
+- `RegisterRequest/Response`, `Heartbeat`, `PollRequest`, `ResultRequest`
+- `RelayEnvelope` wraps tool execution requests
+- `ExecToolRequest/Result` for tool calls
+- `ChatStartRequest`, `ChatStreamRequest/Response` for interactive chat
+- `ApprovalReplyRequest` for remote approval decisions
+
+**Tools** (`internal/tools/execute.go`):
+- Supports: `shell`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+- Shell: subprocess with timeout, stdout/stderr streaming
+- File ops: path validation, content limits
+- Glob/grep: skip `.git`, `node_modules`, `__pycache__`, venv, etc.
 
 ## Configuration (`config.yaml`)
 
