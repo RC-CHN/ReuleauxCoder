@@ -64,3 +64,13 @@ def test_agent_loop_appends_ephemeral_runtime_context_at_tail() -> None:
     assert "[Runtime Context]" in messages[-1]["content"]
     assert "- Working directory: " in messages[-1]["content"]
     assert "- Shell: " in messages[-1]["content"]
+
+
+def test_agent_loop_runtime_working_directory_override() -> None:
+    agent = _AgentStub()
+    agent.runtime_working_directory = "/tmp/remote-workspace"
+    loop = AgentLoop(agent)
+
+    messages = loop._full_messages()
+
+    assert "- Working directory: /tmp/remote-workspace" in messages[-1]["content"]

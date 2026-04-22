@@ -25,11 +25,12 @@ class AgentLoop:
         """Build ephemeral runtime context appended only at send time."""
         uname = platform.uname()
         shell = get_platform_info().get_preferred_shell()
+        runtime_cwd = getattr(self.agent, "runtime_working_directory", None) or os.getcwd()
         content = (
             "[Runtime Context]\n"
             "This is ephemeral runtime state for the current turn. "
             "Do not treat it as persisted conversation history or a new user request.\n"
-            f"- Working directory: {os.getcwd()}\n"
+            f"- Working directory: {runtime_cwd}\n"
             f"- OS: {uname.system} {uname.release} ({uname.machine})\n"
             f"- Python: {platform.python_version()}\n"
             f"- Shell: {shell.value}"

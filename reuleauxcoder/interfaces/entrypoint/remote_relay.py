@@ -118,6 +118,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
 
         peer = relay_server.registry.get(peer_id)
         workspace_root = peer.workspace_root if peer is not None else None
+        runtime_cwd = workspace_root or (peer.cwd if peer is not None else None)
+        if runtime_cwd:
+            setattr(peer_agent, "runtime_working_directory", runtime_cwd)
         for tool in peer_agent.tools:
             backend = getattr(tool, "backend", None)
             if getattr(backend, "backend_id", None) != "remote_relay":

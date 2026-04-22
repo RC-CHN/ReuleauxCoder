@@ -409,6 +409,33 @@ class TestRunnerRemoteExec:
         finally:
             runner.cleanup(ctx.agent)
 
+    def test_runner_stream_chat_sets_remote_runtime_working_directory(self, tmp_path: Path) -> None:
+        port = _free_port()
+
+        def chat_behavior(agent: FakeAgent, _prompt: str) -> str:
+            return f"cwd:{getattr(agent, 'runtime_working_directory', '<missing>')}"
+
+        runner = _build_runner_with_fake_agent(f"127.0.0.1:{port}", chat_behavior=chat_behavior)
+        ctx = runner.initialize()
+        try:
+            assert runner._relay_server is not None
+            assert runner._relay_http_service is not None
+            _, peer_token = _register_peer(
+                runner._relay_http_service.base_url,
+                runner._relay_server.issue_bootstrap_token(ttl_sec=60),
+                str(tmp_path),
+            )
+            _, start_body = _json_request(
+                "POST",
+                f"{runner._relay_http_service.base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "hello"},
+            )
+            events = _collect_stream_events(runner._relay_http_service.base_url, peer_token, start_body["chat_id"])
+            end_event = [event for event in events if event["type"] == "chat_end"][-1]
+            assert end_event["payload"]["response"] == f"cwd:{tmp_path}"
+        finally:
+            runner.cleanup(ctx.agent)
+
     def test_runner_stream_chat_slash_command_renders_terminal_view(self, tmp_path: Path) -> None:
         port = _free_port()
         runner = _build_runner_with_fake_agent(f"127.0.0.1:{port}")
