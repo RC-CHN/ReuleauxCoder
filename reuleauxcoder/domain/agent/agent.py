@@ -57,6 +57,7 @@ class Agent:
 
         # State
         self.state = AgentState()
+        self._state_lock = threading.Lock()
         self._stop_event = threading.Event()
 
         # Context manager
@@ -233,6 +234,57 @@ class Agent:
                 return t
         return None
 
+    @staticmethod
+    def _format_subagent_job_message(job) -> tuple[str, bool]:
+        if job.status == "completed":
+            content = (
+                "[Background sub-agent completed]\n"
+                f"id={job.id}\n"
+                f"mode={job.mode}\n"
+                f"task={job.task}\n\n"
+                f"{job.result or '(empty)'}\n"
+                "[/Background sub-agent completed]"
+            )
+            return content, True
+
+        error_text = (
+            "[Background sub-agent failed]\n"
+            f"id={job.id}\n"
+            f"mode={job.mode}\n"
+            f"task={job.task}\n\n"
+            f"{job.error or 'unknown error'}\n"
+            "[/Background sub-agent failed]"
+        )
+        return error_text, False
+
+    def inject_subagent_job_result(self, job) -> bool:
+        """Inject one finished sub-agent job into parent history immediately."""
+        with self._state_lock:
+            if getattr(job, "injected_to_parent", False):
+                return False
+            job.injected_to_parent = True
+            content, success = self._format_subagent_job_message(job)
+            self.state.messages.append({"role": "assistant", "content": content})
+
+        if success:
+            self._emit_event(AgentEvent.subagent_completed(
+                job_id=job.id,
+                mode=job.mode,
+                task=job.task,
+                status=job.status,
+                result=job.result,
+            ))
+        else:
+            self._emit_event(AgentEvent.subagent_completed(
+                job_id=job.id,
+                mode=job.mode,
+                task=job.task,
+                status=job.status,
+                error=job.error,
+            ))
+        self._emit_event(AgentEvent.tool_call_end("agent", content, success=success))
+        return True
+
     def _inject_completed_subagent_jobs(self) -> int:
         """Inject completed background sub-agent summaries into parent history."""
         try:
@@ -244,43 +296,8 @@ class Agent:
 
         injected = 0
         for job in manager.drain_completed_for_parent():
-            if job.status == "completed":
-                content = (
-                    "[Background sub-agent completed]\n"
-                    f"id={job.id}\n"
-                    f"mode={job.mode}\n"
-                    f"task={job.task}\n\n"
-                    f"{job.result or '(empty)'}\n"
-                    "[/Background sub-agent completed]"
-                )
-                self.state.messages.append({"role": "assistant", "content": content})
-                self._emit_event(AgentEvent.subagent_completed(
-                    job_id=job.id,
-                    mode=job.mode,
-                    task=job.task,
-                    status=job.status,
-                    result=job.result,
-                ))
-                self._emit_event(AgentEvent.tool_call_end("agent", content, success=True))
-            else:
-                error_text = (
-                    "[Background sub-agent failed]\n"
-                    f"id={job.id}\n"
-                    f"mode={job.mode}\n"
-                    f"task={job.task}\n\n"
-                    f"{job.error or 'unknown error'}\n"
-                    "[/Background sub-agent failed]"
-                )
-                self.state.messages.append({"role": "assistant", "content": error_text})
-                self._emit_event(AgentEvent.subagent_completed(
-                    job_id=job.id,
-                    mode=job.mode,
-                    task=job.task,
-                    status=job.status,
-                    error=job.error,
-                ))
-                self._emit_event(AgentEvent.tool_call_end("agent", error_text, success=False))
-            injected += 1
+            if self.inject_subagent_job_result(job):
+                injected += 1
         return injected
 
     def chat(self, user_input: str) -> str:

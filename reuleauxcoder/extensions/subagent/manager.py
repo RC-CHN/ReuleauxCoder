@@ -185,6 +185,7 @@ class SubagentManager:
         future = self._explore_pool.submit(_runner)
 
         def _on_done(done: Future) -> None:
+            tracked_for_injection = None
             with self._lock:
                 tracked = self._jobs.get(job_id)
                 if tracked is None:
@@ -205,13 +206,23 @@ class SubagentManager:
                         emit_level = "warning"
                     else:
                         tracked.status = "completed"
+                        tracked_for_injection = tracked
                         emit_status = "completed"
                         emit_level = "success"
                 except Exception as e:  # pragma: no cover - defensive
                     tracked.error = str(e)
                     tracked.status = "failed"
+                    tracked_for_injection = tracked
                     emit_status = "failed"
                     emit_level = "error"
+
+            if tracked_for_injection is not None:
+                inject = getattr(parent_agent, "inject_subagent_job_result", None)
+                if callable(inject):
+                    try:
+                        inject(tracked_for_injection)
+                    except Exception:
+                        pass
 
             _emit_subagent_ui_event(
                 parent_agent,
@@ -305,7 +316,7 @@ class SubagentManager:
                         result=job.result,
                         error=job.error,
                         detached_due_to_timeout=job.detached_due_to_timeout,
-                        injected_to_parent=True,
+                        injected_to_parent=False,
                     )
                 )
         return sorted(drained, key=lambda item: item.finished_at or item.created_at)
