@@ -16,3 +16,4 @@ dist/
 .pytest_cache/
 .rcoder/
 docs/rfc/
+artifacts/
