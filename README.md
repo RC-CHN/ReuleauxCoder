@@ -65,8 +65,9 @@ rcoder --server
 After that, you can bootstrap a peer on machine B with:
 
 ```bash
-curl -fsSL https://<HOST>/remote/bootstrap.sh \
-  -H "X-RC-Bootstrap-Secret: $RC_BOOTSTRAP_SECRET" | sh
+RC_HOST="https://<HOST>" \
+RC_BOOTSTRAP_SECRET='<your-bootstrap-secret>' \
+sh -c 'curl -fsSL -H "X-RC-Bootstrap-Secret: ${RC_BOOTSTRAP_SECRET}" "${RC_HOST}/remote/bootstrap.sh" | sh'
 ```
 
 The bootstrap access secret is checked over HTTPS before the server issues a short-lived one-time bootstrap token embedded into the returned script.

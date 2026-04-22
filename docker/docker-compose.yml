@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: reuleauxcoder-host:latest
+    image: reuleauxcoder-host:test
     container_name: reuleauxcoder-host
     restart: unless-stopped
     env_file:

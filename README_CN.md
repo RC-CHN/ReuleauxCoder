@@ -65,8 +65,9 @@ rcoder --server
 之后可以在 B 机通过一条命令拉起 peer：
 
 ```bash
-curl -fsSL https://<HOST>/remote/bootstrap.sh \
-  -H "X-RC-Bootstrap-Secret: $RC_BOOTSTRAP_SECRET" | sh
+RC_HOST="https://<HOST>" \
+RC_BOOTSTRAP_SECRET='<你的 bootstrap secret>' \
+sh -c 'curl -fsSL -H "X-RC-Bootstrap-Secret: ${RC_BOOTSTRAP_SECRET}" "${RC_HOST}/remote/bootstrap.sh" | sh'
 ```
 
 服务端会先通过 HTTPS 校验 `Bootstrap Access Secret`，校验通过后才会签发一个短期、一次性的 bootstrap token，并嵌入返回的脚本中。

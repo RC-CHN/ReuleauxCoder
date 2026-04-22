@@ -1,4 +1,4 @@
-FROM golang:1.23 AS peer-builder
+FROM golang:1.25 AS peer-builder
 
 WORKDIR /src/reuleauxcoder-agent
 COPY reuleauxcoder-agent/go.mod reuleauxcoder-agent/go.sum ./
@@ -25,12 +25,15 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md README_CN.md /app/
 COPY reuleauxcoder /app/reuleauxcoder
-COPY .rcoder/skills /app/.rcoder/skills
 COPY docker/entrypoint.sh /app/docker/entrypoint.sh
 COPY docker/config.host.yaml /app/docker/config.host.yaml.template
 COPY --from=peer-builder /out /app/artifacts/remote
 
-RUN pip install --no-cache-dir . \
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir --index-url https://pypi.org/simple . \
+    && SITE_PACKAGES="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+    && mkdir -p "${SITE_PACKAGES}/artifacts" \
+    && ln -sfn /app/artifacts/remote "${SITE_PACKAGES}/artifacts/remote" \
     && chmod +x /app/docker/entrypoint.sh \
     && mkdir -p /app/.rcoder
 
