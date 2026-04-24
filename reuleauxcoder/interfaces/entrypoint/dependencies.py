@@ -46,6 +46,7 @@ def _default_create_llm(config: Config) -> LLM:
         reasoning_effort=getattr(config, "reasoning_effort", None),
         thinking_enabled=getattr(config, "thinking_enabled", None),
         reasoning_replay_mode=getattr(config, "reasoning_replay_mode", None),
+        reasoning_replay_placeholder=getattr(config, "reasoning_replay_placeholder", None),
         debug_trace=getattr(config, "llm_debug_trace", False),
     )
 

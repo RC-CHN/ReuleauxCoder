@@ -25,6 +25,7 @@ from reuleauxcoder.services.llm.diagnostics import (
 
 MAX_DEBUG_CONTENT_CHARS = 400
 MAX_DEBUG_STREAM_EVENTS = 200
+DEFAULT_REASONING_REPLAY_PLACEHOLDER = "[PLACE_HOLDER]"
 
 
 def _mask_api_key(api_key: str) -> str:
@@ -99,13 +100,22 @@ def _persist_debug_trace(
     return path
 
 
-def _sanitize_messages_for_llm(
+def _normalize_reasoning_replay_mode(reasoning_replay_mode: str | None) -> str:
+    mode = (reasoning_replay_mode or "none").strip().lower()
+    if mode not in {"none", "tool_calls"}:
+        return "none"
+    return mode
+
+
+
+def _sanitize_messages_for_llm_core(
     messages: list[dict],
     *,
     preserve_reasoning_content: bool = True,
     backfill_reasoning_content_for_tool_calls: bool = False,
     require_reasoning_content_for_tool_calls: bool = False,
     replay_reasoning_for_non_tool_assistant: bool = False,
+    reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
 ) -> list[dict]:
     """Repair/trim malformed tool-call history before sending to the LLM."""
     sanitized: list[dict] = []
@@ -146,7 +156,7 @@ def _sanitize_messages_for_llm(
 
         item["tool_calls"] = repaired_tool_calls
         if effective_backfill and "reasoning_content" not in item:
-            item["reasoning_content"] = ""
+            item["reasoning_content"] = reasoning_replay_placeholder
         sanitized.append(item)
 
     final_messages: list[dict] = []
@@ -183,6 +193,79 @@ def _sanitize_messages_for_llm(
     return final_messages
 
 
+
+def _sanitize_messages_for_reasoning_replay_none(
+    messages: list[dict],
+    *,
+    preserve_reasoning_content: bool = True,
+    backfill_reasoning_content_for_tool_calls: bool = False,
+    reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+) -> list[dict]:
+    return _sanitize_messages_for_llm_core(
+        messages,
+        preserve_reasoning_content=preserve_reasoning_content,
+        backfill_reasoning_content_for_tool_calls=backfill_reasoning_content_for_tool_calls,
+        require_reasoning_content_for_tool_calls=False,
+        replay_reasoning_for_non_tool_assistant=False,
+        reasoning_replay_placeholder=reasoning_replay_placeholder,
+    )
+
+
+
+def _sanitize_messages_for_reasoning_replay_tool_calls(
+    messages: list[dict],
+    *,
+    preserve_reasoning_content: bool = True,
+    backfill_reasoning_content_for_tool_calls: bool = False,
+    reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+) -> list[dict]:
+    return _sanitize_messages_for_llm_core(
+        messages,
+        preserve_reasoning_content=preserve_reasoning_content,
+        backfill_reasoning_content_for_tool_calls=backfill_reasoning_content_for_tool_calls,
+        require_reasoning_content_for_tool_calls=preserve_reasoning_content,
+        replay_reasoning_for_non_tool_assistant=False,
+        reasoning_replay_placeholder=reasoning_replay_placeholder,
+    )
+
+
+
+def _sanitize_messages_for_llm(
+    messages: list[dict],
+    *,
+    preserve_reasoning_content: bool = True,
+    backfill_reasoning_content_for_tool_calls: bool = False,
+    require_reasoning_content_for_tool_calls: bool = False,
+    replay_reasoning_for_non_tool_assistant: bool = False,
+    reasoning_replay_mode: str | None = None,
+    reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+) -> list[dict]:
+    if reasoning_replay_mode is not None:
+        mode = _normalize_reasoning_replay_mode(reasoning_replay_mode)
+        if mode == "tool_calls":
+            return _sanitize_messages_for_reasoning_replay_tool_calls(
+                messages,
+                preserve_reasoning_content=preserve_reasoning_content,
+                backfill_reasoning_content_for_tool_calls=backfill_reasoning_content_for_tool_calls,
+                reasoning_replay_placeholder=reasoning_replay_placeholder,
+            )
+        return _sanitize_messages_for_reasoning_replay_none(
+            messages,
+            preserve_reasoning_content=preserve_reasoning_content,
+            backfill_reasoning_content_for_tool_calls=backfill_reasoning_content_for_tool_calls,
+            reasoning_replay_placeholder=reasoning_replay_placeholder,
+        )
+
+    return _sanitize_messages_for_llm_core(
+        messages,
+        preserve_reasoning_content=preserve_reasoning_content,
+        backfill_reasoning_content_for_tool_calls=backfill_reasoning_content_for_tool_calls,
+        require_reasoning_content_for_tool_calls=require_reasoning_content_for_tool_calls,
+        replay_reasoning_for_non_tool_assistant=replay_reasoning_for_non_tool_assistant,
+        reasoning_replay_placeholder=reasoning_replay_placeholder,
+    )
+
+
 class LLM:
     """LLM client that wraps OpenAI-compatible APIs."""
 
@@ -198,6 +281,7 @@ class LLM:
         reasoning_effort: str | None = None,
         thinking_enabled: bool | None = None,
         reasoning_replay_mode: str | None = None,
+        reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
         debug_trace: bool = False,
         ui_bus: UIEventBus | None = None,
     ):
@@ -214,6 +298,7 @@ class LLM:
         self.reasoning_effort = reasoning_effort
         self.thinking_enabled = thinking_enabled
         self.reasoning_replay_mode = reasoning_replay_mode
+        self.reasoning_replay_placeholder = reasoning_replay_placeholder
         self.debug_trace = debug_trace
         self.ui_bus = ui_bus
 
@@ -230,6 +315,7 @@ class LLM:
         reasoning_effort: str | None = None,
         thinking_enabled: bool | None = None,
         reasoning_replay_mode: str | None = None,
+        reasoning_replay_placeholder: str | None = None,
         debug_trace: bool | None = None,
     ) -> None:
         """Hot-swap runtime model/client settings."""
@@ -251,6 +337,8 @@ class LLM:
             self.thinking_enabled = thinking_enabled
         if reasoning_replay_mode is not None:
             self.reasoning_replay_mode = reasoning_replay_mode
+        if reasoning_replay_placeholder is not None:
+            self.reasoning_replay_placeholder = reasoning_replay_placeholder
         if debug_trace is not None:
             self.debug_trace = debug_trace
 
@@ -272,16 +360,13 @@ class LLM:
         """Send messages, stream back response, handle tool calls."""
         raw_messages = [dict(msg) for msg in messages]
         thinking_enabled = bool(self.thinking_enabled)
-        replay_mode = (self.reasoning_replay_mode or "none").strip().lower()
-        require_reasoning_for_tool_calls = (
-            replay_mode == "tool_calls" and self.preserve_reasoning_content
-        )
+        replay_mode = _normalize_reasoning_replay_mode(self.reasoning_replay_mode)
         messages = _sanitize_messages_for_llm(
             messages,
             preserve_reasoning_content=self.preserve_reasoning_content,
             backfill_reasoning_content_for_tool_calls=self.backfill_reasoning_content_for_tool_calls,
-            require_reasoning_content_for_tool_calls=require_reasoning_for_tool_calls,
-            replay_reasoning_for_non_tool_assistant=False,
+            reasoning_replay_mode=replay_mode,
+            reasoning_replay_placeholder=self.reasoning_replay_placeholder,
         )
         params: dict[str, Any] = {
             "model": self.model,

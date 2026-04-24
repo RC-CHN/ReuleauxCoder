@@ -19,6 +19,7 @@ CONFIG_SCHEMA = {
                 "thinking_enabled": "bool (optional, enable provider thinking/reasoning mode for this profile)",
                 "reasoning_effort": "string (optional, provider-specific reasoning effort, e.g. high/max)",
                 "reasoning_replay_mode": "string (optional, one of: none, tool_calls; controls which historical assistant reasoning_content is replayed)",
+                "reasoning_replay_placeholder": "string (optional, placeholder text injected when backfilling missing reasoning_content; default: [PLACE_HOLDER])",
             }
         },
     },

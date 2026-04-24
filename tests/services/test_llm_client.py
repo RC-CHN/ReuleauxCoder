@@ -28,7 +28,7 @@ def test_sanitize_messages_backfills_reasoning_content_for_assistant_tool_calls(
         backfill_reasoning_content_for_tool_calls=True,
     )
 
-    assert sanitized[0]["reasoning_content"] == ""
+    assert sanitized[0]["reasoning_content"] == "[PLACE_HOLDER]"
 
 
 def test_sanitize_messages_does_not_backfill_when_disabled() -> None:
@@ -118,10 +118,35 @@ def test_sanitize_messages_does_not_require_tool_reasoning_without_replay_mode()
     sanitized = _sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
-        require_reasoning_content_for_tool_calls=False,
+        reasoning_replay_mode="none",
     )
 
     assert "reasoning_content" not in sanitized[0]
+
+
+def test_sanitize_messages_replays_tool_reasoning_by_mode() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        reasoning_replay_mode="tool_calls",
+    )
+
+    assert sanitized[0]["reasoning_content"] == "[PLACE_HOLDER]"
 
 
 def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_required() -> None:
@@ -146,7 +171,7 @@ def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_req
         require_reasoning_content_for_tool_calls=True,
     )
 
-    assert sanitized[0]["reasoning_content"] == ""
+    assert sanitized[0]["reasoning_content"] == "[PLACE_HOLDER]"
 
 
 def test_sanitize_messages_strips_reasoning_content_when_preserve_disabled() -> None:

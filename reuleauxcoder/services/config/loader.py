@@ -289,6 +289,11 @@ class ConfigLoader:
                 if active_profile is not None
                 else app_config.get("reasoning_replay_mode")
             ),
+            reasoning_replay_placeholder=(
+                active_profile.reasoning_replay_placeholder
+                if active_profile is not None
+                else app_config.get("reasoning_replay_placeholder")
+            ),
             mcp_servers=mcp_servers,
             model_profiles=model_profiles,
             active_model_profile=active_model_profile,

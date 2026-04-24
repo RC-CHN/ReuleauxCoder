@@ -376,6 +376,8 @@ def _create_subagent_llm(parent_agent, model_profile_name: str | None):
                 max_tokens=profile.max_tokens,
                 preserve_reasoning_content=profile.preserve_reasoning_content,
                 backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
+                reasoning_replay_mode=profile.reasoning_replay_mode,
+                reasoning_replay_placeholder=profile.reasoning_replay_placeholder,
             ), profile_name
 
     return parent_agent.llm, None

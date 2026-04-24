@@ -54,6 +54,7 @@ class ModelProfileConfig:
     reasoning_effort: Optional[str] = None
     thinking_enabled: Optional[bool] = None
     reasoning_replay_mode: Optional[str] = None
+    reasoning_replay_placeholder: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary format for serialization."""
@@ -69,6 +70,7 @@ class ModelProfileConfig:
             "reasoning_effort": self.reasoning_effort,
             "thinking_enabled": self.thinking_enabled,
             "reasoning_replay_mode": self.reasoning_replay_mode,
+            "reasoning_replay_placeholder": self.reasoning_replay_placeholder,
         }
 
     @classmethod
@@ -89,6 +91,7 @@ class ModelProfileConfig:
             reasoning_effort=d.get("reasoning_effort"),
             thinking_enabled=d.get("thinking_enabled"),
             reasoning_replay_mode=d.get("reasoning_replay_mode"),
+            reasoning_replay_placeholder=d.get("reasoning_replay_placeholder"),
         )
 
 
@@ -201,6 +204,7 @@ class Config:
     reasoning_effort: Optional[str] = None
     thinking_enabled: Optional[bool] = None
     reasoning_replay_mode: Optional[str] = None
+    reasoning_replay_placeholder: Optional[str] = None
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     model_profiles: dict[str, ModelProfileConfig] = field(default_factory=dict)
     active_model_profile: Optional[str] = None

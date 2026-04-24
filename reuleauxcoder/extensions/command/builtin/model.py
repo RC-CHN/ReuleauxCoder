@@ -191,6 +191,7 @@ def _apply_main_profile_to_runtime(ctx, profile_name: str, profile) -> None:
         reasoning_effort=profile.reasoning_effort,
         thinking_enabled=profile.thinking_enabled,
         reasoning_replay_mode=profile.reasoning_replay_mode,
+        reasoning_replay_placeholder=profile.reasoning_replay_placeholder,
         debug_trace=debug_trace,
     )
     ctx.agent.context.reconfigure(profile.max_context_tokens)
