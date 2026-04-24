@@ -274,6 +274,21 @@ class ConfigLoader:
                 if active_profile is not None
                 else app_config.get("backfill_reasoning_content_for_tool_calls", False)
             ),
+            reasoning_effort=(
+                active_profile.reasoning_effort
+                if active_profile is not None
+                else app_config.get("reasoning_effort")
+            ),
+            thinking_enabled=(
+                active_profile.thinking_enabled
+                if active_profile is not None
+                else app_config.get("thinking_enabled")
+            ),
+            reasoning_replay_mode=(
+                active_profile.reasoning_replay_mode
+                if active_profile is not None
+                else app_config.get("reasoning_replay_mode")
+            ),
             mcp_servers=mcp_servers,
             model_profiles=model_profiles,
             active_model_profile=active_model_profile,

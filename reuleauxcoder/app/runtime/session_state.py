@@ -112,6 +112,9 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
             max_tokens=profile.max_tokens,
             preserve_reasoning_content=profile.preserve_reasoning_content,
             backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
+            reasoning_effort=profile.reasoning_effort,
+            thinking_enabled=profile.thinking_enabled,
+            reasoning_replay_mode=profile.reasoning_replay_mode,
             debug_trace=getattr(config, "llm_debug_trace", False),
         )
         agent.context.reconfigure(profile.max_context_tokens)
@@ -180,6 +183,9 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
             max_tokens=profile.max_tokens,
             preserve_reasoning_content=profile.preserve_reasoning_content,
             backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
+            reasoning_effort=profile.reasoning_effort,
+            thinking_enabled=profile.thinking_enabled,
+            reasoning_replay_mode=profile.reasoning_replay_mode,
             debug_trace=agent.llm.debug_trace,
         )
         agent.context.reconfigure(profile.max_context_tokens)

@@ -16,6 +16,9 @@ CONFIG_SCHEMA = {
                 "max_context_tokens": "int (default: 128000)",
                 "preserve_reasoning_content": "bool (default: true, persist/round-trip provider reasoning_content)",
                 "backfill_reasoning_content_for_tool_calls": "bool (default: false, inject empty reasoning_content for assistant tool calls when missing)",
+                "thinking_enabled": "bool (optional, enable provider thinking/reasoning mode for this profile)",
+                "reasoning_effort": "string (optional, provider-specific reasoning effort, e.g. high/max)",
+                "reasoning_replay_mode": "string (optional, one of: none, tool_calls; controls which historical assistant reasoning_content is replayed)",
             }
         },
     },

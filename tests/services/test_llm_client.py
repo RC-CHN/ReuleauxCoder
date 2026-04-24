@@ -56,6 +56,99 @@ def test_sanitize_messages_does_not_backfill_when_disabled() -> None:
     assert "reasoning_content" not in sanitized[0]
 
 
+def test_sanitize_messages_drops_reasoning_for_non_tool_assistant_by_default() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": "done",
+            "reasoning_content": "private thoughts",
+        }
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+    )
+
+    assert "reasoning_content" not in sanitized[0]
+
+
+def test_sanitize_messages_keeps_reasoning_for_tool_assistant_when_present() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "need to inspect files first",
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        require_reasoning_content_for_tool_calls=True,
+    )
+
+    assert sanitized[0]["reasoning_content"] == "need to inspect files first"
+
+
+def test_sanitize_messages_does_not_require_tool_reasoning_without_replay_mode() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        require_reasoning_content_for_tool_calls=False,
+    )
+
+    assert "reasoning_content" not in sanitized[0]
+
+
+def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_required() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        require_reasoning_content_for_tool_calls=True,
+    )
+
+    assert sanitized[0]["reasoning_content"] == ""
+
+
 def test_sanitize_messages_strips_reasoning_content_when_preserve_disabled() -> None:
     messages = [
         {

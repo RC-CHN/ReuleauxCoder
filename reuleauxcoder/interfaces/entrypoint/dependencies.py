@@ -43,6 +43,9 @@ def _default_create_llm(config: Config) -> LLM:
         backfill_reasoning_content_for_tool_calls=getattr(
             config, "backfill_reasoning_content_for_tool_calls", False
         ),
+        reasoning_effort=getattr(config, "reasoning_effort", None),
+        thinking_enabled=getattr(config, "thinking_enabled", None),
+        reasoning_replay_mode=getattr(config, "reasoning_replay_mode", None),
         debug_trace=getattr(config, "llm_debug_trace", False),
     )
 

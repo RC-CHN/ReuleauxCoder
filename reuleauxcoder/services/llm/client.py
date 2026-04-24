@@ -104,13 +104,16 @@ def _sanitize_messages_for_llm(
     *,
     preserve_reasoning_content: bool = True,
     backfill_reasoning_content_for_tool_calls: bool = False,
+    require_reasoning_content_for_tool_calls: bool = False,
+    replay_reasoning_for_non_tool_assistant: bool = False,
 ) -> list[dict]:
     """Repair/trim malformed tool-call history before sending to the LLM."""
     sanitized: list[dict] = []
     tool_call_names: dict[str, str] = {}
     seen_tool_outputs: set[str] = set()
-    effective_backfill = (
-        preserve_reasoning_content and backfill_reasoning_content_for_tool_calls
+    effective_backfill = preserve_reasoning_content and (
+        backfill_reasoning_content_for_tool_calls
+        or require_reasoning_content_for_tool_calls
     )
 
     for msg_index, msg in enumerate(messages):
@@ -123,6 +126,8 @@ def _sanitize_messages_for_llm(
 
         raw_tool_calls = item.get("tool_calls") or []
         if not raw_tool_calls:
+            if not replay_reasoning_for_non_tool_assistant:
+                item.pop("reasoning_content", None)
             sanitized.append(item)
             continue
 
@@ -190,6 +195,9 @@ class LLM:
         max_tokens: int = 4096,
         preserve_reasoning_content: bool = True,
         backfill_reasoning_content_for_tool_calls: bool = False,
+        reasoning_effort: str | None = None,
+        thinking_enabled: bool | None = None,
+        reasoning_replay_mode: str | None = None,
         debug_trace: bool = False,
         ui_bus: UIEventBus | None = None,
     ):
@@ -203,6 +211,9 @@ class LLM:
         self.backfill_reasoning_content_for_tool_calls = (
             backfill_reasoning_content_for_tool_calls
         )
+        self.reasoning_effort = reasoning_effort
+        self.thinking_enabled = thinking_enabled
+        self.reasoning_replay_mode = reasoning_replay_mode
         self.debug_trace = debug_trace
         self.ui_bus = ui_bus
 
@@ -216,6 +227,9 @@ class LLM:
         max_tokens: int,
         preserve_reasoning_content: bool | None = None,
         backfill_reasoning_content_for_tool_calls: bool | None = None,
+        reasoning_effort: str | None = None,
+        thinking_enabled: bool | None = None,
+        reasoning_replay_mode: str | None = None,
         debug_trace: bool | None = None,
     ) -> None:
         """Hot-swap runtime model/client settings."""
@@ -231,6 +245,12 @@ class LLM:
             self.backfill_reasoning_content_for_tool_calls = (
                 backfill_reasoning_content_for_tool_calls
             )
+        if reasoning_effort is not None:
+            self.reasoning_effort = reasoning_effort
+        if thinking_enabled is not None:
+            self.thinking_enabled = thinking_enabled
+        if reasoning_replay_mode is not None:
+            self.reasoning_replay_mode = reasoning_replay_mode
         if debug_trace is not None:
             self.debug_trace = debug_trace
 
@@ -251,10 +271,17 @@ class LLM:
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
         raw_messages = [dict(msg) for msg in messages]
+        thinking_enabled = bool(self.thinking_enabled)
+        replay_mode = (self.reasoning_replay_mode or "none").strip().lower()
+        require_reasoning_for_tool_calls = (
+            replay_mode == "tool_calls" and self.preserve_reasoning_content
+        )
         messages = _sanitize_messages_for_llm(
             messages,
             preserve_reasoning_content=self.preserve_reasoning_content,
             backfill_reasoning_content_for_tool_calls=self.backfill_reasoning_content_for_tool_calls,
+            require_reasoning_content_for_tool_calls=require_reasoning_for_tool_calls,
+            replay_reasoning_for_non_tool_assistant=False,
         )
         params: dict[str, Any] = {
             "model": self.model,
@@ -263,6 +290,10 @@ class LLM:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
+        if thinking_enabled:
+            params["extra_body"] = {"thinking": {"type": "enabled"}}
 
         if tools:
             params["tools"] = tools

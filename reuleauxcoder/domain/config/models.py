@@ -51,6 +51,9 @@ class ModelProfileConfig:
     max_context_tokens: int = 128_000
     preserve_reasoning_content: bool = True
     backfill_reasoning_content_for_tool_calls: bool = False
+    reasoning_effort: Optional[str] = None
+    thinking_enabled: Optional[bool] = None
+    reasoning_replay_mode: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary format for serialization."""
@@ -63,6 +66,9 @@ class ModelProfileConfig:
             "max_context_tokens": self.max_context_tokens,
             "preserve_reasoning_content": self.preserve_reasoning_content,
             "backfill_reasoning_content_for_tool_calls": self.backfill_reasoning_content_for_tool_calls,
+            "reasoning_effort": self.reasoning_effort,
+            "thinking_enabled": self.thinking_enabled,
+            "reasoning_replay_mode": self.reasoning_replay_mode,
         }
 
     @classmethod
@@ -80,6 +86,9 @@ class ModelProfileConfig:
             backfill_reasoning_content_for_tool_calls=d.get(
                 "backfill_reasoning_content_for_tool_calls", False
             ),
+            reasoning_effort=d.get("reasoning_effort"),
+            thinking_enabled=d.get("thinking_enabled"),
+            reasoning_replay_mode=d.get("reasoning_replay_mode"),
         )
 
 
@@ -189,6 +198,9 @@ class Config:
     max_context_tokens: int = 128_000
     preserve_reasoning_content: bool = True
     backfill_reasoning_content_for_tool_calls: bool = False
+    reasoning_effort: Optional[str] = None
+    thinking_enabled: Optional[bool] = None
+    reasoning_replay_mode: Optional[str] = None
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
     model_profiles: dict[str, ModelProfileConfig] = field(default_factory=dict)
     active_model_profile: Optional[str] = None
