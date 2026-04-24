@@ -203,6 +203,47 @@ def test_sanitize_messages_does_not_replay_non_tool_turn_reasoning_by_mode() -> 
     assert "reasoning_content" not in sanitized[1]
 
 
+def test_sanitize_messages_backfills_missing_reasoning_for_non_tool_assistant_in_tool_turn() -> (
+    None
+):
+    """Non-tool-call assistant lacking reasoning_content in a tool-call turn
+    (e.g. injected sub-agent results) must receive a placeholder when
+    reasoning_replay_mode='tool_calls'."""
+    messages = [
+        {"role": "user", "content": "send sub-agents"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "I need background jobs",
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "agent", "arguments": '{"tasks":["..."],"run_in_background":true}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "started jobs"},
+        {
+            "role": "assistant",
+            "content": "[Background sub-agent completed]...",
+            # No reasoning_content — injected by system
+        },
+        {"role": "user", "content": "are they done?"},
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        reasoning_replay_mode="tool_calls",
+    )
+
+    # Tool-call assistant keeps its original reasoning
+    assert sanitized[1]["reasoning_content"] == "I need background jobs"
+    # Injected non-tool-call assistant gets backfilled
+    assert sanitized[3]["reasoning_content"] == "[PLACE_HOLDER]"
+
+
 def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_required() -> None:
     messages = [
         {

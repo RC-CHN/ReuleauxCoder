@@ -145,7 +145,9 @@ def _sanitize_messages_for_llm_core(
 
         raw_tool_calls = item.get("tool_calls") or []
         if not raw_tool_calls:
-            if not (replay_reasoning_for_non_tool_assistant or user_turn_had_tool_calls):
+            if effective_backfill and user_turn_had_tool_calls and "reasoning_content" not in item:
+                item["reasoning_content"] = reasoning_replay_placeholder
+            elif not (replay_reasoning_for_non_tool_assistant or user_turn_had_tool_calls):
                 item.pop("reasoning_content", None)
             sanitized.append(item)
             continue
