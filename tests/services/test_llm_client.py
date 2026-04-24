@@ -149,6 +149,60 @@ def test_sanitize_messages_replays_tool_reasoning_by_mode() -> None:
     assert sanitized[0]["reasoning_content"] == "[PLACE_HOLDER]"
 
 
+def test_sanitize_messages_replays_all_assistant_reasoning_within_tool_turn() -> None:
+    messages = [
+        {"role": "user", "content": "question 1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "need tool first",
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
+        {
+            "role": "assistant",
+            "content": "final answer",
+            "reasoning_content": "now I can answer",
+        },
+        {"role": "user", "content": "question 2"},
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        reasoning_replay_mode="tool_calls",
+    )
+
+    assert sanitized[1]["reasoning_content"] == "need tool first"
+    assert sanitized[3]["reasoning_content"] == "now I can answer"
+
+
+def test_sanitize_messages_does_not_replay_non_tool_turn_reasoning_by_mode() -> None:
+    messages = [
+        {"role": "user", "content": "question 1"},
+        {
+            "role": "assistant",
+            "content": "plain answer",
+            "reasoning_content": "private thoughts",
+        },
+        {"role": "user", "content": "question 2"},
+    ]
+
+    sanitized = _sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        reasoning_replay_mode="tool_calls",
+    )
+
+    assert "reasoning_content" not in sanitized[1]
+
+
 def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_required() -> None:
     messages = [
         {

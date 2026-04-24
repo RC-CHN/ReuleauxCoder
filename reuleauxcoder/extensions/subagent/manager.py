@@ -9,7 +9,7 @@ import time
 import uuid
 
 from reuleauxcoder.interfaces.events import UIEventKind
-from reuleauxcoder.services.llm.client import LLM
+from reuleauxcoder.services.llm.factory import build_llm_from_settings
 
 
 _SUBAGENT_MODES = {"explore", "execute", "verify"}
@@ -368,16 +368,9 @@ def _create_subagent_llm(parent_agent, model_profile_name: str | None):
     if profile_name:
         profile = profiles.get(profile_name)
         if profile is not None:
-            return LLM(
-                model=profile.model,
-                api_key=profile.api_key,
-                base_url=profile.base_url,
-                temperature=profile.temperature,
-                max_tokens=profile.max_tokens,
-                preserve_reasoning_content=profile.preserve_reasoning_content,
-                backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
-                reasoning_replay_mode=profile.reasoning_replay_mode,
-                reasoning_replay_placeholder=profile.reasoning_replay_placeholder,
+            return build_llm_from_settings(
+                profile,
+                debug_trace=getattr(parent_agent.llm, "debug_trace", False),
             ), profile_name
 
     return parent_agent.llm, None

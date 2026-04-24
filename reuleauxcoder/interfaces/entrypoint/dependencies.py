@@ -26,6 +26,7 @@ from reuleauxcoder.interfaces.interactions import UIInteractor
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.llm.client import LLM
+from reuleauxcoder.services.llm.factory import build_llm_from_settings
 
 
 def _default_load_config(path: Path | None) -> Config:
@@ -33,20 +34,8 @@ def _default_load_config(path: Path | None) -> Config:
 
 
 def _default_create_llm(config: Config) -> LLM:
-    return LLM(
-        model=config.model,
-        api_key=config.api_key,
-        base_url=config.base_url,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-        preserve_reasoning_content=getattr(config, "preserve_reasoning_content", True),
-        backfill_reasoning_content_for_tool_calls=getattr(
-            config, "backfill_reasoning_content_for_tool_calls", False
-        ),
-        reasoning_effort=getattr(config, "reasoning_effort", None),
-        thinking_enabled=getattr(config, "thinking_enabled", None),
-        reasoning_replay_mode=getattr(config, "reasoning_replay_mode", None),
-        reasoning_replay_placeholder=getattr(config, "reasoning_replay_placeholder", None),
+    return build_llm_from_settings(
+        config,
         debug_trace=getattr(config, "llm_debug_trace", False),
     )
 

@@ -125,22 +125,32 @@ def _sanitize_messages_for_llm_core(
         backfill_reasoning_content_for_tool_calls
         or require_reasoning_content_for_tool_calls
     )
+    user_turn_had_tool_calls = False
 
     for msg_index, msg in enumerate(messages):
         item = dict(msg)
-        if not preserve_reasoning_content:
-            item.pop("reasoning_content", None)
-        if item.get("role") != "assistant":
+        role = item.get("role")
+
+        if role == "user":
+            user_turn_had_tool_calls = False
             sanitized.append(item)
             continue
 
+        if role != "assistant":
+            sanitized.append(item)
+            continue
+
+        if not preserve_reasoning_content:
+            item.pop("reasoning_content", None)
+
         raw_tool_calls = item.get("tool_calls") or []
         if not raw_tool_calls:
-            if not replay_reasoning_for_non_tool_assistant:
+            if not (replay_reasoning_for_non_tool_assistant or user_turn_had_tool_calls):
                 item.pop("reasoning_content", None)
             sanitized.append(item)
             continue
 
+        user_turn_had_tool_calls = True
         repaired_tool_calls: list[dict] = []
         for tc_index, tc in enumerate(raw_tool_calls):
             tc_item = dict(tc)

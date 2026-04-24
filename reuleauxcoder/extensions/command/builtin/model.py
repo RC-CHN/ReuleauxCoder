@@ -24,6 +24,7 @@ from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
 from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.interfaces.view_registration import register_view
+from reuleauxcoder.services.llm.factory import reconfigure_llm_from_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,18 +181,9 @@ def _apply_main_profile_to_runtime(ctx, profile_name: str, profile) -> None:
     debug_trace = getattr(
         ctx.agent.llm, "debug_trace", getattr(ctx.config, "llm_debug_trace", False)
     )
-    ctx.agent.llm.reconfigure(
-        model=profile.model,
-        api_key=profile.api_key,
-        base_url=profile.base_url,
-        temperature=profile.temperature,
-        max_tokens=profile.max_tokens,
-        preserve_reasoning_content=profile.preserve_reasoning_content,
-        backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
-        reasoning_effort=profile.reasoning_effort,
-        thinking_enabled=profile.thinking_enabled,
-        reasoning_replay_mode=profile.reasoning_replay_mode,
-        reasoning_replay_placeholder=profile.reasoning_replay_placeholder,
+    reconfigure_llm_from_settings(
+        ctx.agent.llm,
+        profile,
         debug_trace=debug_trace,
     )
     ctx.agent.context.reconfigure(profile.max_context_tokens)
