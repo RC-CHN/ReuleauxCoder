@@ -529,6 +529,14 @@ class LLM:
                         "stream_options": params.get("stream_options"),
                         "stream_options_enabled": debug_stream_options_enabled,
                         "tool_count": len(params.get("tools") or []),
+                        "reasoning_effort": params.get("reasoning_effort"),
+                        "reasoning_replay_mode": replay_mode,
+                        "thinking_enabled": self.thinking_enabled,
+                        "thinking_type": (
+                            ((params.get("extra_body") or {}).get("thinking") or {}).get(
+                                "type"
+                            )
+                        ),
                     },
                     "messages": {
                         "raw_count": len(raw_messages),

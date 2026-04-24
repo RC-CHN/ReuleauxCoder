@@ -27,6 +27,20 @@ models:
       preserve_reasoning_content: true
       backfill_reasoning_content_for_tool_calls: false
 
+    # Example DeepSeek reasoning profile for tool-calling workloads.
+    deepseek-v4-pro:
+      model: "deepseek-v4-pro"
+      api_key: "your-deepseek-api-key-here"
+      base_url: "https://api.deepseek.com"
+      max_tokens: 8192
+      temperature: 0.0
+      max_context_tokens: 128000
+      preserve_reasoning_content: true
+      backfill_reasoning_content_for_tool_calls: false
+      thinking_enabled: true
+      reasoning_effort: "high"
+      reasoning_replay_mode: "tool_calls"
+
 modes:
   active: "coder"
   profiles:
