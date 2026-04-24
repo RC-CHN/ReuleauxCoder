@@ -17,7 +17,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from reuleauxcoder.app.runtime.session_state import get_session_fingerprint, restore_config_runtime_defaults
+from reuleauxcoder.app.runtime.session_state import (
+    get_session_fingerprint,
+    restore_config_runtime_defaults,
+)
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.hooks import (
@@ -40,7 +43,10 @@ from reuleauxcoder.interfaces.entrypoint.dependencies import (
     AppOptions,
     _default_create_remote_artifact_provider,
 )
-from reuleauxcoder.interfaces.entrypoint.remote_relay import bind_remote_chat_handler, init_remote_relay
+from reuleauxcoder.interfaces.entrypoint.remote_relay import (
+    bind_remote_chat_handler,
+    init_remote_relay,
+)
 from reuleauxcoder.interfaces.entrypoint.session_lifecycle import restore_session
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.services.llm.client import LLM
@@ -77,7 +83,9 @@ class AppRunner:
             restore_config_runtime_defaults(config, agent)
             current_session_id, session_exit_time = None, None
         else:
-            current_session_id, session_exit_time, sessions_dir = self._restore_session(config, agent, ui_bus)
+            current_session_id, session_exit_time, sessions_dir = self._restore_session(
+                config, agent, ui_bus
+            )
 
         app_ctx = AppContext(
             config=config,
@@ -123,7 +131,9 @@ class AppRunner:
         llm.ui_bus = ui_bus
         tool_backend = self.dependencies.create_tool_backend(config, ui_bus)
         if self._relay_server is not None:
-            tool_backend = RemoteRelayToolBackend(relay_server=self._relay_server, ui_bus=ui_bus)
+            tool_backend = RemoteRelayToolBackend(
+                relay_server=self._relay_server, ui_bus=ui_bus
+            )
         tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
         setattr(agent, "runtime_config", config)
@@ -168,7 +178,9 @@ class AppRunner:
         setattr(agent, "mcp_manager", mcp_manager)
         return mcp_manager
 
-    def _init_skills(self, config: Config, agent: Agent, ui_bus: UIEventBus) -> SkillsService:
+    def _init_skills(
+        self, config: Config, agent: Agent, ui_bus: UIEventBus
+    ) -> SkillsService:
         """Initialize skills service and attach stable catalog to the agent."""
         skills_service = SkillsService(
             workspace_dir=Path.cwd(),
@@ -198,7 +210,9 @@ class AppRunner:
         for name in reload_result.removed:
             ui_bus.warning(f"Skill removed: {name}", kind=UIEventKind.SYSTEM)
         for name in reload_result.missing:
-            ui_bus.warning(f"Skill not found and skipped: {name}", kind=UIEventKind.SYSTEM)
+            ui_bus.warning(
+                f"Skill not found and skipped: {name}", kind=UIEventKind.SYSTEM
+            )
         for diagnostic in reload_result.diagnostics:
             emit = ui_bus.warning if diagnostic.level == "warning" else ui_bus.error
             emit(diagnostic.message, kind=UIEventKind.SYSTEM)
@@ -221,8 +235,14 @@ class AppRunner:
                 RunnerShutdownContext(hook_point=HookPoint.RUNNER_SHUTDOWN),
             )
         if self._relay_http_service is not None:
-            artifact_provider = getattr(self._relay_http_service, "artifact_provider", None)
-            build_dir = getattr(artifact_provider, "_build_dir", None) if artifact_provider is not None else None
+            artifact_provider = getattr(
+                self._relay_http_service, "artifact_provider", None
+            )
+            build_dir = (
+                getattr(artifact_provider, "_build_dir", None)
+                if artifact_provider is not None
+                else None
+            )
             self._relay_http_service.stop()
             self._relay_http_service = None
             if isinstance(build_dir, Path):
@@ -244,7 +264,10 @@ class AppRunner:
     def _run_lifecycle_hooks(
         agent: Agent,
         hook_point: HookPoint,
-        context: RunnerStartupContext | RunnerShutdownContext | SessionStartContext | SessionSaveContext,
+        context: RunnerStartupContext
+        | RunnerShutdownContext
+        | SessionStartContext
+        | SessionSaveContext,
     ) -> None:
         """Run hooks for a lifecycle event without mutating control flow."""
         for decision in agent.hook_registry.run_guards(hook_point, context):
@@ -253,7 +276,9 @@ class AppRunner:
         agent.hook_registry.run_transforms(hook_point, context)
         agent.hook_registry.run_observers(hook_point, context)
 
-    def _init_mcp(self, mcp_servers: list[Any], agent: Agent, ui_bus: UIEventBus) -> MCPManager:
+    def _init_mcp(
+        self, mcp_servers: list[Any], agent: Agent, ui_bus: UIEventBus
+    ) -> MCPManager:
         """Initialize MCP manager and connect to servers."""
         manager = self.dependencies.create_mcp_manager(ui_bus)
         manager.start()

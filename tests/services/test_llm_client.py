@@ -4,7 +4,9 @@ from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 from reuleauxcoder.services.llm.client import LLM, _sanitize_messages_for_llm
 
 
-def test_sanitize_messages_backfills_reasoning_content_for_assistant_tool_calls() -> None:
+def test_sanitize_messages_backfills_reasoning_content_for_assistant_tool_calls() -> (
+    None
+):
     messages = [
         {
             "role": "assistant",
@@ -87,7 +89,9 @@ class _FakeUsage:
 
 
 class _FakeDelta:
-    def __init__(self, content: str = "", reasoning_content: str | None = None, tool_calls=None):
+    def __init__(
+        self, content: str = "", reasoning_content: str | None = None, tool_calls=None
+    ):
         self.content = content
         self.reasoning_content = reasoning_content
         self.tool_calls = tool_calls
@@ -104,7 +108,9 @@ class _FakeChunk:
         self.choices = [_FakeChoice(_FakeDelta(content=content))]
 
 
-def test_llm_debug_trace_persists_trace_and_emits_ui_event(tmp_path, monkeypatch) -> None:
+def test_llm_debug_trace_persists_trace_and_emits_ui_event(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     ui_bus = UIEventBus()
     seen = []
@@ -127,7 +133,11 @@ def test_llm_debug_trace_persists_trace_and_emits_ui_event(tmp_path, monkeypatch
         )
 
     llm._call_with_retry = _fake_call_with_retry  # type: ignore[method-assign]
-    response = llm.chat([{"role": "user", "content": "Hi"}], session_id="session_test", trace_id="trace_1")
+    response = llm.chat(
+        [{"role": "user", "content": "Hi"}],
+        session_id="session_test",
+        trace_id="trace_1",
+    )
 
     assert response.content == "Hello"
     debug_events = [event for event in seen if event.level == UIEventLevel.DEBUG]

@@ -48,7 +48,9 @@ class UIRegistry:
     """Static registry of available UI implementations."""
 
     def __init__(self, registrations: list[UIRegistration]):
-        self._registrations = {registration.profile.ui_id: registration for registration in registrations}
+        self._registrations = {
+            registration.profile.ui_id: registration for registration in registrations
+        }
 
     def get(self, ui_id: str) -> UIRegistration | None:
         """Return a registered UI if present."""

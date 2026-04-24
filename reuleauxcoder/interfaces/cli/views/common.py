@@ -13,10 +13,14 @@ def stop_stream_and_clear(renderer) -> None:
         close_active()
 
 
-def render_markdown_panel(renderer, *, markdown_text: str, title: str, border_style: str = "blue") -> bool:
+def render_markdown_panel(
+    renderer, *, markdown_text: str, title: str, border_style: str = "blue"
+) -> bool:
     """Render markdown content in a standard CLI panel."""
     if not markdown_text:
         return False
     stop_stream_and_clear(renderer)
-    renderer.console.print(Panel(Markdown(markdown_text), title=title, border_style=border_style))
+    renderer.console.print(
+        Panel(Markdown(markdown_text), title=title, border_style=border_style)
+    )
     return True

@@ -44,7 +44,9 @@ class WriteFileTool(Tool):
             return "Error: file_path must be a non-empty string"
         if not isinstance(content, str):
             return "Error: content must be a string"
-        return self.backend.exec_tool("write_file", {"file_path": file_path, "content": content})
+        return self.backend.exec_tool(
+            "write_file", {"file_path": file_path, "content": content}
+        )
 
     @backend_handler("local")
     def _execute_local(self, file_path: str, content: str) -> str:

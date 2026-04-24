@@ -6,8 +6,18 @@ from collections import defaultdict
 from copy import copy
 from typing import Any, cast
 
-from reuleauxcoder.domain.hooks.base import GuardHook, HookBase, ObserverHook, TransformHook
-from reuleauxcoder.domain.hooks.types import GuardDecision, HookContext, HookKind, HookPoint
+from reuleauxcoder.domain.hooks.base import (
+    GuardHook,
+    HookBase,
+    ObserverHook,
+    TransformHook,
+)
+from reuleauxcoder.domain.hooks.types import (
+    GuardDecision,
+    HookContext,
+    HookKind,
+    HookPoint,
+)
 
 
 class HookRegistry:
@@ -22,18 +32,26 @@ class HookRegistry:
 
     def unregister(self, hook_point: HookPoint, hook_name: str) -> None:
         """Remove a hook by name from a hook point."""
-        self._hooks[hook_point] = [h for h in self._hooks.get(hook_point, []) if h.name != hook_name]
+        self._hooks[hook_point] = [
+            h for h in self._hooks.get(hook_point, []) if h.name != hook_name
+        ]
 
     def list_hooks(self, hook_point: HookPoint | None = None) -> dict[str, list[str]]:
         """List registered hook names."""
         if hook_point is not None:
-            return {hook_point.value: [h.name for h in self._sorted_hooks(self._hooks.get(hook_point, []))]}
+            return {
+                hook_point.value: [
+                    h.name for h in self._sorted_hooks(self._hooks.get(hook_point, []))
+                ]
+            }
         return {
             point.value: [h.name for h in self._sorted_hooks(hooks)]
             for point, hooks in self._hooks.items()
         }
 
-    def run_guards(self, hook_point: HookPoint, context: HookContext) -> list[GuardDecision]:
+    def run_guards(
+        self, hook_point: HookPoint, context: HookContext
+    ) -> list[GuardDecision]:
         """Run guard hooks with fail-closed semantics."""
         decisions: list[GuardDecision] = []
         for hook in self._iter_kind(hook_point, HookKind.GUARD):
@@ -51,7 +69,9 @@ class HookRegistry:
                 break
         return decisions
 
-    def run_transforms(self, hook_point: HookPoint, context: HookContext) -> HookContext:
+    def run_transforms(
+        self, hook_point: HookPoint, context: HookContext
+    ) -> HookContext:
         """Run transform hooks, requiring same-type context results."""
         current = context
         for hook in self._iter_kind(hook_point, HookKind.TRANSFORM):

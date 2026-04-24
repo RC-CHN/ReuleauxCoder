@@ -1,5 +1,11 @@
 from reuleauxcoder.domain.agent.events import AgentEvent
-from reuleauxcoder.interfaces.events import AgentEventBridge, UIEvent, UIEventBus, UIEventKind, UIEventLevel
+from reuleauxcoder.interfaces.events import (
+    AgentEventBridge,
+    UIEvent,
+    UIEventBus,
+    UIEventKind,
+    UIEventLevel,
+)
 
 
 def test_ui_event_factory_methods_set_level_and_kind() -> None:
@@ -42,7 +48,13 @@ def test_ui_event_bus_open_view_emits_structured_view_event() -> None:
     seen = []
     bus.subscribe(lambda event: seen.append(event), replay_history=False)
 
-    bus.open_view("skills", title="Skills", payload={"markdown": "# Skills"}, focus=False, reuse_key="skills")
+    bus.open_view(
+        "skills",
+        title="Skills",
+        payload={"markdown": "# Skills"},
+        focus=False,
+        reuse_key="skills",
+    )
 
     event = seen[0]
     assert event.kind is UIEventKind.VIEW
@@ -72,7 +84,9 @@ def test_agent_event_bridge_maps_tool_events_to_debug_level() -> None:
     seen = []
     bus.subscribe(lambda event: seen.append(event), replay_history=False)
 
-    AgentEventBridge(bus).on_agent_event(AgentEvent.tool_call_start("shell", {"command": "ls"}))
+    AgentEventBridge(bus).on_agent_event(
+        AgentEvent.tool_call_start("shell", {"command": "ls"})
+    )
 
     event = seen[0]
     assert event.kind is UIEventKind.AGENT

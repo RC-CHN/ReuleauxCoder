@@ -18,7 +18,11 @@ from reuleauxcoder.domain.config.models import (
     RemoteExecConfig,
     SkillsConfig,
 )
-from reuleauxcoder.domain.config.schema import BUILTIN_MODES, DEFAULTS, DEFAULT_ACTIVE_MODE
+from reuleauxcoder.domain.config.schema import (
+    BUILTIN_MODES,
+    DEFAULTS,
+    DEFAULT_ACTIVE_MODE,
+)
 from reuleauxcoder.infrastructure.yaml.loader import save_yaml_config, load_yaml_config
 
 
@@ -73,9 +77,8 @@ class ConfigLoader:
                     override_profiles = value["profiles"]
                     merged_profiles = dict(base_profiles)
                     for profile_name, profile_value in override_profiles.items():
-                        if (
-                            isinstance(profile_value, dict)
-                            and isinstance(base_profiles.get(profile_name), dict)
+                        if isinstance(profile_value, dict) and isinstance(
+                            base_profiles.get(profile_name), dict
                         ):
                             merged_profiles[profile_name] = self._merge_dicts(
                                 base_profiles[profile_name],
@@ -86,7 +89,11 @@ class ConfigLoader:
                     result_section["profiles"] = merged_profiles
 
                 result[key] = result_section
-            elif isinstance(value, dict) and key in result and isinstance(result[key], dict):
+            elif (
+                isinstance(value, dict)
+                and key in result
+                and isinstance(result[key], dict)
+            ):
                 # Recursively merge nested dicts
                 result[key] = self._merge_dicts(result[key], value)
             else:
@@ -123,8 +130,7 @@ class ConfigLoader:
 
         # Require explicit model/runtime config even if builtin modes are present
         has_runtime_config = any(
-            key in config_data and config_data.get(key)
-            for key in ("models", "app")
+            key in config_data and config_data.get(key) for key in ("models", "app")
         )
         if not has_runtime_config:
             raise FileNotFoundError(
@@ -170,13 +176,22 @@ class ConfigLoader:
             model_profiles[name] = ModelProfileConfig.from_dict(name, profile_data)
 
         active_main_model_profile = models_config.get("active_main")
-        if not isinstance(active_main_model_profile, str) or active_main_model_profile not in model_profiles:
+        if (
+            not isinstance(active_main_model_profile, str)
+            or active_main_model_profile not in model_profiles
+        ):
             active_main_model_profile = models_config.get("active")
-        if not isinstance(active_main_model_profile, str) or active_main_model_profile not in model_profiles:
+        if (
+            not isinstance(active_main_model_profile, str)
+            or active_main_model_profile not in model_profiles
+        ):
             active_main_model_profile = next(iter(model_profiles.keys()), None)
 
         active_sub_model_profile = models_config.get("active_sub")
-        if not isinstance(active_sub_model_profile, str) or active_sub_model_profile not in model_profiles:
+        if (
+            not isinstance(active_sub_model_profile, str)
+            or active_sub_model_profile not in model_profiles
+        ):
             active_sub_model_profile = active_main_model_profile
 
         # Backward compatibility alias: active_model_profile tracks main profile.
@@ -198,7 +213,11 @@ class ConfigLoader:
 
         active_mode = modes_config.get("active")
         if not isinstance(active_mode, str) or active_mode not in modes:
-            active_mode = DEFAULT_ACTIVE_MODE if DEFAULT_ACTIVE_MODE in modes else next(iter(modes.keys()), None)
+            active_mode = (
+                DEFAULT_ACTIVE_MODE
+                if DEFAULT_ACTIVE_MODE in modes
+                else next(iter(modes.keys()), None)
+            )
 
         approval_rules = [
             ApprovalRuleConfig(
@@ -241,7 +260,9 @@ class ConfigLoader:
             max_context_tokens=(
                 active_profile.max_context_tokens
                 if active_profile is not None
-                else app_config.get("max_context_tokens", DEFAULTS["max_context_tokens"])
+                else app_config.get(
+                    "max_context_tokens", DEFAULTS["max_context_tokens"]
+                )
             ),
             preserve_reasoning_content=(
                 active_profile.preserve_reasoning_content
@@ -282,7 +303,11 @@ class ConfigLoader:
                 enabled=skills_config.get("enabled", True),
                 scan_project=skills_config.get("scan_project", True),
                 scan_user=skills_config.get("scan_user", True),
-                disabled=[str(name) for name in skills_config.get("disabled", []) if str(name).strip()],
+                disabled=[
+                    str(name)
+                    for name in skills_config.get("disabled", [])
+                    if str(name).strip()
+                ],
             ),
             prompt=PromptConfig(
                 system_append=str(prompt_config.get("system_append", "") or ""),
@@ -298,19 +323,32 @@ class ConfigLoader:
                     "snip_min_lines", DEFAULTS["snip_min_lines"]
                 ),
                 summarize_keep_recent_turns=context_config.get(
-                    "summarize_keep_recent_turns", DEFAULTS["summarize_keep_recent_turns"]
+                    "summarize_keep_recent_turns",
+                    DEFAULTS["summarize_keep_recent_turns"],
                 ),
             ),
             remote_exec=RemoteExecConfig(
                 enabled=bool(remote_exec_config.get("enabled", False)),
                 host_mode=bool(remote_exec_config.get("host_mode", False)),
                 relay_bind=str(remote_exec_config.get("relay_bind", "127.0.0.1:8765")),
-                bootstrap_access_secret=str(remote_exec_config.get("bootstrap_access_secret", "")),
-                bootstrap_token_ttl_sec=int(remote_exec_config.get("bootstrap_token_ttl_sec", 300)),
-                peer_token_ttl_sec=int(remote_exec_config.get("peer_token_ttl_sec", 3600)),
-                heartbeat_interval_sec=int(remote_exec_config.get("heartbeat_interval_sec", 10)),
-                heartbeat_timeout_sec=int(remote_exec_config.get("heartbeat_timeout_sec", 30)),
-                default_tool_timeout_sec=int(remote_exec_config.get("default_tool_timeout_sec", 30)),
+                bootstrap_access_secret=str(
+                    remote_exec_config.get("bootstrap_access_secret", "")
+                ),
+                bootstrap_token_ttl_sec=int(
+                    remote_exec_config.get("bootstrap_token_ttl_sec", 300)
+                ),
+                peer_token_ttl_sec=int(
+                    remote_exec_config.get("peer_token_ttl_sec", 3600)
+                ),
+                heartbeat_interval_sec=int(
+                    remote_exec_config.get("heartbeat_interval_sec", 10)
+                ),
+                heartbeat_timeout_sec=int(
+                    remote_exec_config.get("heartbeat_timeout_sec", 30)
+                ),
+                default_tool_timeout_sec=int(
+                    remote_exec_config.get("default_tool_timeout_sec", 30)
+                ),
                 shell_timeout_sec=int(remote_exec_config.get("shell_timeout_sec", 120)),
             ),
             session_auto_save=session_config.get(
@@ -318,7 +356,9 @@ class ConfigLoader:
             ),
             session_dir=session_config.get("dir"),
             history_file=cli_config.get("history_file"),
-            llm_debug_trace=bool(app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])),
+            llm_debug_trace=bool(
+                app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])
+            ),
         )
 
     def _backfill_workspace_modes(self, config: Config) -> None:
@@ -331,14 +371,22 @@ class ConfigLoader:
             workspace_data = {}
 
         modes_data = workspace_data.get("modes")
-        profiles_data = modes_data.get("profiles") if isinstance(modes_data, dict) else None
-        has_active = isinstance(modes_data, dict) and isinstance(modes_data.get("active"), str)
+        profiles_data = (
+            modes_data.get("profiles") if isinstance(modes_data, dict) else None
+        )
+        has_active = isinstance(modes_data, dict) and isinstance(
+            modes_data.get("active"), str
+        )
 
-        needs_write = not isinstance(profiles_data, dict) or not profiles_data or not has_active
+        needs_write = (
+            not isinstance(profiles_data, dict) or not profiles_data or not has_active
+        )
         if not needs_write:
             return
 
-        workspace_data.setdefault("modes", {})["active"] = config.active_mode or DEFAULT_ACTIVE_MODE
+        workspace_data.setdefault("modes", {})["active"] = (
+            config.active_mode or DEFAULT_ACTIVE_MODE
+        )
         workspace_data["modes"]["profiles"] = {
             name: {
                 "description": mode.description,
@@ -350,14 +398,26 @@ class ConfigLoader:
         }
         save_yaml_config(path, workspace_data)
 
-    def _bootstrap_workspace_snapshot(self, merged_data: dict, workspace_data: dict) -> None:
+    def _bootstrap_workspace_snapshot(
+        self, merged_data: dict, workspace_data: dict
+    ) -> None:
         """Write merged config snapshot into workspace once for single-file editing."""
-        modes_data = workspace_data.get("modes") if isinstance(workspace_data, dict) else None
-        profiles_data = modes_data.get("profiles") if isinstance(modes_data, dict) else None
-        has_active_mode = isinstance(modes_data, dict) and isinstance(modes_data.get("active"), str)
+        modes_data = (
+            workspace_data.get("modes") if isinstance(workspace_data, dict) else None
+        )
+        profiles_data = (
+            modes_data.get("profiles") if isinstance(modes_data, dict) else None
+        )
+        has_active_mode = isinstance(modes_data, dict) and isinstance(
+            modes_data.get("active"), str
+        )
 
-        meta_data = workspace_data.get("meta") if isinstance(workspace_data, dict) else None
-        bootstrapped = isinstance(meta_data, dict) and bool(meta_data.get("workspace_bootstrapped"))
+        meta_data = (
+            workspace_data.get("meta") if isinstance(workspace_data, dict) else None
+        )
+        bootstrapped = isinstance(meta_data, dict) and bool(
+            meta_data.get("workspace_bootstrapped")
+        )
 
         needs_bootstrap = (
             not workspace_data

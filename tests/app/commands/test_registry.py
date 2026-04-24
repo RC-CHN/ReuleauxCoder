@@ -7,11 +7,15 @@ from reuleauxcoder.app.commands.specs import ActionSpec, TriggerKind, TriggerSpe
 from reuleauxcoder.interfaces.ui_registry import UICapability, UIProfile
 
 
-CLI_PROFILE = UIProfile(ui_id="cli", display_name="CLI", capabilities=frozenset({UICapability.TEXT_INPUT}))
+CLI_PROFILE = UIProfile(
+    ui_id="cli", display_name="CLI", capabilities=frozenset({UICapability.TEXT_INPUT})
+)
 TUI_PROFILE = UIProfile(ui_id="tui", display_name="TUI", capabilities=frozenset())
 
 
-def _slash_action(*, action_id: str = "test", parser=None, handler=None, ui_targets=frozenset({"cli"})) -> ActionSpec:
+def _slash_action(
+    *, action_id: str = "test", parser=None, handler=None, ui_targets=frozenset({"cli"})
+) -> ActionSpec:
     return ActionSpec(
         action_id=action_id,
         feature_id="feature.test",
@@ -25,10 +29,12 @@ def _slash_action(*, action_id: str = "test", parser=None, handler=None, ui_targ
 
 
 def test_action_registry_iter_actions_filters_by_ui_profile() -> None:
-    registry = ActionRegistry([
-        _slash_action(action_id="cli-only"),
-        _slash_action(action_id="tui-only", ui_targets=frozenset({"tui"})),
-    ])
+    registry = ActionRegistry(
+        [
+            _slash_action(action_id="cli-only"),
+            _slash_action(action_id="tui-only", ui_targets=frozenset({"tui"})),
+        ]
+    )
 
     actions = registry.iter_actions(CLI_PROFILE)
 
@@ -65,7 +71,9 @@ def test_action_registry_parse_skips_actions_without_available_slash_trigger() -
 
 def test_action_registry_dispatch_returns_continue_when_handler_missing() -> None:
     registry = ActionRegistry()
-    parsed = SimpleNamespace(action=_slash_action(handler=None), command={"x": 1}, registry=registry)
+    parsed = SimpleNamespace(
+        action=_slash_action(handler=None), command={"x": 1}, registry=registry
+    )
 
     result = registry.dispatch(parsed, ctx=SimpleNamespace())
 
@@ -80,7 +88,9 @@ def test_dispatch_command_delegates_to_registry_dispatch() -> None:
         return CommandResult(action="exit")
 
     registry = ActionRegistry([_slash_action(handler=handler)])
-    parsed = SimpleNamespace(action=_slash_action(handler=handler), command={"ok": True}, registry=registry)
+    parsed = SimpleNamespace(
+        action=_slash_action(handler=handler), command={"ok": True}, registry=registry
+    )
     ctx = SimpleNamespace()
 
     result = dispatch_command(parsed, ctx)

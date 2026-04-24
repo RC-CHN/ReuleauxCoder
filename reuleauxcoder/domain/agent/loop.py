@@ -25,7 +25,9 @@ class AgentLoop:
         """Build ephemeral runtime context appended only at send time."""
         uname = platform.uname()
         shell = get_platform_info().get_preferred_shell()
-        runtime_cwd = getattr(self.agent, "runtime_working_directory", None) or os.getcwd()
+        runtime_cwd = (
+            getattr(self.agent, "runtime_working_directory", None) or os.getcwd()
+        )
         content = (
             "[Runtime Context]\n"
             "This is ephemeral runtime state for the current turn. "
@@ -47,7 +49,10 @@ class AgentLoop:
         suggested_modes: list[str] = []
         for tool in blocked:
             for mode_name in self.agent.suggest_modes_for_tool(tool.name):
-                if mode_name != self.agent.active_mode and mode_name not in suggested_modes:
+                if (
+                    mode_name != self.agent.active_mode
+                    and mode_name not in suggested_modes
+                ):
                     suggested_modes.append(mode_name)
         suggested_modes.sort()  # Ensure deterministic order for prompt caching
 
@@ -61,8 +66,11 @@ class AgentLoop:
             mode_name=self.agent.active_mode,
             mode_prompt_append=mode.prompt_append if mode is not None else "",
             user_system_append=(
-                getattr(getattr(self.agent, "runtime_config", None), "prompt", None).system_append
-                if getattr(getattr(self.agent, "runtime_config", None), "prompt", None) is not None
+                getattr(
+                    getattr(self.agent, "runtime_config", None), "prompt", None
+                ).system_append
+                if getattr(getattr(self.agent, "runtime_config", None), "prompt", None)
+                is not None
                 else ""
             ),
             blocked_tools=blocked_tools,
@@ -132,7 +140,9 @@ class AgentLoop:
 
             if len(resp.tool_calls) == 1:
                 tc = resp.tool_calls[0]
-                self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
+                self.agent._emit_event(
+                    AgentEvent.tool_call_start(tc.name, tc.arguments)
+                )
                 result = self.agent._executor.execute(tc)
                 self.agent.state.messages.append(
                     {
@@ -147,7 +157,9 @@ class AgentLoop:
                     for tc in resp.tool_calls:
                         if self.agent.stop_requested():
                             return "(stopped by cancellation request)"
-                        self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
+                        self.agent._emit_event(
+                            AgentEvent.tool_call_start(tc.name, tc.arguments)
+                        )
                         result = self.agent._executor.execute(tc)
                         self.agent.state.messages.append(
                             {
@@ -161,7 +173,9 @@ class AgentLoop:
                     if self.agent.stop_requested():
                         return "(stopped by cancellation request)"
                     for tc in resp.tool_calls:
-                        self.agent._emit_event(AgentEvent.tool_call_start(tc.name, tc.arguments))
+                        self.agent._emit_event(
+                            AgentEvent.tool_call_start(tc.name, tc.arguments)
+                        )
                     results = self.agent._executor.execute_parallel(resp.tool_calls)
                     for tc, result in zip(resp.tool_calls, results):
                         self.agent.state.messages.append(

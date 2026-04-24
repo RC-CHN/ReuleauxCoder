@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
-from reuleauxcoder.app.runtime.approval import refresh_approval_runtime, same_rule_target
+from reuleauxcoder.app.runtime.approval import (
+    refresh_approval_runtime,
+    same_rule_target,
+)
 from reuleauxcoder.domain.agent.agent import Agent
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, Config
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    ApprovalRuleConfig,
+    Config,
+)
 from reuleauxcoder.domain.session.models import Session, SessionRuntimeState
-from reuleauxcoder.infrastructure.persistence.session_store import DEFAULT_SESSION_FINGERPRINT
+from reuleauxcoder.infrastructure.persistence.session_store import (
+    DEFAULT_SESSION_FINGERPRINT,
+)
 
 
 def get_session_fingerprint(config: Config, agent: Agent) -> str:
     """Return the current session environment fingerprint."""
-    return getattr(agent, "session_fingerprint", None) or getattr(
-        config, "session_fingerprint", None
-    ) or DEFAULT_SESSION_FINGERPRINT
+    return (
+        getattr(agent, "session_fingerprint", None)
+        or getattr(config, "session_fingerprint", None)
+        or DEFAULT_SESSION_FINGERPRINT
+    )
 
 
 def _clone_approval_rules(rules: list[ApprovalRuleConfig]) -> list[ApprovalRuleConfig]:
@@ -37,7 +48,11 @@ def merge_approval_config(
     """Merge baseline approval config with session-scoped rule overrides."""
     merged_rules = _clone_approval_rules(baseline.rules)
     for rule in session_rules or []:
-        merged_rules = [existing for existing in merged_rules if not same_rule_target(existing, rule)]
+        merged_rules = [
+            existing
+            for existing in merged_rules
+            if not same_rule_target(existing, rule)
+        ]
         merged_rules.append(
             ApprovalRuleConfig(
                 tool_name=rule.tool_name,
@@ -103,7 +118,11 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
     else:
         agent.llm.debug_trace = getattr(config, "llm_debug_trace", False)
     setattr(agent, "active_main_model_profile", main_profile_name)
-    setattr(agent, "active_sub_model_profile", getattr(config, "active_sub_model_profile", None))
+    setattr(
+        agent,
+        "active_sub_model_profile",
+        getattr(config, "active_sub_model_profile", None),
+    )
     setattr(agent, "session_approval_rules", [])
     refresh_approval_runtime(agent, config.approval)
 
@@ -145,7 +164,9 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
             for rule in runtime.approval_rules
         ]
         setattr(agent, "session_approval_rules", session_rules)
-        refresh_approval_runtime(agent, merge_approval_config(config.approval, session_rules))
+        refresh_approval_runtime(
+            agent, merge_approval_config(config.approval, session_rules)
+        )
 
     main_profile = runtime.active_main_model_profile
     profiles = getattr(config, "model_profiles", {}) or {}

@@ -1,6 +1,11 @@
 """Hook runtime - core hook abstractions and registry."""
 
-from reuleauxcoder.domain.hooks.base import HookBase, GuardHook, ObserverHook, TransformHook
+from reuleauxcoder.domain.hooks.base import (
+    HookBase,
+    GuardHook,
+    ObserverHook,
+    TransformHook,
+)
 from reuleauxcoder.domain.hooks.discovery import (
     HookSpec,
     register_hook,

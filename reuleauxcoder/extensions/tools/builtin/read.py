@@ -75,7 +75,12 @@ class ReadFileTool(Tool):
             return "Error: override must be a boolean"
         return self.backend.exec_tool(
             "read_file",
-            {"file_path": file_path, "offset": offset, "limit": limit, "override": override},
+            {
+                "file_path": file_path,
+                "offset": offset,
+                "limit": limit,
+                "override": override,
+            },
         )
 
     @backend_handler("local")

@@ -1,4 +1,8 @@
-from reuleauxcoder.domain.context.compression import HardCollapseStrategy, SummarizeStrategy, ToolOutputSnipStrategy
+from reuleauxcoder.domain.context.compression import (
+    HardCollapseStrategy,
+    SummarizeStrategy,
+    ToolOutputSnipStrategy,
+)
 
 
 class DummyResponse:
@@ -49,8 +53,13 @@ def test_tool_output_snip_strategy_skips_short_or_non_tool_messages() -> None:
 
 def test_summarize_strategy_requires_llm_and_enough_messages() -> None:
     strategy = SummarizeStrategy()
-    assert strategy.compress([{"role": "user", "content": "one"}], llm=DummyLLM("summary")) is False
-    assert strategy.compress([{"role": "user", "content": "one"}] * 20, llm=None) is False
+    assert (
+        strategy.compress([{"role": "user", "content": "one"}], llm=DummyLLM("summary"))
+        is False
+    )
+    assert (
+        strategy.compress([{"role": "user", "content": "one"}] * 20, llm=None) is False
+    )
 
 
 def test_summarize_strategy_replaces_old_messages_with_summary() -> None:

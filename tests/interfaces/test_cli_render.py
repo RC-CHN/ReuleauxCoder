@@ -36,7 +36,9 @@ def test_cli_renderer_renders_chat_end_when_requested() -> None:
     renderer.render_content_markdown.assert_called_once_with("final answer")
 
 
-def test_cli_renderer_finalizes_stream_without_rendering_duplicate_chat_end_response() -> None:
+def test_cli_renderer_finalizes_stream_without_rendering_duplicate_chat_end_response() -> (
+    None
+):
     renderer = _renderer()
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
@@ -84,9 +86,7 @@ def test_cli_renderer_tracks_notification_block_after_stream() -> None:
     renderer.render_plain_text = Mock()
 
     renderer.on_event(AgentEvent.stream_token("hello"))
-    renderer.on_ui_event(
-        UIEvent.info("debug note", kind=UIEventKind.SYSTEM)
-    )
+    renderer.on_ui_event(UIEvent.info("debug note", kind=UIEventKind.SYSTEM))
 
     assert renderer._active_content_block is None
     assert len(renderer._completed_blocks) == 2

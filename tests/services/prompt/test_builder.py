@@ -42,4 +42,3 @@ def test_system_prompt_contains_only_static_and_semi_static_blocks() -> None:
     assert prompt.index("# User Instructions") < prompt.index("# Active Mode")
     assert "# Environment" not in prompt
     assert "- Working directory: " not in prompt
-

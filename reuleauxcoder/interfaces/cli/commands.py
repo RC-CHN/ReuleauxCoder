@@ -46,9 +46,10 @@ def handle_command(
         )
         return {
             "action": result.action,
-            "session_id": result.session_id if result.session_id is not None else current_session_id,
+            "session_id": result.session_id
+            if result.session_id is not None
+            else current_session_id,
             "session_exit_time": result.session_exit_time,
         }
 
     return {"action": "chat", "session_id": current_session_id}
-

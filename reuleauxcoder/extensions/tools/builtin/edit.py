@@ -40,7 +40,9 @@ class EditFileTool(Tool):
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
 
-    def preflight_validate(self, file_path: str, old_string: str, new_string: str) -> str | None:
+    def preflight_validate(
+        self, file_path: str, old_string: str, new_string: str
+    ) -> str | None:
         """Fast validation so invalid edit requests can be rejected before approval."""
         if getattr(self.backend, "backend_id", "local") == "remote_relay":
             if not isinstance(file_path, str) or not file_path:
@@ -77,7 +79,11 @@ class EditFileTool(Tool):
             return validation_error
         return self.backend.exec_tool(
             "edit_file",
-            {"file_path": file_path, "old_string": old_string, "new_string": new_string},
+            {
+                "file_path": file_path,
+                "old_string": old_string,
+                "new_string": new_string,
+            },
         )
 
     @backend_handler("local")
@@ -94,7 +100,9 @@ class EditFileTool(Tool):
             return f"Error: {e}"
 
 
-def _validate_edit_request(file_path: str, old_string: str, new_string: str) -> str | None:
+def _validate_edit_request(
+    file_path: str, old_string: str, new_string: str
+) -> str | None:
     if not isinstance(file_path, str) or not file_path:
         return "Error: edit_file requires a valid string file_path"
     if not isinstance(old_string, str) or not isinstance(new_string, str):

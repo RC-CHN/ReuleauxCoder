@@ -16,7 +16,9 @@ MAX_TOOL_RESULT_CHARS = 500
 MAX_ERROR_BODY_CHARS = 4000
 
 
-def snapshot_messages(messages: list[dict], limit: int = MAX_SNAPSHOT_MESSAGES) -> list[dict[str, Any]]:
+def snapshot_messages(
+    messages: list[dict], limit: int = MAX_SNAPSHOT_MESSAGES
+) -> list[dict[str, Any]]:
     """Build a compact tail snapshot of messages for diagnostics."""
     tail = messages[-limit:] if len(messages) > limit else list(messages)
     snapshot: list[dict[str, Any]] = []
@@ -29,7 +31,9 @@ def snapshot_messages(messages: list[dict], limit: int = MAX_SNAPSHOT_MESSAGES) 
         content = msg.get("content")
         if content is not None:
             text = str(content)
-            item["content"] = text[:MAX_CONTENT_CHARS] + ("..." if len(text) > MAX_CONTENT_CHARS else "")
+            item["content"] = text[:MAX_CONTENT_CHARS] + (
+                "..." if len(text) > MAX_CONTENT_CHARS else ""
+            )
         if msg.get("tool_call_id"):
             item["tool_call_id"] = msg.get("tool_call_id")
         if msg.get("tool_calls"):
@@ -61,7 +65,9 @@ def persist_llm_error_diagnostic(
         "message": str(error),
     }
     if body is not None:
-        body_text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+        body_text = (
+            body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+        )
         error_payload["body"] = body_text[:MAX_ERROR_BODY_CHARS]
 
     tool_schemas = request_params.get("tools") or []
@@ -95,5 +101,7 @@ def persist_llm_error_diagnostic(
         "metadata": dict(metadata or {}),
     }
 
-    file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    file_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return file_path

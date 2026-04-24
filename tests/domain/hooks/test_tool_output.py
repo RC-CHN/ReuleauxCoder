@@ -5,10 +5,16 @@ from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.domain.llm.models import ToolCall
 
 
-def _ctx(file_path: str, result: str, *, override: bool = False) -> AfterToolExecuteContext:
+def _ctx(
+    file_path: str, result: str, *, override: bool = False
+) -> AfterToolExecuteContext:
     return AfterToolExecuteContext(
         hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-        tool_call=ToolCall(id="1", name="read_file", arguments={"file_path": file_path, "override": override}),
+        tool_call=ToolCall(
+            id="1",
+            name="read_file",
+            arguments={"file_path": file_path, "override": override},
+        ),
         result=result,
         round_index=1,
     )
@@ -58,7 +64,9 @@ def test_tool_output_bypasses_truncation_for_global_skills_markdown(
     assert out.result == long_text
 
 
-def test_tool_output_does_not_bypass_non_markdown_under_skills(tmp_path: Path, monkeypatch) -> None:
+def test_tool_output_does_not_bypass_non_markdown_under_skills(
+    tmp_path: Path, monkeypatch
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(workspace)

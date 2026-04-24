@@ -30,7 +30,6 @@ def _default_load_config(path: Path | None) -> Config:
     return ConfigLoader.from_path(path)
 
 
-
 def _default_create_llm(config: Config) -> LLM:
     return LLM(
         model=config.model,
@@ -46,15 +45,12 @@ def _default_create_llm(config: Config) -> LLM:
     )
 
 
-
 def _default_create_tool_backend(config: Config, ui_bus: UIEventBus) -> ToolBackend:
     return LocalToolBackend()
 
 
-
 def _default_load_tools(tool_backend: ToolBackend) -> list[Any]:
     return build_tools(tool_backend)
-
 
 
 def _default_create_agent(llm: LLM, tools: list[Any], config: Config) -> Agent:
@@ -67,15 +63,12 @@ def _default_create_agent(llm: LLM, tools: list[Any], config: Config) -> Agent:
     )
 
 
-
 def _default_create_session_store(sessions_dir: Path | None) -> SessionStore:
     return SessionStore(sessions_dir)
 
 
-
 def _default_create_mcp_manager(ui_bus: UIEventBus) -> MCPManager:
     return MCPManager(ui_bus=ui_bus)
-
 
 
 def _default_create_remote_relay_server(config: Config) -> RelayServer | None:
@@ -91,8 +84,9 @@ def _default_create_remote_relay_server(config: Config) -> RelayServer | None:
     )
 
 
-
-def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[str, str, str], tuple[bytes, str] | None]:
+def _default_create_remote_artifact_provider(
+    ui_bus: UIEventBus,
+) -> Callable[[str, str, str], tuple[bytes, str] | None]:
     repo_root = Path(__file__).resolve().parents[3]
     agent_dir = repo_root / "reuleauxcoder-agent"
     artifact_root = repo_root / "artifacts" / "remote"
@@ -100,7 +94,9 @@ def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[st
     build_lock = threading.Lock()
     cache: dict[tuple[str, str], Path] = {}
 
-    def _find_prebuilt_binary(os_name: str, arch: str, artifact_name: str) -> Path | None:
+    def _find_prebuilt_binary(
+        os_name: str, arch: str, artifact_name: str
+    ) -> Path | None:
         output_name = artifact_name + (".exe" if os_name == "windows" else "")
         candidates = [
             artifact_root / os_name / arch / output_name,
@@ -112,7 +108,9 @@ def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[st
                 return candidate
         return None
 
-    def provide(os_name: str, arch: str, artifact_name: str) -> tuple[bytes, str] | None:
+    def provide(
+        os_name: str, arch: str, artifact_name: str
+    ) -> tuple[bytes, str] | None:
         if artifact_name != "rcoder-peer":
             return None
         if os_name not in {"linux", "darwin", "windows"}:
@@ -146,7 +144,13 @@ def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[st
                 env["GOOS"] = os_name
                 env["GOARCH"] = arch
                 subprocess.run(
-                    ["go", "build", "-o", str(binary_path), "./cmd/reuleauxcoder-agent"],
+                    [
+                        "go",
+                        "build",
+                        "-o",
+                        str(binary_path),
+                        "./cmd/reuleauxcoder-agent",
+                    ],
                     cwd=agent_dir,
                     env=env,
                     check=True,
@@ -165,7 +169,6 @@ def _default_create_remote_artifact_provider(ui_bus: UIEventBus) -> Callable[[st
     setattr(provide, "_build_dir", build_dir)
     setattr(provide, "_artifact_root", artifact_root)
     return provide
-
 
 
 def _default_create_remote_http_service(
@@ -194,15 +197,21 @@ class AppDependencies:
     load_config: Callable[[Path | None], Config] = _default_load_config
     create_ui_bus: Callable[[], UIEventBus] = UIEventBus
     create_llm: Callable[[Config], LLM] = _default_create_llm
-    create_tool_backend: Callable[[Config, UIEventBus], ToolBackend] = _default_create_tool_backend
+    create_tool_backend: Callable[[Config, UIEventBus], ToolBackend] = (
+        _default_create_tool_backend
+    )
     load_tools: Callable[[ToolBackend], list[Any]] = _default_load_tools
     create_agent: Callable[[LLM, list[Any], Config], Agent] = _default_create_agent
-    create_session_store: Callable[[Path | None], SessionStore] = _default_create_session_store
-    create_mcp_manager: Callable[[UIEventBus], MCPManager] = _default_create_mcp_manager
-    create_remote_relay_server: Callable[[Config], RelayServer | None] = _default_create_remote_relay_server
-    create_remote_http_service: Callable[[Config, RelayServer, UIEventBus], RemoteRelayHTTPService | None] = (
-        _default_create_remote_http_service
+    create_session_store: Callable[[Path | None], SessionStore] = (
+        _default_create_session_store
     )
+    create_mcp_manager: Callable[[UIEventBus], MCPManager] = _default_create_mcp_manager
+    create_remote_relay_server: Callable[[Config], RelayServer | None] = (
+        _default_create_remote_relay_server
+    )
+    create_remote_http_service: Callable[
+        [Config, RelayServer, UIEventBus], RemoteRelayHTTPService | None
+    ] = _default_create_remote_http_service
 
 
 @dataclass

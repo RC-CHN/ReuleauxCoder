@@ -126,7 +126,9 @@ class UIEventBus:
             except Exception:
                 pass
 
-    def info(self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any) -> None:
+    def info(
+        self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any
+    ) -> None:
         self.emit(UIEvent.info(message, kind=kind, **data))
 
     def success(
@@ -147,10 +149,14 @@ class UIEventBus:
     ) -> None:
         self.emit(UIEvent.warning(message, kind=kind, **data))
 
-    def error(self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any) -> None:
+    def error(
+        self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any
+    ) -> None:
         self.emit(UIEvent.error(message, kind=kind, **data))
 
-    def debug(self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any) -> None:
+    def debug(
+        self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any
+    ) -> None:
         self.emit(UIEvent.debug(message, kind=kind, **data))
 
     def open_view(
@@ -232,4 +238,3 @@ class AgentEventBridge:
                 },
             )
         )
-

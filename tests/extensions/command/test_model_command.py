@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
-from reuleauxcoder.domain.config.models import ApprovalConfig, Config, ModelProfileConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    Config,
+    ModelProfileConfig,
+)
 from reuleauxcoder.extensions.command.builtin.model import (
     SetMainModelCommand,
     SetSubModelCommand,
@@ -62,7 +66,11 @@ def _build_ctx() -> SimpleNamespace:
     llm = FakeLLM()
     agent = SimpleNamespace(
         llm=llm,
-        context=SimpleNamespace(reconfigure=lambda max_tokens: setattr(agent.context, "max_tokens", max_tokens)),
+        context=SimpleNamespace(
+            reconfigure=lambda max_tokens: setattr(
+                agent.context, "max_tokens", max_tokens
+            )
+        ),
         active_main_model_profile="alpha",
         active_sub_model_profile="alpha",
         active_mode="coder",
@@ -126,7 +134,8 @@ def test_use_sub_model_alias_switches_session_sub_model() -> None:
     assert ctx.config.active_sub_model_profile == "alpha"
     assert result.payload["active_sub_profile"] == "beta"
     assert any(
-        event.level == UIEventLevel.SUCCESS and "session sub-agent model profile" in event.message
+        event.level == UIEventLevel.SUCCESS
+        and "session sub-agent model profile" in event.message
         for event in ctx.ui_bus._history
     )
 
@@ -151,6 +160,7 @@ def test_set_sub_model_updates_global_sub_profile(monkeypatch) -> None:
     assert ctx.agent.active_sub_model_profile == "alpha"
     assert result.payload["active_sub_profile"] == "alpha"
     assert any(
-        event.level == UIEventLevel.SUCCESS and "global sub-agent model profile" in event.message
+        event.level == UIEventLevel.SUCCESS
+        and "global sub-agent model profile" in event.message
         for event in ctx.ui_bus._history
     )

@@ -91,7 +91,11 @@ class AgentTool(Tool):
         run_in_background = kwargs.get("run_in_background", False)
 
         single_task = (task or "").strip() if isinstance(task, str) else ""
-        batch_tasks = [item.strip() for item in (tasks or []) if isinstance(item, str) and item.strip()]
+        batch_tasks = [
+            item.strip()
+            for item in (tasks or [])
+            if isinstance(item, str) and item.strip()
+        ]
 
         if not single_task and not batch_tasks:
             return "Error: provide either 'task' or non-empty 'tasks'."
@@ -105,7 +109,11 @@ class AgentTool(Tool):
                 "and run_in_background=true."
             )
 
-        if not get_subagent_manager(self._parent_agent).is_valid_mode(mode) if self._parent_agent is not None else False:
+        if (
+            not get_subagent_manager(self._parent_agent).is_valid_mode(mode)
+            if self._parent_agent is not None
+            else False
+        ):
             return f"Error: unsupported sub-agent mode '{mode}'."
 
         return None
@@ -181,7 +189,11 @@ class AgentTool(Tool):
                 model_profile_name=model_route,
             )
 
-        task_list = [item.strip() for item in (tasks or []) if isinstance(item, str) and item.strip()]
+        task_list = [
+            item.strip()
+            for item in (tasks or [])
+            if isinstance(item, str) and item.strip()
+        ]
         if not task_list:
             return "Error: provide either 'task' or non-empty 'tasks'."
 

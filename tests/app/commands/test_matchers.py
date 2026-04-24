@@ -1,4 +1,8 @@
-from reuleauxcoder.app.commands.matchers import match_template, matches_any, normalize_input
+from reuleauxcoder.app.commands.matchers import (
+    match_template,
+    matches_any,
+    normalize_input,
+)
 
 
 def test_normalize_input_collapses_whitespace() -> None:
@@ -18,7 +22,9 @@ def test_match_template_single_placeholder() -> None:
 
 
 def test_match_template_greedy_placeholder_captures_remaining_tokens() -> None:
-    assert match_template("/session latest saved", "/session {target+}") == {"target": "latest saved"}
+    assert match_template("/session latest saved", "/session {target+}") == {
+        "target": "latest saved"
+    }
 
 
 def test_match_template_greedy_placeholder_must_be_last() -> None:
@@ -26,7 +32,9 @@ def test_match_template_greedy_placeholder_must_be_last() -> None:
 
 
 def test_match_template_case_insensitive_literals() -> None:
-    assert match_template("/MODE Coder", "/mode {name}", case_insensitive=True) == {"name": "Coder"}
+    assert match_template("/MODE Coder", "/mode {name}", case_insensitive=True) == {
+        "name": "Coder"
+    }
 
 
 def test_match_template_rejects_extra_tokens() -> None:

@@ -109,7 +109,9 @@ class ShellTool(Tool):
         )
         return proc
 
-    def _update_cwd(self, command: str, current_cwd: str, is_windows: bool = False) -> None:
+    def _update_cwd(
+        self, command: str, current_cwd: str, is_windows: bool = False
+    ) -> None:
         if is_windows:
             parts = re.split(r"[;]|\n", command)
         else:

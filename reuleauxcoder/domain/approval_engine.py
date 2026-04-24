@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from reuleauxcoder.domain.config.models import ApprovalAction, ApprovalConfig, ApprovalRuleConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalAction,
+    ApprovalConfig,
+    ApprovalRuleConfig,
+)
 from reuleauxcoder.domain.llm.models import ToolCall
 
 ToolSource = Literal["builtin", "mcp", "unknown"]
@@ -41,7 +45,9 @@ class ApprovalPolicyEngine:
 
     def evaluate(self, context: ToolApprovalContext) -> ApprovalPolicyMatch:
         """Resolve the approval action for a tool context."""
-        ranked_rules = sorted(self.config.rules, key=lambda rule: self._specificity(rule), reverse=True)
+        ranked_rules = sorted(
+            self.config.rules, key=lambda rule: self._specificity(rule), reverse=True
+        )
         for rule in ranked_rules:
             if self._matches(rule, context):
                 return ApprovalPolicyMatch(action=rule.action, rule=rule)
@@ -81,4 +87,3 @@ class ApprovalPolicyEngine:
         if rule.profile is not None and rule.profile != context.profile:
             return False
         return True
-

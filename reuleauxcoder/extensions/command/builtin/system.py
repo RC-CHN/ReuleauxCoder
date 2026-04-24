@@ -68,12 +68,16 @@ def _parse_compact(user_input: str, parse_ctx):
     if match_template(user_input, "/compact") is not None:
         return CompactContextCommand()
 
-    captures = match_template(user_input, "/compact force {strategy}", case_insensitive=True)
+    captures = match_template(
+        user_input, "/compact force {strategy}", case_insensitive=True
+    )
     if captures is None:
         return None
 
     try:
-        strategy = enum_text(_FORCE_COMPACT_STRATEGIES, case_insensitive=True).parse(captures["strategy"])
+        strategy = enum_text(_FORCE_COMPACT_STRATEGIES, case_insensitive=True).parse(
+            captures["strategy"]
+        )
     except ParamParseError:
         return CompactContextCommand(force_strategy="")
 
@@ -124,11 +128,18 @@ def _handle_show_help(command, ctx) -> CommandResult:
     else:
         markdown = build_help_markdown(ctx.ui_profile, ctx.action_registry)
     payload = {"markdown": markdown}
-    ctx.ui_bus.open_view("help", title="ReuleauxCoder Help", payload=payload, reuse_key="help")
+    ctx.ui_bus.open_view(
+        "help", title="ReuleauxCoder Help", payload=payload, reuse_key="help"
+    )
     return CommandResult(
         action="continue",
         view_requests=[
-            OpenViewRequest(view_type="help", title="ReuleauxCoder Help", payload=payload, reuse_key="help")
+            OpenViewRequest(
+                view_type="help",
+                title="ReuleauxCoder Help",
+                payload=payload,
+                reuse_key="help",
+            )
         ],
         payload=payload,
     )
@@ -154,7 +165,9 @@ def _handle_exit(command, ctx) -> CommandResult:
 def _handle_reset(command, ctx) -> CommandResult:
     ctx.agent.reset()
     restore_config_runtime_defaults(ctx.config, ctx.agent)
-    ctx.ui_bus.warning("Conversation reset (in-memory only, does not delete saved sessions).")
+    ctx.ui_bus.warning(
+        "Conversation reset (in-memory only, does not delete saved sessions)."
+    )
     return CommandResult(action="continue")
 
 
@@ -162,7 +175,9 @@ def _handle_compact(command, ctx) -> CommandResult:
     before = estimate_tokens(ctx.agent.messages)
 
     if command.force_strategy == "":
-        ctx.ui_bus.warning("Invalid compact strategy. Use: /compact force <snip|summarize|collapse>")
+        ctx.ui_bus.warning(
+            "Invalid compact strategy. Use: /compact force <snip|summarize|collapse>"
+        )
         return CommandResult(action="continue")
 
     if command.force_strategy:
@@ -185,9 +200,13 @@ def _handle_compact(command, ctx) -> CommandResult:
     compressed = ctx.agent.context.maybe_compress(ctx.agent.messages, ctx.agent.llm)
     after = estimate_tokens(ctx.agent.messages)
     if compressed:
-        ctx.ui_bus.success(f"Compressed: {before} → {after} tokens ({len(ctx.agent.messages)} messages)")
+        ctx.ui_bus.success(
+            f"Compressed: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
+        )
     else:
-        ctx.ui_bus.info(f"Nothing to compress ({before} tokens, {len(ctx.agent.messages)} messages)")
+        ctx.ui_bus.info(
+            f"Nothing to compress ({before} tokens, {len(ctx.agent.messages)} messages)"
+        )
     return CommandResult(action="continue")
 
 
@@ -274,7 +293,9 @@ def _handle_debug(command, ctx) -> CommandResult:
     ctx.agent.llm.debug_trace = command.enabled
     state = "on" if command.enabled else "off"
     ctx.ui_bus.info(f"LLM debug trace for this session: {state}")
-    return CommandResult(action="continue", payload={"llm_debug_trace": command.enabled})
+    return CommandResult(
+        action="continue", payload={"llm_debug_trace": command.enabled}
+    )
 
 
 def _format_percent(value: float | None) -> str:
@@ -288,7 +309,6 @@ def _build_usage_bar(current: int, maximum: int, width: int = 24) -> str:
     filled = int(ratio * width)
     bar = "█" * filled + "·" * (width - filled)
     return f"`[{bar}] {_format_percent(ratio * 100)}`"
-
 
 
 def _build_tokens_markdown(
@@ -310,7 +330,11 @@ def _build_tokens_markdown(
     max_hits: int,
 ) -> str:
     usage_bar = _build_usage_bar(current_context_tokens, max_context_tokens)
-    remaining_tokens = max(max_context_tokens - current_context_tokens, 0) if max_context_tokens else None
+    remaining_tokens = (
+        max(max_context_tokens - current_context_tokens, 0)
+        if max_context_tokens
+        else None
+    )
 
     lines = [
         "**Session usage (provider-reported):**",
@@ -331,14 +355,32 @@ def _build_tokens_markdown(
 
     thresholds = []
     if snip_at is not None:
-        threshold_pct = round((snip_at / max_context_tokens) * 100, 1) if max_context_tokens else None
-        thresholds.append(f"- layer 1 / snip tool outputs: `{snip_at}` tokens ({_format_percent(threshold_pct)})")
+        threshold_pct = (
+            round((snip_at / max_context_tokens) * 100, 1)
+            if max_context_tokens
+            else None
+        )
+        thresholds.append(
+            f"- layer 1 / snip tool outputs: `{snip_at}` tokens ({_format_percent(threshold_pct)})"
+        )
     if summarize_at is not None:
-        threshold_pct = round((summarize_at / max_context_tokens) * 100, 1) if max_context_tokens else None
-        thresholds.append(f"- layer 2 / summarize old turns: `{summarize_at}` tokens ({_format_percent(threshold_pct)})")
+        threshold_pct = (
+            round((summarize_at / max_context_tokens) * 100, 1)
+            if max_context_tokens
+            else None
+        )
+        thresholds.append(
+            f"- layer 2 / summarize old turns: `{summarize_at}` tokens ({_format_percent(threshold_pct)})"
+        )
     if collapse_at is not None:
-        threshold_pct = round((collapse_at / max_context_tokens) * 100, 1) if max_context_tokens else None
-        thresholds.append(f"- layer 3 / hard collapse: `{collapse_at}` tokens ({_format_percent(threshold_pct)})")
+        threshold_pct = (
+            round((collapse_at / max_context_tokens) * 100, 1)
+            if max_context_tokens
+            else None
+        )
+        thresholds.append(
+            f"- layer 3 / hard collapse: `{collapse_at}` tokens ({_format_percent(threshold_pct)})"
+        )
     if thresholds:
         lines.append("")
         lines.append("**Compression thresholds:**")
@@ -347,10 +389,14 @@ def _build_tokens_markdown(
     lines.append("")
     lines.append("**Compression wall-hit state:**")
     snip_status = "exhausted" if snip_exhausted else f"{snip_hit_count}/{max_hits} hits"
-    summarize_status = "exhausted" if summarize_exhausted else f"{summarize_hit_count}/{max_hits} hits"
+    summarize_status = (
+        "exhausted" if summarize_exhausted else f"{summarize_hit_count}/{max_hits} hits"
+    )
     lines.append(f"- layer 1 (snip): `{snip_status}`")
     lines.append(f"- layer 2 (summarize): `{summarize_status}`")
-    lines.append("- meaning: a layer is marked `exhausted` after repeated attempts stop producing enough reduction.")
+    lines.append(
+        "- meaning: a layer is marked `exhausted` after repeated attempts stop producing enough reduction."
+    )
 
     return "\n".join(lines)
 

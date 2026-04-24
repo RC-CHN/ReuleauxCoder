@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from reuleauxcoder.services.llm.diagnostics import persist_llm_error_diagnostic, snapshot_messages
+from reuleauxcoder.services.llm.diagnostics import (
+    persist_llm_error_diagnostic,
+    snapshot_messages,
+)
 
 
 def test_snapshot_messages_keeps_last_10_and_truncates_content() -> None:

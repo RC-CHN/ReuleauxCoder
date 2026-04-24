@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Optional
 
 from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
-from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
+from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
+    WorkspaceConfigStore,
+)
 
 
 def get_workspace_config_path() -> Path:

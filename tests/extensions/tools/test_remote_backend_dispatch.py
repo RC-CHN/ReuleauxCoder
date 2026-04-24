@@ -5,8 +5,14 @@ from __future__ import annotations
 import pytest
 
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
-from reuleauxcoder.extensions.remote_exec.errors import PeerDisconnectedError, PeerNotFoundError
-from reuleauxcoder.extensions.remote_exec.protocol import ExecToolRequest, ExecToolResult
+from reuleauxcoder.extensions.remote_exec.errors import (
+    PeerDisconnectedError,
+    PeerNotFoundError,
+)
+from reuleauxcoder.extensions.remote_exec.protocol import (
+    ExecToolRequest,
+    ExecToolResult,
+)
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
@@ -140,6 +146,7 @@ class TestRemoteBackendDispatch:
             # register peer
             bt = srv.issue_bootstrap_token(ttl_sec=60)
             from reuleauxcoder.extensions.remote_exec.protocol import RegisterRequest
+
             resp = srv._on_register(RegisterRequest(bootstrap_token=bt, cwd="/tmp"))
 
             backend = RemoteRelayToolBackend(relay_server=srv)
@@ -147,6 +154,7 @@ class TestRemoteBackendDispatch:
             tool = ShellTool(backend=backend)
 
             import threading
+
             result_holder = {}
 
             def run_tool():
@@ -155,12 +163,14 @@ class TestRemoteBackendDispatch:
             t = threading.Thread(target=run_tool)
             t.start()
             import time
+
             time.sleep(0.1)
 
             # inject tool result
             assert len(received) == 1
             req_id = received[0][1].request_id
             from reuleauxcoder.extensions.remote_exec.protocol import RelayEnvelope
+
             env = RelayEnvelope(
                 type="tool_result",
                 request_id=req_id,
@@ -186,6 +196,7 @@ class TestRemoteBackendDispatch:
         try:
             bt = srv.issue_bootstrap_token(ttl_sec=60)
             from reuleauxcoder.extensions.remote_exec.protocol import RegisterRequest
+
             resp = srv._on_register(RegisterRequest(bootstrap_token=bt, cwd="/tmp"))
 
             import threading
@@ -198,7 +209,9 @@ class TestRemoteBackendDispatch:
                 try:
                     srv.send_exec_request(
                         resp.peer_id,
-                        ExecToolRequest(tool_name="shell", args={"command": "echo hello"}),
+                        ExecToolRequest(
+                            tool_name="shell", args={"command": "echo hello"}
+                        ),
                         timeout_sec=5,
                     )
                 except Exception as exc:
@@ -211,7 +224,11 @@ class TestRemoteBackendDispatch:
             assert len(received) == 1
             srv.handle_inbound(
                 resp.peer_id,
-                RelayEnvelope(type="disconnect", peer_id=resp.peer_id, payload={"reason": "peer_initiated"}),
+                RelayEnvelope(
+                    type="disconnect",
+                    peer_id=resp.peer_id,
+                    payload={"reason": "peer_initiated"},
+                ),
             )
             t.join(timeout=2)
 

@@ -10,7 +10,12 @@ from reuleauxcoder.app.commands.models import CommandResult
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
-from reuleauxcoder.app.commands.shared import TEXT_REQUIRED, UI_TARGETS, non_empty_text, slash_trigger
+from reuleauxcoder.app.commands.shared import (
+    TEXT_REQUIRED,
+    UI_TARGETS,
+    non_empty_text,
+    slash_trigger,
+)
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.interfaces.events import UIEventKind
@@ -120,7 +125,9 @@ def _handle_get_job(command, ctx) -> CommandResult:
     manager = get_subagent_manager(ctx.agent)
     job = manager.get_job(command.job_id)
     if job is None:
-        ctx.ui_bus.error(f"Sub-agent job '{command.job_id}' not found.", kind=UIEventKind.COMMAND)
+        ctx.ui_bus.error(
+            f"Sub-agent job '{command.job_id}' not found.", kind=UIEventKind.COMMAND
+        )
         return CommandResult(action="continue")
 
     ctx.ui_bus.info(
@@ -134,7 +141,9 @@ def _handle_get_job(command, ctx) -> CommandResult:
         mode=job.mode,
     )
     if job.error:
-        ctx.ui_bus.error(f"Job {job.id} error: {job.error}", kind=UIEventKind.COMMAND, job_id=job.id)
+        ctx.ui_bus.error(
+            f"Job {job.id} error: {job.error}", kind=UIEventKind.COMMAND, job_id=job.id
+        )
     if job.result:
         ctx.ui_bus.success(
             f"Job {job.id} result:\n{job.result}",
@@ -165,7 +174,9 @@ def _handle_wait_job(command, ctx) -> CommandResult:
     manager = get_subagent_manager(ctx.agent)
     job = manager.wait_job(command.job_id)
     if job is None:
-        ctx.ui_bus.error(f"Sub-agent job '{command.job_id}' not found.", kind=UIEventKind.COMMAND)
+        ctx.ui_bus.error(
+            f"Sub-agent job '{command.job_id}' not found.", kind=UIEventKind.COMMAND
+        )
         return CommandResult(action="continue")
 
     if job.status == "completed":
@@ -187,7 +198,9 @@ def _handle_wait_job(command, ctx) -> CommandResult:
             job_id=job.id,
         )
 
-    return CommandResult(action="continue", payload={"job_id": job.id, "status": job.status})
+    return CommandResult(
+        action="continue", payload={"job_id": job.id, "status": job.status}
+    )
 
 
 @register_command_module

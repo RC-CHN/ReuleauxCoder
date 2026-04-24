@@ -13,7 +13,9 @@ from reuleauxcoder.extensions.skills.models import (
     SkillToggleResult,
     SkillsViewModel,
 )
-from reuleauxcoder.infrastructure.persistence.skills_config_store import SkillsConfigStore
+from reuleauxcoder.infrastructure.persistence.skills_config_store import (
+    SkillsConfigStore,
+)
 
 
 class SkillsService:
@@ -75,13 +77,16 @@ class SkillsService:
         updated = sorted(
             name
             for name in current_names & previous_names
-            if self._skill_fingerprint(current[name]) != self._skill_fingerprint(previous[name])
+            if self._skill_fingerprint(current[name])
+            != self._skill_fingerprint(previous[name])
         )
 
         active = tuple(skill for skill in discovered if skill.enabled)
         catalog = build_skills_catalog(active)
         signature = self._signature(catalog)
-        changed = bool(added or removed or updated or signature != self._catalog_signature)
+        changed = bool(
+            added or removed or updated or signature != self._catalog_signature
+        )
 
         self._skills = current
         self._active_skills = active
@@ -123,7 +128,9 @@ class SkillsService:
 
         saved_path = None
         if changed:
-            saved_path = str(self._config_store.save_disabled_skills(sorted(self._disabled_names)))
+            saved_path = str(
+                self._config_store.save_disabled_skills(sorted(self._disabled_names))
+            )
             self.reload()
 
         return SkillToggleResult(
@@ -234,4 +241,10 @@ class SkillsService:
 
     @staticmethod
     def _skill_fingerprint(skill: Skill) -> tuple[str, str, str, str, bool]:
-        return (skill.description, skill.location, skill.body, skill.scope, skill.enabled)
+        return (
+            skill.description,
+            skill.location,
+            skill.body,
+            skill.scope,
+            skill.enabled,
+        )

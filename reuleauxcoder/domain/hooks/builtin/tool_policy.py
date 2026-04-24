@@ -8,11 +8,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
 
-from reuleauxcoder.domain.approval_engine import ApprovalPolicyEngine, ToolApprovalContext
+from reuleauxcoder.domain.approval_engine import (
+    ApprovalPolicyEngine,
+    ToolApprovalContext,
+)
 from reuleauxcoder.domain.config.models import ApprovalConfig
 from reuleauxcoder.domain.hooks.base import GuardHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
-from reuleauxcoder.domain.hooks.types import BeforeToolExecuteContext, GuardDecision, HookPoint
+from reuleauxcoder.domain.hooks.types import (
+    BeforeToolExecuteContext,
+    GuardDecision,
+    HookPoint,
+)
 from reuleauxcoder.extensions.tools.policies import DEFAULT_TOOL_POLICIES, ToolPolicy
 
 
@@ -21,7 +28,9 @@ from reuleauxcoder.extensions.tools.policies import DEFAULT_TOOL_POLICIES, ToolP
 class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
     """Run configured tool policies before a tool executes."""
 
-    policies: tuple[ToolPolicy, ...] = field(default_factory=lambda: DEFAULT_TOOL_POLICIES)
+    policies: tuple[ToolPolicy, ...] = field(
+        default_factory=lambda: DEFAULT_TOOL_POLICIES
+    )
     approval_engine: ApprovalPolicyEngine | None = None
 
     def __init__(
@@ -39,7 +48,9 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
         )
         self.policies = policies or DEFAULT_TOOL_POLICIES
         self.approval_engine = (
-            ApprovalPolicyEngine(approval_config) if approval_config is not None else None
+            ApprovalPolicyEngine(approval_config)
+            if approval_config is not None
+            else None
         )
 
     @classmethod
@@ -73,7 +84,9 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
             approval_context = ToolApprovalContext(
                 tool_call=tool_call,
                 tool_name=tool_call.name,
-                tool_source=metadata.get("tool_source", _infer_tool_source(tool_call.name)),
+                tool_source=metadata.get(
+                    "tool_source", _infer_tool_source(tool_call.name)
+                ),
                 mcp_server=metadata.get("mcp_server"),
                 tool_description=metadata.get("tool_description"),
                 tool_schema=metadata.get("tool_schema"),
@@ -84,7 +97,9 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
                     f"Tool '{tool_call.name}' blocked by approval policy engine"
                 )
             if match.action == "warn":
-                warnings.append(f"Tool '{tool_call.name}' matched warning approval policy")
+                warnings.append(
+                    f"Tool '{tool_call.name}' matched warning approval policy"
+                )
             elif match.action == "require_approval":
                 return GuardDecision.require_approval(
                     f"Tool '{tool_call.name}' requires approval by policy"

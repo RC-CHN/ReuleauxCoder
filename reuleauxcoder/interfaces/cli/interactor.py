@@ -31,7 +31,9 @@ class CLIUIInteractor:
 
     def confirm(self, request: ConfirmRequest) -> ConfirmResponse:
         with self._interaction_lock:
-            self.ui_bus.warning(request.title, kind=UIEventKind.COMMAND, **request.details)
+            self.ui_bus.warning(
+                request.title, kind=UIEventKind.COMMAND, **request.details
+            )
             self.ui_bus.info(request.message, kind=UIEventKind.COMMAND)
             while True:
                 answer = input("Confirm? [y/n]: ").strip().lower()
@@ -39,7 +41,9 @@ class CLIUIInteractor:
                     return ConfirmResponse(confirmed=True)
                 if answer in {"n", "no"}:
                     return ConfirmResponse(confirmed=False)
-                self.ui_bus.warning("Please enter 'y' or 'n'.", kind=UIEventKind.COMMAND)
+                self.ui_bus.warning(
+                    "Please enter 'y' or 'n'.", kind=UIEventKind.COMMAND
+                )
 
     def choose_one(self, request: ChooseOneRequest) -> ChooseOneResponse:
         with self._interaction_lock:
@@ -70,7 +74,9 @@ class CLIUIInteractor:
                     idx = int(answer)
                     if 1 <= idx <= len(request.items):
                         return ChooseOneResponse(selected_id=request.items[idx - 1].id)
-                self.ui_bus.warning("Please enter a valid number.", kind=UIEventKind.COMMAND)
+                self.ui_bus.warning(
+                    "Please enter a valid number.", kind=UIEventKind.COMMAND
+                )
 
     def input_text(self, request: InputTextRequest) -> InputTextResponse:
         with self._interaction_lock:
@@ -94,7 +100,9 @@ class CLIUIInteractor:
 
     def review(self, request: ReviewRequest) -> ReviewResponse:
         with self._interaction_lock:
-            self.ui_bus.warning(request.title, kind=UIEventKind.APPROVAL, **request.metadata)
+            self.ui_bus.warning(
+                request.title, kind=UIEventKind.APPROVAL, **request.metadata
+            )
             self.ui_bus.info(request.summary, kind=UIEventKind.APPROVAL)
 
             for section in request.sections:
@@ -109,15 +117,23 @@ class CLIUIInteractor:
 
             while True:
                 try:
-                    answer = input(
-                        f"{request.approve_label}/{request.reject_label}? [y/n]: "
-                    ).strip().lower()
+                    answer = (
+                        input(
+                            f"{request.approve_label}/{request.reject_label}? [y/n]: "
+                        )
+                        .strip()
+                        .lower()
+                    )
                 except (KeyboardInterrupt, EOFError):
                     self.ui_bus.warning("Interrupted.", kind=UIEventKind.APPROVAL)
-                    return ReviewResponse(approved=False, cancelled=True, reason="approval interrupted")
+                    return ReviewResponse(
+                        approved=False, cancelled=True, reason="approval interrupted"
+                    )
 
                 if answer in {"y", "yes"}:
                     return ReviewResponse(approved=True)
                 if answer in {"n", "no"}:
                     return ReviewResponse(approved=False)
-                self.ui_bus.warning("Please enter 'y' or 'n'.", kind=UIEventKind.APPROVAL)
+                self.ui_bus.warning(
+                    "Please enter 'y' or 'n'.", kind=UIEventKind.APPROVAL
+                )

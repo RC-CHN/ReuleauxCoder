@@ -1,4 +1,8 @@
-from reuleauxcoder.domain.context.summary import extract_key_info, flatten_messages, generate_summary
+from reuleauxcoder.domain.context.summary import (
+    extract_key_info,
+    flatten_messages,
+    generate_summary,
+)
 
 
 class DummyResponse:

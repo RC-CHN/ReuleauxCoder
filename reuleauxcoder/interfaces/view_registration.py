@@ -20,13 +20,17 @@ class RegisteredViewRenderer:
 _REGISTERED_VIEWS: list[RegisteredViewRenderer] = []
 
 
-def register_view(*, view_type: str, ui_targets: set[str] | frozenset[str]) -> Callable[[ViewRenderer], ViewRenderer]:
+def register_view(
+    *, view_type: str, ui_targets: set[str] | frozenset[str]
+) -> Callable[[ViewRenderer], ViewRenderer]:
     """Register a structured view renderer for one or more UI targets."""
 
     targets = frozenset(ui_targets)
 
     def decorator(func: ViewRenderer) -> ViewRenderer:
-        registration = RegisteredViewRenderer(view_type=view_type, ui_targets=targets, render=func)
+        registration = RegisteredViewRenderer(
+            view_type=view_type, ui_targets=targets, render=func
+        )
         if registration not in _REGISTERED_VIEWS:
             _REGISTERED_VIEWS.append(registration)
         return func
@@ -34,7 +38,9 @@ def register_view(*, view_type: str, ui_targets: set[str] | frozenset[str]) -> C
     return decorator
 
 
-def iter_registered_views(*, ui_target: str | None = None) -> Iterator[RegisteredViewRenderer]:
+def iter_registered_views(
+    *, ui_target: str | None = None
+) -> Iterator[RegisteredViewRenderer]:
     """Iterate registered views, optionally filtered by UI target."""
     for registration in _REGISTERED_VIEWS:
         if ui_target is None or ui_target in registration.ui_targets:

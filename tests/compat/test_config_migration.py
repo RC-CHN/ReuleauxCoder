@@ -12,7 +12,11 @@ def test_migrate_bash_to_shell_replaces_mode_tools() -> None:
     }
     migrated, changed = migrate_bash_to_shell(data)
     assert changed is True
-    assert migrated["modes"]["profiles"]["coder"]["tools"] == ["read_file", "shell", "write_file"]
+    assert migrated["modes"]["profiles"]["coder"]["tools"] == [
+        "read_file",
+        "shell",
+        "write_file",
+    ]
     assert migrated["modes"]["profiles"]["debugger"]["tools"] == ["shell", "grep"]
 
 
@@ -42,7 +46,7 @@ def test_migrate_bash_to_shell_no_change_when_no_bash() -> None:
             "rules": [
                 {"tool_name": "shell", "action": "require_approval"},
             ]
-        }
+        },
     }
     migrated, changed = migrate_bash_to_shell(data)
     assert changed is False

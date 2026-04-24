@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, MCPServerConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    ApprovalRuleConfig,
+    MCPServerConfig,
+)
 from reuleauxcoder.infrastructure.yaml.loader import load_yaml_config, save_yaml_config
 from reuleauxcoder.services.config.loader import ConfigLoader
 

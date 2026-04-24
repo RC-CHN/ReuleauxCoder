@@ -22,7 +22,9 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    tokens: list[str] = field(default_factory=list)  # Streamed tokens for event emission
+    tokens: list[str] = field(
+        default_factory=list
+    )  # Streamed tokens for event emission
 
     @property
     def message(self) -> dict:

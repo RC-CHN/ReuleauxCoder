@@ -28,8 +28,16 @@ def run_repl(
     ensure_user_dirs()
     show_banner(config.model, config.base_url, __version__)
 
-    hist_path = str(Path(config.history_file).expanduser()) if getattr(config, "history_file", None) else None
-    history = FileHistory(hist_path) if hist_path else FileHistory(str(Path.cwd() / ".rcoder" / "history"))
+    hist_path = (
+        str(Path(config.history_file).expanduser())
+        if getattr(config, "history_file", None)
+        else None
+    )
+    history = (
+        FileHistory(hist_path)
+        if hist_path
+        else FileHistory(str(Path.cwd() / ".rcoder" / "history"))
+    )
     setattr(agent, "current_session_id", current_session_id)
 
     pending_resume_prefix: str | None = None

@@ -17,7 +17,9 @@ class _AgentStub:
     def __init__(self) -> None:
         self.active_mode = "coder"
         self.available_modes = {
-            "coder": SimpleNamespace(description="Default coding mode", prompt_append="Focus on code.")
+            "coder": SimpleNamespace(
+                description="Default coding mode", prompt_append="Focus on code."
+            )
         }
         self.state = SimpleNamespace(messages=[{"role": "user", "content": "hello"}])
         self.runtime_config = SimpleNamespace(

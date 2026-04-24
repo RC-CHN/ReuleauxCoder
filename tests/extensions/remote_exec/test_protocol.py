@@ -54,7 +54,9 @@ class TestRegisterRequest:
 
 class TestRegisterResponse:
     def test_roundtrip(self) -> None:
-        resp = RegisterResponse(peer_id="p1", peer_token="pt_xyz", heartbeat_interval_sec=15)
+        resp = RegisterResponse(
+            peer_id="p1", peer_token="pt_xyz", heartbeat_interval_sec=15
+        )
         d = resp.to_dict()
         restored = RegisterResponse.from_dict(d)
         assert restored.peer_id == "p1"

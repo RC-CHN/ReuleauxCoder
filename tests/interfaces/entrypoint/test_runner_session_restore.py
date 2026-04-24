@@ -5,7 +5,11 @@ from reuleauxcoder.domain.config.models import ApprovalConfig, Config, ModeConfi
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.session.models import SessionRuntimeState
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
-from reuleauxcoder.interfaces.entrypoint.runner import AppDependencies, AppOptions, AppRunner
+from reuleauxcoder.interfaces.entrypoint.runner import (
+    AppDependencies,
+    AppOptions,
+    AppRunner,
+)
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind, UIEventLevel
 
 
@@ -73,30 +77,40 @@ def _build_config(tmp_path: Path) -> Config:
 def _build_runner(**options) -> AppRunner:
     return AppRunner(
         options=AppOptions(**options),
-        dependencies=AppDependencies(create_session_store=lambda sessions_dir: SessionStore(sessions_dir)),
+        dependencies=AppDependencies(
+            create_session_store=lambda sessions_dir: SessionStore(sessions_dir)
+        ),
     )
 
 
-def test_restore_session_auto_resume_latest_is_fingerprint_scoped(tmp_path: Path) -> None:
+def test_restore_session_auto_resume_latest_is_fingerprint_scoped(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path)
     local_id = store.save(
         messages=[{"role": "user", "content": "local msg"}],
         model="local-model",
         fingerprint="local",
-        runtime_state=SessionRuntimeState(model="local-model", active_mode="debugger", llm_debug_trace=True),
+        runtime_state=SessionRuntimeState(
+            model="local-model", active_mode="debugger", llm_debug_trace=True
+        ),
     )
     store.save(
         messages=[{"role": "user", "content": "remote msg"}],
         model="remote-model",
         fingerprint="remote:abc",
-        runtime_state=SessionRuntimeState(model="remote-model", active_mode="coder", llm_debug_trace=False),
+        runtime_state=SessionRuntimeState(
+            model="remote-model", active_mode="coder", llm_debug_trace=False
+        ),
     )
     runner = _build_runner(auto_resume_latest=True)
     config = _build_config(tmp_path)
     agent = FakeAgent(fingerprint="local")
     ui_bus = UIEventBus()
 
-    current_session_id, session_exit_time, sessions_dir = runner._restore_session(config, agent, ui_bus)
+    current_session_id, session_exit_time, sessions_dir = runner._restore_session(
+        config, agent, ui_bus
+    )
 
     assert current_session_id == local_id
     assert session_exit_time is None
@@ -113,7 +127,9 @@ def test_restore_session_auto_resume_latest_is_fingerprint_scoped(tmp_path: Path
     )
 
 
-def test_restore_session_manual_resume_warns_on_cross_fingerprint_and_restores_runtime(tmp_path: Path) -> None:
+def test_restore_session_manual_resume_warns_on_cross_fingerprint_and_restores_runtime(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path)
     remote_id = store.save(
         messages=[{"role": "user", "content": "remote msg"}],
@@ -138,9 +154,10 @@ def test_restore_session_manual_resume_warns_on_cross_fingerprint_and_restores_r
     assert agent.active_mode == "debugger"
     assert agent.llm.model == "remote-model"
     assert agent.llm.debug_trace is True
-    assert [(rule.tool_name, rule.action) for rule in getattr(agent, "session_approval_rules")] == [
-        ("shell", "deny")
-    ]
+    assert [
+        (rule.tool_name, rule.action)
+        for rule in getattr(agent, "session_approval_rules")
+    ] == [("shell", "deny")]
     assert any(
         event.level == UIEventLevel.WARNING
         and event.kind == UIEventKind.SESSION

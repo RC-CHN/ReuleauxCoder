@@ -59,4 +59,3 @@ class MCPServersView:
                 for server in self.servers
             ]
         }
-

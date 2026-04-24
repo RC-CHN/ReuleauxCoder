@@ -8,7 +8,9 @@ def normalize_input(user_input: str) -> str:
     return " ".join(user_input.strip().split())
 
 
-def match_template(user_input: str, template: str, *, case_insensitive: bool = False) -> dict[str, str] | None:
+def match_template(
+    user_input: str, template: str, *, case_insensitive: bool = False
+) -> dict[str, str] | None:
     """Match command input against a template with optional placeholders.
 
     Placeholder forms:
@@ -61,6 +63,12 @@ def match_template(user_input: str, template: str, *, case_insensitive: bool = F
     return captures
 
 
-def matches_any(user_input: str, templates: tuple[str, ...], *, case_insensitive: bool = False) -> bool:
+def matches_any(
+    user_input: str, templates: tuple[str, ...], *, case_insensitive: bool = False
+) -> bool:
     """Return True if input matches any provided template."""
-    return any(match_template(user_input, template, case_insensitive=case_insensitive) is not None for template in templates)
+    return any(
+        match_template(user_input, template, case_insensitive=case_insensitive)
+        is not None
+        for template in templates
+    )

@@ -63,7 +63,10 @@ def _parse_disable_skill(user_input: str, parse_ctx):
 
 
 def _build_reload_message(result) -> str:
-    parts = [f"{len(result.all_skills)} discovered", f"{len(result.active_skills)} active"]
+    parts = [
+        f"{len(result.all_skills)} discovered",
+        f"{len(result.active_skills)} active",
+    ]
     if result.added:
         parts.append(f"+{len(result.added)} added")
     if result.updated:
@@ -139,13 +142,17 @@ def _handle_reload_skills(command, ctx) -> CommandResult:
     for name in result.removed:
         ctx.ui_bus.warning(f"Skill removed: {name}", kind=UIEventKind.SYSTEM)
     for name in result.missing:
-        ctx.ui_bus.warning(f"Skill not found and skipped: {name}", kind=UIEventKind.SYSTEM)
+        ctx.ui_bus.warning(
+            f"Skill not found and skipped: {name}", kind=UIEventKind.SYSTEM
+        )
     for diagnostic in result.diagnostics:
         emit = ctx.ui_bus.warning if diagnostic.level == "warning" else ctx.ui_bus.error
         emit(diagnostic.message, kind=UIEventKind.SYSTEM)
 
     payload = _build_skills_payload(ctx)
-    ctx.ui_bus.refresh_view("skills", title="Skills", payload=payload, reuse_key="skills")
+    ctx.ui_bus.refresh_view(
+        "skills", title="Skills", payload=payload, reuse_key="skills"
+    )
     return CommandResult(action="continue", payload=payload)
 
 
@@ -157,7 +164,9 @@ def _handle_toggle_skill(command: ToggleSkillCommand, ctx) -> CommandResult:
 
     result = service.set_enabled(command.skill_name, command.enabled)
     if not result.found:
-        ctx.ui_bus.warning(result.message, kind=UIEventKind.SYSTEM, skill_name=command.skill_name)
+        ctx.ui_bus.warning(
+            result.message, kind=UIEventKind.SYSTEM, skill_name=command.skill_name
+        )
         return CommandResult(action="continue")
 
     setattr(ctx.agent, "skills_catalog", service.build_catalog())
@@ -171,10 +180,14 @@ def _handle_toggle_skill(command: ToggleSkillCommand, ctx) -> CommandResult:
             saved_path=result.saved_path,
         )
     else:
-        ctx.ui_bus.info(result.message, kind=UIEventKind.SYSTEM, skill_name=command.skill_name)
+        ctx.ui_bus.info(
+            result.message, kind=UIEventKind.SYSTEM, skill_name=command.skill_name
+        )
 
     payload = _build_skills_payload(ctx)
-    ctx.ui_bus.refresh_view("skills", title="Skills", payload=payload, reuse_key="skills")
+    ctx.ui_bus.refresh_view(
+        "skills", title="Skills", payload=payload, reuse_key="skills"
+    )
     return CommandResult(action="continue", payload=payload)
 
 

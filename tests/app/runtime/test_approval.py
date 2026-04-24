@@ -7,7 +7,11 @@ from reuleauxcoder.app.runtime.approval import (
     resolve_mcp_server_action,
     same_rule_target,
 )
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, MCPServerConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    ApprovalRuleConfig,
+    MCPServerConfig,
+)
 
 
 def test_parse_approval_target_supports_tool_and_mcp_targets() -> None:
@@ -38,22 +42,32 @@ def test_parse_approval_target_rejects_invalid_target_or_action() -> None:
 
 
 def test_same_rule_target_and_find_matching_rule() -> None:
-    left = ApprovalRuleConfig(tool_source="mcp", mcp_server="s1", tool_name="search", action="allow")
-    right = ApprovalRuleConfig(tool_source="mcp", mcp_server="s1", tool_name="search", action="deny")
-    other = ApprovalRuleConfig(tool_source="mcp", mcp_server="s2", tool_name="search", action="allow")
+    left = ApprovalRuleConfig(
+        tool_source="mcp", mcp_server="s1", tool_name="search", action="allow"
+    )
+    right = ApprovalRuleConfig(
+        tool_source="mcp", mcp_server="s1", tool_name="search", action="deny"
+    )
+    other = ApprovalRuleConfig(
+        tool_source="mcp", mcp_server="s2", tool_name="search", action="allow"
+    )
 
     assert same_rule_target(left, right) is True
     assert same_rule_target(left, other) is False
     assert find_matching_rule([other, right], left) is right
 
 
-def test_resolve_mcp_server_action_prefers_server_rule_then_generic_then_default() -> None:
+def test_resolve_mcp_server_action_prefers_server_rule_then_generic_then_default() -> (
+    None
+):
     config = SimpleNamespace(
         approval=ApprovalConfig(
             default_mode="require_approval",
             rules=[
                 ApprovalRuleConfig(tool_source="mcp", action="warn"),
-                ApprovalRuleConfig(tool_source="mcp", mcp_server="server1", action="deny"),
+                ApprovalRuleConfig(
+                    tool_source="mcp", mcp_server="server1", action="deny"
+                ),
             ],
         )
     )

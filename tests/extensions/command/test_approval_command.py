@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, Config
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    ApprovalRuleConfig,
+    Config,
+)
 from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.domain.hooks.registry import HookRegistry
@@ -40,7 +44,8 @@ def test_set_approval_rule_is_session_scoped() -> None:
     assert session_rules[0].action == "deny"
     assert result.payload["rules"][0]["tool_name"] == "shell"
     assert any(
-        event.level == UIEventLevel.SUCCESS and event.message == "Updated session approval rule"
+        event.level == UIEventLevel.SUCCESS
+        and event.message == "Updated session approval rule"
         for event in ctx.ui_bus._history
     )
 
@@ -71,7 +76,8 @@ def test_set_global_approval_rule_updates_config_and_runtime(monkeypatch) -> Non
     assert getattr(ctx.agent, "session_approval_rules", []) == []
     assert result.payload["saved_path"] == "/tmp/config.yaml"
     assert any(
-        event.level == UIEventLevel.SUCCESS and "Updated global approval rule" in event.message
+        event.level == UIEventLevel.SUCCESS
+        and "Updated global approval rule" in event.message
         for event in ctx.ui_bus._history
     )
 
@@ -85,4 +91,6 @@ def test_set_global_approval_rule_replaces_same_target() -> None:
         ctx,
     )
 
-    assert [(rule.tool_name, rule.action) for rule in ctx.config.approval.rules] == [("shell", "allow")]
+    assert [(rule.tool_name, rule.action) for rule in ctx.config.approval.rules] == [
+        ("shell", "allow")
+    ]

@@ -17,7 +17,10 @@ from reuleauxcoder.domain.hooks.types import (
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
-from reuleauxcoder.services.llm.diagnostics import persist_llm_error_diagnostic, snapshot_messages
+from reuleauxcoder.services.llm.diagnostics import (
+    persist_llm_error_diagnostic,
+    snapshot_messages,
+)
 
 
 MAX_DEBUG_CONTENT_CHARS = 400
@@ -53,11 +56,25 @@ def _extract_stream_event(chunk: Any) -> list[dict[str, Any]]:
         for tool_call in tool_calls:
             function = getattr(tool_call, "function", None)
             name = getattr(function, "name", None) if function is not None else None
-            arguments = getattr(function, "arguments", None) if function is not None else None
+            arguments = (
+                getattr(function, "arguments", None) if function is not None else None
+            )
             if name:
-                events.append({"type": "tool_name", "text": str(name), "index": getattr(tool_call, "index", None)})
+                events.append(
+                    {
+                        "type": "tool_name",
+                        "text": str(name),
+                        "index": getattr(tool_call, "index", None),
+                    }
+                )
             if arguments:
-                events.append({"type": "tool_arguments", "text": str(arguments), "index": getattr(tool_call, "index", None)})
+                events.append(
+                    {
+                        "type": "tool_arguments",
+                        "text": str(arguments),
+                        "index": getattr(tool_call, "index", None),
+                    }
+                )
     usage = getattr(chunk, "usage", None)
     if usage is not None:
         events.append(
@@ -70,7 +87,9 @@ def _extract_stream_event(chunk: Any) -> list[dict[str, Any]]:
     return events
 
 
-def _persist_debug_trace(payload: dict[str, Any], *, session_id: str | None, trace_id: str | None) -> Path:
+def _persist_debug_trace(
+    payload: dict[str, Any], *, session_id: str | None, trace_id: str | None
+) -> Path:
     diagnostics_dir = get_diagnostics_dir()
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     session_slug = session_id or "no_session"
@@ -90,7 +109,9 @@ def _sanitize_messages_for_llm(
     sanitized: list[dict] = []
     tool_call_names: dict[str, str] = {}
     seen_tool_outputs: set[str] = set()
-    effective_backfill = preserve_reasoning_content and backfill_reasoning_content_for_tool_calls
+    effective_backfill = (
+        preserve_reasoning_content and backfill_reasoning_content_for_tool_calls
+    )
 
     for msg_index, msg in enumerate(messages):
         item = dict(msg)
@@ -179,7 +200,9 @@ class LLM:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.preserve_reasoning_content = preserve_reasoning_content
-        self.backfill_reasoning_content_for_tool_calls = backfill_reasoning_content_for_tool_calls
+        self.backfill_reasoning_content_for_tool_calls = (
+            backfill_reasoning_content_for_tool_calls
+        )
         self.debug_trace = debug_trace
         self.ui_bus = ui_bus
 
@@ -205,7 +228,9 @@ class LLM:
         if preserve_reasoning_content is not None:
             self.preserve_reasoning_content = preserve_reasoning_content
         if backfill_reasoning_content_for_tool_calls is not None:
-            self.backfill_reasoning_content_for_tool_calls = backfill_reasoning_content_for_tool_calls
+            self.backfill_reasoning_content_for_tool_calls = (
+                backfill_reasoning_content_for_tool_calls
+            )
         if debug_trace is not None:
             self.debug_trace = debug_trace
 
@@ -254,11 +279,15 @@ class LLM:
         )
 
         if hook_registry is not None:
-            guard_decisions = hook_registry.run_guards(HookPoint.BEFORE_LLM_REQUEST, before_context)
+            guard_decisions = hook_registry.run_guards(
+                HookPoint.BEFORE_LLM_REQUEST, before_context
+            )
             denied = next((d for d in guard_decisions if not d.allowed), None)
             if denied is not None:
                 raise RuntimeError(denied.reason or "LLM request blocked by guard hook")
-            before_context = hook_registry.run_transforms(HookPoint.BEFORE_LLM_REQUEST, before_context)
+            before_context = hook_registry.run_transforms(
+                HookPoint.BEFORE_LLM_REQUEST, before_context
+            )
             hook_registry.run_observers(HookPoint.BEFORE_LLM_REQUEST, before_context)
 
         params = dict(before_context.request_params)
@@ -285,10 +314,15 @@ class LLM:
             completion_tok = 0
 
             for chunk in stream:
-                if self.debug_trace and len(debug_stream_events) < MAX_DEBUG_STREAM_EVENTS:
+                if (
+                    self.debug_trace
+                    and len(debug_stream_events) < MAX_DEBUG_STREAM_EVENTS
+                ):
                     debug_stream_events.extend(_extract_stream_event(chunk))
                     if len(debug_stream_events) > MAX_DEBUG_STREAM_EVENTS:
-                        debug_stream_events = debug_stream_events[:MAX_DEBUG_STREAM_EVENTS]
+                        debug_stream_events = debug_stream_events[
+                            :MAX_DEBUG_STREAM_EVENTS
+                        ]
 
                 # Usage info comes in the final chunk
                 if chunk.usage:
@@ -306,7 +340,9 @@ class LLM:
                     if on_token is not None:
                         on_token(delta.content)
 
-                if self.preserve_reasoning_content and getattr(delta, "reasoning_content", None):
+                if self.preserve_reasoning_content and getattr(
+                    delta, "reasoning_content", None
+                ):
                     reasoning_parts.append(delta.reasoning_content)
 
                 # Accumulate tool calls across chunks
@@ -332,11 +368,17 @@ class LLM:
                     args = json.loads(raw["args"])
                 except (json.JSONDecodeError, KeyError):
                     args = {}
-                parsed.append(ToolCall(id=tool_call_id, name=raw["name"], arguments=args))
+                parsed.append(
+                    ToolCall(id=tool_call_id, name=raw["name"], arguments=args)
+                )
 
             response = LLMResponse(
                 content="".join(content_parts),
-                reasoning_content=("".join(reasoning_parts) if self.preserve_reasoning_content else None),
+                reasoning_content=(
+                    "".join(reasoning_parts)
+                    if self.preserve_reasoning_content
+                    else None
+                ),
                 tool_calls=parsed,
                 prompt_tokens=prompt_tok,
                 completion_tokens=completion_tok,
@@ -371,7 +413,9 @@ class LLM:
                     },
                     "response": {
                         "content": _trim_text(response.content or "", 1000),
-                        "reasoning_content": _trim_text(response.reasoning_content or "", 1000),
+                        "reasoning_content": _trim_text(
+                            response.reasoning_content or "", 1000
+                        ),
                         "tool_calls": [
                             {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
                             for tc in response.tool_calls
@@ -383,7 +427,9 @@ class LLM:
                     },
                     "metadata": dict(before_context.metadata),
                 }
-                trace_path = _persist_debug_trace(trace_payload, session_id=session_id, trace_id=trace_id)
+                trace_path = _persist_debug_trace(
+                    trace_payload, session_id=session_id, trace_id=trace_id
+                )
                 self._emit_debug(
                     f"LLM trace saved: {trace_path}",
                     trace_path=str(trace_path),
@@ -402,7 +448,9 @@ class LLM:
             )
 
             if hook_registry is not None:
-                after_context = hook_registry.run_transforms(HookPoint.AFTER_LLM_RESPONSE, after_context)
+                after_context = hook_registry.run_transforms(
+                    HookPoint.AFTER_LLM_RESPONSE, after_context
+                )
                 hook_registry.run_observers(HookPoint.AFTER_LLM_RESPONSE, after_context)
 
             return after_context.response or response
@@ -419,7 +467,9 @@ class LLM:
             )
             setattr(e, "llm_diagnostic_path", str(diagnostic_path))
             if session_id:
-                before_context.metadata["llm_error_diagnostic_path"] = str(diagnostic_path)
+                before_context.metadata["llm_error_diagnostic_path"] = str(
+                    diagnostic_path
+                )
             raise
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):

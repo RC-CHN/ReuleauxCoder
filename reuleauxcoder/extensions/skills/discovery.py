@@ -46,10 +46,16 @@ def discover_skills(
             continue
 
         try:
-            entries = sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name)
+            entries = sorted(
+                [p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name
+            )
         except OSError as exc:
             diagnostics.append(
-                SkillDiagnostic(level="warning", message=f"Failed to scan {root}: {exc}", path=str(root))
+                SkillDiagnostic(
+                    level="warning",
+                    message=f"Failed to scan {root}: {exc}",
+                    path=str(root),
+                )
             )
             continue
 

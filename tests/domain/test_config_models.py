@@ -1,4 +1,12 @@
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig, Config, MCPServerConfig, ModeConfig, ModelProfileConfig, RemoteExecConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    ApprovalRuleConfig,
+    Config,
+    MCPServerConfig,
+    ModeConfig,
+    ModelProfileConfig,
+    RemoteExecConfig,
+)
 
 
 def test_mcp_server_config_roundtrip() -> None:
@@ -85,8 +93,14 @@ def test_config_validate_collects_multiple_errors() -> None:
     assert "model_profiles[bad].max_tokens must be positive" in errors
     assert "model_profiles[bad].max_context_tokens must be positive" in errors
     assert "model_profiles[bad].temperature must be between 0 and 2" in errors
-    assert "approval.default_mode must be one of allow, warn, require_approval, deny" in errors
-    assert "approval.rules[0].action must be one of allow, warn, require_approval, deny" in errors
+    assert (
+        "approval.default_mode must be one of allow, warn, require_approval, deny"
+        in errors
+    )
+    assert (
+        "approval.rules[0].action must be one of allow, warn, require_approval, deny"
+        in errors
+    )
 
 
 def test_config_is_valid_for_minimal_valid_configuration() -> None:

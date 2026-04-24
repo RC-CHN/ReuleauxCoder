@@ -50,7 +50,9 @@ class _RemoteChatSession:
     finished_at: float | None = None
     cond: threading.Condition = field(default_factory=threading.Condition)
 
-    def append_event(self, event_type: str, payload: dict[str, Any] | None = None) -> int:
+    def append_event(
+        self, event_type: str, payload: dict[str, Any] | None = None
+    ) -> int:
         with self.cond:
             seq = self.seq_next
             self.seq_next += 1
@@ -65,7 +67,9 @@ class _RemoteChatSession:
             self.cond.notify_all()
             return seq
 
-    def wait_events(self, cursor: int, timeout_sec: float) -> tuple[list[dict[str, Any]], bool, int]:
+    def wait_events(
+        self, cursor: int, timeout_sec: float
+    ) -> tuple[list[dict[str, Any]], bool, int]:
         deadline = time.time() + max(timeout_sec, 0.0)
         with self.cond:
             while cursor >= len(self.events) and not self.done:
@@ -97,7 +101,9 @@ class _RemoteChatSession:
         with self.cond:
             self.approval_waiters[approval_id] = {}
 
-    def resolve_approval(self, approval_id: str, decision: str, reason: str | None) -> bool:
+    def resolve_approval(
+        self, approval_id: str, decision: str, reason: str | None
+    ) -> bool:
         with self.cond:
             waiter = self.approval_waiters.get(approval_id)
             if waiter is None:
@@ -108,7 +114,9 @@ class _RemoteChatSession:
             self.cond.notify_all()
             return True
 
-    def wait_approval(self, approval_id: str, timeout_sec: float | None = None) -> tuple[str, str | None]:
+    def wait_approval(
+        self, approval_id: str, timeout_sec: float | None = None
+    ) -> tuple[str, str | None]:
         deadline = time.time() + timeout_sec if timeout_sec else None
         with self.cond:
             waiter = self.approval_waiters.setdefault(approval_id, {})
@@ -147,7 +155,8 @@ class RemoteRelayHTTPService:
         ui_bus: UIEventBus | None = None,
         artifact_provider: callable | None = None,
         chat_handler: Callable[[str, str], ChatResponse] | None = None,
-        stream_chat_handler: Callable[[str, str, _RemoteChatSession], None] | None = None,
+        stream_chat_handler: Callable[[str, str, _RemoteChatSession], None]
+        | None = None,
         bootstrap_access_secret: str = "",
         bootstrap_token_ttl_sec: int = 300,
     ) -> None:
@@ -204,7 +213,9 @@ class RemoteRelayHTTPService:
     def issue_bootstrap_token(self, ttl_sec: int = 300) -> str:
         return self.relay_server.issue_bootstrap_token(ttl_sec=ttl_sec)
 
-    def set_chat_handler(self, handler: Callable[[str, str], ChatResponse] | None) -> None:
+    def set_chat_handler(
+        self, handler: Callable[[str, str], ChatResponse] | None
+    ) -> None:
         self.chat_handler = handler
 
     def set_stream_chat_handler(
@@ -226,7 +237,9 @@ class RemoteRelayHTTPService:
             stale_ids = [
                 chat_id
                 for chat_id, session in self._chat_sessions.items()
-                if session.done and session.finished_at is not None and now - session.finished_at > self._chat_session_ttl_sec
+                if session.done
+                and session.finished_at is not None
+                and now - session.finished_at > self._chat_session_ttl_sec
             ]
             for chat_id in stale_ids:
                 self._chat_sessions.pop(chat_id, None)
@@ -242,7 +255,11 @@ class RemoteRelayHTTPService:
 
     def _abort_peer_chat_sessions(self, peer_id: str, reason: str) -> None:
         with self._chat_sessions_lock:
-            peer_sessions = [session for session in self._chat_sessions.values() if session.peer_id == peer_id and not session.done]
+            peer_sessions = [
+                session
+                for session in self._chat_sessions.values()
+                if session.peer_id == peer_id and not session.done
+            ]
         for session in peer_sessions:
             session.cancel_pending_approvals(reason)
             session.append_event("error", {"message": reason})
@@ -326,7 +343,12 @@ class RemoteRelayHTTPService:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _send_text(self, status: int, body: str, content_type: str = "text/plain; charset=utf-8") -> None:
+            def _send_text(
+                self,
+                status: int,
+                body: str,
+                content_type: str = "text/plain; charset=utf-8",
+            ) -> None:
                 data = body.encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
@@ -339,23 +361,38 @@ class RemoteRelayHTTPService:
                 configured_secret = service.bootstrap_access_secret
                 presented_secret = self.headers.get("X-RC-Bootstrap-Secret", "")
                 if not configured_secret:
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "bootstrap_disabled"})
+                    self._send_json(
+                        HTTPStatus.FORBIDDEN, {"error": "bootstrap_disabled"}
+                    )
                     return
                 if not secrets.compare_digest(presented_secret, configured_secret):
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "invalid_bootstrap_secret"})
+                    self._send_json(
+                        HTTPStatus.FORBIDDEN, {"error": "invalid_bootstrap_secret"}
+                    )
                     return
-                token = service.issue_bootstrap_token(ttl_sec=service.bootstrap_token_ttl_sec)
+                token = service.issue_bootstrap_token(
+                    ttl_sec=service.bootstrap_token_ttl_sec
+                )
                 host_header = self.headers.get("Host")
                 forwarded_proto = self.headers.get("X-Forwarded-Proto", "http")
-                request_base_url = f"{forwarded_proto}://{host_header}" if host_header else service.base_url
+                request_base_url = (
+                    f"{forwarded_proto}://{host_header}"
+                    if host_header
+                    else service.base_url
+                )
                 script = generate_bootstrap_script(request_base_url, token)
-                self._send_text(HTTPStatus.OK, script, "text/x-shellscript; charset=utf-8")
+                self._send_text(
+                    HTTPStatus.OK, script, "text/x-shellscript; charset=utf-8"
+                )
 
             def _handle_artifact(self, path: str) -> None:
                 if service.artifact_provider is None:
                     self._send_json(
                         HTTPStatus.NOT_FOUND,
-                        {"error": "artifact_unavailable", "message": "peer artifact not uploaded yet"},
+                        {
+                            "error": "artifact_unavailable",
+                            "message": "peer artifact not uploaded yet",
+                        },
                     )
                     return
                 suffix = path.removeprefix("/remote/artifacts/")
@@ -373,7 +410,9 @@ class RemoteRelayHTTPService:
                     )
                     return
                 if artifact is None:
-                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "artifact_unavailable"})
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND, {"error": "artifact_unavailable"}
+                    )
                     return
                 content, content_type = artifact
                 self.send_response(HTTPStatus.OK)
@@ -385,11 +424,16 @@ class RemoteRelayHTTPService:
             def _handle_register(self) -> None:
                 payload = self._read_json()
                 try:
-                    resp = service.relay_server._on_register(RegisterRequest.from_dict(payload))
+                    resp = service.relay_server._on_register(
+                        RegisterRequest.from_dict(payload)
+                    )
                 except RegisterRejectedError as exc:
                     self._send_json(
                         HTTPStatus.FORBIDDEN,
-                        {"type": "register_rejected", "payload": RegisterRejected(reason=exc.message).to_dict()},
+                        {
+                            "type": "register_rejected",
+                            "payload": RegisterRejected(reason=exc.message).to_dict(),
+                        },
                     )
                     return
                 service.ui_bus and service.ui_bus.success(
@@ -397,14 +441,20 @@ class RemoteRelayHTTPService:
                     kind=UIEventKind.REMOTE,
                     peer_id=resp.peer_id,
                 )
-                self._send_json(HTTPStatus.OK, {"type": "register_ok", "payload": resp.to_dict()})
+                self._send_json(
+                    HTTPStatus.OK, {"type": "register_ok", "payload": resp.to_dict()}
+                )
 
             def _handle_heartbeat(self) -> None:
                 payload = self._read_json()
                 hb = Heartbeat.from_dict(payload)
-                peer_id = service.relay_server.token_manager.verify_peer_token(hb.peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    hb.peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
                 service.relay_server.registry.update_heartbeat(peer_id)
                 self._send_json(HTTPStatus.OK, {"ok": True, "peer_id": peer_id})
@@ -413,11 +463,17 @@ class RemoteRelayHTTPService:
                 payload = self._read_json()
                 peer_token = payload.get("peer_token")
                 if not isinstance(peer_token, str) or not peer_token:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "peer_token_required"})
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "peer_token_required"}
+                    )
                     return
-                peer_id = service.relay_server.token_manager.verify_peer_token(peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
                 service.relay_server.registry.update_heartbeat(peer_id)
                 env = service._next_envelope(peer_id)
@@ -432,12 +488,18 @@ class RemoteRelayHTTPService:
                 request_id = payload.get("request_id")
                 result_type = payload.get("type", "tool_result")
                 result_payload = payload.get("payload", {})
-                peer_id = service.relay_server.token_manager.verify_peer_token(peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
                 if not isinstance(request_id, str) or not request_id:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "request_id_required"})
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "request_id_required"}
+                    )
                     return
                 if result_type == "cleanup_result":
                     result = CleanupResult.from_dict(result_payload)
@@ -470,12 +532,18 @@ class RemoteRelayHTTPService:
                 try:
                     req = ChatRequest.from_dict(payload)
                 except Exception:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_request"})
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_request"}
+                    )
                     return
 
-                peer_id = service.relay_server.token_manager.verify_peer_token(req.peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    req.peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
 
                 if service.chat_handler is None:
@@ -498,17 +566,25 @@ class RemoteRelayHTTPService:
                 try:
                     req = ChatStartRequest.from_dict(payload)
                 except Exception:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_start_request"})
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_start_request"}
+                    )
                     return
 
-                peer_id = service.relay_server.token_manager.verify_peer_token(req.peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    req.peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
                 if service.stream_chat_handler is None:
                     self._send_json(
                         HTTPStatus.SERVICE_UNAVAILABLE,
-                        ChatStartResponse(chat_id="", error="chat_stream_unavailable").to_dict(),
+                        ChatStartResponse(
+                            chat_id="", error="chat_stream_unavailable"
+                        ).to_dict(),
                     )
                     return
 
@@ -526,29 +602,41 @@ class RemoteRelayHTTPService:
                             session.mark_done()
 
                 threading.Thread(target=_run_chat, daemon=True).start()
-                self._send_json(HTTPStatus.OK, ChatStartResponse(chat_id=session.chat_id).to_dict())
+                self._send_json(
+                    HTTPStatus.OK, ChatStartResponse(chat_id=session.chat_id).to_dict()
+                )
 
             def _handle_chat_stream(self) -> None:
                 payload = self._read_json()
                 try:
                     req = ChatStreamRequest.from_dict(payload)
                 except Exception:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_stream_request"})
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST, {"error": "invalid_chat_stream_request"}
+                    )
                     return
 
-                peer_id = service.relay_server.token_manager.verify_peer_token(req.peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    req.peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
                 session = service._get_chat_session(req.chat_id)
                 if session is None or session.peer_id != peer_id:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "chat_not_found"})
                     return
 
-                events, done, next_cursor = session.wait_events(req.cursor, req.timeout_sec)
+                events, done, next_cursor = session.wait_events(
+                    req.cursor, req.timeout_sec
+                )
                 self._send_json(
                     HTTPStatus.OK,
-                    ChatStreamResponse(events=events, done=done, next_cursor=next_cursor).to_dict(),
+                    ChatStreamResponse(
+                        events=events, done=done, next_cursor=next_cursor
+                    ).to_dict(),
                 )
 
             def _handle_approval_reply(self) -> None:
@@ -556,25 +644,36 @@ class RemoteRelayHTTPService:
                 try:
                     req = ApprovalReplyRequest.from_dict(payload)
                 except Exception:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_approval_reply_request"})
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "invalid_approval_reply_request"},
+                    )
                     return
 
-                peer_id = service.relay_server.token_manager.verify_peer_token(req.peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    req.peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
                 session = service._get_chat_session(req.chat_id)
                 if session is None or session.peer_id != peer_id:
                     self._send_json(
                         HTTPStatus.NOT_FOUND,
-                        ApprovalReplyResponse(ok=False, error="chat_not_found").to_dict(),
+                        ApprovalReplyResponse(
+                            ok=False, error="chat_not_found"
+                        ).to_dict(),
                     )
                     return
                 ok = session.resolve_approval(req.approval_id, req.decision, req.reason)
                 if not ok:
                     self._send_json(
                         HTTPStatus.NOT_FOUND,
-                        ApprovalReplyResponse(ok=False, error="approval_not_found").to_dict(),
+                        ApprovalReplyResponse(
+                            ok=False, error="approval_not_found"
+                        ).to_dict(),
                     )
                     return
                 self._send_json(HTTPStatus.OK, ApprovalReplyResponse(ok=True).to_dict())
@@ -582,15 +681,25 @@ class RemoteRelayHTTPService:
             def _handle_disconnect(self) -> None:
                 payload = self._read_json()
                 peer_token = payload.get("peer_token")
-                peer_id = service.relay_server.token_manager.verify_peer_token(peer_token)
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    peer_token
+                )
                 if peer_id is None:
-                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"})
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
                     return
-                notice = DisconnectNotice(reason=payload.get("reason", "peer_initiated"))
-                service._abort_peer_chat_sessions(peer_id, f"peer_disconnected: {notice.reason}")
+                notice = DisconnectNotice(
+                    reason=payload.get("reason", "peer_initiated")
+                )
+                service._abort_peer_chat_sessions(
+                    peer_id, f"peer_disconnected: {notice.reason}"
+                )
                 service.relay_server.handle_inbound(
                     peer_id,
-                    RelayEnvelope(type="disconnect", peer_id=peer_id, payload=notice.to_dict()),
+                    RelayEnvelope(
+                        type="disconnect", peer_id=peer_id, payload=notice.to_dict()
+                    ),
                 )
                 service.ui_bus and service.ui_bus.warning(
                     f"Remote peer disconnected: {peer_id}",

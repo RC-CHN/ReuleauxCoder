@@ -74,7 +74,9 @@ class ActionSpec:
             return False
         return self.required_capabilities.issubset(ui_profile.capabilities)
 
-    def matching_triggers(self, ui_profile: UIProfile, *, kind: TriggerKind | None = None) -> tuple[TriggerSpec, ...]:
+    def matching_triggers(
+        self, ui_profile: UIProfile, *, kind: TriggerKind | None = None
+    ) -> tuple[TriggerSpec, ...]:
         """Return triggers available for a UI profile, optionally filtered by trigger kind."""
         matched: list[TriggerSpec] = []
         for trigger in self.triggers:

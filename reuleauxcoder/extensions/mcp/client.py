@@ -111,7 +111,8 @@ class MCPClient:
 
             self._initialized = True
             self._emit(
-                "success", f"Connected to '{self.config.name}' with {len(self._tools)} tools"
+                "success",
+                f"Connected to '{self.config.name}' with {len(self._tools)} tools",
             )
             return True
         except Exception as e:

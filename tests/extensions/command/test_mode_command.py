@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
 from reuleauxcoder.domain.config.models import ApprovalConfig, Config, ModeConfig
-from reuleauxcoder.extensions.command.builtin.mode import SwitchModeCommand, _handle_switch_mode
+from reuleauxcoder.extensions.command.builtin.mode import (
+    SwitchModeCommand,
+    _handle_switch_mode,
+)
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 
 
@@ -37,7 +40,8 @@ def test_switch_mode_is_session_scoped() -> None:
     assert ctx.config.active_mode == "coder"
     assert result.payload["active_mode"] == "debugger"
     assert any(
-        event.level == UIEventLevel.SUCCESS and event.message == "Switched session mode to 'debugger'"
+        event.level == UIEventLevel.SUCCESS
+        and event.message == "Switched session mode to 'debugger'"
         for event in ctx.ui_bus._history
     )
 

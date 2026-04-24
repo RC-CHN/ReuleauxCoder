@@ -41,7 +41,9 @@ def test_show_mcp_rejects_non_local_runtime() -> None:
 def test_toggle_mcp_rejects_non_local_runtime() -> None:
     ctx = _build_ctx("remote")
 
-    result = _handle_toggle_mcp_server(ToggleMCPServerCommand(server_name="demo", enabled=True), ctx)
+    result = _handle_toggle_mcp_server(
+        ToggleMCPServerCommand(server_name="demo", enabled=True), ctx
+    )
 
     assert result.payload == {"markdown": "MCP local-only."}
     assert any(
@@ -64,7 +66,11 @@ def test_toggle_mcp_local_runtime_emits_success_and_refreshes(monkeypatch) -> No
 
     class FakeView:
         def to_payload(self) -> dict:
-            return {"servers": [{"name": "demo", "enabled": True, "runtime_connected": False}]}
+            return {
+                "servers": [
+                    {"name": "demo", "enabled": True, "runtime_connected": False}
+                ]
+            }
 
     monkeypatch.setattr(
         "reuleauxcoder.extensions.command.builtin.mcp.toggle_mcp_server",
@@ -75,7 +81,9 @@ def test_toggle_mcp_local_runtime_emits_success_and_refreshes(monkeypatch) -> No
         lambda config, agent: FakeView(),
     )
 
-    result = _handle_toggle_mcp_server(ToggleMCPServerCommand(server_name="demo", enabled=True), ctx)
+    result = _handle_toggle_mcp_server(
+        ToggleMCPServerCommand(server_name="demo", enabled=True), ctx
+    )
 
     assert result.payload["servers"][0]["name"] == "demo"
     assert any(

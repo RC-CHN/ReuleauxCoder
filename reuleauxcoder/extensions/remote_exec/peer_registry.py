@@ -62,7 +62,9 @@ class PeerRegistry:
             info.status = "online"
         return True
 
-    def mark_disconnected(self, peer_id: str, reason: str = "unknown") -> PeerInfo | None:
+    def mark_disconnected(
+        self, peer_id: str, reason: str = "unknown"
+    ) -> PeerInfo | None:
         """Mark a peer as offline. Returns the peer info if found."""
         info = self._peers.get(peer_id)
         if info is None:
@@ -97,7 +99,10 @@ class PeerRegistry:
         now = time.time()
         stale: list[str] = []
         for peer_id, info in self._peers.items():
-            if info.status == "online" and (now - info.last_seen_at) > self._heartbeat_timeout_sec:
+            if (
+                info.status == "online"
+                and (now - info.last_seen_at) > self._heartbeat_timeout_sec
+            ):
                 info.status = "offline"
                 info.meta["disconnect_reason"] = "heartbeat_timeout"
                 stale.append(peer_id)

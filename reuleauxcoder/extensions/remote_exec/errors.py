@@ -17,7 +17,9 @@ class PeerDisconnectedError(RemoteExecError):
 
     def __init__(self, peer_id: str):
         self.peer_id = peer_id
-        super().__init__("PEER_DISCONNECTED", f"Peer '{peer_id}' disconnected during execution")
+        super().__init__(
+            "PEER_DISCONNECTED", f"Peer '{peer_id}' disconnected during execution"
+        )
 
 
 class RemoteTimeoutError(RemoteExecError):
@@ -25,7 +27,9 @@ class RemoteTimeoutError(RemoteExecError):
 
     def __init__(self, timeout_sec: int):
         self.timeout_sec = timeout_sec
-        super().__init__("REMOTE_TIMEOUT", f"Remote execution timed out after {timeout_sec}s")
+        super().__init__(
+            "REMOTE_TIMEOUT", f"Remote execution timed out after {timeout_sec}s"
+        )
 
 
 class PeerNotFoundError(RemoteExecError):
@@ -55,4 +59,6 @@ class RemoteToolError(RemoteExecError):
 
     def __init__(self, tool_name: str, message: str):
         self.tool_name = tool_name
-        super().__init__("REMOTE_TOOL_ERROR", f"Tool '{tool_name}' failed remotely: {message}")
+        super().__init__(
+            "REMOTE_TOOL_ERROR", f"Tool '{tool_name}' failed remotely: {message}"
+        )

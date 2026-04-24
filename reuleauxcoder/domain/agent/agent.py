@@ -267,21 +267,25 @@ class Agent:
             self.state.messages.append({"role": "assistant", "content": content})
 
         if success:
-            self._emit_event(AgentEvent.subagent_completed(
-                job_id=job.id,
-                mode=job.mode,
-                task=job.task,
-                status=job.status,
-                result=job.result,
-            ))
+            self._emit_event(
+                AgentEvent.subagent_completed(
+                    job_id=job.id,
+                    mode=job.mode,
+                    task=job.task,
+                    status=job.status,
+                    result=job.result,
+                )
+            )
         else:
-            self._emit_event(AgentEvent.subagent_completed(
-                job_id=job.id,
-                mode=job.mode,
-                task=job.task,
-                status=job.status,
-                error=job.error,
-            ))
+            self._emit_event(
+                AgentEvent.subagent_completed(
+                    job_id=job.id,
+                    mode=job.mode,
+                    task=job.task,
+                    status=job.status,
+                    error=job.error,
+                )
+            )
         self._emit_event(AgentEvent.tool_call_end("agent", content, success=success))
         return True
 
@@ -308,7 +312,9 @@ class Agent:
         self._inject_completed_subagent_jobs()
 
         # Repair stale dangling tool calls (e.g. after previous crash/interruption)
-        self.reconcile_pending_tool_calls(reason="Recovered from previous interrupted turn.")
+        self.reconcile_pending_tool_calls(
+            reason="Recovered from previous interrupted turn."
+        )
 
         self._emit_event(AgentEvent.chat_start(user_input))
 
@@ -320,13 +326,17 @@ class Agent:
             result = self._loop.run()
         except BaseException as e:
             # Ensure tool-call/response parity before bubbling the failure upward.
-            self.reconcile_pending_tool_calls(reason=f"Interrupted due to {type(e).__name__}.")
+            self.reconcile_pending_tool_calls(
+                reason=f"Interrupted due to {type(e).__name__}."
+            )
             raise
 
         self._emit_event(
             AgentEvent.chat_end(
                 result,
-                render_response=not getattr(self._loop, "last_response_streamed", False),
+                render_response=not getattr(
+                    self._loop, "last_response_streamed", False
+                ),
             )
         )
         return result

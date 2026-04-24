@@ -13,7 +13,12 @@ from urllib import request
 
 _URLOPEN = request.build_opener(request.ProxyHandler({})).open
 
-from reuleauxcoder.domain.config.models import Config, ContextConfig, ModeConfig, RemoteExecConfig
+from reuleauxcoder.domain.config.models import (
+    Config,
+    ContextConfig,
+    ModeConfig,
+    RemoteExecConfig,
+)
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
@@ -32,7 +37,9 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _json_request(method: str, url: str, payload: dict | None = None) -> tuple[int, dict]:
+def _json_request(
+    method: str, url: str, payload: dict | None = None
+) -> tuple[int, dict]:
     data = None
     headers = {}
     if payload is not None:
@@ -112,7 +119,9 @@ class FakeAgent:
 def _build_runner_with_fake_agent(relay_bind: str, chat_behavior=None) -> AppRunner:
     config = Config(
         api_key="key",
-        remote_exec=RemoteExecConfig(enabled=True, host_mode=True, relay_bind=relay_bind),
+        remote_exec=RemoteExecConfig(
+            enabled=True, host_mode=True, relay_bind=relay_bind
+        ),
         modes={
             "coder": ModeConfig(name="coder", description="Default coding mode"),
             "debugger": ModeConfig(name="debugger", description="Debug mode"),
@@ -126,7 +135,9 @@ def _build_runner_with_fake_agent(relay_bind: str, chat_behavior=None) -> AppRun
             load_config=lambda _: config,
             create_llm=lambda cfg: FakeLLM(cfg.model),
             load_tools=lambda _backend: [],
-            create_agent=lambda llm, _tools, _config: FakeAgent(llm, chat_behavior=chat_behavior),
+            create_agent=lambda llm, _tools, _config: FakeAgent(
+                llm, chat_behavior=chat_behavior
+            ),
         ),
     )
 
@@ -141,7 +152,9 @@ def _register_peer(base_url: str, bootstrap_token: str, cwd: str) -> tuple[str, 
     return payload["peer_id"], payload["peer_token"]
 
 
-def _collect_stream_events(base_url: str, peer_token: str, chat_id: str, timeout_sec: float = 3.0) -> list[dict]:
+def _collect_stream_events(
+    base_url: str, peer_token: str, chat_id: str, timeout_sec: float = 3.0
+) -> list[dict]:
     deadline = time.time() + timeout_sec
     cursor = 0
     events: list[dict] = []
@@ -196,7 +209,10 @@ class TestRunnerRemoteExec:
             assert runner._relay_http_service is None
             assert ctx.agent is not None
             assert len(ctx.agent.tools) > 0
-            assert all(getattr(tool.backend, "backend_id", None) == "local" for tool in ctx.agent.tools)
+            assert all(
+                getattr(tool.backend, "backend_id", None) == "local"
+                for tool in ctx.agent.tools
+            )
         finally:
             runner.cleanup(ctx.agent)
 
@@ -211,7 +227,9 @@ class TestRunnerRemoteExec:
         ctx = runner.initialize()
         assert runner._relay_server is not None
         assert isinstance(runner._relay_server, RelayServer)
-        assert all(isinstance(tool.backend, RemoteRelayToolBackend) for tool in ctx.agent.tools)
+        assert all(
+            isinstance(tool.backend, RemoteRelayToolBackend) for tool in ctx.agent.tools
+        )
         runner.cleanup(ctx.agent)
         assert runner._relay_server is None
 
@@ -264,7 +282,10 @@ class TestRunnerRemoteExec:
             ),
         )
         ctx = runner.initialize()
-        assert getattr(ctx.agent, "config", None) is None or getattr(ctx.agent, "config", None) == config
+        assert (
+            getattr(ctx.agent, "config", None) is None
+            or getattr(ctx.agent, "config", None) == config
+        )
         assert ctx.agent.max_context_tokens == config.max_context_tokens
         runner.cleanup(ctx.agent)
 
@@ -327,11 +348,14 @@ class TestRunnerRemoteExec:
                 f"{runner._relay_http_service.base_url}/remote/chat/start",
                 {"peer_token": peer_token, "prompt": "hello"},
             )
-            events = _collect_stream_events(runner._relay_http_service.base_url, peer_token, start_body["chat_id"])
+            events = _collect_stream_events(
+                runner._relay_http_service.base_url, peer_token, start_body["chat_id"]
+            )
             terminal_outputs = [
                 event["payload"]["content"]
                 for event in events
-                if event["type"] == "output" and event["payload"].get("format") == "terminal"
+                if event["type"] == "output"
+                and event["payload"].get("format") == "terminal"
             ]
             merged = "\n".join(terminal_outputs)
             assert "REMOTE PEER READY" in merged
@@ -343,14 +367,18 @@ class TestRunnerRemoteExec:
         finally:
             runner.cleanup(ctx.agent)
 
-    def test_runner_stream_chat_keeps_peer_sessions_isolated(self, tmp_path: Path) -> None:
+    def test_runner_stream_chat_keeps_peer_sessions_isolated(
+        self, tmp_path: Path
+    ) -> None:
         port = _free_port()
 
         def chat_behavior(agent: FakeAgent, prompt: str) -> str:
             time.sleep(0.15)
             return f"reply:{prompt}:{getattr(agent, 'current_session_id', '-')}"
 
-        runner = _build_runner_with_fake_agent(f"127.0.0.1:{port}", chat_behavior=chat_behavior)
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+        )
         ctx = runner.initialize()
         try:
             assert runner._relay_server is not None
@@ -383,8 +411,12 @@ class TestRunnerRemoteExec:
             t1.join(timeout=3)
             t2.join(timeout=3)
 
-            events_a = _collect_stream_events(runner._relay_http_service.base_url, token_a, starts["alpha"]["chat_id"])
-            events_b = _collect_stream_events(runner._relay_http_service.base_url, token_b, starts["beta"]["chat_id"])
+            events_a = _collect_stream_events(
+                runner._relay_http_service.base_url, token_a, starts["alpha"]["chat_id"]
+            )
+            events_b = _collect_stream_events(
+                runner._relay_http_service.base_url, token_b, starts["beta"]["chat_id"]
+            )
 
             outputs_a = "\n".join(
                 event["payload"].get("content", "")
@@ -409,13 +441,17 @@ class TestRunnerRemoteExec:
         finally:
             runner.cleanup(ctx.agent)
 
-    def test_runner_stream_chat_sets_remote_runtime_working_directory(self, tmp_path: Path) -> None:
+    def test_runner_stream_chat_sets_remote_runtime_working_directory(
+        self, tmp_path: Path
+    ) -> None:
         port = _free_port()
 
         def chat_behavior(agent: FakeAgent, _prompt: str) -> str:
             return f"cwd:{getattr(agent, 'runtime_working_directory', '<missing>')}"
 
-        runner = _build_runner_with_fake_agent(f"127.0.0.1:{port}", chat_behavior=chat_behavior)
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+        )
         ctx = runner.initialize()
         try:
             assert runner._relay_server is not None
@@ -430,13 +466,17 @@ class TestRunnerRemoteExec:
                 f"{runner._relay_http_service.base_url}/remote/chat/start",
                 {"peer_token": peer_token, "prompt": "hello"},
             )
-            events = _collect_stream_events(runner._relay_http_service.base_url, peer_token, start_body["chat_id"])
+            events = _collect_stream_events(
+                runner._relay_http_service.base_url, peer_token, start_body["chat_id"]
+            )
             end_event = [event for event in events if event["type"] == "chat_end"][-1]
             assert end_event["payload"]["response"] == f"cwd:{tmp_path}"
         finally:
             runner.cleanup(ctx.agent)
 
-    def test_runner_stream_chat_slash_command_renders_terminal_view(self, tmp_path: Path) -> None:
+    def test_runner_stream_chat_slash_command_renders_terminal_view(
+        self, tmp_path: Path
+    ) -> None:
         port = _free_port()
         runner = _build_runner_with_fake_agent(f"127.0.0.1:{port}")
         ctx = runner.initialize()
@@ -453,11 +493,14 @@ class TestRunnerRemoteExec:
                 f"{runner._relay_http_service.base_url}/remote/chat/start",
                 {"peer_token": peer_token, "prompt": "/help"},
             )
-            events = _collect_stream_events(runner._relay_http_service.base_url, peer_token, start_body["chat_id"])
+            events = _collect_stream_events(
+                runner._relay_http_service.base_url, peer_token, start_body["chat_id"]
+            )
             terminal_outputs = [
                 event["payload"]["content"]
                 for event in events
-                if event["type"] == "output" and event["payload"].get("format") == "terminal"
+                if event["type"] == "output"
+                and event["payload"].get("format") == "terminal"
             ]
             merged = "\n".join(terminal_outputs)
             assert "REMOTE PEER READY" in merged

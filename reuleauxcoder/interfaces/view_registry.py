@@ -11,8 +11,7 @@ from reuleauxcoder.interfaces.events import UIEvent
 class ViewRenderer(Protocol):
     """Callable protocol for UI-specific structured view renderers."""
 
-    def __call__(self, host: Any, event: UIEvent) -> bool:
-        ...
+    def __call__(self, host: Any, event: UIEvent) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)

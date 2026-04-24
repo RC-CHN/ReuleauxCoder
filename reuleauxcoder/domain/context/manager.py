@@ -19,6 +19,7 @@ def _get_tiktoken_encoder():
     if _tiktoken_encoder is None:
         try:
             import tiktoken
+
             _tiktoken_encoder = tiktoken.get_encoding("o200k_base")
         except Exception:
             _tiktoken_encoder = None
@@ -244,7 +245,11 @@ class ContextManager:
         elif current > self._summarize_at:
             # If snip is exhausted or summarize is near exhausted, go straight to summarize
             if self._snip_exhausted or self._summarize_hit_count >= self._max_hits - 1:
-                changed = self._summarize_old(messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns)
+                changed = self._summarize_old(
+                    messages,
+                    llm,
+                    keep_recent_user_turns=self._summarize_keep_recent_turns,
+                )
                 if changed:
                     compressed = True
                     applied_layers.append("summarize_old")
@@ -286,7 +291,11 @@ class ContextManager:
 
                 # After snip attempt, check if we still need summarize
                 if current > self._summarize_at and not self._summarize_exhausted:
-                    summarize_changed = self._summarize_old(messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns)
+                    summarize_changed = self._summarize_old(
+                        messages,
+                        llm,
+                        keep_recent_user_turns=self._summarize_keep_recent_turns,
+                    )
                     if summarize_changed:
                         compressed = True
                         applied_layers.append("summarize_old")
@@ -353,7 +362,9 @@ class ContextManager:
                 self._last_compact_strategy = "snip"
             return changed
         if strategy == "summarize":
-            changed = self._summarize_old(messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns)
+            changed = self._summarize_old(
+                messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns
+            )
             if changed:
                 self._last_compact_tokens = estimate_tokens(messages)
                 self._last_compact_strategy = "summarize"
@@ -371,7 +382,7 @@ class ContextManager:
         """Layer 1: Truncate older tool results over threshold, keeping recent tool outputs intact."""
         changed = False
         tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-        protected = set(tool_indices[-self._snip_keep_recent_tools:])
+        protected = set(tool_indices[-self._snip_keep_recent_tools :])
 
         for i, m in enumerate(messages):
             if i in protected or m.get("role") != "tool":
@@ -399,7 +410,9 @@ class ContextManager:
         keep_recent_user_turns: int = 20,
     ) -> bool:
         """Layer 2: Summarize old conversation while keeping recent user turns intact."""
-        split_index = self._find_recent_user_turn_boundary(messages, keep_recent_user_turns)
+        split_index = self._find_recent_user_turn_boundary(
+            messages, keep_recent_user_turns
+        )
         if split_index <= 0 or split_index >= len(messages):
             return False
 
@@ -425,12 +438,16 @@ class ContextManager:
         return True
 
     @staticmethod
-    def _find_recent_user_turn_boundary(messages: list[dict], keep_recent_user_turns: int) -> int:
+    def _find_recent_user_turn_boundary(
+        messages: list[dict], keep_recent_user_turns: int
+    ) -> int:
         """Return the split index that keeps the most recent N user turns and everything after them."""
         if keep_recent_user_turns <= 0:
             return len(messages)
 
-        user_turn_starts = [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
+        user_turn_starts = [
+            i for i, msg in enumerate(messages) if msg.get("role") == "user"
+        ]
         if len(user_turn_starts) <= keep_recent_user_turns:
             return 0
         return user_turn_starts[-keep_recent_user_turns]
@@ -542,7 +559,9 @@ class ContextManager:
         )
 
     @staticmethod
-    def _snapshot_messages(messages: list[dict], max_items: int = 12, max_chars: int = 240) -> list[dict[str, Any]]:
+    def _snapshot_messages(
+        messages: list[dict], max_items: int = 12, max_chars: int = 240
+    ) -> list[dict[str, Any]]:
         """Create a compact, UI-friendly snapshot of current context."""
         if len(messages) <= max_items:
             selected = list(enumerate(messages))
@@ -550,8 +569,19 @@ class ContextManager:
             head_count = max_items // 2
             tail_count = max_items - head_count
             selected = list(enumerate(messages[:head_count]))
-            selected.append((-1, {"role": "meta", "content": f"... {len(messages) - max_items} messages omitted ..."}))
-            selected.extend((len(messages) - tail_count + i, msg) for i, msg in enumerate(messages[-tail_count:]))
+            selected.append(
+                (
+                    -1,
+                    {
+                        "role": "meta",
+                        "content": f"... {len(messages) - max_items} messages omitted ...",
+                    },
+                )
+            )
+            selected.extend(
+                (len(messages) - tail_count + i, msg)
+                for i, msg in enumerate(messages[-tail_count:])
+            )
 
         snapshot: list[dict[str, Any]] = []
         for index, msg in selected:

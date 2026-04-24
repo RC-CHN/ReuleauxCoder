@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 from reuleauxcoder.domain.config.models import MCPServerConfig
-from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
-from reuleauxcoder.extensions.mcp.models import MCPServerStatus, MCPServersView, MCPToggleResult
+from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
+    WorkspaceConfigStore,
+)
+from reuleauxcoder.extensions.mcp.models import (
+    MCPServerStatus,
+    MCPServersView,
+    MCPToggleResult,
+)
 
 
-def find_mcp_server(servers: list[MCPServerConfig], server_name: str) -> MCPServerConfig | None:
+def find_mcp_server(
+    servers: list[MCPServerConfig], server_name: str
+) -> MCPServerConfig | None:
     """Find one configured MCP server by name."""
     for server in servers:
         if server.name == server_name:
@@ -20,7 +28,9 @@ def refresh_mcp_runtime_tools(agent) -> None:
     manager = getattr(agent, "mcp_manager", None)
     manager_tools = list(getattr(manager, "tools", []) or [])
     non_mcp_tools = [
-        tool for tool in getattr(agent, "tools", []) if getattr(tool, "tool_source", None) != "mcp"
+        tool
+        for tool in getattr(agent, "tools", [])
+        if getattr(tool, "tool_source", None) != "mcp"
     ]
     agent.tools = non_mcp_tools + manager_tools
 
@@ -98,7 +108,11 @@ def toggle_mcp_server(
             warning=warning,
         )
 
-    ok = manager.connect_server(server) if enabled else manager.disconnect_server(server_name)
+    ok = (
+        manager.connect_server(server)
+        if enabled
+        else manager.disconnect_server(server_name)
+    )
     refresh_mcp_runtime_tools(agent)
 
     state = "enabled" if enabled else "disabled"

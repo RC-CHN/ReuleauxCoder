@@ -29,7 +29,9 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         store_dir: str | None = None,
         priority: int = 0,
     ):
-        super().__init__(name="tool_output_truncation", priority=priority, extension_name="core")
+        super().__init__(
+            name="tool_output_truncation", priority=priority, extension_name="core"
+        )
         self.max_chars = max_chars
         self.max_lines = max_lines
         self.store_full_output = store_full_output
@@ -62,7 +64,9 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
 
         archive_path: Path | None = None
         if self.store_full_output:
-            archive_path = self._archive_output(tool_call.name, result, context.round_index)
+            archive_path = self._archive_output(
+                tool_call.name, result, context.round_index
+            )
 
         truncated_lines = result.splitlines()[: self.max_lines]
         truncated_text = "\n".join(truncated_lines)
@@ -87,19 +91,23 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         )
         return context
 
-    def _archive_output(self, tool_name: str, content: str, round_index: int | None) -> Path:
+    def _archive_output(
+        self, tool_name: str, content: str, round_index: int | None
+    ) -> Path:
         day_dir = self.output_dir / time.strftime("%Y-%m-%d")
         day_dir.mkdir(parents=True, exist_ok=True)
-        round_part = f"round-{round_index:02d}" if round_index is not None else "round-na"
+        round_part = (
+            f"round-{round_index:02d}" if round_index is not None else "round-na"
+        )
         filename = f"{round_part}-{tool_name}-{uuid.uuid4().hex[:8]}.txt"
         path = day_dir / filename
         path.write_text(content)
         return path
 
     def _should_bypass_truncation(self, tool_name: str, arguments: dict) -> bool:
-        return self._is_override_read(tool_name, arguments) or self._is_skills_markdown_read(
+        return self._is_override_read(
             tool_name, arguments
-        )
+        ) or self._is_skills_markdown_read(tool_name, arguments)
 
     def _is_override_read(self, tool_name: str, arguments: dict) -> bool:
         return tool_name == "read_file" and arguments.get("override") is True

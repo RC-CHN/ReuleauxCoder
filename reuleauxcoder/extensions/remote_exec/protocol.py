@@ -37,6 +37,7 @@ class RelayEnvelope:
 # Registration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RegisterRequest:
     bootstrap_token: str
@@ -103,6 +104,7 @@ class RegisterRejected:
 # Heartbeat
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Heartbeat:
     peer_token: str
@@ -119,6 +121,7 @@ class Heartbeat:
 # ---------------------------------------------------------------------------
 # Chat proxy (interactive peer -> host agent)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ChatRequest:
@@ -276,6 +279,7 @@ class ApprovalReplyResponse:
 # Tool execution
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ExecToolRequest:
     tool_name: str
@@ -333,6 +337,7 @@ class ExecToolResult:
 # Stream chunk (MVP: shell only if needed; struct kept for forward-compat)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ToolStreamChunk:
     chunk_type: str  # "stdout" | "stderr" | "exit"
@@ -354,6 +359,7 @@ class ToolStreamChunk:
 # ---------------------------------------------------------------------------
 # Disconnect / Cleanup
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class DisconnectNotice:
@@ -404,6 +410,7 @@ class CleanupResult:
 # ---------------------------------------------------------------------------
 # Generic error
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ErrorMessage:

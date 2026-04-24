@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from reuleauxcoder.domain.approval_engine import ApprovalPolicyEngine, ToolApprovalContext
+from reuleauxcoder.domain.approval_engine import (
+    ApprovalPolicyEngine,
+    ToolApprovalContext,
+)
 from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
 from reuleauxcoder.domain.config.schema import DEFAULTS
 from reuleauxcoder.domain.hooks import HookPoint
@@ -62,7 +65,9 @@ class ApprovalView:
     default_mode_source: str = "builtin"
     rules: list[ApprovalRuleView] = field(default_factory=list)
     tool_policies: list[ApprovalToolPolicyView] = field(default_factory=list)
-    effective_mcp_policies: list[ApprovalEffectivePolicyView] = field(default_factory=list)
+    effective_mcp_policies: list[ApprovalEffectivePolicyView] = field(
+        default_factory=list
+    )
     editor_hint: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
@@ -215,7 +220,9 @@ def _raw_rule_to_config(rule_dict: dict) -> ApprovalRuleConfig:
     )
 
 
-def _has_rule_in_list(rule: ApprovalRuleConfig, rules: list[ApprovalRuleConfig]) -> bool:
+def _has_rule_in_list(
+    rule: ApprovalRuleConfig, rules: list[ApprovalRuleConfig]
+) -> bool:
     """Return whether an equivalent rule target exists in the given list."""
     for r in rules:
         if same_rule_target(rule, r):
@@ -258,7 +265,9 @@ def _build_tool_catalog(agent) -> list[tuple[str, str, str | None]]:
 
     for tool in getattr(agent, "tools", []):
         tool_source = getattr(tool, "tool_source", None) or "builtin"
-        server_name = getattr(tool, "server_name", None) if tool_source == "mcp" else None
+        server_name = (
+            getattr(tool, "server_name", None) if tool_source == "mcp" else None
+        )
         catalog[(tool.name, tool_source, server_name)] = None
 
     return sorted(catalog.keys(), key=lambda item: (item[1], item[2] or "", item[0]))
@@ -266,7 +275,11 @@ def _build_tool_catalog(agent) -> list[tuple[str, str, str | None]]:
 
 def build_approval_view(config, agent=None) -> ApprovalView:
     """Build a structured view for approval rules and effective tool policies."""
-    session_rules = list(getattr(agent, "session_approval_rules", []) or []) if agent is not None else []
+    session_rules = (
+        list(getattr(agent, "session_approval_rules", []) or [])
+        if agent is not None
+        else []
+    )
     workspace_raw = _load_raw_approval(ConfigLoader.WORKSPACE_CONFIG_PATH)
     global_raw = _load_raw_approval(ConfigLoader.GLOBAL_CONFIG_PATH)
 
@@ -323,7 +336,9 @@ def build_approval_view(config, agent=None) -> ApprovalView:
             ToolApprovalContext(
                 tool_call=ToolCall(id="preview", name=tool_name, arguments={}),
                 tool_name=tool_name,
-                tool_source=tool_source if tool_source in {"builtin", "mcp", "unknown"} else "unknown",
+                tool_source=tool_source
+                if tool_source in {"builtin", "mcp", "unknown"}
+                else "unknown",
                 mcp_server=mcp_server,
             )
         )
@@ -379,7 +394,9 @@ def build_approval_view(config, agent=None) -> ApprovalView:
                 ),
             )
             server_action = (
-                server_rule.action if server_rule is not None else resolve_mcp_server_action(config, server_name)
+                server_rule.action
+                if server_rule is not None
+                else resolve_mcp_server_action(config, server_name)
             )
             server_source = (
                 "configured at server level"
@@ -397,13 +414,17 @@ def build_approval_view(config, agent=None) -> ApprovalView:
                         action=config.approval.default_mode,
                     ),
                 )
-                tool_action = tool_rule.action if tool_rule is not None else server_action
+                tool_action = (
+                    tool_rule.action if tool_rule is not None else server_action
+                )
                 tool_source = (
                     "configured at tool level"
                     if tool_rule is not None
                     else f"inherited from server {server_name}"
                 )
-                tools.append({"name": tool_name, "action": tool_action, "source": tool_source})
+                tools.append(
+                    {"name": tool_name, "action": tool_action, "source": tool_source}
+                )
             effective_policies.append(
                 ApprovalEffectivePolicyView(
                     server_name=server_name,
@@ -440,7 +461,9 @@ def build_approval_markdown(view: ApprovalView) -> str:
         lines.append("**Configured rules:**")
         lines.append("")
         for idx, rule in enumerate(view.rules, 1):
-            lines.append(f"{idx}. `{rule.scope}` -> **{rule.action}** _(source: {rule.source})_")
+            lines.append(
+                f"{idx}. `{rule.scope}` -> **{rule.action}** _(source: {rule.source})_"
+            )
     if view.tool_policies:
         lines.append("")
         lines.append("**Effective tool policies (including implicit/default):**")
@@ -458,5 +481,7 @@ def build_approval_markdown(view: ApprovalView) -> str:
             lines.append(f"- **{item.server_name}** -> `{item.action}`")
             lines.append(f"  - source: {item.source}")
             for tool in item.tools:
-                lines.append(f"  - tool `{tool['name']}` -> `{tool['action']}` ({tool['source']})")
+                lines.append(
+                    f"  - tool `{tool['name']}` -> `{tool['action']}` ({tool['source']})"
+                )
     return "\n".join(lines)

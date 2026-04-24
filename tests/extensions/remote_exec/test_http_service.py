@@ -22,7 +22,11 @@ _URLOPEN = request.build_opener(request.ProxyHandler({})).open
 _GO_AVAILABLE = shutil.which("go") is not None
 
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
-from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse, CleanupResult, ExecToolResult
+from reuleauxcoder.extensions.remote_exec.protocol import (
+    ChatResponse,
+    CleanupResult,
+    ExecToolResult,
+)
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
@@ -31,7 +35,9 @@ from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
-from reuleauxcoder.interfaces.entrypoint.runner import _default_create_remote_artifact_provider
+from reuleauxcoder.interfaces.entrypoint.runner import (
+    _default_create_remote_artifact_provider,
+)
 from reuleauxcoder.interfaces.events import UIEventBus
 
 
@@ -41,7 +47,9 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _json_request(method: str, url: str, payload: dict | None = None) -> tuple[int, dict]:
+def _json_request(
+    method: str, url: str, payload: dict | None = None
+) -> tuple[int, dict]:
     data = None
     headers = {}
     if payload is not None:
@@ -88,11 +96,13 @@ class TestRemoteRelayHTTPService:
             relay_server=relay,
             bind=f"127.0.0.1:{port}",
             artifact_provider=lambda os_name, arch, name: (
-                b"peer-binary",
-                "application/octet-stream",
-            )
-            if (os_name, arch, name) == ("linux", "amd64", "rcoder-peer")
-            else None,
+                (
+                    b"peer-binary",
+                    "application/octet-stream",
+                )
+                if (os_name, arch, name) == ("linux", "amd64", "rcoder-peer")
+                else None
+            ),
             bootstrap_access_secret="top-secret",
             bootstrap_token_ttl_sec=60,
         )
@@ -116,7 +126,8 @@ class TestRemoteRelayHTTPService:
             assert "/remote/artifacts/{os}/{arch}/rcoder-peer" in script
 
             with _URLOPEN(
-                f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer", timeout=5
+                f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer",
+                timeout=5,
             ) as resp:
                 assert resp.status == 200
                 assert resp.read() == b"peer-binary"
@@ -197,7 +208,9 @@ class TestRemoteRelayHTTPService:
                     "peer_token": peer_token,
                     "request_id": req_id,
                     "type": "tool_result",
-                    "payload": ExecToolResult(ok=True, result="hello from peer").to_dict(),
+                    "payload": ExecToolResult(
+                        ok=True, result="hello from peer"
+                    ).to_dict(),
                 },
             )
             assert status == 200
@@ -230,7 +243,9 @@ class TestRemoteRelayHTTPService:
                     "peer_token": peer_token,
                     "request_id": cleanup_req_id,
                     "type": "cleanup_result",
-                    "payload": CleanupResult(ok=True, removed_items=["/tmp/rc-peer"]).to_dict(),
+                    "payload": CleanupResult(
+                        ok=True, removed_items=["/tmp/rc-peer"]
+                    ).to_dict(),
                 },
             )
             assert status == 200
@@ -272,8 +287,18 @@ class TestRemoteRelayHTTPService:
             backend = RemoteRelayToolBackend(relay_server=relay)
             backend.context.peer_id = peer_id
             cases = [
-                (ShellTool(backend=backend), {"command": "echo hello"}, "shell", "shell-ok"),
-                (ReadFileTool(backend=backend), {"file_path": "/tmp/demo.txt"}, "read_file", "read-ok"),
+                (
+                    ShellTool(backend=backend),
+                    {"command": "echo hello"},
+                    "shell",
+                    "shell-ok",
+                ),
+                (
+                    ReadFileTool(backend=backend),
+                    {"file_path": "/tmp/demo.txt"},
+                    "read_file",
+                    "read-ok",
+                ),
                 (
                     WriteFileTool(backend=backend),
                     {"file_path": "/tmp/demo.txt", "content": "hello"},
@@ -282,12 +307,26 @@ class TestRemoteRelayHTTPService:
                 ),
                 (
                     EditFileTool(backend=backend),
-                    {"file_path": "/tmp/demo.txt", "old_string": "a", "new_string": "b"},
+                    {
+                        "file_path": "/tmp/demo.txt",
+                        "old_string": "a",
+                        "new_string": "b",
+                    },
                     "edit_file",
                     "edit-ok",
                 ),
-                (GlobTool(backend=backend), {"pattern": "*.py", "path": "/tmp"}, "glob", "glob-ok"),
-                (GrepTool(backend=backend), {"pattern": "hello", "path": "/tmp"}, "grep", "grep-ok"),
+                (
+                    GlobTool(backend=backend),
+                    {"pattern": "*.py", "path": "/tmp"},
+                    "glob",
+                    "glob-ok",
+                ),
+                (
+                    GrepTool(backend=backend),
+                    {"pattern": "hello", "path": "/tmp"},
+                    "grep",
+                    "grep-ok",
+                ),
             ]
 
             for tool, kwargs, expected_name, expected_result in cases:
@@ -318,7 +357,9 @@ class TestRemoteRelayHTTPService:
                         "peer_token": peer_token,
                         "request_id": poll_body["request_id"],
                         "type": "tool_result",
-                        "payload": ExecToolResult(ok=True, result=expected_result).to_dict(),
+                        "payload": ExecToolResult(
+                            ok=True, result=expected_result
+                        ).to_dict(),
                     },
                 )
                 assert status == 200
@@ -339,7 +380,9 @@ class TestRemoteRelayHTTPService:
         try:
             req = request.Request(
                 f"{service.base_url}/remote/register",
-                data=json.dumps({"bootstrap_token": "bt_invalid", "cwd": "/tmp"}).encode("utf-8"),
+                data=json.dumps(
+                    {"bootstrap_token": "bt_invalid", "cwd": "/tmp"}
+                ).encode("utf-8"),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
@@ -361,7 +404,9 @@ class TestRemoteRelayHTTPService:
         service = RemoteRelayHTTPService(
             relay_server=relay,
             bind=f"127.0.0.1:{port}",
-            chat_handler=lambda peer_id, prompt: ChatResponse(response=f"{peer_id}:{prompt}"),
+            chat_handler=lambda peer_id, prompt: ChatResponse(
+                response=f"{peer_id}:{prompt}"
+            ),
         )
         service.start()
         try:
@@ -410,12 +455,18 @@ class TestRemoteRelayHTTPService:
             _, register_a = _json_request(
                 "POST",
                 f"{service.base_url}/remote/register",
-                {"bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60), "cwd": "/tmp/a"},
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/a",
+                },
             )
             _, register_b = _json_request(
                 "POST",
                 f"{service.base_url}/remote/register",
-                {"bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60), "cwd": "/tmp/b"},
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/b",
+                },
             )
 
             token_a = register_a["payload"]["peer_token"]
@@ -556,9 +607,18 @@ class TestRemoteRelayHTTPService:
             _, stream_body = _json_request(
                 "POST",
                 f"{service.base_url}/remote/chat/stream",
-                {"peer_token": peer_token, "chat_id": chat_id, "cursor": 0, "timeout_sec": 1},
+                {
+                    "peer_token": peer_token,
+                    "chat_id": chat_id,
+                    "cursor": 0,
+                    "timeout_sec": 1,
+                },
             )
-            approval_events = [event for event in stream_body["events"] if event["type"] == "approval_request"]
+            approval_events = [
+                event
+                for event in stream_body["events"]
+                if event["type"] == "approval_request"
+            ]
             assert approval_events
             approval_id = approval_events[0]["payload"]["approval_id"]
 
@@ -579,9 +639,18 @@ class TestRemoteRelayHTTPService:
             _, resolved_body = _json_request(
                 "POST",
                 f"{service.base_url}/remote/chat/stream",
-                {"peer_token": peer_token, "chat_id": chat_id, "cursor": stream_body["next_cursor"], "timeout_sec": 1},
+                {
+                    "peer_token": peer_token,
+                    "chat_id": chat_id,
+                    "cursor": stream_body["next_cursor"],
+                    "timeout_sec": 1,
+                },
             )
-            resolved_events = [event for event in resolved_body["events"] if event["type"] == "approval_resolved"]
+            resolved_events = [
+                event
+                for event in resolved_body["events"]
+                if event["type"] == "approval_resolved"
+            ]
             assert resolved_events
             assert resolved_events[0]["payload"]["decision"] == "allow_once"
             assert resolved_body["done"] is True
@@ -631,22 +700,33 @@ class TestRemoteRelayHTTPService:
             service.stop()
             relay.stop()
 
-    def test_default_artifact_provider_prefers_prebuilt_binary(self, tmp_path: Path) -> None:
+    def test_default_artifact_provider_prefers_prebuilt_binary(
+        self, tmp_path: Path
+    ) -> None:
         provider = _default_create_remote_artifact_provider(UIEventBus())
         artifact_root = getattr(provider, "_artifact_root")
         prebuilt_path = artifact_root / "linux" / "amd64" / "rcoder-peer"
         prebuilt_path.parent.mkdir(parents=True, exist_ok=True)
         prebuilt_path.write_bytes(b"prebuilt-peer")
         try:
-            with patch("reuleauxcoder.interfaces.entrypoint.dependencies.subprocess.run") as mock_run:
-                content, content_type = provider("linux", "amd64", "rcoder-peer") or (None, None)
+            with patch(
+                "reuleauxcoder.interfaces.entrypoint.dependencies.subprocess.run"
+            ) as mock_run:
+                content, content_type = provider("linux", "amd64", "rcoder-peer") or (
+                    None,
+                    None,
+                )
             assert content == b"prebuilt-peer"
             assert content_type == "application/octet-stream"
             mock_run.assert_not_called()
         finally:
             _cleanup_provider_build_dir(provider)
             prebuilt_path.unlink(missing_ok=True)
-            for parent in [prebuilt_path.parent, prebuilt_path.parent.parent, artifact_root]:
+            for parent in [
+                prebuilt_path.parent,
+                prebuilt_path.parent.parent,
+                artifact_root,
+            ]:
                 try:
                     parent.rmdir()
                 except OSError:
@@ -655,7 +735,10 @@ class TestRemoteRelayHTTPService:
     def test_default_artifact_provider_raises_without_prebuilt_or_go(self) -> None:
         provider = _default_create_remote_artifact_provider(UIEventBus())
         try:
-            with patch("reuleauxcoder.interfaces.entrypoint.dependencies.shutil.which", return_value=None):
+            with patch(
+                "reuleauxcoder.interfaces.entrypoint.dependencies.shutil.which",
+                return_value=None,
+            ):
                 with pytest.raises(RuntimeError, match="no prebuilt binary found"):
                     provider("linux", "amd64", "rcoder-peer")
         finally:
@@ -665,7 +748,10 @@ class TestRemoteRelayHTTPService:
     def test_default_artifact_provider_builds_real_agent_binary(self) -> None:
         provider = _default_create_remote_artifact_provider(UIEventBus())
         try:
-            content, content_type = provider("linux", "amd64", "rcoder-peer") or (None, None)
+            content, content_type = provider("linux", "amd64", "rcoder-peer") or (
+                None,
+                None,
+            )
             assert content_type == "application/octet-stream"
             assert isinstance(content, bytes)
             assert len(content) > 0
@@ -680,13 +766,18 @@ class TestRemoteRelayHTTPService:
             relay_server=relay,
             bind=f"127.0.0.1:{port}",
             artifact_provider=lambda _os_name, _arch, _name: (_ for _ in ()).throw(
-                RuntimeError("peer artifact unavailable: no prebuilt binary found and local 'go' toolchain is not installed")
+                RuntimeError(
+                    "peer artifact unavailable: no prebuilt binary found and local 'go' toolchain is not installed"
+                )
             ),
         )
         service.start()
         try:
             try:
-                _URLOPEN(f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer", timeout=5)
+                _URLOPEN(
+                    f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer",
+                    timeout=5,
+                )
                 assert False, "expected HTTPError"
             except HTTPError as exc:
                 assert exc.code == 404
@@ -741,10 +832,14 @@ class TestRemoteRelayHTTPService:
             backend = RemoteRelayToolBackend(relay_server=relay)
             backend.context.peer_id = peer_id
 
-            shell_result = ShellTool(backend=backend).execute(command="printf 'hi-from-agent'")
+            shell_result = ShellTool(backend=backend).execute(
+                command="printf 'hi-from-agent'"
+            )
             assert "hi-from-agent" in shell_result
 
-            read_result = ReadFileTool(backend=backend).execute(file_path=str(target_file))
+            read_result = ReadFileTool(backend=backend).execute(
+                file_path=str(target_file)
+            )
             assert "1\thello world" in read_result
 
             write_result = WriteFileTool(backend=backend).execute(
@@ -762,10 +857,14 @@ class TestRemoteRelayHTTPService:
             assert "Edited" in edit_result
             assert target_file.read_text() == "alpha\ngamma\n"
 
-            glob_result = GlobTool(backend=backend).execute(pattern="*.txt", path=str(work_dir))
+            glob_result = GlobTool(backend=backend).execute(
+                pattern="*.txt", path=str(work_dir)
+            )
             assert str(target_file) in glob_result
 
-            grep_result = GrepTool(backend=backend).execute(pattern="gamma", path=str(work_dir))
+            grep_result = GrepTool(backend=backend).execute(
+                pattern="gamma", path=str(work_dir)
+            )
             assert str(target_file) in grep_result
             assert "gamma" in grep_result
         finally:

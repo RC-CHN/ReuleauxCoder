@@ -18,7 +18,17 @@ def test_parse_args_all_supported_options(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(
         sys,
         "argv",
-        ["rcoder", "-c", "config.yaml", "-m", "gpt-4o", "-p", "hello", "-r", "session-1"],
+        [
+            "rcoder",
+            "-c",
+            "config.yaml",
+            "-m",
+            "gpt-4o",
+            "-p",
+            "hello",
+            "-r",
+            "session-1",
+        ],
     )
     args = parse_args()
     assert args.config == "config.yaml"

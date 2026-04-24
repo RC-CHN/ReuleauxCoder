@@ -48,6 +48,7 @@ def register_hook(
             def run(self, context) -> GuardDecision:
                 ...
     """
+
     def decorator(cls: type[HookBase[Any]]) -> type[HookBase[Any]]:
         spec = HookSpec(
             hook_class=cls,
@@ -107,7 +108,9 @@ def instantiate_hooks(
             hook = spec.hook_class.create_from_config(config)
         else:
             # Direct instantiation with priority from spec
-            hook = spec.hook_class(name=spec.hook_class.__name__, priority=spec.priority)
+            hook = spec.hook_class(
+                name=spec.hook_class.__name__, priority=spec.priority
+            )
 
         result.append((spec.hook_point, hook))
 

@@ -45,11 +45,11 @@ class MCPManager:
         if self._loop and self._loop.is_running():
             # Schedule stop on the loop
             self._loop.call_soon_threadsafe(self._loop.stop)
-        
+
         # Wait for thread to finish
         if self._thread:
             self._thread.join(timeout=2.0)
-        
+
         # Properly close the loop to avoid __del__ errors
         if self._loop and not self._loop.is_running():
             try:
@@ -58,7 +58,7 @@ class MCPManager:
                 self._loop.close()
             except Exception:
                 pass
-        
+
         self._loop = None
         self._thread = None
         self._started = False
@@ -114,7 +114,11 @@ class MCPManager:
             pass
 
         self._clients.pop(server_name, None)
-        self._tools = [tool for tool in self._tools if getattr(tool, "server_name", None) != server_name]
+        self._tools = [
+            tool
+            for tool in self._tools
+            if getattr(tool, "server_name", None) != server_name
+        ]
         return True
 
     def disconnect_all(self):

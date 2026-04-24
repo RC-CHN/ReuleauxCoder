@@ -26,7 +26,9 @@ from reuleauxcoder.app.runtime.approval import (
     same_rule_target,
 )
 from reuleauxcoder.app.runtime.session_state import get_runtime_approval_config
-from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
+from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
+    WorkspaceConfigStore,
+)
 from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.interfaces.view_registration import register_view
@@ -91,7 +93,10 @@ def render_approval_rules_view(renderer, event) -> bool:
 
 def _build_approval_payload(ctx) -> dict:
     approval = get_runtime_approval_config(ctx.config, ctx.agent)
-    view = build_approval_view(SimpleNamespace(approval=approval, mcp_servers=ctx.config.mcp_servers), ctx.agent)
+    view = build_approval_view(
+        SimpleNamespace(approval=approval, mcp_servers=ctx.config.mcp_servers),
+        ctx.agent,
+    )
     return view.to_payload()
 
 
@@ -141,10 +146,14 @@ def _handle_set_approval_rule(command, ctx) -> CommandResult:
         return CommandResult(action="continue")
 
     session_rules = list(getattr(ctx.agent, "session_approval_rules", []) or [])
-    session_rules = [existing for existing in session_rules if not same_rule_target(existing, rule)]
+    session_rules = [
+        existing for existing in session_rules if not same_rule_target(existing, rule)
+    ]
     session_rules.append(rule)
     setattr(ctx.agent, "session_approval_rules", session_rules)
-    refresh_approval_runtime(ctx.agent, get_runtime_approval_config(ctx.config, ctx.agent))
+    refresh_approval_runtime(
+        ctx.agent, get_runtime_approval_config(ctx.config, ctx.agent)
+    )
 
     payload = _build_approval_payload(ctx)
     ctx.ui_bus.success(
@@ -169,7 +178,9 @@ def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
         return CommandResult(action="continue")
 
     ctx.config.approval.rules = [
-        existing for existing in ctx.config.approval.rules if not same_rule_target(existing, rule)
+        existing
+        for existing in ctx.config.approval.rules
+        if not same_rule_target(existing, rule)
     ]
     ctx.config.approval.rules.append(rule)
     path = WorkspaceConfigStore().save_approval_config(ctx.config.approval)
@@ -191,7 +202,9 @@ def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
         reuse_key="approval_rules",
     )
 
-    return CommandResult(action="continue", payload={"saved_path": str(path), **payload})
+    return CommandResult(
+        action="continue", payload={"saved_path": str(path), **payload}
+    )
 
 
 @register_command_module

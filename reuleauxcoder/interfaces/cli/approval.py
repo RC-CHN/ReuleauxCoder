@@ -5,7 +5,11 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
-from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalProvider, ApprovalRequest
+from reuleauxcoder.domain.approval import (
+    ApprovalDecision,
+    ApprovalProvider,
+    ApprovalRequest,
+)
 from reuleauxcoder.interfaces.interactions import ReviewRequest, UIInteractor
 
 
@@ -19,10 +23,23 @@ class CLIApprovalProvider(ApprovalProvider):
         sections: list[dict] = []
         diff_text = self._build_preview_diff(request)
         if diff_text is not None:
-            title = "Proposed file diff" if request.tool_name == "write_file" else "Proposed edit diff"
-            sections.append({"id": "diff", "title": title, "kind": "diff", "content": diff_text})
+            title = (
+                "Proposed file diff"
+                if request.tool_name == "write_file"
+                else "Proposed edit diff"
+            )
+            sections.append(
+                {"id": "diff", "title": title, "kind": "diff", "content": diff_text}
+            )
         elif request.tool_args:
-            sections.append({"id": "args", "title": "Arguments", "kind": "json", "content": request.tool_args})
+            sections.append(
+                {
+                    "id": "args",
+                    "title": "Arguments",
+                    "kind": "json",
+                    "content": request.tool_args,
+                }
+            )
 
         subagent_summary = ""
         if request.metadata.get("is_subagent"):
@@ -30,9 +47,8 @@ class CLIApprovalProvider(ApprovalProvider):
             sub_task = str(request.metadata.get("subagent_task") or "").strip()
             if len(sub_task) > 200:
                 sub_task = sub_task[:180] + "..."
-            subagent_summary = (
-                f"\nSource: sub-agent (mode={sub_mode})"
-                + (f"\nSub-agent task: {sub_task}" if sub_task else "")
+            subagent_summary = f"\nSource: sub-agent (mode={sub_mode})" + (
+                f"\nSub-agent task: {sub_task}" if sub_task else ""
             )
 
         response = self.ui_interactor.review(
@@ -52,7 +68,9 @@ class CLIApprovalProvider(ApprovalProvider):
             )
         )
         if response.approved:
-            return ApprovalDecision.allow_once(response.reason or "approved via UI interactor")
+            return ApprovalDecision.allow_once(
+                response.reason or "approved via UI interactor"
+            )
         return ApprovalDecision.deny_once(response.reason or "denied via UI interactor")
 
     def _build_preview_diff(self, request: ApprovalRequest) -> str | None:
@@ -97,7 +115,9 @@ class CLIApprovalProvider(ApprovalProvider):
         return None
 
     @staticmethod
-    def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str | None:
+    def _unified_diff(
+        old: str, new: str, filename: str, context: int = 3
+    ) -> str | None:
         old_lines = old.splitlines(keepends=True)
         new_lines = new.splitlines(keepends=True)
         diff = difflib.unified_diff(
@@ -111,4 +131,3 @@ class CLIApprovalProvider(ApprovalProvider):
         if len(result) > 3000:
             result = result[:2500] + "\n... (diff truncated)\n"
         return result or None
-

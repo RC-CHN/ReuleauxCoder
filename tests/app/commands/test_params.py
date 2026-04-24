@@ -70,5 +70,10 @@ def test_parse_captures_returns_typed_values() -> None:
 
 
 def test_parse_captures_returns_none_for_missing_or_invalid_values() -> None:
-    assert parse_captures({"enabled": "true"}, {"enabled": BoolParam(), "count": IntParam()}) is None
+    assert (
+        parse_captures(
+            {"enabled": "true"}, {"enabled": BoolParam(), "count": IntParam()}
+        )
+        is None
+    )
     assert parse_captures({"count": "abc"}, {"count": IntParam()}) is None

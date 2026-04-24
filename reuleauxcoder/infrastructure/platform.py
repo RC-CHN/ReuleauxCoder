@@ -108,25 +108,29 @@ class PlatformInfo:
             localappdata = Path.home() / "AppData" / "Local"
             roaming = Path.home() / "AppData" / "Roaming"
 
-            paths.extend([
-                localappdata / "Programs",
-                localappdata / "Microsoft" / "WindowsApps",
-                Path.home() / ".local" / "bin",
-                roaming / "Python" / "Python310" / "Scripts",
-                roaming / "Python" / "Python311" / "Scripts",
-                roaming / "Python" / "Python312" / "Scripts",
-                roaming / "Python" / "Python313" / "Scripts",
-                Path("C:") / "Program Files" / "nodejs",
-                Path("C:") / "Program Files" / "PowerShell" / "7",
-            ])
+            paths.extend(
+                [
+                    localappdata / "Programs",
+                    localappdata / "Microsoft" / "WindowsApps",
+                    Path.home() / ".local" / "bin",
+                    roaming / "Python" / "Python310" / "Scripts",
+                    roaming / "Python" / "Python311" / "Scripts",
+                    roaming / "Python" / "Python312" / "Scripts",
+                    roaming / "Python" / "Python313" / "Scripts",
+                    Path("C:") / "Program Files" / "nodejs",
+                    Path("C:") / "Program Files" / "PowerShell" / "7",
+                ]
+            )
         else:
             # Unix paths
-            paths.extend([
-                Path("/usr/local/bin"),
-                Path("/usr/bin"),
-                Path.home() / ".local" / "bin",
-                Path("/opt/homebrew/bin"),
-            ])
+            paths.extend(
+                [
+                    Path("/usr/local/bin"),
+                    Path("/usr/bin"),
+                    Path.home() / ".local" / "bin",
+                    Path("/opt/homebrew/bin"),
+                ]
+            )
 
         return paths
 

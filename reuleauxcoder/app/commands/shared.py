@@ -27,11 +27,15 @@ def slash_trigger(value: str) -> TriggerSpec:
     )
 
 
-def non_empty_text(*, lower: bool = False, reject: frozenset[str] = frozenset()) -> StrParam:
+def non_empty_text(
+    *, lower: bool = False, reject: frozenset[str] = frozenset()
+) -> StrParam:
     """Common non-empty text parameter parser."""
     return StrParam(non_empty=True, lower=lower, reject=reject)
 
 
-def enum_text(values: set[str] | frozenset[str], *, case_insensitive: bool = True) -> EnumParam:
+def enum_text(
+    values: set[str] | frozenset[str], *, case_insensitive: bool = True
+) -> EnumParam:
     """Common enum text parameter parser."""
     return EnumParam(values=frozenset(values), case_insensitive=case_insensitive)

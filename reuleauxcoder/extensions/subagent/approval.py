@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 import json
 import threading
 
-from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalProvider, ApprovalRequest
+from reuleauxcoder.domain.approval import (
+    ApprovalDecision,
+    ApprovalProvider,
+    ApprovalRequest,
+)
 
 _PARENT_LLM_JUDGE_TIMEOUT_SECONDS = 15
 

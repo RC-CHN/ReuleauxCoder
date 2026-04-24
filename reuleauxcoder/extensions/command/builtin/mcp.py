@@ -20,7 +20,10 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
-from reuleauxcoder.extensions.mcp.runtime import build_mcp_servers_view, toggle_mcp_server
+from reuleauxcoder.extensions.mcp.runtime import (
+    build_mcp_servers_view,
+    toggle_mcp_server,
+)
 from reuleauxcoder.interfaces.cli.views.common import stop_stream_and_clear
 from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.interfaces.view_registration import register_view
@@ -71,15 +74,21 @@ def render_mcp_servers_view(renderer, event) -> bool:
     stop_stream_and_clear(renderer)
     if not servers:
         renderer.console.print(
-            Panel("No MCP servers configured.", title="MCP Servers", border_style="blue")
+            Panel(
+                "No MCP servers configured.", title="MCP Servers", border_style="blue"
+            )
         )
         return True
 
     lines = []
     for server in servers:
         enabled_mark = "enabled" if server.get("enabled") else "disabled"
-        runtime_mark = "connected" if server.get("runtime_connected") else "disconnected"
-        lines.append(f"- **{server.get('name', '')}**: {enabled_mark}, runtime={runtime_mark}")
+        runtime_mark = (
+            "connected" if server.get("runtime_connected") else "disconnected"
+        )
+        lines.append(
+            f"- **{server.get('name', '')}**: {enabled_mark}, runtime={runtime_mark}"
+        )
     renderer.console.print(
         Panel(Markdown("\n".join(lines)), title="MCP Servers", border_style="blue")
     )
@@ -98,7 +107,9 @@ def _is_local_runtime(ctx) -> bool:
 
 def _handle_show_mcp_servers(command, ctx) -> CommandResult:
     if not _is_local_runtime(ctx):
-        ctx.ui_bus.error("MCP commands are only available in local runtime.", kind=UIEventKind.MCP)
+        ctx.ui_bus.error(
+            "MCP commands are only available in local runtime.", kind=UIEventKind.MCP
+        )
         return CommandResult(action="continue", payload={"markdown": "MCP local-only."})
 
     view = build_mcp_servers_view(ctx.config, ctx.agent)
@@ -129,7 +140,9 @@ def _handle_show_mcp_servers(command, ctx) -> CommandResult:
 
 def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
     if not _is_local_runtime(ctx):
-        ctx.ui_bus.error("MCP commands are only available in local runtime.", kind=UIEventKind.MCP)
+        ctx.ui_bus.error(
+            "MCP commands are only available in local runtime.", kind=UIEventKind.MCP
+        )
         return CommandResult(action="continue", payload={"markdown": "MCP local-only."})
 
     result = toggle_mcp_server(
@@ -140,15 +153,21 @@ def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
     )
 
     if result.error:
-        ctx.ui_bus.error(result.error, kind=UIEventKind.MCP, server_name=result.server_name)
+        ctx.ui_bus.error(
+            result.error, kind=UIEventKind.MCP, server_name=result.server_name
+        )
         return CommandResult(action="continue")
 
     if result.message and result.already_in_desired_state:
-        ctx.ui_bus.info(result.message, kind=UIEventKind.MCP, server_name=result.server_name)
+        ctx.ui_bus.info(
+            result.message, kind=UIEventKind.MCP, server_name=result.server_name
+        )
         return CommandResult(action="continue")
 
     if result.warning:
-        ctx.ui_bus.warning(result.warning, kind=UIEventKind.MCP, server_name=result.server_name)
+        ctx.ui_bus.warning(
+            result.warning, kind=UIEventKind.MCP, server_name=result.server_name
+        )
     if result.message:
         ctx.ui_bus.success(
             result.message,

@@ -18,7 +18,11 @@ from reuleauxcoder.app.runtime.session_state import (
 )
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
-from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalProvider, ApprovalRequest
+from reuleauxcoder.domain.approval import (
+    ApprovalDecision,
+    ApprovalProvider,
+    ApprovalRequest,
+)
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse
@@ -38,7 +42,9 @@ def init_remote_relay(runner, config: Config, ui_bus: UIEventBus) -> None:
     try:
         relay = runner.dependencies.create_remote_relay_server(config)
     except Exception as exc:
-        ui_bus.warning(f"Remote relay initialization failed: {exc}", kind=UIEventKind.REMOTE)
+        ui_bus.warning(
+            f"Remote relay initialization failed: {exc}", kind=UIEventKind.REMOTE
+        )
         return
     if relay is None:
         return
@@ -46,16 +52,21 @@ def init_remote_relay(runner, config: Config, ui_bus: UIEventBus) -> None:
         relay.start()
         runner._relay_server = relay
     except Exception as exc:
-        ui_bus.warning(f"Remote relay server failed to start: {exc}", kind=UIEventKind.REMOTE)
+        ui_bus.warning(
+            f"Remote relay server failed to start: {exc}", kind=UIEventKind.REMOTE
+        )
         return
 
     try:
-        http_service = runner.dependencies.create_remote_http_service(config, relay, ui_bus)
+        http_service = runner.dependencies.create_remote_http_service(
+            config, relay, ui_bus
+        )
     except Exception as exc:
         relay.stop()
         runner._relay_server = None
         ui_bus.warning(
-            f"Remote relay HTTP service initialization failed: {exc}", kind=UIEventKind.REMOTE
+            f"Remote relay HTTP service initialization failed: {exc}",
+            kind=UIEventKind.REMOTE,
         )
         return
 
@@ -67,16 +78,20 @@ def init_remote_relay(runner, config: Config, ui_bus: UIEventBus) -> None:
             relay.stop()
             runner._relay_server = None
             runner._relay_http_service = None
-            ui_bus.warning(f"Remote relay HTTP service failed to start: {exc}", kind=UIEventKind.REMOTE)
+            ui_bus.warning(
+                f"Remote relay HTTP service failed to start: {exc}",
+                kind=UIEventKind.REMOTE,
+            )
             return
 
     ui_bus.success(
         "Remote relay server started.",
         kind=UIEventKind.REMOTE,
         bind=getattr(config.remote_exec, "relay_bind", None),
-        base_url=runner._relay_http_service.base_url if runner._relay_http_service else None,
+        base_url=runner._relay_http_service.base_url
+        if runner._relay_http_service
+        else None,
     )
-
 
 
 def bind_remote_chat_handler(runner, agent: Agent) -> None:
@@ -87,7 +102,11 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     relay_server: RelayServer = runner._relay_server
     config = getattr(agent, "runtime_config", None)
     ui_bus = getattr(agent.context, "_ui_bus", None)
-    sessions_dir = Path(config.session_dir) if config and getattr(config, "session_dir", None) else None
+    sessions_dir = (
+        Path(config.session_dir)
+        if config and getattr(config, "session_dir", None)
+        else None
+    )
     skills_service: SkillsService | None = getattr(agent, "skills_service", None)
     session_store = runner.dependencies.create_session_store(sessions_dir)
     startup_announced: set[tuple[str, str, str]] = set()
@@ -97,12 +116,18 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         workspace_root = peer.workspace_root if peer is not None else "."
         machine_key = peer_id
         if peer is not None:
-            host_info = peer.meta.get("host_info_min") if isinstance(peer.meta, dict) else None
+            host_info = (
+                peer.meta.get("host_info_min") if isinstance(peer.meta, dict) else None
+            )
             if isinstance(host_info, dict):
-                machine_key = str(host_info.get("hostname") or host_info.get("machine_id") or peer_id)
+                machine_key = str(
+                    host_info.get("hostname") or host_info.get("machine_id") or peer_id
+                )
         return f"remote:{machine_key}:{workspace_root or '.'}"
 
-    def _create_peer_agent(peer_id: str, remote_stream_handler: Callable[[str, Any], None] | None = None) -> Agent:
+    def _create_peer_agent(
+        peer_id: str, remote_stream_handler: Callable[[str, Any], None] | None = None
+    ) -> Agent:
         if config is None:
             return agent
 
@@ -179,10 +204,16 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
 
         session_id = getattr(peer_agent, "current_session_id", "-") or "-"
         peer_info = relay_server.registry.get(peer_id)
-        connection_marker = f"{getattr(peer_info, 'connected_at', 0):.6f}" if peer_info is not None else "0"
+        connection_marker = (
+            f"{getattr(peer_info, 'connected_at', 0):.6f}"
+            if peer_info is not None
+            else "0"
+        )
         startup_key = (peer_id, str(session_id), connection_marker)
         if startup_key not in startup_announced:
-            startup_console = Console(record=True, force_terminal=True, color_system="truecolor")
+            startup_console = Console(
+                record=True, force_terminal=True, color_system="truecolor"
+            )
             startup_console.print(
                 Panel(
                     (
@@ -200,7 +231,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             )
             startup_rendered = startup_console.export_text(clear=True, styles=True)
             if startup_rendered:
-                remote_session.append_event("output", {"format": "terminal", "content": startup_rendered})
+                remote_session.append_event(
+                    "output", {"format": "terminal", "content": startup_rendered}
+                )
             startup_announced.add(startup_key)
 
         if prompt.strip().startswith("/") and config is not None:
@@ -218,14 +251,18 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             if command_result["action"] != "chat":
                 setattr(peer_agent, "current_session_id", command_result["session_id"])
 
-                command_console = Console(record=True, force_terminal=True, color_system="truecolor")
+                command_console = Console(
+                    record=True, force_terminal=True, color_system="truecolor"
+                )
                 command_renderer = CLIRenderer(console_override=command_console)
                 for event in getattr(command_bus, "_history", []):
                     command_renderer.on_ui_event(event)
                 rendered = command_console.export_text(clear=True, styles=True)
                 command_renderer.close()
                 if rendered:
-                    remote_session.append_event("output", {"format": "terminal", "content": rendered})
+                    remote_session.append_event(
+                        "output", {"format": "terminal", "content": rendered}
+                    )
 
                 if command_result["action"] == "exit":
                     remote_session.append_event(
@@ -239,14 +276,18 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 remote_session.append_event("chat_end", {"response": ""})
                 return
 
-        ansi_console = Console(record=True, force_terminal=True, color_system="truecolor")
+        ansi_console = Console(
+            record=True, force_terminal=True, color_system="truecolor"
+        )
         renderer = CLIRenderer(console_override=ansi_console)
         preview_builder = CLIApprovalProvider(ui_interactor=None)  # type: ignore[arg-type]
 
         def _flush_output() -> None:
             rendered = ansi_console.export_text(clear=True, styles=True)
             if rendered:
-                remote_session.append_event("output", {"format": "terminal", "content": rendered})
+                remote_session.append_event(
+                    "output", {"format": "terminal", "content": rendered}
+                )
 
         class _RemoteApprovalProvider(ApprovalProvider):
             def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
@@ -255,10 +296,28 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 diff_text = preview_builder._build_preview_diff(request)
                 sections: list[dict[str, Any]] = []
                 if diff_text is not None:
-                    title = "Proposed file diff" if request.tool_name == "write_file" else "Proposed edit diff"
-                    sections.append({"id": "diff", "title": title, "kind": "diff", "content": diff_text})
+                    title = (
+                        "Proposed file diff"
+                        if request.tool_name == "write_file"
+                        else "Proposed edit diff"
+                    )
+                    sections.append(
+                        {
+                            "id": "diff",
+                            "title": title,
+                            "kind": "diff",
+                            "content": diff_text,
+                        }
+                    )
                 elif request.tool_args:
-                    sections.append({"id": "args", "title": "Arguments", "kind": "json", "content": request.tool_args})
+                    sections.append(
+                        {
+                            "id": "args",
+                            "title": "Arguments",
+                            "kind": "json",
+                            "content": request.tool_args,
+                        }
+                    )
                 payload = {
                     "approval_id": approval_id,
                     "tool_name": request.tool_name,
@@ -286,7 +345,11 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 decision, reason = remote_session.wait_approval(approval_id)
                 remote_session.append_event(
                     "approval_resolved",
-                    {"approval_id": approval_id, "decision": decision, "reason": reason},
+                    {
+                        "approval_id": approval_id,
+                        "decision": decision,
+                        "reason": reason,
+                    },
                 )
                 if decision == "allow_once":
                     return ApprovalDecision.allow_once(reason)
@@ -319,7 +382,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                     },
                 )
             elif event.event_type == AgentEventType.ERROR:
-                remote_session.append_event("error", {"message": event.error_message or "unknown error"})
+                remote_session.append_event(
+                    "error", {"message": event.error_message or "unknown error"}
+                )
             renderer.on_event(event)
             _flush_output()
 

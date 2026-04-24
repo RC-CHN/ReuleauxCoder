@@ -242,11 +242,20 @@ class Config:
         if self.tool_output_max_lines < 1:
             errors.append("tool_output_max_lines must be positive")
         valid_actions = {"allow", "warn", "require_approval", "deny"}
-        if self.active_model_profile and self.active_model_profile not in self.model_profiles:
+        if (
+            self.active_model_profile
+            and self.active_model_profile not in self.model_profiles
+        ):
             errors.append("active_model_profile must exist in model_profiles")
-        if self.active_main_model_profile and self.active_main_model_profile not in self.model_profiles:
+        if (
+            self.active_main_model_profile
+            and self.active_main_model_profile not in self.model_profiles
+        ):
             errors.append("active_main_model_profile must exist in model_profiles")
-        if self.active_sub_model_profile and self.active_sub_model_profile not in self.model_profiles:
+        if (
+            self.active_sub_model_profile
+            and self.active_sub_model_profile not in self.model_profiles
+        ):
             errors.append("active_sub_model_profile must exist in model_profiles")
         for name, profile in self.model_profiles.items():
             if not profile.api_key:
@@ -254,9 +263,13 @@ class Config:
             if profile.max_tokens < 1:
                 errors.append(f"model_profiles[{name}].max_tokens must be positive")
             if profile.max_context_tokens < 1:
-                errors.append(f"model_profiles[{name}].max_context_tokens must be positive")
+                errors.append(
+                    f"model_profiles[{name}].max_context_tokens must be positive"
+                )
             if profile.temperature < 0 or profile.temperature > 2:
-                errors.append(f"model_profiles[{name}].temperature must be between 0 and 2")
+                errors.append(
+                    f"model_profiles[{name}].temperature must be between 0 and 2"
+                )
 
         if self.active_mode and self.active_mode not in self.modes:
             errors.append("active_mode must exist in modes")
@@ -265,7 +278,9 @@ class Config:
                 errors.append(f"modes[{mode_name}] must have a name")
 
         if self.approval.default_mode not in valid_actions:
-            errors.append("approval.default_mode must be one of allow, warn, require_approval, deny")
+            errors.append(
+                "approval.default_mode must be one of allow, warn, require_approval, deny"
+            )
         for i, rule in enumerate(self.approval.rules):
             if rule.action not in valid_actions:
                 errors.append(

@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from reuleauxcoder.extensions.remote_exec.errors import PeerNotFoundError, RemoteExecError
-from reuleauxcoder.extensions.remote_exec.protocol import ExecToolRequest, ToolStreamChunk
+from reuleauxcoder.extensions.remote_exec.errors import (
+    PeerNotFoundError,
+    RemoteExecError,
+)
+from reuleauxcoder.extensions.remote_exec.protocol import (
+    ExecToolRequest,
+    ToolStreamChunk,
+)
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, ToolBackend
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
@@ -76,7 +82,11 @@ class RemoteRelayToolBackend(ToolBackend):
         remote_stream_handler = getattr(self.context, "remote_stream_handler", None)
         if tool_name != "shell" and remote_stream_handler is None:
             return None
-        if tool_name == "shell" and self.ui_bus is None and not callable(remote_stream_handler):
+        if (
+            tool_name == "shell"
+            and self.ui_bus is None
+            and not callable(remote_stream_handler)
+        ):
             return None
 
         def _handle(chunk: ToolStreamChunk) -> None:

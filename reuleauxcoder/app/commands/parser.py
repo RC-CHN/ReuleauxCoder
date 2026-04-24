@@ -19,4 +19,3 @@ def parse_command(
         ui_profile=ui_profile,
         current_session_id=current_session_id,
     )
-

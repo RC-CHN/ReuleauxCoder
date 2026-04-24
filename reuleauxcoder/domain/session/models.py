@@ -57,7 +57,9 @@ class SessionRuntimeState:
             llm_debug_trace=payload.get("llm_debug_trace"),
             active_main_model_profile=payload.get("active_main_model_profile"),
             active_sub_model_profile=payload.get("active_sub_model_profile"),
-            approval_rules=[dict(rule) for rule in approval_rules if isinstance(rule, dict)],
+            approval_rules=[
+                dict(rule) for rule in approval_rules if isinstance(rule, dict)
+            ],
             execution_target=payload.get("execution_target"),
             remote_binding=dict(remote_binding),
         )

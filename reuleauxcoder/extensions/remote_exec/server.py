@@ -110,7 +110,9 @@ class RelayServer:
             for task in pending:
                 task.cancel()
             if pending:
-                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                self._loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
             self._loop.close()
 
     # ------------------------------------------------------------------
@@ -137,24 +139,33 @@ class RelayServer:
             try:
                 resp = self._on_register(req)
                 if isinstance(resp, RegisterResponse):
-                    self._send(resp.peer_id, RelayEnvelope(
-                        type="register_ok",
-                        request_id=req_id,
-                        peer_id=resp.peer_id,
-                        payload=resp.to_dict(),
-                    ))
+                    self._send(
+                        resp.peer_id,
+                        RelayEnvelope(
+                            type="register_ok",
+                            request_id=req_id,
+                            peer_id=resp.peer_id,
+                            payload=resp.to_dict(),
+                        ),
+                    )
                 else:
-                    self._send("", RelayEnvelope(
+                    self._send(
+                        "",
+                        RelayEnvelope(
+                            type="register_rejected",
+                            request_id=req_id,
+                            payload=resp.to_dict(),
+                        ),
+                    )
+            except RegisterRejectedError as e:
+                self._send(
+                    "",
+                    RelayEnvelope(
                         type="register_rejected",
                         request_id=req_id,
-                        payload=resp.to_dict(),
-                    ))
-            except RegisterRejectedError as e:
-                self._send("", RelayEnvelope(
-                    type="register_rejected",
-                    request_id=req_id,
-                    payload=RegisterRejected(reason=e.message).to_dict(),
-                ))
+                        payload=RegisterRejected(reason=e.message).to_dict(),
+                    ),
+                )
 
         elif msg_type == "heartbeat":
             hb = Heartbeat.from_dict(payload)
@@ -358,9 +369,7 @@ class RelayServer:
             "host_info_min": req.host_info_min,
         }
         peer_id = self._registry.register(meta=meta)
-        peer_token = self._token_manager.issue_peer_token(
-            peer_id, ttl_sec=3600
-        )
+        peer_token = self._token_manager.issue_peer_token(peer_id, ttl_sec=3600)
         return RegisterResponse(
             peer_id=peer_id,
             peer_token=peer_token,

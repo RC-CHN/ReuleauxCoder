@@ -13,7 +13,9 @@ class SkillParseError(RuntimeError):
     """Raised when a skill file cannot be parsed."""
 
 
-def parse_skill_file(skill_md_path: Path, *, scope: str, enabled: bool = True) -> tuple[Skill | None, tuple[SkillDiagnostic, ...]]:
+def parse_skill_file(
+    skill_md_path: Path, *, scope: str, enabled: bool = True
+) -> tuple[Skill | None, tuple[SkillDiagnostic, ...]]:
     """Parse one SKILL.md file into a Skill model."""
     diagnostics: list[SkillDiagnostic] = []
 

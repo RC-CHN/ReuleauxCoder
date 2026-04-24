@@ -9,7 +9,9 @@ from reuleauxcoder.extensions.remote_exec.server import RelayServer
 logger = logging.getLogger(__name__)
 
 
-def request_peer_cleanup(relay_server: RelayServer, peer_id: str) -> tuple[bool, list[str], str | None]:
+def request_peer_cleanup(
+    relay_server: RelayServer, peer_id: str
+) -> tuple[bool, list[str], str | None]:
     """Request cleanup on a remote peer.
 
     Returns:
@@ -20,7 +22,9 @@ def request_peer_cleanup(relay_server: RelayServer, peer_id: str) -> tuple[bool,
         if result.ok:
             logger.info("Cleanup succeeded for peer %s", peer_id)
         else:
-            logger.warning("Cleanup failed for peer %s: %s", peer_id, result.error_message)
+            logger.warning(
+                "Cleanup failed for peer %s: %s", peer_id, result.error_message
+            )
         return result.ok, result.removed_items, result.error_message
     except Exception as e:
         logger.warning("Cleanup request exception for peer %s: %s", peer_id, e)

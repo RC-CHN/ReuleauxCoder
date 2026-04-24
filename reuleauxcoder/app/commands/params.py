@@ -55,8 +55,12 @@ class EnumParam(ParamParser):
 
 @dataclass(frozen=True, slots=True)
 class BoolParam(ParamParser):
-    true_values: frozenset[str] = field(default_factory=lambda: frozenset({"1", "true", "yes", "on"}))
-    false_values: frozenset[str] = field(default_factory=lambda: frozenset({"0", "false", "no", "off"}))
+    true_values: frozenset[str] = field(
+        default_factory=lambda: frozenset({"1", "true", "yes", "on"})
+    )
+    false_values: frozenset[str] = field(
+        default_factory=lambda: frozenset({"0", "false", "no", "off"})
+    )
     case_insensitive: bool = True
 
     def parse(self, raw: str) -> bool:
@@ -122,7 +126,9 @@ class ChoiceParam(ParamParser):
         return self.choices[value]
 
 
-def parse_captures(captures: Mapping[str, str], schema: Mapping[str, ParamParser]) -> dict[str, Any] | None:
+def parse_captures(
+    captures: Mapping[str, str], schema: Mapping[str, ParamParser]
+) -> dict[str, Any] | None:
     """Parse captured template fields with a typed schema.
 
     Returns None on first parsing failure.

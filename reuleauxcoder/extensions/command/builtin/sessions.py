@@ -12,7 +12,12 @@ from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
-from reuleauxcoder.app.commands.shared import TEXT_REQUIRED, UI_TARGETS, non_empty_text, slash_trigger
+from reuleauxcoder.app.commands.shared import (
+    TEXT_REQUIRED,
+    UI_TARGETS,
+    non_empty_text,
+    slash_trigger,
+)
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
@@ -87,7 +92,9 @@ def render_sessions_view(renderer, event) -> bool:
     sessions = payload.get("sessions") or []
     fingerprint = payload.get("fingerprint")
     show_all = bool(payload.get("show_all"))
-    scope_label = "all fingerprints" if show_all else f"fingerprint: {fingerprint or 'local'}"
+    scope_label = (
+        "all fingerprints" if show_all else f"fingerprint: {fingerprint or 'local'}"
+    )
     stop_stream_and_clear(renderer)
     if not sessions:
         renderer.console.print(
@@ -171,7 +178,9 @@ def _handle_list_sessions(command, ctx) -> CommandResult:
 
 def _handle_resume_session(command, ctx) -> CommandResult:
     if not command.target:
-        ctx.ui_bus.error("Usage: /session <session_id|latest>", kind=UIEventKind.SESSION)
+        ctx.ui_bus.error(
+            "Usage: /session <session_id|latest>", kind=UIEventKind.SESSION
+        )
         return CommandResult(action="continue")
 
     store = SessionStore(ctx.sessions_dir)
@@ -220,7 +229,11 @@ def _handle_resume_session(command, ctx) -> CommandResult:
         )
 
     exit_time = store.get_exit_time(loaded.messages)
-    ctx.ui_bus.success(f"Resumed session: {session_id}", kind=UIEventKind.SESSION, session_id=session_id)
+    ctx.ui_bus.success(
+        f"Resumed session: {session_id}",
+        kind=UIEventKind.SESSION,
+        session_id=session_id,
+    )
 
     return CommandResult(
         action="continue",
@@ -244,8 +257,14 @@ def _handle_save_session(command, ctx) -> CommandResult:
         fingerprint=fingerprint,
     )
     _emit_session_save_hooks(ctx.agent, session_id)
-    ctx.ui_bus.success(f"Session saved: {session_id}", kind=UIEventKind.SESSION, session_id=session_id)
-    ctx.ui_bus.info(f"Resume with: rcoder -r {session_id}", kind=UIEventKind.SESSION, session_id=session_id)
+    ctx.ui_bus.success(
+        f"Session saved: {session_id}", kind=UIEventKind.SESSION, session_id=session_id
+    )
+    ctx.ui_bus.info(
+        f"Resume with: rcoder -r {session_id}",
+        kind=UIEventKind.SESSION,
+        session_id=session_id,
+    )
     return CommandResult(
         action="continue",
         session_id=session_id,
@@ -270,7 +289,9 @@ def _handle_new_session(command, ctx) -> CommandResult:
         )
         previous_session_id = sid
         _emit_session_save_hooks(ctx.agent, sid)
-        ctx.ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid)
+        ctx.ui_bus.info(
+            f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid
+        )
 
     new_session_id = store.generate_session_id()
     ctx.agent.reset()
@@ -287,7 +308,9 @@ def _handle_new_session(command, ctx) -> CommandResult:
             kind=UIEventKind.SESSION,
             session_id=previous_session_id,
         )
-    return CommandResult(action="continue", session_id=new_session_id, session_exit_time=None)
+    return CommandResult(
+        action="continue", session_id=new_session_id, session_exit_time=None
+    )
 
 
 @register_command_module

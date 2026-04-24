@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.models import CommandContext, CommandResult
-from reuleauxcoder.app.commands.specs import ActionSpec, CommandParseContext, TriggerKind
+from reuleauxcoder.app.commands.specs import (
+    ActionSpec,
+    CommandParseContext,
+    TriggerKind,
+)
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 
 
@@ -34,7 +38,9 @@ class ActionRegistry:
 
     def iter_actions(self, ui_profile: UIProfile) -> list[ActionSpec]:
         """Return actions available for a UI profile."""
-        return [action for action in self._actions if action.is_available_in(ui_profile)]
+        return [
+            action for action in self._actions if action.is_available_in(ui_profile)
+        ]
 
     def parse(
         self,
@@ -44,7 +50,9 @@ class ActionRegistry:
         current_session_id: str | None = None,
     ) -> ParsedAction | None:
         """Try to parse user input using available action parsers."""
-        parse_ctx = CommandParseContext(current_session_id=current_session_id, ui_profile=ui_profile)
+        parse_ctx = CommandParseContext(
+            current_session_id=current_session_id, ui_profile=ui_profile
+        )
         for action in self.iter_actions(ui_profile):
             if action.parser is None:
                 continue

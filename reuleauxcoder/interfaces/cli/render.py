@@ -65,7 +65,9 @@ class CLIRenderer:
     ):
         self.console = console_override or console
         self._active_content_block: _ContentBlock | None = None
-        self._completed_blocks: list[_ContentBlock | _ToolCallBlock | _NotificationBlock] = []
+        self._completed_blocks: list[
+            _ContentBlock | _ToolCallBlock | _NotificationBlock
+        ] = []
         self.view_registry = view_registry or create_cli_view_registry()
 
     def close(self) -> None:
@@ -174,9 +176,13 @@ class CLIRenderer:
             )
         )
 
-    def _render_tool_end(self, name: str, result: str | None, success: bool = True) -> None:
+    def _render_tool_end(
+        self, name: str, result: str | None, success: bool = True
+    ) -> None:
         """Render tool call result."""
-        self._completed_blocks.append(_ToolCallBlock(name=name, args=None, result=result, success=success))
+        self._completed_blocks.append(
+            _ToolCallBlock(name=name, args=None, result=result, success=success)
+        )
         if not result:
             return
         # Special rendering for edit_file with diff
@@ -259,7 +265,9 @@ class CLIRenderer:
 
         self._close_active_content_block()
         self._completed_blocks.append(
-            _NotificationBlock(level=event.level, kind=event.kind, message=event.message)
+            _NotificationBlock(
+                level=event.level, kind=event.kind, message=event.message
+            )
         )
 
         title = f"{event.kind.value.upper()} · {event.level.value.upper()}"
@@ -356,7 +364,6 @@ def show_warning(text: str) -> None:
 
 def show_info(text: str) -> None:
     console.print(text)
-
 
 
 def render_diff_panel(result: str, target_console: Console | None = None) -> None:

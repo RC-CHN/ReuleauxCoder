@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Optional
 
 from reuleauxcoder.domain.context.manager import ensure_message_token_counts
-from reuleauxcoder.domain.session.models import Session, SessionMetadata, SessionRuntimeState
+from reuleauxcoder.domain.session.models import (
+    Session,
+    SessionMetadata,
+    SessionRuntimeState,
+)
 from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 
 DEFAULT_SESSION_FINGERPRINT = "local"
@@ -60,7 +64,9 @@ class SessionStore:
                 ensure_message_token_counts([exit_message])
                 saved_messages.append(exit_message)
 
-            effective_runtime = runtime_state or SessionRuntimeState(model=model, active_mode=active_mode)
+            effective_runtime = runtime_state or SessionRuntimeState(
+                model=model, active_mode=active_mode
+            )
             if effective_runtime.model is None:
                 effective_runtime.model = model
             if effective_runtime.active_mode is None:
@@ -140,7 +146,9 @@ class SessionStore:
             if session.runtime_state.active_mode is None:
                 session.runtime_state.active_mode = session.active_mode
             if updated_messages != data.get("messages"):
-                path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2))
+                path.write_text(
+                    json.dumps(session.to_dict(), ensure_ascii=False, indent=2)
+                )
             return session
 
     def list(
@@ -154,7 +162,9 @@ class SessionStore:
             if not self._sessions_dir.exists():
                 return []
 
-            ranked_sessions: list[tuple[tuple[int, datetime, str], SessionMetadata]] = []
+            ranked_sessions: list[
+                tuple[tuple[int, datetime, str], SessionMetadata]
+            ] = []
             for file_path in self._sessions_dir.glob("*.json"):
                 try:
                     data = json.loads(file_path.read_text())
@@ -175,18 +185,24 @@ class SessionStore:
                         saved_at_rank = datetime.fromisoformat(session.saved_at)
                     except (TypeError, ValueError):
                         try:
-                            saved_at_rank = datetime.strptime(session.saved_at, "%Y-%m-%d %H:%M:%S")
+                            saved_at_rank = datetime.strptime(
+                                session.saved_at, "%Y-%m-%d %H:%M:%S"
+                            )
                         except (TypeError, ValueError):
                             saved_at_rank = datetime.fromtimestamp(0)
 
-                    ranked_sessions.append(((stat.st_mtime_ns, saved_at_rank, metadata.id), metadata))
+                    ranked_sessions.append(
+                        ((stat.st_mtime_ns, saved_at_rank, metadata.id), metadata)
+                    )
                 except (json.JSONDecodeError, KeyError):
                     continue
 
             ranked_sessions.sort(key=lambda item: item[0], reverse=True)
             return [metadata for _, metadata in ranked_sessions[:limit]]
 
-    def get_latest(self, *, fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT) -> SessionMetadata | None:
+    def get_latest(
+        self, *, fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT
+    ) -> SessionMetadata | None:
         """Return the most recent session metadata, if any."""
         sessions = self.list(limit=1, fingerprint=fingerprint)
         return sessions[0] if sessions else None

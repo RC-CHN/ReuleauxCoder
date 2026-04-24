@@ -235,4 +235,3 @@ def system_prompt(
         assembler.add(available_modes_block)
 
     return assembler.render()
-

@@ -18,7 +18,9 @@ from reuleauxcoder.app.commands.shared import (
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.app.runtime.session_state import build_session_runtime_state
-from reuleauxcoder.infrastructure.persistence.workspace_config_store import WorkspaceConfigStore
+from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
+    WorkspaceConfigStore,
+)
 from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.interfaces.view_registration import register_view
@@ -114,7 +116,9 @@ def _parse_switch_model(user_input: str, parse_ctx):
 
     try:
         profile = non_empty_text(
-            reject=frozenset({"ls", "list", "show", "use-main", "use-sub", "set-main", "set-sub"})
+            reject=frozenset(
+                {"ls", "list", "show", "use-main", "use-sub", "set-main", "set-sub"}
+            )
         ).parse(captures["profile"])
     except ParamParseError:
         return None
@@ -173,7 +177,9 @@ def _resolve_profile(ctx, profile_name: str):
 
 
 def _apply_main_profile_to_runtime(ctx, profile_name: str, profile) -> None:
-    debug_trace = getattr(ctx.agent.llm, "debug_trace", getattr(ctx.config, "llm_debug_trace", False))
+    debug_trace = getattr(
+        ctx.agent.llm, "debug_trace", getattr(ctx.config, "llm_debug_trace", False)
+    )
     ctx.agent.llm.reconfigure(
         model=profile.model,
         api_key=profile.api_key,
@@ -220,7 +226,9 @@ def _handle_switch_model(command, ctx) -> CommandResult:
 
 
 def _handle_use_main_model(command, ctx) -> CommandResult:
-    return _handle_switch_model(SwitchModelCommand(profile_name=command.profile_name), ctx)
+    return _handle_switch_model(
+        SwitchModelCommand(profile_name=command.profile_name), ctx
+    )
 
 
 def _handle_use_sub_model(command, ctx) -> CommandResult:
@@ -298,11 +306,27 @@ def _handle_set_sub_model(command, ctx) -> CommandResult:
 
 def _build_model_profiles_payload(config, runtime_state=None) -> dict:
     profiles = getattr(config, "model_profiles", {}) or {}
-    runtime_main = getattr(runtime_state, "active_main_model_profile", None) if runtime_state is not None else None
-    runtime_sub = getattr(runtime_state, "active_sub_model_profile", None) if runtime_state is not None else None
-    runtime_model = getattr(runtime_state, "model", None) if runtime_state is not None else None
-    active_main = runtime_main or getattr(config, "active_main_model_profile", None) or getattr(config, "active_model_profile", None)
-    active_sub = runtime_sub or getattr(config, "active_sub_model_profile", None) or active_main
+    runtime_main = (
+        getattr(runtime_state, "active_main_model_profile", None)
+        if runtime_state is not None
+        else None
+    )
+    runtime_sub = (
+        getattr(runtime_state, "active_sub_model_profile", None)
+        if runtime_state is not None
+        else None
+    )
+    runtime_model = (
+        getattr(runtime_state, "model", None) if runtime_state is not None else None
+    )
+    active_main = (
+        runtime_main
+        or getattr(config, "active_main_model_profile", None)
+        or getattr(config, "active_model_profile", None)
+    )
+    active_sub = (
+        runtime_sub or getattr(config, "active_sub_model_profile", None) or active_main
+    )
 
     lines: list[str] = ["## Model Routing"]
     profile_items: list[dict] = []
@@ -321,15 +345,21 @@ def _build_model_profiles_payload(config, runtime_state=None) -> dict:
 
     lines.append("")
     lines.append("**Commands**")
-    lines.append("- `/model <profile>` or `/model use-main <profile>` → switch session main model")
+    lines.append(
+        "- `/model <profile>` or `/model use-main <profile>` → switch session main model"
+    )
     lines.append("- `/model use-sub <profile>` → switch session sub-agent model")
     lines.append("- `/model set-main <profile>` → set global default main model")
     lines.append("- `/model set-sub <profile>` → set global default sub-agent model")
-    lines.append("- `agent(..., model=\"sub\"|\"main\")` → route a sub-agent to the configured sub/main model")
+    lines.append(
+        '- `agent(..., model="sub"|"main")` → route a sub-agent to the configured sub/main model'
+    )
     lines.append("")
 
     if not profiles:
-        lines.append("> No model profiles configured. Add `models.profiles` in config.yaml.")
+        lines.append(
+            "> No model profiles configured. Add `models.profiles` in config.yaml."
+        )
         lines.append("")
         lines.append("**Current runtime config**")
         lines.append(f"- model: `{config.model}`")

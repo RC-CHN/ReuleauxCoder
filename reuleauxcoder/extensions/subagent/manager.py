@@ -18,8 +18,12 @@ _SUBAGENT_DEFAULT_TIMEOUT_SECONDS = 300
 _SUBAGENT_MAX_TIMEOUT_SECONDS = 3_600
 
 
-def _emit_subagent_ui_event(parent_agent, *, status: str, job_id: str, mode: str, task: str, level: str = "info") -> None:
-    ui_bus = getattr(parent_agent, "ui_bus", None) or getattr(getattr(parent_agent, "context", None), "_ui_bus", None)
+def _emit_subagent_ui_event(
+    parent_agent, *, status: str, job_id: str, mode: str, task: str, level: str = "info"
+) -> None:
+    ui_bus = getattr(parent_agent, "ui_bus", None) or getattr(
+        getattr(parent_agent, "context", None), "_ui_bus", None
+    )
     if ui_bus is None:
         return
 
@@ -27,18 +31,15 @@ def _emit_subagent_ui_event(parent_agent, *, status: str, job_id: str, mode: str
     task_preview = (task or "").strip()
     if len(task_preview) > 240:
         task_preview = task_preview[:237] + "..."
-    message = (
-        "[SUBAGENT]\n"
-        f"status={status}\n"
-        f"id={job_id}\n"
-        f"mode={mode}"
-    )
+    message = f"[SUBAGENT]\nstatus={status}\nid={job_id}\nmode={mode}"
     if task_preview:
         message += f"\n\n{task_preview}"
     emit(message, kind=UIEventKind.AGENT)
 
 
-def _clamp_subagent_rounds(value: int | None, default: int = _SUBAGENT_MAX_ROUNDS) -> int:
+def _clamp_subagent_rounds(
+    value: int | None, default: int = _SUBAGENT_MAX_ROUNDS
+) -> int:
     base = default if value is None else int(value)
     if base < 1:
         return 1
@@ -47,7 +48,9 @@ def _clamp_subagent_rounds(value: int | None, default: int = _SUBAGENT_MAX_ROUND
     return base
 
 
-def _clamp_timeout_seconds(value: int | None, default: int = _SUBAGENT_DEFAULT_TIMEOUT_SECONDS) -> int:
+def _clamp_timeout_seconds(
+    value: int | None, default: int = _SUBAGENT_DEFAULT_TIMEOUT_SECONDS
+) -> int:
     base = default if value is None else int(value)
     if base < 1:
         return 1
@@ -106,7 +109,9 @@ class SubagentManager:
 
     def set_runtime_parallel_explore(self, value: int) -> int:
         with self._lock:
-            self._runtime_parallel_explore = max(1, min(self._max_parallel_explore, int(value)))
+            self._runtime_parallel_explore = max(
+                1, min(self._max_parallel_explore, int(value))
+            )
             self._slot_cv.notify_all()
             return self._runtime_parallel_explore
 
@@ -126,12 +131,16 @@ class SubagentManager:
         model_profile_name: str | None = None,
     ) -> str:
         if mode != "explore":
-            raise ValueError("Only 'explore' mode supports background parallel execution")
+            raise ValueError(
+                "Only 'explore' mode supports background parallel execution"
+            )
 
         if parallel_explore is not None:
             self.set_runtime_parallel_explore(parallel_explore)
 
-        effective_max_rounds = _clamp_subagent_rounds(max_rounds, default=self._default_max_rounds)
+        effective_max_rounds = _clamp_subagent_rounds(
+            max_rounds, default=self._default_max_rounds
+        )
         effective_timeout_seconds = _clamp_timeout_seconds(timeout_seconds)
         job_id = f"sj_{uuid.uuid4().hex[:10]}"
         now = time.time()
@@ -199,9 +208,7 @@ class SubagentManager:
                     if "[Sub-agent finished status=timeout]" in result:
                         tracked.detached_due_to_timeout = True
                         tracked.status = "timed_out_detached"
-                        tracked.error = (
-                            "Sub-agent timed out and detached; background thread may still be running."
-                        )
+                        tracked.error = "Sub-agent timed out and detached; background thread may still be running."
                         emit_status = "timed_out_detached"
                         emit_level = "warning"
                     else:
@@ -250,7 +257,9 @@ class SubagentManager:
         timeout_seconds: int | None = None,
         model_profile_name: str | None = None,
     ) -> str:
-        effective_max_rounds = _clamp_subagent_rounds(max_rounds, default=self._default_max_rounds)
+        effective_max_rounds = _clamp_subagent_rounds(
+            max_rounds, default=self._default_max_rounds
+        )
         effective_timeout_seconds = _clamp_timeout_seconds(timeout_seconds)
         if mode == "explore":
             future = self._explore_pool.submit(
@@ -343,13 +352,17 @@ def _create_subagent_llm(parent_agent, model_profile_name: str | None):
     def _resolve_profile_name(route: str | None) -> str | None:
         normalized = (route or "").strip().lower()
         if normalized == "main":
-            return getattr(config, "active_main_model_profile", None) or getattr(
-                config, "active_model_profile", None
-            ) or getattr(config, "active_sub_model_profile", None)
+            return (
+                getattr(config, "active_main_model_profile", None)
+                or getattr(config, "active_model_profile", None)
+                or getattr(config, "active_sub_model_profile", None)
+            )
 
-        return getattr(config, "active_sub_model_profile", None) or getattr(
-            config, "active_main_model_profile", None
-        ) or getattr(config, "active_model_profile", None)
+        return (
+            getattr(config, "active_sub_model_profile", None)
+            or getattr(config, "active_main_model_profile", None)
+            or getattr(config, "active_model_profile", None)
+        )
 
     profile_name = _resolve_profile_name(model_profile_name)
     if profile_name:
@@ -375,7 +388,11 @@ def _filter_subagent_tools(parent_agent, mode: str):
         "verify": {"read_file", "glob", "grep", "shell"},
     }
     allowed = mode_allowlist[mode]
-    return [tool for tool in parent_agent.tools if tool.name in allowed and tool.name != "agent"]
+    return [
+        tool
+        for tool in parent_agent.tools
+        if tool.name in allowed and tool.name != "agent"
+    ]
 
 
 def run_subagent_task(
@@ -395,9 +412,13 @@ def run_subagent_task(
     effective_timeout_seconds = _clamp_timeout_seconds(timeout_seconds)
 
     from reuleauxcoder.domain.agent.agent import Agent
-    from reuleauxcoder.extensions.subagent.approval import build_subagent_approval_provider
+    from reuleauxcoder.extensions.subagent.approval import (
+        build_subagent_approval_provider,
+    )
 
-    sub_llm, effective_model_profile = _create_subagent_llm(parent_agent, model_profile_name)
+    sub_llm, effective_model_profile = _create_subagent_llm(
+        parent_agent, model_profile_name
+    )
 
     sub = Agent(
         llm=sub_llm,
@@ -431,7 +452,8 @@ def run_subagent_task(
 
     status = "ok"
     if result.strip() == "(reached maximum tool-call rounds)" or any(
-        marker in result for marker in (
+        marker in result
+        for marker in (
             "Maximum tool-call rounds reached.",
             "Max rounds reached.",
             "Reached maximum tool-call rounds",

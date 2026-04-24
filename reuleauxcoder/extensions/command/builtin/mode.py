@@ -68,7 +68,9 @@ def render_mode_profiles_view(renderer, event) -> bool:
 
 
 def _handle_show_mode(command, ctx) -> CommandResult:
-    payload = _build_mode_profiles_payload(ctx.config, getattr(ctx.agent, "active_mode", None))
+    payload = _build_mode_profiles_payload(
+        ctx.config, getattr(ctx.agent, "active_mode", None)
+    )
 
     ctx.ui_bus.open_view(
         "mode_profiles",
@@ -92,7 +94,9 @@ def _handle_show_mode(command, ctx) -> CommandResult:
 
 
 def _handle_current_mode(command, ctx) -> CommandResult:
-    mode_name = getattr(ctx.agent, "active_mode", None) or getattr(ctx.config, "active_mode", None)
+    mode_name = getattr(ctx.agent, "active_mode", None) or getattr(
+        ctx.config, "active_mode", None
+    )
     if mode_name:
         mode = (getattr(ctx.config, "modes", {}) or {}).get(mode_name)
         description = getattr(mode, "description", "") if mode is not None else ""
@@ -128,7 +132,9 @@ def _handle_switch_mode(command, ctx) -> CommandResult:
         mode_name=mode_name,
     )
 
-    payload = _build_mode_profiles_payload(ctx.config, getattr(ctx.agent, "active_mode", None))
+    payload = _build_mode_profiles_payload(
+        ctx.config, getattr(ctx.agent, "active_mode", None)
+    )
     ctx.ui_bus.refresh_view(
         "mode_profiles",
         title="Modes",
@@ -164,7 +170,9 @@ def _build_mode_profiles_payload(config, active_mode: str | None) -> dict:
             marker = " ✓" if is_active else ""
 
             tools = list(getattr(m, "tools", []) or [])
-            allowed_subagent_modes = list(getattr(m, "allowed_subagent_modes", []) or [])
+            allowed_subagent_modes = list(
+                getattr(m, "allowed_subagent_modes", []) or []
+            )
             prompt_append = getattr(m, "prompt_append", "") or ""
 
             mode_items.append(
@@ -183,7 +191,13 @@ def _build_mode_profiles_payload(config, active_mode: str | None) -> dict:
                 lines.append(f"  - description: {m.description}")
             lines.append(
                 "  - tools: "
-                + ("`*`" if "*" in tools else ", ".join(f"`{t}`" for t in tools) if tools else "(none)")
+                + (
+                    "`*`"
+                    if "*" in tools
+                    else ", ".join(f"`{t}`" for t in tools)
+                    if tools
+                    else "(none)"
+                )
             )
             lines.append(
                 "  - allowed_subagent_modes: "
@@ -234,7 +248,10 @@ def register_actions(registry: ActionRegistry) -> None:
                 description="[session] Switch the active session mode",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/mode switch <name>"), slash_trigger("/mode <name>")),
+                triggers=(
+                    slash_trigger("/mode switch <name>"),
+                    slash_trigger("/mode <name>"),
+                ),
                 parser=_parse_switch_mode,
                 handler=_handle_switch_mode,
             ),

@@ -104,7 +104,9 @@ class TestExecRequest:
         srv.start()
         try:
             with pytest.raises(PeerNotFoundError):
-                srv.send_exec_request("no-such-peer", ExecToolRequest(tool_name="shell"))
+                srv.send_exec_request(
+                    "no-such-peer", ExecToolRequest(tool_name="shell")
+                )
         finally:
             srv.stop()
 

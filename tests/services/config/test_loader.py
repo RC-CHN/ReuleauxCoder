@@ -73,13 +73,20 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
                         "preserve_reasoning_content": True,
                         "backfill_reasoning_content_for_tool_calls": True,
                     },
-                    "sub": {"model": "gpt-sub", "api_key": "sub-key", "temperature": 0.2},
+                    "sub": {
+                        "model": "gpt-sub",
+                        "api_key": "sub-key",
+                        "temperature": 0.2,
+                    },
                 },
             },
             "modes": {
                 "active": "coder",
                 "profiles": {
-                    "coder": {"description": "Code mode", "tools": ["shell", "read_file"]}
+                    "coder": {
+                        "description": "Code mode",
+                        "tools": ["shell", "read_file"],
+                    }
                 },
             },
             "approval": {
@@ -112,7 +119,9 @@ def test_parse_config_reads_remote_exec_settings() -> None:
     config = loader._parse_config(
         {
             "app": {"api_key": "key"},
-            "models": {"profiles": {"main": {"model": "gpt-main", "api_key": "main-key"}}},
+            "models": {
+                "profiles": {"main": {"model": "gpt-main", "api_key": "main-key"}}
+            },
             "modes": {"profiles": {"coder": {}}},
             "remote_exec": {
                 "enabled": True,

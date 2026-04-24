@@ -63,13 +63,23 @@ def _build_ctx(tmp_path: Path, *, fingerprint: str = "local") -> SimpleNamespace
     agent = FakeAgent()
     setattr(agent, "session_fingerprint", fingerprint)
     ui_bus = UIEventBus()
-    return SimpleNamespace(config=config, agent=agent, ui_bus=ui_bus, sessions_dir=tmp_path)
+    return SimpleNamespace(
+        config=config, agent=agent, ui_bus=ui_bus, sessions_dir=tmp_path
+    )
 
 
 def test_list_sessions_defaults_to_current_fingerprint(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
-    local_id = store.save(messages=[{"role": "user", "content": "local msg"}], model="m1", fingerprint="local")
-    store.save(messages=[{"role": "user", "content": "remote msg"}], model="m2", fingerprint="remote:abc")
+    local_id = store.save(
+        messages=[{"role": "user", "content": "local msg"}],
+        model="m1",
+        fingerprint="local",
+    )
+    store.save(
+        messages=[{"role": "user", "content": "remote msg"}],
+        model="m2",
+        fingerprint="remote:abc",
+    )
     ctx = _build_ctx(tmp_path, fingerprint="local")
 
     result = _handle_list_sessions(ListSessionsCommand(), ctx)
@@ -81,15 +91,26 @@ def test_list_sessions_defaults_to_current_fingerprint(tmp_path: Path) -> None:
 
 def test_list_sessions_all_shows_all_fingerprints(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
-    local_id = store.save(messages=[{"role": "user", "content": "local msg"}], model="m1", fingerprint="local")
-    remote_id = store.save(messages=[{"role": "user", "content": "remote msg"}], model="m2", fingerprint="remote:abc")
+    local_id = store.save(
+        messages=[{"role": "user", "content": "local msg"}],
+        model="m1",
+        fingerprint="local",
+    )
+    remote_id = store.save(
+        messages=[{"role": "user", "content": "remote msg"}],
+        model="m2",
+        fingerprint="remote:abc",
+    )
     ctx = _build_ctx(tmp_path, fingerprint="local")
 
     result = _handle_list_sessions(ListSessionsCommand(show_all=True), ctx)
 
     assert {item["id"] for item in result.payload["sessions"]} == {local_id, remote_id}
     assert result.payload["show_all"] is True
-    assert {item["fingerprint"] for item in result.payload["sessions"]} == {"local", "remote:abc"}
+    assert {item["fingerprint"] for item in result.payload["sessions"]} == {
+        "local",
+        "remote:abc",
+    }
 
 
 def test_resume_latest_uses_current_fingerprint_only(tmp_path: Path) -> None:
@@ -113,7 +134,9 @@ def test_resume_latest_uses_current_fingerprint_only(tmp_path: Path) -> None:
     assert result.session_id == local_id
     assert ctx.agent.session_fingerprint == "local"
     assert any(
-        event.level == UIEventLevel.SUCCESS and event.kind == UIEventKind.SESSION and local_id in event.message
+        event.level == UIEventLevel.SUCCESS
+        and event.kind == UIEventKind.SESSION
+        and local_id in event.message
         for event in ctx.ui_bus._history
     )
 

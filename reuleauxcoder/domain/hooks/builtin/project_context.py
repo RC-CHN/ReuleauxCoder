@@ -42,7 +42,9 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
         context_files: list[str] | None = None,
         priority: int = 50,
     ):
-        super().__init__(name="project_context", priority=priority, extension_name="core")
+        super().__init__(
+            name="project_context", priority=priority, extension_name="core"
+        )
         self.context_files = context_files or DEFAULT_CONTEXT_FILES
 
     @classmethod
@@ -55,10 +57,13 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
         if content:
             # Insert after system prompt (index 0), before conversation history
             # This ensures stable prefix for KV cache matching
-            context.messages.insert(1, {
-                "role": "system",
-                "content": self._format_message(content),
-            })
+            context.messages.insert(
+                1,
+                {
+                    "role": "system",
+                    "content": self._format_message(content),
+                },
+            )
         return context
 
     def _load_project_context(self) -> tuple[str | None, str | None]:
@@ -113,6 +118,7 @@ class ProjectContextStartupNotifier(ObserverHook[RunnerStartupContext]):
                 if ui_bus is not None:
                     try:
                         from reuleauxcoder.interfaces.events import UIEventKind
+
                         ui_bus.info(
                             f"Loaded project context: {filename}",
                             kind=UIEventKind.CONTEXT,

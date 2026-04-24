@@ -7,7 +7,8 @@ def _make_long_tool_output(lines: int = 20, extra_chars: int = 1600) -> dict:
     """Create a long tool message that will be snipped."""
     return {
         "role": "tool",
-        "content": "\n".join([f"line {i}: " + ("x" * 200) for i in range(lines)]) + ("x" * extra_chars),
+        "content": "\n".join([f"line {i}: " + ("x" * 200) for i in range(lines)])
+        + ("x" * extra_chars),
     }
 
 
@@ -51,7 +52,9 @@ class TestWallHitStateMachine:
         manager._snip_exhausted = True
         manager._snip_hit_count = 3
 
-        messages = _make_messages_with_tokens(750)  # initial target > summarize_at (700)
+        messages = _make_messages_with_tokens(
+            750
+        )  # initial target > summarize_at (700)
 
         manager.maybe_compress(messages, llm=None)
 
@@ -85,20 +88,22 @@ class TestWallHitStateMachine:
         """When summarize runs but doesn't reduce below threshold, hit count increments."""
         manager = ContextManager(max_tokens=1000)
         manager._snip_exhausted = True  # Skip snip
-        
+
         # Messages above summarize threshold with enough messages for summarize
-        messages = [{"role": "user", "content": f"msg {i} " + "x" * 100} for i in range(30)]
-        
+        messages = [
+            {"role": "user", "content": f"msg {i} " + "x" * 100} for i in range(30)
+        ]
+
         # Mock LLM that returns summary
         class SummaryLLM:
             def chat(self, messages, **kwargs):
                 return type("Response", (), {"content": "summary text here"})()
-        
+
         llm = SummaryLLM()
-        
+
         # First summarize attempt
         manager.maybe_compress(messages, llm=llm)
-        
+
         # Check if summarize ran and if tokens still exceed threshold
         current = estimate_tokens(messages)
         if current > manager._summarize_at:
@@ -157,12 +162,12 @@ class TestWallHitStateMachine:
         """When context is healthy (below snip threshold), reset state."""
         manager = ContextManager(max_tokens=1000)
         manager._snip_hit_count = 2
-        
+
         # Messages below snip threshold
         messages = _make_messages_with_tokens(300)  # < snip_at (500)
-        
+
         manager.maybe_compress(messages, llm=None)
-        
+
         # Should reset since context is healthy
         assert manager._snip_hit_count == 0
         assert not manager._snip_exhausted
@@ -177,9 +182,9 @@ class TestWallHitStateMachine:
         manager = ContextManager(max_tokens=1000)
         manager._snip_hit_count = 3
         manager._snip_exhausted = True
-        
+
         manager.reconfigure(max_tokens=2000)
-        
+
         assert manager._snip_hit_count == 0
         assert not manager._snip_exhausted
         assert manager.max_tokens == 2000

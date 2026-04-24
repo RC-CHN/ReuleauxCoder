@@ -7,8 +7,19 @@ pip install textual
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.widgets import Header, Footer, Static, Input, Label, ListItem, ListView, Markdown, Tree
+from textual.widgets import (
+    Header,
+    Footer,
+    Static,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    Markdown,
+    Tree,
+)
 from textual.binding import Binding
+
 
 class ChatMessage(Static):
     def __init__(self, role: str, content: str, **kwargs):
@@ -22,10 +33,11 @@ class ChatMessage(Static):
         # 使用 Markdown 渲染聊天内容
         yield Markdown(self.content)
 
+
 class ReuleauxTUI(App):
     TITLE = "ReuleauxCoder"
     SUB_TITLE = "Terminal AI Coding Assistant"
-    
+
     # 样式定义
     CSS = """
     Screen {
@@ -127,7 +139,7 @@ class ReuleauxTUI(App):
     def compose(self) -> ComposeResult:
         # 顶部 Header (显示标题和时钟)
         yield Header(show_clock=True)
-        
+
         with Container(id="main-container"):
             # 1. 左侧边栏：历史会话列表
             with Vertical(id="sidebar"):
@@ -138,26 +150,46 @@ class ReuleauxTUI(App):
                     ListItem(Label("3. 重构 hooks 系统")),
                     ListItem(Label("4. 为 MCP 编写测试")),
                 )
-            
+
             # 2. 中间：主聊天区域
             with Vertical(id="chat-area"):
                 with VerticalScroll(id="messages"):
-                    yield ChatMessage("system", "ReuleauxCoder Initialized.\nWorkspace: `/home/pan/proj/ReuleauxCoder`\nMode: `Code`")
-                    yield ChatMessage("user", "写一个独立的tui界面样式设计给我看？参考我们这个项目，只做个占位就好，不需要实际链接")
-                    yield ChatMessage("assistant", "好的！我使用 `Textual` 框架为您设计了一个 TUI 界面。\n\n这个界面包含：\n1. **左侧边栏**：显示历史会话记录。\n2. **中间主区域**：显示与 AI 的对话（支持 Markdown 渲染）以及底部的输入框。\n3. **右侧边栏**：显示当前上下文状态（使用的模型、当前活动文件树等）。")
-                    yield ChatMessage("system", "⚙️ Tool Execution: `write_to_file`\nPath: `reuleauxcoder/interfaces/tui/mockup.py`")
-                    yield ChatMessage("assistant", "我已经创建了 TUI 占位文件。您可以直接运行它来预览界面效果。")
-                
+                    yield ChatMessage(
+                        "system",
+                        "ReuleauxCoder Initialized.\nWorkspace: `/home/pan/proj/ReuleauxCoder`\nMode: `Code`",
+                    )
+                    yield ChatMessage(
+                        "user",
+                        "写一个独立的tui界面样式设计给我看？参考我们这个项目，只做个占位就好，不需要实际链接",
+                    )
+                    yield ChatMessage(
+                        "assistant",
+                        "好的！我使用 `Textual` 框架为您设计了一个 TUI 界面。\n\n这个界面包含：\n1. **左侧边栏**：显示历史会话记录。\n2. **中间主区域**：显示与 AI 的对话（支持 Markdown 渲染）以及底部的输入框。\n3. **右侧边栏**：显示当前上下文状态（使用的模型、当前活动文件树等）。",
+                    )
+                    yield ChatMessage(
+                        "system",
+                        "⚙️ Tool Execution: `write_to_file`\nPath: `reuleauxcoder/interfaces/tui/mockup.py`",
+                    )
+                    yield ChatMessage(
+                        "assistant",
+                        "我已经创建了 TUI 占位文件。您可以直接运行它来预览界面效果。",
+                    )
+
                 # 底部输入区
                 with Horizontal(id="input-area"):
-                    yield Input(placeholder="Ask ReuleauxCoder anything... (Press Enter to send)", id="prompt-input")
-            
+                    yield Input(
+                        placeholder="Ask ReuleauxCoder anything... (Press Enter to send)",
+                        id="prompt-input",
+                    )
+
             # 3. 右侧面板：上下文状态与工具
             with Vertical(id="context-panel"):
                 yield Label("💡 Context", classes="panel-title")
-                yield Static("Model: gemini-3.1-pro-preview\nMode: Code\n\nTokens: 1250 / 128000\nCost: $0.00")
+                yield Static(
+                    "Model: gemini-3.1-pro-preview\nMode: Code\n\nTokens: 1250 / 128000\nCost: $0.00"
+                )
                 yield Static("-" * 30)
-                
+
                 yield Label("📂 Active Files", classes="panel-title")
                 tree = Tree("Workspace")
                 tree.root.expand()
@@ -179,6 +211,7 @@ class ReuleauxTUI(App):
         """切换右侧面板显示状态"""
         context_panel = self.query_one("#context-panel")
         context_panel.display = not context_panel.display
+
 
 if __name__ == "__main__":
     app = ReuleauxTUI()

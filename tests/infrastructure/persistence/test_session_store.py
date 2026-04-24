@@ -55,9 +55,13 @@ def test_session_store_save_with_exit_appends_exit_marker(tmp_path: Path) -> Non
     assert store.get_exit_time(loaded.messages) is not None
 
 
-def test_session_store_append_system_message_updates_existing_session(tmp_path: Path) -> None:
+def test_session_store_append_system_message_updates_existing_session(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path)
-    session_id = store.save(messages=[{"role": "user", "content": "hello"}], model="gpt-4o")
+    session_id = store.save(
+        messages=[{"role": "user", "content": "hello"}], model="gpt-4o"
+    )
 
     store.append_system_message(
         session_id,
@@ -73,9 +77,13 @@ def test_session_store_append_system_message_updates_existing_session(tmp_path: 
     assert isinstance(loaded.messages[-1].get(MESSAGE_TOKEN_KEY), int)
 
 
-def test_session_store_load_backfills_missing_message_token_counts(tmp_path: Path) -> None:
+def test_session_store_load_backfills_missing_message_token_counts(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path)
-    session_id = store.save(messages=[{"role": "user", "content": "hello"}], model="gpt-4o")
+    session_id = store.save(
+        messages=[{"role": "user", "content": "hello"}], model="gpt-4o"
+    )
     path = tmp_path / f"{session_id}.json"
 
     import json
@@ -94,8 +102,14 @@ def test_session_store_load_backfills_missing_message_token_counts(tmp_path: Pat
 
 def test_session_store_list_filters_by_fingerprint(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
-    local_id = store.save(messages=[{"role": "user", "content": "first"}], model="m1", fingerprint="local")
-    remote_id = store.save(messages=[{"role": "user", "content": "second"}], model="m2", fingerprint="remote:abc")
+    local_id = store.save(
+        messages=[{"role": "user", "content": "first"}], model="m1", fingerprint="local"
+    )
+    remote_id = store.save(
+        messages=[{"role": "user", "content": "second"}],
+        model="m2",
+        fingerprint="remote:abc",
+    )
     (tmp_path / "broken.json").write_text("{not-json}", encoding="utf-8")
 
     local_sessions = store.list(limit=10, fingerprint="local")
@@ -109,13 +123,26 @@ def test_session_store_list_filters_by_fingerprint(tmp_path: Path) -> None:
     assert store.get_latest(fingerprint="remote:abc") is not None
 
 
-def test_session_store_get_latest_prefers_recently_updated_session(tmp_path: Path) -> None:
+def test_session_store_get_latest_prefers_recently_updated_session(
+    tmp_path: Path,
+) -> None:
     store = SessionStore(tmp_path)
-    first_id = store.save(messages=[{"role": "user", "content": "first"}], model="m1", fingerprint="local")
-    second_id = store.save(messages=[{"role": "user", "content": "second"}], model="m2", fingerprint="local")
+    first_id = store.save(
+        messages=[{"role": "user", "content": "first"}], model="m1", fingerprint="local"
+    )
+    second_id = store.save(
+        messages=[{"role": "user", "content": "second"}],
+        model="m2",
+        fingerprint="local",
+    )
 
     # Update the older session after the newer one was created.
-    store.save(messages=[{"role": "user", "content": "first-updated"}], model="m1", session_id=first_id, fingerprint="local")
+    store.save(
+        messages=[{"role": "user", "content": "first-updated"}],
+        model="m1",
+        session_id=first_id,
+        fingerprint="local",
+    )
 
     latest = store.get_latest(fingerprint="local")
     assert latest is not None
@@ -135,7 +162,9 @@ def test_session_store_load_missing_returns_none(tmp_path: Path) -> None:
 
 def test_session_store_concurrent_save_keeps_sessions_readable(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
-    session_id = store.save(messages=[{"role": "user", "content": "seed"}], model="m1", fingerprint="local")
+    session_id = store.save(
+        messages=[{"role": "user", "content": "seed"}], model="m1", fingerprint="local"
+    )
 
     def update_existing(index: int) -> None:
         store.save(
@@ -152,9 +181,9 @@ def test_session_store_concurrent_save_keeps_sessions_readable(tmp_path: Path) -
             fingerprint="remote:abc",
         )
 
-    threads = [threading.Thread(target=update_existing, args=(i,)) for i in range(4)] + [
-        threading.Thread(target=create_new, args=(i,)) for i in range(4)
-    ]
+    threads = [
+        threading.Thread(target=update_existing, args=(i,)) for i in range(4)
+    ] + [threading.Thread(target=create_new, args=(i,)) for i in range(4)]
     for thread in threads:
         thread.start()
     for thread in threads:
