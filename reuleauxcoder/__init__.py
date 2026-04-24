@@ -13,6 +13,6 @@ except PackageNotFoundError:
 from reuleauxcoder.domain.agent import Agent
 from reuleauxcoder.services.llm.client import LLM
 from reuleauxcoder.domain.config.models import Config
-from reuleauxcoder.extensions.tools.registry import ALL_TOOLS, build_tools
+from reuleauxcoder.extensions.tools.registry import build_tools
 
-__all__ = ["Agent", "LLM", "Config", "ALL_TOOLS", "build_tools", "__version__"]
+__all__ = ["Agent", "LLM", "Config", "build_tools", "__version__"]

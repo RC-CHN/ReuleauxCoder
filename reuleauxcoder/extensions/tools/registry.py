@@ -53,4 +53,5 @@ def get_tool(name: str, backend: ToolBackend | None = None) -> Optional[Tool]:
     return None
 
 
-ALL_TOOLS = build_tools()
+# ALL_TOOLS removed — use build_tools(backend) for explicit instantiation.
+# Previously this was a module-level singleton built eagerly at import time.

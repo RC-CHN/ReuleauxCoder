@@ -11,6 +11,8 @@ import tempfile
 import threading
 from typing import Any, Callable
 
+from reuleauxcoder.app.commands.loader import create_builtin_action_registry
+from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.mcp.manager import MCPManager
@@ -69,6 +71,10 @@ def _default_create_session_store(sessions_dir: Path | None) -> SessionStore:
 
 def _default_create_mcp_manager(ui_bus: UIEventBus) -> MCPManager:
     return MCPManager(ui_bus=ui_bus)
+
+
+def _default_create_action_registry() -> ActionRegistry:
+    return create_builtin_action_registry()
 
 
 def _default_create_remote_relay_server(config: Config) -> RelayServer | None:
@@ -206,6 +212,9 @@ class AppDependencies:
         _default_create_session_store
     )
     create_mcp_manager: Callable[[UIEventBus], MCPManager] = _default_create_mcp_manager
+    create_action_registry: Callable[[], ActionRegistry] = (
+        _default_create_action_registry
+    )
     create_remote_relay_server: Callable[[Config], RelayServer | None] = (
         _default_create_remote_relay_server
     )
@@ -225,6 +234,7 @@ class AppContext:
     ui_interactor: UIInteractor | None = None
     mcp_manager: MCPManager | None = None
     skills_service: SkillsService | None = None
+    action_registry: ActionRegistry | None = None
     current_session_id: str | None = None
     session_exit_time: str | None = None
     sessions_dir: Path | None = None

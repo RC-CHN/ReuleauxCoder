@@ -7,6 +7,7 @@ from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
 
 from reuleauxcoder import __version__
+from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
@@ -20,6 +21,7 @@ def run_repl(
     config,
     ui_bus: UIEventBus,
     ui_profile: UIProfile,
+    action_registry: ActionRegistry,
     current_session_id: str = None,
     sessions_dir: Path | None = None,
     session_exit_time: str | None = None,
@@ -76,6 +78,7 @@ def run_repl(
             current_session_id,
             ui_bus,
             ui_profile,
+            action_registry,
             sessions_dir,
             skills_service,
         )

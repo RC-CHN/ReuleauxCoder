@@ -1,11 +1,10 @@
 """Action registry entrypoint.
 
 This module intentionally keeps no static action table.
-Builtin command extensions are dynamically loaded through the loader.
+Use create_builtin_action_registry() for explicit instantiation.
+Previously ACTION_REGISTRY was a module-level singleton built eagerly at import time.
 """
 
 from __future__ import annotations
 
 from reuleauxcoder.app.commands.loader import create_builtin_action_registry
-
-ACTION_REGISTRY = create_builtin_action_registry()

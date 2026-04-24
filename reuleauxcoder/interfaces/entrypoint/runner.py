@@ -73,6 +73,7 @@ class AppRunner:
             config.remote_exec.enabled = True
             config.remote_exec.host_mode = True
         ui_bus = self.dependencies.create_ui_bus()
+        action_registry = self.dependencies.create_action_registry()
         self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
         self._bind_remote_chat_handler(agent)
@@ -95,6 +96,7 @@ class AppRunner:
             ui_interactor=None,
             mcp_manager=mcp_manager,
             skills_service=skills_service,
+            action_registry=action_registry,
             current_session_id=current_session_id,
             session_exit_time=session_exit_time,
             sessions_dir=sessions_dir,

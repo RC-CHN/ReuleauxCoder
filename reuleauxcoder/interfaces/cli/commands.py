@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
+from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.interfaces.events import UIEventBus
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 
@@ -22,12 +23,14 @@ def handle_command(
     current_session_id: str | None,
     ui_bus: UIEventBus,
     ui_profile: UIProfile,
+    action_registry: ActionRegistry,
     sessions_dir: Path | None = None,
     skills_service: SkillsService | None = None,
 ):
     parsed_action = parse_command(
         user_input,
         ui_profile=ui_profile,
+        action_registry=action_registry,
         current_session_id=current_session_id,
     )
     if parsed_action is not None:

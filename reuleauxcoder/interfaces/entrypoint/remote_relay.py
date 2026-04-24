@@ -245,6 +245,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 getattr(peer_agent, "current_session_id", None),
                 command_bus,
                 CLI_PROFILE,
+                runner.dependencies.create_action_registry(),
                 sessions_dir,
                 skills_service,
             )

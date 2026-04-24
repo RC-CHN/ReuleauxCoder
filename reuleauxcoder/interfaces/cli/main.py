@@ -88,6 +88,7 @@ def main():
             ctx.config,
             ctx.ui_bus,
             cli_ui.profile,
+            ctx.action_registry,
             ctx.current_session_id,
             ctx.sessions_dir,
             ctx.session_exit_time,

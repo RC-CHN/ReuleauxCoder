@@ -15,7 +15,7 @@ from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.mcp.runtime import find_mcp_server
-from reuleauxcoder.extensions.tools import ALL_TOOLS
+from reuleauxcoder.extensions.tools.registry import build_tools
 from reuleauxcoder.infrastructure.yaml.loader import load_yaml_config
 from reuleauxcoder.services.config.loader import ConfigLoader
 
@@ -250,11 +250,11 @@ def _resolve_rule_source(
     return "workspace"
 
 
-def _build_tool_catalog(agent) -> list[tuple[str, str, str | None]]:
+def _build_tool_catalog(agent, builtin_tools: list) -> list[tuple[str, str, str | None]]:
     """Collect visible tools as (name, tool_source, mcp_server)."""
     catalog: dict[tuple[str, str, str | None], None] = {}
 
-    for tool in ALL_TOOLS:
+    for tool in builtin_tools:
         tool_source = getattr(tool, "tool_source", None) or "builtin"
         if tool_source == "mcp":
             continue
@@ -273,8 +273,10 @@ def _build_tool_catalog(agent) -> list[tuple[str, str, str | None]]:
     return sorted(catalog.keys(), key=lambda item: (item[1], item[2] or "", item[0]))
 
 
-def build_approval_view(config, agent=None) -> ApprovalView:
+def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
     """Build a structured view for approval rules and effective tool policies."""
+    if builtin_tools is None:
+        builtin_tools = build_tools()
     session_rules = (
         list(getattr(agent, "session_approval_rules", []) or [])
         if agent is not None
@@ -331,7 +333,7 @@ def build_approval_view(config, agent=None) -> ApprovalView:
 
     policy_engine = ApprovalPolicyEngine(config.approval)
     tool_policies: list[ApprovalToolPolicyView] = []
-    for tool_name, tool_source, mcp_server in _build_tool_catalog(agent):
+    for tool_name, tool_source, mcp_server in _build_tool_catalog(agent, builtin_tools):
         match = policy_engine.evaluate(
             ToolApprovalContext(
                 tool_call=ToolCall(id="preview", name=tool_name, arguments={}),
