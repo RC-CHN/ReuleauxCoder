@@ -62,10 +62,13 @@ Pluggable extension system.
 
 - **tools/**: Built-in tools (`shell`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent`)
   - `Tool` base class with `name`, `description`, `parameters`, `execute()`, `preflight_validate()`
+  - `@register_tool` decorator for auto-discovery; `build_tools(backend)` for instantiation
   - `@backend_handler("backend_id")` decorator for local/remote dispatch
   - `ExecutionContext` carries `peer_id`, `cwd`, `workspace_root`, `remote_stream_handler`
   - `ShellDangerousCommandPolicy` blocks rm -rf, fork bombs, curl|bash, etc.
-- **command/**: Slash commands (`/model`, `/skills`, `/mcp`, `/sessions`, `/mode`, `/approval`)
+- **command/**: Slash commands (`/model`, `/skills`, `/mcp`, `/sessions`, `/mode`, `/approval`, `/jobs`)
+  - Uses `@register_command_module` + `ActionRegistry.register_many()` for registration
+  - `ActionSpec` with `triggers`, `parser`, `handler` per action
 - **mcp/**: MCP server integration (`MCPManager`, `MCPClient`, `MCPTool`)
   - `MCPManager` runs independent asyncio event loop in background thread
   - `MCPClient` is stdio JSON-RPC client with reconnect-once behavior
@@ -75,6 +78,7 @@ Pluggable extension system.
   - `ThreadPoolExecutor(max_workers=4)` caps parallel explore jobs
   - `SubagentJob` tracks status, timing, result/error
   - `DelegatingSubagentApprovalProvider` uses parent LLM as secondary judge
+- **remote_exec/**: Remote execution (HTTP relay server, peer registry, bootstrap, auth, cleanup)
 
 ## Current Runtime Architecture (Phase 1)
 
@@ -292,8 +296,10 @@ Key sections:
 
 ### Adding a new tool
 1. Create class inheriting from `Tool` base in `extensions/tools/builtin/`
-2. Implement `name`, `description`, `schema()`, `execute()`
-3. Add to `ALL_TOOLS` list in `extensions/tools/registry.py`
+2. Set `name`, `description`, `parameters` as class attributes and implement `execute(**kwargs) -> str`
+3. Use `@register_tool` decorator on the class for auto-discovery via `build_tools(backend)`
+4. `schema()` has a default implementation — override only if needed
+5. For multi-backend tools, decorate handler methods with `@backend_handler("backend_id")`
 
 ### Slash command scope conventions (Phase 1)
 Slash command metadata should explicitly communicate scope in `ActionSpec.description` when the command mutates runtime or config.
@@ -326,10 +332,11 @@ Session runtime state currently restored by saved sessions includes:
 - session fingerprint
 
 ### Adding a new slash command
-1. Create handler in `extensions/command/builtin/`
-2. Register in command dispatcher
-3. If the command changes state, annotate scope in `ActionSpec.description`
-4. Keep session-vs-global semantics aligned with the Phase 1 conventions above
+1. Create or update a module in `extensions/command/builtin/`
+2. Define a `register_actions(registry: ActionRegistry)` function decorated with `@register_command_module`
+3. Inside, call `registry.register_many([ActionSpec(action_id=..., feature_id=..., description=..., triggers=[...], handler=..., parser=...)])`
+4. If the command changes state, annotate scope in `ActionSpec.description`
+5. Keep session-vs-global semantics aligned with the Phase 1 conventions above
 
 ### Adding a new hook
 1. Create class inheriting from `GuardHook`, `TransformHook`, or `ObserverHook`
