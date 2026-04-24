@@ -280,6 +280,81 @@ class _FakeChunk:
         self.choices = [_FakeChoice(_FakeDelta(content=content))]
 
 
+def test_llm_chat_sends_explicit_thinking_enabled_state() -> None:
+    captured = {}
+
+    llm = LLM(
+        model="demo-model",
+        api_key="sk-test-12345678",
+        thinking_enabled=True,
+    )
+
+    def _fake_call_with_retry(params):
+        captured.update(params)
+        return iter(
+            [
+                _FakeChunk(content="Hello"),
+                _FakeChunk(usage=_FakeUsage(prompt_tokens=1, completion_tokens=1)),
+            ]
+        )
+
+    llm._call_with_retry = _fake_call_with_retry  # type: ignore[method-assign]
+    response = llm.chat([{"role": "user", "content": "Hi"}])
+
+    assert response.content == "Hello"
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+def test_llm_chat_sends_explicit_thinking_disabled_state() -> None:
+    captured = {}
+
+    llm = LLM(
+        model="demo-model",
+        api_key="sk-test-12345678",
+        thinking_enabled=False,
+    )
+
+    def _fake_call_with_retry(params):
+        captured.update(params)
+        return iter(
+            [
+                _FakeChunk(content="Hello"),
+                _FakeChunk(usage=_FakeUsage(prompt_tokens=1, completion_tokens=1)),
+            ]
+        )
+
+    llm._call_with_retry = _fake_call_with_retry  # type: ignore[method-assign]
+    response = llm.chat([{"role": "user", "content": "Hi"}])
+
+    assert response.content == "Hello"
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_llm_chat_omits_thinking_state_when_unset() -> None:
+    captured = {}
+
+    llm = LLM(
+        model="demo-model",
+        api_key="sk-test-12345678",
+        thinking_enabled=None,
+    )
+
+    def _fake_call_with_retry(params):
+        captured.update(params)
+        return iter(
+            [
+                _FakeChunk(content="Hello"),
+                _FakeChunk(usage=_FakeUsage(prompt_tokens=1, completion_tokens=1)),
+            ]
+        )
+
+    llm._call_with_retry = _fake_call_with_retry  # type: ignore[method-assign]
+    response = llm.chat([{"role": "user", "content": "Hi"}])
+
+    assert response.content == "Hello"
+    assert "extra_body" not in captured
+
+
 def test_llm_debug_trace_persists_trace_and_emits_ui_event(
     tmp_path, monkeypatch
 ) -> None:

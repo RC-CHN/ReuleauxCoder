@@ -369,7 +369,6 @@ class LLM:
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
         raw_messages = [dict(msg) for msg in messages]
-        thinking_enabled = bool(self.thinking_enabled)
         replay_mode = _normalize_reasoning_replay_mode(self.reasoning_replay_mode)
         messages = _sanitize_messages_for_llm(
             messages,
@@ -387,8 +386,12 @@ class LLM:
         }
         if self.reasoning_effort:
             params["reasoning_effort"] = self.reasoning_effort
-        if thinking_enabled:
-            params["extra_body"] = {"thinking": {"type": "enabled"}}
+        if self.thinking_enabled is not None:
+            params["extra_body"] = {
+                "thinking": {
+                    "type": "enabled" if self.thinking_enabled else "disabled"
+                }
+            }
 
         if tools:
             params["tools"] = tools
