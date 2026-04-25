@@ -52,6 +52,15 @@ class ShellTool(Tool):
     @backend_handler("local")
     def _execute_local(self, command: str, timeout: int = 120) -> str:
         cwd = self._cwd or os.getcwd()
+
+        # Detect stale CWD (e.g. deleted temp dir) and reset to workspace root
+        if self._cwd is not None and not os.path.isdir(self._cwd):
+            self._cwd = None
+            return (
+                f"Error: working directory no longer exists ({cwd}). "
+                "Directory has been reset to the project root."
+            )
+
         platform_info = get_platform_info()
         shell = platform_info.get_preferred_shell()
 
