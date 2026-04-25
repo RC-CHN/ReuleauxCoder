@@ -168,3 +168,39 @@ def test_parse_config_falls_back_when_active_profile_missing() -> None:
     assert config.active_sub_model_profile == "first"
     assert config.active_model_profile == "first"
     assert config.model == "gpt-first"
+
+
+def test_merge_dicts_preserves_active_main_and_active_sub_across_layers() -> None:
+    """Workspace active_main / active_sub must override global values."""
+    loader = ConfigLoader()
+
+    # Simulate global config
+    global_data = {
+        "models": {
+            "active": "glm-5",
+            "active_main": "glm-5",
+            "profiles": {
+                "glm-5": {"model": "glm-5", "api_key": "k"},
+                "ds-v4-pro": {"model": "deepseek-v4-pro", "api_key": "k"},
+                "ds-v4-flash": {"model": "deepseek-v4-flash", "api_key": "k"},
+            },
+        }
+    }
+
+    # Simulate workspace override
+    workspace_data = {
+        "models": {
+            "active": "ds-v4-pro",
+            "active_main": "ds-v4-pro",
+            "active_sub": "ds-v4-flash",
+        }
+    }
+
+    merged = loader._merge_dicts(global_data, workspace_data)
+
+    assert merged["models"]["active"] == "ds-v4-pro"
+    assert merged["models"]["active_main"] == "ds-v4-pro"
+    assert merged["models"]["active_sub"] == "ds-v4-flash"
+    # Profiles from global should survive
+    assert "glm-5" in merged["models"]["profiles"]
+    assert merged["models"]["profiles"]["ds-v4-pro"]["model"] == "deepseek-v4-pro"

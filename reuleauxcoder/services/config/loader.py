@@ -64,9 +64,10 @@ class ConfigLoader:
             if key in {"mcp", "models", "modes"} and isinstance(value, dict):
                 result_section = result.get(key, {})
 
-                # Merge `*.active` scalar fields with override priority
-                if "active" in value:
-                    result_section["active"] = value.get("active")
+                # Merge scalar routing fields with override priority
+                for scalar_key in ("active", "active_main", "active_sub"):
+                    if scalar_key in value:
+                        result_section[scalar_key] = value[scalar_key]
 
                 # Merge profile maps by name/key, override wins for same key
                 if "servers" in value and isinstance(value.get("servers"), dict):
