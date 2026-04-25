@@ -18,6 +18,8 @@ from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.hooks import HookBase, HookPoint, HookRegistry
+from reuleauxcoder.infrastructure.platform import get_platform_info
+from reuleauxcoder.services.prompt.builder import system_prompt
 
 
 @dataclass
@@ -80,7 +82,8 @@ class Agent:
 
         # Execution components
         self.approval_provider = approval_provider
-        self._loop = AgentLoop(self)
+        shell = get_platform_info().get_preferred_shell().value
+        self._loop = AgentLoop(self, prompt_fn=system_prompt, shell_name=shell)
         self._executor = ToolExecutor(self)
 
         # Event handlers

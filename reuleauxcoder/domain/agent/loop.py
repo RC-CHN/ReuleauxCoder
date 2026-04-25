@@ -4,27 +4,26 @@ from __future__ import annotations
 
 import os
 import platform
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.agent.agent import Agent
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
-from reuleauxcoder.infrastructure.platform import get_platform_info
-from reuleauxcoder.services.prompt.builder import system_prompt
 
 
 class AgentLoop:
     """Manages the agent's conversation loop."""
 
-    def __init__(self, agent: "Agent"):
+    def __init__(self, agent: "Agent", *, prompt_fn: Callable[..., str], shell_name: str):
         self.agent = agent
+        self._prompt_fn = prompt_fn
+        self._shell = shell_name
         self.last_response_streamed = False
 
     def _runtime_tail_message(self) -> dict:
         """Build ephemeral runtime context appended only at send time."""
         uname = platform.uname()
-        shell = get_platform_info().get_preferred_shell()
         runtime_cwd = (
             getattr(self.agent, "runtime_working_directory", None) or os.getcwd()
         )
@@ -35,7 +34,7 @@ class AgentLoop:
             f"- Working directory: {runtime_cwd}\n"
             f"- OS: {uname.system} {uname.release} ({uname.machine})\n"
             f"- Python: {platform.python_version()}\n"
-            f"- Shell: {shell.value}"
+            f"- Shell: {self._shell}"
         )
         return {"role": "system", "content": content}
 
@@ -61,7 +60,7 @@ class AgentLoop:
             for name, mode_cfg in sorted(self.agent.available_modes.items())
         ]
 
-        system = system_prompt(
+        system = self._prompt_fn(
             active_tools,
             mode_name=self.agent.active_mode,
             mode_prompt_append=mode.prompt_append if mode is not None else "",

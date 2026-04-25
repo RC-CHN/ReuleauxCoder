@@ -50,7 +50,7 @@ def test_system_prompt_no_longer_contains_runtime_environment_block() -> None:
 
 def test_agent_loop_appends_ephemeral_runtime_context_at_tail() -> None:
     agent = _AgentStub()
-    loop = AgentLoop(agent)
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
 
     messages = loop._full_messages()
 
@@ -71,7 +71,7 @@ def test_agent_loop_appends_ephemeral_runtime_context_at_tail() -> None:
 def test_agent_loop_runtime_working_directory_override() -> None:
     agent = _AgentStub()
     agent.runtime_working_directory = "/tmp/remote-workspace"
-    loop = AgentLoop(agent)
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
 
     messages = loop._full_messages()
 
