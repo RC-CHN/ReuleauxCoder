@@ -159,4 +159,5 @@ DEFAULTS = {
     "snip_threshold_chars": 1500,
     "snip_min_lines": 6,
     "summarize_keep_recent_turns": 5,
+    "token_fudge_factor": 1.1,
 }

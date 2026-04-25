@@ -171,6 +171,7 @@ class ContextConfig:
     snip_threshold_chars: int = 1500
     snip_min_lines: int = 6
     summarize_keep_recent_turns: int = 5
+    token_fudge_factor: float = 1.1
 
 
 @dataclass

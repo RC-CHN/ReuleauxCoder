@@ -335,6 +335,9 @@ class ConfigLoader:
                     "summarize_keep_recent_turns",
                     DEFAULTS["summarize_keep_recent_turns"],
                 ),
+                token_fudge_factor=context_config.get(
+                    "token_fudge_factor", DEFAULTS["token_fudge_factor"]
+                ),
             ),
             remote_exec=RemoteExecConfig(
                 enabled=bool(remote_exec_config.get("enabled", False)),

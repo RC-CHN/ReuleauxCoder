@@ -9,7 +9,6 @@ if TYPE_CHECKING:
 
 # Tiktoken encoder cache
 _tiktoken_encoder = None
-TOKEN_FUDGE_FACTOR = 1.1  # Same as Roo-Code
 MESSAGE_TOKEN_KEY = "_rc_token_count"
 
 
@@ -36,7 +35,9 @@ def _estimate_message_tokens_chars(message: dict) -> int:
     return total
 
 
-def estimate_message_tokens(message: dict, *, refresh: bool = False) -> int:
+def estimate_message_tokens(
+    message: dict, *, refresh: bool = False, token_fudge_factor: float = 1.1
+) -> int:
     """Estimate token count for a single message and cache it on the message."""
     cached = message.get(MESSAGE_TOKEN_KEY)
     if not refresh and isinstance(cached, int):
@@ -57,23 +58,25 @@ def estimate_message_tokens(message: dict, *, refresh: bool = False) -> int:
                 total += len(encoder.encode(str(message["tool_calls"])))
             except Exception:
                 total += len(str(message["tool_calls"])) // 3
-        total = int(total * TOKEN_FUDGE_FACTOR)
+        total = int(total * token_fudge_factor)
 
     message[MESSAGE_TOKEN_KEY] = total
     return total
 
 
-def ensure_message_token_counts(messages: list[dict], *, refresh: bool = False) -> int:
+def ensure_message_token_counts(
+    messages: list[dict], *, refresh: bool = False, token_fudge_factor: float = 1.1
+) -> int:
     """Ensure messages have cached token counts and return the total."""
     total = 0
     for message in messages:
-        total += estimate_message_tokens(message, refresh=refresh)
+        total += estimate_message_tokens(message, refresh=refresh, token_fudge_factor=token_fudge_factor)
     return total
 
 
-def estimate_tokens_tiktoken(messages: list[dict]) -> int:
+def estimate_tokens_tiktoken(messages: list[dict], token_fudge_factor: float = 1.1) -> int:
     """Estimate token count using per-message cached counts with tiktoken fallback."""
-    return ensure_message_token_counts(messages)
+    return ensure_message_token_counts(messages, token_fudge_factor=token_fudge_factor)
 
 
 def estimate_tokens_chars(messages: list[dict]) -> int:
@@ -84,9 +87,9 @@ def estimate_tokens_chars(messages: list[dict]) -> int:
     return total
 
 
-def estimate_tokens(messages: list[dict]) -> int:
+def estimate_tokens(messages: list[dict], token_fudge_factor: float = 1.1) -> int:
     """Estimate token count for messages using cached message counts."""
-    return ensure_message_token_counts(messages)
+    return ensure_message_token_counts(messages, token_fudge_factor=token_fudge_factor)
 
 
 SUMMARY_SYSTEM_PROMPT = """\
@@ -173,6 +176,7 @@ class ContextManager:
         snip_threshold_chars: int = 1500,
         snip_min_lines: int = 6,
         summarize_keep_recent_turns: int = 5,
+        token_fudge_factor: float = 1.1,
     ):
         self.max_tokens = max_tokens
         self._ui_bus = ui_bus
@@ -182,6 +186,8 @@ class ContextManager:
         self._snip_min_lines = snip_min_lines
         # Summarize configuration
         self._summarize_keep_recent_turns = summarize_keep_recent_turns
+        # Token fudge factor for safety margin
+        self._token_fudge_factor = token_fudge_factor
         # Layer thresholds (fraction of max_tokens)
         self._snip_at = int(max_tokens * 0.50)  # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
@@ -198,7 +204,7 @@ class ContextManager:
 
     def get_context_tokens(self, messages: list[dict]) -> int:
         """Get current locally-estimated context token count."""
-        return estimate_tokens(messages)
+        return estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
 
     def _reset_compression_state(self) -> None:
         """Reset all compression wall-hit counters and exhausted flags."""
@@ -358,7 +364,7 @@ class ContextManager:
         if strategy == "snip":
             changed = self._snip_tool_outputs(messages)
             if changed:
-                self._last_compact_tokens = estimate_tokens(messages)
+                self._last_compact_tokens = estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
                 self._last_compact_strategy = "snip"
             return changed
         if strategy == "summarize":
@@ -366,14 +372,14 @@ class ContextManager:
                 messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns
             )
             if changed:
-                self._last_compact_tokens = estimate_tokens(messages)
+                self._last_compact_tokens = estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
                 self._last_compact_strategy = "summarize"
             return changed
         if strategy == "collapse":
             if len(messages) <= 4:
                 return False
             self._hard_collapse(messages, llm)
-            self._last_compact_tokens = estimate_tokens(messages)
+            self._last_compact_tokens = estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
             self._last_compact_strategy = "collapse"
             return True
         return False

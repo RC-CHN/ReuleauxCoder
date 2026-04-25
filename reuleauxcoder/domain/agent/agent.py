@@ -73,6 +73,7 @@ class Agent:
                 snip_threshold_chars=context_cfg.snip_threshold_chars,
                 snip_min_lines=context_cfg.snip_min_lines,
                 summarize_keep_recent_turns=context_cfg.summarize_keep_recent_turns,
+                token_fudge_factor=getattr(context_cfg, "token_fudge_factor", 1.1),
             )
         else:
             self.context = ContextManager(max_tokens=max_context_tokens)
