@@ -1,6 +1,5 @@
 """Configuration loader - loads config.yaml with global + workspace merge."""
 
-from copy import deepcopy
 from pathlib import Path
 from typing import Optional
 import yaml
@@ -24,6 +23,10 @@ from reuleauxcoder.domain.config.schema import (
     DEFAULT_ACTIVE_MODE,
 )
 from reuleauxcoder.infrastructure.yaml.loader import save_yaml_config, load_yaml_config
+
+
+class ExampleConfigError(Exception):
+    """Raised when the config is still the example template and needs user editing."""
 
 
 class ConfigLoader:
@@ -115,6 +118,14 @@ class ConfigLoader:
 
         # Load global config
         global_data = self._load_yaml(self.GLOBAL_CONFIG_PATH)
+
+        # Detect example config — user still needs to fill in API key + model
+        if global_data and self._is_example_config(global_data):
+            raise ExampleConfigError(
+                f"\n  The config at {self.GLOBAL_CONFIG_PATH} is still the example template.\n"
+                "  Please edit it with your API key and model settings, then restart.\n"
+            )
+
         if global_data:
             config_data = self._merge_dicts(config_data, global_data)
 
@@ -134,9 +145,12 @@ class ConfigLoader:
             key in config_data and config_data.get(key) for key in ("models", "app")
         )
         if not has_runtime_config:
-            raise FileNotFoundError(
-                "No config.yaml found. "
-                "Create one in ~/.rcoder/ (global) or ./.rcoder/ (workspace)"
+            self._generate_example_global_config()
+            raise ExampleConfigError(
+                f"\n  Welcome to ReuleauxCoder! \U0001F389\n\n"
+                f"  No config.yaml found. I've created an example at:\n"
+                f"    {self.GLOBAL_CONFIG_PATH}\n\n"
+                "  Please edit it with your API key and model settings, then restart.\n"
             )
 
         migrated_data, _ = migrate_legacy_config(config_data)
@@ -382,14 +396,120 @@ class ConfigLoader:
             ),
         )
 
+    def _is_workspace_bootstrapped(self, workspace_data: dict) -> bool:
+        """Check whether workspace has been bootstrapped."""
+        if not isinstance(workspace_data, dict):
+            return False
+        meta = workspace_data.get("meta")
+        return isinstance(meta, dict) and bool(meta.get("workspace_bootstrapped"))
+
+    @staticmethod
+    def _is_example_config(global_data: dict) -> bool:
+        """Check whether the global config is the unedited example template."""
+        if not isinstance(global_data, dict):
+            return False
+        meta = global_data.get("meta")
+        return isinstance(meta, dict) and bool(meta.get("example"))
+
+    def _generate_example_global_config(self) -> None:
+        """Generate an example config at the global config path."""
+        example = {
+            "meta": {"example": True},
+            "models": {
+                "profiles": {
+                    "default": {
+                        "model": "gpt-4o",
+                        "api_key": "your-api-key-here",
+                        "base_url": "https://api.openai.com/v1",
+                        "max_tokens": 4096,
+                        "temperature": 0.0,
+                        "max_context_tokens": 128000,
+                    }
+                }
+            },
+            "modes": {
+                "active": "coder",
+                "profiles": {
+                    name: {
+                        "description": m["description"],
+                        "tools": list(m["tools"]),
+                        "prompt_append": m["prompt_append"],
+                        "allowed_subagent_modes": list(m["allowed_subagent_modes"]),
+                    }
+                    for name, m in sorted(BUILTIN_MODES.items())
+                },
+            },
+            "approval": {
+                "default_mode": "require_approval",
+                "rules": [
+                    {"tool_name": "read_file", "action": "allow"},
+                    {"tool_name": "glob", "action": "allow"},
+                    {"tool_name": "grep", "action": "allow"},
+                    {"tool_name": "write_file", "action": "require_approval"},
+                    {"tool_name": "edit_file", "action": "require_approval"},
+                    {"tool_name": "shell", "action": "require_approval"},
+                    {"tool_name": "agent", "action": "require_approval"},
+                    {"tool_source": "mcp", "action": "require_approval"},
+                ],
+            },
+            "skills": {"enabled": True},
+        }
+        save_yaml_config(self.GLOBAL_CONFIG_PATH, example)
+
+    def _ensure_workspace_config(
+        self, workspace_data: dict, builtin_modes: dict
+    ) -> None:
+        """Ensure workspace config has the minimum required structure.
+
+        Only fills in missing sections (modes). Never overwrites existing
+        user-defined settings. Marks workspace_bootstrapped when done.
+        """
+        path = self.WORKSPACE_CONFIG_PATH
+        changed = False
+
+        # Ensure modes section exists with profiles and active
+        modes = workspace_data.setdefault("modes", {})
+        if not isinstance(modes, dict):
+            modes = {}
+            workspace_data["modes"] = modes
+            changed = True
+
+        profiles = modes.get("profiles")
+        if not isinstance(profiles, dict) or not profiles:
+            modes["profiles"] = {
+                name: {
+                    "description": m["description"],
+                    "tools": list(m["tools"]),
+                    "prompt_append": m["prompt_append"],
+                    "allowed_subagent_modes": list(m["allowed_subagent_modes"]),
+                }
+                for name, m in sorted(builtin_modes.items())
+            }
+            changed = True
+
+        if not isinstance(modes.get("active"), str):
+            modes["active"] = DEFAULT_ACTIVE_MODE
+            changed = True
+
+        if changed:
+            workspace_data.setdefault("meta", {})["workspace_bootstrapped"] = True
+            save_yaml_config(path, workspace_data)
+
     def _backfill_workspace_modes(self, config: Config) -> None:
-        """Backfill builtin mode defaults into workspace config for discoverability."""
+        """Backfill builtin mode defaults into workspace config for discoverability.
+
+        Only runs if the workspace has not yet been bootstrapped, to avoid
+        overwriting user customizations on version upgrades.
+        """
         path = self.WORKSPACE_CONFIG_PATH
 
         try:
             workspace_data = load_yaml_config(path)
         except FileNotFoundError:
             workspace_data = {}
+
+        if self._is_workspace_bootstrapped(workspace_data):
+            return
 
         modes_data = workspace_data.get("modes")
         profiles_data = (
@@ -399,30 +519,22 @@ class ConfigLoader:
             modes_data.get("active"), str
         )
 
-        needs_write = (
-            not isinstance(profiles_data, dict) or not profiles_data or not has_active
-        )
-        if not needs_write:
+        if isinstance(profiles_data, dict) and profiles_data and has_active:
             return
 
-        workspace_data.setdefault("modes", {})["active"] = (
-            config.active_mode or DEFAULT_ACTIVE_MODE
-        )
-        workspace_data["modes"]["profiles"] = {
-            name: {
-                "description": mode.description,
-                "tools": list(mode.tools),
-                "prompt_append": mode.prompt_append,
-                "allowed_subagent_modes": list(mode.allowed_subagent_modes),
-            }
-            for name, mode in sorted(config.modes.items())
-        }
-        save_yaml_config(path, workspace_data)
+        self._ensure_workspace_config(workspace_data, BUILTIN_MODES)
 
     def _bootstrap_workspace_snapshot(
         self, merged_data: dict, workspace_data: dict
     ) -> None:
-        """Write merged config snapshot into workspace once for single-file editing."""
+        """Ensure workspace has minimum structure on first run.
+
+        Only adds missing sections; never replaces existing user configuration.
+        Once bootstrapped (meta.workspace_bootstrapped is true), this is a no-op.
+        """
+        if self._is_workspace_bootstrapped(workspace_data):
+            return
+
         modes_data = (
             workspace_data.get("modes") if isinstance(workspace_data, dict) else None
         )
@@ -433,25 +545,16 @@ class ConfigLoader:
             modes_data.get("active"), str
         )
 
-        meta_data = (
-            workspace_data.get("meta") if isinstance(workspace_data, dict) else None
-        )
-        bootstrapped = isinstance(meta_data, dict) and bool(
-            meta_data.get("workspace_bootstrapped")
-        )
-
         needs_bootstrap = (
             not workspace_data
             or not isinstance(profiles_data, dict)
             or not profiles_data
             or not has_active_mode
         )
-        if bootstrapped or not needs_bootstrap:
+        if not needs_bootstrap:
             return
 
-        snapshot = deepcopy(merged_data)
-        snapshot.setdefault("meta", {})["workspace_bootstrapped"] = True
-        save_yaml_config(self.WORKSPACE_CONFIG_PATH, snapshot)
+        self._ensure_workspace_config(workspace_data, BUILTIN_MODES)
 
     @classmethod
     def from_path(cls, path: Optional[Path] = None) -> Config:
