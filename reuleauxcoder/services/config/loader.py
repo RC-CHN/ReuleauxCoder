@@ -41,8 +41,41 @@ class ConfigLoader:
     GLOBAL_CONFIG_PATH = Path.home() / ".rcoder" / "config.yaml"
     WORKSPACE_CONFIG_PATH = Path.cwd() / ".rcoder" / "config.yaml"
 
+    # LLM params that support active_profile → app_config → DEFAULTS priority.
+    _LLM_PARAM_FIELDS = [
+        "model",
+        "api_key",
+        "base_url",
+        "max_tokens",
+        "temperature",
+        "max_context_tokens",
+        "preserve_reasoning_content",
+        "backfill_reasoning_content_for_tool_calls",
+        "reasoning_effort",
+        "thinking_enabled",
+        "reasoning_replay_mode",
+        "reasoning_replay_placeholder",
+    ]
+
     def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path
+
+    def _resolve_llm_params(self, active_profile, app_config: dict) -> dict:
+        """Resolve LLM params with active_profile > app_config > default priority."""
+        params: dict = {}
+        for field in self._LLM_PARAM_FIELDS:
+            profile_val = (
+                getattr(active_profile, field, None) if active_profile is not None else None
+            )
+            if profile_val is not None:
+                params[field] = profile_val
+            elif field in app_config:
+                params[field] = app_config[field]
+            elif field in DEFAULTS:
+                params[field] = DEFAULTS[field]
+            else:
+                params[field] = None
+        return params
 
     def _load_yaml(self, path: Path) -> dict:
         """Load YAML file, return empty dict if not exists or invalid."""
@@ -246,69 +279,10 @@ class ConfigLoader:
             for rule in approval_config.get("rules", DEFAULTS["approval_rules"])
         ]
 
+        llm_params = self._resolve_llm_params(active_profile, app_config)
+
         return Config(
-            model=(
-                active_profile.model
-                if active_profile is not None
-                else app_config.get("model", DEFAULTS["model"])
-            ),
-            api_key=(
-                active_profile.api_key
-                if active_profile is not None
-                else app_config.get("api_key", "")
-            ),
-            base_url=(
-                active_profile.base_url
-                if active_profile is not None
-                else app_config.get("base_url")
-            ),
-            max_tokens=(
-                active_profile.max_tokens
-                if active_profile is not None
-                else app_config.get("max_tokens", DEFAULTS["max_tokens"])
-            ),
-            temperature=(
-                active_profile.temperature
-                if active_profile is not None
-                else app_config.get("temperature", DEFAULTS["temperature"])
-            ),
-            max_context_tokens=(
-                active_profile.max_context_tokens
-                if active_profile is not None
-                else app_config.get(
-                    "max_context_tokens", DEFAULTS["max_context_tokens"]
-                )
-            ),
-            preserve_reasoning_content=(
-                active_profile.preserve_reasoning_content
-                if active_profile is not None
-                else app_config.get("preserve_reasoning_content", True)
-            ),
-            backfill_reasoning_content_for_tool_calls=(
-                active_profile.backfill_reasoning_content_for_tool_calls
-                if active_profile is not None
-                else app_config.get("backfill_reasoning_content_for_tool_calls", False)
-            ),
-            reasoning_effort=(
-                active_profile.reasoning_effort
-                if active_profile is not None
-                else app_config.get("reasoning_effort")
-            ),
-            thinking_enabled=(
-                active_profile.thinking_enabled
-                if active_profile is not None
-                else app_config.get("thinking_enabled")
-            ),
-            reasoning_replay_mode=(
-                active_profile.reasoning_replay_mode
-                if active_profile is not None
-                else app_config.get("reasoning_replay_mode")
-            ),
-            reasoning_replay_placeholder=(
-                active_profile.reasoning_replay_placeholder
-                if active_profile is not None
-                else app_config.get("reasoning_replay_placeholder")
-            ),
+            **llm_params,
             mcp_servers=mcp_servers,
             model_profiles=model_profiles,
             active_model_profile=active_model_profile,
