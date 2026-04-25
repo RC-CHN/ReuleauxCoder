@@ -12,10 +12,10 @@ from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
 
 
-_SUBAGENT_MODES = {"explore", "execute", "verify"}
-_SUBAGENT_MAX_ROUNDS = 50
-_SUBAGENT_DEFAULT_TIMEOUT_SECONDS = 300
-_SUBAGENT_MAX_TIMEOUT_SECONDS = 3_600
+_VALID_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
+_DEFAULT_MAX_ROUNDS = 50
+_DEFAULT_TIMEOUT_SECONDS = 300
+_MAX_TIMEOUT_SECONDS = 3_600
 
 
 def _emit_subagent_ui_event(
@@ -38,24 +38,24 @@ def _emit_subagent_ui_event(
 
 
 def _clamp_subagent_rounds(
-    value: int | None, default: int = _SUBAGENT_MAX_ROUNDS
+    value: int | None, default: int = _DEFAULT_MAX_ROUNDS
 ) -> int:
     base = default if value is None else int(value)
     if base < 1:
         return 1
-    if base > _SUBAGENT_MAX_ROUNDS:
-        return _SUBAGENT_MAX_ROUNDS
+    if base > _DEFAULT_MAX_ROUNDS:
+        return _DEFAULT_MAX_ROUNDS
     return base
 
 
 def _clamp_timeout_seconds(
-    value: int | None, default: int = _SUBAGENT_DEFAULT_TIMEOUT_SECONDS
+    value: int | None, default: int = _DEFAULT_TIMEOUT_SECONDS
 ) -> int:
     base = default if value is None else int(value)
     if base < 1:
         return 1
-    if base > _SUBAGENT_MAX_TIMEOUT_SECONDS:
-        return _SUBAGENT_MAX_TIMEOUT_SECONDS
+    if base > _MAX_TIMEOUT_SECONDS:
+        return _MAX_TIMEOUT_SECONDS
     return base
 
 
@@ -84,9 +84,18 @@ class SubagentManager:
     can fan out read-only investigations safely.
     """
 
-    def __init__(self, *, max_parallel_explore: int = 4, default_max_rounds: int = 50):
+    def __init__(
+        self,
+        *,
+        max_parallel_explore: int = 4,
+        default_max_rounds: int = _DEFAULT_MAX_ROUNDS,
+        default_timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+        max_timeout_seconds: int = _MAX_TIMEOUT_SECONDS,
+    ):
         self._max_parallel_explore = max(1, int(max_parallel_explore))
         self._default_max_rounds = _clamp_subagent_rounds(default_max_rounds)
+        self._default_timeout_seconds = _clamp_timeout_seconds(default_timeout_seconds)
+        self._max_timeout_seconds = max_timeout_seconds
         self._runtime_parallel_explore = self._max_parallel_explore
         self._active_explore = 0
         self._explore_pool = ThreadPoolExecutor(max_workers=self._max_parallel_explore)
@@ -117,7 +126,7 @@ class SubagentManager:
 
     @staticmethod
     def is_valid_mode(mode: str) -> bool:
-        return mode in _SUBAGENT_MODES
+        return mode in _VALID_SUBAGENT_MODES
 
     def submit_background(
         self,
@@ -396,11 +405,11 @@ def run_subagent_task(
     task: str,
     mode: str,
     max_rounds: int = 50,
-    timeout_seconds: int = _SUBAGENT_DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     model_profile_name: str | None = None,
 ) -> str:
     """Run one sub-agent task with isolated message history."""
-    if mode not in _SUBAGENT_MODES:
+    if mode not in _VALID_SUBAGENT_MODES:
         raise ValueError(f"Unknown sub-agent mode: {mode}")
 
     effective_max_rounds = _clamp_subagent_rounds(max_rounds)
