@@ -12,7 +12,7 @@ from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
 
 
-_VALID_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
+_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
 _DEFAULT_MAX_ROUNDS = 50
 _DEFAULT_TIMEOUT_SECONDS = 300
 _MAX_TIMEOUT_SECONDS = 3_600
