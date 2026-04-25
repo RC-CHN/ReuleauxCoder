@@ -47,6 +47,8 @@ class Agent:
         approval_provider: "ApprovalProvider" | None = None,
         available_modes: dict[str, ModeConfig] | None = None,
         active_mode: str | None = None,
+        loop: AgentLoop | None = None,
+        executor: ToolExecutor | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else []
@@ -82,9 +84,12 @@ class Agent:
 
         # Execution components
         self.approval_provider = approval_provider
-        shell = get_platform_info().get_preferred_shell().value
-        self._loop = AgentLoop(self, prompt_fn=system_prompt, shell_name=shell)
-        self._executor = ToolExecutor(self)
+        if loop is not None:
+            self._loop = loop
+        else:
+            shell = get_platform_info().get_preferred_shell().value
+            self._loop = AgentLoop(self, prompt_fn=system_prompt, shell_name=shell)
+        self._executor = executor or ToolExecutor(self)
 
         # Event handlers
         self._event_handlers: List[Callable[[AgentEvent], None]] = []
