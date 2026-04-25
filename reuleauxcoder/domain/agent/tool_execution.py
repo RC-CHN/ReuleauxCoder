@@ -153,6 +153,8 @@ class ToolExecutor:
 
         try:
             result = tool.execute(**tool_call.arguments)
+            if (shell_cwd := getattr(tool, "_cwd", None)) is not None:
+                setattr(self.agent, "runtime_working_directory", str(shell_cwd))
             after_context = AfterToolExecuteContext(
                 hook_point=HookPoint.AFTER_TOOL_EXECUTE,
                 tool_call=tool_call,
