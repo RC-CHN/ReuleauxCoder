@@ -31,17 +31,18 @@ class AgentLoop:
         now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         now_local = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
         content = (
-            "[Runtime Context]\n"
-            "This is ephemeral runtime state for the current turn. "
-            "Do not treat it as persisted conversation history or a new user request.\n"
+            "<system_context>\n"
+            "This block is automatically injected by the system before each turn.\n"
+            "It is NOT a user message — do not reply to it directly.\n"
             f"- UTC time: {now_utc}\n"
             f"- Local time: {now_local}\n"
             f"- Working directory: {runtime_cwd}\n"
             f"- OS: {uname.system} {uname.release} ({uname.machine})\n"
             f"- Python: {platform.python_version()}\n"
-            f"- Shell: {self._shell}"
+            f"- Shell: {self._shell}\n"
+            "</system_context>"
         )
-        return {"role": "system", "content": content}
+        return {"role": "user", "content": content}
 
     def _full_messages(self) -> list[dict]:
         """Get full messages including system prompt and ephemeral runtime tail."""
