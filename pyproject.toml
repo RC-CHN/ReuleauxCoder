@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reuleauxcoder"
-version = "0.2.3"
+version = "0.2.4"
 description = "Reinventing the wheel, but only for those who prefer it non-circular."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
