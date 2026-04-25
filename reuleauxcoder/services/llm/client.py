@@ -202,6 +202,7 @@ class LLM:
             backfill_reasoning_content_for_tool_calls=self.backfill_reasoning_content_for_tool_calls,
             reasoning_replay_mode=self.reasoning_replay_mode,
             reasoning_replay_placeholder=self.reasoning_replay_placeholder,
+            thinking_enabled=bool(self.thinking_enabled),
         )
         params: dict[str, Any] = {
             "model": self.model,

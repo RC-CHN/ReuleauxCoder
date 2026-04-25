@@ -20,6 +20,7 @@ def _sanitize_messages_for_llm_core(
     require_reasoning_content_for_tool_calls: bool = False,
     replay_reasoning_for_non_tool_assistant: bool = False,
     reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+    thinking_enabled: bool = False,
 ) -> list[dict]:
     """Repair/trim malformed tool-call history before sending to the LLM."""
     sanitized: list[dict] = []
@@ -44,14 +45,16 @@ def _sanitize_messages_for_llm_core(
             sanitized.append(item)
             continue
 
-        if not preserve_reasoning_content:
+        if not preserve_reasoning_content and not thinking_enabled:
             item.pop("reasoning_content", None)
 
         raw_tool_calls = item.get("tool_calls") or []
         if not raw_tool_calls:
             if effective_backfill and user_turn_had_tool_calls and "reasoning_content" not in item:
                 item["reasoning_content"] = reasoning_replay_placeholder
-            elif not (replay_reasoning_for_non_tool_assistant or user_turn_had_tool_calls):
+            elif not thinking_enabled and not (
+                replay_reasoning_for_non_tool_assistant or user_turn_had_tool_calls
+            ):
                 item.pop("reasoning_content", None)
             sanitized.append(item)
             continue
@@ -115,6 +118,7 @@ def _sanitize_messages_for_reasoning_replay_none(
     preserve_reasoning_content: bool = True,
     backfill_reasoning_content_for_tool_calls: bool = False,
     reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+    thinking_enabled: bool = False,
 ) -> list[dict]:
     return _sanitize_messages_for_llm_core(
         messages,
@@ -123,6 +127,7 @@ def _sanitize_messages_for_reasoning_replay_none(
         require_reasoning_content_for_tool_calls=False,
         replay_reasoning_for_non_tool_assistant=False,
         reasoning_replay_placeholder=reasoning_replay_placeholder,
+        thinking_enabled=thinking_enabled,
     )
 
 
@@ -132,6 +137,7 @@ def _sanitize_messages_for_reasoning_replay_tool_calls(
     preserve_reasoning_content: bool = True,
     backfill_reasoning_content_for_tool_calls: bool = False,
     reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+    thinking_enabled: bool = False,
 ) -> list[dict]:
     return _sanitize_messages_for_llm_core(
         messages,
@@ -140,6 +146,7 @@ def _sanitize_messages_for_reasoning_replay_tool_calls(
         require_reasoning_content_for_tool_calls=preserve_reasoning_content,
         replay_reasoning_for_non_tool_assistant=False,
         reasoning_replay_placeholder=reasoning_replay_placeholder,
+        thinking_enabled=thinking_enabled,
     )
 
 
@@ -152,6 +159,7 @@ def sanitize_messages_for_llm(
     replay_reasoning_for_non_tool_assistant: bool = False,
     reasoning_replay_mode: str | None = None,
     reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+    thinking_enabled: bool = False,
 ) -> list[dict]:
     """Public entry point: repair/trim messages, dispatching by reasoning_replay_mode."""
     if reasoning_replay_mode is not None:
@@ -162,12 +170,14 @@ def sanitize_messages_for_llm(
                 preserve_reasoning_content=preserve_reasoning_content,
                 backfill_reasoning_content_for_tool_calls=backfill_reasoning_content_for_tool_calls,
                 reasoning_replay_placeholder=reasoning_replay_placeholder,
+                thinking_enabled=thinking_enabled,
             )
         return _sanitize_messages_for_reasoning_replay_none(
             messages,
             preserve_reasoning_content=preserve_reasoning_content,
             backfill_reasoning_content_for_tool_calls=backfill_reasoning_content_for_tool_calls,
             reasoning_replay_placeholder=reasoning_replay_placeholder,
+            thinking_enabled=thinking_enabled,
         )
 
     return _sanitize_messages_for_llm_core(
@@ -177,4 +187,5 @@ def sanitize_messages_for_llm(
         require_reasoning_content_for_tool_calls=require_reasoning_content_for_tool_calls,
         replay_reasoning_for_non_tool_assistant=replay_reasoning_for_non_tool_assistant,
         reasoning_replay_placeholder=reasoning_replay_placeholder,
+        thinking_enabled=thinking_enabled,
     )
