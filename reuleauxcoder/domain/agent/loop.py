@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
@@ -27,10 +28,14 @@ class AgentLoop:
         runtime_cwd = (
             getattr(self.agent, "runtime_working_directory", None) or os.getcwd()
         )
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        now_local = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
         content = (
             "[Runtime Context]\n"
             "This is ephemeral runtime state for the current turn. "
             "Do not treat it as persisted conversation history or a new user request.\n"
+            f"- UTC time: {now_utc}\n"
+            f"- Local time: {now_local}\n"
             f"- Working directory: {runtime_cwd}\n"
             f"- OS: {uname.system} {uname.release} ({uname.machine})\n"
             f"- Python: {platform.python_version()}\n"
