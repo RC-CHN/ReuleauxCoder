@@ -1,7 +1,8 @@
 import json
 
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
-from reuleauxcoder.services.llm.client import LLM, _sanitize_messages_for_llm
+from reuleauxcoder.services.llm.client import LLM
+from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
 
 
 def test_sanitize_messages_backfills_reasoning_content_for_assistant_tool_calls() -> (
@@ -22,7 +23,7 @@ def test_sanitize_messages_backfills_reasoning_content_for_assistant_tool_calls(
         {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         backfill_reasoning_content_for_tool_calls=True,
@@ -47,7 +48,7 @@ def test_sanitize_messages_does_not_backfill_when_disabled() -> None:
         {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         backfill_reasoning_content_for_tool_calls=False,
@@ -65,7 +66,7 @@ def test_sanitize_messages_drops_reasoning_for_non_tool_assistant_by_default() -
         }
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
     )
@@ -90,7 +91,7 @@ def test_sanitize_messages_keeps_reasoning_for_tool_assistant_when_present() -> 
         {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         require_reasoning_content_for_tool_calls=True,
@@ -115,7 +116,7 @@ def test_sanitize_messages_does_not_require_tool_reasoning_without_replay_mode()
         {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         reasoning_replay_mode="none",
@@ -140,7 +141,7 @@ def test_sanitize_messages_replays_tool_reasoning_by_mode() -> None:
         {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         reasoning_replay_mode="tool_calls",
@@ -173,7 +174,7 @@ def test_sanitize_messages_replays_all_assistant_reasoning_within_tool_turn() ->
         {"role": "user", "content": "question 2"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         reasoning_replay_mode="tool_calls",
@@ -194,7 +195,7 @@ def test_sanitize_messages_does_not_replay_non_tool_turn_reasoning_by_mode() -> 
         {"role": "user", "content": "question 2"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         reasoning_replay_mode="tool_calls",
@@ -232,7 +233,7 @@ def test_sanitize_messages_backfills_missing_reasoning_for_non_tool_assistant_in
         {"role": "user", "content": "are they done?"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         reasoning_replay_mode="tool_calls",
@@ -260,7 +261,7 @@ def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_req
         {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=True,
         require_reasoning_content_for_tool_calls=True,
@@ -286,7 +287,7 @@ def test_sanitize_messages_strips_reasoning_content_when_preserve_disabled() -> 
         {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
     ]
 
-    sanitized = _sanitize_messages_for_llm(
+    sanitized = sanitize_messages_for_llm(
         messages,
         preserve_reasoning_content=False,
         backfill_reasoning_content_for_tool_calls=True,
