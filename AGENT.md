@@ -28,57 +28,104 @@ reuleauxcoder-agent/  # Go binary for remote peer execution
 ### Domain Layer (`domain/`)
 Pure business logic with no external dependencies. Contains core abstractions and types.
 
-- **agent/**: Agent core (`Agent`, `AgentLoop`, `AgentState`, `ToolExecutor`)
-- **config/**: Configuration domain models (`Config`, `ModeConfig`, `ApprovalConfig`)
-- **context/**: Context management (token counting, compression, wall hits)
-- **hooks/**: Hook system (`HookRegistry`, `HookBase`, `GuardHook`, `TransformHook`, `ObserverHook`)
-- **llm/**: LLM domain models (`LLMResponse`, `ToolCall`)
-- **session/**: Session domain types
+- **agent/**: Agent core
+  - `agent.py` — `Agent`: main orchestrator. Owns `AgentState` (messages, tokens, rounds), `active_mode`, thread-safe via `_state_lock` and `_stop_event` for cooperative cancellation. Key methods: `chat(user_input)` processes one turn (recovers dangling tool calls + injects sub-agent results first), `reset()` clears history, `set_mode()` switches mode. Agent-scoped hook registration via `register_hook()`/`list_hooks()` separate from global registry. `add_event_handler()` / `_emit_event()` powers UI reactivity.
+  - `loop.py` — `AgentLoop`: manages the conversation loop. `_runtime_tail_message()` builds the `<system_context>` block each turn (UTC/local time, cwd, OS, Python version, shell). `_full_messages()` assembles system prompt per-mode with blocked tools, mode-switch hints, skills catalog. `run()` iterates up to max rounds with stop-check, streaming, token accumulation. Branches into sequential (with approval provider) or parallel (`execute_parallel()`) tool execution. Max-rounds triggers automatic summary prompt. Passes `round_index`, `active_mode`, `pending_tool_calls`, `summary_phase` as metadata to LLM.
+  - `tool_execution.py` — `ToolExecutor`: 10-step execution pipeline (see Tool Execution Pipeline section below). `BeforeToolExecuteContext` carries `tool_source`, `mcp_server`, `tool_description`, `tool_schema`. Tool is re-resolved after transform hooks in case transforms mutate the tool call. `shell_cwd` propagation tracks working directory. Distinguishes `TypeError` (bad args) vs general `Exception` (exec failure).
+  - `events.py` — `AgentEvent` dataclasses (`ContentDelta`, `ToolCallStart`, `ToolCallEnd`, `SubagentJobCompleted`, etc.) for event-driven UI updates.
+- **config/**: Configuration domain models
+  - `models.py` — `Config`, `ModeConfig` (tools allow/block lists, `allowed_subagent_modes`, `prompt_append`), `ApprovalConfig` (default mode + rule list), `ApprovalRule` (by `tool_name` or `tool_source`, actions: `allow`/`warn`/`require_approval`/`deny`).
+  - `schema.py` — Pydantic-style validation schema with defaults, model profile validation, mode validation.
+- **context/**: Context management
+  - `manager.py` — `ContextManager`: token counting (tiktoken o200k_base), compression triggering, wall-hit detection, `reconfigure()` for model switches.
+  - `compression.py` — compression strategies: `snip` (truncates old tool outputs) and `llm_summarize` (asks LLM to summarize), with `snip_keep_recent_tools` and `summarize_keep_recent_turns` config.
+  - `summary.py` — `LLMSummarizer`: uses LLM to compress conversation history, preserving recent turns.
+- **hooks/**: Hook system (see Hook System section below)
+  - `types.py` — `HookPoint` enum, `GuardDecision` (allow/deny/abstain), `GuardHook`/`TransformHook`/`ObserverHook` base classes.
+  - `registry.py` — `HookRegistry`: global hook store keyed by `HookPoint`, sorted by priority.
+  - `discovery.py` — `discover_hook_specs()` scans `builtin/` for `@register_hook`-decorated classes.
+  - `base.py` — `Hook` abstract base, `HookSpec` frozen dataclass for lazy instantiation.
+  - `builtin/` — `ToolPolicyGuardHook`, `ToolOutputTruncationHook`, `ProjectContextHook`, `ProjectContextStartupNotifier`.
+- **llm/**: LLM domain models
+  - `models.py` — `LLMResponse` (content, tool_calls, usage, finish_reason), `ToolCall` (id, name, arguments), `TokenUsage`.
+  - `messages.py` — `Message` types (system, user, assistant, tool), `ToolResult`.
+  - `protocols.py` — `LLMClient` and `ApprovalProvider` protocols.
+- **session/**: `SessionRuntimeState` captures mode, model profiles, debug trace, approval overrides, fingerprint. `SavedSession` wraps messages + state + metadata.
+- **approval/**: `approval.py` — `ApprovalProvider` protocol (`request_approval()` → `ApprovalDecision`), `ApprovalRequest`/`ApprovalDecision` dataclasses. `approval_engine.py` — `ApprovalEngine`: evaluates rules (`match_tool_name`/`match_tool_source`), computes effective action with `default_mode` fallback, generates approval requests with validation.
 
 ### Services Layer (`services/`)
 Coordinates domain objects and handles external interactions.
 
-- **llm/**: LLM client (OpenAI API, streaming, retry, diagnostics)
-- **prompt/**: System prompt builder (`PromptAssembler`, `PromptBlock`, `PromptZone`)
-- **config/**: Configuration loading, validation, defaults
+- **llm/**: LLM client and related services
+  - `client.py` — `LLM`: OpenAI-compatible API client. Constructor params: `model`, `api_key`, `base_url`, `temperature`, `max_tokens`, `preserve_reasoning_content`, `backfill_reasoning_content_for_tool_calls`, `reasoning_effort`, `thinking_enabled`, `reasoning_replay_mode`, `reasoning_replay_placeholder`, `debug_trace`, `ui_bus`. Key methods: `chat(messages, tools, on_token, hook_registry, session_id, trace_id, metadata) → LLMResponse` — the main inference method that runs `BEFORE_LLM_REQUEST` guards/transforms/observers, streams via `on_token`, accumulates `content_parts`/`reasoning_parts`/tool call deltas via `tc_map`, then runs `AFTER_LLM_RESPONSE` transforms/observers. `reconfigure(**kwargs)` hot-swaps model/client settings at runtime (for model profile switches). `_call_with_retry()` performs inline retry with exponential backoff (max 3 retries). Debug trace writes `llm_trace_{ts}_{session}_{trace}.json` to diagnostics dir. On exception calls `persist_llm_error_diagnostic()` and attaches `llm_diagnostic_path` to the exception.
+  - `sanitizer.py` — `sanitize_messages_for_llm()`: message repair layer. Handles missing `tool_call_id` backfill, missing tool output injection, `reasoning_content` preservation/removal/backfill. Dispatches by `reasoning_replay_mode`: `"none"` (strip all reasoning) vs `"tool_calls"` (inject placeholders for tool-call assistant messages). Controlled by profile flags: `preserve_reasoning_content`, `backfill_reasoning_content_for_tool_calls`, `thinking_enabled`. Uses `DEFAULT_REASONING_REPLAY_PLACEHOLDER = "[PLACE_HOLDER]"`.
+  - `factory.py` — `build_llm_from_settings(settings, *, debug_trace) → LLM`: creates LLM from config/profile objects. `reconfigure_llm_from_settings(llm, settings, *, debug_trace)`: reconfigures existing LLM. `llm_runtime_kwargs()` extracts 12 canonical `_LLM_RUNTIME_FIELDS` from settings.
+  - `diagnostics.py` — `snapshot_messages(messages, limit=10)`: builds compact tail snapshot. `persist_llm_error_diagnostic()`: writes `llm_error_{ts}_{session}.json` with error details, message tails, tool schemas, model info.
+  - `retry.py` — standalone retry decorator (separate from the inline retry in `LLM.chat()`).
+- **prompt/**: System prompt builder
+  - `builder.py` — `PromptAssembler`: constructs system prompt from `PromptBlock` objects. `PromptBlock` has `zone` (`STATIC` or `SEMI_STATIC` for cache stability), `order`, `key`, `content` callable. Sorted by `(zone, order, key)` for deterministic output. Blocks include identity/rules, mode context, tool schemas, skills catalog, user injection.
+- **config/**: Configuration loading and validation
+  - `loader.py` — `ConfigLoader`: loads `config.yaml`, merges with defaults (`DEFAULT_CONFIG`), validates via `ConfigSchema`, resolves model profile references. Provides `load_workspace_config()` and `load_user_config()`. Supports `WORKSPACE_CONFIG_PATH = ".rcoder/config.yaml"` and `USER_CONFIG_PATH = "~/.rcoder/config.yaml"`.
 
 ### Infrastructure Layer (`infrastructure/`)
 External resource access and low-level utilities.
 
-- **fs/**: File system paths and utilities
-- **persistence/**: Storage (session store, config store, skills config store)
-- **yaml/**: YAML loading utilities
-- **openai/**: OpenAI SDK wrapper
+- **platform.py**: `PlatformInfo` singleton — system detection (`is_windows`, `is_linux`, `is_darwin`, `system`), preferred shell detection (`get_preferred_shell()` → `ShellType` enum: `BASH`/`POWERSHELL`/`POWERSHELL_CORE`/`CMD`/`UNKNOWN`), shell executable resolution (`get_shell_executable()`), path formatting. Module-level conveniences: `get_platform_info()`, `is_windows()`, `get_shell_type()`, `get_shell_command()`.
+- **fs/paths.py**: Path utility functions — `get_sessions_dir()`, `get_history_file()`, `get_user_config_dir()` → `~/.rcoder`, `get_tool_outputs_dir(configured_dir=None)` → `.rcoder/tool-outputs`, `get_diagnostics_dir()` → `.rcoder/diagnostics`, `ensure_user_dirs()` creates all directories.
+- **persistence/**: Storage layer
+  - `session_store.py` — `SessionStore`: JSON persistence for sessions. `save()` writes messages + runtime overlay + fingerprint, refreshes `saved_at`. `list()` and `get_latest()` are fingerprint-aware. `load()` backfills missing token metadata for older sessions. `append_system_message()` attaches diagnostics. `generate_session_id()` creates `session_<timestamp>_<hex>` IDs. Thread-safe via `threading.RLock()`. `DEFAULT_SESSION_FINGERPRINT = "local"`.
+  - `workspace_config_store.py` — `WorkspaceConfigStore`: persists runtime config changes to workspace `config.yaml`. Methods: `save_approval_config()`, `save_active_model_profile()`, `save_active_sub_model_profile()`, `save_active_mode()`, `save_mcp_server_config()`. Used by `[global]` slash commands.
+  - `skills_config_store.py` — `SkillsConfigStore`: persists disabled skills list to workspace config.
+- **yaml/**: YAML loading with error context (file path, line numbers).
+- **openai/**: OpenAI SDK wrapper for typed client instantiation.
 
 ### Interfaces Layer (`interfaces/`)
 User-facing interfaces.
 
-- **cli/**: CLI REPL, commands, rendering, views
-- **tui/**: TUI interface (in development)
-- **entrypoint/**: Application runner (`AppRunner`, `AppContext`, `AppDependencies`)
+- **Root abstractions** (`interfaces/`):
+  - `events.py` — `UIEventBus`: synchronous pub/sub bus. `UIEvent` dataclass: `message`, `level` (`UIEventLevel`: INFO/SUCCESS/WARNING/ERROR/DEBUG), `kind` (`UIEventKind`: SYSTEM/COMMAND/SESSION/MODEL/MCP/APPROVAL/VIEW/AGENT/CONTEXT/REMOTE), `timestamp`, `data` dict. `AgentEventBridge` translates domain `AgentEvent` → `UIEvent`. Bus has `info()`/`success()`/`warning()`/`error()`/`debug()`/`open_view()`/`refresh_view()` convenience methods.
+  - `interactions.py` — `UIInteractor` Protocol: `notify()`, `confirm()`, `choose_one()`, `input_text()`, `review()`. Request/response dataclasses: `ConfirmRequest/Response`, `ChoiceItem`/`ChooseOneRequest/Response`, `InputTextRequest/Response`, `ReviewRequest/Response`.
+  - `ui_registry.py` — `UICapability` enum (TEXT_INPUT, STREAM_OUTPUT, PALETTE, BUTTONS, MENUS, TABS, MODAL, DIFF_REVIEW, TEXT_SELECT, TEXT_EDIT), `UIProfile` (frozen dataclass: `ui_id`, `display_name`, `capabilities`), `UIRegistration` bundles `UIProfile` + `ViewRendererRegistry` + `UIInteractor`, `UIRegistry` maps `ui_id → UIRegistration`.
+  - `view_registry.py` / `view_registration.py` — `ViewRenderer` protocol, `ViewRendererSpec` (`view_type` + `render` callable), `ViewRendererRegistry` maps `view_type → ViewRendererSpec`, `@register_view(view_type=..., ui_targets=...)` decorator for declarative registration.
+- **cli/**: CLI implementation (Rich-based)
+  - `main.py` — CLI entrypoint (`main()`), parses args, starts REPL.
+  - `args.py` — `CLIArgs` dataclass: `--config`, `--model`, `--prompt`, `--resume`/`-r`, `--server`, `--version`.
+  - `repl.py` — `CLIREPL`: main REPL loop using `prompt_toolkit`. Handles input, history, slash command dispatch, session save/restore. `_dispatch_input()` routes user text to agent `chat()` or command handlers.
+  - `commands.py` — `CommandDispatcher`: parses leading `/` commands, routes to registered `ActionSpec` handlers via `ActionRegistry`.
+  - `render.py` — `CLIRenderer`: event-driven agent/UI renderer. Stream rendering accumulates tokens into `_ContentBlock`, flushes completed markdown paragraphs at `\n\n`. Tool call rendering shows `name(args)` in cyan panel; compact output (1200-char limit, 5 lines for `read_file`, 20 for others). Diff rendering uses `Syntax("diff", theme="monokai")`. Sub-agent rendering shows status panels. Slash command results rendered as Rich panels (`/help`, `/model`, `/tokens`, etc.).
+  - `interactor.py` — `CLIInteractor`: implements `UIInteractor` with `prompt_toolkit` dialogs (`confirm()`, `choose_one()`, etc.).
+  - `approval.py` — `CLIApprovalProvider`: interactive approval prompts for tool execution.
+  - `registration.py` — `CLIRegistration`: wires up CLI-specific `UIRegistration` with `CLIRenderer` + `CLIInteractor`.
+  - `views/` — View renderers registered via `@register_view`. `registry.py` finds and instantiates view specs.
+- **tui/**: TUI interface (prototype only, `mockup.py`).
+- **entrypoint/**: Application bootstrap
+  - `runner.py` — `AppRunner`: application initialization and DI (see AppRunner detail below).
+  - `dependencies.py` — `AppDependencies`: customizable component factory for testability.
+  - `session_lifecycle.py` — session save/restore orchestration during startup/shutdown.
+  - `remote_relay.py` — bootstraps the HTTP relay server when `--server` mode is active.
 
 ### Extensions Layer (`extensions/`)
 Pluggable extension system.
 
-- **tools/**: Built-in tools (`shell`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent`)
-  - `Tool` base class with `name`, `description`, `parameters`, `execute()`, `preflight_validate()`
-  - `@register_tool` decorator for auto-discovery; `build_tools(backend)` for instantiation
-  - `@backend_handler("backend_id")` decorator for local/remote dispatch
-  - `ExecutionContext` carries `peer_id`, `cwd`, `workspace_root`, `remote_stream_handler`
-  - `ShellDangerousCommandPolicy` blocks rm -rf, fork bombs, curl|bash, etc.
-- **command/**: Slash commands (`/model`, `/skills`, `/mcp`, `/sessions`, `/mode`, `/approval`, `/jobs`)
-  - Uses `@register_command_module` + `ActionRegistry.register_many()` for registration
-  - `ActionSpec` with `triggers`, `parser`, `handler` per action
-- **mcp/**: MCP server integration (`MCPManager`, `MCPClient`, `MCPTool`)
-  - `MCPManager` runs independent asyncio event loop in background thread
-  - `MCPClient` is stdio JSON-RPC client with reconnect-once behavior
-  - Remote tools wrapped as `MCPTool` with schema translation
-- **skills/**: Skills system (`SkillsService`, discovery, catalog)
-- **subagent/**: Sub-agent management (`SubagentManager`, jobs, approval)
-  - `ThreadPoolExecutor(max_workers=4)` caps parallel explore jobs
-  - `SubagentJob` tracks status, timing, result/error
-  - `DelegatingSubagentApprovalProvider` uses parent LLM as secondary judge
-- **remote_exec/**: Remote execution (HTTP relay server, peer registry, bootstrap, auth, cleanup)
+- **tools/**: Built-in tools and tool infrastructure
+  - `base.py` — `Tool` base class: `name`, `description`, `parameters` (OpenAI function schema dict), `execute(**kwargs) → str`, `preflight_validate(args)`. `__init_subclass__` auto-discovers `@backend_handler` methods via MRO walking. `schema()` returns `{"type": "function", "function": {...}}`. `run_backend(...)` picks handler for current `backend_id`, falls back to `"local"`.
+  - `registry.py` — `@register_tool` decorator populates `_TOOL_CLASSES`. `build_tools(backend)` instantiates all registered tools. `get_tool(name, backend)` creates single tool by name. `iter_tool_classes()` returns classes after lazy-importing `reuleauxcoder.extensions.tools.builtin`.
+  - `backend.py` — `ToolBackend` base (marker with `backend_id = "base"`). `LocalToolBackend` (`"local"`): direct execution. `RemoteRelayToolBackend` (`"remote"`): forwards to relay server. `ExecutionContext` carries `peer_id`, `cwd`, `workspace_root`, `execution_target` ("local"/"remote"), `remote_stream_handler`.
+  - `policies/` — `ToolPolicy` Protocol: `evaluate(tool_call) → GuardDecision | None`. `DEFAULT_TOOL_POLICIES` tuple starts with `ShellDangerousCommandPolicy` (blocks rm -rf, fork bombs, curl|bash, etc.).
+  - `builtin/shell.py` — `ShellTool`: platform-aware shell detection via `infrastructure.platform`, stale CWD detection (resets if dir gone), PowerShell fallback (`_run_powershell()`), output truncated at ~9k chars (keeps head+tail).
+  - `builtin/read.py` — `ReadFileTool`: supports `offset`/`limit` paging; `override=true` reads full file.
+  - `builtin/write.py` — `WriteFileTool`: `_unified_diff()` produces diff output truncated at 3k chars.
+  - `builtin/edit.py` — `EditFileTool`: `_validate_edit_request()` checks file existence and old_string uniqueness before applying.
+  - `builtin/grep.py` — `GrepTool`: skips `.git`, `node_modules`, `__pycache__`, `.venv`, etc. via `_SKIP_DIRS`.
+  - `builtin/glob.py` — `GlobTool`: recursive `**` support, skip-dirs filter.
+  - `builtin/agent.py` — `AgentTool`: spawns sub-agents. `_parent_agent` ref for mode validation. Pre-flight: mutual exclusion of `task`/`tasks`, batch requires `mode='explore'` + `run_in_background=true`, `parallel_explore` caps (1-4).
+- **command/**: Slash commands with `@register_command_module` + `ActionRegistry`
+  - Complete command list: `/help`, `/quit`/`/exit`, `/reset`, `/new`, `/compact [force <strategy>]`, `/tokens`, `/debug on/off`, `/save`, `/model <profile|use-main|use-sub|set-main|set-sub>`, `/mode <mode>`, `/skills [reload|enable|disable <n>]`, `/mcp [show|enable|disable <s>]`, `/approval [show|set ...|set-global ...]`, `/sessions [all]`, `/session <id|latest>`, `/jobs [get|wait <job_id>]`.
+  - Commands grouped by module: `system.py` (help/quit/reset/compact/tokens/debug), `sessions.py` (save/new/sessions/session), `model.py` (model switch), `mode.py` (mode switch), `skills.py`, `mcp.py`, `approval.py`, `subagent_jobs.py`.
+- **mcp/**: MCP server integration — `MCPManager` (independent asyncio loop in background thread), `MCPClient` (stdio JSON-RPC with reconnect-once), `MCPTool` (schema translation wrapping remote tools). Config per-server: `command`, `args`, `env`.
+- **skills/**: Skills system — `SkillsService` discovers skills from `SKILL.md` files, builds catalog with `Skill` objects (`name`, `description`, `location`). Supports enable/disable with persistence via `SkillsConfigStore`.
+- **subagent/**: `SubagentManager` — `_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})`, `_DEFAULT_MAX_ROUNDS = 50`, `_DEFAULT_TIMEOUT_SECONDS = 300`, `_MAX_TIMEOUT_SECONDS = 3600`. `SubagentJob` dataclass tracks `job_id`, `status` (PENDING/RUNNING/COMPLETED/FAILED), `start_time`/`end_time`, `result`/`error`. `DelegatingSubagentApprovalProvider` uses parent LLM as secondary judge for sub-agent tool calls. Manager takes `default_timeout_seconds` and `max_timeout_seconds` as injectable params.
+- **remote_exec/**: `RemoteExecService` — HTTP relay server with `POST /remote/chat/start`, `POST /remote/chat/stream` (long-poll event stream), `POST /remote/approval/reply`. Stream events: `chat_start`, `output`, `approval_request`, `approval_resolved`, `chat_end`, `error`. Bootstrap via `sh -c 'curl -fsSL ... | sh'` with one-time token.
 
 ## Current Runtime Architecture (Phase 1)
 
@@ -96,23 +143,51 @@ High-level layering:
 
 ### Agent (`domain/agent/agent.py`)
 The main orchestrator that coordinates LLM and tools.
-- Manages conversation state (`messages`, `tokens`, `rounds`)
-- Owns live runtime fields such as `active_mode`
-- Carries session-scoped overlays like active model profile selections and approval overrides
-- Registers and executes hooks
+
+- **State**: `AgentState` dataclass holds `messages`, `total_prompt_tokens`, `total_completion_tokens`, `current_round`.
+- **Thread safety**: `_state_lock: threading.Lock()` for state mutations, `_stop_event: threading.Event()` for cooperative cancellation mid-turn (used by stop/interrupt).
+- **Event pub-sub**: `_event_handlers` list, `add_event_handler()`, `_emit_event()` powers UI reactivity — content deltas, tool call start/end, sub-agent completions, errors.
+- **Core flow**: `chat(user_input)` is the single-turn entry point:
+  1. Appends user message to history
+  2. Recovers dangling tool calls via `_collect_pending_tool_calls()` + `reconcile_pending_tool_calls(reason)` (fallback after crash/interruption, preserving message parity)
+  3. Injects completed sub-agent results via `_inject_completed_subagent_jobs()`
+  4. Delegates to `AgentLoop.run()`
+- **Sub-agent integration**: `inject_subagent_job_result(job)` feeds background sub-agent results back into parent conversation.
+- **Mode/tool queries**: `get_active_tools()`, `get_blocked_tools()`, `is_tool_allowed_in_mode(tool_name)`, `suggest_modes_for_tool(tool_name)`, `set_mode(mode_name)`.
+- **Agent-scoped hooks**: `register_hook(hook_point, hook)`, `list_hooks(hook_point)` — separate from the global `HookRegistry`.
+- **Lifecycle**: `reset()` clears conversation history (used by `/reset`). Context manager initialized from `config.context` with snip/summarize parameters.
 
 ### AgentLoop (`domain/agent/loop.py`)
 Manages the conversation loop.
-- Builds system prompt via `system_prompt()`
-- Injects runtime context at message tail
-- Handles tool call execution flow
+
+- `_runtime_tail_message()` builds the `<system_context>` block injected each turn: UTC time, local time, working directory, OS/Kernel (`uname -srm`), Python version, shell.
+- `_full_messages()` assembles the full message list: system prompt (per-mode, blocked tools, mode-switch hints, skills catalog) + conversation history + ephemeral tail.
+- `run()` iteration:
+  - Compression before loop start (`maybe_compress`)
+  - Max-round iteration with `_stop_event` checks
+  - Streaming via `on_token` callback to UI
+  - Token count accumulation from LLM response
+  - Branches: sequential tool execution (when approval provider present) or parallel `execute_parallel()` (no approval). Max-rounds triggers automatic summary prompt via `_build_summary_prompt()`.
+- **Metadata passed to LLM**: `round_index`, `active_mode`, `pending_tool_calls`, `summary_phase` — used for diagnostic tracing.
+- `last_response_streamed` flag controls whether final response is rendered again by UI.
 
 ### ContextManager (`domain/context/manager.py`)
 Manages conversation context and token limits.
-- Token counting with tiktoken (o200k_base encoding)
-- Context compression when approaching limits
-- Wall hit detection for context boundaries
-- Runtime `reconfigure()` is used when a resumed or switched model changes context budget
+
+- Token counting with tiktoken (o200k_base encoding).
+- Compression strategies when approaching limits:
+  - `snip`: truncates old tool outputs, keeping `snip_keep_recent_tools` recent calls (configurable, default 5). Min thresholds: `snip_threshold_chars` (default 1500), `snip_min_lines` (default 6).
+  - `llm_summarize`: asks LLM to compress history, preserving `summarize_keep_recent_turns` recent turns (default 5). Uses `LLMSummarizer` (`domain/context/summary.py`).
+- Wall hit detection for context boundaries (when even compressed context exceeds limit).
+- `reconfigure(max_context_tokens)` adjusts budget at runtime for model switches or session resume.
+- Compression is triggered before each loop iteration by `AgentLoop.run()`.
+
+### Approval Engine (`domain/approval.py` + `domain/approval_engine.py`)
+Manages tool approval decisions.
+
+- **Protocols**: `ApprovalProvider` — `request_approval(request: ApprovalRequest) → ApprovalDecision`. `ApprovalRequest` carries `tool_name`, `arguments`, `reason`, `source` (local/mcp). `ApprovalDecision` is `ALLOW`/`DENY`/`ABSTAIN` with optional `reason`.
+- **Engine** (`ApprovalEngine`): evaluates ordered approval rules. Each `ApprovalRule` matches by `tool_name` or `tool_source` (e.g. `"mcp"`, `"mcp:<server>"`, `"mcp:<server>:<tool>"`). Actions: `allow`/`warn`/`require_approval`/`deny`. Falls back to `default_mode` when no rule matches.
+- **Integration**: `ToolPolicyGuardHook` evaluates tool policies during `BEFORE_TOOL_EXECUTE`. If result is `requires_approval`, the ToolExecutor calls the configured `approval_provider` (CLI interactive, sub-agent delegated, or remote forward).
 
 ### Session Model and Persistence
 
@@ -275,13 +350,23 @@ Standalone Go binary for remote peer execution:
 
 ## Configuration (`config.yaml`)
 
+Workplace config at `.rcoder/config.yaml`, user defaults at `~/.rcoder/config.yaml`.
+
 Key sections:
-- `models.profiles`: Model profiles with API keys, base URLs, token limits
-- `modes`: Agent modes with tool restrictions and prompt append
-- `approval`: Tool approval rules (allow, warn, require_approval, deny)
-- `prompt.system_append`: Custom system prompt injection
-- `skills`: Skills discovery and enable/disable
-- `mcp.servers`: MCP server configurations
+
+- **`models`**: `active`, `active_main`, `active_sub` select profiles. Each `profiles.<name>` has:
+  - Core: `model`, `api_key`, `base_url`, `max_tokens`, `temperature`, `max_context_tokens`.
+  - Reasoning: `thinking_enabled`, `reasoning_effort` (`"high"`/`"medium"`/`"low"`), `reasoning_replay_mode` (`"tool_calls"`/`"none"`), `preserve_reasoning_content`, `backfill_reasoning_content_for_tool_calls`.
+- **`modes`**: `active` selects current mode. Each `profiles.<mode>` has `description`, `prompt_append`, `tools` (allow list; `"*"` for all), `allowed_subagent_modes`.
+- **`approval`**: `default_mode` (`"allow"`/`"warn"`/`"require_approval"`/`"deny"`). `rules`: list of `{tool_name, tool_source, action}`. Tool source matches support `"mcp"`, `"mcp:<server>"`, `"mcp:<server>:<tool>"`.
+- **`prompt`**: `system_append` for custom system prompt injection.
+- **`skills`**: `enabled` (bool), `disabled` (list of skill names to exclude), `dirs` (additional skill directories).
+- **`mcp.servers`**: `<name>` → `{command, args, env}`. MCP servers are stdio-based JSON-RPC subprocesses.
+- **`context`**: optional compression tuning — `snip_keep_recent_tools` (default 5), `snip_threshold_chars` (1500), `snip_min_lines` (6), `summarize_keep_recent_turns` (5).
+- **`session`**: `auto_save` (default true), `dir` (default `.rcoder/sessions`).
+- **`tool_output`**: `max_chars` (default 12000), `max_lines` (120), `store_full_output` (true), `store_dir` (`.rcoder/tool-outputs`).
+- **`remote_exec`**: `enabled`, `host_mode`, `relay_bind`, `bootstrap_access_secret`, `bootstrap_token_ttl_sec`, `peer_token_ttl_sec`, `heartbeat_interval_sec`, `heartbeat_timeout_sec`, `default_tool_timeout_sec`, `shell_timeout_sec`.
+- **`cli`**: `history_file` (default `~/.rcoder/history`).
 
 ## Coding Conventions
 
