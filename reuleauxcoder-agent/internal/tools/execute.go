@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -217,32 +218,44 @@ func readFile(args map[string]any, cwd string) protocol.ExecToolResult {
 	if err != nil {
 		return errorResult("REMOTE_TOOL_ERROR", err.Error())
 	}
-	data, err := os.ReadFile(resolved)
+	f, err := os.Open(resolved)
 	if err != nil {
 		return errorResult("REMOTE_TOOL_ERROR", err.Error())
 	}
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	lines := strings.Split(text, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var lines []string
+	lineNo := 0
+	start := offset - 1
+	end := start + limit
+
+	for scanner.Scan() {
+		lineNo++
+		if override {
+			lines = append(lines, scanner.Text())
+			continue
+		}
+		if lineNo > start && lineNo <= end {
+			lines = append(lines, scanner.Text())
+		}
 	}
+	if err := scanner.Err(); err != nil {
+		return errorResult("REMOTE_TOOL_ERROR", err.Error())
+	}
+
 	if override {
 		return protocol.ExecToolResult{OK: true, Result: joinNumbered(lines, 0)}
 	}
-	start := offset - 1
-	if start >= len(lines) {
+	if start >= lineNo {
 		return protocol.ExecToolResult{OK: true, Result: "(empty file)"}
 	}
-	end := start + limit
-	if end > len(lines) {
-		end = len(lines)
-	}
-	result := joinNumbered(lines[start:end], start)
+	result := joinNumbered(lines, start)
 	if result == "" {
 		result = "(empty file)"
 	}
-	if end < len(lines) {
-		result += fmt.Sprintf("\n... (%d lines total, showing %d-%d; use override=true to read full file)", len(lines), start+1, end)
+	if end < lineNo {
+		result += fmt.Sprintf("\n... (%d lines total, showing %d-%d; use override=true to read full file)", lineNo, start+1, min(end, lineNo))
 	}
 	return protocol.ExecToolResult{OK: true, Result: result}
 }
@@ -309,7 +322,24 @@ func editFile(args map[string]any, cwd string) protocol.ExecToolResult {
 	if err := os.WriteFile(resolved, []byte(updated), 0o644); err != nil {
 		return errorResult("REMOTE_TOOL_ERROR", err.Error())
 	}
-	return protocol.ExecToolResult{OK: true, Result: fmt.Sprintf("Edited %s", filePath)}
+	return protocol.ExecToolResult{OK: true, Result: formatDiff(filePath, oldString, newString)}
+}
+
+// formatDiff produces a unified-diff-style summary of an edit, truncated at 3k chars.
+func formatDiff(filePath string, oldStr, newStr string) string {
+	var buf strings.Builder
+	buf.WriteString(fmt.Sprintf("--- a/%s\n+++ b/%s\n", filePath, filePath))
+	for _, line := range strings.Split(oldStr, "\n") {
+		buf.WriteString("-" + line + "\n")
+	}
+	for _, line := range strings.Split(newStr, "\n") {
+		buf.WriteString("+" + line + "\n")
+	}
+	out := buf.String()
+	if len(out) > 3000 {
+		out = out[:3000] + "\n... (diff truncated)"
+	}
+	return out
 }
 
 func globFiles(args map[string]any, cwd string) protocol.ExecToolResult {
