@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -76,7 +77,8 @@ func runShell(
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-lc", command)
+	shellName, shellArgs := pickShell(command)
+	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
 	cmd.Dir = cwd
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -152,7 +154,31 @@ func runShell(
 	if strings.TrimSpace(out) == "" {
 		out = "(no output)"
 	}
+	out = truncateOutput(out)
 	return protocol.ExecToolResult{OK: true, Result: out, Meta: map[string]any{"exit_code": exitCode}}
+}
+
+// pickShell returns the platform-appropriate shell and its argument template.
+func pickShell(command string) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "powershell", []string{"-Command", command}
+	}
+	return "sh", []string{"-lc", command}
+}
+
+// truncateOutput truncates shell output exceeding maxOutputChars,
+// preserving head and tail to keep both initial context and final error messages.
+const maxOutputChars = 15_000
+const keepHeadChars = 6_000
+const keepTailChars = 3_000
+
+func truncateOutput(out string) string {
+	if len(out) <= maxOutputChars {
+		return out
+	}
+	return out[:keepHeadChars] +
+		fmt.Sprintf("\n\n... truncated (%d chars total) ...\n\n", len(out)) +
+		out[len(out)-keepTailChars:]
 }
 
 func readFile(args map[string]any, cwd string) protocol.ExecToolResult {
