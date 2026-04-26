@@ -40,6 +40,9 @@ class AgentLoop:
             f"- OS: {uname.system} {uname.release} ({uname.machine})\n"
             f"- Python: {platform.python_version()}\n"
             f"- Shell: {self._shell}\n"
+            "Local time represents the user's current time at this turn.\n"
+            "Always use Local time as the source of truth for all time-related reasoning.\n"
+            "UTC time is provided only for reference.\n"
             "</system_context>"
         )
         return {"role": "user", "content": content}
