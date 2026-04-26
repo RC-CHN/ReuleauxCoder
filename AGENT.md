@@ -127,6 +127,37 @@ Pluggable extension system.
 - **subagent/**: `SubagentManager` — `_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})`, `_DEFAULT_MAX_ROUNDS = 50`, `_DEFAULT_TIMEOUT_SECONDS = 300`, `_MAX_TIMEOUT_SECONDS = 3600`. `SubagentJob` dataclass tracks `job_id`, `status` (PENDING/RUNNING/COMPLETED/FAILED), `start_time`/`end_time`, `result`/`error`. `DelegatingSubagentApprovalProvider` uses parent LLM as secondary judge for sub-agent tool calls. Manager takes `default_timeout_seconds` and `max_timeout_seconds` as injectable params.
 - **remote_exec/**: `RemoteExecService` — HTTP relay server with `POST /remote/chat/start`, `POST /remote/chat/stream` (long-poll event stream), `POST /remote/approval/reply`. Stream events: `chat_start`, `output`, `approval_request`, `approval_resolved`, `chat_end`, `error`. Bootstrap via `sh -c 'curl -fsSL ... | sh'` with one-time token.
 
+### Application Layer (`app/`)
+Use-case orchestration and shared runtime utilities.
+
+#### `app/commands/` — Cross-Interface Command System
+UI-agnostic command infrastructure shared by CLI, TUI, and other interfaces.
+
+- `specs.py` — `ActionSpec` (frozen): central action definition with `action_id`, `feature_id`, `description`, `triggers` (tuple of `TriggerSpec`), `parser` callable, `handler` callable. `TriggerSpec` has `kind` (`SLASH`/`PALETTE`/`BUTTON`/`MENU`/`SHORTCUT`), `value`, `ui_targets`, `required_capabilities`. An action can have multiple triggers gated by UI capabilities.
+- `registry.py` — `ActionRegistry`: static, explicit registry (not singleton). `register(action)` / `register_many(actions)`. `parse(user_input, ui_profile)` filters actions by UI availability, checks SLASH triggers, calls parsers, returns `ParsedAction` on first match. `dispatch(parsed, ctx)` calls the handler.
+- `models.py` — `CommandContext` (runtime context for handlers: `agent`, `config`, `ui_bus`, `ui_interactor`, `skills_service`, etc.). `CommandResult`: return type with `action` (`"continue"`/`"chat"`/`"exit"`), `notifications`, `view_requests`. `"chat"` action signals the caller to inject payload into the LLM conversation.
+- `parser.py` / `dispatcher.py` — thin entry points: `parse_command()` / `dispatch_command()`.
+- `module_registry.py` — `@register_command_module` decorator collects `register_actions(registry)` functions for lazy discovery.
+- `loader.py` — `load_command_modules()` imports all `builtin/` modules and calls their `register_actions`.
+- `matchers.py` — `match_commands()` returns candidate `ActionSpec` matches for a given input prefix (used by auto-complete).
+- `params.py` — parameter extraction utilities for command arguments.
+- `help.py` — builds help text markdown from all registered actions, grouped by `feature_id`, annotated with scope labels.
+
+#### `app/runtime/` — Runtime State & Approval Views
+
+- `session_state.py` — bridge between live agent runtime and persisted `SessionRuntimeState`:
+  - `build_session_runtime_state()` snapshots current runtime into serializable state.
+  - `restore_config_runtime_defaults()` resets agent back to config defaults.
+  - `apply_session_runtime_state()` reapplies saved mode/model/debug/approval overrides.
+  - `merge_approval_config()` clones baseline rules, replaces with session-scoped overrides matching the same target.
+- `approval.py` — approval view models:
+  - `ApprovalView` aggregates `default_mode`, per-rule `ApprovalRuleView` list, per-tool `ApprovalToolPolicyView` list, effective MCP policies, and editor hint. `to_payload()` produces the full view with computed markdown.
+  - `build_approval_view()` / `build_approval_markdown()` construct views from config + agent state.
+  - `refresh_approval_runtime()` syncs approval config to the live `ToolPolicyGuardHook` runtime hook.
+  - `parse_approval_target()` / `find_matching_rule()` support the `/approval set` command's target resolution.
+
+#### `app/usecases/` — (placeholder for future use-case orchestration)
+
 ## Current Runtime Architecture (Phase 1)
 
 The project now treats a saved session as a **runtime overlay on top of fixed config defaults**, not as a full replacement for `config.yaml`.
