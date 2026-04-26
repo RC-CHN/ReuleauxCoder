@@ -351,7 +351,7 @@ func globFiles(args map[string]any, cwd string) protocol.ExecToolResult {
 	if walkErr != nil {
 		return errorResult("REMOTE_TOOL_ERROR", walkErr.Error())
 	}
-	sort.Strings(matches)
+	sortByMtime(matches)
 	if len(matches) == 0 {
 		return protocol.ExecToolResult{OK: true, Result: "No files matched."}
 	}
@@ -359,6 +359,29 @@ func globFiles(args map[string]any, cwd string) protocol.ExecToolResult {
 		matches = append(matches[:100], fmt.Sprintf("... (%d matches, showing first 100)", len(matches)))
 	}
 	return protocol.ExecToolResult{OK: true, Result: strings.Join(dedupe(matches), "\n")}
+}
+
+// sortByMtime sorts file paths by modification time descending (newest first),
+// matching Python's Path.glob() behavior. Files with stat errors sort to the end.
+func sortByMtime(paths []string) {
+	type entry struct {
+		path  string
+		mtime int64
+	}
+	entries := make([]entry, len(paths))
+	for i, p := range paths {
+		entries[i].path = p
+		info, err := os.Stat(p)
+		if err == nil {
+			entries[i].mtime = info.ModTime().UnixNano()
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].mtime > entries[j].mtime
+	})
+	for i, e := range entries {
+		paths[i] = e.path
+	}
 }
 
 // compileGlobRegex converts a glob pattern with ** support into a compiled regex.
