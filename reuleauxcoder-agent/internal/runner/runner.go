@@ -414,6 +414,9 @@ func (r *Runner) sendCleanupResult(ctx context.Context, peerToken, requestID str
 	})
 }
 
+// mapFromStruct converts a struct to map[string]any via JSON roundtrip.
+// This is the idiomatic Go approach for struct-to-map conversion;
+// the intermediate JSON marshal is cheap for small control-plane structs.
 func mapFromStruct(v any) map[string]any {
 	buf, err := json.Marshal(v)
 	if err != nil {

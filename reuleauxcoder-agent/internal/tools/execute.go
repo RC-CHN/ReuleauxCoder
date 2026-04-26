@@ -282,6 +282,16 @@ func globFiles(args map[string]any, cwd string) protocol.ExecToolResult {
 	if err != nil {
 		return errorResult("REMOTE_TOOL_ERROR", err.Error())
 	}
+
+	hasGlobstar := strings.Contains(pattern, "**")
+	var re *regexp.Regexp
+	if hasGlobstar {
+		re, err = compileGlobRegex(pattern)
+		if err != nil {
+			return errorResult("REMOTE_TOOL_ERROR", fmt.Sprintf("invalid glob pattern: %v", err))
+		}
+	}
+
 	var matches []string
 	walkErr := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -297,14 +307,16 @@ func globFiles(args map[string]any, cwd string) protocol.ExecToolResult {
 		if err != nil {
 			return nil
 		}
-		matched, err := filepath.Match(pattern, rel)
-		if err == nil && matched {
-			matches = append(matches, path)
-		}
-		if strings.Contains(pattern, "**") {
-			alt := strings.ReplaceAll(pattern, "**/", "")
-			matchedAlt, err := filepath.Match(alt, filepath.Base(path))
-			if err == nil && matchedAlt {
+		// Normalize to forward slashes for consistent matching.
+		relNorm := filepath.ToSlash(rel)
+
+		if hasGlobstar {
+			if re.MatchString(relNorm) {
+				matches = append(matches, path)
+			}
+		} else {
+			matched, err := filepath.Match(pattern, rel)
+			if err == nil && matched {
 				matches = append(matches, path)
 			}
 		}
@@ -321,6 +333,34 @@ func globFiles(args map[string]any, cwd string) protocol.ExecToolResult {
 		matches = append(matches[:100], fmt.Sprintf("... (%d matches, showing first 100)", len(matches)))
 	}
 	return protocol.ExecToolResult{OK: true, Result: strings.Join(dedupe(matches), "\n")}
+}
+
+// compileGlobRegex converts a glob pattern with ** support into a compiled regex.
+// ** matches zero or more path components; * matches within a single component;
+// ? matches any single non-separator character.
+func compileGlobRegex(pattern string) (*regexp.Regexp, error) {
+	var buf strings.Builder
+	buf.WriteString("^")
+	for i := 0; i < len(pattern); i++ {
+		c := pattern[i]
+		switch {
+		case c == '*' && i+1 < len(pattern) && pattern[i+1] == '*':
+			buf.WriteString(".*")
+			i++
+		case c == '*':
+			buf.WriteString("[^/]*")
+		case c == '?':
+			buf.WriteString("[^/]")
+		case c == '.' || c == '+' || c == '(' || c == ')' || c == '|' ||
+			c == '^' || c == '$' || c == '{' || c == '}' || c == '\\':
+			buf.WriteByte('\\')
+			buf.WriteByte(c)
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	buf.WriteString("$")
+	return regexp.Compile(buf.String())
 }
 
 func grepFiles(args map[string]any, cwd string) protocol.ExecToolResult {

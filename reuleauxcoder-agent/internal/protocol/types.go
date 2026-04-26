@@ -145,6 +145,8 @@ type NoopEnvelope struct {
 	Payload map[string]any `json:"payload"`
 }
 
+// DecodeExecToolRequest converts a map payload to ExecToolRequest via JSON roundtrip.
+// The marshal-unmarshal pattern is idiomatic Go for map-to-struct conversion.
 func DecodeExecToolRequest(payload map[string]any) (ExecToolRequest, error) {
 	var req ExecToolRequest
 	buf, err := json.Marshal(payload)
