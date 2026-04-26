@@ -35,26 +35,43 @@ func Execute(
 	onStream func(protocol.ToolStreamChunk),
 ) protocol.ExecToolResult {
 	cwd := currentCWD
+	staleWarning := ""
 	if req.CWD != nil && *req.CWD != "" {
 		cwd = *req.CWD
+		// Detect stale CWD and fall back to workspace root.
+		if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+			staleWarning = fmt.Sprintf(
+				"Warning: working directory no longer exists (%s). Reset to %s.\n",
+				cwd, currentCWD)
+			cwd = currentCWD
+		}
 	}
 
 	switch req.ToolName {
 	case "shell":
-		return runShell(req.Args, cwd, req.TimeoutSec, onStream)
+		return prependWarning(runShell(req.Args, cwd, req.TimeoutSec, onStream), staleWarning)
 	case "read_file":
-		return readFile(req.Args, cwd)
+		return prependWarning(readFile(req.Args, cwd), staleWarning)
 	case "write_file":
-		return writeFile(req.Args, cwd)
+		return prependWarning(writeFile(req.Args, cwd), staleWarning)
 	case "edit_file":
-		return editFile(req.Args, cwd)
+		return prependWarning(editFile(req.Args, cwd), staleWarning)
 	case "glob":
-		return globFiles(req.Args, cwd)
+		return prependWarning(globFiles(req.Args, cwd), staleWarning)
 	case "grep":
-		return grepFiles(req.Args, cwd)
+		return prependWarning(grepFiles(req.Args, cwd), staleWarning)
 	default:
 		return errorResult("REMOTE_TOOL_ERROR", fmt.Sprintf("unsupported tool %q", req.ToolName))
 	}
+}
+
+// prependWarning prepends a warning message to the tool result if non-empty.
+func prependWarning(r protocol.ExecToolResult, warning string) protocol.ExecToolResult {
+	if warning == "" || !r.OK {
+		return r
+	}
+	r.Result = warning + r.Result
+	return r
 }
 
 func runShell(
