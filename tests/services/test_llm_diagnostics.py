@@ -9,6 +9,7 @@ from reuleauxcoder.services.llm.diagnostics import (
 def test_snapshot_messages_keeps_last_10_and_truncates_content() -> None:
     messages = [{"role": "user", "content": f"msg-{i}"} for i in range(12)]
     messages[-1]["content"] = "x" * 600
+    messages[-1]["reasoning_content"] = "r" * 600
 
     snapshot = snapshot_messages(messages)
 
@@ -16,6 +17,7 @@ def test_snapshot_messages_keeps_last_10_and_truncates_content() -> None:
     assert snapshot[0]["index"] == 2
     assert snapshot[-1]["role"] == "user"
     assert snapshot[-1]["content"].endswith("...")
+    assert snapshot[-1]["reasoning_content"].endswith("...")
 
 
 def test_persist_llm_error_diagnostic_writes_json(tmp_path: Path, monkeypatch) -> None:

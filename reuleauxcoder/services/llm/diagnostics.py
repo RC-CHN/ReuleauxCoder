@@ -34,6 +34,12 @@ def snapshot_messages(
             item["content"] = text[:MAX_CONTENT_CHARS] + (
                 "..." if len(text) > MAX_CONTENT_CHARS else ""
             )
+        reasoning_content = msg.get("reasoning_content")
+        if reasoning_content is not None:
+            reasoning_text = str(reasoning_content)
+            item["reasoning_content"] = reasoning_text[:MAX_CONTENT_CHARS] + (
+                "..." if len(reasoning_text) > MAX_CONTENT_CHARS else ""
+            )
         if msg.get("tool_call_id"):
             item["tool_call_id"] = msg.get("tool_call_id")
         if msg.get("tool_calls"):
