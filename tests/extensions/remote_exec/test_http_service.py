@@ -854,7 +854,10 @@ class TestRemoteRelayHTTPService:
                 old_string="beta",
                 new_string="gamma",
             )
-            assert "Edited" in edit_result
+            assert "--- a/" in edit_result
+            assert "+++ b/" in edit_result
+            assert "-beta" in edit_result
+            assert "+gamma" in edit_result
             assert target_file.read_text() == "alpha\ngamma\n"
 
             glob_result = GlobTool(backend=backend).execute(
