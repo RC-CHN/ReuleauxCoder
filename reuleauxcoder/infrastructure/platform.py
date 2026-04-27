@@ -52,8 +52,13 @@ class PlatformInfo:
             return self._shell
 
         if self._is_windows:
-            # Prefer PowerShell Core, then PowerShell, then CMD
-            if shutil.which("pwsh"):
+            # Git Bash first — the AI generates Unix commands (grep, sed, &&,
+            # |, etc.) that PowerShell only partially supports via aliases.
+            # Most Windows developers have Git for Windows installed.
+            if shutil.which("bash"):
+                self._shell = ShellType.BASH
+                self._shell_path = shutil.which("bash")
+            elif shutil.which("pwsh"):
                 self._shell = ShellType.POWERSHELL_CORE
                 self._shell_path = shutil.which("pwsh")
             elif shutil.which("powershell"):
