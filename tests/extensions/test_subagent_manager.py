@@ -1,7 +1,13 @@
+import threading
+import time
 from types import SimpleNamespace
 
 from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
-from reuleauxcoder.extensions.subagent.manager import _create_subagent_llm
+from reuleauxcoder.extensions.subagent.manager import (
+    SubagentJob,
+    SubagentManager,
+    _create_subagent_llm,
+)
 
 
 class _FakeParentLLM:
@@ -52,3 +58,118 @@ def test_create_subagent_llm_uses_full_profile_runtime_settings() -> None:
     assert llm.reasoning_replay_mode == "tool_calls"
     assert llm.reasoning_replay_placeholder == "[PLACE_HOLDER]"
     assert llm.debug_trace is True
+
+
+# ---------------------------------------------------------------------------
+# drain_completed_for_parent  –  parent_state_lock  sync tests
+# ---------------------------------------------------------------------------
+
+
+def test_drain_with_parent_state_lock_skips_concurrently_injected_job() -> None:
+    """The locked re-check catches a job injected between fast-path and locked check."""
+    manager = SubagentManager()
+    now = time.time()
+    job = SubagentJob(
+        id="sj_race",
+        mode="explore",
+        task="test task",
+        status="completed",
+        created_at=now,
+        result="done",
+        injected_to_parent=False,
+    )
+    manager._jobs["sj_race"] = job
+
+    parent_lock = threading.Lock()
+    # Hold the lock so drain blocks inside the locked section before re-check.
+    parent_lock.acquire()
+
+    drained_result: list[list[SubagentJob]] = []
+
+    def _drain() -> None:
+        drained_result.append(
+            manager.drain_completed_for_parent(parent_state_lock=parent_lock)
+        )
+
+    t = threading.Thread(target=_drain)
+    t.start()
+
+    # Let the drain thread pass the fast-path check and block on parent_lock.
+    time.sleep(0.15)
+
+    # Simulate the done-callback injecting the job concurrently.
+    job.injected_to_parent = True
+
+    parent_lock.release()
+    t.join(timeout=2)
+
+    assert not t.is_alive(), "drain thread should have finished"
+    assert len(drained_result) == 1
+    assert drained_result[0] == [], (
+        "job should be skipped because it was injected concurrently"
+    )
+
+
+def test_drain_completed_for_parent_works_without_parent_lock() -> None:
+    """Backward-compatible: drain still returns completed jobs when no lock is given."""
+    manager = SubagentManager()
+    now = time.time()
+    job = SubagentJob(
+        id="sj_no_lock",
+        mode="explore",
+        task="test task",
+        status="completed",
+        created_at=now,
+        result="done",
+        injected_to_parent=False,
+    )
+    manager._jobs["sj_no_lock"] = job
+
+    result = manager.drain_completed_for_parent()
+
+    assert len(result) == 1
+    assert result[0].id == "sj_no_lock"
+    assert job.injected_to_parent is True
+
+
+def test_drain_with_parent_state_lock_drains_job_not_injected() -> None:
+    """With parent_state_lock, a job that was *not* injected concurrently is drained."""
+    manager = SubagentManager()
+    now = time.time()
+    job = SubagentJob(
+        id="sj_safe",
+        mode="explore",
+        task="test task",
+        status="completed",
+        created_at=now,
+        result="done",
+        injected_to_parent=False,
+    )
+    manager._jobs["sj_safe"] = job
+
+    parent_lock = threading.Lock()
+    result = manager.drain_completed_for_parent(parent_state_lock=parent_lock)
+
+    assert len(result) == 1
+    assert result[0].id == "sj_safe"
+    assert job.injected_to_parent is True
+
+
+def test_drain_without_lock_skips_already_injected_job() -> None:
+    """Jobs already marked injected_to_parent are skipped even without parent lock."""
+    manager = SubagentManager()
+    now = time.time()
+    job = SubagentJob(
+        id="sj_done",
+        mode="explore",
+        task="test task",
+        status="completed",
+        created_at=now,
+        result="done",
+        injected_to_parent=True,
+    )
+    manager._jobs["sj_done"] = job
+
+    result = manager.drain_completed_for_parent()
+
+    assert result == []

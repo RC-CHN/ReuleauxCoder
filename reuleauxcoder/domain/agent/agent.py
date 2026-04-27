@@ -305,7 +305,9 @@ class Agent:
             return 0
 
         injected = 0
-        for job in manager.drain_completed_for_parent():
+        for job in manager.drain_completed_for_parent(
+            parent_state_lock=self._state_lock,
+        ):
             if self.inject_subagent_job_result(job):
                 injected += 1
         return injected
