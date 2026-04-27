@@ -13,7 +13,7 @@
 先安装 [`pipx`](https://pipx.pypa.io/stable/installation/)，再用 release 中的 wheel 进行全局安装：
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.2.6/reuleauxcoder-0.2.6-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.2.7/reuleauxcoder-0.2.7-py3-none-any.whl
 ```
 
 安装完成后可以直接运行：
