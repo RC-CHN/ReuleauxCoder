@@ -83,7 +83,7 @@ External resource access and low-level utilities.
 User-facing interfaces.
 
 - **Root abstractions** (`interfaces/`):
-  - `events.py` — `UIEventBus`: synchronous pub/sub bus. `UIEvent` dataclass: `message`, `level` (`UIEventLevel`: INFO/SUCCESS/WARNING/ERROR/DEBUG), `kind` (`UIEventKind`: SYSTEM/COMMAND/SESSION/MODEL/MCP/APPROVAL/VIEW/AGENT/CONTEXT/REMOTE), `timestamp`, `data` dict. `AgentEventBridge` translates domain `AgentEvent` → `UIEvent`. Bus has `info()`/`success()`/`warning()`/`error()`/`debug()`/`open_view()`/`refresh_view()` convenience methods.
+  - `events.py` — `UIEventBus`: dual-mode pub/sub bus. **Synchronous mode** (default): `emit()` calls handlers directly on the caller's thread. **Queued mode**: pass a `queue.Queue` at construction; `emit()` pushes events onto the queue, and a separate `drain()` call dequeues and dispatches on the UI thread (used by sub-agents to batch-deliver events to the parent renderer). `UIEvent` dataclass: `message`, `level` (`UIEventLevel`: INFO/SUCCESS/WARNING/ERROR/DEBUG), `kind` (`UIEventKind`: SYSTEM/COMMAND/SESSION/MODEL/MCP/APPROVAL/VIEW/AGENT/CONTEXT/REMOTE), `timestamp`, `data` dict. `AgentEventBridge` translates domain `AgentEvent` → `UIEvent`. Bus has `info()`/`success()`/`warning()`/`error()`/`debug()`/`open_view()`/`refresh_view()` convenience methods.
   - `interactions.py` — `UIInteractor` Protocol: `notify()`, `confirm()`, `choose_one()`, `input_text()`, `review()`. Request/response dataclasses: `ConfirmRequest/Response`, `ChoiceItem`/`ChooseOneRequest/Response`, `InputTextRequest/Response`, `ReviewRequest/Response`.
   - `ui_registry.py` — `UICapability` enum (TEXT_INPUT, STREAM_OUTPUT, PALETTE, BUTTONS, MENUS, TABS, MODAL, DIFF_REVIEW, TEXT_SELECT, TEXT_EDIT), `UIProfile` (frozen dataclass: `ui_id`, `display_name`, `capabilities`), `UIRegistration` bundles `UIProfile` + `ViewRendererRegistry` + `UIInteractor`, `UIRegistry` maps `ui_id → UIRegistration`.
   - `view_registry.py` / `view_registration.py` — `ViewRenderer` protocol, `ViewRendererSpec` (`view_type` + `render` callable), `ViewRendererRegistry` maps `view_type → ViewRendererSpec`, `@register_view(view_type=..., ui_targets=...)` decorator for declarative registration.
@@ -92,12 +92,15 @@ User-facing interfaces.
   - `args.py` — `CLIArgs` dataclass: `--config`, `--model`, `--prompt`, `--resume`/`-r`, `--server`, `--version`.
   - `repl.py` — `CLIREPL`: main REPL loop using `prompt_toolkit`. Handles input, history, slash command dispatch, session save/restore. `_dispatch_input()` routes user text to agent `chat()` or command handlers.
   - `commands.py` — `CommandDispatcher`: parses leading `/` commands, routes to registered `ActionSpec` handlers via `ActionRegistry`.
-  - `render.py` — `CLIRenderer`: event-driven agent/UI renderer. Stream rendering accumulates tokens into `_ContentBlock`, flushes completed markdown paragraphs at `\n\n`. Tool call rendering shows `name(args)` in cyan panel; compact output (1200-char limit, 5 lines for `read_file`, 20 for others). Diff rendering uses `Syntax("diff", theme="monokai")`. Sub-agent rendering shows status panels. Slash command results rendered as Rich panels (`/help`, `/model`, `/tokens`, etc.).
+  - `render.py` — `CLIRenderer`: event-driven agent/UI renderer. Stream rendering accumulates tokens into `_ContentBlock`, flushes completed markdown blocks using `_find_committed_boundary()` — a markdown-it block-token parser that confirms every block except the last (potentially incomplete) one, preventing orphaned code fences when a `\n\n` appears inside a fenced code block. Tool call rendering shows `name(args)` in cyan panel; compact output has two branches: **pre-truncated** (`[truncated]` prefix) preserves hook stats + archive path and shows first 3 + last 3 lines; **non-truncated** caps at 1200 chars/5-20 lines and appends total line count. `display` text is `_escape_markup`-wrapped to prevent Rich from interpreting bracket notation as markup tags. Diff rendering uses `Syntax("diff", theme="monokai")`. Sub-agent rendering shows status panels. Slash command results rendered as Rich panels (`/help`, `/model`, `/tokens`, etc.).
   - `interactor.py` — `CLIInteractor`: implements `UIInteractor` with `prompt_toolkit` dialogs (`confirm()`, `choose_one()`, etc.).
   - `approval.py` — `CLIApprovalProvider`: interactive approval prompts for tool execution.
   - `registration.py` — `CLIRegistration`: wires up CLI-specific `UIRegistration` with `CLIRenderer` + `CLIInteractor`.
   - `views/` — View renderers registered via `@register_view`. `registry.py` finds and instantiates view specs.
-- **tui/**: TUI interface (prototype only, `mockup.py`).
+- **shared/** (`interfaces/shared/`): Cross-interface utilities.
+  - `approval_preview.py` — `build_preview_diff()`: performs filesystem I/O (read file, compute diff) to build approval preview text. Lives in interface layer rather than domain because it depends on filesystem access. Used by both CLI and TUI approval handlers.
+- **tui/**: TUI interface.
+  - `approval_handler.py` — `TUIApprovalHandler`: interactive approval prompts for the Textual-based TUI. Shares `build_preview_diff` with CLI via `interfaces/shared/`.
 - **entrypoint/**: Application bootstrap
   - `runner.py` — `AppRunner`: application initialization and DI (see AppRunner detail below).
   - `dependencies.py` — `AppDependencies`: customizable component factory for testability.
@@ -124,7 +127,7 @@ Pluggable extension system.
   - Commands grouped by module: `system.py` (help/quit/reset/compact/tokens/debug), `sessions.py` (save/new/sessions/session), `model.py` (model switch), `mode.py` (mode switch), `skills.py`, `mcp.py`, `approval.py`, `subagent_jobs.py`.
 - **mcp/**: MCP server integration — `MCPManager` (independent asyncio loop in background thread), `MCPClient` (stdio JSON-RPC with reconnect-once), `MCPTool` (schema translation wrapping remote tools). Config per-server: `command`, `args`, `env`.
 - **skills/**: Skills system — `SkillsService` discovers skills from `SKILL.md` files, builds catalog with `Skill` objects (`name`, `description`, `location`). Supports enable/disable with persistence via `SkillsConfigStore`.
-- **subagent/**: `SubagentManager` — `_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})`, `_DEFAULT_MAX_ROUNDS = 50`, `_DEFAULT_TIMEOUT_SECONDS = 300`, `_MAX_TIMEOUT_SECONDS = 3600`. `SubagentJob` dataclass tracks `job_id`, `status` (PENDING/RUNNING/COMPLETED/FAILED), `start_time`/`end_time`, `result`/`error`. `DelegatingSubagentApprovalProvider` uses parent LLM as secondary judge for sub-agent tool calls. Manager takes `default_timeout_seconds` and `max_timeout_seconds` as injectable params.
+- **subagent/**: `SubagentManager` — `_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})`, `_DEFAULT_MAX_ROUNDS = 50`, `_DEFAULT_TIMEOUT_SECONDS = 300`, `_MAX_TIMEOUT_SECONDS = 3600`. `SubagentJob` dataclass tracks `job_id`, `status` (PENDING/RUNNING/COMPLETED/FAILED), `start_time`/`end_time`, `result`/`error`. Approval for sub-agents uses a judge-middleware pattern: `build_subagent_approval_provider()` returns `SharedApprovalProvider(handler=..., judges=[ParentLLMJudge(...)])` where `ParentLLMJudge` (a callable `ApprovalJudge`) delegates to the parent LLM first, and only escalates to the human handler if the judge returns `None`. Approval lock (RLock) wraps the handler to serialise terminal access across sub-agents. Manager takes `default_timeout_seconds` and `max_timeout_seconds` as injectable params.
 - **remote_exec/**: `RemoteExecService` — HTTP relay server with `POST /remote/chat/start`, `POST /remote/chat/stream` (long-poll event stream), `POST /remote/approval/reply`. Stream events: `chat_start`, `output`, `approval_request`, `approval_resolved`, `chat_end`, `error`. Bootstrap via `sh -c 'curl -fsSL ... | sh'` with one-time token.
 
 ### Application Layer (`app/`)
@@ -216,9 +219,10 @@ Manages conversation context and token limits.
 ### Approval Engine (`domain/approval.py` + `domain/approval_engine.py`)
 Manages tool approval decisions.
 
-- **Protocols**: `ApprovalProvider` — `request_approval(request: ApprovalRequest) → ApprovalDecision`. `ApprovalRequest` carries `tool_name`, `arguments`, `reason`, `source` (local/mcp). `ApprovalDecision` is `ALLOW`/`DENY`/`ABSTAIN` with optional `reason`.
+- **Protocols**: `ApprovalProvider` — `request_approval(request: ApprovalRequest) → ApprovalDecision`. `ApprovalRequest` carries `tool_name`, `arguments`, `reason`, `source` (local/mcp). `ApprovalDecision` is `ALLOW`/`DENY`/`ABSTAIN` with optional `reason`. `ApprovalJudge` — `Callable[[ApprovalRequest], ApprovalDecision | None]`: optional pre-handler judges that short-circuit before the human handler; returning `None` escalates to the next judge or handler.
+- **SharedApprovalProvider**: single implementation used by both CLI (via handler injection) and sub-agents (via handler + judges). Constructor takes `handler: ApprovalHandler` + optional `judges: list[ApprovalJudge]`. `request_approval()` iterates judges first; a judge returning a non-`None` decision short-circuits. If all judges return `None`, falls through to the handler (typically human interaction). Exposes `handler` property for sub-agent delegation.
 - **Engine** (`ApprovalEngine`): evaluates ordered approval rules. Each `ApprovalRule` matches by `tool_name` or `tool_source` (e.g. `"mcp"`, `"mcp:<server>"`, `"mcp:<server>:<tool>"`). Actions: `allow`/`warn`/`require_approval`/`deny`. Falls back to `default_mode` when no rule matches.
-- **Integration**: `ToolPolicyGuardHook` evaluates tool policies during `BEFORE_TOOL_EXECUTE`. If result is `requires_approval`, the ToolExecutor calls the configured `approval_provider` (CLI interactive, sub-agent delegated, or remote forward).
+- **Integration**: `ToolPolicyGuardHook` evaluates tool policies during `BEFORE_TOOL_EXECUTE`. If result is `requires_approval`, the ToolExecutor calls the configured `approval_provider` (CLI interactive, sub-agent delegated with judge middlewares, or remote forward).
 
 ### Session Model and Persistence
 
@@ -465,3 +469,10 @@ Session runtime state currently restored by saved sessions includes:
 
 Tests are in `tests/` mirroring the source structure.
 Run with: `uv run python -m pytest tests/ -v`
+
+## Tooling
+
+This project uses **uv** as its package manager and task runner.
+- `uv run ...` — run any command in the project virtual environment
+- `uv sync` — sync dependencies
+- `uv add <pkg>` — add a dependency
