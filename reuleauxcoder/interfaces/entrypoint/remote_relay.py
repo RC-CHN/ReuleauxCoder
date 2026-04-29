@@ -29,7 +29,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.backend import ExecutionContext
-from reuleauxcoder.domain.approval_preview import build_preview_diff as _build_preview_diff
+from reuleauxcoder.interfaces.shared.approval_preview import build_preview_diff as _build_preview_diff
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import CLIRenderer

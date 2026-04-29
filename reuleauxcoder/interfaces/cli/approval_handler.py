@@ -12,7 +12,7 @@ from reuleauxcoder.domain.approval import (
     ApprovalHandler,
     PendingApproval,
 )
-from reuleauxcoder.domain.approval_preview import build_preview_diff
+from reuleauxcoder.interfaces.shared.approval_preview import build_preview_diff
 from reuleauxcoder.interfaces.interactions import ReviewRequest, UIInteractor
 
 

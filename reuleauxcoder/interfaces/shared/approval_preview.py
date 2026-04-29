@@ -1,7 +1,7 @@
 """Shared diff-preview utilities for tool-approval requests.
 
-Extracted from ``CLIApprovalProvider`` so both CLI and TUI handlers
-can use the same diff-building logic without depending on any UI layer.
+Used by CLI and TUI approval handlers to build readable diffs
+before presenting them to the user.
 """
 
 from __future__ import annotations
