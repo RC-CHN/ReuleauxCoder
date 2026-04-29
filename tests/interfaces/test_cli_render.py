@@ -117,9 +117,11 @@ def test_cli_renderer_flushes_completed_paragraph_as_markdown() -> None:
 
     renderer.on_event(AgentEvent.stream_token("# Title\nline 1\n\nrest"))
 
-    renderer.render_content_markdown.assert_called_once_with("# Title\nline 1\n\n")
+    # With markdown-it block commitment, "# Title" (heading) and "line 1"
+    # (paragraph) are two complete blocks; only "rest" stays pending.
+    renderer.render_content_markdown.assert_called_once_with("# Title\nline 1\n")
     assert renderer._active_content_block is not None
-    assert renderer._active_content_block.pending_text == "rest"
+    assert renderer._active_content_block.pending_text == "\nrest"
     renderer.render_plain_text.assert_not_called()
 
 
