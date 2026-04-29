@@ -10,7 +10,8 @@ import sys
 import time
 from pathlib import Path
 
-from reuleauxcoder.interfaces.cli.approval import CLIApprovalProvider
+from reuleauxcoder.domain.approval import SharedApprovalProvider
+from reuleauxcoder.interfaces.cli.approval_handler import make_cli_handler
 from reuleauxcoder.interfaces.cli.args import parse_args
 from reuleauxcoder.interfaces.cli.registration import create_cli_registration
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
@@ -69,7 +70,9 @@ def main():
 
     ctx.ui_interactor = cli_ui.interactor
     setattr(ctx.agent, "ui_interactor", cli_ui.interactor)
-    ctx.agent.approval_provider = CLIApprovalProvider(cli_ui.interactor)
+    ctx.agent.approval_provider = SharedApprovalProvider(
+        handler=make_cli_handler(cli_ui.interactor)
+    )
 
     # Add CLI renderer and bridge agent events onto the UI bus
     bridge = AgentEventBridge(ctx.ui_bus)

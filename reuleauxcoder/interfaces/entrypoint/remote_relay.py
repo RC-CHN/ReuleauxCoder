@@ -29,7 +29,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.backend import ExecutionContext
-from reuleauxcoder.interfaces.cli.approval import CLIApprovalProvider
+from reuleauxcoder.domain.approval_preview import build_preview_diff as _build_preview_diff
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
@@ -281,7 +281,6 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             record=True, force_terminal=True, color_system="truecolor"
         )
         renderer = CLIRenderer(console_override=ansi_console)
-        preview_builder = CLIApprovalProvider(ui_interactor=None)  # type: ignore[arg-type]
 
         def _flush_output() -> None:
             rendered = ansi_console.export_text(clear=True, styles=True)
@@ -294,7 +293,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
                 approval_id = str(uuid.uuid4())
                 remote_session.register_approval(approval_id)
-                diff_text = preview_builder._build_preview_diff(request)
+                diff_text = _build_preview_diff(request)
                 sections: list[dict[str, Any]] = []
                 if diff_text is not None:
                     title = (

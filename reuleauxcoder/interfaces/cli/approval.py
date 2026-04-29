@@ -1,4 +1,10 @@
-"""CLI approval interaction provider."""
+"""CLI approval interaction provider.
+
+.. deprecated::
+    Replaced by :func:`reuleauxcoder.interfaces.cli.approval_handler.make_cli_handler`
+    + :class:`reuleauxcoder.domain.approval.SharedApprovalProvider`.
+    This module will be removed once the new path is verified.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +20,12 @@ from reuleauxcoder.interfaces.interactions import ReviewRequest, UIInteractor
 
 
 class CLIApprovalProvider(ApprovalProvider):
-    """Approval provider backed by the shared UIInteractor."""
+    """Approval provider backed by the shared UIInteractor.
+
+    .. deprecated::
+        Use :class:`~reuleauxcoder.domain.approval.SharedApprovalProvider`
+        with :func:`~reuleauxcoder.interfaces.cli.approval_handler.make_cli_handler`.
+    """
 
     def __init__(self, ui_interactor: UIInteractor):
         self.ui_interactor = ui_interactor
