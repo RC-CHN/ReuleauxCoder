@@ -93,18 +93,49 @@ ApprovalHandler = Callable[[PendingApproval], None]
 
 CLI:  resolves synchronously (same thread) — ``resolve()`` is called
       before ``SharedApprovalProvider`` reaches ``wait()``.
-TUI:  pushes the pending onto ``AgentChannels.approvals``; a Textual
-      ``ModalScreen`` calls ``resolve()`` later.
+TUI:  pushes the pending onto a queue; a Textual ``ModalScreen``
+      calls ``resolve()`` later.
+"""
+
+ApprovalJudge = Callable[["ApprovalRequest"], "ApprovalDecision | None"]
+"""A pre-approval judge that can short-circuit the human handler.
+
+Returns ``ApprovalDecision`` to auto-approve/deny without user input,
+or ``None`` to escalate to the human handler.  Used by sub-agents to
+let the parent LLM decide before asking the user.
 """
 
 
 class SharedApprovalProvider(ApprovalProvider):
-    """Unified approval provider — handler determines CLI / TUI behaviour."""
+    """Unified approval provider — handler determines CLI / TUI behaviour.
 
-    def __init__(self, handler: ApprovalHandler):
+    Optional *judges* run before the human handler.  Each judge may
+    return an ``ApprovalDecision`` (auto-resolve) or ``None``
+    (escalate).  Sub-agents inject a ``ParentLLMJudge`` here.
+    """
+
+    def __init__(
+        self,
+        handler: ApprovalHandler,
+        *,
+        judges: list[ApprovalJudge] | None = None,
+    ):
         self._handler = handler
+        self._judges: list[ApprovalJudge] = judges or []
+
+    @property
+    def handler(self) -> ApprovalHandler:
+        """The human handler (CLI interactor or TUI queue pusher)."""
+        return self._handler
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
+        # ── Pre-approval judges (e.g. parent LLM for sub-agents) ──
+        for judge in self._judges:
+            decision = judge(request)
+            if decision is not None:
+                return decision
+
+        # ── Human handler ──
         pending = PendingApproval(request=request)
         self._handler(pending)
 
