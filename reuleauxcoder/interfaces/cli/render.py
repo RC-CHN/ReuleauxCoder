@@ -221,7 +221,45 @@ class CLIRenderer:
         )
 
     def _compact_tool_output(self, tool_name: str, result: str) -> str:
-        """Compact noisy tool output for terminal readability."""
+        """Compact noisy tool output for terminal readability.
+
+        When the result has already been truncated by
+        ``ToolOutputTruncationHook`` (detected via the ``[truncated]``
+        prefix), we preserve the header / footer lines containing the
+        real stats and archive path, and show only the first and last
+        3 lines of the wrapped content body.
+        """
+        # ── Already wrapped by ToolOutputTruncationHook ──
+        if result.startswith("[truncated]"):
+            lines = result.splitlines()
+            try:
+                begin = next(
+                    i for i, ln in enumerate(lines)
+                    if ln.startswith("--- BEGIN TRUNCATED OUTPUT ---")
+                )
+                end = next(
+                    i for i, ln in enumerate(lines)
+                    if ln.startswith("--- END TRUNCATED OUTPUT ---")
+                )
+            except StopIteration:
+                return result  # malformed — show as-is
+
+            header = lines[: begin + 1]   # stats + BEGIN marker
+            body = lines[begin + 1 : end]
+            footer = lines[end:]          # END marker
+
+            if len(body) <= 6:
+                return result              # small enough, no need to compact
+
+            return (
+                "\n".join(header) + "\n"
+                + "\n".join(body[:3]) + "\n"
+                + f"... ({len(body) - 6} more lines) ...\n"
+                + "\n".join(body[-3:]) + "\n"
+                + "\n".join(footer)
+            )
+
+        # ── Not pre-truncated — apply simple length cap ──
         text = result[:1200] + "..." if len(result) > 1200 else result
         lines = text.splitlines()
         if not lines:
