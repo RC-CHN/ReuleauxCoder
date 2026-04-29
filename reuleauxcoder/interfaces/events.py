@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import queue
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -98,11 +99,29 @@ class UIEvent:
 
 
 class UIEventBus:
-    """Simple synchronous publish/subscribe bus for UI events."""
+    """Publish/subscribe bus for UI events.
 
-    def __init__(self):
+    Two delivery modes:
+
+    * **Synchronous** (default) — ``emit()`` calls every handler immediately
+      on the calling thread.  Used by CLI (single-thread).
+    * **Queued** — pass a ``queue.Queue`` at construction time.  ``emit()``
+      pushes events onto the queue; the UI thread must periodically call
+      ``drain()`` to dispatch them.  Used by TUI (cross-thread).
+
+    Handlers are always called on the **draining thread** — never on the
+    emitting thread when queued.
+    """
+
+    def __init__(self, *, event_queue: queue.Queue | None = None):
+        self._queue = event_queue
         self._handlers: list[Callable[[UIEvent], None]] = []
         self._history: list[UIEvent] = []
+
+    @property
+    def is_queued(self) -> bool:
+        """True when this bus uses cross-thread queued delivery."""
+        return self._queue is not None
 
     def subscribe(
         self,
@@ -120,6 +139,28 @@ class UIEventBus:
 
     def emit(self, event: UIEvent) -> None:
         self._history.append(event)
+        if self._queue is not None:
+            self._queue.put(event)
+        else:
+            self._dispatch(event)
+
+    def drain(self) -> None:
+        """Dequeue and dispatch all pending events (queued mode only).
+
+        Call periodically from the UI main thread (e.g. via
+        ``set_interval``).  No-op in synchronous mode.
+        """
+        if self._queue is None:
+            return
+        while True:
+            try:
+                event = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            self._dispatch(event)
+
+    def _dispatch(self, event: UIEvent) -> None:
+        """Call every registered handler for *event*."""
         for handler in self._handlers:
             try:
                 handler(event)
