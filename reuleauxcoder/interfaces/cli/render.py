@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 from rich import box
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.syntax import Syntax
 
@@ -257,11 +258,11 @@ class CLIRenderer:
         else:
             display = self._compact_tool_output(name, result)
             if success:
-                self.console.print(f"[dim]{display}[/dim]")
+                self.console.print(f"[dim]{_escape_markup(display)}[/dim]")
             else:
                 self.console.print(
                     Panel(
-                        f"[red]{display}[/red]",
+                        f"[red]{_escape_markup(display)}[/red]",
                         title=f"TOOL ERROR · {name}",
                         border_style="red",
                         box=box.ROUNDED,
@@ -338,7 +339,8 @@ class CLIRenderer:
 
         kept = "\n".join(lines[:max_lines])
         omitted = len(lines) - max_lines
-        return f"{kept}\n... ({omitted} more lines hidden)"
+        total = len(result.splitlines())
+        return f"{kept}\n... ({omitted} more lines hidden, {total} total)"
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""

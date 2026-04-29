@@ -104,7 +104,7 @@ def test_compact_non_truncated_read_file(renderer: CLIRenderer) -> None:
     assert "line_0" in result
     assert "line_4" in result
     assert "line_5" not in result
-    assert "... (5 more lines hidden)" in result
+    assert "... (5 more lines hidden, 10 total)" in result
 
 
 def test_compact_non_truncated_other_tool(renderer: CLIRenderer) -> None:
@@ -113,7 +113,7 @@ def test_compact_non_truncated_other_tool(renderer: CLIRenderer) -> None:
     assert "line_0" in result
     assert "line_19" in result
     assert "line_20" not in result
-    assert "... (10 more lines hidden)" in result
+    assert "... (10 more lines hidden, 30 total)" in result
 
 
 def test_compact_non_truncated_below_limit(renderer: CLIRenderer) -> None:
