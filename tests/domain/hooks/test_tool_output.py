@@ -52,7 +52,9 @@ def test_tool_output_bypasses_truncation_for_global_skills_markdown(
 ) -> None:
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HOME", str(home))
+    # Path.home() uses HOME on Unix, USERPROFILE on Windows.
+    # Patch it directly so the test is platform-agnostic.
+    monkeypatch.setattr(Path, "home", lambda: home)
 
     hook = ToolOutputTruncationHook(max_chars=20, max_lines=2, store_full_output=False)
     long_text = "line1\nline2\nline3\nline4"
