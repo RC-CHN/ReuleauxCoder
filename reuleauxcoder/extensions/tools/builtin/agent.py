@@ -14,30 +14,24 @@ class AgentTool(Tool):
     description = (
         "Spawn one or more sub-agents to handle complex sub-tasks independently. "
         "Each sub-agent has isolated context and tool access. "
-        "Provide either 'task' or 'tasks', but not both. "
-        "Batch 'tasks' requires mode='explore' and run_in_background=true. "
-        "Optionally set 'model' to 'sub' or 'main'. "
-        "'sub' uses the configured default sub-agent model; 'main' uses the configured main-agent model. "
-        "If omitted or invalid, 'sub' is used. "
+        "Pass a list of task strings via the 'tasks' parameter: "
+        "a single-element list for one sub-agent, multiple elements for batch parallel jobs. "
+        "Single tasks support any mode (sync or background). "
+        "Batch tasks (multiple elements) always run as explore-mode background jobs. "
+        "Optionally set 'model' to 'sub' or 'main' to choose the sub-agent model profile "
+        "(defaults to 'sub' if omitted or invalid). "
         "parallel_explore sets the runtime explore parallelism cap (1-4)."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "task": {
-                "type": "string",
-                "description": (
-                    "Single sub-agent task. Use this for one job only. "
-                    "Mutually exclusive with 'tasks' - do not provide both."
-                ),
-            },
             "tasks": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Batch tasks for parallel/background explore jobs. "
-                    "Mutually exclusive with 'task' - do not provide both. "
-                    "Requires mode='explore' and run_in_background=true."
+                    "List of sub-agent task descriptions. "
+                    "Pass a single-item list for one sub-agent, "
+                    "or multiple items for batch parallel explore jobs."
                 ),
             },
             "mode": {
@@ -76,7 +70,7 @@ class AgentTool(Tool):
                 ),
             },
         },
-        "required": [],
+        "required": ["tasks"],
     }
 
     _parent_agent = None
@@ -85,28 +79,23 @@ class AgentTool(Tool):
         super().__init__(backend or LocalToolBackend())
 
     def preflight_validate(self, **kwargs) -> str | None:
-        task = kwargs.get("task")
         tasks = kwargs.get("tasks")
         mode = kwargs.get("mode", "explore")
         run_in_background = kwargs.get("run_in_background", False)
 
-        single_task = (task or "").strip() if isinstance(task, str) else ""
-        batch_tasks = [
+        task_list = [
             item.strip()
             for item in (tasks or [])
             if isinstance(item, str) and item.strip()
         ]
 
-        if not single_task and not batch_tasks:
-            return "Error: provide either 'task' or non-empty 'tasks'."
+        if not task_list:
+            return "Error: 'tasks' must be a non-empty list of task strings."
 
-        if single_task and batch_tasks:
-            return "Error: use either 'task' or 'tasks', not both."
-
-        if batch_tasks and (mode != "explore" or not run_in_background):
+        if len(task_list) > 1 and (mode != "explore" or not run_in_background):
             return (
-                "Error: batch 'tasks' currently requires mode='explore' "
-                "and run_in_background=true."
+                "Error: batch tasks (multiple items) require "
+                "mode='explore' and run_in_background=true."
             )
 
         if (
@@ -120,7 +109,6 @@ class AgentTool(Tool):
 
     def execute(
         self,
-        task: str | None = None,
         tasks: list[str] | None = None,
         mode: str = "explore",
         run_in_background: bool = False,
@@ -133,7 +121,6 @@ class AgentTool(Tool):
             return "Error: agent tool not initialized (no parent agent)"
 
         return self.run_backend(
-            task=task,
             tasks=tasks,
             mode=mode,
             run_in_background=run_in_background,
@@ -146,7 +133,6 @@ class AgentTool(Tool):
     @backend_handler("local")
     def _execute_local(
         self,
-        task: str | None = None,
         tasks: list[str] | None = None,
         mode: str = "explore",
         run_in_background: bool = False,
@@ -166,8 +152,17 @@ class AgentTool(Tool):
         if model_route not in {"sub", "main"}:
             model_route = "sub"
 
-        single_task = (task or "").strip() if isinstance(task, str) else ""
-        if single_task:
+        task_list = [
+            item.strip()
+            for item in (tasks or [])
+            if isinstance(item, str) and item.strip()
+        ]
+        if not task_list:
+            return "Error: 'tasks' must be a non-empty list of task strings."
+
+        # Single task: run in the requested mode (sync or background)
+        if len(task_list) == 1:
+            single_task = task_list[0]
             if run_in_background:
                 job_id = manager.submit_background(
                     parent_agent=parent,
@@ -189,20 +184,13 @@ class AgentTool(Tool):
                 model_profile_name=model_route,
             )
 
-        task_list = [
-            item.strip()
-            for item in (tasks or [])
-            if isinstance(item, str) and item.strip()
-        ]
-        if not task_list:
-            return "Error: provide either 'task' or non-empty 'tasks'."
-
+        # Multiple tasks: always run as explore-mode background jobs
         job_ids: list[str] = []
         for item in task_list:
             job_id = manager.submit_background(
                 parent_agent=parent,
                 task=item,
-                mode=mode,
+                mode="explore",
                 max_rounds=effective_max_rounds,
                 timeout_seconds=effective_timeout,
                 parallel_explore=parallel_explore,
