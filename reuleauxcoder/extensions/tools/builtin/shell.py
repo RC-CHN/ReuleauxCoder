@@ -70,27 +70,29 @@ class ShellTool(Tool):
                 ShellType.POWERSHELL_CORE,
             ):
                 proc = self._run_powershell(command, cwd, timeout)
-            elif platform_info.is_windows and shell == ShellType.BASH:
-                # On Windows, shell=True always invokes cmd.exe regardless
-                # of $SHELL. When Git Bash is the preferred shell, run it
-                # explicitly so Unix commands (grep, sed, &&, etc.) work.
-                shell_path = platform_info.get_shell_path()
-                proc = subprocess.run(
-                    [shell_path, "-c", command],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=cwd,
-                )
             else:
-                proc = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=cwd,
-                )
+                # Use explicit shell invocation when available (handles
+                # bash on both Windows/Unix, cmd.exe on Windows).
+                # Fall back to shell=True only when no shell is detected
+                # (e.g. minimal containers without bash/sh).
+                shell_cmd = platform_info.get_shell_executable()
+                if shell_cmd:
+                    proc = subprocess.run(
+                        shell_cmd + [command],
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        cwd=cwd,
+                    )
+                else:
+                    proc = subprocess.run(
+                        command,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                        cwd=cwd,
+                    )
 
             if proc.returncode == 0:
                 self._update_cwd(command, cwd, platform_info.is_windows)
@@ -115,11 +117,23 @@ class ShellTool(Tool):
     def _run_powershell(
         self, command: str, cwd: str, timeout: int
     ) -> subprocess.CompletedProcess:
-        """Run a command through PowerShell on Windows."""
+        """Run a command through PowerShell on Windows.
+
+        PowerShell 5.1 (powershell.exe) does not support ``&&`` and ``||``
+        chain operators, so we replace ``&&`` with ``;`` for compatibility.
+        PowerShell 7+ (pwsh) supports ``&&`` natively, so we leave it intact.
+        """
         platform_info = get_platform_info()
+        shell = platform_info.get_preferred_shell()
         shell_cmd = platform_info.get_shell_executable()
 
-        normalized = command.replace("&&", ";")
+        # PowerShell 7+ (pwsh) supports && chain operators natively.
+        # Legacy Windows PowerShell 5.1 does not — replace && with ;
+        # to avoid cryptic syntax errors from AI-generated commands.
+        if shell != ShellType.POWERSHELL_CORE:
+            normalized = command.replace("&&", ";")
+        else:
+            normalized = command
 
         proc = subprocess.run(
             shell_cmd + [normalized],
@@ -133,10 +147,17 @@ class ShellTool(Tool):
     def _update_cwd(
         self, command: str, current_cwd: str, is_windows: bool = False
     ) -> None:
+        # Split on command separators. On Unix/Bash/Git-Bash: && | ; | \n.
+        # On PowerShell/CMD: ; | \n (&&/|| not supported in legacy PS, but
+        # we handle them for pwsh 7+ and CMD's &/* quirks).
         if is_windows:
-            parts = re.split(r"[;]|\n", command)
+            shell = get_platform_info().get_preferred_shell()
+            if shell in (ShellType.BASH, ShellType.POWERSHELL_CORE):
+                parts = re.split(r"&&|\|\||[;]|\n", command)
+            else:
+                parts = re.split(r"[;]|\n", command)
         else:
-            parts = re.split(r"&&|;|\n", command)
+            parts = re.split(r"&&|\|\||[;]|\n", command)
 
         for part in parts:
             part = part.strip()

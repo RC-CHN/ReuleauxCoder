@@ -75,6 +75,10 @@ class PlatformInfo:
             if shutil.which("bash"):
                 self._shell = ShellType.BASH
                 self._shell_path = shutil.which("bash")
+            elif shutil.which("sh"):
+                # POSIX sh fallback (minimal containers, NixOS, etc.)
+                self._shell = ShellType.BASH
+                self._shell_path = shutil.which("sh")
             else:
                 self._shell = ShellType.UNKNOWN
                 self._shell_path = None
