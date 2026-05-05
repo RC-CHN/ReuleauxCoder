@@ -200,6 +200,9 @@ class AgentLoop:
                 self.agent.llm,
             )
 
+            # Flush any sub-agent injections buffered during tool execution.
+            self.agent._flush_pending_subagent_injections()
+
         summary_prompt = (
             "Maximum tool-call rounds reached. Do not call any tools. "
             "Briefly summarize the current findings/status, list any blockers or incomplete work, "

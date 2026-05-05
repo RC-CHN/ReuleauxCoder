@@ -94,6 +94,11 @@ class Agent:
         # Event handlers
         self._event_handlers: List[Callable[[AgentEvent], None]] = []
 
+        # Buffer for sub-agent injections that arrive during active tool execution.
+        # Deferred to avoid interleaving assistant messages between a tool_calls
+        # message and its corresponding tool responses (violates API contract).
+        self._pending_subagent_injections: list[tuple] = []
+
         # Activate initial mode if available
         if self.available_modes:
             default_mode = active_mode or next(iter(self.available_modes.keys()), None)
@@ -265,15 +270,8 @@ class Agent:
         )
         return error_text, False
 
-    def inject_subagent_job_result(self, job) -> bool:
-        """Inject one finished sub-agent job into parent history immediately."""
-        with self._state_lock:
-            if getattr(job, "injected_to_parent", False):
-                return False
-            job.injected_to_parent = True
-            content, success = self._format_subagent_job_message(job)
-            self.state.messages.append({"role": "assistant", "content": content})
-
+    def _emit_subagent_completion_events(self, job, content: str, success: bool) -> None:
+        """Emit UI events for a completed/failed sub-agent job."""
         if success:
             self._emit_event(
                 AgentEvent.subagent_completed(
@@ -295,7 +293,50 @@ class Agent:
                 )
             )
         self._emit_event(AgentEvent.tool_call_end("agent", content, success=success))
+
+    def inject_subagent_job_result(self, job) -> bool:
+        """Inject one finished sub-agent job into parent history.
+
+        If there are unresolved tool calls in the message history (e.g. the
+        main loop is mid-execution of a prior tool_calls message), the
+        injection is buffered to avoid interleaving assistant messages
+        between a tool_calls message and its tool responses — which would
+        violate the LLM API contract.
+        """
+        with self._state_lock:
+            if getattr(job, "injected_to_parent", False):
+                return False
+            job.injected_to_parent = True
+            content, success = self._format_subagent_job_message(job)
+
+            # Defer if there are unresolved tool calls in the message history.
+            if self._collect_pending_tool_calls():
+                self._pending_subagent_injections.append((job, content, success))
+                return True
+
+            self.state.messages.append({"role": "assistant", "content": content})
+
+        self._emit_subagent_completion_events(job, content, success)
         return True
+
+    def _flush_pending_subagent_injections(self) -> int:
+        """Flush buffered sub-agent injections. Safe to call after tool
+        execution when no unresolved tool_calls remain.
+
+        Returns the number of injections flushed.
+        """
+        pending: list[tuple] = []
+        with self._state_lock:
+            if not self._pending_subagent_injections:
+                return 0
+            pending = self._pending_subagent_injections[:]
+            self._pending_subagent_injections.clear()
+            for job, content, _success in pending:
+                self.state.messages.append({"role": "assistant", "content": content})
+
+        for job, content, success in pending:
+            self._emit_subagent_completion_events(job, content, success)
+        return len(pending)
 
     def _inject_completed_subagent_jobs(self) -> int:
         """Inject completed background sub-agent summaries into parent history."""
@@ -323,6 +364,10 @@ class Agent:
         self.reconcile_pending_tool_calls(
             reason="Recovered from previous interrupted turn."
         )
+
+        # Flush any sub-agent injections buffered because of the stale tool
+        # calls that were just reconciled above.
+        self._flush_pending_subagent_injections()
 
         self._emit_event(AgentEvent.chat_start(user_input))
 
