@@ -172,7 +172,7 @@ class ContextManager:
         self,
         max_tokens: int = 128_000,
         ui_bus: "UIEventBus | None" = None,
-        snip_keep_recent_tools: int = 5,
+        snip_keep_recent_tools: int = 2,
         snip_threshold_chars: int = 1500,
         snip_min_lines: int = 6,
         summarize_keep_recent_turns: int = 5,
@@ -385,10 +385,30 @@ class ContextManager:
         return False
 
     def _snip_tool_outputs(self, messages: list[dict]) -> bool:
-        """Layer 1: Truncate older tool results over threshold, keeping recent tool outputs intact."""
+        """Layer 1: Truncate old tool results over threshold.
+
+        Protection is round-based rather than message-count-based: we
+        walk backwards to find the N-th most recent assistant message
+        that carries ``tool_calls``, then protect *all* tool messages
+        from that round onwards.  A round may contain many tool calls
+        and we want to keep the complete working set intact.
+        """
         changed = False
+
+        # Find the split point: count backwards by assistant messages
+        # that carry tool_calls.  Each one marks the start of a round.
+        assistant_rounds = 0
+        cut_index = 0
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                assistant_rounds += 1
+                if assistant_rounds >= self._snip_keep_recent_tools:
+                    cut_index = i
+                    break
+
         tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-        protected = set(tool_indices[-self._snip_keep_recent_tools :])
+        protected = {i for i in tool_indices if i >= cut_index}
 
         for i, m in enumerate(messages):
             if i in protected or m.get("role") != "tool":

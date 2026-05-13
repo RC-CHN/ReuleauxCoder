@@ -167,7 +167,7 @@ class PromptConfig:
 class ContextConfig:
     """Context compression configuration."""
 
-    snip_keep_recent_tools: int = 5
+    snip_keep_recent_tools: int = 2  # number of recent agent rounds to protect
     snip_threshold_chars: int = 1500
     snip_min_lines: int = 6
     summarize_keep_recent_turns: int = 5
