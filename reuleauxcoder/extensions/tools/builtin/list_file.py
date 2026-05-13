@@ -5,12 +5,21 @@ from __future__ import annotations
 import datetime
 import fnmatch
 import os
+import re
 import stat
 from pathlib import Path
 
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
+
+
+_SANITIZE_RE = re.compile(r"[`*_\[\]|<>]")
+
+
+def _sanitize_name(name: str) -> str:
+    """Escape characters that could interfere with markdown rendering."""
+    return _SANITIZE_RE.sub(r"\\\g<0>", name)
 
 
 def _format_mode(mode: int) -> str:
@@ -160,14 +169,15 @@ class ListFileTool(Tool):
     @staticmethod
     def _format_single(resolved: Path, *, long: bool) -> str:
         st = resolved.stat()
+        name = _sanitize_name(resolved.name)
         if long:
             return (
                 f"{_format_mode(st.st_mode)}  "
                 f"{st.st_size:>8}  "
                 f"{_format_mtime(st.st_mtime)}  "
-                f"{resolved.name}"
+                f"{name}"
             )
-        return resolved.name
+        return name
 
     @staticmethod
     def _list_dir(
@@ -200,13 +210,13 @@ class ListFileTool(Tool):
 
         if long:
             return [
-                f"{_format_mode(mode)}  {size:>8}  {_format_mtime(mtime)}  {name}"
+                f"{_format_mode(mode)}  {size:>8}  {_format_mtime(mtime)}  {_sanitize_name(name)}"
                 f"{'/' if stat.S_ISDIR(mode) else ''}"
                 for name, mode, size, mtime in entries
             ]
         else:
             return [
-                f"{name}{'/' if stat.S_ISDIR(mode) else ''}"
+                f"{_sanitize_name(name)}{'/' if stat.S_ISDIR(mode) else ''}"
                 for name, mode, _size, _mtime in entries
             ]
 
