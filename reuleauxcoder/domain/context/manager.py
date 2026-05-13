@@ -426,6 +426,7 @@ class ContextManager:
                 + "\n".join(lines[-3:])
             )
             m["content"] = snipped
+            m.pop("_rc_token_count", None)  # invalidate stale cache
             changed = True
         return changed
 
@@ -541,7 +542,7 @@ class ContextManager:
         if not self._ui_bus:
             return
 
-        after_tokens = estimate_tokens(after_messages)
+        after_tokens = self.get_context_tokens(after_messages)
         after_message_count = len(after_messages)
         after_snapshot = self._snapshot_messages(after_messages)
         strategy = self._describe_strategy(applied_layers)

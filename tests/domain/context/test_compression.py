@@ -3,6 +3,8 @@ from reuleauxcoder.domain.context.compression import (
     SummarizeStrategy,
     ToolOutputSnipStrategy,
 )
+from reuleauxcoder.domain.context.manager import ContextManager
+from reuleauxcoder.interfaces.events import UIEventBus
 
 
 class DummyResponse:
@@ -98,3 +100,94 @@ def test_hard_collapse_strategy_keeps_tail_with_reset_markers() -> None:
 def test_hard_collapse_strategy_skips_when_message_count_small() -> None:
     messages = [{"role": "user", "content": f"msg {i}"} for i in range(4)]
     assert HardCollapseStrategy().compress(messages) is False
+
+
+# ---------------------------------------------------------------------------
+# Integration: token count actually drops after snip
+# ---------------------------------------------------------------------------
+
+def _build_realistic_conversation(
+    rounds: int = 4,
+    large_tool_lines: int = 200,
+) -> list[dict]:
+    """Build a conversation with alternating user/assistant and big tool outputs."""
+    msgs: list[dict] = [
+        {"role": "system", "content": "You are a coding assistant."},
+        {"role": "user", "content": "Refactor the auth module."},
+    ]
+    for r in range(rounds):
+        msgs.append({
+            "role": "assistant",
+            "content": f"Working on round {r}...",
+            "tool_calls": [{"id": f"tc_{r}", "name": "read_file", "arguments": {}}],
+        })
+        # Large tool output simulating an override read
+        msgs.append({
+            "role": "tool",
+            "tool_call_id": f"tc_{r}",
+            "content": "\n".join(
+                f"line {i}: {'x' * 30}" for i in range(large_tool_lines)
+            ),
+        })
+    return msgs
+
+
+def test_snip_reduces_token_count() -> None:
+    """After _snip_tool_outputs runs, get_context_tokens returns fewer tokens."""
+    messages = _build_realistic_conversation(rounds=5, large_tool_lines=200)
+
+    mgr = ContextManager(
+        max_tokens=1_000_000,
+        ui_bus=UIEventBus(),
+        snip_keep_recent_tools=2,
+    )
+
+    before = mgr.get_context_tokens(messages)
+    # Force snip
+    changed = mgr._snip_tool_outputs(messages)
+    after = mgr.get_context_tokens(messages)
+
+    assert changed is True
+    assert after < before, f"Expected token count to drop, got {before} → {after}"
+
+
+def test_maybe_compress_snip_counts_after_change() -> None:
+    """maybe_compress with snip-only path: after-token count reflects the snip."""
+    messages = _build_realistic_conversation(rounds=6, large_tool_lines=300)
+
+    # Use a small max_tokens so the snip threshold is easily crossed
+    mgr = ContextManager(
+        max_tokens=30_000,
+        ui_bus=UIEventBus(),
+        snip_keep_recent_tools=2,
+    )
+
+    before = mgr.get_context_tokens(messages)
+    compressed = mgr.maybe_compress(messages)
+    after = mgr.get_context_tokens(messages)
+
+    assert compressed is True, f"maybe_compress returned False (tokens={before})"
+    assert after < before, f"maybe_compress snip: {before} → {after}"
+
+
+def test_snip_invalidates_token_cache() -> None:
+    """After _snip_tool_outputs mutates content, _rc_token_count cache is cleared."""
+    messages = _build_realistic_conversation(rounds=3, large_tool_lines=300)
+
+    mgr = ContextManager(max_tokens=1_000_000)
+
+    # Prime the cache
+    mgr.get_context_tokens(messages)
+    for m in messages:
+        if m.get("role") == "tool" and len(m.get("content", "")) > 1500:
+            assert "_rc_token_count" in m, "Cache should be primed"
+
+    changed = mgr._snip_tool_outputs(messages)
+    assert changed
+
+    # All snipped messages should have their cache cleared
+    for m in messages:
+        if m.get("role") == "tool" and "snipped" in m.get("content", ""):
+            assert "_rc_token_count" not in m, (
+                f"Snipped message still has stale _rc_token_count={m.get('_rc_token_count')}"
+            )
