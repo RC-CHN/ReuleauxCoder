@@ -270,7 +270,9 @@ class Agent:
         )
         return error_text, False
 
-    def _emit_subagent_completion_events(self, job, content: str, success: bool) -> None:
+    def _emit_subagent_completion_events(
+        self, job, content: str, success: bool
+    ) -> None:
         """Emit UI events for a completed/failed sub-agent job."""
         if success:
             self._emit_event(

@@ -72,17 +72,19 @@ def test_inject_defers_when_pending_tool_calls_exist() -> None:
     agent.add_event_handler(events.append)
 
     # Simulate a pending tool call that hasn't been responded to yet.
-    agent.state.messages.append({
-        "role": "assistant",
-        "content": "calling tool...",
-        "tool_calls": [
-            {
-                "id": "call_pending_001",
-                "type": "function",
-                "function": {"name": "shell", "arguments": "{}"},
-            }
-        ],
-    })
+    agent.state.messages.append(
+        {
+            "role": "assistant",
+            "content": "calling tool...",
+            "tool_calls": [
+                {
+                    "id": "call_pending_001",
+                    "type": "function",
+                    "function": {"name": "shell", "arguments": "{}"},
+                }
+            ],
+        }
+    )
 
     job = SimpleNamespace(
         id="sj_bg_1",
@@ -108,11 +110,13 @@ def test_inject_defers_when_pending_tool_calls_exist() -> None:
     assert len(events) == 0
 
     # After resolving the pending tool call, flushing should release it.
-    agent.state.messages.append({
-        "role": "tool",
-        "tool_call_id": "call_pending_001",
-        "content": "ok",
-    })
+    agent.state.messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": "call_pending_001",
+            "content": "ok",
+        }
+    )
     flushed = agent._flush_pending_subagent_injections()
     assert flushed == 1
 

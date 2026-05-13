@@ -95,11 +95,13 @@ def build_subagent_approval_provider(
     def locked_handler(pending: PendingApproval) -> None:
         # Enrich the request with sub-agent attribution so the human
         # handler (CLI / TUI) can display the sub-agent source.
-        pending.request.metadata.update({
-            "is_subagent": True,
-            "subagent_mode": subagent_mode,
-            "subagent_task": subagent_task,
-        })
+        pending.request.metadata.update(
+            {
+                "is_subagent": True,
+                "subagent_mode": subagent_mode,
+                "subagent_task": subagent_task,
+            }
+        )
         pending.request.reason = (
             f"{pending.request.reason or 'sub-agent approval request'}; "
             "parent_llm=escalate"

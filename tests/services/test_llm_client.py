@@ -100,7 +100,9 @@ def test_sanitize_messages_keeps_reasoning_for_tool_assistant_when_present() -> 
     assert sanitized[0]["reasoning_content"] == "need to inspect files first"
 
 
-def test_sanitize_messages_does_not_require_tool_reasoning_without_replay_mode() -> None:
+def test_sanitize_messages_does_not_require_tool_reasoning_without_replay_mode() -> (
+    None
+):
     messages = [
         {
             "role": "assistant",
@@ -220,7 +222,10 @@ def test_sanitize_messages_backfills_missing_reasoning_for_non_tool_assistant_in
                 {
                     "id": "tool_1",
                     "type": "function",
-                    "function": {"name": "agent", "arguments": '{"tasks":["..."],"run_in_background":true}'},
+                    "function": {
+                        "name": "agent",
+                        "arguments": '{"tasks":["..."],"run_in_background":true}',
+                    },
                 }
             ],
         },
@@ -245,7 +250,9 @@ def test_sanitize_messages_backfills_missing_reasoning_for_non_tool_assistant_in
     assert sanitized[3]["reasoning_content"] == "[PLACE_HOLDER]"
 
 
-def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_required() -> None:
+def test_sanitize_messages_fallbacks_empty_reasoning_for_tool_assistant_when_required() -> (
+    None
+):
     messages = [
         {
             "role": "assistant",

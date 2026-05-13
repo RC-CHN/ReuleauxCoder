@@ -250,7 +250,9 @@ def _resolve_rule_source(
     return "workspace"
 
 
-def _build_tool_catalog(agent, builtin_tools: list) -> list[tuple[str, str, str | None]]:
+def _build_tool_catalog(
+    agent, builtin_tools: list
+) -> list[tuple[str, str, str | None]]:
     """Collect visible tools as (name, tool_source, mcp_server)."""
     catalog: dict[tuple[str, str, str | None], None] = {}
 

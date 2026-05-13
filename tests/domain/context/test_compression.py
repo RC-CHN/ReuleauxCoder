@@ -106,6 +106,7 @@ def test_hard_collapse_strategy_skips_when_message_count_small() -> None:
 # Integration: token count actually drops after snip
 # ---------------------------------------------------------------------------
 
+
 def _build_realistic_conversation(
     rounds: int = 4,
     large_tool_lines: int = 200,
@@ -116,19 +117,23 @@ def _build_realistic_conversation(
         {"role": "user", "content": "Refactor the auth module."},
     ]
     for r in range(rounds):
-        msgs.append({
-            "role": "assistant",
-            "content": f"Working on round {r}...",
-            "tool_calls": [{"id": f"tc_{r}", "name": "read_file", "arguments": {}}],
-        })
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": f"Working on round {r}...",
+                "tool_calls": [{"id": f"tc_{r}", "name": "read_file", "arguments": {}}],
+            }
+        )
         # Large tool output simulating an override read
-        msgs.append({
-            "role": "tool",
-            "tool_call_id": f"tc_{r}",
-            "content": "\n".join(
-                f"line {i}: {'x' * 30}" for i in range(large_tool_lines)
-            ),
-        })
+        msgs.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"tc_{r}",
+                "content": "\n".join(
+                    f"line {i}: {'x' * 30}" for i in range(large_tool_lines)
+                ),
+            }
+        )
     return msgs
 
 

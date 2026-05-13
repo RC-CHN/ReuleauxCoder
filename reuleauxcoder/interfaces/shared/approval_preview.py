@@ -66,9 +66,7 @@ def build_preview_diff(request: ApprovalRequest) -> str | None:
     return None
 
 
-def _unified_diff(
-    old: str, new: str, filename: str, context: int = 3
-) -> str | None:
+def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str | None:
     """Compute a unified diff between *old* and *new* text.
 
     Truncates output to ~3 000 characters to keep approval dialogs

@@ -301,28 +301,33 @@ class CLIRenderer:
             lines = result.splitlines()
             try:
                 begin = next(
-                    i for i, ln in enumerate(lines)
+                    i
+                    for i, ln in enumerate(lines)
                     if ln.startswith("--- BEGIN TRUNCATED OUTPUT ---")
                 )
                 end = next(
-                    i for i, ln in enumerate(lines)
+                    i
+                    for i, ln in enumerate(lines)
                     if ln.startswith("--- END TRUNCATED OUTPUT ---")
                 )
             except StopIteration:
                 return result  # malformed — show as-is
 
-            header = lines[: begin + 1]   # stats + BEGIN marker
+            header = lines[: begin + 1]  # stats + BEGIN marker
             body = lines[begin + 1 : end]
-            footer = lines[end:]          # END marker
+            footer = lines[end:]  # END marker
 
             if len(body) <= 6:
-                return result              # small enough, no need to compact
+                return result  # small enough, no need to compact
 
             return (
-                "\n".join(header) + "\n"
-                + "\n".join(body[:3]) + "\n"
+                "\n".join(header)
+                + "\n"
+                + "\n".join(body[:3])
+                + "\n"
                 + f"... ({len(body) - 6} more lines) ...\n"
-                + "\n".join(body[-3:]) + "\n"
+                + "\n".join(body[-3:])
+                + "\n"
                 + "\n".join(footer)
             )
 

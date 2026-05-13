@@ -106,8 +106,11 @@ class ListFileTool(Tool):
         pattern: str | None = None,
     ) -> str:
         return self.run_backend(
-            path=path, all=all, long=long,
-            recursive=recursive, pattern=pattern,
+            path=path,
+            all=all,
+            long=long,
+            recursive=recursive,
+            pattern=pattern,
         )
 
     @backend_handler("remote_relay")
@@ -119,10 +122,16 @@ class ListFileTool(Tool):
         recursive: bool = False,
         pattern: str | None = None,
     ) -> str:
-        return self.backend.exec_tool("list_file", {
-            "path": path, "all": all, "long": long,
-            "recursive": recursive, "pattern": pattern,
-        })
+        return self.backend.exec_tool(
+            "list_file",
+            {
+                "path": path,
+                "all": all,
+                "long": long,
+                "recursive": recursive,
+                "pattern": pattern,
+            },
+        )
 
     @backend_handler("local")
     def _execute_local(
@@ -144,8 +153,11 @@ class ListFileTool(Tool):
         # Directory
         lines = self._list_dir(resolved, all=all, long=long, pattern=pattern)
         if not lines:
-            note = f"(no entries matching '{pattern}' in '{path}')" if pattern \
-                   else f"(empty directory: '{path}')"
+            note = (
+                f"(no entries matching '{pattern}' in '{path}')"
+                if pattern
+                else f"(empty directory: '{path}')"
+            )
             return note
 
         header = f"{resolved}{'/' if resolved.is_dir() else ''}:\n" if long else ""
@@ -155,8 +167,11 @@ class ListFileTool(Tool):
             subdirs = self._collect_subdirs(resolved, all=all)
             for sub in sorted(subdirs):
                 sub_output = self._execute_local(
-                    path=str(sub), all=all, long=long,
-                    recursive=True, pattern=pattern,
+                    path=str(sub),
+                    all=all,
+                    long=long,
+                    recursive=True,
+                    pattern=pattern,
                 )
                 output += "\n\n" + sub_output
 
@@ -181,7 +196,11 @@ class ListFileTool(Tool):
 
     @staticmethod
     def _list_dir(
-        root: Path, *, all: bool, long: bool, pattern: str | None,
+        root: Path,
+        *,
+        all: bool,
+        long: bool,
+        pattern: str | None,
     ) -> list[str]:
         """Collect and format entries in *root*.  Returns formatted lines."""
         entries: list[tuple[str, int, int, float]] = []  # name, mode, size, mtime

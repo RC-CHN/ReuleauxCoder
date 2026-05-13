@@ -8,6 +8,7 @@ from reuleauxcoder.domain.llm.models import ToolCall
 
 class _ShellToolStub:
     """A minimal stub mimicking ShellTool, with _cwd tracking."""
+
     name = "shell"
     description = "Run a shell command"
     parameters = {}

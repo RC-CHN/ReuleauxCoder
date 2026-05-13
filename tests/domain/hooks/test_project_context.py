@@ -27,6 +27,7 @@ def _make_context(messages: list[dict] | None = None) -> BeforeLLMRequestContext
 # Loading
 # ---------------------------------------------------------------------------
 
+
 def test_load_returns_empty_when_no_files(tmp_path: Path, monkeypatch) -> None:
     """No context files → empty list."""
     monkeypatch.chdir(tmp_path)
@@ -44,7 +45,8 @@ def test_load_finds_agent_md(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_load_collects_all_existing_in_fixed_order(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     """Multiple candidates → all found, in DEFAULT_CONTEXT_FILES order."""
     (tmp_path / "CLAUDE.md").write_text("CLAUDE")
@@ -67,6 +69,7 @@ def test_load_skips_empty_files(tmp_path: Path, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 # Injection
 # ---------------------------------------------------------------------------
+
 
 def test_run_injects_single_file(tmp_path: Path, monkeypatch) -> None:
     """Single AGENT.md → one system message at index 1."""
@@ -148,6 +151,7 @@ def test_transformed_messages_flow_to_request_params() -> None:
 # ---------------------------------------------------------------------------
 # Order stability
 # ---------------------------------------------------------------------------
+
 
 def test_default_context_files_order_is_stable() -> None:
     """DEFAULT_CONTEXT_FILES is deterministic — must not change accidentally."""

@@ -65,7 +65,9 @@ class ConfigLoader:
         params: dict = {}
         for field in self._LLM_PARAM_FIELDS:
             profile_val = (
-                getattr(active_profile, field, None) if active_profile is not None else None
+                getattr(active_profile, field, None)
+                if active_profile is not None
+                else None
             )
             if profile_val is not None:
                 params[field] = profile_val
@@ -180,7 +182,7 @@ class ConfigLoader:
         if not has_runtime_config:
             self._generate_example_global_config()
             raise ExampleConfigError(
-                f"\n  Welcome to ReuleauxCoder! \U0001F389\n\n"
+                f"\n  Welcome to ReuleauxCoder! \U0001f389\n\n"
                 f"  No config.yaml found. I've created an example at:\n"
                 f"    {self.GLOBAL_CONFIG_PATH}\n\n"
                 "  Please edit it with your API key and model settings, then restart.\n"

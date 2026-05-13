@@ -237,9 +237,7 @@ class LLM:
             params["reasoning_effort"] = self.reasoning_effort
         if self.thinking_enabled is not None:
             params["extra_body"] = {
-                "thinking": {
-                    "type": "enabled" if self.thinking_enabled else "disabled"
-                }
+                "thinking": {"type": "enabled" if self.thinking_enabled else "disabled"}
             }
 
         if tools:
@@ -405,9 +403,9 @@ class LLM:
                         "reasoning_replay_mode": self.reasoning_replay_mode or "none",
                         "thinking_enabled": self.thinking_enabled,
                         "thinking_type": (
-                            ((params.get("extra_body") or {}).get("thinking") or {}).get(
-                                "type"
-                            )
+                            (
+                                (params.get("extra_body") or {}).get("thinking") or {}
+                            ).get("type")
                         ),
                         "preserve_reasoning_content": self.preserve_reasoning_content,
                     },

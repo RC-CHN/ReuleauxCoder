@@ -16,7 +16,9 @@ from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 class AgentLoop:
     """Manages the agent's conversation loop."""
 
-    def __init__(self, agent: "Agent", *, prompt_fn: Callable[..., str], shell_name: str):
+    def __init__(
+        self, agent: "Agent", *, prompt_fn: Callable[..., str], shell_name: str
+    ):
         self.agent = agent
         self._prompt_fn = prompt_fn
         self._shell = shell_name

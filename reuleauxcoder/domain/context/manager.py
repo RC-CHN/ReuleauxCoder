@@ -70,11 +70,15 @@ def ensure_message_token_counts(
     """Ensure messages have cached token counts and return the total."""
     total = 0
     for message in messages:
-        total += estimate_message_tokens(message, refresh=refresh, token_fudge_factor=token_fudge_factor)
+        total += estimate_message_tokens(
+            message, refresh=refresh, token_fudge_factor=token_fudge_factor
+        )
     return total
 
 
-def estimate_tokens_tiktoken(messages: list[dict], token_fudge_factor: float = 1.1) -> int:
+def estimate_tokens_tiktoken(
+    messages: list[dict], token_fudge_factor: float = 1.1
+) -> int:
     """Estimate token count using per-message cached counts with tiktoken fallback."""
     return ensure_message_token_counts(messages, token_fudge_factor=token_fudge_factor)
 
@@ -364,7 +368,9 @@ class ContextManager:
         if strategy == "snip":
             changed = self._snip_tool_outputs(messages)
             if changed:
-                self._last_compact_tokens = estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
+                self._last_compact_tokens = estimate_tokens(
+                    messages, token_fudge_factor=self._token_fudge_factor
+                )
                 self._last_compact_strategy = "snip"
             return changed
         if strategy == "summarize":
@@ -372,14 +378,18 @@ class ContextManager:
                 messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns
             )
             if changed:
-                self._last_compact_tokens = estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
+                self._last_compact_tokens = estimate_tokens(
+                    messages, token_fudge_factor=self._token_fudge_factor
+                )
                 self._last_compact_strategy = "summarize"
             return changed
         if strategy == "collapse":
             if len(messages) <= 4:
                 return False
             self._hard_collapse(messages, llm)
-            self._last_compact_tokens = estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
+            self._last_compact_tokens = estimate_tokens(
+                messages, token_fudge_factor=self._token_fudge_factor
+            )
             self._last_compact_strategy = "collapse"
             return True
         return False

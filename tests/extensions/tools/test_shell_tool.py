@@ -94,7 +94,9 @@ def test_run_powershell_legacy_replaces_and_operator():
         mock_info = mock.MagicMock()
         mock_info.get_preferred_shell.return_value = ShellType.POWERSHELL
         mock_info.get_shell_executable.return_value = [
-            "powershell", "-NoProfile", "-Command"
+            "powershell",
+            "-NoProfile",
+            "-Command",
         ]
         mock_platform.return_value = mock_info
 
@@ -107,9 +109,7 @@ def test_run_powershell_legacy_replaces_and_operator():
 
     cmd_passed = mock_run.call_args[0][0]
     normalized_part = cmd_passed[-1]
-    assert "&&" not in normalized_part, (
-        "&& should be replaced in legacy PowerShell"
-    )
+    assert "&&" not in normalized_part, "&& should be replaced in legacy PowerShell"
     assert ";" in normalized_part
 
 
