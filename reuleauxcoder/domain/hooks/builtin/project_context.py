@@ -17,9 +17,12 @@ from reuleauxcoder.domain.hooks.types import (
 )
 
 
-# Candidate filenames to search for project context, in priority order
+# Candidate filenames to search for project context.
+# All existing files are loaded and concatenated in this fixed order
+# so the KV cache prefix stays stable across requests.
 DEFAULT_CONTEXT_FILES = [
     "AGENT.md",
+    "AGENTS.md",
     ".agent.md",
     "CLAUDE.md",
     ".claude.md",
@@ -53,44 +56,53 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
         return cls(priority=50)
 
     def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
-        content, filename = self._load_project_context()
-        if content:
-            # Insert after system prompt (index 0), before conversation history
-            # This ensures stable prefix for KV cache matching
+        parts = self._load_all_project_contexts()
+        if parts:
+            # Insert after system prompt (index 0), before conversation history.
+            # All found files are concatenated in the fixed DEFAULT_CONTEXT_FILES
+            # order so the KV cache prefix stays stable.
             context.messages.insert(
                 1,
                 {
                     "role": "system",
-                    "content": self._format_message(content),
+                    "content": self._format_multi_message(parts),
                 },
             )
         return context
 
-    def _load_project_context(self) -> tuple[str | None, str | None]:
-        """Load the first found project context file from cwd.
+    def _load_all_project_contexts(self) -> list[tuple[str, str]]:
+        """Load all existing project context files from cwd.
 
         Returns:
-            Tuple of (content, filename) or (None, None) if no file found.
+            List of (filename, content) tuples in DEFAULT_CONTEXT_FILES order.
+            Empty list if no files found.
         """
         cwd = Path.cwd()
+        found: list[tuple[str, str]] = []
         for filename in self.context_files:
             candidate = cwd / filename
             if candidate.exists() and candidate.is_file():
                 try:
-                    return candidate.read_text(encoding="utf-8").strip(), filename
+                    content = candidate.read_text(encoding="utf-8").strip()
+                    if content:
+                        found.append((filename, content))
                 except OSError:
                     # Skip files that can't be read
                     continue
-        return None, None
+        return found
 
-    def _format_message(self, content: str) -> str:
-        """Format project context as a system message."""
-        return (
+    def _format_multi_message(self, parts: list[tuple[str, str]]) -> str:
+        """Format multiple project context files into a single system message."""
+        header = (
             "[Project Context]\n"
-            "This is project-level context from a local file (e.g., AGENT.md). "
+            "This is project-level context from local file(s) "
+            "(e.g. AGENT.md, CLAUDE.md). "
             "It provides project-specific instructions and conventions.\n"
-            f"{content}"
         )
+        sections: list[str] = [header]
+        for filename, content in parts:
+            sections.append(f"--- {filename} ---\n{content}")
+        return "\n".join(sections)
 
 
 @register_hook(HookPoint.RUNNER_STARTUP, priority=0)
@@ -111,18 +123,19 @@ class ProjectContextStartupNotifier(ObserverHook[RunnerStartupContext]):
 
     def run(self, context: RunnerStartupContext) -> None:
         cwd = Path.cwd()
+        found: list[str] = []
         for filename in DEFAULT_CONTEXT_FILES:
             candidate = cwd / filename
             if candidate.exists() and candidate.is_file():
-                ui_bus = context.metadata.get("ui_bus") if context.metadata else None
-                if ui_bus is not None:
-                    try:
-                        from reuleauxcoder.interfaces.events import UIEventKind
+                found.append(filename)
+        if found and (ui_bus := (context.metadata or {}).get("ui_bus")):
+            try:
+                from reuleauxcoder.interfaces.events import UIEventKind
 
-                        ui_bus.info(
-                            f"Loaded project context: {filename}",
-                            kind=UIEventKind.CONTEXT,
-                        )
-                    except Exception:
-                        pass
-                break
+                names = ", ".join(found)
+                ui_bus.info(
+                    f"Loaded project context: {names}",
+                    kind=UIEventKind.CONTEXT,
+                )
+            except Exception:
+                pass

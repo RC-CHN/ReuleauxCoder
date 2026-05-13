@@ -269,6 +269,9 @@ class LLM:
             hook_registry.run_observers(HookPoint.BEFORE_LLM_REQUEST, before_context)
 
         params = dict(before_context.request_params)
+        # Use messages from the transform chain so hooks like
+        # ProjectContextHook can inject additional context.
+        params["messages"] = before_context.messages
 
         debug_stream_events: list[dict[str, Any]] = []
         debug_stream_options_enabled = False
