@@ -140,6 +140,7 @@ DEFAULTS = {
         {"tool_name": "read_file", "action": "allow"},
         {"tool_name": "glob", "action": "allow"},
         {"tool_name": "grep", "action": "allow"},
+        {"tool_name": "list_file", "action": "allow"},
         {"tool_name": "write_file", "action": "require_approval"},
         {"tool_name": "edit_file", "action": "require_approval"},
         {"tool_name": "shell", "action": "require_approval"},
@@ -155,7 +156,7 @@ DEFAULTS = {
     "session_dir": None,  # Will be computed at runtime
     "history_file": None,  # Will be computed at runtime
     "llm_debug_trace": False,
-    "snip_keep_recent_tools": 5,
+    "snip_keep_recent_tools": 2,
     "snip_threshold_chars": 1500,
     "snip_min_lines": 6,
     "summarize_keep_recent_turns": 5,
