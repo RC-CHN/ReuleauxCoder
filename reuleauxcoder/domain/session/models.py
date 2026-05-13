@@ -118,8 +118,20 @@ class Session:
         }
 
     def get_preview(self) -> str:
-        """Get preview text from first user message."""
+        """Build a preview showing the first user message and the last
+        non-system message so both the topic and the end-state are visible.
+        """
+        first_user = ""
+        last_content = ""
         for m in self.messages:
-            if m.get("role") == "user" and m.get("content"):
-                return m["content"][:80]
+            if m.get("role") == "user" and m.get("content") and not first_user:
+                first_user = m["content"].replace("\n", " ").strip()
+            if m.get("content") and m.get("role") in ("user", "assistant"):
+                text = m["content"].replace("\n", " ").strip()
+                if text:
+                    last_content = text
+        if first_user and last_content:
+            return f"{first_user[:60]} ... {last_content[:60]}"
+        if first_user:
+            return first_user[:80]
         return ""
