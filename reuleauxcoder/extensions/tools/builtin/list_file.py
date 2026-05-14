@@ -49,10 +49,10 @@ def _format_mtime(ts: float) -> str:
 class ListFileTool(Tool):
     name = "list_file"
     description = (
-        "List files and directories. "
-        "Pure read-only — no shell involved, always safe. "
-        "Use this for exploring project structure, checking what files "
-        "exist, or verifying paths."
+        "List files and directories. Pure read-only — no shell involved, always safe. "
+        "Use this for exploring project structure, checking what files exist, "
+        "or verifying paths.  Prefer this over `shell ls` — it is faster, safer, "
+        "and returns structured output that is easier for the model to consume."
     )
     parameters = {
         "type": "object",
