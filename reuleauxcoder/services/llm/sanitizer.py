@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from reuleauxcoder.domain.llm.models import EMPTY_ASSISTANT_CONTENT_PLACEHOLDER
+
 DEFAULT_REASONING_REPLAY_PLACEHOLDER = "[PLACE_HOLDER]"
 
 
@@ -60,6 +62,9 @@ def _sanitize_messages_for_llm_core(
                 replay_reasoning_for_non_tool_assistant or user_turn_had_tool_calls
             ):
                 item.pop("reasoning_content", None)
+            content = item.get("content")
+            if content is None or not str(content).strip():
+                item["content"] = EMPTY_ASSISTANT_CONTENT_PLACEHOLDER
             sanitized.append(item)
             continue
 

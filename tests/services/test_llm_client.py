@@ -1,8 +1,75 @@
 import json
 
+from reuleauxcoder.domain.llm.models import (
+    EMPTY_ASSISTANT_CONTENT_PLACEHOLDER,
+    LLMResponse,
+    ToolCall,
+)
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 from reuleauxcoder.services.llm.client import LLM
 from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
+
+
+def test_llm_response_message_backfills_empty_assistant_content() -> None:
+    response = LLMResponse(reasoning_content="reasoning only")
+
+    assert response.message["content"] == EMPTY_ASSISTANT_CONTENT_PLACEHOLDER
+    assert response.message["reasoning_content"] == "reasoning only"
+    assert "tool_calls" not in response.message
+
+
+def test_llm_response_message_keeps_null_content_for_tool_calls() -> None:
+    response = LLMResponse(
+        tool_calls=[ToolCall(id="tool_1", name="glob", arguments={})],
+    )
+
+    assert response.message["content"] is None
+    assert response.message["tool_calls"][0]["id"] == "tool_1"
+
+
+def test_sanitize_messages_backfills_reasoning_only_assistant_content() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "reasoning_content": "reasoning only",
+        }
+    ]
+
+    sanitized = sanitize_messages_for_llm(messages, preserve_reasoning_content=True)
+
+    assert sanitized[0]["content"] == EMPTY_ASSISTANT_CONTENT_PLACEHOLDER
+    assert "reasoning_content" not in sanitized[0]
+
+
+def test_sanitize_messages_backfills_empty_assistant_content_in_tool_turn() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "need tool first",
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "glob", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "ok"},
+        {
+            "role": "assistant",
+            "reasoning_content": "reasoning only after tool",
+        },
+    ]
+
+    sanitized = sanitize_messages_for_llm(
+        messages,
+        preserve_reasoning_content=True,
+        reasoning_replay_mode="tool_calls",
+    )
+
+    assert sanitized[2]["content"] == EMPTY_ASSISTANT_CONTENT_PLACEHOLDER
+    assert sanitized[2]["reasoning_content"] == "reasoning only after tool"
 
 
 def test_sanitize_messages_backfills_reasoning_content_for_assistant_tool_calls() -> (
