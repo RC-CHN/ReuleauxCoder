@@ -45,7 +45,7 @@ Pure business logic with no external dependencies. Contains core abstractions an
   - `registry.py` — `HookRegistry`: global hook store keyed by `HookPoint`, sorted by priority.
   - `discovery.py` — `discover_hook_specs()` scans `builtin/` for `@register_hook`-decorated classes.
   - `base.py` — `Hook` abstract base, `HookSpec` frozen dataclass for lazy instantiation.
-  - `builtin/` — `ToolPolicyGuardHook`, `ToolOutputTruncationHook`, `ProjectContextHook`, `ProjectContextStartupNotifier`.
+  - `builtin/` — `ToolPolicyGuardHook`, `ToolOutputTruncationHook`, `ProjectContextHook`, `ProjectContextStartupNotifier`, `LspEditObserverHook`, `LspDiagnosticsInjectorHook`.
 - **llm/**: LLM domain models
   - `models.py` — `LLMResponse` (content, tool_calls, usage, finish_reason), `ToolCall` (id, name, arguments), `TokenUsage`.
   - `messages.py` — `Message` types (system, user, assistant, tool), `ToolResult`.
@@ -122,9 +122,15 @@ Pluggable extension system.
   - `builtin/grep.py` — `GrepTool`: skips `.git`, `node_modules`, `__pycache__`, `.venv`, etc. via `_SKIP_DIRS`.
   - `builtin/glob.py` — `GlobTool`: recursive `**` support, skip-dirs filter.
   - `builtin/agent.py` — `AgentTool`: spawns sub-agents. `_parent_agent` ref for mode validation. Pre-flight: mutual exclusion of `task`/`tasks`, batch requires `mode='explore'` + `run_in_background=true`, `parallel_explore` caps (1-4).
+  - `builtin/lsp.py` — `LspTool`: unified LSP tool dispatching `goToDefinition` / `findReferences` / `documentSymbol` through the worker thread. Module-level `set_lsp_manager()` injected by `AppRunner`; all operations are read-only and do not require approval.
+- **lsp/**: Language Server Protocol integration
+  - `manager.py` — `LspManager`: singleton coordinator. Single-worker async thread owns all LSP subprocess creation/use/shutdown. `_get_or_create_server()` lazy-spawns with respawn limit (`MAX_RESPWANS=3`). `_abort_current` flag allows clean shutdown without waiting for in-flight requests. `send_request_sync()` bridges the main thread to the worker via a queue + future. `shutdown_all()` drains queues, signals the worker to close its own clients (same event loop), and clears `_results`. Supports `health_check()`, `enqueue_diagnostics()`, `drain_diagnostics()`, `notify_did_save()`.
+  - `client.py` — `LspClient`: JSON-RPC over stdio subprocess. Frame-based stdout reader (`readuntil(b"\\r\\n\\r\\n")` + `readexactly(content_length)`). Handles `spawn`, `initialize`, `didOpen`/`didChange`/`didSave`, `send_request`, `wait_for_diagnostics`, and `shutdown` with `.kill()` fallback. Stderr goes to `DEVNULL`. `_fail_all_pending()` drains `_pending` futures (with `future.exception()` to avoid asyncio warnings).
+  - `registry.py` — `LanguageId` enum, `detect_language()` by extension, `get_server_command()` per-language (npx or native), workspace root markers.
+  - `diagnostics.py` — `Diagnostic`, `DiagnosticBlock` dataclasses, `render_blocks()` for human-readable output.
+  - `tool_helpers.py` — Active LSP tool formatting: `resolve_file_path`, `validate_position`, `format_locations`, `format_references`, `format_document_symbols`.
+  - `config.py` — `LspConfig` (`enabled`, `poll_timeout_ms`, `max_diagnostics`, `include_warnings`, `server_overrides`).
 - **command/**: Slash commands with `@register_command_module` + `ActionRegistry`
-  - Complete command list: `/help`, `/quit`/`/exit`, `/reset`, `/new`, `/compact [force <strategy>]`, `/tokens`, `/debug on/off`, `/save`, `/model <profile|use-main|use-sub|set-main|set-sub>`, `/mode <mode>`, `/skills [reload|enable|disable <n>]`, `/mcp [show|enable|disable <s>]`, `/approval [show|set ...|set-global ...]`, `/sessions [all]`, `/session <id|latest>`, `/jobs [get|wait <job_id>]`.
-  - Commands grouped by module: `system.py` (help/quit/reset/compact/tokens/debug), `sessions.py` (save/new/sessions/session), `model.py` (model switch), `mode.py` (mode switch), `skills.py`, `mcp.py`, `approval.py`, `subagent_jobs.py`.
 - **mcp/**: MCP server integration — `MCPManager` (independent asyncio loop in background thread), `MCPClient` (stdio JSON-RPC with reconnect-once), `MCPTool` (schema translation wrapping remote tools). Config per-server: `command`, `args`, `env`.
 - **skills/**: Skills system — `SkillsService` discovers skills from `SKILL.md` files, builds catalog with `Skill` objects (`name`, `description`, `location`). Supports enable/disable with persistence via `SkillsConfigStore`.
 - **subagent/**: `SubagentManager` — `_VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})`, `_DEFAULT_MAX_ROUNDS = 50`, `_DEFAULT_TIMEOUT_SECONDS = 300`, `_MAX_TIMEOUT_SECONDS = 3600`. `SubagentJob` dataclass tracks `job_id`, `status` (PENDING/RUNNING/COMPLETED/FAILED), `start_time`/`end_time`, `result`/`error`. Approval for sub-agents uses a judge-middleware pattern: `build_subagent_approval_provider()` returns `SharedApprovalProvider(handler=..., judges=[ParentLLMJudge(...)])` where `ParentLLMJudge` (a callable `ApprovalJudge`) delegates to the parent LLM first, and only escalates to the human handler if the judge returns `None`. Approval lock (RLock) wraps the handler to serialise terminal access across sub-agents. Manager takes `default_timeout_seconds` and `max_timeout_seconds` as injectable params.
@@ -337,7 +343,8 @@ Blocks are sorted by `(zone, order, key)` for deterministic output.
 Application initialization and dependency injection.
 - Uses `AppDependencies` for customizable component construction
 - Auto-discovers hooks via `discover_hook_specs()` + `instantiate_hooks()`
-- Manages MCP servers, skills service, and session restore/save lifecycle
+- Manages MCP servers, skills service, LSP infrastructure, and session restore/save lifecycle
+- LSP lifecycle: `health_check` → `start_worker` → inject `LspManager` into hooks (`LspEditObserverHook`, `LspDiagnosticsInjectorHook`) and the `lsp` tool module via `set_lsp_manager()` → on shutdown: `shutdown_all()` + `set_lsp_manager(None)`.
 - Computes the current session fingerprint from runtime/config
 - Auto-resume latest is fingerprint-scoped and resolves "latest" by most recently saved/updated session
 - Manual resume by explicit session id is allowed to cross fingerprints with warning
@@ -393,7 +400,7 @@ Key sections:
   - Core: `model`, `api_key`, `base_url`, `max_tokens`, `temperature`, `max_context_tokens`.
   - Reasoning: `thinking_enabled`, `reasoning_effort` (`"high"`/`"medium"`/`"low"`), `reasoning_replay_mode` (`"tool_calls"`/`"none"`), `preserve_reasoning_content`, `backfill_reasoning_content_for_tool_calls`.
 - **`modes`**: `active` selects current mode. Each `profiles.<mode>` has `description`, `prompt_append`, `tools` (allow list; `"*"` for all), `allowed_subagent_modes`.
-- **`approval`**: `default_mode` (`"allow"`/`"warn"`/`"require_approval"`/`"deny"`). `rules`: list of `{tool_name, tool_source, action}`. Tool source matches support `"mcp"`, `"mcp:<server>"`, `"mcp:<server>:<tool>"`.
+- **`approval`**: `default_mode` (`"allow"`/`"warn"`/`"require_approval"`/`"deny"`). `rules`: list of `{tool_name, tool_source, action}`. Tool source matches support `"mcp"`, `"mcp:<server>"`, `"mcp:<server>:<tool>"`. **Default allow-list** (read-only tools that never require approval) is defined in `domain/config/schema.py` → `DEFAULTS["approval_rules"]` and includes `read_file`, `glob`, `grep`, `list_file`, and `lsp`.
 - **`prompt`**: `system_append` for custom system prompt injection.
 - **`skills`**: `enabled` (bool), `disabled` (list of skill names to exclude), `dirs` (additional skill directories).
 - **`mcp.servers`**: `<name>` → `{command, args, env}`. MCP servers are stdio-based JSON-RPC subprocesses.
