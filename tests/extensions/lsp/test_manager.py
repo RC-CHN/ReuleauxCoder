@@ -225,13 +225,14 @@ class TestSendRequestSyncValidation:
     def test_raises_when_server_unavailable(
         self, manager: LspManager
     ) -> None:
-        with patch.object(manager, "_ensure_server_ready", return_value=None):
-            with pytest.raises(LspClientError, match="No LSP server available"):
-                manager.send_request_sync(
-                    Path("/tmp/test.py"),
-                    "textDocument/definition",
-                    {},
-                )
+        with pytest.raises(LspClientError, match="No LSP server available"):
+            manager.send_request_sync(
+                Path("/tmp/test.py"),
+                "textDocument/definition",
+                {},
+                timeout=1.0,
+            )
+        manager.shutdown_all()
 
 
 class TestEnqueueDiagnostics:

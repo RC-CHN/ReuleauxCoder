@@ -16,6 +16,7 @@ import concurrent.futures
 import logging
 import shutil
 import threading
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -171,7 +172,8 @@ class LspManager:
         with self._request_condition:
             self._request_condition.notify_all()
 
-        # Fail all pending tool requests
+        # Fail queued synchronous requests immediately.  The worker owns any
+        # in-flight request and will fail/finish it before shutting clients down.
         with self._lock:
             for req in self._tool_queue:
                 if not req.future.done():
@@ -179,24 +181,26 @@ class LspManager:
                         LspClientError("LSP manager shutting down")
                     )
             self._tool_queue.clear()
+            self._diagnostics_queue.clear()
+            self._notification_queue.clear()
 
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT)
             if self._worker_thread.is_alive():
                 logger.warning("LSP worker thread did not join in time")
-            self._worker_thread = None
+            else:
+                self._worker_thread = None
 
-        # Shutdown clients (run in a temp event loop)
-        clients = {}
-        with self._lock:
-            clients = dict(self._transports)
-            self._transports.clear()
-
-        for lang, client in clients.items():
-            try:
-                asyncio.run(client.shutdown())
-            except Exception:
-                pass
+        # Fallback for legacy/test-created clients when no worker is alive.
+        # Runtime clients are created and closed by the worker event loop.
+        if self._worker_thread is None:
+            clients: dict[LanguageId, LspClient]
+            with self._lock:
+                clients = dict(self._transports)
+                self._transports.clear()
+            for client in clients.values():
+                with suppress(Exception):
+                    asyncio.run(client.shutdown())
 
     # === Diagnostics (fire-and-forget) ===
 
@@ -241,17 +245,11 @@ class LspManager:
                 f"No LSP support for file type: {file_path.suffix}"
             )
 
-        # Ensure server is ready (spawn on main thread if needed)
-        server = self._ensure_server_ready(lang, file_path)
-        if server is None:
-            raise LspClientError(
-                f"No LSP server available for {get_language_id_string(lang)}"
-            )
-
-        # Start worker if not already running
+        # Start worker if not already running.  The worker owns LSP subprocesses,
+        # so it also handles lazy spawn before executing the request.
         self.start_worker()
 
-        # Enqueue the request — worker handles sync + query
+        # Enqueue the request — worker handles spawn + sync + query
         future: concurrent.futures.Future[Any] = concurrent.futures.Future()
         req = ToolRequest(
             file_path=file_path,
@@ -296,40 +294,43 @@ class LspManager:
         asyncio.run(self._async_worker_main())
 
     async def _async_worker_main(self) -> None:
-        """Main worker loop — sole writer to LSP subprocess stdin."""
+        """Main worker loop — sole owner of LSP subprocesses."""
         self._worker_loop = asyncio.get_event_loop()
 
-        while not self._stop_event.is_set():
-            # Collect work
-            with self._lock:
-                tool = self._tool_queue.pop(0) if self._tool_queue else None
-                diag = self._diagnostics_queue.pop(0) if self._diagnostics_queue else None
-                notif = self._notification_queue.pop(0) if self._notification_queue else None
+        try:
+            while not self._stop_event.is_set():
+                # Collect work
+                with self._lock:
+                    tool = self._tool_queue.pop(0) if self._tool_queue else None
+                    diag = self._diagnostics_queue.pop(0) if self._diagnostics_queue else None
+                    notif = self._notification_queue.pop(0) if self._notification_queue else None
 
-            if tool is not None:
-                await self._handle_tool_request(tool)
-            elif diag is not None:
-                await self._handle_diagnostics_request(*diag)
-            elif notif is not None:
-                await self._handle_notification(*notif)
-            else:
-                # No work — poll briefly, then check again.
-                # Using asyncio.sleep avoids blocking the event loop
-                # (unlike threading.Condition.wait which would stall it).
-                # The main thread's enqueue + condition.notify() reduces
-                # wakeup latency, but the poll interval is the worst case.
-                await asyncio.sleep(_WORKER_POLL_INTERVAL)
-
-        logger.info("LSP worker loop exited")
+                if tool is not None:
+                    await self._handle_tool_request(tool)
+                elif diag is not None:
+                    await self._handle_diagnostics_request(*diag)
+                elif notif is not None:
+                    await self._handle_notification(*notif)
+                else:
+                    # No work — poll briefly, then check again.
+                    # Using asyncio.sleep avoids blocking the event loop
+                    # (unlike threading.Condition.wait which would stall it).
+                    # The main thread's enqueue + condition.notify() reduces
+                    # wakeup latency, but the poll interval is the worst case.
+                    await asyncio.sleep(_WORKER_POLL_INTERVAL)
+        finally:
+            await self._shutdown_clients_async()
+            self._worker_loop = None
+            logger.info("LSP worker loop exited")
 
     async def _handle_tool_request(self, req: ToolRequest) -> None:
         """Process a synchronous active-tool request."""
         try:
-            server = self._transports.get(req.language_id)
-            if server is None or not server.is_alive:
+            server = await self._get_or_create_server(req.language_id, req.file_path)
+            if server is None:
                 req.future.set_exception(
                     LspClientError(
-                        f"LSP server for {req.language_id.name} is not running"
+                        f"No LSP server available for {get_language_id_string(req.language_id)}"
                     )
                 )
                 return
@@ -469,6 +470,21 @@ class LspManager:
         if server is not None and server.is_alive:
             return server
 
+        if server is not None:
+            await self._discard_transport_async(lang, server)
+            count = self._re_spawn_counts.get(lang, 0)
+            if count >= MAX_RESPWANS:
+                logger.error(
+                    "LSP server for %s failed %d times — disabled for this session",
+                    lang.name,
+                    MAX_RESPWANS,
+                )
+                with self._lock:
+                    self._availability[lang] = False
+                return None
+            with self._lock:
+                self._re_spawn_counts[lang] = count + 1
+
         return await self._spawn_async(lang, file_path)
 
     def _spawn_blocking(
@@ -561,6 +577,31 @@ class LspManager:
         """Spawn and initialize a client (shared by sync and async paths)."""
         await client.spawn(cmd, args)
         await client.initialize(init_opts)
+
+    async def _discard_transport_async(
+        self,
+        lang: LanguageId,
+        client: LspClient | None,
+    ) -> None:
+        """Remove and shut down a transport on the worker event loop."""
+        if client is None:
+            return
+        with self._lock:
+            if self._transports.get(lang) is client:
+                self._transports.pop(lang, None)
+        with suppress(Exception):
+            await client.shutdown()
+
+    async def _shutdown_clients_async(self) -> None:
+        """Shut down all transports on the worker event loop."""
+        with self._lock:
+            clients = dict(self._transports)
+            self._transports.clear()
+            self._last_sync_time.clear()
+
+        for client in clients.values():
+            with suppress(Exception):
+                await client.shutdown()
 
     def _re_spawn(self, lang: LanguageId, file_path: Path) -> LspClient | None:
         """Attempt to re-spawn a crashed LSP server."""

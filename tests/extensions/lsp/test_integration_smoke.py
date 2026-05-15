@@ -40,6 +40,9 @@ class DiagnosticCase:
     filename: str
     content: str
     expected_messages: tuple[str, ...]
+    setup_files: dict[str, str] | None = None
+    # ^ extra files to write into tmp_path before starting the LSP
+    #   (e.g. go.mod for gopls).  All are cleaned up with tmp_path.
 
 
 DIAGNOSTIC_CASES: tuple[DiagnosticCase, ...] = (
@@ -72,12 +75,46 @@ DIAGNOSTIC_CASES: tuple[DiagnosticCase, ...] = (
         content="root:\n  child: [1, 2\n",
         expected_messages=("Flow sequence", "end with a ]"),
     ),
+    DiagnosticCase(
+        language=LanguageId.BASH,
+        filename="broken.sh",
+        content="if [ -f /tmp/nope ]; then\n  echo yes\n",
+        expected_messages=("Couldn't find 'fi'",),
+    ),
+    DiagnosticCase(
+        language=LanguageId.GO,
+        filename="broken.go",
+        content="package main\n\nfunc main() {\n    x := \"hello\"\n}\n",
+        expected_messages=("declared and not used",),
+        setup_files={
+            "go.mod": "module test\n\ngo 1.21\n",
+        },
+    ),
+    DiagnosticCase(
+        language=LanguageId.C,
+        filename="broken.c",
+        content="#include <stdio.h>\n\nint main() {\n    int x = \"oops\";\n    return 0\n}\n",
+        expected_messages=("Incompatible pointer to integer conversion",),
+    ),
+    DiagnosticCase(
+        language=LanguageId.CPP,
+        filename="broken.cpp",
+        content="class Foo {\n    int x\n};\n",
+        expected_messages=("Expected ';' at end of declaration list",),
+    ),
+    DiagnosticCase(
+        language=LanguageId.RUST,
+        filename="src/main.rs",
+        content="fn main() {\n    let x: i32 = \"oops\";\n}\n",
+        expected_messages=("mismatched types",),
+        setup_files={
+            "Cargo.toml": "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        },
+    ),
 )
 
 
-STARTUP_ONLY_LANGUAGES: tuple[LanguageId, ...] = (
-    LanguageId.BASH,
-)
+STARTUP_ONLY_LANGUAGES: tuple[LanguageId, ...] = ()
 
 
 async def _collect_non_empty_diagnostics(
@@ -104,7 +141,15 @@ async def _run_diagnostic_case(case: DiagnosticCase, tmp_path: Path) -> list[Dia
     if shutil.which(cmd) is None:
         pytest.skip(f"{cmd} is not available on PATH")
 
+    # Write any auxiliary files the language server needs
+    if case.setup_files:
+        for name, text in case.setup_files.items():
+            p = tmp_path / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+
     file_path = tmp_path / case.filename
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(case.content, encoding="utf-8")
 
     client = LspClient(language_id=case.language, workspace_root=tmp_path)
@@ -163,7 +208,7 @@ def test_installed_lsp_starts_without_diagnostics_assertion(
 ) -> None:
     """Smoke-test installed LSPs that do not reliably publish diagnostics.
 
-    bash-language-server starts successfully, but it does not behave like
-    shellcheck and may not publish syntax diagnostics for simple broken files.
+    Currently empty — all installed language servers have diagnostics assertions.
+    Add languages here when a new LSP is installed but diagnostics are unreliable.
     """
     asyncio.run(_run_startup_smoke(language, tmp_path))

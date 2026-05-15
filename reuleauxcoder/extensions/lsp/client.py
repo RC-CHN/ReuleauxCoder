@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -88,7 +89,7 @@ class LspClient:
                 *full_args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
                 cwd=str(self._workspace_root),
             )
         except FileNotFoundError:
@@ -230,7 +231,8 @@ class LspClient:
 
     async def shutdown(self) -> None:
         """Gracefully shutdown the LSP server."""
-        if self._process is None:
+        process = self._process
+        if process is None:
             return
 
         logger.info(
@@ -253,17 +255,25 @@ class LspClient:
 
         if self._reader_task:
             self._reader_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._reader_task
+
+        if process.stdin is not None:
+            with suppress(Exception):
+                process.stdin.close()
+                await process.stdin.wait_closed()
 
         try:
-            self._process.stdin.close()  # type: ignore[union-attr]
-        except Exception:
-            pass
-
-        try:
-            await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            await asyncio.wait_for(process.wait(), timeout=5.0)
         except asyncio.TimeoutError:
-            self._process.kill()
-            await self._process.wait()
+            process.kill()
+            await process.wait()
+        finally:
+            self._fail_all_pending("LSP server shut down")
+            self._process = None
+            self._reader_task = None
+            self._initialized = False
+            self._diagnostics_buffer.clear()
 
     # === Internal: Request/Response ===
 
