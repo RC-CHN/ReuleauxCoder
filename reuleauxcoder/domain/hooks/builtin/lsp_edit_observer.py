@@ -27,7 +27,7 @@ from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
 
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
 _DIAGNOSTICS_POLL_DEADLINE = 2.5  # seconds — short poll for instant feedback
-_DIAGNOSTICS_POLL_INTERVAL = 0.25
+_DIAGNOSTICS_POLL_INTERVAL = 0.1
 
 
 def _extract_file_path(tool_name: str, arguments: dict) -> str | None:

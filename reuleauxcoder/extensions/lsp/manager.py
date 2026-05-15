@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # === Constants ===
 
 MAX_RESPWANS = 3
-WORKER_SHUTDOWN_TIMEOUT = 5.0
+WORKER_SHUTDOWN_TIMEOUT = 15.0  # must allow in-flight request to time out (10s) + cleanup
 _WORKER_POLL_INTERVAL = 0.1
 SPAWN_TIMEOUT = 30.0
 
@@ -106,6 +106,7 @@ class LspManager:
         # Worker thread
         self._worker_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._abort_current = False  # set during shutdown to skip in-flight work
         self._request_condition = threading.Condition()
 
         # Worker event loop reference (set once worker starts)
@@ -167,6 +168,7 @@ class LspManager:
     def shutdown_all(self) -> None:
         """Gracefully shutdown all LSP servers and stop the worker thread."""
         logger.info("Shutting down LSP manager")
+        self._abort_current = True  # tells worker to skip in-flight work
         self._stop_event.set()
 
         with self._request_condition:
@@ -183,6 +185,7 @@ class LspManager:
             self._tool_queue.clear()
             self._diagnostics_queue.clear()
             self._notification_queue.clear()
+            self._results.clear()
 
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT)
@@ -360,6 +363,12 @@ class LspManager:
                             logger.debug("LSP sync error (swallowed): %s", e)
 
             # Execute the actual LSP request
+            if self._abort_current:
+                req.future.set_exception(
+                    LspClientError("LSP manager shutting down")
+                )
+                return
+
             result = await asyncio.wait_for(
                 server.send_request(req.method, req.params),
                 timeout=req.timeout,
@@ -447,25 +456,6 @@ class LspManager:
 
     # === Internal: Server Lifecycle ===
 
-    def _ensure_server_ready(
-        self,
-        lang: LanguageId,
-        file_path: Path,
-    ) -> LspClient | None:
-        """Get or create an LSP server.  May block on initial spawn.
-
-        Called synchronously from the main thread.
-        """
-        with self._lock:
-            server = self._transports.get(lang)
-
-        if server is not None:
-            if server.is_alive:
-                return server
-            return self._re_spawn(lang, file_path)
-
-        return self._spawn_blocking(lang, file_path)
-
     async def _get_or_create_server(
         self,
         lang: LanguageId,
@@ -492,52 +482,6 @@ class LspManager:
                 self._re_spawn_counts[lang] = count + 1
 
         return await self._spawn_async(lang, file_path)
-
-    def _spawn_blocking(
-        self,
-        lang: LanguageId,
-        file_path: Path,
-    ) -> LspClient | None:
-        """Spawn + initialize from the main thread.
-
-        Creates a temporary asyncio event loop for the one-shot
-        spawn + initialize handshake.  After initialization, all
-        further communication goes through the worker thread.
-        """
-        if lang not in self._availability or not self._availability[lang]:
-            return None
-
-        root = self._resolve_root(lang, file_path)
-        cmd, args = self._resolve_command(lang)
-        init_opts = self._resolve_init_opts(lang)
-
-        client = LspClient(language_id=lang, workspace_root=root)
-
-        try:
-            # Use a temp event loop for spawn + initialize only
-            asyncio.run(self._do_spawn(client, cmd, args, init_opts))
-        except Exception as e:
-            logger.warning(
-                "Failed to spawn LSP server for %s (%s %s): %s",
-                lang.name,
-                cmd,
-                " ".join(args),
-                e,
-            )
-            with self._lock:
-                self._availability[lang] = False
-            return None
-
-        with self._lock:
-            self._transports[lang] = client
-            self._re_spawn_counts[lang] = 0
-
-        logger.info(
-            "LSP server ready: lang=%s, root=%s",
-            get_language_id_string(lang),
-            root,
-        )
-        return client
 
     async def _spawn_async(
         self,
@@ -614,33 +558,6 @@ class LspManager:
         for client in clients.values():
             with suppress(Exception):
                 await client.shutdown()
-
-    def _re_spawn(self, lang: LanguageId, file_path: Path) -> LspClient | None:
-        """Attempt to re-spawn a crashed LSP server."""
-        count = self._re_spawn_counts.get(lang, 0)
-
-        if count >= MAX_RESPWANS:
-            logger.error(
-                "LSP server for %s failed %d times — disabled for this session",
-                lang.name,
-                MAX_RESPWANS,
-            )
-            with self._lock:
-                self._availability[lang] = False
-            return None
-
-        logger.warning(
-            "Re-spawning LSP server for %s (attempt %d/%d)",
-            lang.name,
-            count + 1,
-            MAX_RESPWANS,
-        )
-
-        with self._lock:
-            self._transports.pop(lang, None)
-            self._re_spawn_counts[lang] = count + 1
-
-        return self._spawn_blocking(lang, file_path)
 
     def _on_transport_error(self, lang: LanguageId, reason: str) -> None:
         """Mark a transport as dead after a worker-thread error."""

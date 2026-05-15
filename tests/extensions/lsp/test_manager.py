@@ -30,6 +30,16 @@ from reuleauxcoder.extensions.lsp.manager import (
 from reuleauxcoder.extensions.lsp.registry import LanguageId
 
 
+def _make_mock_client(*, alive: bool = True) -> MagicMock:
+    """Build a mock LspClient for lifecycle tests."""
+    from unittest.mock import MagicMock
+    c = MagicMock()
+    c.is_alive = alive
+    c.is_initialized = True
+    c.shutdown = MagicMock()
+    return c
+
+
 @pytest.fixture
 def manager() -> LspManager:
     """Create a manager with all languages marked unavailable."""
@@ -61,21 +71,41 @@ class TestHealthCheck:
 
 class TestReSpawnLimit:
     def test_re_spawn_increments_counter(self, manager: LspManager) -> None:
+        """When a dead server is found, _get_or_create_server increments the count."""
+        import asyncio
+
         manager._availability[LanguageId.PYTHON] = True
         manager._re_spawn_counts[LanguageId.PYTHON] = 0
+        dead = _make_mock_client(alive=False)
+        manager._transports[LanguageId.PYTHON] = dead
 
-        with patch.object(manager, "_spawn_blocking", return_value=None) as spawn:
-            result = manager._re_spawn(LanguageId.PYTHON, Path("/tmp/test.py"))
+        async def run():
+            with patch.object(manager, "_spawn_async", return_value=dead) as spawn:
+                result = await manager._get_or_create_server(
+                    LanguageId.PYTHON, Path("/tmp/test.py")
+                )
+            return result, spawn
 
-        assert result is None
-        spawn.assert_called_once_with(LanguageId.PYTHON, Path("/tmp/test.py"))
+        result, spawn = asyncio.run(run())
+        assert result is dead
+        spawn.assert_called_once()
         assert manager._re_spawn_counts.get(LanguageId.PYTHON, 0) == 1
 
     def test_re_spawn_limit_disables_language(self, manager: LspManager) -> None:
-        manager._availability[LanguageId.PYTHON] = True
-        manager._re_spawn_counts[LanguageId.PYTHON] = MAX_RESPWANS  # at limit
+        """When respawn count hits MAX_RESPWANS, the language is disabled."""
+        import asyncio
 
-        result = manager._re_spawn(LanguageId.PYTHON, Path("/tmp/test.py"))
+        manager._availability[LanguageId.PYTHON] = True
+        manager._re_spawn_counts[LanguageId.PYTHON] = MAX_RESPWANS
+        dead = _make_mock_client(alive=False)
+        manager._transports[LanguageId.PYTHON] = dead
+
+        async def run():
+            return await manager._get_or_create_server(
+                LanguageId.PYTHON, Path("/tmp/test.py")
+            )
+
+        result = asyncio.run(run())
         assert result is None
         with manager._lock:
             assert manager._availability[LanguageId.PYTHON] is False
