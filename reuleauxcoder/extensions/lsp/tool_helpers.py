@@ -65,9 +65,7 @@ def resolve_file_path(file_path: str) -> tuple[LanguageId, Path]:
 
     lang = detect_language(path)
     if lang is None:
-        raise ValueError(
-            f"No LSP server available for \"{path.suffix}\" files"
-        )
+        raise ValueError(f'No LSP server available for "{path.suffix}" files')
 
     return lang, path
 
@@ -112,7 +110,11 @@ def format_location(
     if not uri:
         return None
 
-    rng = location.get("range") or location.get("targetSelectionRange") or location.get("targetRange")
+    rng = (
+        location.get("range")
+        or location.get("targetSelectionRange")
+        or location.get("targetRange")
+    )
     if not rng:
         return None
 
@@ -121,7 +123,7 @@ def format_location(
     # Convert file:// URI to a path
     path = _uri_to_path(uri)
 
-    line = start.get("line", 0) + 1       # 0-based → 1-based
+    line = start.get("line", 0) + 1  # 0-based → 1-based
     char = start.get("character", 0) + 1
 
     return f"{prefix}{path}:{line}:{char}"
@@ -315,9 +317,7 @@ def _render_hierarchical_symbols(
 
         children = s.get("children", [])
         if children:
-            child_lines = _render_hierarchical_symbols(
-                children, file_path, indent + 1
-            )
+            child_lines = _render_hierarchical_symbols(children, file_path, indent + 1)
             lines.append(child_lines)
 
     return "\n".join(lines)

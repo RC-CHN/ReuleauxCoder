@@ -33,6 +33,7 @@ from reuleauxcoder.extensions.lsp.registry import LanguageId
 def _make_mock_client(*, alive: bool = True) -> MagicMock:
     """Build a mock LspClient for lifecycle tests."""
     from unittest.mock import MagicMock
+
     c = MagicMock()
     c.is_alive = alive
     c.is_initialized = True

@@ -179,7 +179,7 @@ def _position_params(path: Path, line: int, character: int) -> dict[str, Any]:
     return {
         "textDocument": {"uri": path.resolve().as_uri()},
         "position": {
-            "line": line - 1,         # 1-based → 0-based
+            "line": line - 1,  # 1-based → 0-based
             "character": character - 1,
         },
     }

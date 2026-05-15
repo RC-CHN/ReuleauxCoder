@@ -58,15 +58,9 @@ class TestLspToolIntegration:
         src = tmp_path / "src"
         src.mkdir()
         lib = src / "lib.py"
-        lib.write_text(
-            "def greet(name: str) -> str:\n"
-            '    return f"Hello, {name}"\n'
-        )
+        lib.write_text('def greet(name: str) -> str:\n    return f"Hello, {name}"\n')
         main = src / "main.py"
-        main.write_text(
-            "from lib import greet\n\n"
-            'result = greet("World")\n'
-        )
+        main.write_text('from lib import greet\n\nresult = greet("World")\n')
 
         mgr = _setup_manager(tmp_path, LanguageId.PYTHON)
         try:
@@ -87,15 +81,9 @@ class TestLspToolIntegration:
         src = tmp_path / "src"
         src.mkdir()
         lib = src / "lib.py"
-        lib.write_text(
-            "def greet(name: str) -> str:\n"
-            '    return f"Hello, {name}"\n'
-        )
+        lib.write_text('def greet(name: str) -> str:\n    return f"Hello, {name}"\n')
         main = src / "main.py"
-        main.write_text(
-            "from lib import greet\n\n"
-            'result = greet("World")\n'
-        )
+        main.write_text('from lib import greet\n\nresult = greet("World")\n')
 
         mgr = _setup_manager(tmp_path, LanguageId.PYTHON)
         try:
@@ -118,7 +106,7 @@ class TestLspToolIntegration:
             "def add(a: int, b: int) -> int:\n"
             "    return a + b\n\n"
             "def main() -> None:\n"
-            '    print(add(1, 2))\n'
+            "    print(add(1, 2))\n"
         )
 
         mgr = _setup_manager(tmp_path, LanguageId.PYTHON)
@@ -166,7 +154,7 @@ class TestLspToolIntegration:
         f = tmp_path / "main.go"
         f.write_text(
             "package main\n\n"
-            "import \"fmt\"\n\n"
+            'import "fmt"\n\n'
             "func greet(name string) string {\n"
             '    return fmt.Sprintf("Hello, %s", name)\n'
             "}\n\n"

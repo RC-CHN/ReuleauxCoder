@@ -87,7 +87,10 @@ class TestFormatLocation:
     def test_location_with_file_uri(self) -> None:
         loc = {
             "uri": "file:///home/user/src/main.py",
-            "range": {"start": {"line": 9, "character": 4}, "end": {"line": 9, "character": 10}},
+            "range": {
+                "start": {"line": 9, "character": 4},
+                "end": {"line": 9, "character": 10},
+            },
         }
         result = format_location(loc)
         assert result is not None
@@ -96,7 +99,10 @@ class TestFormatLocation:
     def test_locationlink_with_target_uri(self) -> None:
         loc = {
             "targetUri": "file:///home/user/src/main.py",
-            "targetRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}},
+            "targetRange": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 4},
+            },
         }
         result = format_location(loc)
         assert result is not None
@@ -192,10 +198,12 @@ class TestFormatReferences:
     def test_many_references_truncated(self) -> None:
         raw = []
         for i in range(MAX_REFERENCES + 10):
-            raw.append({
-                "uri": "file:///src/x.py",
-                "range": {"start": {"line": i, "character": 0}},
-            })
+            raw.append(
+                {
+                    "uri": "file:///src/x.py",
+                    "range": {"start": {"line": i, "character": 0}},
+                }
+            )
         out = format_references(raw, file_path="/tmp/test.py")
         assert f"{MAX_REFERENCES + 10} references" in out
         assert "not shown" in out

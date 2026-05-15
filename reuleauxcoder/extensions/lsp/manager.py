@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 # === Constants ===
 
 MAX_RESPWANS = 3
-WORKER_SHUTDOWN_TIMEOUT = 15.0  # must allow in-flight request to time out (10s) + cleanup
+WORKER_SHUTDOWN_TIMEOUT = (
+    15.0  # must allow in-flight request to time out (10s) + cleanup
+)
 _WORKER_POLL_INTERVAL = 0.1
 SPAWN_TIMEOUT = 30.0
 
@@ -364,9 +366,7 @@ class LspManager:
 
             # Execute the actual LSP request
             if self._abort_current:
-                req.future.set_exception(
-                    LspClientError("LSP manager shutting down")
-                )
+                req.future.set_exception(LspClientError("LSP manager shutting down"))
                 return
 
             result = await asyncio.wait_for(
