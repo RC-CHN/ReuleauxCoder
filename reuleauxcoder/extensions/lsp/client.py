@@ -447,10 +447,13 @@ class LspClient:
         self._diagnostics_buffer[uri] = existing + items
 
     def _fail_all_pending(self, reason: str) -> None:
-        """Fail all outstanding requests (used on server crash)."""
+        """Fail all outstanding requests (used on server crash / shutdown)."""
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(LspClientError(reason))
+                # Retrieve the exception so asyncio does not warn about
+                # "Future exception was never retrieved".
+                future.exception()
         self._pending.clear()
 
     # === Helpers ===
