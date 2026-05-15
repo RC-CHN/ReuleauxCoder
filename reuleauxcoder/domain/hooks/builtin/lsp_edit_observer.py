@@ -5,12 +5,13 @@ AFTER_TOOL_EXECUTE observer (fail-open):
 - Extracts edited file paths
 - Enqueues diagnostics request (fire-and-forget)
 - Sends didSave notification (fire-and-forget)
-
-The LspManager reference is injected post-construction via set_lsp_manager().
+- Polls briefly for diagnostics and appends them to the tool result so the
+  model sees any errors immediately (no one-turn delay).
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,8 +23,11 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.hooks.base import ObserverHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
+from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
 
 EDIT_TOOLS = frozenset({"edit_file", "write_file", "apply_patch"})
+_DIAGNOSTICS_POLL_DEADLINE = 2.5   # seconds — short poll for instant feedback
+_DIAGNOSTICS_POLL_INTERVAL = 0.25
 
 
 def _extract_file_path(tool_name: str, arguments: dict) -> str | None:
@@ -66,7 +70,9 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
         self.lsp_manager = mgr
 
     def run(self, context: AfterToolExecuteContext) -> None:
-        """Detect edit tools and enqueue diagnostics + didSave."""
+        """Detect edit tools, enqueue diagnostics, and try to inject them
+        immediately into the tool result.
+        """
         if self.lsp_manager is None:
             return
 
@@ -91,3 +97,24 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
 
         # 2. Enqueue diagnostics request (fire-and-forget)
         self.lsp_manager.enqueue_diagnostics(path, seq=context.round_index or 0)
+
+        # 3. Short synchronous poll — if the worker has already produced
+        #    diagnostics, append them directly to the tool result so the
+        #    model sees them immediately.
+        deadline = time.monotonic() + _DIAGNOSTICS_POLL_DEADLINE
+        blocks = []
+        while time.monotonic() < deadline:
+            blocks = self.lsp_manager.drain_diagnostics()
+            if blocks:
+                break
+            time.sleep(_DIAGNOSTICS_POLL_INTERVAL)
+
+        if blocks:
+            rendered = render_blocks(
+                blocks,
+                max_diagnostics=self.lsp_manager.config.max_diagnostics,
+                include_warnings=self.lsp_manager.config.include_warnings,
+            )
+            if rendered:
+                suffix = "\n\n" + rendered
+                context.result = (context.result or "") + suffix
