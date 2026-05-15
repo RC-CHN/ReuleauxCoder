@@ -95,6 +95,32 @@ class TestServerCommands:
             "--stdio",
         ]
 
+    def test_typescript_server_includes_typescript_package(self) -> None:
+        cmd, args = get_server_command(LanguageId.TYPESCRIPT)
+        assert cmd == "npx"
+        assert args == [
+            "-y",
+            "--package",
+            "typescript",
+            "--package",
+            "typescript-language-server",
+            "typescript-language-server",
+            "--stdio",
+        ]
+
+    def test_javascript_server_includes_typescript_package(self) -> None:
+        cmd, args = get_server_command(LanguageId.JAVASCRIPT)
+        assert cmd == "npx"
+        assert args == [
+            "-y",
+            "--package",
+            "typescript",
+            "--package",
+            "typescript-language-server",
+            "typescript-language-server",
+            "--stdio",
+        ]
+
     def test_rust_analyzer_is_native(self) -> None:
         cmd, args = get_server_command(LanguageId.RUST)
         assert cmd == "rust-analyzer"
