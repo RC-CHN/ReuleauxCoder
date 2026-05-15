@@ -37,6 +37,8 @@ from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
+from reuleauxcoder.extensions.lsp.config import LspConfig
+from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.interfaces.entrypoint.dependencies import (
     AppContext,
     AppDependencies,
@@ -65,6 +67,7 @@ class AppRunner:
         self._mcp_manager: MCPManager | None = None
         self._relay_server: RelayServer | None = None
         self._relay_http_service: RemoteRelayHTTPService | None = None
+        self._lsp_manager: LspManager | None = None
 
     def initialize(self) -> AppContext:
         """Initialize all application components and return context."""
@@ -144,6 +147,7 @@ class AppRunner:
         agent.context._ui_bus = ui_bus
 
         self._register_hooks(agent, config)
+        self._init_lsp(config, agent, ui_bus)
         self._wire_agent_tool_parent(agent)
         return config, ui_bus, llm, agent
 
@@ -159,6 +163,46 @@ class AppRunner:
         hooks = instantiate_hooks(specs, config)
         for hook_point, hook in hooks:
             agent.register_hook(hook_point, hook)
+
+    def _init_lsp(
+        self, config: Config, agent: Agent, ui_bus: UIEventBus
+    ) -> None:
+        """Initialize LSP infrastructure if the [lsp] section is configured."""
+        lsp_config = LspConfig.from_config(config)
+        if not lsp_config.enabled:
+            ui_bus.debug("LSP diagnostics disabled by config.", kind=UIEventKind.SYSTEM)
+            return
+
+        manager = LspManager(lsp_config, workspace_cwd=Path.cwd())
+        report = manager.health_check()
+
+        if report.available == 0:
+            ui_bus.warning(
+                "LSP: No language servers found on PATH. "
+                "Install pyright, rust-analyzer, gopls, or other LSP servers "
+                "for diagnostics support.",
+                kind=UIEventKind.SYSTEM,
+            )
+            return
+
+        ui_bus.info(
+            f"LSP diagnostics: {report.available}/{report.total} servers available",
+            kind=UIEventKind.SYSTEM,
+        )
+        for lang_name, available, details in report.languages:
+            if available:
+                ui_bus.debug(f"  LSP: {details}", kind=UIEventKind.SYSTEM)
+
+        manager.start_worker()
+        self._lsp_manager = manager
+
+        # Inject LspManager into the two LSP hooks
+        for hooks in agent.hook_registry._hooks.values():
+            for hook in hooks:
+                if hasattr(hook, "set_lsp_manager"):
+                    hook.set_lsp_manager(manager)
+
+        setattr(agent, "lsp_manager", manager)
 
     @staticmethod
     def _wire_agent_tool_parent(agent: Agent) -> None:
@@ -261,6 +305,9 @@ class AppRunner:
             self._mcp_manager.disconnect_all()
             self._mcp_manager.stop()
             self._mcp_manager = None
+        if self._lsp_manager:
+            self._lsp_manager.shutdown_all()
+            self._lsp_manager = None
 
     @staticmethod
     def _run_lifecycle_hooks(

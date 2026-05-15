@@ -245,6 +245,9 @@ class Config:
     # Remote execution settings
     remote_exec: RemoteExecConfig = field(default_factory=RemoteExecConfig)
 
+    # LSP settings (raw dict, parsed by LspConfig)
+    lsp: Optional[dict] = None
+
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""
         errors = []

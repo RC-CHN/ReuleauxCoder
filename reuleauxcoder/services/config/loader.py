@@ -210,6 +210,7 @@ class ConfigLoader:
         prompt_config = data.get("prompt", {})
         context_config = data.get("context", {})
         remote_exec_config = data.get("remote_exec", {})
+        lsp_config = data.get("lsp", {})
 
         # Parse MCP servers
         mcp_servers = []
@@ -373,6 +374,7 @@ class ConfigLoader:
             llm_debug_trace=bool(
                 app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])
             ),
+            lsp=lsp_config if lsp_config else None,
         )
 
     def _is_workspace_bootstrapped(self, workspace_data: dict) -> bool:
