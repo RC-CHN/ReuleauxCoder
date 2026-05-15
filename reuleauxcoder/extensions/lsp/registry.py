@@ -71,7 +71,10 @@ _LANGUAGE_ID_STRINGS: dict[LanguageId, str] = {
 # (command, args) tuples.  npx-based servers use -y for auto-install.
 
 _SERVER_COMMANDS: dict[LanguageId, tuple[str, list[str]]] = {
-    LanguageId.PYTHON: ("npx", ["-y", "pyright", "--stdio"]),
+    LanguageId.PYTHON: (
+        "npx",
+        ["-y", "--package", "pyright", "pyright-langserver", "--stdio"],
+    ),
     LanguageId.RUST: ("rust-analyzer", []),
     LanguageId.GO: ("gopls", ["serve"]),
     LanguageId.TYPESCRIPT: ("npx", ["-y", "typescript-language-server", "--stdio"]),

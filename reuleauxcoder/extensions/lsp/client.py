@@ -334,15 +334,14 @@ class LspClient:
         if self._process is None or self._process.stdout is None:
             return
 
-        buffer = b""
+        stdout = self._process.stdout
 
         while True:
             try:
-                line = await self._process.stdout.readline()
-            except (asyncio.CancelledError, Exception):
+                header_bytes = await stdout.readuntil(b"\r\n\r\n")
+            except asyncio.CancelledError:
                 break
-
-            if not line:
+            except asyncio.IncompleteReadError:
                 # EOF — server exited (normal during shutdown, noisy during startup)
                 logger.debug(
                     "LSP server stdout closed (lang=%s)",
@@ -350,44 +349,43 @@ class LspClient:
                 )
                 self._fail_all_pending("LSP server exited unexpectedly")
                 break
+            except Exception as e:
+                logger.debug("LSP response reader stopped: %s", e)
+                self._fail_all_pending(str(e))
+                break
 
-            buffer += line
+            header = header_bytes[:-4].decode("utf-8", errors="replace")
+            content_length = 0
+            for hdr_line in header.split("\r\n"):
+                if hdr_line.lower().startswith("content-length:"):
+                    try:
+                        content_length = int(hdr_line.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
 
-            # Look for Content-Length header
-            while b"\r\n\r\n" in buffer:
-                header_end = buffer.index(b"\r\n\r\n")
-                header = buffer[:header_end].decode("utf-8", errors="replace")
-                buffer = buffer[header_end + 4:]
+            if content_length <= 0:
+                logger.debug("Skipping LSP message with missing Content-Length")
+                continue
 
-                content_length = 0
-                for hdr_line in header.split("\r\n"):
-                    if hdr_line.lower().startswith("content-length:"):
-                        try:
-                            content_length = int(hdr_line.split(":", 1)[1].strip())
-                        except ValueError:
-                            pass
+            try:
+                body_bytes = await stdout.readexactly(content_length)
+            except asyncio.CancelledError:
+                break
+            except asyncio.IncompleteReadError:
+                logger.debug(
+                    "LSP server stdout closed mid-message (lang=%s)",
+                    self._language_id_string,
+                )
+                self._fail_all_pending("LSP server exited unexpectedly")
+                break
 
-                if content_length <= 0:
-                    continue
+            try:
+                body = json.loads(body_bytes.decode("utf-8"))
+            except json.JSONDecodeError as e:
+                logger.warning("Failed to parse LSP message: %s", e)
+                continue
 
-                # Wait for full body
-                if len(buffer) < content_length:
-                    # Need more — put header back and wait
-                    buffer = (
-                        header.encode("utf-8") + b"\r\n\r\n" + buffer
-                    )
-                    break
-
-                body_bytes = buffer[:content_length]
-                buffer = buffer[content_length:]
-
-                try:
-                    body = json.loads(body_bytes.decode("utf-8"))
-                except json.JSONDecodeError as e:
-                    logger.warning("Failed to parse LSP message: %s", e)
-                    continue
-
-                self._dispatch_message(body)
+            self._dispatch_message(body)
 
     def _dispatch_message(self, message: dict[str, Any]) -> None:
         """Route an incoming JSON-RPC message."""

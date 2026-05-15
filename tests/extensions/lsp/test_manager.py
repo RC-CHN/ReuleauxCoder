@@ -70,12 +70,12 @@ class TestReSpawnLimit:
         manager._availability[LanguageId.PYTHON] = True
         manager._re_spawn_counts[LanguageId.PYTHON] = 0
 
-        # First re-spawn: should succeed when count < MAX_RESPWANS
-        # (but actual spawn will fail since we have no real server)
-        result = manager._re_spawn(LanguageId.PYTHON, Path("/tmp/test.py"))
-        # re-spawn calls _spawn_blocking which fails due to unavailable server
-        # But the counter should be incremented
-        assert manager._re_spawn_counts.get(LanguageId.PYTHON, 0) >= 1
+        with patch.object(manager, "_spawn_blocking", return_value=None) as spawn:
+            result = manager._re_spawn(LanguageId.PYTHON, Path("/tmp/test.py"))
+
+        assert result is None
+        spawn.assert_called_once_with(LanguageId.PYTHON, Path("/tmp/test.py"))
+        assert manager._re_spawn_counts.get(LanguageId.PYTHON, 0) == 1
 
     def test_re_spawn_limit_disables_language(
         self, manager: LspManager
@@ -225,15 +225,13 @@ class TestSendRequestSyncValidation:
     def test_raises_when_server_unavailable(
         self, manager: LspManager
     ) -> None:
-        with manager._lock:
-            manager._availability[LanguageId.PYTHON] = True
-        # Server not spawned → _ensure_server_ready returns None
-        with pytest.raises(LspClientError, match="No LSP server available"):
-            manager.send_request_sync(
-                Path("/tmp/test.py"),
-                "textDocument/definition",
-                {},
-            )
+        with patch.object(manager, "_ensure_server_ready", return_value=None):
+            with pytest.raises(LspClientError, match="No LSP server available"):
+                manager.send_request_sync(
+                    Path("/tmp/test.py"),
+                    "textDocument/definition",
+                    {},
+                )
 
 
 class TestEnqueueDiagnostics:

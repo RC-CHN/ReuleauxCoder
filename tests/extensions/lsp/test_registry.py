@@ -87,7 +87,13 @@ class TestServerCommands:
     def test_pyright_is_npx_based(self) -> None:
         cmd, args = get_server_command(LanguageId.PYTHON)
         assert cmd == "npx"
-        assert "--stdio" in args
+        assert args == [
+            "-y",
+            "--package",
+            "pyright",
+            "pyright-langserver",
+            "--stdio",
+        ]
 
     def test_rust_analyzer_is_native(self) -> None:
         cmd, args = get_server_command(LanguageId.RUST)
