@@ -343,8 +343,8 @@ class LspClient:
                 break
 
             if not line:
-                # EOF — server exited
-                logger.warning(
+                # EOF — server exited (normal during shutdown, noisy during startup)
+                logger.debug(
                     "LSP server stdout closed (lang=%s)",
                     self._language_id_string,
                 )

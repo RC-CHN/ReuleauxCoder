@@ -183,15 +183,27 @@ class AppRunner:
             )
             return
 
+        available_lines = [
+            f"  ✓ {details}"
+            for _, available, details in report.languages
+            if available
+        ]
+        missing_lines = [
+            f"  ✗ {details}"
+            for _, available, details in report.languages
+            if not available
+        ]
+
         ui_bus.info(
-            f"LSP: {report.available}/{report.total} language servers ready",
+            f"LSP: {report.available}/{report.total} language servers ready\n"
+            + "\n".join(available_lines),
             kind=UIEventKind.SYSTEM,
         )
-        for lang_name, available, details in report.languages:
-            if available:
-                ui_bus.info(f"  ✓ {details}", kind=UIEventKind.SYSTEM)
-            else:
-                ui_bus.debug(f"  ✗ {details}", kind=UIEventKind.SYSTEM)
+        if missing_lines:
+            ui_bus.debug(
+                "LSP: unavailable servers\n" + "\n".join(missing_lines),
+                kind=UIEventKind.SYSTEM,
+            )
 
         manager.start_worker()
         self._lsp_manager = manager

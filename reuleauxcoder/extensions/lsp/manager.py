@@ -495,7 +495,10 @@ class LspManager:
             # Use a temp event loop for spawn + initialize only
             asyncio.run(self._do_spawn(client, cmd, args, init_opts))
         except Exception as e:
-            logger.warning("Failed to spawn LSP server for %s: %s", lang.name, e)
+            logger.warning(
+                "Failed to spawn LSP server for %s (%s %s): %s",
+                lang.name, cmd, " ".join(args), e,
+            )
             with self._lock:
                 self._availability[lang] = False
             return None
@@ -529,7 +532,10 @@ class LspManager:
         try:
             await self._do_spawn(client, cmd, args, init_opts)
         except Exception as e:
-            logger.warning("Failed to spawn LSP server for %s: %s", lang.name, e)
+            logger.warning(
+                "Failed to spawn LSP server (async) for %s (%s %s): %s",
+                lang.name, cmd, " ".join(args), e,
+            )
             with self._lock:
                 self._availability[lang] = False
             return None
