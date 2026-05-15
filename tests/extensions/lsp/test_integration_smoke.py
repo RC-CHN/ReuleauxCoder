@@ -50,7 +50,7 @@ DIAGNOSTIC_CASES: tuple[DiagnosticCase, ...] = (
         language=LanguageId.PYTHON,
         filename="broken.py",
         content=(
-            'def greet(name: str) -> str:\n'
+            "def greet(name: str) -> str:\n"
             '    return f"Hello, {name}"\n'
             "\n"
             'print(greet("World")\n'
@@ -84,7 +84,7 @@ DIAGNOSTIC_CASES: tuple[DiagnosticCase, ...] = (
     DiagnosticCase(
         language=LanguageId.GO,
         filename="broken.go",
-        content="package main\n\nfunc main() {\n    x := \"hello\"\n}\n",
+        content='package main\n\nfunc main() {\n    x := "hello"\n}\n',
         expected_messages=("declared and not used",),
         setup_files={
             "go.mod": "module test\n\ngo 1.21\n",
@@ -93,7 +93,7 @@ DIAGNOSTIC_CASES: tuple[DiagnosticCase, ...] = (
     DiagnosticCase(
         language=LanguageId.C,
         filename="broken.c",
-        content="#include <stdio.h>\n\nint main() {\n    int x = \"oops\";\n    return 0\n}\n",
+        content='#include <stdio.h>\n\nint main() {\n    int x = "oops";\n    return 0\n}\n',
         expected_messages=("Incompatible pointer to integer conversion",),
     ),
     DiagnosticCase(
@@ -105,10 +105,10 @@ DIAGNOSTIC_CASES: tuple[DiagnosticCase, ...] = (
     DiagnosticCase(
         language=LanguageId.RUST,
         filename="src/main.rs",
-        content="fn main() {\n    let x: i32 = \"oops\";\n}\n",
+        content='fn main() {\n    let x: i32 = "oops";\n}\n',
         expected_messages=("mismatched types",),
         setup_files={
-            "Cargo.toml": "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            "Cargo.toml": '[package]\nname = "test"\nversion = "0.1.0"\nedition = "2021"\n',
         },
     ),
 )
@@ -136,7 +136,9 @@ async def _collect_non_empty_diagnostics(
     return diagnostics
 
 
-async def _run_diagnostic_case(case: DiagnosticCase, tmp_path: Path) -> list[Diagnostic]:
+async def _run_diagnostic_case(
+    case: DiagnosticCase, tmp_path: Path
+) -> list[Diagnostic]:
     cmd, args = get_server_command(case.language)
     if shutil.which(cmd) is None:
         pytest.skip(f"{cmd} is not available on PATH")

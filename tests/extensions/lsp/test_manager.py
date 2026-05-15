@@ -43,9 +43,7 @@ def manager() -> LspManager:
 
 
 class TestHealthCheck:
-    def test_health_check_caches_availability(
-        self, manager: LspManager
-    ) -> None:
+    def test_health_check_caches_availability(self, manager: LspManager) -> None:
         report = manager.health_check()
         assert report.total == 9  # 9 supported languages
         assert isinstance(report.available, int)
@@ -53,9 +51,7 @@ class TestHealthCheck:
         with manager._lock:
             assert len(manager._availability) == 9
 
-    def test_health_report_has_language_entries(
-        self, manager: LspManager
-    ) -> None:
+    def test_health_report_has_language_entries(self, manager: LspManager) -> None:
         report = manager.health_check()
         for lang_name, available, details in report.languages:
             assert isinstance(lang_name, str)
@@ -64,9 +60,7 @@ class TestHealthCheck:
 
 
 class TestReSpawnLimit:
-    def test_re_spawn_increments_counter(
-        self, manager: LspManager
-    ) -> None:
+    def test_re_spawn_increments_counter(self, manager: LspManager) -> None:
         manager._availability[LanguageId.PYTHON] = True
         manager._re_spawn_counts[LanguageId.PYTHON] = 0
 
@@ -77,9 +71,7 @@ class TestReSpawnLimit:
         spawn.assert_called_once_with(LanguageId.PYTHON, Path("/tmp/test.py"))
         assert manager._re_spawn_counts.get(LanguageId.PYTHON, 0) == 1
 
-    def test_re_spawn_limit_disables_language(
-        self, manager: LspManager
-    ) -> None:
+    def test_re_spawn_limit_disables_language(self, manager: LspManager) -> None:
         manager._availability[LanguageId.PYTHON] = True
         manager._re_spawn_counts[LanguageId.PYTHON] = MAX_RESPWANS  # at limit
 
@@ -107,9 +99,7 @@ class TestFileStaleness:
         manager._last_sync_time[(LanguageId.PYTHON, f)] = future_mtime
         assert manager._check_stale(LanguageId.PYTHON, f) is False
 
-    def test_file_stale_after_edit(
-        self, manager: LspManager, tmp_path: Path
-    ) -> None:
+    def test_file_stale_after_edit(self, manager: LspManager, tmp_path: Path) -> None:
         f = tmp_path / "test.py"
         f.write_text("old")
         manager._last_sync_time[(LanguageId.PYTHON, f)] = f.stat().st_mtime
@@ -117,9 +107,7 @@ class TestFileStaleness:
         f.write_text("new")
         assert manager._check_stale(LanguageId.PYTHON, f) is True
 
-    def test_missing_file_not_stale(
-        self, manager: LspManager
-    ) -> None:
+    def test_missing_file_not_stale(self, manager: LspManager) -> None:
         assert manager._check_stale(LanguageId.PYTHON, Path("/nonexistent.py")) is False
 
 
@@ -171,29 +159,21 @@ class TestConfigOverrides:
 
 
 class TestEnabledForFile:
-    def test_disabled_when_config_disabled(
-        self, manager: LspManager
-    ) -> None:
+    def test_disabled_when_config_disabled(self, manager: LspManager) -> None:
         manager._config.enabled = False
         assert manager._enabled_for_file(Path("/tmp/test.py")) is False
 
-    def test_disabled_when_unsupported_extension(
-        self, manager: LspManager
-    ) -> None:
+    def test_disabled_when_unsupported_extension(self, manager: LspManager) -> None:
         manager._config.enabled = True
         assert manager._enabled_for_file(Path("/tmp/notes.txt")) is False
 
-    def test_disabled_when_language_unavailable(
-        self, manager: LspManager
-    ) -> None:
+    def test_disabled_when_language_unavailable(self, manager: LspManager) -> None:
         manager._config.enabled = True
         with manager._lock:
             manager._availability[LanguageId.PYTHON] = False
         assert manager._enabled_for_file(Path("/tmp/test.py")) is False
 
-    def test_enabled_when_all_conditions_met(
-        self, manager: LspManager
-    ) -> None:
+    def test_enabled_when_all_conditions_met(self, manager: LspManager) -> None:
         manager._config.enabled = True
         with manager._lock:
             manager._availability[LanguageId.PYTHON] = True
@@ -203,7 +183,9 @@ class TestEnabledForFile:
 class TestRelativizePath:
     def test_within_workspace(self, manager: LspManager) -> None:
         mgr = LspManager(LspConfig(), workspace_cwd=Path("/home/user/proj"))
-        assert mgr._relativize_path(Path("/home/user/proj/src/main.py")) == "src/main.py"
+        assert (
+            mgr._relativize_path(Path("/home/user/proj/src/main.py")) == "src/main.py"
+        )
 
     def test_outside_workspace(self, manager: LspManager) -> None:
         mgr = LspManager(LspConfig(), workspace_cwd=Path("/home/user/proj"))
@@ -212,9 +194,7 @@ class TestRelativizePath:
 
 
 class TestSendRequestSyncValidation:
-    def test_raises_for_unsupported_file(
-        self, manager: LspManager
-    ) -> None:
+    def test_raises_for_unsupported_file(self, manager: LspManager) -> None:
         with pytest.raises(LspClientError, match="No LSP support"):
             manager.send_request_sync(
                 Path("/tmp/notes.txt"),
@@ -222,9 +202,7 @@ class TestSendRequestSyncValidation:
                 {},
             )
 
-    def test_raises_when_server_unavailable(
-        self, manager: LspManager
-    ) -> None:
+    def test_raises_when_server_unavailable(self, manager: LspManager) -> None:
         with pytest.raises(LspClientError, match="No LSP server available"):
             manager.send_request_sync(
                 Path("/tmp/test.py"),
@@ -236,9 +214,7 @@ class TestSendRequestSyncValidation:
 
 
 class TestEnqueueDiagnostics:
-    def test_enqueue_when_enabled(
-        self, manager: LspManager
-    ) -> None:
+    def test_enqueue_when_enabled(self, manager: LspManager) -> None:
         manager._config.enabled = True
         with manager._lock:
             manager._availability[LanguageId.PYTHON] = True
@@ -247,18 +223,14 @@ class TestEnqueueDiagnostics:
         manager.enqueue_diagnostics(Path("/tmp/test.py"), seq=1)
         assert len(manager._diagnostics_queue) == 1
 
-    def test_no_enqueue_when_disabled(
-        self, manager: LspManager
-    ) -> None:
+    def test_no_enqueue_when_disabled(self, manager: LspManager) -> None:
         manager._config.enabled = False
         manager.enqueue_diagnostics(Path("/tmp/test.py"), seq=1)
         assert len(manager._diagnostics_queue) == 0
 
 
 class TestDrainDiagnostics:
-    def test_drain_clears_results(
-        self, manager: LspManager
-    ) -> None:
+    def test_drain_clears_results(self, manager: LspManager) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
 
         block = DiagnosticBlock(
@@ -277,9 +249,7 @@ class TestDrainDiagnostics:
 
 
 class TestNotifyDidSave:
-    def test_enqueues_notification(
-        self, manager: LspManager
-    ) -> None:
+    def test_enqueues_notification(self, manager: LspManager) -> None:
         manager._config.enabled = True
         with manager._lock:
             manager._availability[LanguageId.PYTHON] = True

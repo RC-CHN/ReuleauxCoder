@@ -164,9 +164,7 @@ class AppRunner:
         for hook_point, hook in hooks:
             agent.register_hook(hook_point, hook)
 
-    def _init_lsp(
-        self, config: Config, agent: Agent, ui_bus: UIEventBus
-    ) -> None:
+    def _init_lsp(self, config: Config, agent: Agent, ui_bus: UIEventBus) -> None:
         """Initialize LSP infrastructure if the [lsp] section is configured."""
         lsp_config = LspConfig.from_config(config)
         if not lsp_config.enabled:
@@ -184,9 +182,7 @@ class AppRunner:
             return
 
         available_lines = [
-            f"  ✓ {details}"
-            for _, available, details in report.languages
-            if available
+            f"  ✓ {details}" for _, available, details in report.languages if available
         ]
         missing_lines = [
             f"  ✗ {details}"

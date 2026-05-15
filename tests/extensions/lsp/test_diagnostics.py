@@ -25,11 +25,26 @@ class TestDiagnostic:
         assert d.code == "E999"
 
     def test_severity_label(self) -> None:
-        assert Diagnostic(line=1, character=1, message="", severity=1).severity_label == "ERROR"
-        assert Diagnostic(line=1, character=1, message="", severity=2).severity_label == "WARNING"
-        assert Diagnostic(line=1, character=1, message="", severity=3).severity_label == "INFO"
-        assert Diagnostic(line=1, character=1, message="", severity=4).severity_label == "HINT"
-        assert Diagnostic(line=1, character=1, message="", severity=99).severity_label == "UNKNOWN"
+        assert (
+            Diagnostic(line=1, character=1, message="", severity=1).severity_label
+            == "ERROR"
+        )
+        assert (
+            Diagnostic(line=1, character=1, message="", severity=2).severity_label
+            == "WARNING"
+        )
+        assert (
+            Diagnostic(line=1, character=1, message="", severity=3).severity_label
+            == "INFO"
+        )
+        assert (
+            Diagnostic(line=1, character=1, message="", severity=4).severity_label
+            == "HINT"
+        )
+        assert (
+            Diagnostic(line=1, character=1, message="", severity=99).severity_label
+            == "UNKNOWN"
+        )
 
     def test_is_error(self) -> None:
         assert Diagnostic(line=1, character=1, message="", severity=1).is_error is True
@@ -37,8 +52,12 @@ class TestDiagnostic:
         assert Diagnostic(line=1, character=1, message="", severity=3).is_error is False
 
     def test_is_warning(self) -> None:
-        assert Diagnostic(line=1, character=1, message="", severity=2).is_warning is True
-        assert Diagnostic(line=1, character=1, message="", severity=1).is_warning is False
+        assert (
+            Diagnostic(line=1, character=1, message="", severity=2).is_warning is True
+        )
+        assert (
+            Diagnostic(line=1, character=1, message="", severity=1).is_warning is False
+        )
 
     def test_slots_no_dict(self) -> None:
         """Diagnostic uses __slots__ so no __dict__ overhead."""
@@ -68,7 +87,11 @@ class TestRenderBlocks:
     def test_single_error(self) -> None:
         block = DiagnosticBlock(
             file_path="src/main.py",
-            items=[Diagnostic(line=12, character=8, message="IndentationError: unexpected indent")],
+            items=[
+                Diagnostic(
+                    line=12, character=8, message="IndentationError: unexpected indent"
+                )
+            ],
         )
         out = render_blocks([block])
         assert out is not None
@@ -175,20 +198,27 @@ class TestRenderBlocks:
         assert "err_b" in out
 
     def test_all_blocks_empty_returns_none(self) -> None:
-        assert render_blocks([
-            DiagnosticBlock(file_path="a.py"),
-            DiagnosticBlock(file_path="b.py"),
-        ]) is None
+        assert (
+            render_blocks(
+                [
+                    DiagnosticBlock(file_path="a.py"),
+                    DiagnosticBlock(file_path="b.py"),
+                ]
+            )
+            is None
+        )
 
     def test_mixed_empty_and_nonempty(self) -> None:
         """One empty block + one non-empty → only the non-empty rendered."""
-        out = render_blocks([
-            DiagnosticBlock(file_path="a.py"),
-            DiagnosticBlock(
-                file_path="b.py",
-                items=[Diagnostic(line=1, character=1, message="err")],
-            ),
-        ])
+        out = render_blocks(
+            [
+                DiagnosticBlock(file_path="a.py"),
+                DiagnosticBlock(
+                    file_path="b.py",
+                    items=[Diagnostic(line=1, character=1, message="err")],
+                ),
+            ]
+        )
         assert out is not None
         assert 'file="a.py"' not in out
         assert 'file="b.py"' in out

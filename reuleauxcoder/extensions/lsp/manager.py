@@ -241,9 +241,7 @@ class LspManager:
         """
         lang = detect_language(file_path)
         if lang is None:
-            raise LspClientError(
-                f"No LSP support for file type: {file_path.suffix}"
-            )
+            raise LspClientError(f"No LSP support for file type: {file_path.suffix}")
 
         # Start worker if not already running.  The worker owns LSP subprocesses,
         # so it also handles lazy spawn before executing the request.
@@ -270,9 +268,7 @@ class LspManager:
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
-            raise LspClientError(
-                f"LSP request '{method}' timed out after {timeout}s"
-            )
+            raise LspClientError(f"LSP request '{method}' timed out after {timeout}s")
 
     # === Notifications (fire-and-forget) ===
 
@@ -302,8 +298,16 @@ class LspManager:
                 # Collect work
                 with self._lock:
                     tool = self._tool_queue.pop(0) if self._tool_queue else None
-                    diag = self._diagnostics_queue.pop(0) if self._diagnostics_queue else None
-                    notif = self._notification_queue.pop(0) if self._notification_queue else None
+                    diag = (
+                        self._diagnostics_queue.pop(0)
+                        if self._diagnostics_queue
+                        else None
+                    )
+                    notif = (
+                        self._notification_queue.pop(0)
+                        if self._notification_queue
+                        else None
+                    )
 
                 if tool is not None:
                     await self._handle_tool_request(tool)
@@ -349,7 +353,9 @@ class LspManager:
                             else:
                                 await server.did_change(req.file_path, content)
                             with self._lock:
-                                self._last_sync_time[key] = req.file_path.stat().st_mtime
+                                self._last_sync_time[key] = (
+                                    req.file_path.stat().st_mtime
+                                )
                         except Exception as e:
                             logger.debug("LSP sync error (swallowed): %s", e)
 
@@ -513,7 +519,10 @@ class LspManager:
         except Exception as e:
             logger.warning(
                 "Failed to spawn LSP server for %s (%s %s): %s",
-                lang.name, cmd, " ".join(args), e,
+                lang.name,
+                cmd,
+                " ".join(args),
+                e,
             )
             with self._lock:
                 self._availability[lang] = False
@@ -550,7 +559,10 @@ class LspManager:
         except Exception as e:
             logger.warning(
                 "Failed to spawn LSP server (async) for %s (%s %s): %s",
-                lang.name, cmd, " ".join(args), e,
+                lang.name,
+                cmd,
+                " ".join(args),
+                e,
             )
             with self._lock:
                 self._availability[lang] = False

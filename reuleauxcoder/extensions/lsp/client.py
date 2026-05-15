@@ -98,14 +98,14 @@ class LspClient:
                 f"Make sure the language toolchain is installed."
             )
         except OSError as e:
-            raise LspClientError(
-                f"Failed to spawn LSP server {cmd}: {e}"
-            )
+            raise LspClientError(f"Failed to spawn LSP server {cmd}: {e}")
 
         # Start reading responses/notifications from stdout
         self._reader_task = asyncio.create_task(self._read_responses())
 
-    async def initialize(self, init_opts: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def initialize(
+        self, init_opts: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Perform the LSP initialize handshake.
 
         Returns the server capabilities dict.
@@ -119,9 +119,7 @@ class LspClient:
             "processId": os.getpid(),
             "rootUri": root_uri,
             "rootPath": str(self._workspace_root),
-            "workspaceFolders": [
-                {"uri": root_uri, "name": self._workspace_root.name}
-            ],
+            "workspaceFolders": [{"uri": root_uri, "name": self._workspace_root.name}],
             "capabilities": {
                 "textDocument": {
                     "publishDiagnostics": {},
@@ -156,34 +154,41 @@ class LspClient:
 
     async def did_open(self, file_path: Path, content: str) -> None:
         """Notify the server that a file has been opened."""
-        await self._send_notification("textDocument/didOpen", {
-            "textDocument": {
-                "uri": self._file_uri(file_path),
-                "languageId": self._language_id_string,
-                "version": 1,
-                "text": content,
-            }
-        })
+        await self._send_notification(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": self._file_uri(file_path),
+                    "languageId": self._language_id_string,
+                    "version": 1,
+                    "text": content,
+                }
+            },
+        )
 
     async def did_change(self, file_path: Path, content: str, version: int = 2) -> None:
         """Notify the server that a file has changed."""
-        await self._send_notification("textDocument/didChange", {
-            "textDocument": {
-                "uri": self._file_uri(file_path),
-                "version": version,
+        await self._send_notification(
+            "textDocument/didChange",
+            {
+                "textDocument": {
+                    "uri": self._file_uri(file_path),
+                    "version": version,
+                },
+                "contentChanges": [{"text": content}],
             },
-            "contentChanges": [
-                {"text": content}
-            ],
-        })
+        )
 
     async def did_save(self, file_path: Path) -> None:
         """Notify the server that a file has been saved."""
-        await self._send_notification("textDocument/didSave", {
-            "textDocument": {
-                "uri": self._file_uri(file_path),
-            }
-        })
+        await self._send_notification(
+            "textDocument/didSave",
+            {
+                "textDocument": {
+                    "uri": self._file_uri(file_path),
+                }
+            },
+        )
 
     # === Diagnostics ===
 
@@ -305,9 +310,7 @@ class LspClient:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
-            raise LspClientError(
-                f"LSP request '{method}' timed out after {timeout}s"
-            )
+            raise LspClientError(f"LSP request '{method}' timed out after {timeout}s")
 
     async def _send_notification(
         self,
@@ -429,13 +432,15 @@ class LspClient:
         for d in diagnostics_raw:
             rng = d.get("range", {})
             start = rng.get("start", {})
-            items.append(Diagnostic(
-                line=start.get("line", 0) + 1,      # 0-based → 1-based
-                character=start.get("character", 0) + 1,
-                message=d.get("message", ""),
-                severity=d.get("severity", SEVERITY_ERROR),
-                code=d.get("code"),
-            ))
+            items.append(
+                Diagnostic(
+                    line=start.get("line", 0) + 1,  # 0-based → 1-based
+                    character=start.get("character", 0) + 1,
+                    message=d.get("message", ""),
+                    severity=d.get("severity", SEVERITY_ERROR),
+                    code=d.get("code"),
+                )
+            )
 
         # Accumulate — caller drains via wait_for_diagnostics()
         existing = self._diagnostics_buffer.get(uri, [])

@@ -43,13 +43,16 @@ def _make_manager() -> LspManager:
 
 class TestExtractFilePath:
     def test_edit_file(self) -> None:
-        assert _extract_file_path("edit_file", {"file_path": "src/main.py"}) == "src/main.py"
+        assert (
+            _extract_file_path("edit_file", {"file_path": "src/main.py"})
+            == "src/main.py"
+        )
 
     def test_write_file(self) -> None:
-        assert _extract_file_path("write_file", {"file_path": "/tmp/out.py"}) == "/tmp/out.py"
-
-    def test_apply_patch(self) -> None:
-        assert _extract_file_path("apply_patch", {"file_path": "src/fix.py"}) == "src/fix.py"
+        assert (
+            _extract_file_path("write_file", {"file_path": "/tmp/out.py"})
+            == "/tmp/out.py"
+        )
 
     def test_missing_key(self) -> None:
         assert _extract_file_path("edit_file", {}) is None
@@ -60,7 +63,9 @@ class TestLspEditObserverBasic:
         hook = LspEditObserverHook(lsp_manager=None)
         context = AfterToolExecuteContext(
             hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(id="1", name="edit_file", arguments={"file_path": "x.py"}),
+            tool_call=ToolCall(
+                id="1", name="edit_file", arguments={"file_path": "x.py"}
+            ),
         )
         # Should not raise
         hook.run(context)
@@ -71,7 +76,9 @@ class TestLspEditObserverBasic:
         hook = LspEditObserverHook(lsp_manager=mgr)
         context = AfterToolExecuteContext(
             hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(id="1", name="edit_file", arguments={"file_path": "x.py"}),
+            tool_call=ToolCall(
+                id="1", name="edit_file", arguments={"file_path": "x.py"}
+            ),
         )
         # Should not enqueue
         hook.run(context)
@@ -91,7 +98,9 @@ class TestLspEditObserverBasic:
         hook = LspEditObserverHook(lsp_manager=mgr)
         context = AfterToolExecuteContext(
             hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(id="1", name="read_file", arguments={"file_path": "x.py"}),
+            tool_call=ToolCall(
+                id="1", name="read_file", arguments={"file_path": "x.py"}
+            ),
         )
         hook.run(context)
         assert len(mgr._diagnostics_queue) == 0
@@ -100,6 +109,7 @@ class TestLspEditObserverBasic:
         mgr = _make_manager()
         # Mark Python as available so enqueue passes the guard
         from reuleauxcoder.extensions.lsp.registry import LanguageId
+
         with mgr._lock:
             mgr._availability[LanguageId.PYTHON] = True
 
@@ -107,7 +117,8 @@ class TestLspEditObserverBasic:
         context = AfterToolExecuteContext(
             hook_point=HookPoint.AFTER_TOOL_EXECUTE,
             tool_call=ToolCall(
-                id="1", name="edit_file",
+                id="1",
+                name="edit_file",
                 arguments={"file_path": "/tmp/test.py"},
             ),
             round_index=1,
@@ -117,6 +128,7 @@ class TestLspEditObserverBasic:
     def test_enqueues_notification_for_edit_tools(self) -> None:
         mgr = _make_manager()
         from reuleauxcoder.extensions.lsp.registry import LanguageId
+
         with mgr._lock:
             mgr._availability[LanguageId.PYTHON] = True
 
@@ -125,7 +137,8 @@ class TestLspEditObserverBasic:
         context = AfterToolExecuteContext(
             hook_point=HookPoint.AFTER_TOOL_EXECUTE,
             tool_call=ToolCall(
-                id="1", name="write_file",
+                id="1",
+                name="write_file",
                 arguments={"file_path": "/tmp/test.py"},
             ),
         )

@@ -1,7 +1,7 @@
 """LSP edit observer hook — triggers diagnostics and didSave after file edits.
 
 AFTER_TOOL_EXECUTE observer (fail-open):
-- Detects edit_file / write_file / apply_patch tool calls
+- Detects edit_file / write_file tool calls
 - Extracts edited file paths
 - Enqueues diagnostics request (fire-and-forget)
 - Sends didSave notification (fire-and-forget)
@@ -25,16 +25,15 @@ from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
 
-EDIT_TOOLS = frozenset({"edit_file", "write_file", "apply_patch"})
-_DIAGNOSTICS_POLL_DEADLINE = 2.5   # seconds — short poll for instant feedback
+EDIT_TOOLS = frozenset({"edit_file", "write_file"})
+_DIAGNOSTICS_POLL_DEADLINE = 2.5  # seconds — short poll for instant feedback
 _DIAGNOSTICS_POLL_INTERVAL = 0.25
 
 
 def _extract_file_path(tool_name: str, arguments: dict) -> str | None:
     """Extract the file path from a tool call's arguments.
 
-    Handles the known schemas of edit_file, write_file, and apply_patch.
-    All three use 'file_path' as the key.
+    Handles edit_file and write_file — both use 'file_path' as the key.
     """
     return arguments.get("file_path")
 

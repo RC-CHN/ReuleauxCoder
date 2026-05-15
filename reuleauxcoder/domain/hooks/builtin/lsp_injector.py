@@ -53,9 +53,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         """Inject the LspManager reference post-construction."""
         self.lsp_manager = mgr
 
-    def run(
-        self, context: BeforeLLMRequestContext
-    ) -> BeforeLLMRequestContext:
+    def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
         """Drain diagnostics and prepend synthetic user message."""
         if self.lsp_manager is None:
             return context
