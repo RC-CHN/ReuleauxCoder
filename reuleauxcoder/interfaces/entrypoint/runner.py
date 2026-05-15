@@ -170,28 +170,28 @@ class AppRunner:
         """Initialize LSP infrastructure if the [lsp] section is configured."""
         lsp_config = LspConfig.from_config(config)
         if not lsp_config.enabled:
-            ui_bus.debug("LSP diagnostics disabled by config.", kind=UIEventKind.SYSTEM)
             return
 
         manager = LspManager(lsp_config, workspace_cwd=Path.cwd())
         report = manager.health_check()
 
         if report.available == 0:
-            ui_bus.warning(
+            ui_bus.info(
                 "LSP: No language servers found on PATH. "
-                "Install pyright, rust-analyzer, gopls, or other LSP servers "
-                "for diagnostics support.",
+                "Install pyright, rust-analyzer, gopls, etc. for diagnostics.",
                 kind=UIEventKind.SYSTEM,
             )
             return
 
         ui_bus.info(
-            f"LSP diagnostics: {report.available}/{report.total} servers available",
+            f"LSP: {report.available}/{report.total} language servers ready",
             kind=UIEventKind.SYSTEM,
         )
         for lang_name, available, details in report.languages:
             if available:
-                ui_bus.debug(f"  LSP: {details}", kind=UIEventKind.SYSTEM)
+                ui_bus.info(f"  ✓ {details}", kind=UIEventKind.SYSTEM)
+            else:
+                ui_bus.debug(f"  ✗ {details}", kind=UIEventKind.SYSTEM)
 
         manager.start_worker()
         self._lsp_manager = manager
