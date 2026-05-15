@@ -80,6 +80,34 @@ sh -c 'curl -fsSL -H "X-RC-Bootstrap-Secret: ${RC_BOOTSTRAP_SECRET}" "${RC_HOST}
 
 > 注意：脚本已内置 TTY 兜底处理。即使通过 pipe 执行（`curl | sh`），也会优先尝试从 `/dev/tty` 进入 `--interactive`；若无可用 TTY，则自动降级为非交互模式并保持 peer 在线。
 
+## Language Server Protocol (LSP)
+
+ReuleauxCoder 集成了真实的语言服务器，提供代码智能功能：跳转到定义、查找引用、文件符号列表、保存时诊断。
+
+### 支持的语言
+
+| 语言 | LSP 服务器 | 安装方式 |
+|---|---|---|
+| Python | `pyright-langserver` (npx) | npx 自动安装 |
+| TypeScript / JavaScript | `typescript-language-server` (npx) | npx 自动安装 |
+| YAML | `yaml-language-server` (npx) | npx 自动安装 |
+| Bash | `bash-language-server` (npx) + `shellcheck` | `apt install shellcheck` |
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| C / C++ | `clangd` | `apt install clangd` |
+| Rust | `rust-analyzer` | `rustup component add rust-analyzer` |
+
+基于 npx 的服务器（Python、TS/JS、YAML、Bash）会在首次使用时通过 `npx -y` 自动安装。Go、C/C++、Rust 需要单独安装。
+
+### 主动 LSP 工具
+
+`lsp` 工具提供只读的代码智能操作：
+
+- `goToDefinition` — 查找符号的定义位置
+- `findReferences` — 查找符号的所有引用
+- `documentSymbol` — 列出文件中的所有符号（函数、类、变量等）
+
+所有 LSP 操作均为只读，**无需**审批。
+
 ## 命令
 
 ```text

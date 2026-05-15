@@ -80,6 +80,34 @@ The bootstrap access secret is checked over HTTPS before the server issues a sho
 
 > Note: the bootstrap script now includes TTY fallback handling. Even when executed via a pipe (`curl | sh`), it will try to attach interactive mode via `/dev/tty`; if no TTY is available, it automatically falls back to non-interactive mode and keeps the peer online.
 
+## Language Server Protocol (LSP)
+
+ReuleauxCoder integrates with real language servers for code intelligence: go-to-definition, find-references, document-symbols, and on-save diagnostics.
+
+### Supported Languages
+
+| Language | LSP Server | Install |
+|---|---|---|
+| Python | `pyright-langserver` (npx) | auto-installed via npx |
+| TypeScript / JavaScript | `typescript-language-server` (npx) | auto-installed via npx |
+| YAML | `yaml-language-server` (npx) | auto-installed via npx |
+| Bash | `bash-language-server` (npx) + `shellcheck` | `apt install shellcheck` |
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| C / C++ | `clangd` | `apt install clangd` |
+| Rust | `rust-analyzer` | `rustup component add rust-analyzer` |
+
+npx-based servers (Python, TS/JS, YAML, Bash) are auto-installed on first use with `npx -y`.  Go, C/C++, and Rust servers must be installed separately.
+
+### Active LSP Tools
+
+The `lsp` tool provides read-only code intelligence:
+
+- `goToDefinition` — find where a symbol is defined
+- `findReferences` — find all references to a symbol across the codebase
+- `documentSymbol` — list all symbols (functions, classes, variables) in a file
+
+All LSP operations are read-only and do **not** require approval.
+
 ## Commands
 
 ```text
