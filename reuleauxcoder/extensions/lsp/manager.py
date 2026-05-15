@@ -639,8 +639,12 @@ class LspManager:
         return None
 
     def _relativize_path(self, file_path: Path) -> str:
-        """Convert absolute path to workspace-relative, or basename."""
+        """Convert absolute path to workspace-relative, or basename.
+
+        Normalises to forward slashes for cross-platform consistency
+        (LSP URIs and diagnostics use /).
+        """
         try:
-            return str(file_path.relative_to(self._workspace_cwd))
+            return file_path.relative_to(self._workspace_cwd).as_posix()
         except ValueError:
             return file_path.name
