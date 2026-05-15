@@ -212,6 +212,16 @@ class AppRunner:
 
         setattr(agent, "lsp_manager", manager)
 
+        # Inject LspManager into the active LSP tool module as well
+        try:
+            from reuleauxcoder.extensions.tools.builtin.lsp import (
+                set_lsp_manager as set_lsp_tool_manager,
+            )
+
+            set_lsp_tool_manager(manager)
+        except Exception:
+            pass
+
     @staticmethod
     def _wire_agent_tool_parent(agent: Agent) -> None:
         """Inject parent agent into the nested agent tool if present."""
@@ -316,6 +326,14 @@ class AppRunner:
         if self._lsp_manager:
             self._lsp_manager.shutdown_all()
             self._lsp_manager = None
+            try:
+                from reuleauxcoder.extensions.tools.builtin.lsp import (
+                    set_lsp_manager as set_lsp_tool_manager,
+                )
+
+                set_lsp_tool_manager(None)
+            except Exception:
+                pass
 
     @staticmethod
     def _run_lifecycle_hooks(
