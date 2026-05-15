@@ -266,18 +266,13 @@ def format_document_symbols(
 
 
 def _uri_to_path(uri: str) -> str:
-    """Convert file:// URI to a path string."""
+    """Convert file:// URI to a path string (always forward slashes)."""
     if uri.startswith("file://"):
         from urllib.parse import unquote
         from urllib.request import url2pathname
 
-        host_part = uri[7:]
-        # Strip host name (usually empty or "localhost")
-        if host_part.startswith("/"):
-            return url2pathname(unquote(uri[7:]))
-        # Windows: file:///C:/...
-        return url2pathname(unquote(uri[7:]))
-
+        raw = url2pathname(unquote(uri[7:]))
+        return raw.replace("\\", "/")  # normalise Windows backslashes
     return uri
 
 
