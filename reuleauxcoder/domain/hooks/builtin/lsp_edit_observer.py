@@ -1,0 +1,93 @@
+"""LSP edit observer hook — triggers diagnostics and didSave after file edits.
+
+AFTER_TOOL_EXECUTE observer (fail-open):
+- Detects edit_file / write_file / apply_patch tool calls
+- Extracts edited file paths
+- Enqueues diagnostics request (fire-and-forget)
+- Sends didSave notification (fire-and-forget)
+
+The LspManager reference is injected post-construction via set_lsp_manager().
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from reuleauxcoder.domain.config.models import Config
+    from reuleauxcoder.extensions.lsp.manager import LspManager
+
+from reuleauxcoder.domain.hooks.base import ObserverHook
+from reuleauxcoder.domain.hooks.discovery import register_hook
+from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
+
+EDIT_TOOLS = frozenset({"edit_file", "write_file", "apply_patch"})
+
+
+def _extract_file_path(tool_name: str, arguments: dict) -> str | None:
+    """Extract the file path from a tool call's arguments.
+
+    Handles the known schemas of edit_file, write_file, and apply_patch.
+    All three use 'file_path' as the key.
+    """
+    return arguments.get("file_path")
+
+
+@register_hook(HookPoint.AFTER_TOOL_EXECUTE, priority=200)
+@dataclass(slots=True)
+class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
+    """Trigger LSP diagnostics and didSave after file edits."""
+
+    lsp_manager: LspManager | None = field(default=None)
+
+    def __init__(
+        self,
+        *,
+        lsp_manager: LspManager | None = None,
+        priority: int = 200,
+    ):
+        ObserverHook.__init__(
+            self,
+            name="lsp_edit_observer",
+            priority=priority,
+            extension_name="core",
+        )
+        self.lsp_manager = lsp_manager
+
+    @classmethod
+    def create_from_config(cls, config: "Config") -> "LspEditObserverHook":
+        """Create hook instance from config.  LspManager injected later."""
+        return cls(lsp_manager=None, priority=200)
+
+    def set_lsp_manager(self, mgr: "LspManager") -> None:
+        """Inject the LspManager reference post-construction."""
+        self.lsp_manager = mgr
+
+    def run(self, context: AfterToolExecuteContext) -> None:
+        """Detect edit tools and enqueue diagnostics + didSave."""
+        if self.lsp_manager is None:
+            return
+
+        if not self.lsp_manager.enabled:
+            return
+
+        tool_call = context.tool_call
+        if tool_call is None:
+            return
+
+        if tool_call.name not in EDIT_TOOLS:
+            return
+
+        file_path = _extract_file_path(tool_call.name, tool_call.arguments)
+        if file_path is None:
+            return
+
+        path = Path(file_path)
+
+        # 1. Notify LSP server that the file was saved
+        self.lsp_manager.notify_did_save(path)
+
+        # 2. Enqueue diagnostics request (fire-and-forget)
+        self.lsp_manager.enqueue_diagnostics(path, seq=context.round_index or 0)
