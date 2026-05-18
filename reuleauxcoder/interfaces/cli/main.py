@@ -6,6 +6,7 @@ This module handles CLI-specific concerns:
 - REPL loop
 """
 
+import signal
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,25 @@ from reuleauxcoder.interfaces.entrypoint import AppRunner, AppOptions
 from reuleauxcoder.interfaces.events import AgentEventBridge
 from reuleauxcoder.interfaces.ui_registry import UIRegistry
 from reuleauxcoder.services.config.loader import ExampleConfigError
+
+
+def _install_sigint_handler(agent):
+    """Install a SIGINT handler that sets the agent's cooperative-stop flag.
+
+    The handler sets ``agent.request_stop()`` so that the agent loop
+    exits cleanly at its next check point, *then* re-raises
+    ``KeyboardInterrupt`` to interrupt the currently-blocked operation
+    (streaming, subprocess, etc.) immediately.
+    """
+
+    def handler(signum, frame):
+        try:
+            agent.request_stop()
+        except Exception:
+            pass  # best-effort; the agent reference may be stale
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, handler)
 
 
 def _run_once(agent, prompt: str):
@@ -91,6 +111,7 @@ def main():
             return
 
         # Interactive REPL mode
+        _install_sigint_handler(ctx.agent)
         run_repl(
             ctx.agent,
             ctx.config,

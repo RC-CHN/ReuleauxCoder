@@ -110,6 +110,7 @@ def run_repl(
         try:
             agent.chat(chat_input)
         except KeyboardInterrupt:
+            agent.request_stop()
             ui_bus.warning("Interrupted.")
         except Exception as e:
             diagnostic_path = getattr(e, "llm_diagnostic_path", None)

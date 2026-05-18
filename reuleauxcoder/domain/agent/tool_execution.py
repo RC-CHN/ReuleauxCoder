@@ -169,6 +169,14 @@ class ToolExecutor:
                 AgentEvent.tool_call_end(tool_call.name, after_context.result)
             )
             return after_context.result
+        except KeyboardInterrupt:
+            message = f"Tool '{tool_call.name}' interrupted by user."
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+            )
+            if not self.agent.stop_requested():
+                self.agent.request_stop()
+            raise
         except TypeError as e:
             message = f"Error: bad arguments for {tool_call.name}: {e}"
             self.agent._emit_event(
