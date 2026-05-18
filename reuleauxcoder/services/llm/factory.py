@@ -42,4 +42,8 @@ def reconfigure_llm_from_settings(
         settings,
         debug_trace=llm.debug_trace if debug_trace is None else debug_trace,
     )
+    # Profile-level fields not in _LLM_RUNTIME_FIELDS (not available on top-level Config)
+    for field in ("reasoning_effort_values", "reasoning_effort_param"):
+        if hasattr(settings, field):
+            kwargs[field] = getattr(settings, field)
     llm.reconfigure(**kwargs)

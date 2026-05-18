@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
 from reuleauxcoder.app.commands.registry import ActionRegistry
-from reuleauxcoder.interfaces.events import UIEventBus
+from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 
 if TYPE_CHECKING:
@@ -34,19 +34,26 @@ def handle_command(
         current_session_id=current_session_id,
     )
     if parsed_action is not None:
-        result = dispatch_command(
-            parsed_action,
-            CommandContext(
-                agent=agent,
-                config=config,
-                ui_bus=ui_bus,
-                ui_profile=ui_profile,
-                action_registry=parsed_action.registry,
-                ui_interactor=getattr(agent, "ui_interactor", None),
-                sessions_dir=sessions_dir,
-                skills_service=skills_service,
-            ),
-        )
+        try:
+            result = dispatch_command(
+                parsed_action,
+                CommandContext(
+                    agent=agent,
+                    config=config,
+                    ui_bus=ui_bus,
+                    ui_profile=ui_profile,
+                    action_registry=parsed_action.registry,
+                    ui_interactor=getattr(agent, "ui_interactor", None),
+                    sessions_dir=sessions_dir,
+                    skills_service=skills_service,
+                ),
+            )
+        except Exception as exc:
+            ui_bus.error(
+                f"Command failed: {exc}",
+                kind=UIEventKind.COMMAND,
+            )
+            return {"action": "continue", "session_id": current_session_id}
         return {
             "action": result.action,
             "session_id": result.session_id

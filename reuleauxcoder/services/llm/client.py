@@ -119,6 +119,8 @@ class LLM:
         thinking_enabled: bool | None = None,
         reasoning_replay_mode: str | None = None,
         reasoning_replay_placeholder: str = DEFAULT_REASONING_REPLAY_PLACEHOLDER,
+        reasoning_effort_values: dict[str, object] | None = None,
+        reasoning_effort_param: str = "reasoning_effort",
         debug_trace: bool = False,
         ui_bus: UIEventBus | None = None,
     ):
@@ -133,6 +135,8 @@ class LLM:
             backfill_reasoning_content_for_tool_calls
         )
         self.reasoning_effort = reasoning_effort
+        self.reasoning_effort_values = reasoning_effort_values
+        self.reasoning_effort_param = reasoning_effort_param
         self.thinking_enabled = thinking_enabled
         self.reasoning_replay_mode = reasoning_replay_mode
         self.reasoning_replay_placeholder = reasoning_replay_placeholder
@@ -153,6 +157,8 @@ class LLM:
         thinking_enabled: bool | None = None,
         reasoning_replay_mode: str | None = None,
         reasoning_replay_placeholder: str | None = None,
+        reasoning_effort_values: dict[str, object] | None = None,
+        reasoning_effort_param: str | None = None,
         debug_trace: bool | None = None,
     ) -> None:
         """Hot-swap runtime model/client settings."""
@@ -176,6 +182,10 @@ class LLM:
             self.reasoning_replay_mode = reasoning_replay_mode
         if reasoning_replay_placeholder is not None:
             self.reasoning_replay_placeholder = reasoning_replay_placeholder
+        if reasoning_effort_values is not None:
+            self.reasoning_effort_values = reasoning_effort_values
+        if reasoning_effort_param is not None:
+            self.reasoning_effort_param = reasoning_effort_param
         if debug_trace is not None:
             self.debug_trace = debug_trace
 
@@ -189,6 +199,7 @@ class LLM:
         messages: list[dict],
         tools: Optional[list[dict]] = None,
         on_token: Optional[Callable[[str], None]] = None,
+        on_reasoning_token: Optional[Callable[[str], None]] = None,
         hook_registry: HookRegistry | None = None,
         session_id: str | None = None,
         trace_id: str | None = None,
@@ -234,7 +245,15 @@ class LLM:
             "max_tokens": self.max_tokens,
         }
         if self.reasoning_effort:
-            params["reasoning_effort"] = self.reasoning_effort
+            # Resolve CLI label → API value via the reasoning_effort_values mapping.
+            # Default mapping: {"low":"low","medium":"medium","high":"high"}
+            mapping = self.reasoning_effort_values or {
+                "low": "low",
+                "medium": "medium",
+                "high": "high",
+            }
+            api_value = mapping.get(self.reasoning_effort, self.reasoning_effort)
+            params[self.reasoning_effort_param] = api_value
         if self.thinking_enabled is not None:
             params["extra_body"] = {
                 "thinking": {"type": "enabled" if self.thinking_enabled else "disabled"}
@@ -323,6 +342,8 @@ class LLM:
                     delta, "reasoning_content", None
                 ):
                     reasoning_parts.append(delta.reasoning_content)
+                    if on_reasoning_token is not None:
+                        on_reasoning_token(delta.reasoning_content)
 
                 # Accumulate tool calls across chunks
                 if delta.tool_calls:

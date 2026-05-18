@@ -119,10 +119,22 @@ class AgentLoop:
                 streamed_output = True
                 self.agent._emit_event(AgentEvent.stream_token(token))
 
+            def _on_reasoning(token: str) -> None:
+                self.agent._emit_event(
+                    AgentEvent(
+                        event_type=AgentEventType.STREAM_REASONING,
+                        data={
+                            "token": token,
+                            "display_mode": self.agent.reasoning_display_mode,
+                        },
+                    )
+                )
+
             resp = self.agent.llm.chat(
                 messages=self._full_messages(),
                 tools=self._tool_schemas(),
                 on_token=_on_token,
+                on_reasoning_token=_on_reasoning,
                 hook_registry=self.agent.hook_registry,
                 session_id=getattr(self.agent, "current_session_id", None),
                 metadata={
@@ -131,6 +143,10 @@ class AgentLoop:
                     "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
                 },
             )
+
+            # Store reasoning content for /thinking command
+            if resp.reasoning_content:
+                self.agent.last_reasoning_content = resp.reasoning_content
 
             # Update token counts
             self.agent.state.total_prompt_tokens += resp.prompt_tokens

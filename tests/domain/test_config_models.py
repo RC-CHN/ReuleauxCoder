@@ -2,6 +2,7 @@ from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
     Config,
+    DEFAULT_REASONING_EFFORT_VALUES,
     MCPServerConfig,
     ModeConfig,
     ModelProfileConfig,
@@ -31,6 +32,46 @@ def test_model_profile_config_from_dict_uses_defaults() -> None:
     assert profile.temperature == 0.0
     assert profile.preserve_reasoning_content is True
     assert profile.backfill_reasoning_content_for_tool_calls is False
+
+
+def test_model_profile_config_default_reasoning_effort_param() -> None:
+    profile = ModelProfileConfig.from_dict("main", {})
+    assert profile.reasoning_effort_param == "reasoning_effort"
+    assert profile.reasoning_effort_values is None
+
+
+def test_model_profile_config_custom_reasoning_effort_param() -> None:
+    profile = ModelProfileConfig.from_dict(
+        "deepseek",
+        {
+            "model": "deepseek-chat",
+            "api_key": "sk-xx",
+            "reasoning_effort": "high",
+            "reasoning_effort_param": "thinking_level",
+            "reasoning_effort_values": {"low": "high", "medium": "high", "high": "max"},
+        },
+    )
+    assert profile.reasoning_effort == "high"
+    assert profile.reasoning_effort_param == "thinking_level"
+    assert profile.reasoning_effort_values == {"low": "high", "medium": "high", "high": "max"}
+
+
+def test_model_profile_config_reasoning_effort_values_roundtrip() -> None:
+    profile = ModelProfileConfig(
+        name="test",
+        model="m",
+        api_key="k",
+        reasoning_effort="high",
+        reasoning_effort_values={"low": 1, "medium": 5, "high": 10},
+        reasoning_effort_param="think",
+    )
+    restored = ModelProfileConfig.from_dict("test", profile.to_dict())
+    assert restored.reasoning_effort_values == {"low": 1, "medium": 5, "high": 10}
+    assert restored.reasoning_effort_param == "think"
+
+
+def test_default_reasoning_effort_values() -> None:
+    assert DEFAULT_REASONING_EFFORT_VALUES == {"low": "low", "medium": "medium", "high": "high"}
 
 
 def test_mode_config_from_dict_normalizes_invalid_fields() -> None:

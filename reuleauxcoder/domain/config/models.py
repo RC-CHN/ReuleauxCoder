@@ -38,6 +38,13 @@ class MCPServerConfig:
         )
 
 
+DEFAULT_REASONING_EFFORT_VALUES: dict[str, object] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+}
+
+
 @dataclass
 class ModelProfileConfig:
     """Named model/runtime profile used by ``/model`` switching."""
@@ -55,6 +62,8 @@ class ModelProfileConfig:
     thinking_enabled: Optional[bool] = None
     reasoning_replay_mode: Optional[str] = None
     reasoning_replay_placeholder: Optional[str] = None
+    reasoning_effort_values: Optional[dict[str, object]] = None
+    reasoning_effort_param: str = "reasoning_effort"
 
     def to_dict(self) -> dict:
         """Convert to dictionary format for serialization."""
@@ -71,6 +80,8 @@ class ModelProfileConfig:
             "thinking_enabled": self.thinking_enabled,
             "reasoning_replay_mode": self.reasoning_replay_mode,
             "reasoning_replay_placeholder": self.reasoning_replay_placeholder,
+            "reasoning_effort_values": self.reasoning_effort_values,
+            "reasoning_effort_param": self.reasoning_effort_param,
         }
 
     @classmethod
@@ -92,6 +103,8 @@ class ModelProfileConfig:
             thinking_enabled=d.get("thinking_enabled"),
             reasoning_replay_mode=d.get("reasoning_replay_mode"),
             reasoning_replay_placeholder=d.get("reasoning_replay_placeholder"),
+            reasoning_effort_values=d.get("reasoning_effort_values"),
+            reasoning_effort_param=d.get("reasoning_effort_param", "reasoning_effort"),
         )
 
 

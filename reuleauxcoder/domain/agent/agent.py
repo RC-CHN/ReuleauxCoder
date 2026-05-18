@@ -60,6 +60,10 @@ class Agent:
         self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
         self.active_mode: str | None = None
 
+        # Reasoning / thinking state
+        self.last_reasoning_content: str | None = None
+        self.reasoning_display_mode: str = "quiet"  # "quiet" | "inline"
+
         # State
         self.state = AgentState()
         self._state_lock = threading.Lock()

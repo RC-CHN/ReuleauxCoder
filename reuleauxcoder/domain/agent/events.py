@@ -12,6 +12,7 @@ class AgentEventType(Enum):
     CHAT_START = "chat_start"
     CHAT_END = "chat_end"
     STREAM_TOKEN = "stream_token"
+    STREAM_REASONING = "stream_reasoning"
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_END = "tool_call_end"
     SUBAGENT_COMPLETED = "subagent_completed"
@@ -109,6 +110,14 @@ class AgentEvent:
         """Create a stream token event."""
         return cls(
             event_type=AgentEventType.STREAM_TOKEN,
+            data={"token": token},
+        )
+
+    @classmethod
+    def stream_reasoning(cls, token: str) -> "AgentEvent":
+        """Create a stream reasoning event."""
+        return cls(
+            event_type=AgentEventType.STREAM_REASONING,
             data={"token": token},
         )
 

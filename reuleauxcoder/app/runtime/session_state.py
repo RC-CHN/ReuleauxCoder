@@ -177,6 +177,8 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
             preserve_reasoning_content=profile.preserve_reasoning_content,
             backfill_reasoning_content_for_tool_calls=profile.backfill_reasoning_content_for_tool_calls,
             reasoning_effort=profile.reasoning_effort,
+            reasoning_effort_values=profile.reasoning_effort_values,
+            reasoning_effort_param=profile.reasoning_effort_param,
             thinking_enabled=profile.thinking_enabled,
             reasoning_replay_mode=profile.reasoning_replay_mode,
             reasoning_replay_placeholder=profile.reasoning_replay_placeholder,

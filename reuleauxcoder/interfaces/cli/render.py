@@ -126,6 +126,8 @@ class CLIRenderer:
             _ContentBlock | _ToolCallBlock | _NotificationBlock
         ] = []
         self.view_registry = view_registry or create_cli_view_registry()
+        # Reasoning streaming state
+        self._reasoning_label_printed: bool = False
 
     def close(self) -> None:
         """Release terminal handlers/resources held by the renderer."""
@@ -136,6 +138,8 @@ class CLIRenderer:
         """Handle an agent event."""
         if event.event_type == AgentEventType.STREAM_TOKEN:
             self._render_token(event.data["token"])
+        elif event.event_type == AgentEventType.STREAM_REASONING:
+            self._render_reasoning(event.data)
         elif event.event_type == AgentEventType.TOOL_CALL_START:
             self._render_tool_start(event.tool_name, event.tool_args)
         elif event.event_type == AgentEventType.TOOL_CALL_END:
@@ -174,10 +178,37 @@ class CLIRenderer:
 
     def _render_token(self, token: str) -> None:
         """Append streamed content and flush complete markdown paragraphs."""
+        # Reset reasoning label state when content begins
+        if self._reasoning_label_printed:
+            self._reasoning_label_printed = False
         if self._active_content_block is None:
             self._active_content_block = _ContentBlock()
         self._active_content_block.append(token)
         self._flush_completed_paragraphs()
+
+    def _render_reasoning(self, data: dict) -> None:
+        """Render a streamed reasoning token.
+
+        In *quiet* mode (default): prints ``🤔 Thinking...`` once, then
+        silently accumulates the rest.
+        In *inline* mode: streams reasoning tokens in dim grey, raw text
+        (no Markdown parsing).
+        """
+        mode = data.get("display_mode", "quiet")
+        token: str = data.get("token", "")
+
+        if mode == "quiet":
+            if not self._reasoning_label_printed:
+                self.console.print("  [dim]Thinking...[/dim]")
+                self._reasoning_label_printed = True
+            return
+
+        # inline mode
+        if not self._reasoning_label_printed:
+            self._close_active_content_block()
+            self.console.print("  [dim]Thinking: [/dim]", end="")
+            self._reasoning_label_printed = True
+        self.console.print(f"[dim]{_escape_markup(token)}[/dim]", end="")
 
     def _flush_completed_paragraphs(self) -> None:
         """Render completed blocks from the active content block.
@@ -366,6 +397,21 @@ class CLIRenderer:
 
     def _render_notification(self, event: UIEvent) -> None:
         """Render a generic UI notification event."""
+        # Reasoning content display (/thinking command)
+        if event.data.get("is_reasoning"):
+            self._close_active_content_block()
+            title = event.data.get("title", "Reasoning")
+            self.console.print(
+                Panel(
+                    event.message,
+                    title=title,
+                    border_style="bright_black",
+                    box=box.ROUNDED,
+                    padding=(0, 1),
+                )
+            )
+            return
+
         border_style = {
             UIEventLevel.INFO: "blue",
             UIEventLevel.SUCCESS: "green",
