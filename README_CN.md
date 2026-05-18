@@ -128,12 +128,19 @@ ReuleauxCoder 集成了真实的语言服务器，提供代码智能功能：跳
 /session latest   恢复最近一次保存的会话
 /approval show    显示审批规则
 /approval set ... 更新审批规则
+/debug on|off     切换 LLM 调试追踪
 /mcp show         显示 MCP 服务器状态
 /mcp enable <s>   启用一个 MCP 服务器
 /mcp disable <s>  禁用一个 MCP 服务器
+/thinking         查看上轮推理内容
+/thinking inline  切换推理内容的内联流式显示
+/thinking effort  查看当前思考预算
+/thinking effort <low|medium|high>  设置思考预算（会话级）
 /quit             退出
 /exit             退出
 ```
+
+输错的斜杠命令（如 `/thiking`）会通过编辑距离（≤2）模糊匹配并建议正确的命令。
 
 ### 命令说明
 
@@ -144,6 +151,7 @@ ReuleauxCoder 集成了真实的语言服务器，提供代码智能功能：跳
 - `/session <id>` 会在当前进程中恢复会话；也可以用 `rcoder -r <id>` 在启动时直接恢复。
 - `/approval set` 当前支持的目标格式包括 `tool:<name>`、`mcp`、`mcp:<server>`、`mcp:<server>:<tool>`；动作支持 `allow`、`warn`、`require_approval`、`deny`。
 - `/mcp enable <server>` 与 `/mcp disable <server>` 会更新工作区配置，并尝试在运行时立即生效。
+- `/thinking` 以灰色面板展示模型上一轮的链式推理内容。`/thinking inline` 切换安静模式（仅显示 `Thinking...` 标记）和内联模式（灰色流式输出）。`/thinking effort` 查看或设置思考预算（low/medium/high），支持按 profile 配置自定义值映射。
 
 ## CLI 参数
 

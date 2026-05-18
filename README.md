@@ -111,29 +111,37 @@ All LSP operations are read-only and do **not** require approval.
 ## Commands
 
 ```text
-/help             Show help
-/reset            Clear current in-memory conversation only
-/new              Start a new conversation (auto-save previous)
-/model            List model profiles and current active profile
-/model <profile>  Switch to a configured model profile
-/skills           Show discovered skills
-/skills reload    Reload skills from disk
-/skills enable <n>  Enable one skill
-/skills disable <n> Disable one skill
-/tokens           Show token usage
-/compact          Compress conversation context
-/save             Save session to disk
-/sessions         List saved sessions
-/session <id>     Resume a saved session in current process
-/session latest   Resume the latest saved session
-/approval show    Show approval rules
-/approval set ... Update approval rules
-/mcp show         Show MCP server status
-/mcp enable <s>   Enable one MCP server
-/mcp disable <s>  Disable one MCP server
-/quit             Exit
-/exit             Exit
+/help              Show help
+/reset             Clear current in-memory conversation only
+/new               Start a new conversation (auto-save previous)
+/model             List model profiles and current active profile
+/model <profile>   Switch to a configured model profile
+/skills            Show discovered skills
+/skills reload     Reload skills from disk
+/skills enable <n>   Enable one skill
+/skills disable <n>  Disable one skill
+/tokens            Show token usage
+/compact           Compress conversation context
+/save              Save session to disk
+/sessions          List saved sessions
+/session <id>      Resume a saved session in current process
+/session latest    Resume the latest saved session
+/approval show     Show approval rules
+/approval set ...  Update approval rules
+/debug on|off      Toggle LLM debug trace
+/mcp show          Show MCP server status
+/mcp enable <s>    Enable one MCP server
+/mcp disable <s>   Disable one MCP server
+/thinking          Show reasoning content from the last turn
+/thinking inline   Toggle inline streaming of reasoning content
+/thinking effort   Show current reasoning effort budget
+/thinking effort <low|medium|high>  Set reasoning effort (session-scoped)
+/quit              Exit
+/exit              Exit
 ```
+
+Mistyped slash commands (e.g. `/thiking`) are fuzzy-matched and suggest the closest
+known command if within edit distance ≤ 2.
 
 ### Command Notes
 
@@ -144,6 +152,7 @@ All LSP operations are read-only and do **not** require approval.
 - `/session <id>` resumes a saved session in the current process; `rcoder -r <id>` resumes directly on startup.
 - `/approval set` currently supports targets like `tool:<name>`, `mcp`, `mcp:<server>`, and `mcp:<server>:<tool>` with actions `allow`, `warn`, `require_approval`, or `deny`.
 - `/mcp enable <server>` and `/mcp disable <server>` update workspace config and try to apply the change at runtime.
+- `/thinking` shows the model's chain-of-thought reasoning from the most recent turn in a dimmed panel. `/thinking inline` toggles between quiet mode (a single `Thinking...` label) and inline mode (dim-grey streaming).  `/thinking effort` views or sets the reasoning budget (low/medium/high), with configurable per-profile value mappings.
 
 ## CLI Options
 
