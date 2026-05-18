@@ -135,14 +135,15 @@ class LspManager:
 
         report = LspHealthReport()
         for lang in iter_supported_languages():
-            cmd, _args = get_server_command(lang)
+            cmd, args = get_server_command(lang)
             found = shutil.which(cmd) is not None
 
             with self._lock:
                 self._availability[lang] = found
 
             lang_name = get_language_id_string(lang)
-            details = f"✓ {cmd}" if found else f"✗ {cmd} not found on PATH"
+            full_cmd = f"{cmd} {' '.join(args)}".strip()
+            details = full_cmd
             report.languages.append((lang_name, found, details))
             report.total += 1
             if found:

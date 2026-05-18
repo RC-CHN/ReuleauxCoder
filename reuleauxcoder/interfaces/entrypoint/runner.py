@@ -181,12 +181,19 @@ class AppRunner:
             )
             return
 
+        _MAX_CMD_LEN = 55
+
+        def _fmt(cmd: str) -> str:
+            return cmd if len(cmd) <= _MAX_CMD_LEN else cmd[:_MAX_CMD_LEN] + "..."
+
         available_lines = [
-            f"  ✓ {details}" for _, available, details in report.languages if available
+            f"  ✓ {lang_name} ({_fmt(details)})"
+            for lang_name, available, details in report.languages
+            if available
         ]
         missing_lines = [
-            f"  ✗ {details}"
-            for _, available, details in report.languages
+            f"  ✗ {lang_name} ({_fmt(details)})"
+            for lang_name, available, details in report.languages
             if not available
         ]
 
