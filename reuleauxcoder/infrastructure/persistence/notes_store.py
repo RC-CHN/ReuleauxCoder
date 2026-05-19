@@ -87,16 +87,32 @@ def render_notes(
 
     if ws_entries:
         lines.append(f"Workspace notes ({len(ws_entries)}):")
-        for e in ws_entries:
+        for i, e in enumerate(ws_entries, 1):
             ts = e.get("ts", "")[:16].replace("T", " ")
-            lines.append(f'- {ts}  "{e["content"]}"')
+            lines.append(f'  [{i}] {ts}  "{e["content"]}"')
 
     if gl_entries:
         if ws_entries:
             lines.append("")
         lines.append(f"Global notes ({len(gl_entries)}):")
-        for e in gl_entries:
+        for i, e in enumerate(gl_entries, 1):
             ts = e.get("ts", "")[:16].replace("T", " ")
-            lines.append(f'- {ts}  "{e["content"]}"')
+            lines.append(f'  [{i}] {ts}  "{e["content"]}"')
 
     return "\n".join(lines)
+
+
+def delete_note(
+    index: int,
+    *,
+    scope: str = "workspace",
+    workspace_dir: Path | None = None,
+) -> bool:
+    """Delete a single note by 1-based index.  Returns True on success."""
+    path = _notes_path(scope, workspace_dir)
+    entries = _load(path)
+    if not entries or index < 1 or index > len(entries):
+        return False
+    entries.pop(index - 1)
+    _save(path, entries)
+    return True

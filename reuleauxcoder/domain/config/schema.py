@@ -138,6 +138,8 @@ DEFAULTS = {
     "approval_default_mode": "require_approval",
     "approval_rules": [
         {"tool_name": "read_file", "action": "allow"},
+        {"tool_name": "write_note", "action": "allow"},
+        {"tool_name": "delete_note", "action": "allow"},
         {"tool_name": "glob", "action": "allow"},
         {"tool_name": "grep", "action": "allow"},
         {"tool_name": "list_file", "action": "allow"},
