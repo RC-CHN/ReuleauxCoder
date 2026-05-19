@@ -154,6 +154,9 @@ DEFAULTS = {
     "tool_output_store_full": True,
     "tool_output_store_dir": None,
     "shell_rtk": "auto",  # "auto" | "on" | "off"
+    "notes_workspace_max": 30,
+    "notes_global_max": 20,
+    "notes_inject": True,
     "session_auto_save": True,
     "session_dir": None,  # Will be computed at runtime
     "history_file": None,  # Will be computed at runtime

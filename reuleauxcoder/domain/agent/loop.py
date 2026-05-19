@@ -45,8 +45,21 @@ class AgentLoop:
             "Local time represents the user's current time at this turn.\n"
             "Always use Local time as the source of truth for all time-related reasoning.\n"
             "UTC time is provided only for reference.\n"
-            "</system_context>"
         )
+        # Inject notes if available and enabled
+        try:
+            config = getattr(self.agent, "_config", None) or getattr(
+                self.agent, "config", None
+            )
+        except Exception:
+            config = None
+        if config is not None and getattr(config, "notes_inject", True):
+            from reuleauxcoder.infrastructure.persistence.notes_store import render_notes
+
+            notes_text = render_notes()
+            if notes_text:
+                content += "\n" + notes_text + "\n"
+        content += "</system_context>"
         return {"role": "user", "content": content}
 
     def _full_messages(self) -> list[dict]:

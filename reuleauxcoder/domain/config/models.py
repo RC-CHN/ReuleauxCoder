@@ -231,7 +231,12 @@ class Config:
 
     # Shell settings
     shell_rtk: str = "auto"  # "auto" | "on" | "off"
-    
+
+    # Notes settings
+    notes_workspace_max: int = 30
+    notes_global_max: int = 20
+    notes_inject: bool = True
+
     # Tool output settings
     tool_output_max_chars: int = 12_000
     tool_output_max_lines: int = 120
