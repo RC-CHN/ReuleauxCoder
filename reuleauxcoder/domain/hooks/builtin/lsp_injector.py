@@ -54,7 +54,12 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         self.lsp_manager = mgr
 
     def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
-        """Drain diagnostics and prepend synthetic user message."""
+        """Drain diagnostics and append to the runtime system_context tail.
+
+        Appended at the end of the message list (inside the dynamic tail block)
+        rather than prepended at index 0, so that prompt-cache prefixes are not
+        invalidated by fresh diagnostics after a session resume.
+        """
         if self.lsp_manager is None:
             return context
 
@@ -73,14 +78,16 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if rendered is None:
             return context
 
-        # Prepend synthetic user message so the model sees diagnostics
-        # before processing the next turn.
-        context.messages.insert(
-            0,
-            {
-                "role": "user",
-                "content": rendered,
-            },
-        )
+        # Append diagnostics to the last message in the list (the runtime
+        # <system_context> tail).  The tail changes every turn anyway
+        # (time, directory listing, notes), so adding diagnostics here does
+        # not cause additional cache breaks.
+        if context.messages:
+            last = context.messages[-1]
+            if last.get("role") == "user" and "</system_context>" in last.get("content", ""):
+                last["content"] = last["content"].replace(
+                    "</system_context>",
+                    "\n[LSP DIAGNOSTICS]\n" + rendered + "\n</system_context>",
+                )
 
         return context
