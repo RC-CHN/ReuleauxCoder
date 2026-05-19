@@ -46,19 +46,15 @@ class AgentLoop:
             "Always use Local time as the source of truth for all time-related reasoning.\n"
             "UTC time is provided only for reference.\n"
         )
-        # Inject notes if available and enabled
+        # Inject persistent notes into the tail block when present.
         try:
-            config = getattr(self.agent, "_config", None) or getattr(
-                self.agent, "config", None
-            )
-        except Exception:
-            config = None
-        if config is not None and getattr(config, "notes_inject", True):
             from reuleauxcoder.infrastructure.persistence.notes_store import render_notes
 
             notes_text = render_notes()
             if notes_text:
                 content += "\n" + notes_text + "\n"
+        except Exception:
+            pass  # notes are best-effort; never break the system context block
         content += "</system_context>"
         return {"role": "user", "content": content}
 
