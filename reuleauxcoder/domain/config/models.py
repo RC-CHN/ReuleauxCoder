@@ -229,6 +229,9 @@ class Config:
     modes: dict[str, ModeConfig] = field(default_factory=dict)
     active_mode: Optional[str] = None
 
+    # Shell settings
+    shell_rtk: str = "auto"  # "auto" | "on" | "off"
+    
     # Tool output settings
     tool_output_max_chars: int = 12_000
     tool_output_max_lines: int = 120

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
@@ -38,6 +39,33 @@ class ShellTool(Tool):
         super().__init__(backend or LocalToolBackend())
         self._cwd: str | None = None
 
+    def _maybe_rtk(self, command: str) -> str:
+        """Wrap *command* with ``rtk`` if the binary is available and enabled."""
+        try:
+            config = getattr(self, "_agent_config", None)
+        except Exception:
+            return command
+        if config is None:
+            return command
+
+        rtk_mode = getattr(config, "shell_rtk", "auto")
+        if rtk_mode == "off":
+            return command
+
+        has_rtk = shutil.which("rtk") is not None
+        if has_rtk:
+            return f"rtk {command}"
+
+        if rtk_mode == "on":
+            # user wanted rtk but it's missing — emit a soft warning via stderr (one-shot)
+            if not getattr(self, "_rtk_warned_missing", False):
+                print(
+                    "[rtk] shell.rtk=on but rtk not found on PATH, running raw command",
+                    file=__import__("sys").stderr,
+                )
+                self._rtk_warned_missing = True
+        return command
+
     def execute(self, command: str, timeout: int = 120) -> str:
         return self.run_backend(command=command, timeout=timeout)
 
@@ -51,6 +79,8 @@ class ShellTool(Tool):
 
     @backend_handler("local")
     def _execute_local(self, command: str, timeout: int = 120) -> str:
+        command = self._maybe_rtk(command)
+
         cwd = self._cwd or os.getcwd()
 
         # Detect stale CWD (e.g. deleted temp dir) and reset to workspace root

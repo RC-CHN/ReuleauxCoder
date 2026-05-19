@@ -149,7 +149,25 @@ class AppRunner:
         self._register_hooks(agent, config)
         self._init_lsp(config, agent, ui_bus)
         self._wire_agent_tool_parent(agent)
+        self._hint_rtk_install(config, ui_bus)
         return config, ui_bus, llm, agent
+
+    @staticmethod
+    def _hint_rtk_install(config: Config, ui_bus: UIEventBus) -> None:
+        """Emit a one-time hint if rtk is not installed and shell_rtk is auto/on."""
+        rtk_mode = getattr(config, "shell_rtk", "auto")
+        if rtk_mode == "off":
+            return
+        import shutil
+        if shutil.which("rtk"):
+            return
+        ui_bus.info(
+            "[rtk] not detected — install with:\n"
+            "  curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh\n"
+            "  → 60-90% token savings on shell command output\n"
+            "  Set shell.rtk: off in config to suppress this hint.",
+            kind=UIEventKind.SYSTEM,
+        )
 
     def _init_remote_relay(self, config: Config, ui_bus: UIEventBus) -> None:
         init_remote_relay(self, config, ui_bus)
@@ -231,10 +249,12 @@ class AppRunner:
 
     @staticmethod
     def _wire_agent_tool_parent(agent: Agent) -> None:
-        """Inject parent agent into the nested agent tool if present."""
+        """Inject parent agent and config into tools that need them."""
         for tool in agent.tools:
             if tool.name == "agent":
                 tool._parent_agent = agent
+            if hasattr(tool, "_maybe_rtk"):
+                tool._agent_config = agent.config
 
     def _attach_mcp_if_configured(
         self,

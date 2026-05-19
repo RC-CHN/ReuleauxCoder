@@ -202,6 +202,7 @@ class ConfigLoader:
         approval_config = data.get("approval", {})
         tool_output_config = data.get("tool_output", {})
         session_config = data.get("session", {})
+        shell_config = data.get("shell", {})
         cli_config = data.get("cli", {})
         mcp_config = data.get("mcp", {})
         models_config = data.get("models", {})
@@ -375,6 +376,7 @@ class ConfigLoader:
                 app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])
             ),
             lsp=lsp_config if lsp_config else None,
+            shell_rtk=shell_config.get("rtk", DEFAULTS["shell_rtk"]),
         )
 
     def _is_workspace_bootstrapped(self, workspace_data: dict) -> bool:

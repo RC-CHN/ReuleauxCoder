@@ -153,6 +153,7 @@ DEFAULTS = {
     "tool_output_max_lines": 120,
     "tool_output_store_full": True,
     "tool_output_store_dir": None,
+    "shell_rtk": "auto",  # "auto" | "on" | "off"
     "session_auto_save": True,
     "session_dir": None,  # Will be computed at runtime
     "history_file": None,  # Will be computed at runtime
