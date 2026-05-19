@@ -24,6 +24,26 @@ class AgentLoop:
         self._shell = shell_name
         self.last_response_streamed = False
 
+    @staticmethod
+    def _dir_listing(cwd: str, max_entries: int = 50) -> tuple[int, str] | None:
+        """Return (count, text) for non-recursive directory listing, or None."""
+        try:
+            entries = sorted(os.scandir(cwd), key=lambda e: (not e.is_dir(), e.name))
+        except OSError:
+            return None
+
+        lines: list[str] = []
+        for entry in entries:
+            if len(lines) >= max_entries:
+                lines.append(f"  ... and {len(entries) - max_entries} more")
+                break
+            suffix = "/" if entry.is_dir() else ""
+            lines.append(f"  {entry.name}{suffix}")
+
+        if not lines:
+            return None
+        return (len(entries), "\n".join(lines))
+
     def _runtime_tail_message(self) -> dict:
         """Build ephemeral runtime context appended only at send time."""
         uname = platform.uname()
@@ -46,6 +66,13 @@ class AgentLoop:
             "Always use Local time as the source of truth for all time-related reasoning.\n"
             "UTC time is provided only for reference.\n"
         )
+        # Inject directory listing (non-recursive, max 50)
+        try:
+            listing = self._dir_listing(runtime_cwd, max_entries=50)
+            if listing:
+                content += f"- Directory ({listing[0]} entries):\n{listing[1]}\n"
+        except Exception:
+            pass
         # Inject persistent notes into the tail block when present.
         try:
             from reuleauxcoder.infrastructure.persistence.notes_store import render_notes
