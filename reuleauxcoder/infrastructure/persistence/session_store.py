@@ -56,9 +56,9 @@ class SessionStore:
             saved_messages = [dict(message) for message in messages]
             ensure_message_token_counts(saved_messages)
             if is_exit:
-                exit_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                exit_time = time.strftime("%Y-%m-%d %H:%M:%S %Z")
                 exit_message = {
-                    "role": "system",
+                    "role": "user",
                     "content": f"[SESSION_EXIT] User left the session at {exit_time}.",
                 }
                 ensure_message_token_counts([exit_message])
@@ -211,7 +211,8 @@ class SessionStore:
     def get_exit_time(messages: list[dict]) -> str | None:
         """Extract exit time from persisted session messages, if present."""
         for msg in reversed(messages):
-            if msg.get("role") != "system":
+            role = msg.get("role", "")
+            if role not in ("system", "user"):
                 continue
             content = msg.get("content", "") or ""
             match = re.search(r"\[SESSION_EXIT\].* at (.+?)\.$", content)

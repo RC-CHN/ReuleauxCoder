@@ -44,7 +44,7 @@ def run_repl(
 
     pending_resume_prefix: str | None = None
     if session_exit_time is not None:
-        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S %Z")
         pending_resume_prefix = (
             f"[SESSION_RESUME] User returned to the session at {current_time} "
             f"(last left at {session_exit_time}).\n\n"
@@ -88,7 +88,7 @@ def run_repl(
 
         resumed_exit_time = result.get("session_exit_time")
         if resumed_exit_time is not None:
-            current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S %Z")
             pending_resume_prefix = (
                 f"[SESSION_RESUME] User returned to the session at {current_time} "
                 f"(last left at {resumed_exit_time}).\n\n"
