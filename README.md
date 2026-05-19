@@ -6,9 +6,11 @@ A terminal-native AI coding agent.
 
 Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/he-yufeng/CoreCoder).
 
+[中文](README_CN.md)
+
 ## Install
 
-### Install from GitHub Release (recommended)
+### Install globally (recommended)
 
 Install [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/) first, then install the release wheel globally:
 
@@ -22,28 +24,45 @@ Or use [`uv`](https://docs.astral.sh/uv/) (v0.4.0+):
 uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.1/reuleauxcoder-0.3.1-py3-none-any.whl
 ```
 
-After installation, you can run:
+After installation, the `rcoder` command is available globally — run it from any directory:
 
 ```bash
 rcoder --version
 rcoder
 ```
 
-### Run from source
+### Run from source (for developers)
+
+`uv run rcoder` only works inside the project directory. This is intended for development, not for end users.
 
 ```bash
 uv sync
+uv run rcoder
 ```
 
 ## Quick Start
 
-```bash
-# Copy the example config to the workspace config location
-mkdir -p .rcoder
-cp config.yaml.example .rcoder/config.yaml
+On first run, `rcoder` auto-generates a global config template at `~/.rcoder/config.yaml`. Edit it with your API credentials:
 
-# Edit .rcoder/config.yaml with your API key and model
-uv run rcoder
+```bash
+rcoder
+# → ~/.rcoder/config.yaml created. Edit it with your API key and model.
+```
+
+After editing the API key in `~/.rcoder/config.yaml`, run again:
+
+```bash
+rcoder
+```
+
+### Workspace-level config (optional)
+
+For per-project overrides — such as different models, custom MCP servers, or approval rules — create `.rcoder/config.yaml` in your project root. This file is merged on top of the global config and is entirely optional.
+
+```bash
+# Only needed if you want project-specific overrides
+mkdir -p .rcoder
+cp config.yaml.example .rcoder/config.yaml   # or write your own
 ```
 
 ## Remote Bootstrap (Host/Peer)

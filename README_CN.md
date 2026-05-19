@@ -6,9 +6,11 @@
 
 灵感来自并作为 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 的完整重写而启动。
 
+[English](README.md)
+
 ## 安装
 
-### 从 GitHub Release 安装（推荐）
+### 全局安装（推荐）
 
 先安装 [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/)，再用 release 中的 wheel 进行全局安装：
 
@@ -22,28 +24,45 @@ pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.1/re
 uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.1/reuleauxcoder-0.3.1-py3-none-any.whl
 ```
 
-安装完成后可以直接运行：
+安装完成后，`rcoder` 命令在任意目录下都可以直接使用：
 
 ```bash
 rcoder --version
 rcoder
 ```
 
-### 从源码运行
+### 从源码运行（面向开发者）
+
+`uv run rcoder` 仅在项目目录内有效，适合开发调试，不建议终端用户使用。
 
 ```bash
 uv sync
+uv run rcoder
 ```
 
 ## 快速开始
 
-```bash
-# 将示例配置复制到工作区配置目录
-mkdir -p .rcoder
-cp config.yaml.example .rcoder/config.yaml
+首次运行时，`rcoder` 会自动在 `~/.rcoder/config.yaml` 生成全局配置模板。编辑该文件，填入你的 API 凭据：
 
-# 在 .rcoder/config.yaml 中填入你的 API key 和模型
-uv run rcoder
+```bash
+rcoder
+# → 已生成 ~/.rcoder/config.yaml，请编辑它并填入 API key 和模型。
+```
+
+编辑 `~/.rcoder/config.yaml` 中的 API key 后，再次运行：
+
+```bash
+rcoder
+```
+
+### 项目级配置（可选）
+
+如需在某个项目中使用不同的模型、自定义 MCP 服务器或审批规则，可以在项目根目录下创建 `.rcoder/config.yaml`。该文件会与全局配置合并，完全可选。
+
+```bash
+# 仅在需要项目级覆盖时使用
+mkdir -p .rcoder
+cp config.yaml.example .rcoder/config.yaml   # 或自行编写
 ```
 
 ## 远端 Bootstrap（Host/Peer）
