@@ -11,7 +11,7 @@ from reuleauxcoder.infrastructure.platform import ShellType
 
 
 def test_execute_local_resets_cwd_when_directory_deleted():
-    """When tracked CWD is deleted externally, next command resets to project root."""
+    """When tracked CWD is deleted externally, next command returns an error."""
     tool = ShellTool()
 
     # Create a temp directory and cd into it
@@ -23,13 +23,13 @@ def test_execute_local_resets_cwd_when_directory_deleted():
     os.rmdir(tmpdir)
     assert not os.path.isdir(tmpdir)
 
-    # Next command should detect stale CWD and reset
+    # Next command should detect stale CWD and return an error
     result = tool._execute_local("echo hello")
 
-    assert "working directory no longer exists" in result
-    assert "reset to the project root" in result
+    assert "working directory does not exist" in result
     assert tmpdir in result
-    assert tool._cwd is None
+    # _cwd is NOT reset to None — we no longer auto-recover; the next call
+    # with an explicit cwd or persist_cwd can set a new valid one
 
 
 def test_execute_local_succeeds_when_cwd_valid():
@@ -113,71 +113,67 @@ def test_run_powershell_legacy_replaces_and_operator():
     assert ";" in normalized_part
 
 
-# ── _update_cwd: separator logic ──────────────────────────────────────────
+# ── cwd / persist_cwd ──────────────────────────────────────────────
 
 
-def test_update_cwd_splits_on_and_for_git_bash_on_windows():
-    """Windows + Git Bash: && should split cd commands."""
+def test_cwd_explicit_overrides_session_default():
+    """Explicit cwd parameter overrides both session _cwd and os.getcwd()."""
     tool = ShellTool()
-    tmpdir = tempfile.mkdtemp(prefix="rcoder-cwd-bash-")
+    tool._cwd = "/tmp"
 
-    with mock.patch(
-        "reuleauxcoder.extensions.tools.builtin.shell.get_platform_info"
-    ) as mock_platform:
-        mock_info = mock.MagicMock()
-        mock_info.get_preferred_shell.return_value = ShellType.BASH
-        mock_platform.return_value = mock_info
+    with mock.patch("subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(
+            returncode=0, stdout="ok\n", stderr=""
+        )
+        result = tool._execute_local("echo ok", cwd="/home")
 
-        tool._update_cwd(f"cd {tmpdir} && echo done", "/tmp", is_windows=True)
+    assert "ok" in result
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs["cwd"] == "/home", "Should use explicit cwd"
 
-    assert tool._cwd == tmpdir, "cd via && should be tracked on Windows Git Bash"
 
-
-def test_update_cwd_splits_on_and_for_pwsh_core_on_windows():
-    """Windows + PowerShell Core: && should split cd commands."""
+def test_persist_cwd_updates_session_default():
+    """persist_cwd=True updates _cwd for subsequent calls."""
     tool = ShellTool()
-    tmpdir = tempfile.mkdtemp(prefix="rcoder-cwd-pwsh7-")
+    tool._cwd = "/tmp"
 
-    with mock.patch(
-        "reuleauxcoder.extensions.tools.builtin.shell.get_platform_info"
-    ) as mock_platform:
-        mock_info = mock.MagicMock()
-        mock_info.get_preferred_shell.return_value = ShellType.POWERSHELL_CORE
-        mock_platform.return_value = mock_info
+    with mock.patch("subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(
+            returncode=0, stdout="ok\n", stderr=""
+        )
+        tool._execute_local("echo ok", cwd="/home", persist_cwd=True)
 
-        tool._update_cwd(f"cd {tmpdir} && echo done", "/tmp", is_windows=True)
-
-    assert tool._cwd == tmpdir, "cd via && should be tracked on pwsh 7+"
+    assert tool._cwd == "/home", "_cwd should be updated by persist_cwd"
 
 
-def test_update_cwd_splits_on_semicolon_for_legacy_powershell():
-    """Windows + legacy PowerShell: only ; (not &&) should split."""
+def test_cwd_without_persist_does_not_update_session():
+    """cwd without persist_cwd should not change _cwd."""
     tool = ShellTool()
-    tmpdir = tempfile.mkdtemp(prefix="rcoder-cwd-ps5-")
+    old_cwd = "/tmp"
+    tool._cwd = old_cwd
 
-    with mock.patch(
-        "reuleauxcoder.extensions.tools.builtin.shell.get_platform_info"
-    ) as mock_platform:
-        mock_info = mock.MagicMock()
-        mock_info.get_preferred_shell.return_value = ShellType.POWERSHELL
-        mock_platform.return_value = mock_info
+    with mock.patch("subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(
+            returncode=0, stdout="ok\n", stderr=""
+        )
+        tool._execute_local("echo ok", cwd="/other")
 
-        tool._update_cwd(f"cd {tmpdir} ; echo done", "/tmp", is_windows=True)
-
-    assert tool._cwd == tmpdir, "cd via ; should be tracked on legacy PowerShell"
+    assert tool._cwd == old_cwd, "_cwd should not change without persist_cwd"
 
 
-def test_update_cwd_unix_splits_on_and_and_or_and_semicolon():
-    """Unix: &&, ||, and ; should all split commands."""
+def test_cwd_defaults_to_session_when_not_provided():
+    """When cwd is not provided, use session _cwd."""
     tool = ShellTool()
-    tmpdir = tempfile.mkdtemp(prefix="rcoder-cwd-unix-")
+    tool._cwd = "/tmp"
 
-    tool._update_cwd(f"cd {tmpdir} && echo done", "/tmp", is_windows=False)
-    assert tool._cwd == tmpdir, "cd via && should be tracked on Unix"
+    with mock.patch("subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(
+            returncode=0, stdout="ok\n", stderr=""
+        )
+        tool._execute_local("echo ok")
 
-    tmpdir2 = tempfile.mkdtemp(prefix="rcoder-cwd-unix2-")
-    tool._update_cwd(f"cd {tmpdir2} || exit 1", "/tmp", is_windows=False)
-    assert tool._cwd == tmpdir2, "cd via || should be tracked on Unix"
+    call_kwargs = mock_run.call_args[1]
+    assert call_kwargs["cwd"] == "/tmp", "Should use session _cwd"
 
 
 # ── _execute_local: shell invocation strategy ─────────────────────────────

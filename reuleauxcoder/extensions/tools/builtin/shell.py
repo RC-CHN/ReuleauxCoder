@@ -31,6 +31,25 @@ class ShellTool(Tool):
                 "type": "integer",
                 "description": "Timeout in seconds (default 120)",
             },
+            "cwd": {
+                "type": "string",
+                "description": (
+                    "Working directory for this command.  Defaults to the "
+                    "session's current working directory (set by a previous "
+                    "persist_cwd, or the project root on startup).  Use this "
+                    "to run a one-off command elsewhere without switching the "
+                    "session directory."
+                ),
+            },
+            "persist_cwd": {
+                "type": "boolean",
+                "description": (
+                    "If true, update the session's default working directory "
+                    "to the provided cwd.  Subsequent shell calls without an "
+                    "explicit cwd will use this new directory.  Ignored when "
+                    "cwd is not provided."
+                ),
+            },
         },
         "required": ["command"],
     }
@@ -66,30 +85,31 @@ class ShellTool(Tool):
                 self._rtk_warned_missing = True
         return command
 
-    def execute(self, command: str, timeout: int = 120) -> str:
-        return self.run_backend(command=command, timeout=timeout)
+    def execute(self, command: str, timeout: int = 120, cwd: str | None = None, persist_cwd: bool = False) -> str:
+        return self.run_backend(command=command, timeout=timeout, cwd=cwd, persist_cwd=persist_cwd)
 
     @backend_handler("remote_relay")
-    def _execute_remote(self, command: str, timeout: int = 120) -> str:
+    def _execute_remote(self, command: str, timeout: int = 120, cwd: str | None = None, persist_cwd: bool = False) -> str:
         if not isinstance(command, str) or not command:
             return "Error: shell command must be a non-empty string"
         if not isinstance(timeout, int) or timeout < 1:
             return "Error: timeout must be a positive integer"
-        return self.backend.exec_tool("shell", {"command": command, "timeout": timeout})
+        return self.backend.exec_tool("shell", {"command": command, "timeout": timeout, "cwd": cwd, "persist_cwd": persist_cwd})
 
     @backend_handler("local")
-    def _execute_local(self, command: str, timeout: int = 120) -> str:
+    def _execute_local(self, command: str, timeout: int = 120, cwd: str | None = None, persist_cwd: bool = False) -> str:
         command = self._maybe_rtk(command)
 
-        cwd = self._cwd or os.getcwd()
+        # Resolve working directory: explicit cwd > persisted session cwd > process cwd
+        actual_cwd = cwd or self._cwd or os.getcwd()
 
-        # Detect stale CWD (e.g. deleted temp dir) and reset to workspace root
-        if self._cwd is not None and not os.path.isdir(self._cwd):
-            self._cwd = None
-            return (
-                f"Error: working directory no longer exists ({cwd}). "
-                "Directory has been reset to the project root."
-            )
+        # Validate the directory exists
+        if not os.path.isdir(actual_cwd):
+            return f"Error: working directory does not exist ({actual_cwd})"
+
+        # Persist cwd for subsequent calls
+        if cwd and persist_cwd:
+            self._cwd = cwd
 
         platform_info = get_platform_info()
         shell = platform_info.get_preferred_shell()
@@ -99,7 +119,7 @@ class ShellTool(Tool):
                 ShellType.POWERSHELL,
                 ShellType.POWERSHELL_CORE,
             ):
-                proc = self._run_powershell(command, cwd, timeout)
+                proc = self._run_powershell(command, actual_cwd, timeout)
             else:
                 # Use explicit shell invocation when available (handles
                 # bash on both Windows/Unix, cmd.exe on Windows).
@@ -112,7 +132,7 @@ class ShellTool(Tool):
                         capture_output=True,
                         text=True,
                         timeout=timeout,
-                        cwd=cwd,
+                        cwd=actual_cwd,
                     )
                 else:
                     proc = subprocess.run(
@@ -121,11 +141,8 @@ class ShellTool(Tool):
                         capture_output=True,
                         text=True,
                         timeout=timeout,
-                        cwd=cwd,
+                        cwd=actual_cwd,
                     )
-
-            if proc.returncode == 0:
-                self._update_cwd(command, cwd, platform_info.is_windows)
 
             out = proc.stdout
             if proc.stderr:
@@ -173,40 +190,3 @@ class ShellTool(Tool):
             cwd=cwd,
         )
         return proc
-
-    def _update_cwd(
-        self, command: str, current_cwd: str, is_windows: bool = False
-    ) -> None:
-        # Split on command separators. On Unix/Bash/Git-Bash: && | ; | \n.
-        # On PowerShell/CMD: ; | \n (&&/|| not supported in legacy PS, but
-        # we handle them for pwsh 7+ and CMD's &/* quirks).
-        if is_windows:
-            shell = get_platform_info().get_preferred_shell()
-            if shell in (ShellType.BASH, ShellType.POWERSHELL_CORE):
-                parts = re.split(r"&&|\|\||[;]|\n", command)
-            else:
-                parts = re.split(r"[;]|\n", command)
-        else:
-            parts = re.split(r"&&|\|\||[;]|\n", command)
-
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-
-            target: str | None = None
-            if part.startswith("cd "):
-                target = part[3:].strip().strip("'\"")
-            elif part.lower().startswith("set-location "):
-                target = part[13:].strip().strip("'\"")
-            elif part.lower().startswith("chdir "):
-                target = part[6:].strip().strip("'\"")
-            elif len(part) > 3 and part.lower().startswith("sl "):
-                target = part[3:].strip().strip("'\"")
-
-            if target:
-                new_dir = os.path.normpath(
-                    os.path.join(current_cwd, os.path.expanduser(target))
-                )
-                if os.path.isdir(new_dir):
-                    self._cwd = new_dir
