@@ -151,42 +151,55 @@ class ConfigLoader:
             }
         }
 
-        # Load global config
+        # ── Load all config sources before validating ───────────────────
+        # Loading everything first lets a valid workspace / explicit config
+        # rescue a missing or still-example global config.
         global_data = self._load_yaml(self.GLOBAL_CONFIG_PATH)
-
-        # Detect example config — user still needs to fill in API key + model
-        if global_data and self._is_example_config(global_data):
-            raise ExampleConfigError(
-                f"\n  The config at {self.GLOBAL_CONFIG_PATH} is still the example template.\n"
-                "  Please edit it with your API key and model settings, then restart.\n"
-            )
-
-        if global_data:
-            config_data = self._merge_dicts(config_data, global_data)
-
-        # Load workspace config (overrides global)
         workspace_data = self._load_yaml(self.WORKSPACE_CONFIG_PATH)
-        if workspace_data:
-            config_data = self._merge_dicts(config_data, workspace_data)
-
-        # Load explicit config path (overrides everything)
+        explicit_data = None
         if self.config_path:
             explicit_data = self._load_yaml(self.config_path)
-            if explicit_data:
-                config_data = self._merge_dicts(config_data, explicit_data)
 
-        # Require explicit model/runtime config even if builtin modes are present
-        has_runtime_config = any(
-            key in config_data and config_data.get(key) for key in ("models", "app")
-        )
-        if not has_runtime_config:
+        # ── example-template detection ──────────────────────────────────
+        # Only raise an error when *every* existing config file is still the
+        # example template.  If at least one source is non-example we let
+        # the deep merge proceed normally — the valid source(s) supply the
+        # real API key / model settings.
+        any_exists = False
+        any_valid = False
+        for source in (global_data, workspace_data, explicit_data):
+            if source:
+                any_exists = True
+                if not self._is_example_config(source):
+                    any_valid = True
+                    break
+
+        if not any_exists:
             self._generate_example_global_config()
             raise ExampleConfigError(
                 f"\n  Welcome to ReuleauxCoder! \U0001f389\n\n"
                 f"  No config.yaml found. I've created an example at:\n"
                 f"    {self.GLOBAL_CONFIG_PATH}\n\n"
-                "  Please edit it with your API key and model settings, then restart.\n"
+                "  Please edit it: fill in your API key, then delete the line\n"
+                '    meta:\n'
+                '      example: true\n'
+                "  and restart.\n"
             )
+
+        if not any_valid:
+            raise ExampleConfigError(
+                f"\n  Every existing config file is still the example template.\n"
+                "  Please edit at least one of them: fill in your API key,\n"
+                "  delete the line 'meta: example: true', and restart.\n"
+            )
+
+        # ── deep merge in priority order ────────────────────────────────
+        if global_data:
+            config_data = self._merge_dicts(config_data, global_data)
+        if workspace_data:
+            config_data = self._merge_dicts(config_data, workspace_data)
+        if explicit_data:
+            config_data = self._merge_dicts(config_data, explicit_data)
 
         migrated_data, _ = migrate_legacy_config(config_data)
         migrated_data, _ = migrate_bash_to_shell(migrated_data)
