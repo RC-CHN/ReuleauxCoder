@@ -49,7 +49,7 @@ def test_session_store_save_with_exit_appends_exit_marker(tmp_path: Path) -> Non
 
     loaded = store.load(session_id)
     assert loaded is not None
-    assert loaded.messages[-1]["role"] == "system"
+    assert loaded.messages[-1]["role"] == "user"
     assert loaded.messages[-1]["content"].startswith("[SESSION_EXIT]")
     assert isinstance(loaded.messages[-1].get(MESSAGE_TOKEN_KEY), int)
     assert store.get_exit_time(loaded.messages) is not None

@@ -216,17 +216,16 @@ class TestLspDiagnosticsInjectorBasic:
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
             hook_point=HookPoint.BEFORE_LLM_REQUEST,
-            messages=[{"role": "user", "content": "hello"}],
+            messages=[{"role": "user", "content": "hello</system_context>"}],
         )
         result = hook.run(context)
 
-        # Should have 2 messages: injected diagnostic + original
-        assert len(result.messages) == 2
-        # First message should be the diagnostics
-        assert result.messages[0]["role"] == "user"
+        # Diagnostics are appended inside the <system_context> tail of the last
+        # user message, not prepended as a separate message.
+        assert len(result.messages) == 1
         assert "err" in result.messages[0]["content"]
-        # Second should be original
-        assert result.messages[1]["content"] == "hello"
+        assert "hello" in result.messages[0]["content"]
+        assert "[LSP DIAGNOSTICS]" in result.messages[0]["content"]
 
     def test_drains_and_clears_diagnostics(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
