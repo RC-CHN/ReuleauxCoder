@@ -26,7 +26,7 @@ class LspConfig:
     enabled: bool = True
     poll_timeout_ms: int = 5000
     max_diagnostics: int = 20
-    include_warnings: bool = False
+    include_warnings: bool = True
     server_overrides: dict[str, LspServerOverride] = field(default_factory=dict)
 
     def get_override(self, language_key: str) -> LspServerOverride | None:

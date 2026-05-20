@@ -21,6 +21,7 @@ from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
+from reuleauxcoder.interfaces.events import UIEventKind
 
 
 @register_hook(HookPoint.BEFORE_LLM_REQUEST, priority=100)
@@ -70,6 +71,16 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if not blocks:
             return context
 
+        # Count errors / warnings for UI feedback
+        err_count = 0
+        warn_count = 0
+        for block in blocks:
+            for d in block.items:
+                if d.is_error:
+                    err_count += 1
+                elif d.is_warning:
+                    warn_count += 1
+
         rendered = render_blocks(
             blocks,
             max_diagnostics=self.lsp_manager.config.max_diagnostics,
@@ -88,6 +99,20 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
                 last["content"] = last["content"].replace(
                     "</system_context>",
                     "\n[LSP DIAGNOSTICS]\n" + rendered + "\n</system_context>",
+                )
+
+        # Emit a compact UI feedback panel
+        ui_bus = getattr(self.lsp_manager, "ui_bus", None)
+        if ui_bus is not None:
+            parts: list[str] = []
+            if err_count:
+                parts.append(f"{err_count} error{'s' if err_count != 1 else ''}")
+            if warn_count:
+                parts.append(f"{warn_count} warning{'s' if warn_count != 1 else ''}")
+            if parts:
+                ui_bus.info(
+                    f"LSP: {', '.join(parts)} injected",
+                    kind=UIEventKind.SYSTEM,
                 )
 
         return context

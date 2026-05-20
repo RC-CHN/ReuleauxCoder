@@ -192,7 +192,7 @@ class AppRunner:
         if not lsp_config.enabled:
             return
 
-        manager = LspManager(lsp_config, workspace_cwd=Path.cwd())
+        manager = LspManager(lsp_config, workspace_cwd=Path.cwd(), ui_bus=ui_bus)
         report = manager.health_check()
 
         if report.available == 0:

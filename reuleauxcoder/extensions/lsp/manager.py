@@ -82,9 +82,12 @@ class LspManager:
         self,
         config: LspConfig,
         workspace_cwd: Path,
+        *,
+        ui_bus: Any = None,
     ) -> None:
         self._config = config
         self._workspace_cwd = workspace_cwd
+        self.ui_bus = ui_bus
 
         # Per-language state
         self._transports: dict[LanguageId, LspClient] = {}

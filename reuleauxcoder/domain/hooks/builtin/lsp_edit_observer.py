@@ -24,6 +24,7 @@ from reuleauxcoder.domain.hooks.base import ObserverHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
+from reuleauxcoder.interfaces.events import UIEventKind
 
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
 _DIAGNOSTICS_POLL_DEADLINE = 2.5  # seconds — short poll for instant feedback
@@ -109,6 +110,16 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
             time.sleep(_DIAGNOSTICS_POLL_INTERVAL)
 
         if blocks:
+            # Count errors / warnings for UI feedback
+            err_count = 0
+            warn_count = 0
+            for block in blocks:
+                for d in block.items:
+                    if d.is_error:
+                        err_count += 1
+                    elif d.is_warning:
+                        warn_count += 1
+
             rendered = render_blocks(
                 blocks,
                 max_diagnostics=self.lsp_manager.config.max_diagnostics,
@@ -117,3 +128,17 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
             if rendered:
                 suffix = "\n\n" + rendered
                 context.result = (context.result or "") + suffix
+
+            # Emit a compact UI feedback panel
+            ui_bus = getattr(self.lsp_manager, "ui_bus", None)
+            if ui_bus is not None:
+                parts: list[str] = []
+                if err_count:
+                    parts.append(f"{err_count} error{'s' if err_count != 1 else ''}")
+                if warn_count:
+                    parts.append(f"{warn_count} warning{'s' if warn_count != 1 else ''}")
+                if parts:
+                    ui_bus.info(
+                        f"LSP: {', '.join(parts)} after {tool_call.name}",
+                        kind=UIEventKind.SYSTEM,
+                    )
