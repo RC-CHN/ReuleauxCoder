@@ -119,52 +119,57 @@ def test_run_powershell_legacy_replaces_and_operator():
 def test_cwd_explicit_overrides_session_default():
     """Explicit cwd parameter overrides both session _cwd and os.getcwd()."""
     tool = ShellTool()
-    tool._cwd = "/tmp"
+    default_dir = tempfile.gettempdir()
+    alt_dir = os.path.dirname(default_dir) or default_dir
+    tool._cwd = default_dir
 
     with mock.patch("subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(
             returncode=0, stdout="ok\n", stderr=""
         )
-        result = tool._execute_local("echo ok", cwd="/home")
+        result = tool._execute_local("echo ok", cwd=alt_dir)
 
     assert "ok" in result
     call_kwargs = mock_run.call_args[1]
-    assert call_kwargs["cwd"] == "/home", "Should use explicit cwd"
+    assert call_kwargs["cwd"] == alt_dir, "Should use explicit cwd"
 
 
 def test_persist_cwd_updates_session_default():
     """persist_cwd=True updates _cwd for subsequent calls."""
     tool = ShellTool()
-    tool._cwd = "/tmp"
+    default_dir = tempfile.gettempdir()
+    alt_dir = os.path.dirname(default_dir) or default_dir
+    tool._cwd = default_dir
 
     with mock.patch("subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(
             returncode=0, stdout="ok\n", stderr=""
         )
-        tool._execute_local("echo ok", cwd="/home", persist_cwd=True)
+        tool._execute_local("echo ok", cwd=alt_dir, persist_cwd=True)
 
-    assert tool._cwd == "/home", "_cwd should be updated by persist_cwd"
+    assert tool._cwd == alt_dir, "_cwd should be updated by persist_cwd"
 
 
 def test_cwd_without_persist_does_not_update_session():
     """cwd without persist_cwd should not change _cwd."""
     tool = ShellTool()
-    old_cwd = "/tmp"
-    tool._cwd = old_cwd
+    default_dir = tempfile.gettempdir()
+    alt_dir = os.path.dirname(default_dir) or default_dir
+    tool._cwd = default_dir
 
     with mock.patch("subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(
             returncode=0, stdout="ok\n", stderr=""
         )
-        tool._execute_local("echo ok", cwd="/other")
+        tool._execute_local("echo ok", cwd=alt_dir)
 
-    assert tool._cwd == old_cwd, "_cwd should not change without persist_cwd"
+    assert tool._cwd == default_dir, "_cwd should not change without persist_cwd"
 
 
 def test_cwd_defaults_to_session_when_not_provided():
     """When cwd is not provided, use session _cwd."""
     tool = ShellTool()
-    tool._cwd = "/tmp"
+    tool._cwd = tempfile.gettempdir()
 
     with mock.patch("subprocess.run") as mock_run:
         mock_run.return_value = mock.MagicMock(
@@ -173,7 +178,7 @@ def test_cwd_defaults_to_session_when_not_provided():
         tool._execute_local("echo ok")
 
     call_kwargs = mock_run.call_args[1]
-    assert call_kwargs["cwd"] == "/tmp", "Should use session _cwd"
+    assert call_kwargs["cwd"] == tempfile.gettempdir(), "Should use session _cwd"
 
 
 # ── _execute_local: shell invocation strategy ─────────────────────────────

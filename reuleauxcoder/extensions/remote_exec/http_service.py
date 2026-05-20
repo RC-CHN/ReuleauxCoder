@@ -695,6 +695,12 @@ class RemoteRelayHTTPService:
                 service._abort_peer_chat_sessions(
                     peer_id, f"peer_disconnected: {notice.reason}"
                 )
+                # Mark disconnected synchronously so callers (tests, UI) can see
+                # the state change immediately without waiting for the async
+                # event-loop dispatch.
+                service.relay_server._registry.mark_disconnected(
+                    peer_id, notice.reason
+                )
                 service.relay_server.handle_inbound(
                     peer_id,
                     RelayEnvelope(
