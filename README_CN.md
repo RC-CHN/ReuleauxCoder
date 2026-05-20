@@ -15,13 +15,13 @@
 先安装 [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/)，再用 release 中的 wheel 进行全局安装：
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.1/reuleauxcoder-0.3.1-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.2/reuleauxcoder-0.3.2-py3-none-any.whl
 ```
 
 或者使用 [`uv`](https://docs.astral.sh/uv/)（v0.4.0+）：
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.1/reuleauxcoder-0.3.1-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.2/reuleauxcoder-0.3.2-py3-none-any.whl
 ```
 
 安装完成后，`rcoder` 命令在任意目录下都可以直接使用：

@@ -15,13 +15,13 @@ Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/
 Install [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/) first, then install the release wheel globally:
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.1/reuleauxcoder-0.3.1-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.2/reuleauxcoder-0.3.2-py3-none-any.whl
 ```
 
 Or use [`uv`](https://docs.astral.sh/uv/) (v0.4.0+):
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.1/reuleauxcoder-0.3.1-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.3.2/reuleauxcoder-0.3.2-py3-none-any.whl
 ```
 
 After installation, the `rcoder` command is available globally — run it from any directory:

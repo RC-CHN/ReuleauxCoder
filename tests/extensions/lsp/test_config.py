@@ -9,7 +9,7 @@ class TestLspConfigDefaults:
         assert lsp.enabled is True
         assert lsp.poll_timeout_ms == 5000
         assert lsp.max_diagnostics == 20
-        assert lsp.include_warnings is False
+        assert lsp.include_warnings is True
         assert lsp.server_overrides == {}
 
     def test_defaults_when_lsp_is_none(self) -> None:
