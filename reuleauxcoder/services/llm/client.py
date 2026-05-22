@@ -4,7 +4,7 @@ import json
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
 
@@ -212,7 +212,8 @@ class LLM:
             preserve_reasoning_content=self.preserve_reasoning_content,
             backfill_reasoning_content_for_tool_calls=self.backfill_reasoning_content_for_tool_calls,
             reasoning_replay_mode=self.reasoning_replay_mode,
-            reasoning_replay_placeholder=self.reasoning_replay_placeholder,
+            reasoning_replay_placeholder=self.reasoning_replay_placeholder
+            or DEFAULT_REASONING_REPLAY_PLACEHOLDER,
             thinking_enabled=bool(self.thinking_enabled),
         )
 
@@ -288,6 +289,9 @@ class LLM:
             )
             hook_registry.run_observers(HookPoint.BEFORE_LLM_REQUEST, before_context)
 
+        # Narrow back from HookContext — run_transforms preserves the
+        # same type, but the type system doesn't track that invariant.
+        before_context = cast(BeforeLLMRequestContext, before_context)
         params = dict(before_context.request_params)
         # Use messages from the transform chain so hooks like
         # ProjectContextHook can inject additional context.
@@ -488,6 +492,8 @@ class LLM:
                 )
                 hook_registry.run_observers(HookPoint.AFTER_LLM_RESPONSE, after_context)
 
+            # Narrow back from HookContext (same reasoning as above).
+            after_context = cast(AfterLLMResponseContext, after_context)
             return after_context.response or response
         except Exception as e:
             diagnostic_path = persist_llm_error_diagnostic(
@@ -507,7 +513,7 @@ class LLM:
                 )
             raise
 
-    def _call_with_retry(self, params: dict, max_retries: int = 3):
+    def _call_with_retry(self, params: dict, max_retries: int = 3) -> Any:
         """Retry on transient errors with exponential backoff."""
         for attempt in range(max_retries):
             try:
