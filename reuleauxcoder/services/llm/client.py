@@ -161,31 +161,31 @@ class LLM:
         reasoning_effort_param: str | None = None,
         debug_trace: bool | None = None,
     ) -> None:
-        """Hot-swap runtime model/client settings."""
+        """Hot-swap runtime model/client settings.
+
+        All optional fields are always applied, even when ``None``, so that
+        switching model profiles fully resets reasoning/thinking state.
+        """
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.api_key = api_key
         self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
-        if preserve_reasoning_content is not None:
-            self.preserve_reasoning_content = preserve_reasoning_content
-        if backfill_reasoning_content_for_tool_calls is not None:
-            self.backfill_reasoning_content_for_tool_calls = (
-                backfill_reasoning_content_for_tool_calls
-            )
-        if reasoning_effort is not None:
-            self.reasoning_effort = reasoning_effort
-        if thinking_enabled is not None:
-            self.thinking_enabled = thinking_enabled
-        if reasoning_replay_mode is not None:
-            self.reasoning_replay_mode = reasoning_replay_mode
-        if reasoning_replay_placeholder is not None:
-            self.reasoning_replay_placeholder = reasoning_replay_placeholder
-        if reasoning_effort_values is not None:
-            self.reasoning_effort_values = reasoning_effort_values
-        if reasoning_effort_param is not None:
-            self.reasoning_effort_param = reasoning_effort_param
+        self.preserve_reasoning_content = (
+            preserve_reasoning_content
+            if preserve_reasoning_content is not None
+            else True
+        )
+        self.backfill_reasoning_content_for_tool_calls = (
+            backfill_reasoning_content_for_tool_calls or False
+        )
+        self.reasoning_effort = reasoning_effort
+        self.thinking_enabled = thinking_enabled
+        self.reasoning_replay_mode = reasoning_replay_mode
+        self.reasoning_replay_placeholder = reasoning_replay_placeholder
+        self.reasoning_effort_values = reasoning_effort_values
+        self.reasoning_effort_param = reasoning_effort_param or "reasoning_effort"
         if debug_trace is not None:
             self.debug_trace = debug_trace
 
@@ -254,7 +254,10 @@ class LLM:
             }
             api_value = mapping.get(self.reasoning_effort, self.reasoning_effort)
             params[self.reasoning_effort_param] = api_value
-        if self.thinking_enabled is not None:
+        elif self.thinking_enabled is not None:
+            # Only send thinking via extra_body when reasoning_effort is *not*
+            # being used — they are mutually exclusive mechanisms for the same
+            # feature and many API proxies reject requests that specify both.
             params["extra_body"] = {
                 "thinking": {"type": "enabled" if self.thinking_enabled else "disabled"}
             }
