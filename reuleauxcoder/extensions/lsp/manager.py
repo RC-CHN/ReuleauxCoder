@@ -105,6 +105,10 @@ class LspManager:
         # Results
         self._results: dict[Path, DiagnosticBlock] = {}
 
+        # Dedup: when edit observer already fed diagnostics to the model,
+        # the injector should skip this turn to avoid double-reporting.
+        self._diagnostics_fed: bool = False
+
         # Lock (RLock for reentrancy in health_check)
         self._lock: threading.RLock = threading.RLock()
 
@@ -230,6 +234,27 @@ class LspManager:
             blocks = list(self._results.values())
             self._results.clear()
         return blocks
+
+    def mark_diagnostics_fed(self) -> None:
+        """Mark that diagnostics were already fed to the model this turn.
+
+        Called by the edit observer after it appends diagnostics to the
+        tool result.  The injector will check this flag and skip its own
+        injection to avoid double-reporting the same issue batch.
+        """
+        with self._lock:
+            self._diagnostics_fed = True
+
+    def consume_diagnostics_fed_flag(self) -> bool:
+        """Check and reset the diagnostics-fed flag.
+
+        Returns True if the edit observer already handled diagnostics
+        for the current turn.
+        """
+        with self._lock:
+            result = self._diagnostics_fed
+            self._diagnostics_fed = False
+        return result
 
     # === Active Tools (synchronous bridge) ===
 

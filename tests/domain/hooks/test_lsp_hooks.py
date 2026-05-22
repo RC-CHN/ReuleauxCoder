@@ -264,3 +264,168 @@ class TestLspDiagnosticsInjectorCreateFromConfig:
         mgr = _make_manager()
         hook.set_lsp_manager(mgr)
         assert hook.lsp_manager is mgr
+
+
+# === LspManager dedup flag ===
+
+
+class TestLspManagerDedupFlag:
+    def test_flag_starts_false(self) -> None:
+        mgr = _make_manager()
+        assert mgr._diagnostics_fed is False
+
+    def test_mark_diagnostics_fed_sets_flag(self) -> None:
+        mgr = _make_manager()
+        mgr.mark_diagnostics_fed()
+        assert mgr._diagnostics_fed is True
+
+    def test_consume_returns_and_resets(self) -> None:
+        mgr = _make_manager()
+        mgr.mark_diagnostics_fed()
+        assert mgr.consume_diagnostics_fed_flag() is True
+        # Flag is reset after consumption
+        assert mgr.consume_diagnostics_fed_flag() is False
+
+    def test_consume_false_when_not_marked(self) -> None:
+        mgr = _make_manager()
+        assert mgr.consume_diagnostics_fed_flag() is False
+
+
+# === LspEditObserverHook dedup ===
+
+
+class TestLspEditObserverDedup:
+    def test_marks_fed_after_injecting_diagnostics(self) -> None:
+        """When the edit observer drains and injects diagnostics, it
+        should call mark_diagnostics_fed() so the injector skips."""
+        from reuleauxcoder.extensions.lsp.diagnostics import (
+            Diagnostic,
+            DiagnosticBlock,
+        )
+        from reuleauxcoder.extensions.lsp.registry import LanguageId
+
+        mgr = _make_manager()
+        with mgr._lock:
+            mgr._availability[LanguageId.PYTHON] = True
+
+        # Pre-populate results so drain_diagnostics returns a block
+        block = DiagnosticBlock(
+            file_path="/tmp/test.py",
+            items=[Diagnostic(line=1, character=1, message="err")],
+        )
+        with mgr._lock:
+            mgr._results[Path("/tmp/test.py")] = block
+
+        assert mgr._diagnostics_fed is False
+
+        hook = LspEditObserverHook(lsp_manager=mgr)
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id="1",
+                name="edit_file",
+                arguments={"file_path": "/tmp/test.py"},
+            ),
+            round_index=1,
+        )
+        hook.run(context)
+
+        # After injecting: flag is True
+        assert mgr._diagnostics_fed is True
+        # Tool result should contain the diagnostics
+        assert context.result is not None
+        assert "err" in context.result
+
+    def test_does_not_mark_when_diagnostics_empty(self) -> None:
+        """When drain returns no blocks, mark_diagnostics_fed is NOT called."""
+        from reuleauxcoder.extensions.lsp.registry import LanguageId
+
+        mgr = _make_manager()
+        with mgr._lock:
+            mgr._availability[LanguageId.PYTHON] = True
+
+        # Results dict is empty — drain will return []
+        assert mgr._diagnostics_fed is False
+
+        hook = LspEditObserverHook(lsp_manager=mgr)
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id="1",
+                name="edit_file",
+                arguments={"file_path": "/tmp/test.py"},
+            ),
+            round_index=1,
+        )
+        hook.run(context)
+
+        # No diagnostics injected → flag stays False
+        assert mgr._diagnostics_fed is False
+
+
+# === LspDiagnosticsInjectorHook dedup ===
+
+
+class TestLspDiagnosticsInjectorDedup:
+    def test_skips_when_flag_set(self) -> None:
+        """When consume_diagnostics_fed_flag() returns True, the injector
+        drains the queue but skips injecting into messages."""
+        from reuleauxcoder.extensions.lsp.diagnostics import (
+            Diagnostic,
+            DiagnosticBlock,
+        )
+
+        mgr = _make_manager()
+        block = DiagnosticBlock(
+            file_path="/tmp/test.py",
+            items=[Diagnostic(line=1, character=1, message="err")],
+        )
+        with mgr._lock:
+            mgr._results[Path("/tmp/test.py")] = block
+            mgr._diagnostics_fed = True  # simulate edit observer
+
+        hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[{"role": "user", "content": "hello</system_context>"}],
+        )
+        result = hook.run(context)
+
+        # Content unchanged — no injection
+        assert "[LSP DIAGNOSTICS]" not in result.messages[0]["content"]
+        assert result.messages[0]["content"] == "hello</system_context>"
+        # Queue is drained anyway
+        assert len(mgr.drain_diagnostics()) == 0
+        # Flag is consumed/reset
+        assert mgr._diagnostics_fed is False
+
+    def test_still_injects_when_flag_not_set(self) -> None:
+        """Normal path: flag is False → injector proceeds as usual."""
+        from reuleauxcoder.extensions.lsp.diagnostics import (
+            Diagnostic,
+            DiagnosticBlock,
+        )
+
+        mgr = _make_manager()
+        block = DiagnosticBlock(
+            file_path="/tmp/test.py",
+            items=[Diagnostic(line=1, character=1, message="err")],
+        )
+        with mgr._lock:
+            mgr._results[Path("/tmp/test.py")] = block
+            # flag is False (default)
+
+        hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[{"role": "user", "content": "hello</system_context>"}],
+        )
+        result = hook.run(context)
+
+        # Injection happened
+        assert "[LSP DIAGNOSTICS]" in result.messages[0]["content"]
+        assert "err" in result.messages[0]["content"]
+        # Queue drained
+        assert len(mgr.drain_diagnostics()) == 0
+        # Flag was consumed (was False, stays False)
+        assert mgr._diagnostics_fed is False

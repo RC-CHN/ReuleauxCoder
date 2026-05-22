@@ -71,6 +71,12 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if not blocks:
             return context
 
+        # If the edit observer already fed diagnostics to the model for this
+        # turn, skip injection to avoid double-reporting.  The queue has
+        # already been drained above.
+        if self.lsp_manager.consume_diagnostics_fed_flag():
+            return context
+
         # Count errors / warnings for UI feedback
         err_count = 0
         warn_count = 0

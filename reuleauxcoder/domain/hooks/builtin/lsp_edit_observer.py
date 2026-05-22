@@ -129,6 +129,10 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
                 suffix = "\n\n" + rendered
                 context.result = (context.result or "") + suffix
 
+            # Mark that diagnostics were already fed to the model so the
+            # BEFORE_LLM_REQUEST injector skips this turn.
+            self.lsp_manager.mark_diagnostics_fed()
+
             # Emit a compact UI feedback panel
             ui_bus = getattr(self.lsp_manager, "ui_bus", None)
             if ui_bus is not None:
