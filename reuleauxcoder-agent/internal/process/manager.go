@@ -36,6 +36,7 @@ type state struct {
 	id             string
 	idempotencyKey string
 	cmd            *exec.Cmd
+	stdin          io.WriteCloser
 	stdout         safeBuffer
 	stderr         safeBuffer
 	done           chan struct{}
@@ -68,6 +69,8 @@ func (m *Manager) Execute(req protocol.WorkspaceRequest) protocol.WorkspaceResul
 		return m.start(req.Args)
 	case "process.poll":
 		return m.poll(req.Args)
+	case "process.input":
+		return m.input(req.Args)
 	case "process.cancel":
 		return m.cancel(req.Args)
 	default:
@@ -109,9 +112,13 @@ func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
 	if err != nil {
 		return failure("io_error", err.Error())
 	}
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return failure("io_error", err.Error())
+	}
 	processState := &state{
 		id: processID, idempotencyKey: idempotencyKey,
-		cmd: cmd, done: make(chan struct{}),
+		cmd: cmd, stdin: stdinPipe, done: make(chan struct{}),
 	}
 	if err := cmd.Start(); err != nil {
 		return failure("io_error", err.Error())
@@ -234,6 +241,32 @@ func (m *Manager) cancel(args map[string]any) protocol.WorkspaceResult {
 	<-processState.done
 	m.remove(processState)
 	return success(map[string]any{"process_id": processID, "cancelled": true})
+}
+
+func (m *Manager) input(args map[string]any) protocol.WorkspaceResult {
+	processID, _ := args["process_id"].(string)
+	processState := m.lookup(processID)
+	if processState == nil {
+		return failure("not_found", "process not found")
+	}
+	data, ok := args["data"].(string)
+	if !ok {
+		return failure("invalid_path", "data must be a string")
+	}
+	if data != "" {
+		if _, err := io.WriteString(processState.stdin, data); err != nil {
+			return failure("io_error", err.Error())
+		}
+	}
+	closed, _ := args["close"].(bool)
+	if closed {
+		if err := processState.stdin.Close(); err != nil {
+			return failure("io_error", err.Error())
+		}
+	}
+	return success(map[string]any{
+		"process_id": processID, "bytes_written": len(data), "closed": closed,
+	})
 }
 
 func (m *Manager) lookup(processID string) *state {

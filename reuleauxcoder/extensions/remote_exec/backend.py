@@ -299,9 +299,7 @@ class RemoteProcessPort:
         stderr_offset = 0
         while True:
             if cancellation_event is not None and cancellation_event.is_set():
-                self.backend.workspace._request(
-                    "process.cancel", process_id=process_id
-                )
+                self.cancel(process_id)
                 return ProcessResult(cancelled=True)
             state = self.backend.workspace._request(
                 "process.poll",
@@ -326,3 +324,17 @@ class RemoteProcessPort:
                     cancelled=bool(state.get("cancelled")),
                 )
             time.sleep(0.05)
+
+    def write_input(
+        self, process_id: str, data: str, *, close: bool = False
+    ) -> int:
+        result = self.backend.workspace._request(
+            "process.input",
+            process_id=process_id,
+            data=data,
+            close=close,
+        )
+        return int(result.get("bytes_written", 0))
+
+    def cancel(self, process_id: str) -> None:
+        self.backend.workspace._request("process.cancel", process_id=process_id)

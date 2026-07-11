@@ -33,6 +33,30 @@ func TestProcessStartPollAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestProcessInputWritesAndClosesStdin(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "stdin", "idempotency_key": "stdin-key",
+		"command": "read value; printf '%s' \"$value\"", "cwd": root,
+		"deadline_unix_ms": time.Now().Add(5 * time.Second).UnixMilli(),
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	written := manager.Execute(request("process.input", map[string]any{
+		"process_id": "stdin", "data": "hello\n", "close": true,
+	}))
+	if !written.OK || written.Data["bytes_written"] != len("hello\n") {
+		t.Fatalf("unexpected input result: %#v", written)
+	}
+	result := waitDone(t, manager, "stdin")
+	if result.Data["stdout_all"] != "hello" {
+		t.Fatalf("unexpected process output: %#v", result)
+	}
+}
+
 func TestProcessCancelAndDeadline(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, root)
