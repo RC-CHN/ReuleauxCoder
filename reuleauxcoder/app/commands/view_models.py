@@ -89,6 +89,29 @@ class DataViewModel:
         return dict(self.data)
 
 
+@dataclass(frozen=True, slots=True)
+class EffectiveConfigRowViewModel:
+    path: str
+    value: str
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveConfigViewModel:
+    rows: tuple[EffectiveConfigRowViewModel, ...]
+    diagnostics: tuple[str, ...] = ()
+    view_type: str = "effective_config"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "rows": [
+                {"path": row.path, "value": row.value, "source": row.source}
+                for row in self.rows
+            ],
+            "diagnostics": list(self.diagnostics),
+        }
+
+
 def view_model_from_payload(
     view_type: str, payload: Mapping[str, Any] | None
 ) -> ViewModel:

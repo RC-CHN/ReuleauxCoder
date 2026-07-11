@@ -1,6 +1,12 @@
 from types import SimpleNamespace
 
-from reuleauxcoder.extensions.command.builtin.system import _handle_debug, _parse_debug
+from reuleauxcoder.domain.config.models import Config
+from reuleauxcoder.extensions.command.builtin.system import (
+    _handle_config,
+    _handle_debug,
+    _parse_config,
+    _parse_debug,
+)
 from reuleauxcoder.interfaces.events import UIEventBus
 
 
@@ -29,3 +35,24 @@ def test_handle_debug_toggles_runtime_flag() -> None:
     assert ctx.config.llm_debug_trace is False
     assert ctx.agent.llm.debug_trace is False
     assert result.payload == {"llm_debug_trace": False}
+
+
+def test_config_command_emits_typed_effective_view() -> None:
+    assert _parse_config("/config", None) is not None
+    ui_bus = UIEventBus()
+    seen = []
+    ui_bus.subscribe(seen.append, replay_history=False)
+    config = Config()
+    agent = SimpleNamespace(
+        active_main_model_profile=None,
+        active_sub_model_profile=None,
+        active_mode=None,
+        llm=SimpleNamespace(model="demo"),
+    )
+
+    result = _handle_config(None, SimpleNamespace(config=config, agent=agent, ui_bus=ui_bus))
+
+    event = seen[-1]
+    assert event.data["view_type"] == "effective_config"
+    assert event.data["view_model"].view_type == "effective_config"
+    assert result.payload["rows"]

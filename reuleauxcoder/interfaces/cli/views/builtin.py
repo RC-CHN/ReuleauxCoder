@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.table import Table
 
 from reuleauxcoder.interfaces.cli.views.common import (
     render_markdown_panel,
@@ -14,6 +15,7 @@ from reuleauxcoder.app.commands.view_models import (
     MCPServersViewModel,
     MarkdownViewModel,
     SessionsViewModel,
+    EffectiveConfigViewModel,
 )
 
 
@@ -89,6 +91,23 @@ def render_sessions_view(renderer, event) -> bool:
     return True
 
 
+def render_effective_config_view(renderer, event) -> bool:
+    model = event.data.get("view_model")
+    if not isinstance(model, EffectiveConfigViewModel):
+        return False
+    stop_stream_and_clear(renderer)
+    table = Table(title="Effective Configuration", show_header=True)
+    table.add_column("Path")
+    table.add_column("Value")
+    table.add_column("Source")
+    for row in model.rows:
+        table.add_row(row.path, row.value, row.source)
+    renderer.console.print(table)
+    for diagnostic in model.diagnostics:
+        renderer.console.print(f"[yellow]⚠ {diagnostic}[/yellow]")
+    return True
+
+
 def builtin_cli_view_specs() -> list[ViewRendererSpec]:
     """Return explicit CLI-owned view registrations."""
     markdown_views = {
@@ -109,6 +128,9 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
                 view_type="mcp_servers", render=render_mcp_servers_view
             ),
             ViewRendererSpec(view_type="sessions", render=render_sessions_view),
+            ViewRendererSpec(
+                view_type="effective_config", render=render_effective_config_view
+            ),
         ]
     )
     return specs

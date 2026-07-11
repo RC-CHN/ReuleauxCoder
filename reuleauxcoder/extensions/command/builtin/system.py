@@ -23,6 +23,7 @@ from reuleauxcoder.app.runtime.session_state import (
     get_session_fingerprint,
     restore_config_runtime_defaults,
 )
+from reuleauxcoder.app.runtime.effective_config import build_effective_config_view
 from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
@@ -84,6 +85,12 @@ def _parse_compact(user_input: str, parse_ctx):
 
 def _parse_tokens(user_input: str, parse_ctx):
     if match_template(user_input, "/tokens") is not None:
+        return EmptyCommand()
+    return None
+
+
+def _parse_config(user_input: str, parse_ctx):
+    if match_template(user_input, "/config") is not None:
         return EmptyCommand()
     return None
 
@@ -252,6 +259,17 @@ def _handle_debug(command, ctx) -> CommandResult:
     )
 
 
+def _handle_config(command, ctx) -> CommandResult:
+    view = build_effective_config_view(ctx.config, ctx.agent)
+    ctx.ui_bus.open_view(
+        view.view_type,
+        title="Effective Configuration",
+        view_model=view,
+        reuse_key=view.view_type,
+    )
+    return CommandResult(action="continue", payload=view.to_payload())
+
+
 def _format_percent(value: float | None) -> str:
     return f"{value:.1f}%" if value is not None else "n/a"
 
@@ -418,6 +436,16 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/debug"),),
                 parser=_parse_debug,
                 handler=_handle_debug,
+            ),
+            ActionSpec(
+                action_id="system.config",
+                feature_id="system",
+                description="Show effective configuration values, sources and diagnostics",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/config"),),
+                parser=_parse_config,
+                handler=_handle_config,
             ),
         ]
     )
