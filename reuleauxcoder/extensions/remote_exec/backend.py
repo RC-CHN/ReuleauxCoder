@@ -32,7 +32,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, ToolBackend
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.interfaces.events import UIEventBus
 
 
 class RemoteRelayToolBackend(ToolBackend):
@@ -155,10 +155,7 @@ class RemoteRelayToolBackend(ToolBackend):
                 except Exception:
                     pass
             if tool_name == "shell" and self.ui_bus is not None:
-                self.ui_bus.info(
-                    "",
-                    kind=UIEventKind.REMOTE,
-                    remote_stream=True,
+                self.ui_bus.emit_remote_stream(
                     tool_name=tool_name,
                     stream=chunk.chunk_type,
                     chunk=chunk.data,

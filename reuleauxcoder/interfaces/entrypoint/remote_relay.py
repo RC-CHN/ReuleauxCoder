@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import io
 from pathlib import Path
-import uuid
 from typing import Any
 
 from rich.console import Console
-from rich.markdown import Markdown
 
 from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
@@ -18,12 +15,7 @@ from reuleauxcoder.app.runtime.session_state import (
 )
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
-from reuleauxcoder.domain.approval import (
-    ApprovalDecision,
-    ApprovalProvider,
-    ApprovalRequest,
-    ApprovalSectionKind,
-)
+from reuleauxcoder.domain.approval import SharedApprovalProvider
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse
@@ -34,6 +26,22 @@ from reuleauxcoder.extensions.tools.backend import ExecutionContext
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
+from reuleauxcoder.interfaces.cli.interaction_presenter import (
+    interaction_constraints,
+    render_interaction_request,
+)
+from reuleauxcoder.interfaces.approval import make_approval_handler
+from reuleauxcoder.app.runtime.interactions import InteractionCoordinator
+from reuleauxcoder.interfaces.interactions import (
+    ChooseOneRequest,
+    ChooseOneResponse,
+    ConfirmRequest,
+    ConfirmResponse,
+    InputTextRequest,
+    InputTextResponse,
+    ReviewRequest,
+    ReviewResponse,
+)
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 
 
@@ -347,77 +355,71 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                     "output", {"format": "terminal", "content": rendered}
                 )
 
-        class _RemoteApprovalProvider(ApprovalProvider):
-            def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-                request_id = str(uuid.uuid4())
-                remote_session.register_interaction(request_id)
-                sections = request.preview.sections if request.preview is not None else ()
-                diff_section = next(
-                    (
-                        section
-                        for section in sections
-                        if section.kind is ApprovalSectionKind.DIFF
-                    ),
-                    None,
-                )
-                args_section = next(
-                    (
-                        section
-                        for section in sections
-                        if section.kind is ApprovalSectionKind.JSON
-                    ),
-                    None,
-                )
-                diff_text = (
-                    diff_section.content
-                    if diff_section is not None
-                    and isinstance(diff_section.content, str)
-                    else None
-                )
-                args_content = (
-                    args_section.content if args_section is not None else request.tool_args
-                )
-                approval_markdown = "\n\n".join(
-                    part
-                    for part in [
-                        f"## Approval required: {request.tool_name}",
-                        f"Tool `{request.tool_name}` from source `{request.tool_source}` requires approval.",
-                        request.reason or "",
-                        (
-                            f"```json\n{json.dumps(args_content, ensure_ascii=False, indent=2)}\n```"
-                            if args_content and diff_text is None
-                            else ""
-                        ),
-                        f"```diff\n{diff_text}\n```" if diff_text else "",
-                    ]
-                    if part
-                )
-                approval_console = _console_for_peer(peer_id)
-                approval_console.print(Markdown(approval_markdown))
-                rendered_approval = export_remote_console(approval_console)
+        class _RemoteUIInteractor:
+            def notify(self, event) -> None:
+                renderer.on_ui_event(event)
+                _flush_output()
+
+            def _request(self, request):
+                _flush_output()
+                remote_session.register_interaction(request.request_id)
+                render_interaction_request(ansi_console, request)
+                rendered_frame = export_remote_console(ansi_console)
+                kind = {
+                    ConfirmRequest: "confirm",
+                    ChooseOneRequest: "choose_one",
+                    InputTextRequest: "text_input",
+                    ReviewRequest: "review",
+                }[type(request)]
                 payload = {
-                    "request_id": request_id,
-                    "kind": "review",
-                    "rendered_frame": rendered_approval,
-                    "input_constraints": {
-                        "value_type": "boolean",
-                        "approve_label": "Approve",
-                        "reject_label": "Reject",
-                    },
+                    "request_id": request.request_id,
+                    "kind": kind,
+                    "rendered_frame": rendered_frame,
+                    "input_constraints": interaction_constraints(request),
                 }
                 remote_session.append_event("interaction_request", payload)
-                value, cancelled, reason = remote_session.wait_interaction(request_id)
+                value, cancelled, reason = remote_session.wait_interaction(
+                    request.request_id
+                )
                 remote_session.append_event(
                     "interaction_resolved",
                     {
-                        "request_id": request_id,
+                        "request_id": request.request_id,
                         "cancelled": cancelled,
                         "reason": reason,
                     },
                 )
-                if value is True and not cancelled:
-                    return ApprovalDecision.allow_once(reason)
-                return ApprovalDecision.deny_once(reason)
+                return value, cancelled, reason
+
+            def confirm(self, request: ConfirmRequest) -> ConfirmResponse:
+                value, cancelled, _ = self._request(request)
+                return ConfirmResponse(confirmed=value is True, cancelled=cancelled)
+
+            def choose_one(self, request: ChooseOneRequest) -> ChooseOneResponse:
+                value, cancelled, _ = self._request(request)
+                selected = value if isinstance(value, str) else None
+                return ChooseOneResponse(selected_id=selected, cancelled=cancelled)
+
+            def input_text(self, request: InputTextRequest) -> InputTextResponse:
+                value, cancelled, _ = self._request(request)
+                text = value if isinstance(value, str) else None
+                return InputTextResponse(value=text, cancelled=cancelled)
+
+            def review(self, request: ReviewRequest) -> ReviewResponse:
+                value, cancelled, reason = self._request(request)
+                return ReviewResponse(
+                    approved=value is True and not cancelled,
+                    cancelled=cancelled,
+                    reason=reason,
+                )
+
+            def cancel(self, request_id: str) -> None:
+                remote_session.resolve_interaction(
+                    request_id,
+                    None,
+                    True,
+                    "interaction cancelled",
+                )
 
         def _on_remote_stream(tool_name: str, chunk: Any) -> None:
             remote_session.append_event(
@@ -445,8 +447,13 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 context.remote_stream_handler = _on_remote_stream
 
         previous_approval = peer_agent.approval_provider
+        previous_interactor = getattr(peer_agent, "ui_interactor", None)
+        interaction_coordinator = InteractionCoordinator(_RemoteUIInteractor())
         peer_agent.add_event_handler(_on_agent_event)
-        peer_agent.approval_provider = _RemoteApprovalProvider()
+        peer_agent.ui_interactor = interaction_coordinator
+        peer_agent.approval_provider = SharedApprovalProvider(
+            handler=make_approval_handler(interaction_coordinator)
+        )
         try:
             result = peer_agent.chat(prompt)
             _flush_output()
@@ -457,7 +464,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             _save_peer_session(peer_agent, peer_id)
             remote_session.append_event("error", {"message": str(exc)})
         finally:
+            interaction_coordinator.shutdown(reason="remote chat closed")
             peer_agent.approval_provider = previous_approval
+            peer_agent.ui_interactor = previous_interactor
             try:
                 peer_agent._event_handlers.remove(_on_agent_event)
             except ValueError:

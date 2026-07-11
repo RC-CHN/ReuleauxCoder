@@ -1,11 +1,17 @@
 from reuleauxcoder.domain.agent.events import AgentEvent
-from reuleauxcoder.domain.runtime.events import ToolCallFinished
+from reuleauxcoder.domain.runtime.events import (
+    ErrorOccurred,
+    ToolCallFinished,
+    ToolCallStarted,
+)
 from reuleauxcoder.interfaces.events import (
     AgentEventBridge,
     UIEvent,
     UIEventBus,
     UIEventKind,
     UIEventLevel,
+    RuntimeEventPayload,
+    ViewEventPayload,
 )
 
 
@@ -61,12 +67,13 @@ def test_ui_event_bus_open_view_emits_structured_view_event() -> None:
 
     event = seen[0]
     assert event.kind is UIEventKind.VIEW
-    assert event.data["action"] == "open"
-    assert event.data["view_type"] == "help"
-    assert event.data["title"] == "Help"
-    assert event.data["view_model"].view_type == "help"
-    assert event.data["focus"] is False
-    assert event.data["reuse_key"] == "help"
+    assert isinstance(event.payload, ViewEventPayload)
+    assert event.payload.action == "open"
+    assert event.payload.view_type == "help"
+    assert event.payload.title == "Help"
+    assert event.payload.view_model.view_type == "help"
+    assert event.payload.focus is False
+    assert event.payload.reuse_key == "help"
 
 
 def test_agent_event_bridge_maps_error_to_error_level() -> None:
@@ -79,7 +86,9 @@ def test_agent_event_bridge_maps_error_to_error_level() -> None:
     event = seen[0]
     assert event.kind is UIEventKind.AGENT
     assert event.level is UIEventLevel.ERROR
-    assert event.data["error_message"] == "boom"
+    assert isinstance(event.payload, RuntimeEventPayload)
+    assert isinstance(event.payload.event.payload, ErrorOccurred)
+    assert event.payload.event.payload.message == "boom"
 
 
 def test_agent_event_bridge_maps_tool_events_to_debug_level() -> None:
@@ -88,13 +97,17 @@ def test_agent_event_bridge_maps_tool_events_to_debug_level() -> None:
     bus.subscribe(lambda event: seen.append(event), replay_history=False)
 
     AgentEventBridge(bus).on_agent_event(
-        AgentEvent.tool_call_start("shell", {"command": "ls"})
+        AgentEvent.tool_call_start(
+            "shell", {"command": "ls"}, tool_call_id="call-start"
+        )
     )
 
     event = seen[0]
     assert event.kind is UIEventKind.AGENT
     assert event.level is UIEventLevel.DEBUG
-    assert event.data["tool_name"] == "shell"
+    assert isinstance(event.payload, RuntimeEventPayload)
+    assert isinstance(event.payload.event.payload, ToolCallStarted)
+    assert event.payload.event.payload.tool_name == "shell"
 
 
 def test_agent_event_bridge_exposes_tool_correlation_and_outcome() -> None:
@@ -109,7 +122,8 @@ def test_agent_event_bridge_exposes_tool_correlation_and_outcome() -> None:
     )
 
     event = seen[0]
-    assert event.data["tool_call_id"] == "call-7"
-    assert event.data["tool_outcome"].model_text == "ok"
-    assert isinstance(event.data["runtime_event"].payload, ToolCallFinished)
-    assert event.data["runtime_event"].payload.tool_call_id == "call-7"
+    assert isinstance(event.payload, RuntimeEventPayload)
+    runtime = event.payload.event
+    assert isinstance(runtime.payload, ToolCallFinished)
+    assert runtime.payload.tool_call_id == "call-7"
+    assert runtime.payload.outcome.model_text == "ok"

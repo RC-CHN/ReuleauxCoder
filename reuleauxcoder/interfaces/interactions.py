@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import uuid
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from reuleauxcoder.domain.approval import ApprovalSection
-from reuleauxcoder.interfaces.events import UIEvent
+
+if TYPE_CHECKING:
+    from reuleauxcoder.interfaces.events import UIEvent
 
 
 @dataclass(slots=True)
@@ -113,10 +115,15 @@ class ReviewResponse:
     reason: str | None = None
 
 
+InteractionRequest: TypeAlias = (
+    ConfirmRequest | ChooseOneRequest | InputTextRequest | ReviewRequest
+)
+
+
 class UIInteractor(Protocol):
     """Interface-layer interaction port for synchronous user input."""
 
-    def notify(self, event: UIEvent) -> None:
+    def notify(self, event: "UIEvent") -> None:
         """Optional direct notification hook for interfaces that need it."""
 
     def confirm(self, request: ConfirmRequest) -> ConfirmResponse:

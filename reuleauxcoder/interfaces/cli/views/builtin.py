@@ -22,10 +22,16 @@ from reuleauxcoder.app.commands.view_models import (
     TokenUsageViewModel,
 )
 from reuleauxcoder.extensions.mcp.models import MCPServersView
+from reuleauxcoder.interfaces.events import ViewEventPayload
+
+
+def _view_model(event):
+    payload = event.payload
+    return payload.view_model if isinstance(payload, ViewEventPayload) else None
 
 
 def render_mcp_servers_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, MCPServersView):
         return False
     servers = model.servers
@@ -54,7 +60,7 @@ def render_mcp_servers_view(renderer, event) -> bool:
 
 
 def render_sessions_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, SessionsViewModel):
         return False
     sessions = model.sessions
@@ -87,7 +93,7 @@ def render_sessions_view(renderer, event) -> bool:
 
 
 def render_effective_config_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, EffectiveConfigViewModel):
         return False
     stop_stream_and_clear(renderer)
@@ -117,7 +123,7 @@ def render_effective_config_view(renderer, event) -> bool:
 
 
 def render_help_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, HelpViewModel):
         return False
     stop_stream_and_clear(renderer)
@@ -140,7 +146,7 @@ def render_help_view(renderer, event) -> bool:
 
 
 def render_model_profiles_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, ModelListViewModel):
         return False
     stop_stream_and_clear(renderer)
@@ -175,7 +181,7 @@ def render_model_profiles_view(renderer, event) -> bool:
 
 
 def render_modes_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, ModesViewModel):
         return False
     stop_stream_and_clear(renderer)
@@ -196,7 +202,7 @@ def render_modes_view(renderer, event) -> bool:
 
 
 def render_token_usage_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, TokenUsageViewModel):
         return False
     stop_stream_and_clear(renderer)
@@ -220,7 +226,7 @@ def render_token_usage_view(renderer, event) -> bool:
 
 
 def render_approval_rules_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, ApprovalView):
         return False
     stop_stream_and_clear(renderer)
@@ -248,7 +254,7 @@ def render_approval_rules_view(renderer, event) -> bool:
 
 
 def render_skills_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, SkillsViewModel):
         return False
     stop_stream_and_clear(renderer)
@@ -277,7 +283,7 @@ def render_skills_view(renderer, event) -> bool:
 
 
 def render_subagent_jobs_view(renderer, event) -> bool:
-    model = event.data.get("view_model")
+    model = _view_model(event)
     if not isinstance(model, SubagentJobsViewModel):
         return False
     stop_stream_and_clear(renderer)

@@ -164,7 +164,12 @@ def _apply_command_effect(result: CommandEffect, ui_bus: UIEventBus) -> None:
         except ValueError:
             kind = UIEventKind.COMMAND
         emit = getattr(ui_bus, notice.level)
-        emit(notice.message, kind=kind, **notice.metadata)
+        emit(
+            notice.message,
+            kind=kind,
+            payload=notice.payload,
+            **notice.metadata,
+        )
 
     for view in result.views:
         if view.action == "refresh":

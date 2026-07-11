@@ -15,7 +15,6 @@ from reuleauxcoder.interfaces.interactions import (
     ReviewRequest,
     ReviewResponse,
 )
-from reuleauxcoder.interfaces.cli.render import render_diff_panel
 
 
 class CLIUIInteractor:
@@ -31,10 +30,7 @@ class CLIUIInteractor:
 
     def confirm(self, request: ConfirmRequest) -> ConfirmResponse:
         with self._interaction_lock:
-            self.ui_bus.warning(
-                request.title, kind=UIEventKind.COMMAND
-            )
-            self.ui_bus.info(request.message, kind=UIEventKind.COMMAND)
+            self.ui_bus.emit_interaction_prompt(request)
             while True:
                 answer = input("Confirm? [y/n]: ").strip().lower()
                 if answer in {"y", "yes"}:
@@ -47,19 +43,10 @@ class CLIUIInteractor:
 
     def choose_one(self, request: ChooseOneRequest) -> ChooseOneResponse:
         with self._interaction_lock:
-            self.ui_bus.info(request.title, kind=UIEventKind.COMMAND)
-            if request.message:
-                self.ui_bus.info(request.message, kind=UIEventKind.COMMAND)
+            self.ui_bus.emit_interaction_prompt(request)
             if not request.items:
                 self.ui_bus.warning("No options available.", kind=UIEventKind.COMMAND)
                 return ChooseOneResponse(selected_id=None, cancelled=True)
-
-            for index, item in enumerate(request.items, 1):
-                suffix = f" — {item.description}" if item.description else ""
-                self.ui_bus.info(
-                    f"  {index}. {item.label}{suffix}",
-                    kind=UIEventKind.COMMAND,
-                )
 
             prompt = "Choose one"
             if request.allow_cancel:
@@ -80,7 +67,7 @@ class CLIUIInteractor:
 
     def input_text(self, request: InputTextRequest) -> InputTextResponse:
         with self._interaction_lock:
-            self.ui_bus.info(request.title, kind=UIEventKind.COMMAND)
+            self.ui_bus.emit_interaction_prompt(request)
             prompt = request.prompt
             if request.placeholder:
                 prompt += f" ({request.placeholder})"
@@ -100,17 +87,7 @@ class CLIUIInteractor:
 
     def review(self, request: ReviewRequest) -> ReviewResponse:
         with self._interaction_lock:
-            self.ui_bus.warning(
-                request.title, kind=UIEventKind.APPROVAL
-            )
-            self.ui_bus.info(request.summary, kind=UIEventKind.APPROVAL)
-
-            for section in request.sections:
-                self.ui_bus.info(section.title, kind=UIEventKind.APPROVAL)
-                if section.kind.value == "diff" and isinstance(section.content, str):
-                    render_diff_panel(section.content)
-                else:
-                    self.ui_bus.info(str(section.content), kind=UIEventKind.APPROVAL)
+            self.ui_bus.emit_interaction_prompt(request)
 
             while True:
                 try:

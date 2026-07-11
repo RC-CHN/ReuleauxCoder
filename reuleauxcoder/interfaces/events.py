@@ -7,10 +7,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeAlias
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.runtime.events import RuntimeEvent, agent_event_to_runtime_event
+from reuleauxcoder.interfaces.interactions import InteractionRequest
 
 
 class UIEventLevel(Enum):
@@ -42,6 +43,47 @@ class ViewModelPort(Protocol):
     view_type: str
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeEventPayload:
+    event: RuntimeEvent
+
+
+@dataclass(frozen=True, slots=True)
+class ViewEventPayload:
+    action: str
+    view_type: str
+    title: str
+    view_model: ViewModelPort
+    focus: bool = True
+    reuse_key: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteStreamPayload:
+    tool_name: str
+    stream: str
+    chunk: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningNoticePayload:
+    title: str = "Reasoning"
+
+
+@dataclass(frozen=True, slots=True)
+class InteractionPromptPayload:
+    request: InteractionRequest
+
+
+UIEventPayload: TypeAlias = (
+    RuntimeEventPayload
+    | ViewEventPayload
+    | RemoteStreamPayload
+    | ReasoningNoticePayload
+    | InteractionPromptPayload
+)
+
+
 @dataclass
 class UIEvent:
     """A user-facing event emitted through the UI bus."""
@@ -50,6 +92,7 @@ class UIEvent:
     level: UIEventLevel = UIEventLevel.INFO
     kind: UIEventKind = UIEventKind.SYSTEM
     timestamp: float = field(default_factory=time.time)
+    payload: UIEventPayload | None = None
     data: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -58,9 +101,16 @@ class UIEvent:
         message: str,
         *,
         kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
         **data: Any,
     ) -> "UIEvent":
-        return cls(message=message, level=UIEventLevel.INFO, kind=kind, data=data)
+        return cls(
+            message=message,
+            level=UIEventLevel.INFO,
+            kind=kind,
+            payload=payload,
+            data=data,
+        )
 
     @classmethod
     def success(
@@ -68,9 +118,16 @@ class UIEvent:
         message: str,
         *,
         kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
         **data: Any,
     ) -> "UIEvent":
-        return cls(message=message, level=UIEventLevel.SUCCESS, kind=kind, data=data)
+        return cls(
+            message=message,
+            level=UIEventLevel.SUCCESS,
+            kind=kind,
+            payload=payload,
+            data=data,
+        )
 
     @classmethod
     def warning(
@@ -78,9 +135,16 @@ class UIEvent:
         message: str,
         *,
         kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
         **data: Any,
     ) -> "UIEvent":
-        return cls(message=message, level=UIEventLevel.WARNING, kind=kind, data=data)
+        return cls(
+            message=message,
+            level=UIEventLevel.WARNING,
+            kind=kind,
+            payload=payload,
+            data=data,
+        )
 
     @classmethod
     def error(
@@ -88,9 +152,16 @@ class UIEvent:
         message: str,
         *,
         kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
         **data: Any,
     ) -> "UIEvent":
-        return cls(message=message, level=UIEventLevel.ERROR, kind=kind, data=data)
+        return cls(
+            message=message,
+            level=UIEventLevel.ERROR,
+            kind=kind,
+            payload=payload,
+            data=data,
+        )
 
     @classmethod
     def debug(
@@ -98,9 +169,16 @@ class UIEvent:
         message: str,
         *,
         kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
         **data: Any,
     ) -> "UIEvent":
-        return cls(message=message, level=UIEventLevel.DEBUG, kind=kind, data=data)
+        return cls(
+            message=message,
+            level=UIEventLevel.DEBUG,
+            kind=kind,
+            payload=payload,
+            data=data,
+        )
 
 
 class UIEventBus:
@@ -173,37 +251,54 @@ class UIEventBus:
                 pass
 
     def info(
-        self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any
+        self,
+        message: str,
+        *,
+        kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
+        **data: Any,
     ) -> None:
-        self.emit(UIEvent.info(message, kind=kind, **data))
+        self.emit(UIEvent.info(message, kind=kind, payload=payload, **data))
 
     def success(
         self,
         message: str,
         *,
         kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
         **data: Any,
     ) -> None:
-        self.emit(UIEvent.success(message, kind=kind, **data))
+        self.emit(UIEvent.success(message, kind=kind, payload=payload, **data))
 
     def warning(
         self,
         message: str,
         *,
         kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
         **data: Any,
     ) -> None:
-        self.emit(UIEvent.warning(message, kind=kind, **data))
+        self.emit(UIEvent.warning(message, kind=kind, payload=payload, **data))
 
     def error(
-        self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any
+        self,
+        message: str,
+        *,
+        kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
+        **data: Any,
     ) -> None:
-        self.emit(UIEvent.error(message, kind=kind, **data))
+        self.emit(UIEvent.error(message, kind=kind, payload=payload, **data))
 
     def debug(
-        self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any
+        self,
+        message: str,
+        *,
+        kind: UIEventKind = UIEventKind.SYSTEM,
+        payload: UIEventPayload | None = None,
+        **data: Any,
     ) -> None:
-        self.emit(UIEvent.debug(message, kind=kind, **data))
+        self.emit(UIEvent.debug(message, kind=kind, payload=payload, **data))
 
     def emit_runtime(self, event: RuntimeEvent) -> None:
         """Publish one typed runtime event through the shared UI scheduler."""
@@ -211,7 +306,7 @@ class UIEventBus:
             UIEvent(
                 message=event.kind.value,
                 kind=UIEventKind.AGENT,
-                data={"runtime_event": event},
+                payload=RuntimeEventPayload(event),
             )
         )
 
@@ -231,12 +326,14 @@ class UIEventBus:
             UIEvent.info(
                 f"Open view: {title}",
                 kind=UIEventKind.VIEW,
-                action="open",
-                view_type=view_type,
-                title=title,
-                focus=focus,
-                reuse_key=reuse_key,
-                view_model=view_model,
+                payload=ViewEventPayload(
+                    action="open",
+                    view_type=view_type,
+                    title=title,
+                    focus=focus,
+                    reuse_key=reuse_key,
+                    view_model=view_model,
+                ),
             )
         )
 
@@ -255,11 +352,34 @@ class UIEventBus:
             UIEvent.info(
                 f"Refresh view: {title or view_type}",
                 kind=UIEventKind.VIEW,
-                action="refresh",
-                view_type=view_type,
-                title=title or view_type,
-                reuse_key=reuse_key,
-                view_model=view_model,
+                payload=ViewEventPayload(
+                    action="refresh",
+                    view_type=view_type,
+                    title=title or view_type,
+                    focus=False,
+                    reuse_key=reuse_key,
+                    view_model=view_model,
+                ),
+            )
+        )
+
+    def emit_remote_stream(
+        self, *, tool_name: str, stream: str, chunk: str
+    ) -> None:
+        self.emit(
+            UIEvent.info(
+                "",
+                kind=UIEventKind.REMOTE,
+                payload=RemoteStreamPayload(tool_name, stream, chunk),
+            )
+        )
+
+    def emit_interaction_prompt(self, request: InteractionRequest) -> None:
+        self.emit(
+            UIEvent.info(
+                request.title,
+                kind=UIEventKind.APPROVAL,
+                payload=InteractionPromptPayload(request),
             )
         )
 
@@ -288,17 +408,6 @@ class AgentEventBridge:
                 message=event.event_type.value,
                 level=level,
                 kind=UIEventKind.AGENT,
-                data={
-                    "agent_event": event,
-                    "runtime_event": runtime_event,
-                    "event_type": event.event_type.value,
-                    "tool_name": event.tool_name,
-                    "tool_args": event.tool_args,
-                    "tool_result": event.tool_result,
-                    "tool_success": event.tool_success,
-                    "tool_call_id": event.correlation_id,
-                    "tool_outcome": event.tool_outcome,
-                    "error_message": event.error_message,
-                },
+                payload=RuntimeEventPayload(runtime_event),
             )
         )

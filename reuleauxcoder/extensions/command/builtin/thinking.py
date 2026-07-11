@@ -89,11 +89,10 @@ def _handle_show(_command, ctx) -> CommandEffect:
         )
         return ctx.effect.finish(control="continue")
 
-    ctx.effect.info(
+    ctx.effect.reasoning(
         content,
         kind=UIEventKind.COMMAND,
         title="Reasoning",
-        is_reasoning=True,
     )
     return ctx.effect.finish(control="continue")
 

@@ -150,7 +150,7 @@ class TestHandleShow:
         assert result.control == "continue"
         assert any(
             e.level == "info"
-            and e.metadata.get("is_reasoning") is True
+            and e.payload is not None
             and e.message == "Let me think about this..."
             for e in ctx.effect.notifications
         )

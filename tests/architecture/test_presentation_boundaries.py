@@ -36,13 +36,16 @@ def test_presentation_core_has_no_ui_framework_or_io_dependencies() -> None:
 
 
 def test_cli_renderer_does_not_restore_legacy_string_protocols() -> None:
-    source = (ROOT / "reuleauxcoder/interfaces/cli/render.py").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "reuleauxcoder/interfaces/cli/render.py").read_text(encoding="utf-8")
+    view_source = (
+        ROOT / "reuleauxcoder/interfaces/cli/views/builtin.py"
+    ).read_text(encoding="utf-8")
     assert "_completed_blocks" not in source
     assert "_compact_tool_output" not in source
     assert "[truncated]" not in source
     assert 'name == "edit_file"' not in source
+    assert "event.data" not in source
+    assert "event.data" not in view_source
 
 
 def test_command_extensions_do_not_import_cli_or_ui_frameworks() -> None:

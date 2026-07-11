@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
 from reuleauxcoder.interfaces.interactions import UIInteractor
+from reuleauxcoder.interfaces.events import ReasoningNoticePayload, UIEventPayload
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 from reuleauxcoder.app.commands.view_models import ViewModel
 
@@ -37,6 +38,7 @@ class NotificationEffect:
     level: Literal["info", "success", "warning", "error", "debug"] = "info"
     kind: str = "command"
     metadata: Mapping[str, object] = field(default_factory=dict)
+    payload: UIEventPayload | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +71,13 @@ class CommandEffect:
         return str(getattr(kind, "value", kind or "command"))
 
     def _notify(
-        self, level: str, message: str, *, kind=None, **metadata: object
+        self,
+        level: str,
+        message: str,
+        *,
+        kind=None,
+        payload: UIEventPayload | None = None,
+        **metadata: object,
     ) -> None:
         self.notifications.append(
             NotificationEffect(
@@ -77,6 +85,7 @@ class CommandEffect:
                 level=level,  # type: ignore[arg-type]
                 kind=self._kind_value(kind),
                 metadata=dict(metadata),
+                payload=payload,
             )
         )
 
@@ -94,6 +103,14 @@ class CommandEffect:
 
     def debug(self, message: str, *, kind=None, **metadata: object) -> None:
         self._notify("debug", message, kind=kind, **metadata)
+
+    def reasoning(self, content: str, *, title: str = "Reasoning", kind=None) -> None:
+        self._notify(
+            "info",
+            content,
+            kind=kind,
+            payload=ReasoningNoticePayload(title=title),
+        )
 
     def open_view(
         self,

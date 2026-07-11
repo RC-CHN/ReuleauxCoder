@@ -8,7 +8,6 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape as _escape_markup
 from rich.panel import Panel
-from rich.syntax import Syntax
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
@@ -32,9 +31,22 @@ from reuleauxcoder.domain.runtime.events import (
     agent_event_to_runtime_event,
 )
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
-from reuleauxcoder.interfaces.events import UIEvent, UIEventKind, UIEventLevel
+from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
+from reuleauxcoder.interfaces.events import (
+    ReasoningNoticePayload,
+    InteractionPromptPayload,
+    RemoteStreamPayload,
+    RuntimeEventPayload,
+    UIEvent,
+    UIEventKind,
+    UIEventLevel,
+    ViewEventPayload,
+)
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
 from reuleauxcoder.presentation import PresentationPolicy, PresentationReducer
+from reuleauxcoder.interfaces.cli.interaction_presenter import (
+    render_interaction_request,
+)
 
 if TYPE_CHECKING:
     from markdown_it import MarkdownIt
@@ -210,22 +222,22 @@ class CLIRenderer:
     def on_ui_event(self, event: UIEvent) -> None:
         """Handle a UI bus event."""
         if event.kind == UIEventKind.AGENT:
-            runtime_event = event.data.get("runtime_event")
-            if isinstance(runtime_event, RuntimeEvent):
-                self.on_runtime_event(runtime_event)
-                return
-            agent_event = event.data.get("agent_event")
-            if isinstance(agent_event, AgentEvent):
-                self.on_event(agent_event)
+            if isinstance(event.payload, RuntimeEventPayload):
+                self.on_runtime_event(event.payload.event)
             return
 
-        if event.kind == UIEventKind.REMOTE and event.data.get("remote_stream"):
-            self._render_remote_stream(event)
+        if isinstance(event.payload, RemoteStreamPayload):
+            self._render_remote_stream(event.payload)
             return
 
-        if event.kind == UIEventKind.VIEW:
-            if self._render_view_event(event):
+        if isinstance(event.payload, ViewEventPayload):
+            if self._render_view_event(event.payload, event):
                 return
+
+        if isinstance(event.payload, InteractionPromptPayload):
+            self._close_active_content_block()
+            render_interaction_request(self.console, event.payload.request)
+            return
 
         self._render_notification(event)
 
@@ -362,24 +374,22 @@ class CLIRenderer:
         if message:
             self.console.print(f"[red]{message}[/red]")
 
-    def _render_remote_stream(self, event: UIEvent) -> None:
+    def _render_remote_stream(self, payload: RemoteStreamPayload) -> None:
         """Render raw remote stream chunk directly to terminal."""
-        chunk = event.data.get("chunk")
-        if not isinstance(chunk, str) or not chunk:
+        if not payload.chunk:
             return
         self._close_active_content_block()
-        self.render_plain_text(chunk)
+        self.render_plain_text(payload.chunk)
 
     def _render_notification(self, event: UIEvent) -> None:
         """Render a generic UI notification event."""
         # Reasoning content display (/thinking command)
-        if event.data.get("is_reasoning"):
+        if isinstance(event.payload, ReasoningNoticePayload):
             self._close_active_content_block()
-            title = event.data.get("title", "Reasoning")
             self.console.print(
                 Panel(
                     event.message,
-                    title=title,
+                    title=event.payload.title,
                     border_style="bright_black",
                     box=box.ROUNDED,
                     padding=(0, 1),
@@ -421,10 +431,12 @@ class CLIRenderer:
             )
         )
 
-    def _render_view_event(self, event: UIEvent) -> bool:
+    def _render_view_event(
+        self, payload: ViewEventPayload, event: UIEvent
+    ) -> bool:
         """Render known structured view events in the CLI."""
-        view_type = event.data.get("view_type")
-        if not isinstance(view_type, str) or not view_type:
+        view_type = payload.view_type
+        if not view_type:
             return False
 
         spec = self.view_registry.get(view_type)
@@ -516,13 +528,3 @@ def show_warning(text: str) -> None:
 
 def show_info(text: str) -> None:
     console.print(text)
-
-
-def render_diff_panel(result: str, target_console: Console | None = None) -> None:
-    """Render a diff with syntax highlighting into the given console."""
-    out = target_console or console
-    try:
-        syntax = Syntax(result, "diff", theme="monokai", line_numbers=False)
-        out.print(Panel(syntax, border_style="green", padding=(0, 1)))
-    except Exception:
-        out.print(f"[dim]{result[:500]}[/dim]")
