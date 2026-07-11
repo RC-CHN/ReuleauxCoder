@@ -71,6 +71,12 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
             )
         return context
 
+    def clone_for_scope(self, scope: str) -> "ProjectContextHook":
+        del scope
+        return ProjectContextHook(
+            context_files=list(self.context_files), priority=self.priority
+        )
+
     def _load_all_project_contexts(self) -> list[tuple[str, str]]:
         """Load all existing project context files from cwd.
 
@@ -140,3 +146,7 @@ class ProjectContextStartupNotifier(ObserverHook[RunnerStartupContext]):
                 )
             except Exception:
                 pass
+
+    def clone_for_scope(self, scope: str) -> "ProjectContextStartupNotifier":
+        del scope
+        return ProjectContextStartupNotifier(priority=self.priority)

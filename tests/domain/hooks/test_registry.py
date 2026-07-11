@@ -193,8 +193,13 @@ def test_observer_receives_immutable_snapshot_and_failure_is_observable() -> Non
 
 
 def test_hook_registry_clone_is_isolated_copy() -> None:
+    class CloneableGuard(AllowGuard):
+        def clone_for_scope(self, scope: str):
+            del scope
+            return CloneableGuard(name=self.name, priority=self.priority)
+
     registry = HookRegistry()
-    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, AllowGuard(name="allow"))
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, CloneableGuard(name="allow"))
 
     cloned = registry.clone()
     cloned.unregister(HookPoint.BEFORE_TOOL_EXECUTE, "allow")
@@ -205,6 +210,14 @@ def test_hook_registry_clone_is_isolated_copy() -> None:
     assert cloned.list_hooks(HookPoint.BEFORE_TOOL_EXECUTE) == {
         "before_tool_execute": []
     }
+
+
+def test_hook_registry_rejects_implicit_scope_clone() -> None:
+    registry = HookRegistry()
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, AllowGuard(name="allow"))
+
+    with pytest.raises(TypeError, match="must declare explicit clone_for_scope"):
+        registry.clone(scope="subagent")
 
 
 def test_registry_passes_explicit_clone_scope_to_hooks() -> None:

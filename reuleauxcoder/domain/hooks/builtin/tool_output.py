@@ -112,6 +112,16 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         context.result = context.outcome.model_text
         return context
 
+    def clone_for_scope(self, scope: str) -> "ToolOutputTruncationHook":
+        del scope
+        return ToolOutputTruncationHook(
+            max_chars=self.max_chars,
+            max_lines=self.max_lines,
+            store_full_output=self.store_full_output,
+            store_dir=str(self.output_dir),
+            priority=self.priority,
+        )
+
     def _archive_output(
         self, tool_name: str, content: str, round_index: int | None
     ) -> Path:

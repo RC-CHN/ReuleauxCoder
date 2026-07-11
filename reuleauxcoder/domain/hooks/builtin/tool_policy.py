@@ -62,6 +62,18 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
         """Replace approval config for live runtime updates."""
         self.approval_engine = ApprovalPolicyEngine(approval_config)
 
+    def clone_for_scope(self, scope: str) -> "ToolPolicyGuardHook":
+        del scope
+        return ToolPolicyGuardHook(
+            policies=self.policies,
+            approval_config=(
+                self.approval_engine.config
+                if self.approval_engine is not None
+                else None
+            ),
+            priority=self.priority,
+        )
+
     def run(self, context: BeforeToolExecuteContext) -> GuardDecision:
         tool_call = context.tool_call
         if tool_call is None:
