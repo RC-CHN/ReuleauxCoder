@@ -53,6 +53,8 @@ from reuleauxcoder.interfaces.entrypoint.session_lifecycle import restore_sessio
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.services.llm.client import LLM
 
+__all__ = ["AppRunner", "_default_create_remote_artifact_provider"]
+
 
 class AppRunner:
     """Application runner that handles initialization and cleanup."""
@@ -68,6 +70,7 @@ class AppRunner:
         self._relay_server: RelayServer | None = None
         self._relay_http_service: RemoteRelayHTTPService | None = None
         self._lsp_manager: LspManager | None = None
+        self._agent: Agent | None = None
 
     def initialize(self) -> AppContext:
         """Initialize all application components and return context."""
@@ -79,6 +82,7 @@ class AppRunner:
         action_registry = self.dependencies.create_action_registry()
         self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
+        self._agent = agent
         self._bind_remote_chat_handler(agent)
         skills_service = self._init_skills(config, agent, ui_bus)
         mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
@@ -323,12 +327,16 @@ class AppRunner:
 
     def cleanup(self, agent: Agent | None = None) -> None:
         """Clean up resources (MCP connections, remote relay, etc.)."""
+        agent = agent or self._agent
         if agent is not None:
             self._run_lifecycle_hooks(
                 agent,
                 HookPoint.RUNNER_SHUTDOWN,
                 RunnerShutdownContext(hook_point=HookPoint.RUNNER_SHUTDOWN),
             )
+            subagent_manager = getattr(agent, "_subagent_manager", None)
+            if subagent_manager is not None:
+                subagent_manager.shutdown(wait=True)
         if self._relay_http_service is not None:
             artifact_provider = getattr(
                 self._relay_http_service, "artifact_provider", None
@@ -365,6 +373,7 @@ class AppRunner:
                 set_lsp_tool_manager(None)
             except Exception:
                 pass
+        self._agent = None
 
     @staticmethod
     def _run_lifecycle_hooks(

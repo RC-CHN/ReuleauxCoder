@@ -304,7 +304,6 @@ class Agent:
                     error=job.error,
                 )
             )
-        self._emit_event(AgentEvent.tool_call_end("agent", content, success=success))
 
     def inject_subagent_job_result(self, job) -> bool:
         """Inject one finished sub-agent job into parent history.
@@ -315,6 +314,9 @@ class Agent:
         between a tool_calls message and its tool responses — which would
         violate the LLM API contract.
         """
+        manager = getattr(self, "_subagent_manager", None)
+        if manager is not None and getattr(job, "generation", manager.generation) != manager.generation:
+            return False
         with self._state_lock:
             if getattr(job, "injected_to_parent", False):
                 return False
@@ -409,11 +411,15 @@ class Agent:
 
     def reset(self) -> None:
         """Clear conversation history."""
+        manager = getattr(self, "_subagent_manager", None)
+        if manager is not None:
+            manager.advance_generation(cancel_pending=True)
         self.state.messages.clear()
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0
         self.state.current_round = 0
         self._current_turn_id = None
+        self._pending_subagent_injections.clear()
 
     @property
     def messages(self) -> list[dict]:

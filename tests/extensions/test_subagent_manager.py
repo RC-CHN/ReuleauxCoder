@@ -7,6 +7,7 @@ from reuleauxcoder.extensions.subagent.manager import (
     SubagentJob,
     SubagentManager,
     _create_subagent_llm,
+    _filter_subagent_tools,
 )
 
 
@@ -173,3 +174,130 @@ def test_drain_without_lock_skips_already_injected_job() -> None:
     result = manager.drain_completed_for_parent()
 
     assert result == []
+
+
+class _Parent:
+    def __init__(self) -> None:
+        self.injected = []
+
+    def inject_subagent_job_result(self, job) -> None:
+        self.injected.append(job.id)
+
+
+def test_fast_background_completion_never_loses_job_registration(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task",
+        lambda **kwargs: "done",
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+
+    job_id = manager.submit_background(
+        parent_agent=parent, task="fast", mode="explore"
+    )
+    job = manager.wait_job(job_id, timeout=2)
+
+    assert job is not None and job.status == "completed"
+    assert job.result == "done"
+    assert parent.injected == [job_id]
+    manager.shutdown()
+
+
+def test_generation_change_prevents_old_result_injection(monkeypatch) -> None:
+    release = threading.Event()
+
+    def run(**kwargs):
+        release.wait(timeout=2)
+        return "old result"
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent, task="old", mode="explore"
+    )
+
+    manager.advance_generation(cancel_pending=False)
+    release.set()
+    job = manager.wait_job(job_id, timeout=2)
+
+    assert job is not None and job.status == "stale"
+    assert parent.injected == []
+    assert manager.drain_completed_for_parent() == []
+    manager.shutdown()
+
+
+def test_cancel_job_has_explicit_terminal_state(monkeypatch) -> None:
+    def run(**kwargs):
+        cancel_event = kwargs["cancel_event"]
+        cancel_event.wait(timeout=2)
+        return "[Sub-agent finished status=cancelled]"
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent, task="cancel", mode="explore"
+    )
+
+    assert manager.cancel_job(job_id) is True
+    job = manager.wait_job(job_id, timeout=2)
+
+    assert job is not None and job.status == "cancelled"
+    assert job.cancel_requested is True
+    assert parent.injected == []
+    manager.shutdown()
+
+
+def test_cancelling_queued_future_does_not_deadlock_callback(monkeypatch) -> None:
+    release = threading.Event()
+
+    def run(**kwargs):
+        release.wait(timeout=2)
+        return "done"
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    first = manager.submit_background(
+        parent_agent=parent, task="blocking", mode="explore"
+    )
+    second = manager.submit_background(
+        parent_agent=parent, task="queued", mode="explore"
+    )
+
+    assert manager.cancel_job(second) is True
+    second_job = manager.wait_job(second, timeout=1)
+    assert second_job is not None and second_job.status == "cancelled"
+
+    release.set()
+    manager.wait_job(first, timeout=2)
+    manager.shutdown()
+
+
+def test_shutdown_rejects_new_jobs() -> None:
+    manager = SubagentManager()
+    manager.shutdown()
+
+    try:
+        manager.submit_background(parent_agent=_Parent(), task="late", mode="explore")
+    except RuntimeError as error:
+        assert "shut down" in str(error)
+    else:
+        raise AssertionError("submission after shutdown must fail")
+
+
+def test_subagent_tools_are_distinct_instances() -> None:
+    tool = SimpleNamespace(name="read_file", mutable=[])
+    parent = SimpleNamespace(tools=[tool])
+
+    (child_tool,) = _filter_subagent_tools(parent, "explore")
+
+    assert child_tool is not tool
+    assert child_tool.mutable is not tool.mutable

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEventType
+from reuleauxcoder.extensions.subagent.manager import SubagentManager
 
 
 class _LLMStub:
@@ -36,7 +37,6 @@ def test_inject_subagent_job_result_appends_message_and_emits_events() -> None:
     assert "done" in agent.state.messages[-1]["content"]
     assert [event.event_type for event in events] == [
         AgentEventType.SUBAGENT_COMPLETED,
-        AgentEventType.TOOL_CALL_END,
     ]
 
 
@@ -128,7 +128,6 @@ def test_inject_defers_when_pending_tool_calls_exist() -> None:
     # Events should have been emitted during flush.
     assert [e.event_type for e in events] == [
         AgentEventType.SUBAGENT_COMPLETED,
-        AgentEventType.TOOL_CALL_END,
     ]
 
 
@@ -162,3 +161,37 @@ def test_flush_empty_is_noop() -> None:
     agent = _make_agent()
     assert agent._flush_pending_subagent_injections() == 0
     assert agent.state.messages == []
+
+
+def test_reset_advances_generation_and_clears_pending_injections() -> None:
+    agent = _make_agent()
+    manager = SubagentManager()
+    agent._subagent_manager = manager
+    agent._pending_subagent_injections.append((object(), "old", True))
+
+    agent.reset()
+
+    assert manager.generation == 1
+    assert agent._pending_subagent_injections == []
+    manager.shutdown()
+
+
+def test_old_generation_job_is_rejected_by_agent_injection() -> None:
+    agent = _make_agent()
+    manager = SubagentManager()
+    agent._subagent_manager = manager
+    manager.advance_generation(cancel_pending=False)
+    job = SimpleNamespace(
+        id="old",
+        mode="explore",
+        task="old",
+        status="completed",
+        result="stale",
+        error=None,
+        injected_to_parent=False,
+        generation=0,
+    )
+
+    assert agent.inject_subagent_job_result(job) is False
+    assert agent.state.messages == []
+    manager.shutdown()

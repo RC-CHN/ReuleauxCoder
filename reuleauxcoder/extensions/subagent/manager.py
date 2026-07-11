@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+import copy
 from dataclasses import dataclass
 import threading
 import time
 import uuid
 
-from reuleauxcoder.interfaces.events import UIEventKind
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
 
 
@@ -16,25 +16,6 @@ _VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
 _DEFAULT_MAX_ROUNDS = 50
 _DEFAULT_TIMEOUT_SECONDS = 300
 _MAX_TIMEOUT_SECONDS = 3_600
-
-
-def _emit_subagent_ui_event(
-    parent_agent, *, status: str, job_id: str, mode: str, task: str, level: str = "info"
-) -> None:
-    ui_bus = getattr(parent_agent, "ui_bus", None) or getattr(
-        getattr(parent_agent, "context", None), "_ui_bus", None
-    )
-    if ui_bus is None:
-        return
-
-    emit = getattr(ui_bus, level, None) or ui_bus.info
-    task_preview = (task or "").strip()
-    if len(task_preview) > 240:
-        task_preview = task_preview[:237] + "..."
-    message = f"[SUBAGENT]\nstatus={status}\nid={job_id}\nmode={mode}"
-    if task_preview:
-        message += f"\n\n{task_preview}"
-    emit(message, kind=UIEventKind.AGENT)
 
 
 def _clamp_subagent_rounds(
@@ -75,6 +56,8 @@ class SubagentJob:
     error: str | None = None
     detached_due_to_timeout: bool = False
     injected_to_parent: bool = False
+    generation: int = 0
+    cancel_requested: bool = False
 
 
 class SubagentManager:
@@ -103,6 +86,9 @@ class SubagentManager:
         self._slot_cv = threading.Condition(self._lock)
         self._jobs: dict[str, SubagentJob] = {}
         self._futures: dict[str, Future] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._generation = 0
+        self._shutdown = False
 
     @property
     def max_parallel_explore(self) -> int:
@@ -115,6 +101,11 @@ class SubagentManager:
     @property
     def default_max_rounds(self) -> int:
         return self._default_max_rounds
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
 
     def set_runtime_parallel_explore(self, value: int) -> int:
         with self._lock:
@@ -144,13 +135,19 @@ class SubagentManager:
                 "Only 'explore' mode supports background parallel execution"
             )
 
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("SubagentManager is shut down")
+
         if parallel_explore is not None:
             self.set_runtime_parallel_explore(parallel_explore)
 
         effective_max_rounds = _clamp_subagent_rounds(
             max_rounds, default=self._default_max_rounds
         )
-        effective_timeout_seconds = _clamp_timeout_seconds(timeout_seconds)
+        effective_timeout_seconds = _clamp_timeout_seconds(
+            timeout_seconds, default=self._default_timeout_seconds
+        )
         job_id = f"sj_{uuid.uuid4().hex[:10]}"
         now = time.time()
         job = SubagentJob(
@@ -160,32 +157,22 @@ class SubagentManager:
             status="queued",
             created_at=now,
             timeout_seconds=effective_timeout_seconds,
+            generation=self.generation,
         )
-        _emit_subagent_ui_event(
-            parent_agent,
-            status="queued",
-            job_id=job_id,
-            mode=mode,
-            task=task,
-        )
-
+        cancel_event = threading.Event()
         def _runner() -> str:
             with self._slot_cv:
                 while self._active_explore >= self._runtime_parallel_explore:
+                    if cancel_event.is_set() or self._shutdown:
+                        return "[Sub-agent finished status=cancelled]"
                     self._slot_cv.wait(timeout=0.5)
+                if cancel_event.is_set() or self._shutdown:
+                    return "[Sub-agent finished status=cancelled]"
                 self._active_explore += 1
                 tracked = self._jobs.get(job_id)
                 if tracked is not None:
                     tracked.status = "running"
                     tracked.started_at = time.time()
-            _emit_subagent_ui_event(
-                parent_agent,
-                status="running",
-                job_id=job_id,
-                mode=mode,
-                task=task,
-            )
-
             try:
                 return run_subagent_task(
                     parent_agent=parent_agent,
@@ -194,13 +181,20 @@ class SubagentManager:
                     max_rounds=effective_max_rounds,
                     timeout_seconds=effective_timeout_seconds,
                     model_profile_name=model_profile_name,
+                    cancel_event=cancel_event,
                 )
             finally:
                 with self._slot_cv:
                     self._active_explore = max(0, self._active_explore - 1)
                     self._slot_cv.notify_all()
 
-        future = self._explore_pool.submit(_runner)
+        # Register the job before submission. A very fast Future may invoke its
+        # callback immediately; it must always find the tracked job.
+        with self._lock:
+            self._jobs[job_id] = job
+            self._cancel_events[job_id] = cancel_event
+            future = self._explore_pool.submit(_runner)
+            self._futures[job_id] = future
 
         def _on_done(done: Future) -> None:
             tracked_for_injection = None
@@ -211,26 +205,36 @@ class SubagentManager:
                 if tracked.detached_due_to_timeout:
                     return
                 tracked.finished_at = time.time()
-                try:
-                    result = done.result()
-                    tracked.result = result
-                    if "[Sub-agent finished status=timeout]" in result:
-                        tracked.detached_due_to_timeout = True
-                        tracked.status = "timed_out_detached"
-                        tracked.error = "Sub-agent timed out and detached; background thread may still be running."
-                        emit_status = "timed_out_detached"
-                        emit_level = "warning"
-                    else:
-                        tracked.status = "completed"
+                if done.cancelled():
+                    tracked.status = "cancelled"
+                    tracked.error = "Sub-agent cancelled before it started."
+                else:
+                    try:
+                        result = done.result()
+                    except Exception as e:  # pragma: no cover - defensive
+                        tracked.error = str(e)
+                        tracked.status = "failed"
                         tracked_for_injection = tracked
-                        emit_status = "completed"
-                        emit_level = "success"
-                except Exception as e:  # pragma: no cover - defensive
-                    tracked.error = str(e)
-                    tracked.status = "failed"
-                    tracked_for_injection = tracked
-                    emit_status = "failed"
-                    emit_level = "error"
+                    else:
+                        if "[Sub-agent finished status=cancelled]" in result:
+                            tracked.detached_due_to_timeout = "detached" in result
+                            tracked.status = (
+                                "cancelled_detached"
+                                if tracked.detached_due_to_timeout
+                                else "cancelled"
+                            )
+                            tracked.error = "Sub-agent cancelled."
+                        elif "[Sub-agent finished status=timeout]" in result:
+                            tracked.detached_due_to_timeout = True
+                            tracked.status = "timed_out_detached"
+                            tracked.error = "Sub-agent timed out and detached; background thread may still be running."
+                        elif tracked.generation != self._generation:
+                            tracked.status = "stale"
+                            tracked.error = "Sub-agent completed for an inactive session generation."
+                        else:
+                            tracked.result = result
+                            tracked.status = "completed"
+                            tracked_for_injection = tracked
 
             if tracked_for_injection is not None:
                 inject = getattr(parent_agent, "inject_subagent_job_result", None)
@@ -240,20 +244,7 @@ class SubagentManager:
                     except Exception:
                         pass
 
-            _emit_subagent_ui_event(
-                parent_agent,
-                status=emit_status,
-                job_id=job_id,
-                mode=mode,
-                task=task,
-                level=emit_level,
-            )
-
         future.add_done_callback(_on_done)
-
-        with self._lock:
-            self._jobs[job_id] = job
-            self._futures[job_id] = future
         return job_id
 
     def run_sync(
@@ -269,7 +260,9 @@ class SubagentManager:
         effective_max_rounds = _clamp_subagent_rounds(
             max_rounds, default=self._default_max_rounds
         )
-        effective_timeout_seconds = _clamp_timeout_seconds(timeout_seconds)
+        effective_timeout_seconds = _clamp_timeout_seconds(
+            timeout_seconds, default=self._default_timeout_seconds
+        )
         if mode == "explore":
             future = self._explore_pool.submit(
                 run_subagent_task,
@@ -310,6 +303,88 @@ class SubagentManager:
         except Exception:
             pass
         return self.get_job(job_id)
+
+    def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation and prevent later parent injection."""
+        with self._slot_cv:
+            job = self._jobs.get(job_id)
+            event = self._cancel_events.get(job_id)
+            future = self._futures.get(job_id)
+            if job is None or event is None or job.status in {
+                "completed",
+                "failed",
+                "cancelled",
+                "cancelled_detached",
+                "timed_out_detached",
+                "stale",
+            }:
+                return False
+            job.cancel_requested = True
+            event.set()
+            job.status = "cancelling"
+            self._slot_cv.notify_all()
+        # Future.cancel() may invoke callbacks synchronously. Never call it
+        # while holding the manager lock because callbacks acquire that lock.
+        cancelled_before_start = future is not None and future.cancel()
+        if cancelled_before_start:
+            with self._lock:
+                job.status = "cancelled"
+                job.finished_at = job.finished_at or time.time()
+        return True
+
+    def advance_generation(self, *, cancel_pending: bool = True) -> int:
+        """Start a new parent session generation.
+
+        Results from older generations remain inspectable but can never be
+        injected into the new parent conversation.
+        """
+        with self._slot_cv:
+            self._generation += 1
+            old_ids = [
+                job.id
+                for job in self._jobs.values()
+                if job.generation < self._generation
+                and job.status in {"queued", "running", "cancelling"}
+            ]
+        if cancel_pending:
+            for job_id in old_ids:
+                self.cancel_job(job_id)
+        return self._generation
+
+    def prune(self, *, keep: int = 100) -> int:
+        """Remove oldest terminal jobs while retaining recent diagnostics."""
+        terminal = {
+            "completed",
+            "failed",
+            "cancelled",
+            "cancelled_detached",
+            "timed_out_detached",
+            "stale",
+        }
+        with self._lock:
+            finished = sorted(
+                (job for job in self._jobs.values() if job.status in terminal),
+                key=lambda job: job.finished_at or job.created_at,
+                reverse=True,
+            )
+            remove_ids = {job.id for job in finished[max(0, keep) :]}
+            for job_id in remove_ids:
+                self._jobs.pop(job_id, None)
+                self._futures.pop(job_id, None)
+                self._cancel_events.pop(job_id, None)
+            return len(remove_ids)
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Cancel all jobs and release the worker pool exactly once."""
+        with self._slot_cv:
+            if self._shutdown:
+                return
+            self._shutdown = True
+            active_ids = list(self._cancel_events)
+            self._slot_cv.notify_all()
+        for job_id in active_ids:
+            self.cancel_job(job_id)
+        self._explore_pool.shutdown(wait=wait, cancel_futures=True)
 
     def drain_completed_for_parent(
         self, *, parent_state_lock: threading.Lock | None = None
@@ -352,6 +427,8 @@ class SubagentManager:
                             error=job.error,
                             detached_due_to_timeout=job.detached_due_to_timeout,
                             injected_to_parent=False,
+                            generation=job.generation,
+                            cancel_requested=job.cancel_requested,
                         )
                     )
                 finally:
@@ -413,10 +490,25 @@ def _filter_subagent_tools(parent_agent, mode: str):
     }
     allowed = mode_allowlist[mode]
     return [
-        tool
+        _clone_tool_for_subagent(tool)
         for tool in parent_agent.tools
         if tool.name in allowed and tool.name != "agent"
     ]
+
+
+def _clone_tool_for_subagent(tool):
+    """Clone tool-local mutable state while intentionally sharing its backend port."""
+    cloned = copy.copy(tool)
+    for name, value in vars(tool).items():
+        if name == "backend":
+            continue
+        if isinstance(value, dict):
+            setattr(cloned, name, dict(value))
+        elif isinstance(value, list):
+            setattr(cloned, name, list(value))
+        elif isinstance(value, set):
+            setattr(cloned, name, set(value))
+    return cloned
 
 
 def run_subagent_task(
@@ -427,6 +519,7 @@ def run_subagent_task(
     max_rounds: int = 50,
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     model_profile_name: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """Run one sub-agent task with isolated message history."""
     if mode not in _VALID_SUBAGENT_MODES:
@@ -453,14 +546,29 @@ def run_subagent_task(
         approval_provider=build_subagent_approval_provider(parent_agent, mode, task),
     )
 
-    holder: dict[str, str] = {}
+    holder: dict[str, object] = {}
 
     def _run() -> None:
-        holder["result"] = sub.chat(task)
+        try:
+            holder["result"] = sub.chat(task)
+        except BaseException as error:  # propagate worker failures to the manager
+            holder["error"] = error
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    thread.join(timeout=effective_timeout_seconds)
+    deadline = time.monotonic() + effective_timeout_seconds
+    cancelled = False
+    while thread.is_alive() and time.monotonic() < deadline:
+        thread.join(timeout=min(0.05, max(0.0, deadline - time.monotonic())))
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            sub.request_stop()
+            thread.join(timeout=1.0)
+            break
+
+    if cancelled:
+        suffix = " detached" if thread.is_alive() else ""
+        return f"[Sub-agent cancelled{suffix}]\n[Sub-agent finished status=cancelled]"
     if thread.is_alive():
         sub.request_stop()
         return (
@@ -470,7 +578,9 @@ def run_subagent_task(
             "[Sub-agent finished status=timeout]"
         )
 
-    result = holder.get("result", "")
+    if "error" in holder:
+        raise holder["error"]  # type: ignore[misc]
+    result = str(holder.get("result", ""))
     if len(result) > 5000:
         result = result[:4500] + "\n... (sub-agent output truncated)"
 
