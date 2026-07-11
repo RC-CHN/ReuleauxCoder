@@ -231,7 +231,11 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         return _cache_created_agent()
 
     def _save_peer_session(peer_agent: Agent, peer_id: str) -> None:
-        if config is None or not getattr(peer_agent, "messages", None):
+        if (
+            config is None
+            or not config.session_auto_save
+            or not getattr(peer_agent, "messages", None)
+        ):
             return
         sid = session_store.save(
             peer_agent.messages,

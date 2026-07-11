@@ -118,7 +118,7 @@ def _handle_show_help(command, ctx) -> CommandResult:
 
 
 def _handle_exit(command, ctx) -> CommandResult:
-    if ctx.agent.messages:
+    if ctx.agent.messages and ctx.config.session_auto_save:
         sid = SessionStore(ctx.sessions_dir).save(
             ctx.agent.messages,
             getattr(ctx.agent.llm, "model", ctx.config.model),

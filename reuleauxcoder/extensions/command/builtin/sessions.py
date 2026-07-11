@@ -226,7 +226,7 @@ def _handle_new_session(command, ctx) -> CommandResult:
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     previous_session_id = command.current_session_id
-    if ctx.agent.messages:
+    if ctx.agent.messages and ctx.config.session_auto_save:
         sid = store.save(
             ctx.agent.messages,
             getattr(ctx.agent.llm, "model", ctx.config.model),

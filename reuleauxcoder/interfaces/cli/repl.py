@@ -58,7 +58,7 @@ def run_repl(
             user_input = pt_prompt("You > ", history=history).strip()
         except (EOFError, KeyboardInterrupt):
             ui_bus.info("\nBye!")
-            if agent.messages:
+            if agent.messages and config.session_auto_save:
                 sid = SessionStore(sessions_dir).save(
                     agent.messages,
                     config.model,

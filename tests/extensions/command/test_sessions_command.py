@@ -6,8 +6,10 @@ from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.session.models import SessionRuntimeState
 from reuleauxcoder.extensions.command.builtin.sessions import (
     ListSessionsCommand,
+    NewSessionCommand,
     ResumeSessionCommand,
     _handle_list_sessions,
+    _handle_new_session,
     _handle_resume_session,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
@@ -161,3 +163,15 @@ def test_resume_cross_fingerprint_by_id_warns_but_allows(tmp_path: Path) -> None
         and "belongs to fingerprint 'remote:abc'" in event.message
         for event in ctx.ui_bus._history
     )
+
+
+def test_new_session_respects_disabled_auto_save(tmp_path: Path) -> None:
+    ctx = _build_ctx(tmp_path)
+    ctx.config.session_auto_save = False
+    ctx.agent.messages.append({"role": "user", "content": "do not persist"})
+
+    result = _handle_new_session(NewSessionCommand(current_session_id=None), ctx)
+
+    assert result.session_id is not None
+    assert SessionStore(tmp_path).list() == []
+    assert ctx.agent.messages == []

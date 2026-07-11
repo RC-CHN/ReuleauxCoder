@@ -4,6 +4,7 @@ from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.command.builtin.system import (
     _handle_config,
     _handle_debug,
+    _handle_exit,
     _parse_config,
     _parse_debug,
 )
@@ -56,3 +57,24 @@ def test_config_command_emits_typed_effective_view() -> None:
     assert event.data["view_type"] == "effective_config"
     assert event.data["view_model"].view_type == "effective_config"
     assert result.payload["rows"]
+
+
+def test_exit_respects_disabled_auto_save(tmp_path) -> None:
+    config = Config(session_auto_save=False)
+    agent = SimpleNamespace(
+        messages=[{"role": "user", "content": "do not persist"}],
+        llm=SimpleNamespace(model="demo"),
+        state=SimpleNamespace(total_prompt_tokens=0, total_completion_tokens=0),
+        active_mode=None,
+    )
+    ctx = SimpleNamespace(
+        config=config,
+        agent=agent,
+        ui_bus=UIEventBus(),
+        sessions_dir=tmp_path,
+    )
+
+    result = _handle_exit(SimpleNamespace(current_session_id=None), ctx)
+
+    assert result.action == "exit"
+    assert not list(tmp_path.iterdir())
