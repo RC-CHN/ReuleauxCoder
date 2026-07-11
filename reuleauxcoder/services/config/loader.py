@@ -9,6 +9,7 @@ from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
     Config,
+    ConfigDiagnostic,
     ContextConfig,
     MCPServerConfig,
     ModeConfig,
@@ -59,6 +60,18 @@ class ConfigLoader:
 
     def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path
+        self._effective_sources: dict[str, str] = {}
+
+    def _record_sources(
+        self, value: object, source: str, prefix: str = ""
+    ) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                self._record_sources(child, source, path)
+            return
+        if prefix:
+            self._effective_sources[prefix] = source
 
     def _resolve_llm_params(self, active_profile, app_config: dict) -> dict:
         """Resolve LLM params with active_profile > app_config > default priority."""
@@ -160,6 +173,12 @@ class ConfigLoader:
         if self.config_path:
             explicit_data = self._load_yaml(self.config_path)
 
+        self._effective_sources = {}
+        self._record_sources(global_data, "global")
+        self._record_sources(workspace_data, "workspace")
+        if explicit_data:
+            self._record_sources(explicit_data, "explicit")
+
         # ── example-template detection ──────────────────────────────────
         # Only raise an error when *every* existing config file is still the
         # example template.  If at least one source is non-example we let
@@ -188,7 +207,7 @@ class ConfigLoader:
 
         if not any_valid:
             raise ExampleConfigError(
-                f"\n  Every existing config file is still the example template.\n"
+                "\n  Every existing config file is still the example template.\n"
                 "  Please edit at least one of them: fill in your API key,\n"
                 "  delete the line 'meta: example: true', and restart.\n"
             )
@@ -225,6 +244,7 @@ class ConfigLoader:
         context_config = data.get("context", {})
         remote_exec_config = data.get("remote_exec", {})
         lsp_config = data.get("lsp", {})
+        diagnostics: list[ConfigDiagnostic] = []
 
         # Parse MCP servers
         mcp_servers = []
@@ -240,23 +260,60 @@ class ConfigLoader:
                 continue
             model_profiles[name] = ModelProfileConfig.from_dict(name, profile_data)
 
-        active_main_model_profile = models_config.get("active_main")
+        requested_main = models_config.get("active_main")
+        active_main_model_profile = requested_main
         if (
             not isinstance(active_main_model_profile, str)
             or active_main_model_profile not in model_profiles
         ):
-            active_main_model_profile = models_config.get("active")
+            if requested_main is not None:
+                diagnostics.append(
+                    ConfigDiagnostic(
+                        code="invalid_model_profile",
+                        path="models.active_main",
+                        message=(
+                            f"Unknown main model profile '{requested_main}'; "
+                            "using a compatible fallback."
+                        ),
+                        source=self._effective_sources.get("models.active_main"),
+                    )
+                )
+            legacy_active = models_config.get("active")
+            active_main_model_profile = legacy_active
+            if requested_main is None and legacy_active is not None:
+                diagnostics.append(
+                    ConfigDiagnostic(
+                        code="legacy_config_alias",
+                        path="models.active",
+                        message="models.active is legacy; migrate to models.active_main.",
+                        severity="info",
+                        source=self._effective_sources.get("models.active"),
+                    )
+                )
         if (
             not isinstance(active_main_model_profile, str)
             or active_main_model_profile not in model_profiles
         ):
             active_main_model_profile = next(iter(model_profiles.keys()), None)
 
-        active_sub_model_profile = models_config.get("active_sub")
+        requested_sub = models_config.get("active_sub")
+        active_sub_model_profile = requested_sub
         if (
             not isinstance(active_sub_model_profile, str)
             or active_sub_model_profile not in model_profiles
         ):
+            if requested_sub is not None:
+                diagnostics.append(
+                    ConfigDiagnostic(
+                        code="invalid_model_profile",
+                        path="models.active_sub",
+                        message=(
+                            f"Unknown subagent model profile '{requested_sub}'; "
+                            "using the effective main profile."
+                        ),
+                        source=self._effective_sources.get("models.active_sub"),
+                    )
+                )
             active_sub_model_profile = active_main_model_profile
 
         # Backward compatibility alias: active_model_profile tracks main profile.
@@ -389,6 +446,8 @@ class ConfigLoader:
                 app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])
             ),
             lsp=lsp_config if lsp_config else None,
+            diagnostics=diagnostics,
+            effective_sources=dict(self._effective_sources),
             shell_rtk=shell_config.get("rtk", DEFAULTS["shell_rtk"]),
         )
 

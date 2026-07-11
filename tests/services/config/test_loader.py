@@ -168,6 +168,48 @@ def test_parse_config_falls_back_when_active_profile_missing() -> None:
     assert config.active_sub_model_profile == "first"
     assert config.active_model_profile == "first"
     assert config.model == "gpt-first"
+    assert [(item.code, item.path) for item in config.diagnostics] == [
+        ("invalid_model_profile", "models.active_main")
+    ]
+
+
+def test_parse_config_reports_legacy_active_alias() -> None:
+    loader = ConfigLoader()
+    loader._effective_sources["models.active"] = "workspace"
+
+    config = loader._parse_config(
+        {
+            "models": {
+                "active": "first",
+                "profiles": {
+                    "first": {"model": "gpt-first", "api_key": "key-1"}
+                },
+            },
+            "modes": {"profiles": {"coder": {}}},
+        }
+    )
+
+    diagnostic = next(
+        item for item in config.diagnostics if item.code == "legacy_config_alias"
+    )
+    assert diagnostic.source == "workspace"
+    assert config.active_main_model_profile == "first"
+
+
+def test_record_sources_tracks_highest_precedence_leaf() -> None:
+    loader = ConfigLoader()
+    loader._record_sources(
+        {"models": {"active_main": "global", "active_sub": "global"}},
+        "global",
+    )
+    loader._record_sources(
+        {"models": {"active_main": "workspace"}}, "workspace"
+    )
+
+    assert loader._effective_sources == {
+        "models.active_main": "workspace",
+        "models.active_sub": "global",
+    }
 
 
 def test_merge_dicts_preserves_active_main_and_active_sub_across_layers() -> None:

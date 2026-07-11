@@ -4,6 +4,15 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 
+@dataclass(frozen=True, slots=True)
+class ConfigDiagnostic:
+    code: str
+    path: str
+    message: str
+    severity: Literal["info", "warning", "error"] = "warning"
+    source: str | None = None
+
+
 @dataclass
 class MCPServerConfig:
     """Configuration for an MCP server."""
@@ -268,6 +277,10 @@ class Config:
 
     # LSP settings (raw dict, parsed by LspConfig)
     lsp: Optional[dict] = None
+
+    # Effective configuration observability.
+    diagnostics: list[ConfigDiagnostic] = field(default_factory=list)
+    effective_sources: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""
