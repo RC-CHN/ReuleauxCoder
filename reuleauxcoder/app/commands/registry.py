@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reuleauxcoder.app.commands.models import CommandContext, CommandResult
+from reuleauxcoder.app.commands.models import (
+    CommandContext,
+    CommandEffect,
+    CommandEffectBuilder,
+    CommandResult,
+)
 from reuleauxcoder.app.commands.specs import (
     ActionSpec,
     CommandParseContext,
@@ -63,8 +68,12 @@ class ActionRegistry:
                 return ParsedAction(command=parsed, action=action, registry=self)
         return None
 
-    def dispatch(self, parsed: ParsedAction, ctx: CommandContext) -> CommandResult:
+    def dispatch(self, parsed: ParsedAction, ctx: CommandContext) -> CommandEffect:
         """Dispatch a parsed action to its handler."""
         if parsed.action.handler is None:
             return CommandResult(action="continue")
-        return parsed.action.handler(parsed.command, ctx)
+        result = parsed.action.handler(parsed.command, ctx)
+        builder = getattr(ctx, "ui_bus", None)
+        if isinstance(builder, CommandEffectBuilder):
+            return builder.build(result)
+        return result

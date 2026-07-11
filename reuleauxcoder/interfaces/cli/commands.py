@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
+from reuleauxcoder.app.commands.models import CommandEffect, CommandEffectBuilder
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.ui_registry import UIProfile
@@ -117,12 +118,13 @@ def handle_command(
     )
     if parsed_action is not None:
         try:
+            effects = CommandEffectBuilder()
             result = dispatch_command(
                 parsed_action,
                 CommandContext(
                     agent=agent,
                     config=config,
-                    ui_bus=ui_bus,
+                    ui_bus=effects,
                     ui_profile=ui_profile,
                     action_registry=parsed_action.registry,
                     ui_interactor=getattr(agent, "ui_interactor", None),
@@ -136,6 +138,7 @@ def handle_command(
                 kind=UIEventKind.COMMAND,
             )
             return {"action": "continue", "session_id": current_session_id}
+        _apply_command_effect(result, ui_bus)
         return {
             "action": result.action,
             "session_id": result.session_id
@@ -151,3 +154,31 @@ def handle_command(
         return {"action": "continue", "session_id": current_session_id}
 
     return {"action": "chat", "session_id": current_session_id}
+
+
+def _apply_command_effect(result: CommandEffect, ui_bus: UIEventBus) -> None:
+    """Apply one command effect to the active interface event bus."""
+    for notice in result.notifications:
+        try:
+            kind = UIEventKind(notice.kind)
+        except ValueError:
+            kind = UIEventKind.COMMAND
+        emit = getattr(ui_bus, notice.level)
+        emit(notice.message, kind=kind, **notice.data)
+
+    for view in result.view_requests:
+        if view.action == "refresh":
+            ui_bus.refresh_view(
+                view.view_type,
+                title=view.title,
+                payload=view.payload,
+                reuse_key=view.reuse_key,
+            )
+        else:
+            ui_bus.open_view(
+                view.view_type,
+                title=view.title,
+                payload=view.payload,
+                focus=view.focus,
+                reuse_key=view.reuse_key,
+            )
