@@ -22,6 +22,11 @@ from reuleauxcoder.domain.hooks.types import (
     BeforeLLMRequestContext,
     HookPoint,
 )
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.extensions.lsp.diagnostics import (
@@ -157,6 +162,7 @@ class TestLspEditObserverBasic:
                 name="edit_file",
                 arguments={"file_path": "/tmp/test.py"},
             ),
+            outcome=ToolOutcome(content="edited"),
             round_index=1,
         )
         hook.run(context)
@@ -177,11 +183,34 @@ class TestLspEditObserverBasic:
                 name="write_file",
                 arguments={"file_path": "/tmp/test.py"},
             ),
+            outcome=ToolOutcome(content="wrote"),
         )
         hook.run(context)
         assert len(mgr._notification_queue) == 1
         kind, path = mgr._notification_queue[0]
         assert kind == "did_save"
+
+    def test_failed_edit_does_not_notify_or_enqueue(self) -> None:
+        mgr = _make_manager()
+        hook = LspEditObserverHook(lsp_manager=mgr)
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id="failed",
+                name="edit_file",
+                arguments={"file_path": "/tmp/test.py"},
+            ),
+            outcome=ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content="edit failed",
+                error_kind=ToolErrorKind.EXECUTION,
+            ),
+        )
+
+        hook.run(context)
+
+        assert len(mgr._notification_queue) == 0
+        assert len(mgr._diagnostics_queue) == 0
 
     def test_all_edit_tools_are_handled(self) -> None:
         """Verify that the EDIT_TOOLS set covers all expected edit tools."""
@@ -348,13 +377,14 @@ class TestLspEditObserverDedup:
                 name="edit_file",
                 arguments={"file_path": "/tmp/test.py"},
             ),
+            outcome=ToolOutcome(content="edited"),
             round_index=1,
         )
         hook.run(context)
 
-        # Tool result should contain the diagnostics
-        assert context.result is not None
-        assert "err" in context.result
+        assert context.outcome is not None
+        assert [item.message for item in context.outcome.diagnostics] == ["err"]
+        assert "err" in context.outcome.model_text
         assert mgr.pending_diagnostic_batches() == ()
         assert mgr.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
 
@@ -377,6 +407,7 @@ class TestLspEditObserverDedup:
                 name="edit_file",
                 arguments={"file_path": "/tmp/test.py"},
             ),
+            outcome=ToolOutcome(content="edited"),
             round_index=1,
         )
         hook.run(context)
@@ -409,11 +440,15 @@ class TestLspEditObserverDedup:
                 name="edit_file",
                 arguments={"file_path": "/tmp/test.py"},
             ),
+            outcome=ToolOutcome(content="edited"),
             round_index=1,
         )
         hook.run(tool_context)
 
-        assert "edited" in tool_context.result
+        assert tool_context.outcome is not None
+        assert [item.message for item in tool_context.outcome.diagnostics] == [
+            "edited"
+        ]
         remaining = mgr.pending_diagnostic_batches()
         assert [batch.block.file_path for batch in remaining] == ["/tmp/other.py"]
 

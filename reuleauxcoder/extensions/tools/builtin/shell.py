@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -72,7 +78,7 @@ class ShellTool(Tool):
         timeout: int = 120,
         cwd: str | None = None,
         persist_cwd: bool = False,
-    ) -> str:
+    ) -> ToolOutcome:
         return self.run_backend(
             command=command,
             timeout=timeout,
@@ -87,14 +93,14 @@ class ShellTool(Tool):
         timeout: int = 120,
         cwd: str | None = None,
         persist_cwd: bool = False,
-    ) -> str:
+    ) -> ToolOutcome:
         if not isinstance(command, str) or not command:
-            return "Error: shell command must be a non-empty string"
+            return _invalid("Error: shell command must be a non-empty string")
         if not isinstance(timeout, int) or timeout < 1:
-            return "Error: timeout must be a positive integer"
+            return _invalid("Error: timeout must be a positive integer")
         supports = getattr(self.backend, "supports_capability", None)
         if callable(supports) and not supports("process.start"):
-            return self.backend.exec_tool(
+            return self.backend.exec_tool_outcome(
                 "shell",
                 {
                     "command": command,
@@ -112,7 +118,7 @@ class ShellTool(Tool):
         timeout: int = 120,
         cwd: str | None = None,
         persist_cwd: bool = False,
-    ) -> str:
+    ) -> ToolOutcome:
         return self._execute_process(command, timeout, cwd, persist_cwd)
 
     def _execute_process(
@@ -121,15 +127,15 @@ class ShellTool(Tool):
         timeout: int,
         cwd: str | None,
         persist_cwd: bool,
-    ) -> str:
+    ) -> ToolOutcome:
         if not isinstance(command, str) or not command:
-            return "Error: shell command must be a non-empty string"
+            return _invalid("Error: shell command must be a non-empty string")
         if not isinstance(timeout, int) or timeout < 1:
-            return "Error: timeout must be a positive integer"
+            return _invalid("Error: timeout must be a positive integer")
         if cwd is not None and not isinstance(cwd, str):
-            return "Error: cwd must be a string when provided"
+            return _invalid("Error: cwd must be a string when provided")
         if not isinstance(persist_cwd, bool):
-            return "Error: persist_cwd must be a boolean"
+            return _invalid("Error: persist_cwd must be a boolean")
         command = self._maybe_rtk(command)
         context = self.backend.context
         actual_cwd = (
@@ -141,6 +147,7 @@ class ShellTool(Tool):
         )
         if cwd and persist_cwd:
             self._cwd = cwd
+        started = time.monotonic()
         try:
             result = self.backend.process.run(
                 command,
@@ -150,25 +157,58 @@ class ShellTool(Tool):
                 stream_handler=self._stream_handler(),
             )
         except FileNotFoundError:
-            return f"Error: working directory does not exist ({actual_cwd})"
-        except Exception as error:
-            return f"Error running command: {error}"
-        if result.timed_out:
-            return f"Error: timed out after {timeout}s"
-        if result.cancelled:
-            return "Error: shell command cancelled"
-        output = result.stdout
-        if result.stderr:
-            output += f"\n[stderr]\n{result.stderr}"
-        if result.exit_code not in {None, 0}:
-            output += f"\n[exit code: {result.exit_code}]"
-        if len(output) > 15_000:
-            output = (
-                output[:6000]
-                + f"\n\n... truncated ({len(output)} chars total) ...\n\n"
-                + output[-3000:]
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=f"Error: working directory does not exist ({actual_cwd})",
+                duration_seconds=time.monotonic() - started,
+                error_kind=ToolErrorKind.NOT_FOUND,
             )
-        return output.strip() or "(no output)"
+        except Exception as error:
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=f"Error running command: {error}",
+                duration_seconds=time.monotonic() - started,
+                error_kind=ToolErrorKind.EXECUTION,
+            )
+        duration = time.monotonic() - started
+        if result.timed_out:
+            return ToolOutcome(
+                status=ToolOutcomeStatus.TIMED_OUT,
+                content=f"Error: timed out after {timeout}s",
+                stdout=result.stdout,
+                stderr=result.stderr,
+                exit_code=result.exit_code,
+                duration_seconds=duration,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        if result.cancelled:
+            return ToolOutcome(
+                status=ToolOutcomeStatus.CANCELLED,
+                content="Error: shell command cancelled",
+                stdout=result.stdout,
+                stderr=result.stderr,
+                exit_code=result.exit_code,
+                duration_seconds=duration,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        failed = result.exit_code not in {None, 0}
+        return ToolOutcome(
+            status=(ToolOutcomeStatus.FAILED if failed else ToolOutcomeStatus.SUCCEEDED),
+            summary=(
+                f"Command exited with code {result.exit_code}"
+                if failed
+                else "Command completed"
+            ),
+            content=(
+                "(no output)" if not result.stdout and not result.stderr else None
+            ),
+            stdout=result.stdout.strip(),
+            stderr=result.stderr.strip(),
+            exit_code=result.exit_code,
+            duration_seconds=duration,
+            error_kind=ToolErrorKind.EXECUTION if failed else None,
+            metadata={"cwd": str(actual_cwd)},
+        )
 
     def _stream_handler(self):
         build = getattr(self.backend, "_build_stream_handler", None)
@@ -186,3 +226,11 @@ class ShellTool(Tool):
             )
 
         return handle
+
+
+def _invalid(message: str) -> ToolOutcome:
+    return ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        content=message,
+        error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+    )

@@ -8,6 +8,11 @@ from typing import Any
 import uuid
 
 from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
     WorkspaceError,
@@ -75,11 +80,17 @@ class RemoteRelayToolBackend(ToolBackend):
 
         If no peer is explicitly selected, picks the single online peer (MVP).
         """
+        return self.exec_tool_outcome(tool_name, args).model_text
+
+    def exec_tool_outcome(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> ToolOutcome:
+        """Adapt protocol-v1 execution into the canonical Host outcome."""
         peer_id = self.context.peer_id
         if peer_id is None:
             peer = self.relay_server.registry.pick_default_peer()
             if peer is None:
-                return "Error: no remote peer is currently connected"
+                return _remote_failure("Error: no remote peer is currently connected")
             peer_id = peer.peer_id
 
         timeout = None
@@ -105,16 +116,24 @@ class RemoteRelayToolBackend(ToolBackend):
                 stream_handler=stream_handler,
             )
         except PeerNotFoundError:
-            return f"Error: peer '{peer_id}' is not online"
+            return _remote_failure(f"Error: peer '{peer_id}' is not online")
         except RemoteExecError as e:
-            return f"Error [{e.code}]: {e.message}"
+            return _remote_failure(
+                f"Error [{e.code}]: {e.message}", metadata={"remote_error_code": e.code}
+            )
         except Exception as e:
-            return f"Error executing {tool_name} remotely: {e}"
+            return _remote_failure(f"Error executing {tool_name} remotely: {e}")
 
         if result.ok:
-            return result.result
+            return ToolOutcome(content=result.result, metadata=dict(result.meta))
         error_msg = result.error_message or "unknown remote error"
-        return f"Error [{result.error_code or 'REMOTE_TOOL_ERROR'}]: {error_msg}"
+        return _remote_failure(
+            f"Error [{result.error_code or 'REMOTE_TOOL_ERROR'}]: {error_msg}",
+            metadata={
+                **dict(result.meta),
+                "remote_error_code": result.error_code or "REMOTE_TOOL_ERROR",
+            },
+        )
 
     def _build_stream_handler(self, tool_name: str):
         remote_stream_handler = getattr(self.context, "remote_stream_handler", None)
@@ -146,6 +165,17 @@ class RemoteRelayToolBackend(ToolBackend):
                 )
 
         return _handle
+
+
+def _remote_failure(
+    message: str, *, metadata: dict[str, object] | None = None
+) -> ToolOutcome:
+    return ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        content=message,
+        error_kind=ToolErrorKind.EXECUTION,
+        metadata=metadata or {},
+    )
 
 
 class RemoteWorkspacePort:

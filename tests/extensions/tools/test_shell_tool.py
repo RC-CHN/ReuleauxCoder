@@ -8,6 +8,7 @@ import threading
 import time
 
 from reuleauxcoder.domain.process import ProcessResult
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcomeStatus
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 
@@ -40,7 +41,8 @@ def test_explicit_cwd_overrides_and_can_be_persisted(tmp_path: Path) -> None:
         "echo ok", cwd=alternate, persist_cwd=True
     )
 
-    assert result == "ok"
+    assert result.model_text == "ok"
+    assert result.status is ToolOutcomeStatus.SUCCEEDED
     assert process.calls[0][1]["cwd"] == alternate
     assert tool._cwd == alternate
 
@@ -60,12 +62,21 @@ def test_shell_formats_stderr_exit_timeout_and_cancel(tmp_path: Path) -> None:
         ProcessResult(stdout="out", stderr="bad", exit_code=7)
     )
     tool = _tool(process, cwd=str(tmp_path))
-    assert tool._execute_local("demo") == "out\n[stderr]\nbad\n[exit code: 7]"
+    failed = tool._execute_local("demo")
+    assert failed.model_text == "out\n[stderr]\nbad\n[exit code: 7]"
+    assert failed.stdout == "out"
+    assert failed.stderr == "bad"
+    assert failed.exit_code == 7
+    assert failed.status is ToolOutcomeStatus.FAILED
 
     process.result = ProcessResult(timed_out=True)
-    assert tool._execute_local("demo", timeout=3) == "Error: timed out after 3s"
+    timed_out = tool._execute_local("demo", timeout=3)
+    assert timed_out.model_text == "Error: timed out after 3s"
+    assert timed_out.status is ToolOutcomeStatus.TIMED_OUT
     process.result = ProcessResult(cancelled=True)
-    assert tool._execute_local("demo") == "Error: shell command cancelled"
+    cancelled = tool._execute_local("demo")
+    assert cancelled.model_text == "Error: shell command cancelled"
+    assert cancelled.status is ToolOutcomeStatus.CANCELLED
 
 
 def test_shell_passes_runtime_cancellation_event(tmp_path: Path) -> None:
@@ -83,7 +94,7 @@ def test_shell_passes_runtime_cancellation_event(tmp_path: Path) -> None:
 
 def test_local_process_port_executes_and_cancels_real_process() -> None:
     tool = ShellTool()
-    assert "hello" in tool._execute_local("echo hello")
+    assert "hello" in tool._execute_local("echo hello").model_text
 
     cancellation = threading.Event()
     backend = LocalToolBackend(ExecutionContext(cancellation_event=cancellation))
@@ -98,7 +109,7 @@ def test_local_process_port_executes_and_cancels_real_process() -> None:
     finally:
         timer.cancel()
 
-    assert "cancelled" in result.lower()
+    assert "cancelled" in result.model_text.lower()
     assert time.monotonic() - started < 3
 
 
@@ -106,7 +117,9 @@ def test_invalid_inputs_are_rejected_before_process_port() -> None:
     process = RecordingProcessPort()
     tool = _tool(process, cwd=os.getcwd())
 
-    assert "non-empty" in tool.execute("")
-    assert "positive integer" in tool.execute("echo", timeout=0)
-    assert "cwd must be" in tool.execute("echo", cwd=123)  # type: ignore[arg-type]
+    assert "non-empty" in tool.execute("").model_text
+    assert "positive integer" in tool.execute("echo", timeout=0).model_text
+    assert "cwd must be" in tool.execute(  # type: ignore[arg-type]
+        "echo", cwd=123
+    ).model_text
     assert process.calls == []

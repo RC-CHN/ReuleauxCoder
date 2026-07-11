@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import difflib
-from reuleauxcoder.domain.workspace import WorkspaceError
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolDiff,
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
+from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -34,19 +40,19 @@ class WriteFileTool(Tool):
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
 
-    def execute(self, file_path: str, content: str) -> str:
+    def execute(self, file_path: str, content: str) -> ToolOutcome:
         return self.run_backend(file_path=file_path, content=content)
 
     @backend_handler("remote_relay")
-    def _execute_remote(self, file_path: str, content: str) -> str:
+    def _execute_remote(self, file_path: str, content: str) -> ToolOutcome:
         if not isinstance(file_path, str) or not file_path:
-            return "Error: file_path must be a non-empty string"
+            return _invalid("Error: file_path must be a non-empty string")
         if not isinstance(content, str):
-            return "Error: content must be a string"
+            return _invalid("Error: content must be a string")
         return self._execute_local(file_path, content)
 
     @backend_handler("local")
-    def _execute_local(self, file_path: str, content: str) -> str:
+    def _execute_local(self, file_path: str, content: str) -> ToolOutcome:
         try:
             old_content = self.backend.workspace.write_text_atomic(file_path, content)
             n_lines = content.count("\n") + (
@@ -54,11 +60,35 @@ class WriteFileTool(Tool):
             )
             resolved = self.backend.workspace.resolve(file_path)
             diff = _unified_diff(old_content, content, str(resolved))
-            return f"Wrote {n_lines} lines to {file_path}\n{diff}"
+            summary = f"Wrote {n_lines} lines to {file_path}"
+            return ToolOutcome(
+                summary=summary,
+                content=summary,
+                diff=ToolDiff(path=str(resolved), unified=diff),
+                metadata={
+                    "file_path": file_path,
+                    "resolved_path": str(resolved),
+                    "line_count": n_lines,
+                },
+            )
         except WorkspaceError as e:
-            return f"Error [{e.code.value}]: {e.message}"
+            kind = (
+                ToolErrorKind.NOT_FOUND
+                if e.code is WorkspaceErrorCode.NOT_FOUND
+                else ToolErrorKind.EXECUTION
+            )
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=f"Error [{e.code.value}]: {e.message}",
+                error_kind=kind,
+                metadata={"workspace_error_code": e.code.value},
+            )
         except Exception as e:
-            return f"Error: {e}"
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=f"Error: {e}",
+                error_kind=ToolErrorKind.EXECUTION,
+            )
 
 
 def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
@@ -71,7 +101,12 @@ def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
         tofile=f"b/{filename}",
         n=context,
     )
-    result = "".join(diff)
-    if len(result) > 3000:
-        result = result[:2500] + "\n... (diff truncated)\n"
-    return result
+    return "".join(diff)
+
+
+def _invalid(message: str) -> ToolOutcome:
+    return ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        content=message,
+        error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+    )

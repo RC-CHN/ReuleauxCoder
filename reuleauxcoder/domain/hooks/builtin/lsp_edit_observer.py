@@ -12,7 +12,7 @@ AFTER_TOOL_EXECUTE transform:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,9 +21,10 @@ if TYPE_CHECKING:
     from reuleauxcoder.extensions.lsp.manager import LspManager
 
 from reuleauxcoder.domain.hooks.base import TransformHook
+from reuleauxcoder.domain.agent.tool_outcome import ToolDiagnostic
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
-from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute, render_blocks
+from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
 from reuleauxcoder.interfaces.events import UIEventKind
 
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
@@ -92,6 +93,11 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
         if tool_call.name not in EDIT_TOOLS:
             return context
 
+        # edit/write now report explicit status.  Never notify LSP about a
+        # failed mutation or diagnose a file view that was not actually saved.
+        if context.outcome is None or not context.outcome.success:
+            return context
+
         file_path = _extract_file_path(tool_call.name, tool_call.arguments)
         if file_path is None:
             return context
@@ -140,14 +146,37 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
                     elif d.is_warning:
                         warn_count += 1
 
-            rendered = render_blocks(
-                blocks,
-                max_diagnostics=self.lsp_manager.config.max_diagnostics,
-                include_warnings=self.lsp_manager.config.include_warnings,
-            )
-            if rendered:
-                suffix = "\n\n" + rendered
-                context.result = (context.result or "") + suffix
+            diagnostics: list[ToolDiagnostic] = []
+            for block in blocks:
+                items = block.items
+                if not self.lsp_manager.config.include_warnings:
+                    items = [item for item in items if item.is_error]
+                for item in sorted(
+                    items[: self.lsp_manager.config.max_diagnostics],
+                    key=lambda diagnostic: (diagnostic.severity, diagnostic.line),
+                ):
+                    diagnostics.append(
+                        ToolDiagnostic(
+                            path=block.file_path,
+                            line=item.line,
+                            character=item.character,
+                            message=item.message,
+                            severity=item.severity_label.lower(),
+                            code=item.code,
+                            source="lsp",
+                        )
+                    )
+            if diagnostics:
+                metadata = {
+                    **dict(context.outcome.metadata),
+                    "lsp_batch_ids": tuple(batch.batch_id for batch in batches),
+                }
+                context.outcome = replace(
+                    context.outcome,
+                    diagnostics=context.outcome.diagnostics + tuple(diagnostics),
+                    metadata=metadata,
+                )
+                context.result = context.outcome.model_text
 
             # Emit a compact UI feedback panel
             ui_bus = getattr(self.lsp_manager, "ui_bus", None)

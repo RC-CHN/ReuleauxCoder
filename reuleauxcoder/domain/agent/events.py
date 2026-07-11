@@ -92,13 +92,16 @@ class AgentEvent:
         outcome: ToolOutcome | None = None,
     ) -> "AgentEvent":
         """Create a tool call end event."""
+        effective_outcome = outcome or ToolOutcome.from_legacy(
+            result, success=success
+        )
         return cls(
             event_type=AgentEventType.TOOL_CALL_END,
             correlation_id=tool_call_id,
             tool_name=tool_name,
             tool_result=result,
-            tool_success=success,
-            tool_outcome=outcome or ToolOutcome.from_legacy(result, success=success),
+            tool_success=effective_outcome.success,
+            tool_outcome=effective_outcome,
         )
 
     @classmethod

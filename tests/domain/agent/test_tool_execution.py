@@ -3,6 +3,11 @@
 from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.domain.hooks.types import GuardDecision
 from reuleauxcoder.domain.llm.models import ToolCall
 
@@ -117,6 +122,29 @@ def test_shell_tool_without_cwd_does_not_set_runtime_working_directory() -> None
     executor.execute(tc)
 
     assert not hasattr(agent, "runtime_working_directory")
+
+
+def test_structured_failure_status_is_preserved_without_string_guessing() -> None:
+    failure = ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        content="plain failure without legacy prefix",
+        error_kind=ToolErrorKind.EXECUTION,
+    )
+    tool = SimpleNamespace(
+        name="structured",
+        execute=lambda **kwargs: failure,
+        preflight_validate=lambda **kwargs: None,
+        schema=lambda: {"type": "function", "function": {"name": "structured"}},
+    )
+    agent = _AgentStub(tool)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="call_failed", name="structured", arguments={})
+    )
+
+    assert result == "plain failure without legacy prefix"
+    assert agent.events[-1].tool_success is False
+    assert agent.events[-1].tool_outcome is failure
 
 
 def test_guard_warning_is_emitted_as_structured_diagnostic() -> None:

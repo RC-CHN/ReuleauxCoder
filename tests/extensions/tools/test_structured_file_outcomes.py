@@ -1,0 +1,41 @@
+from pathlib import Path
+
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcomeStatus
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
+from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
+from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
+
+
+def _backend(root: Path) -> LocalToolBackend:
+    return LocalToolBackend(
+        ExecutionContext(cwd=str(root), workspace_root=str(root))
+    )
+
+
+def test_write_and_edit_return_structured_unbounded_diffs(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    write = WriteFileTool(backend).execute("demo.txt", "alpha\nbeta\n")
+
+    assert write.status is ToolOutcomeStatus.SUCCEEDED
+    assert write.summary == "Wrote 2 lines to demo.txt"
+    assert write.diff is not None
+    assert write.diff.path == str(tmp_path / "demo.txt")
+    assert "+alpha" in write.diff.unified
+
+    edit = EditFileTool(backend).execute("demo.txt", "beta", "gamma")
+
+    assert edit.status is ToolOutcomeStatus.SUCCEEDED
+    assert edit.diff is not None
+    assert "-beta" in edit.diff.unified
+    assert "+gamma" in edit.diff.unified
+    assert edit.model_text.startswith("Edited demo.txt\n--- a/")
+
+
+def test_invalid_edit_has_explicit_failed_status(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    (tmp_path / "demo.txt").write_text("same")
+
+    outcome = EditFileTool(backend).execute("demo.txt", "same", "same")
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert "must differ" in outcome.model_text

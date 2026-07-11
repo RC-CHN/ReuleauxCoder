@@ -313,28 +313,19 @@ class TestRemoteRelayHTTPService:
 
             backend = RemoteRelayToolBackend(relay_server=relay)
             backend.context.peer_id = peer_id
-            forwarded_cases = [
+            legacy_forwarded_cases = [
                 (
                     ShellTool(backend=backend),
                     {"command": "echo hello"},
                     "shell",
                     "shell-ok",
                 ),
-                (
-                    GlobTool(backend=backend),
-                    {"pattern": "*.py", "path": "/tmp"},
-                    "glob",
-                    "glob-ok",
-                ),
-                (
-                    GrepTool(backend=backend),
-                    {"pattern": "hello", "path": "/tmp"},
-                    "grep",
-                    "grep-ok",
-                ),
             ]
 
-            for tool, kwargs, expected_name, expected_result in forwarded_cases:
+            # Protocol-v1 shell remains as a compatibility fixture. Workspace
+            # tools intentionally use Host-owned primitives below and must not
+            # be forwarded as Peer product tools.
+            for tool, kwargs, expected_name, expected_result in legacy_forwarded_cases:
                 holder: dict[str, object] = {}
 
                 def run_tool(current_tool=tool, current_kwargs=kwargs) -> None:
@@ -371,7 +362,7 @@ class TestRemoteRelayHTTPService:
                 assert result_body["ok"] is True
 
                 t.join(timeout=2)
-                assert holder["result"] == expected_result
+                assert holder["result"].model_text == expected_result
 
             def poll_workspace() -> dict:
                 time.sleep(0.05)
@@ -426,7 +417,7 @@ class TestRemoteRelayHTTPService:
             assert body["payload"]["operation"] == "fs.write_text_atomic"
             reply_workspace(body, {"old_content": ""})
             thread.join(timeout=2)
-            assert str(holder["result"]).startswith("Wrote 1 lines")
+            assert holder["result"].model_text.startswith("Wrote 1 lines")
 
             holder = {}
             thread = threading.Thread(
@@ -445,7 +436,7 @@ class TestRemoteRelayHTTPService:
             assert body["payload"]["operation"] == "fs.replace_exact_atomic"
             reply_workspace(body, {"old_content": "a", "new_content": "b"})
             thread.join(timeout=2)
-            assert str(holder["result"]).startswith("Edited /tmp/demo.txt")
+            assert holder["result"].model_text.startswith("Edited /tmp/demo.txt")
         finally:
             service.stop()
             relay.stop()
@@ -1162,13 +1153,13 @@ class TestRemoteRelayHTTPService:
             shell_result = ShellTool(backend=backend).execute(
                 command="printf 'hi-from-agent'"
             )
-            assert "hi-from-agent" in shell_result
+            assert "hi-from-agent" in shell_result.model_text
 
             timeout_started = time.monotonic()
             timeout_result = ShellTool(backend=backend).execute(
                 command="sleep 10", timeout=1
             )
-            assert "timed out" in timeout_result.lower()
+            assert "timed out" in timeout_result.model_text.lower()
             assert time.monotonic() - timeout_started < 3
 
             cancellation = threading.Event()
@@ -1183,34 +1174,53 @@ class TestRemoteRelayHTTPService:
             finally:
                 timer.cancel()
                 cancellation.clear()
-            assert "cancelled" in cancel_result.lower()
+            assert "cancelled" in cancel_result.model_text.lower()
             assert time.monotonic() - cancel_started < 3
             assert "still-alive" in ShellTool(backend=backend).execute(
                 command="printf 'still-alive'"
-            )
+            ).model_text
 
             read_result = ReadFileTool(backend=backend).execute(
                 file_path=str(target_file)
             )
             assert "1\thello world" in read_result
 
+            local_backend = LocalToolBackend(
+                ExecutionContext(
+                    cwd=str(work_dir), workspace_root=str(work_dir)
+                )
+            )
             write_result = WriteFileTool(backend=backend).execute(
                 file_path=str(target_file),
                 content="alpha\nbeta\n",
             )
-            assert "Wrote" in write_result
+            assert "Wrote" in write_result.model_text
             assert target_file.read_text() == "alpha\nbeta\n"
+            target_file.write_text("hello world\n")
+            local_write_result = WriteFileTool(backend=local_backend).execute(
+                file_path=str(target_file),
+                content="alpha\nbeta\n",
+            )
+            assert write_result == local_write_result
 
             edit_result = EditFileTool(backend=backend).execute(
                 file_path=str(target_file),
                 old_string="beta",
                 new_string="gamma",
             )
-            assert "--- a/" in edit_result
-            assert "+++ b/" in edit_result
-            assert "-beta" in edit_result
-            assert "+gamma" in edit_result
+            assert edit_result.diff is not None
+            assert "--- a/" in edit_result.diff.unified
+            assert "+++ b/" in edit_result.diff.unified
+            assert "-beta" in edit_result.diff.unified
+            assert "+gamma" in edit_result.diff.unified
             assert target_file.read_text() == "alpha\ngamma\n"
+            target_file.write_text("alpha\nbeta\n")
+            local_edit_result = EditFileTool(backend=local_backend).execute(
+                file_path=str(target_file),
+                old_string="beta",
+                new_string="gamma",
+            )
+            assert edit_result == local_edit_result
 
             glob_result = GlobTool(backend=backend).execute(
                 pattern="*.txt", path=str(work_dir)
@@ -1223,11 +1233,6 @@ class TestRemoteRelayHTTPService:
             assert str(target_file) in grep_result
             assert "gamma" in grep_result
 
-            local_backend = LocalToolBackend(
-                ExecutionContext(
-                    cwd=str(work_dir), workspace_root=str(work_dir)
-                )
-            )
             assert glob_result == GlobTool(backend=local_backend).execute(
                 pattern="*.txt", path=str(work_dir)
             )

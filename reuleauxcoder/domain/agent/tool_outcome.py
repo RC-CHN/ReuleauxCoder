@@ -144,7 +144,7 @@ class ToolOutcome:
         sections: list[str] = []
         if self.content:
             sections.append(self.content)
-        elif self.summary:
+        elif self.summary and not (self.stdout or self.stderr or self.diff):
             sections.append(self.summary)
         if self.stdout:
             sections.append(self.stdout)

@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import difflib
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolDiff,
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -47,14 +53,18 @@ class EditFileTool(Tool):
             file_path, old_string, new_string, workspace=self.backend.workspace
         )
 
-    def execute(self, file_path: str, old_string: str, new_string: str) -> str:
+    def execute(self, file_path: str, old_string: str, new_string: str) -> ToolOutcome:
         validation_error = self.preflight_validate(
             file_path=file_path,
             old_string=old_string,
             new_string=new_string,
         )
         if validation_error:
-            return validation_error
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=validation_error,
+                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+            )
         return self.run_backend(
             file_path=file_path,
             old_string=old_string,
@@ -62,22 +72,36 @@ class EditFileTool(Tool):
         )
 
     @backend_handler("remote_relay")
-    def _execute_remote(self, file_path: str, old_string: str, new_string: str) -> str:
+    def _execute_remote(
+        self, file_path: str, old_string: str, new_string: str
+    ) -> ToolOutcome:
         return self._execute_local(file_path, old_string, new_string)
 
     @backend_handler("local")
-    def _execute_local(self, file_path: str, old_string: str, new_string: str) -> str:
+    def _execute_local(
+        self, file_path: str, old_string: str, new_string: str
+    ) -> ToolOutcome:
         try:
             content, new_content = self.backend.workspace.replace_exact_atomic(
                 file_path, old_string, new_string
             )
             resolved = self.backend.workspace.resolve(file_path)
             diff = _unified_diff(content, new_content, str(resolved))
-            return f"Edited {file_path}\n{diff}"
+            summary = f"Edited {file_path}"
+            return ToolOutcome(
+                summary=summary,
+                content=summary,
+                diff=ToolDiff(path=str(resolved), unified=diff),
+                metadata={"file_path": file_path, "resolved_path": str(resolved)},
+            )
         except WorkspaceError as e:
-            return f"Error [{e.code.value}]: {e.message}"
+            return _workspace_failure(e)
         except Exception as e:
-            return f"Error: {e}"
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=f"Error: {e}",
+                error_kind=ToolErrorKind.EXECUTION,
+            )
 
 
 def _validate_edit_request(
@@ -120,7 +144,18 @@ def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
         tofile=f"b/{filename}",
         n=context,
     )
-    result = "".join(diff)
-    if len(result) > 3000:
-        result = result[:2500] + "\n... (diff truncated)\n"
-    return result
+    return "".join(diff)
+
+
+def _workspace_failure(error: WorkspaceError) -> ToolOutcome:
+    kind = (
+        ToolErrorKind.NOT_FOUND
+        if error.code is WorkspaceErrorCode.NOT_FOUND
+        else ToolErrorKind.EXECUTION
+    )
+    return ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        content=f"Error [{error.code.value}]: {error.message}",
+        error_kind=kind,
+        metadata={"workspace_error_code": error.code.value},
+    )

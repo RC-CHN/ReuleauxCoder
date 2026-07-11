@@ -29,7 +29,7 @@ class TestRemoteBackendDispatch:
             backend = RemoteRelayToolBackend(relay_server=srv)
             tool = ShellTool(backend=backend)
             result = tool.execute(command="ls")
-            assert "no remote peer" in result.lower()
+            assert "no remote peer" in result.model_text.lower()
         finally:
             srv.stop()
 
@@ -60,7 +60,7 @@ class TestRemoteBackendDispatch:
             backend = RemoteRelayToolBackend(relay_server=srv)
             tool = WriteFileTool(backend=backend)
             result = tool.execute(file_path="/tmp/foo", content="bar")
-            assert "no remote peer" in result.lower()
+            assert "no remote peer" in result.model_text.lower()
         finally:
             srv.stop()
 
@@ -75,14 +75,14 @@ class TestRemoteBackendDispatch:
                 old_string="a",
                 new_string="b",
             )
-            assert "no remote peer" in result.lower()
+            assert "no remote peer" in result.model_text.lower()
 
             result = tool.execute(
                 file_path="/tmp/foo",
                 old_string="same",
                 new_string="same",
             )
-            assert "must differ" in result.lower()
+            assert "must differ" in result.model_text.lower()
         finally:
             srv.stop()
 
@@ -124,10 +124,10 @@ class TestRemoteBackendDispatch:
             backend = RemoteRelayToolBackend(relay_server=srv)
             tool = ShellTool(backend=backend)
             result = tool.execute(command="")
-            assert "non-empty string" in result.lower()
+            assert "non-empty string" in result.model_text.lower()
 
             result = tool.execute(command="echo ok", timeout=0)
-            assert "positive integer" in result.lower()
+            assert "positive integer" in result.model_text.lower()
         finally:
             srv.stop()
 
@@ -179,7 +179,7 @@ class TestRemoteBackendDispatch:
             srv.handle_inbound(resp.peer_id, env)
             t.join(timeout=2)
 
-            assert result_holder["result"] == "hello"
+            assert result_holder["result"].model_text == "hello"
         finally:
             srv.stop()
 
