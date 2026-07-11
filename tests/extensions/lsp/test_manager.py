@@ -74,40 +74,84 @@ class TestReSpawnLimit:
         import asyncio
 
         manager._availability[LanguageId.PYTHON] = True
-        manager._re_spawn_counts[LanguageId.PYTHON] = 0
+        path = Path("/tmp/test.py")
+        key = manager._transport_key(LanguageId.PYTHON, path)
+        manager._re_spawn_counts[key] = 0
         dead = _make_mock_client(alive=False)
-        manager._transports[LanguageId.PYTHON] = dead
+        manager._transports[key] = dead
 
         async def run():
             with patch.object(manager, "_spawn_async", return_value=dead) as spawn:
                 result = await manager._get_or_create_server(
-                    LanguageId.PYTHON, Path("/tmp/test.py")
+                    LanguageId.PYTHON, path
                 )
             return result, spawn
 
         result, spawn = asyncio.run(run())
         assert result is dead
         spawn.assert_called_once()
-        assert manager._re_spawn_counts.get(LanguageId.PYTHON, 0) == 1
+        assert manager._re_spawn_counts.get(key, 0) == 1
 
-    def test_re_spawn_limit_disables_language(self, manager: LspManager) -> None:
-        """When respawn count hits MAX_RESPWANS, the language is disabled."""
+    def test_re_spawn_limit_is_scoped_to_workspace(self, manager: LspManager) -> None:
+        """A failed workspace must not disable that language for other roots."""
         import asyncio
 
         manager._availability[LanguageId.PYTHON] = True
-        manager._re_spawn_counts[LanguageId.PYTHON] = MAX_RESPWANS
+        path = Path("/tmp/test.py")
+        key = manager._transport_key(LanguageId.PYTHON, path)
+        manager._re_spawn_counts[key] = MAX_RESPWANS
         dead = _make_mock_client(alive=False)
-        manager._transports[LanguageId.PYTHON] = dead
+        manager._transports[key] = dead
 
         async def run():
             return await manager._get_or_create_server(
-                LanguageId.PYTHON, Path("/tmp/test.py")
+                LanguageId.PYTHON, path
             )
 
         result = asyncio.run(run())
         assert result is None
         with manager._lock:
-            assert manager._availability[LanguageId.PYTHON] is False
+            assert manager._availability[LanguageId.PYTHON] is True
+
+
+class TestWorkspaceTransportIsolation:
+    def test_same_language_uses_distinct_servers_per_root(
+        self, manager: LspManager, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        first_root = tmp_path / "first"
+        second_root = tmp_path / "second"
+        for root in (first_root, second_root):
+            root.mkdir()
+            (root / "pyproject.toml").write_text("[project]\nname='demo'\n")
+        first_path = first_root / "main.py"
+        second_path = second_root / "main.py"
+        first_path.write_text("x = 1\n")
+        second_path.write_text("x = 2\n")
+
+        first = _make_mock_client()
+        second = _make_mock_client()
+        first_key = manager._transport_key(LanguageId.PYTHON, first_path)
+        second_key = manager._transport_key(LanguageId.PYTHON, second_path)
+        manager._transports[first_key] = first
+        manager._transports[second_key] = second
+
+        async def run():
+            return (
+                await manager._get_or_create_server(
+                    LanguageId.PYTHON, first_path
+                ),
+                await manager._get_or_create_server(
+                    LanguageId.PYTHON, second_path
+                ),
+            )
+
+        resolved_first, resolved_second = asyncio.run(run())
+
+        assert first_key != second_key
+        assert resolved_first is first
+        assert resolved_second is second
 
 
 class TestFileStaleness:
@@ -125,13 +169,15 @@ class TestFileStaleness:
         f = tmp_path / "test.py"
         f.write_text("hello")
         future_mtime = f.stat().st_mtime + 100
-        manager._last_sync_time[(LanguageId.PYTHON, f)] = future_mtime
+        key = manager._transport_key(LanguageId.PYTHON, f)
+        manager._last_sync_time[(key, f)] = future_mtime
         assert manager._check_stale(LanguageId.PYTHON, f) is False
 
     def test_file_stale_after_edit(self, manager: LspManager, tmp_path: Path) -> None:
         f = tmp_path / "test.py"
         f.write_text("old")
-        manager._last_sync_time[(LanguageId.PYTHON, f)] = f.stat().st_mtime
+        key = manager._transport_key(LanguageId.PYTHON, f)
+        manager._last_sync_time[(key, f)] = f.stat().st_mtime
         time.sleep(0.01)  # ensure mtime changes
         f.write_text("new")
         assert manager._check_stale(LanguageId.PYTHON, f) is True

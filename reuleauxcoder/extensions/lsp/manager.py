@@ -46,6 +46,7 @@ WORKER_SHUTDOWN_TIMEOUT = (
 )
 _WORKER_POLL_INTERVAL = 0.1
 SPAWN_TIMEOUT = 30.0
+TransportKey = tuple[LanguageId, Path]
 
 
 @dataclass
@@ -89,12 +90,13 @@ class LspManager:
         self._workspace_cwd = workspace_cwd
         self.ui_bus = ui_bus
 
-        # Per-language state
-        self._transports: dict[LanguageId, LspClient] = {}
-        self._workspace_roots: dict[LanguageId, Path] = {}
+        # Per-language/workspace state. One language server must never index
+        # files from an unrelated workspace root.
+        self._transports: dict[TransportKey, LspClient] = {}
+        self._workspace_roots: dict[TransportKey, Path] = {}
         self._availability: dict[LanguageId, bool] = {}
-        self._re_spawn_counts: dict[LanguageId, int] = {}
-        self._last_sync_time: dict[tuple[LanguageId, Path], float] = {}
+        self._re_spawn_counts: dict[TransportKey, int] = {}
+        self._last_sync_time: dict[tuple[TransportKey, Path], float] = {}
 
         # Queues
         self._diagnostics_queue: list[tuple[Path, int]] = []
@@ -139,7 +141,7 @@ class LspManager:
 
         report = LspHealthReport()
         for lang in iter_supported_languages():
-            cmd, args = get_server_command(lang)
+            cmd, args = self._resolve_command(lang)
             found = shutil.which(cmd) is not None
 
             with self._lock:
@@ -164,6 +166,7 @@ class LspManager:
             if self._worker_thread is not None:
                 return
             self._stop_event.clear()
+            self._abort_current = False
             self._worker_thread = threading.Thread(
                 target=self._worker_entry,
                 name="lsp-worker",
@@ -205,7 +208,7 @@ class LspManager:
         # Fallback for legacy/test-created clients when no worker is alive.
         # Runtime clients are created and closed by the worker event loop.
         if self._worker_thread is None:
-            clients: dict[LanguageId, LspClient]
+            clients: dict[TransportKey, LspClient]
             with self._lock:
                 clients = dict(self._transports)
                 self._transports.clear()
@@ -372,7 +375,10 @@ class LspManager:
                 if stale:
                     content = self._read_file_content(req.file_path)
                     if content is not None:
-                        key = (req.language_id, req.file_path)
+                        key = (
+                            self._transport_key(req.language_id, req.file_path),
+                            req.file_path,
+                        )
                         last_sync = self._last_sync_time.get(key, 0)
                         try:
                             if last_sync == 0:
@@ -428,7 +434,7 @@ class LspManager:
             if stale:
                 content = self._read_file_content(file_path)
                 if content is not None:
-                    key = (lang, file_path)
+                    key = (self._transport_key(lang, file_path), file_path)
                     last_sync = self._last_sync_time.get(key, 0)
                     try:
                         if last_sync == 0:
@@ -473,7 +479,7 @@ class LspManager:
             return
 
         try:
-            server = self._transports.get(lang)
+            server = self._transports.get(self._transport_key(lang, file_path))
             if server and server.is_alive and server.is_initialized:
                 if kind == "did_save":
                     await server.did_save(file_path)
@@ -488,24 +494,27 @@ class LspManager:
         file_path: Path,
     ) -> LspClient | None:
         """Get or create an LSP server (called from worker thread)."""
-        server = self._transports.get(lang)
+        key = self._transport_key(lang, file_path)
+        server = self._transports.get(key)
         if server is not None and server.is_alive:
             return server
 
+        count = self._re_spawn_counts.get(key, 0)
+        if count >= MAX_RESPWANS:
+            logger.error(
+                "LSP server for %s at %s failed %d times — disabled for this workspace",
+                lang.name,
+                key[1],
+                MAX_RESPWANS,
+            )
+            return None
+
         if server is not None:
-            await self._discard_transport_async(lang, server)
-            count = self._re_spawn_counts.get(lang, 0)
-            if count >= MAX_RESPWANS:
-                logger.error(
-                    "LSP server for %s failed %d times — disabled for this session",
-                    lang.name,
-                    MAX_RESPWANS,
-                )
-                with self._lock:
-                    self._availability[lang] = False
-                return None
+            await self._discard_transport_async(key, server)
             with self._lock:
-                self._re_spawn_counts[lang] = count + 1
+                self._re_spawn_counts[key] = count + 1
+            if count + 1 >= MAX_RESPWANS:
+                return None
 
         return await self._spawn_async(lang, file_path)
 
@@ -519,6 +528,7 @@ class LspManager:
             return None
 
         root = self._resolve_root(lang, file_path)
+        key = (lang, root)
         cmd, args = self._resolve_command(lang)
         init_opts = self._resolve_init_opts(lang)
 
@@ -535,12 +545,12 @@ class LspManager:
                 e,
             )
             with self._lock:
-                self._availability[lang] = False
+                self._re_spawn_counts[key] = self._re_spawn_counts.get(key, 0) + 1
             return None
 
         with self._lock:
-            self._transports[lang] = client
-            self._re_spawn_counts[lang] = 0
+            self._transports[key] = client
+            self._re_spawn_counts[key] = 0
 
         logger.info(
             "LSP server ready (async): lang=%s, root=%s",
@@ -562,15 +572,15 @@ class LspManager:
 
     async def _discard_transport_async(
         self,
-        lang: LanguageId,
+        key: TransportKey,
         client: LspClient | None,
     ) -> None:
         """Remove and shut down a transport on the worker event loop."""
         if client is None:
             return
         with self._lock:
-            if self._transports.get(lang) is client:
-                self._transports.pop(lang, None)
+            if self._transports.get(key) is client:
+                self._transports.pop(key, None)
         with suppress(Exception):
             await client.shutdown()
 
@@ -598,7 +608,7 @@ class LspManager:
         except OSError:
             return False
 
-        key = (lang, file_path)
+        key = (self._transport_key(lang, file_path), file_path)
         last_sync = self._last_sync_time.get(key, 0)
         return mtime > last_sync
 
@@ -634,9 +644,13 @@ class LspManager:
         root = resolve_workspace_root(
             file_path, lang, cwd=self._workspace_cwd, override=override
         )
+        resolved = root.resolve()
         with self._lock:
-            self._workspace_roots[lang] = root
-        return root
+            self._workspace_roots[(lang, resolved)] = resolved
+        return resolved
+
+    def _transport_key(self, lang: LanguageId, file_path: Path) -> TransportKey:
+        return lang, self._resolve_root(lang, file_path)
 
     def _resolve_command(self, lang: LanguageId) -> tuple[str, list[str]]:
         """Get server command with config overrides applied."""
