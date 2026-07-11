@@ -52,6 +52,8 @@ class SubagentJob:
     task: str
     status: str
     created_at: float
+    parent_agent_id: str | None = None
+    parent_session_id: str | None = None
     started_at: float | None = None
     finished_at: float | None = None
     timeout_seconds: int | None = None
@@ -77,6 +79,8 @@ class SubagentManager:
         default_max_rounds: int = _DEFAULT_MAX_ROUNDS,
         default_timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
         max_timeout_seconds: int = _MAX_TIMEOUT_SECONDS,
+        parent_agent_id: str | None = None,
+        initial_generation: int = 0,
     ):
         self._max_parallel_explore = max(1, int(max_parallel_explore))
         self._default_max_rounds = _clamp_subagent_rounds(default_max_rounds)
@@ -93,7 +97,8 @@ class SubagentManager:
         self._jobs: dict[str, SubagentJob] = {}
         self._futures: dict[str, Future] = {}
         self._cancel_events: dict[str, threading.Event] = {}
-        self._generation = 0
+        self._parent_agent_id = parent_agent_id
+        self._generation = max(0, int(initial_generation))
         self._shutdown = False
 
     @property
@@ -141,9 +146,25 @@ class SubagentManager:
                 "Only 'explore' mode supports background parallel execution"
             )
 
+        parent_agent_id = getattr(parent_agent, "agent_id", None)
+        if not parent_agent_id:
+            raise ValueError("parent agent must expose a stable agent_id")
+        parent_generation = getattr(parent_agent, "session_generation", None)
+        if parent_generation is None:
+            raise ValueError("parent agent must expose session_generation")
+
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("SubagentManager is shut down")
+            if self._parent_agent_id is None:
+                self._parent_agent_id = parent_agent_id
+                self._generation = parent_generation
+            if self._parent_agent_id != parent_agent_id:
+                raise ValueError("SubagentManager cannot be shared across parent agents")
+            if self._generation != parent_generation:
+                raise ValueError(
+                    "SubagentManager generation does not match the parent session"
+                )
 
         if parallel_explore is not None:
             self.set_runtime_parallel_explore(parallel_explore)
@@ -164,8 +185,10 @@ class SubagentManager:
             task=task,
             status="queued",
             created_at=now,
+            parent_agent_id=parent_agent_id,
+            parent_session_id=getattr(parent_agent, "current_session_id", None),
             timeout_seconds=effective_timeout_seconds,
-            generation=self.generation,
+            generation=parent_generation,
         )
         cancel_event = threading.Event()
         def _runner() -> str:
@@ -342,14 +365,24 @@ class SubagentManager:
                 job.finished_at = job.finished_at or time.time()
         return True
 
-    def advance_generation(self, *, cancel_pending: bool = True) -> int:
+    def advance_generation(
+        self,
+        *,
+        generation: int | None = None,
+        cancel_pending: bool = True,
+    ) -> int:
         """Start a new parent session generation.
 
         Results from older generations remain inspectable but can never be
         injected into the new parent conversation.
         """
         with self._slot_cv:
-            self._generation += 1
+            next_generation = (
+                self._generation + 1 if generation is None else int(generation)
+            )
+            if next_generation <= self._generation:
+                raise ValueError("session generation must increase monotonically")
+            self._generation = next_generation
             old_ids = [
                 job.id
                 for job in self._jobs.values()
@@ -430,6 +463,8 @@ class SubagentManager:
                             task=job.task,
                             status=job.status,
                             created_at=job.created_at,
+                            parent_agent_id=job.parent_agent_id,
+                            parent_session_id=job.parent_session_id,
                             started_at=job.started_at,
                             finished_at=job.finished_at,
                             timeout_seconds=job.timeout_seconds,
@@ -453,7 +488,12 @@ def get_subagent_manager(agent) -> SubagentManager:
         return manager
 
     default_rounds = getattr(agent, "max_rounds", 50)
-    manager = SubagentManager(max_parallel_explore=4, default_max_rounds=default_rounds)
+    manager = SubagentManager(
+        max_parallel_explore=4,
+        default_max_rounds=default_rounds,
+        parent_agent_id=getattr(agent, "agent_id", None),
+        initial_generation=getattr(agent, "session_generation", 0),
+    )
     agent._subagent_manager = manager
     return manager
 

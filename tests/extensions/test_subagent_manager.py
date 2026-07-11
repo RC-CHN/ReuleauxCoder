@@ -2,6 +2,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
 from reuleauxcoder.extensions.subagent.manager import (
     SubagentJob,
@@ -179,6 +181,9 @@ def test_drain_without_lock_skips_already_injected_job() -> None:
 
 class _Parent:
     def __init__(self) -> None:
+        self.agent_id = "parent-agent"
+        self.session_generation = 0
+        self.current_session_id = "session-1"
         self.injected = []
 
     def inject_subagent_job_result(self, job) -> None:
@@ -200,8 +205,31 @@ def test_fast_background_completion_never_loses_job_registration(monkeypatch) ->
 
     assert job is not None and job.status == "completed"
     assert job.result == "done"
+    assert job.parent_agent_id == "parent-agent"
+    assert job.parent_session_id == "session-1"
+    assert job.generation == parent.session_generation
     assert parent.injected == [job_id]
     manager.shutdown()
+
+
+def test_manager_rejects_cross_parent_reuse(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task",
+        lambda **kwargs: "done",
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    first = _Parent()
+    manager.submit_background(parent_agent=first, task="first", mode="explore")
+    second = _Parent()
+    second.agent_id = "other-parent"
+
+    try:
+        with pytest.raises(ValueError, match="cannot be shared"):
+            manager.submit_background(
+                parent_agent=second, task="second", mode="explore"
+            )
+    finally:
+        manager.shutdown()
 
 
 def test_generation_change_prevents_old_result_injection(monkeypatch) -> None:

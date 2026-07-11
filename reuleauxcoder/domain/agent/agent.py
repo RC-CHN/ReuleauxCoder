@@ -384,8 +384,16 @@ class Agent:
         between a tool_calls message and its tool responses — which would
         violate the LLM API contract.
         """
+        parent_agent_id = getattr(job, "parent_agent_id", None)
+        if parent_agent_id is not None and parent_agent_id != self.agent_id:
+            return False
+        if getattr(job, "generation", self.session_generation) != self.session_generation:
+            return False
         manager = getattr(self, "_subagent_manager", None)
-        if manager is not None and getattr(job, "generation", manager.generation) != manager.generation:
+        if (
+            manager is not None
+            and getattr(job, "generation", manager.generation) != manager.generation
+        ):
             return False
         with self._state_lock:
             if getattr(job, "injected_to_parent", False):
@@ -484,7 +492,9 @@ class Agent:
         self.session_generation += 1
         manager = getattr(self, "_subagent_manager", None)
         if manager is not None:
-            manager.advance_generation(cancel_pending=True)
+            manager.advance_generation(
+                generation=self.session_generation, cancel_pending=True
+            )
         self.state.messages.clear()
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0

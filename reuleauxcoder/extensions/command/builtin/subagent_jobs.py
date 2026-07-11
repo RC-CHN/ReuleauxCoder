@@ -74,6 +74,8 @@ def _build_jobs_view(manager, jobs) -> SubagentJobsViewModel:
         jobs=tuple(
             SubagentJobViewModel(
                 job_id=job.id,
+                parent_agent_id=job.parent_agent_id,
+                parent_session_id=job.parent_session_id,
                 status=job.status,
                 mode=job.mode,
                 task=job.task,

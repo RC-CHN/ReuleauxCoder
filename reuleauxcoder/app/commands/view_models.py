@@ -181,6 +181,8 @@ class TokenUsageViewModel:
 @dataclass(frozen=True, slots=True)
 class SubagentJobViewModel:
     job_id: str
+    parent_agent_id: str | None
+    parent_session_id: str | None
     status: str
     mode: str
     task: str
@@ -207,6 +209,8 @@ class SubagentJobsViewModel:
             "jobs": [
                 {
                     "id": job.job_id,
+                    "parent_agent_id": job.parent_agent_id,
+                    "parent_session_id": job.parent_session_id,
                     "status": job.status,
                     "mode": job.mode,
                     "task": job.task,
