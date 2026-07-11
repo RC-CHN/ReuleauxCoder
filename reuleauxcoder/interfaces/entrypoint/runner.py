@@ -165,6 +165,9 @@ class AppRunner:
         tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
         agent.runtime_config = config
+        agent.reasoning_display_mode = (
+            "inline" if config.ui.reasoning_display == "inline" else "quiet"
+        )
         agent.relay_server = self._relay_server
         agent.current_session_id = None
         agent.session_fingerprint = get_session_fingerprint(config, agent)

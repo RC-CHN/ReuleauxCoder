@@ -60,6 +60,17 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
             source("session.auto_save"),
         ),
         EffectiveConfigRowViewModel(
+            "ui.verbosity", config.ui.verbosity, source("ui.verbosity")
+        ),
+        EffectiveConfigRowViewModel(
+            "ui.tool_output", config.ui.tool_output, source("ui.tool_output")
+        ),
+        EffectiveConfigRowViewModel(
+            "ui.reasoning_display",
+            config.ui.reasoning_display,
+            source("ui.reasoning_display"),
+        ),
+        EffectiveConfigRowViewModel(
             "tool_output.max_chars",
             str(config.tool_output_max_chars),
             source("tool_output.max_chars"),

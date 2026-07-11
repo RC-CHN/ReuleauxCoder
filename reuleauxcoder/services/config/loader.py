@@ -17,6 +17,7 @@ from reuleauxcoder.domain.config.models import (
     PromptConfig,
     RemoteExecConfig,
     SkillsConfig,
+    UIConfig,
 )
 from reuleauxcoder.domain.config.schema import (
     BUILTIN_MODES,
@@ -236,6 +237,7 @@ class ConfigLoader:
         session_config = data.get("session", {})
         shell_config = data.get("shell", {})
         cli_config = data.get("cli", {})
+        ui_config = data.get("ui", {})
         mcp_config = data.get("mcp", {})
         models_config = data.get("models", {})
         modes_config = data.get("modes", {})
@@ -445,6 +447,34 @@ class ConfigLoader:
             llm_debug_trace=bool(
                 app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])
             ),
+            ui=UIConfig(
+                verbosity=ui_config.get(
+                    "verbosity", DEFAULTS["ui_verbosity"]
+                ),
+                tool_output=ui_config.get(
+                    "tool_output", DEFAULTS["ui_tool_output"]
+                ),
+                max_preview_lines=int(
+                    ui_config.get(
+                        "max_preview_lines", DEFAULTS["ui_max_preview_lines"]
+                    )
+                ),
+                max_preview_chars=int(
+                    ui_config.get(
+                        "max_preview_chars", DEFAULTS["ui_max_preview_chars"]
+                    )
+                ),
+                show_tool_args=bool(
+                    ui_config.get("show_tool_args", DEFAULTS["ui_show_tool_args"])
+                ),
+                reasoning_display=ui_config.get(
+                    "reasoning_display", DEFAULTS["ui_reasoning_display"]
+                ),
+                notification_threshold=ui_config.get(
+                    "notification_threshold",
+                    DEFAULTS["ui_notification_threshold"],
+                ),
+            ),
             lsp=lsp_config if lsp_config else None,
             diagnostics=diagnostics,
             effective_sources=dict(self._effective_sources),
@@ -508,6 +538,11 @@ class ConfigLoader:
                 ],
             },
             "skills": {"enabled": True},
+            "ui": {
+                "verbosity": "compact",
+                "tool_output": "summary",
+                "reasoning_display": "indicator",
+            },
         }
         save_yaml_config(self.GLOBAL_CONFIG_PATH, example)
 

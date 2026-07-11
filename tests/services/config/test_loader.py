@@ -95,6 +95,15 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
             },
             "skills": {"enabled": True, "scan_project": False, "disabled": ["demo"]},
             "prompt": {"system_append": "Always answer in Chinese."},
+            "ui": {
+                "verbosity": "standard",
+                "tool_output": "preview",
+                "max_preview_lines": 12,
+                "max_preview_chars": 800,
+                "show_tool_args": False,
+                "reasoning_display": "inline",
+                "notification_threshold": "warning",
+            },
         }
     )
 
@@ -112,6 +121,13 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.prompt.system_append == "Always answer in Chinese."
     assert config.preserve_reasoning_content is True
     assert config.backfill_reasoning_content_for_tool_calls is True
+    assert config.ui.verbosity == "standard"
+    assert config.ui.tool_output == "preview"
+    assert config.ui.max_preview_lines == 12
+    assert config.ui.max_preview_chars == 800
+    assert config.ui.show_tool_args is False
+    assert config.ui.reasoning_display == "inline"
+    assert config.ui.notification_threshold == "warning"
 
 
 def test_parse_config_reads_remote_exec_settings() -> None:

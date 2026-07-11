@@ -7,6 +7,7 @@ from reuleauxcoder.domain.config.models import (
     ModeConfig,
     ModelProfileConfig,
     RemoteExecConfig,
+    UIConfig,
 )
 
 
@@ -98,6 +99,11 @@ def test_config_validate_collects_multiple_errors() -> None:
         temperature=3.0,
         tool_output_max_chars=0,
         tool_output_max_lines=0,
+        ui=UIConfig(
+            verbosity="verbose",  # type: ignore[arg-type]
+            max_preview_chars=0,
+            max_preview_lines=0,
+        ),
         active_model_profile="missing",
         active_main_model_profile="missing-main",
         active_sub_model_profile="missing-sub",
@@ -126,6 +132,9 @@ def test_config_validate_collects_multiple_errors() -> None:
     assert "temperature must be between 0 and 2" in errors
     assert "tool_output_max_chars must be positive" in errors
     assert "tool_output_max_lines must be positive" in errors
+    assert "ui.max_preview_chars must be positive" in errors
+    assert "ui.max_preview_lines must be positive" in errors
+    assert "ui.verbosity must be compact, standard, or debug" in errors
     assert "active_model_profile must exist in model_profiles" in errors
     assert "active_main_model_profile must exist in model_profiles" in errors
     assert "active_sub_model_profile must exist in model_profiles" in errors

@@ -43,7 +43,12 @@ from reuleauxcoder.interfaces.events import (
     ViewEventPayload,
 )
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
-from reuleauxcoder.presentation import PresentationPolicy, PresentationReducer
+from reuleauxcoder.presentation import (
+    PresentationPolicy,
+    PresentationReducer,
+    ReasoningDisplay,
+    Verbosity,
+)
 from reuleauxcoder.interfaces.cli.interaction_presenter import (
     render_interaction_request,
 )
@@ -202,7 +207,7 @@ class CLIRenderer:
                     f"{payload.file_path}"
                 )
         elif isinstance(payload, DiagnosticsCleared) and changes:
-            if self.policy.verbosity != "compact":
+            if self.policy.verbosity is not Verbosity.COMPACT:
                 self.console.print(f"LSP: clean {payload.file_path}")
         elif isinstance(payload, ApprovalRequested) and changes:
             self.console.print(f"Approval requested: {payload.title}")
@@ -216,7 +221,7 @@ class CLIRenderer:
             self.console.print(f"[red]{payload.message}[/red]")
         elif level == "warning":
             self.console.print(f"[yellow]{payload.message}[/yellow]")
-        elif self.policy.verbosity != "compact":
+        elif self.policy.verbosity is not Verbosity.COMPACT:
             self.console.print(payload.message)
 
     def on_ui_event(self, event: UIEvent) -> None:
@@ -261,7 +266,13 @@ class CLIRenderer:
         In *inline* mode: streams reasoning tokens in dim grey, raw text
         (no Markdown parsing).
         """
-        mode = display_mode or "quiet"
+        if self.policy.reasoning_display is ReasoningDisplay.HIDDEN:
+            return
+        mode = display_mode or (
+            "inline"
+            if self.policy.reasoning_display is ReasoningDisplay.INLINE
+            else "quiet"
+        )
 
         if mode == "quiet":
             if not self._reasoning_label_printed:
@@ -326,18 +337,23 @@ class CLIRenderer:
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
         self._close_active_content_block()
-        args_str = brief(args) if args else ""
+        args_str = brief(args, maxlen=max(24, self.console.width - 20)) if (
+            args and self.policy.show_tool_args
+        ) else ""
         call_text = f"{name}({args_str})" if args_str else f"{name}()"
         self.console.print(f"[cyan]›[/cyan] [bold]{call_text}[/bold]")
 
     def _render_tool_end(self, name: str, outcome: ToolOutcome) -> None:
         """Render tool call result."""
-        result = outcome.display_text
-        if not result:
-            return
         display = self.policy.tool_preview(outcome)
+        if not display:
+            return
         if outcome.success:
             self.console.print(f"  [dim]{_escape_markup(display)}[/dim]")
+        elif self.policy.verbosity is Verbosity.COMPACT:
+            self.console.print(
+                f"  [red]× {name}: {_escape_markup(display)}[/red]"
+            )
         else:
             self.console.print(
                 Panel(
@@ -352,7 +368,7 @@ class CLIRenderer:
     def _render_subagent_completed(self, payload: SubagentFinished) -> None:
         """Render a concise sub-agent completion notification."""
         body = f"id={payload.job_id} mode={payload.mode}"
-        if payload.error:
+        if payload.error and self.policy.verbosity is not Verbosity.COMPACT:
             self.console.print(
                 Panel(
                     f"{body}\n{payload.error}",
@@ -361,6 +377,11 @@ class CLIRenderer:
                     box=box.ROUNDED,
                     padding=(0, 1),
                 )
+            )
+        elif payload.error:
+            self.console.print(
+                f"[red]× subagent[/red] {body} {payload.status}: "
+                f"{_escape_markup(payload.error)}"
             )
         else:
             self.console.print(f"[magenta]↳ subagent[/magenta] {body} {payload.status}")
@@ -412,7 +433,7 @@ class CLIRenderer:
             level=event.level.value,
             category=event.kind.value,
         )
-        if event.level is UIEventLevel.DEBUG and self.policy.verbosity.value != "debug":
+        if not self.policy.should_render_notification(event.level.value):
             return
         if event.level is UIEventLevel.INFO:
             self.console.print(f"[dim]{_escape_markup(event.message)}[/dim]")

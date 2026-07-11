@@ -192,12 +192,22 @@ class ShellTool(Tool):
                 error_kind=ToolErrorKind.INTERRUPTED,
             )
         failed = result.exit_code not in {None, 0}
+        first_line = next(
+            (
+                line.strip()
+                for line in (result.stdout or result.stderr).splitlines()
+                if line.strip()
+            ),
+            "(no output)",
+        )
+        if len(first_line) > 120:
+            first_line = first_line[:117] + "..."
         return ToolOutcome(
             status=(ToolOutcomeStatus.FAILED if failed else ToolOutcomeStatus.SUCCEEDED),
             summary=(
-                f"Command exited with code {result.exit_code}"
+                f"Command failed (exit {result.exit_code}) · {first_line}"
                 if failed
-                else "Command completed"
+                else f"Command completed · {first_line}"
             ),
             content=(
                 "(no output)" if not result.stdout and not result.stderr else None

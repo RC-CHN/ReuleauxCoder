@@ -43,6 +43,7 @@ from reuleauxcoder.interfaces.interactions import (
     ReviewResponse,
 )
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.presentation import PresentationPolicy
 
 
 def create_remote_console(terminal: TerminalCapabilities) -> Console:
@@ -150,6 +151,14 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     peer_connection_markers: dict[str, str] = {}
     peer_presenters: dict[str, tuple[Console, CLIRenderer]] = {}
 
+    def _renderer_for(console: Console) -> CLIRenderer:
+        policy = (
+            PresentationPolicy.from_ui_config(config.ui)
+            if config is not None
+            else PresentationPolicy()
+        )
+        return CLIRenderer(console_override=console, policy=policy)
+
     def _console_for_peer(peer_id: str) -> Console:
         peer = relay_server.registry.get(peer_id)
         terminal = TerminalCapabilities.from_dict(
@@ -211,7 +220,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             console = _console_for_peer(peer_id)
             peer_presenters[peer_id] = (
                 console,
-                CLIRenderer(console_override=console),
+                _renderer_for(console),
             )
             return agent
 
@@ -221,6 +230,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         peer_tools = runner.dependencies.load_tools(peer_backend)
         peer_agent = runner.dependencies.create_agent(peer_llm, peer_tools, config)
         peer_agent.runtime_config = config
+        peer_agent.reasoning_display_mode = (
+            "inline" if config.ui.reasoning_display == "inline" else "quiet"
+        )
         peer_agent.relay_server = relay_server
         peer_agent.extension_manager = runner._extension_manager
         peer_agent.skills_service = skills_service
@@ -253,7 +265,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             console = _console_for_peer(peer_id)
             peer_presenters[peer_id] = (
                 console,
-                CLIRenderer(console_override=console),
+                _renderer_for(console),
             )
             peer_agent.lifecycle.runner_started(
                 metadata={"ui_bus": ui_bus, "peer_id": peer_id}

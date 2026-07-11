@@ -16,6 +16,7 @@ from reuleauxcoder.interfaces.approval import make_approval_handler
 from reuleauxcoder.interfaces.cli.args import parse_args
 from reuleauxcoder.interfaces.cli.registration import create_cli_registration
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
+from reuleauxcoder.presentation import PresentationPolicy
 from reuleauxcoder.interfaces.cli.output import CLIOutputCoordinator
 from reuleauxcoder.interfaces.cli.repl import run_repl
 from reuleauxcoder.interfaces.entrypoint import AppRunner, AppOptions
@@ -73,7 +74,10 @@ def main():
     ui_registry = UIRegistry([create_cli_registration(ctx.ui_bus)])
     cli_ui = ui_registry.require("cli")
 
-    renderer = CLIRenderer(view_registry=cli_ui.view_registry)
+    renderer = CLIRenderer(
+        view_registry=cli_ui.view_registry,
+        policy=PresentationPolicy.from_ui_config(ctx.config.ui),
+    )
     output = CLIOutputCoordinator(renderer)
     ctx.ui_bus.subscribe(output.on_ui_event)
 

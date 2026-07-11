@@ -197,6 +197,19 @@ class ContextConfig:
 
 
 @dataclass
+class UIConfig:
+    """Framework-neutral presentation policy shared by CLI and TUI."""
+
+    verbosity: Literal["compact", "standard", "debug"] = "compact"
+    tool_output: Literal["errors", "summary", "preview", "full"] = "summary"
+    max_preview_lines: int = 20
+    max_preview_chars: int = 1_200
+    show_tool_args: bool = True
+    reasoning_display: Literal["hidden", "indicator", "inline"] = "indicator"
+    notification_threshold: Literal["debug", "info", "warning", "error"] = "info"
+
+
+@dataclass
 class RemoteExecConfig:
     """Remote execution relay configuration."""
 
@@ -260,6 +273,9 @@ class Config:
     history_file: Optional[str] = None
     llm_debug_trace: bool = False
 
+    # Cross-interface presentation settings
+    ui: UIConfig = field(default_factory=UIConfig)
+
     # Approval settings
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)
 
@@ -295,6 +311,27 @@ class Config:
             errors.append("tool_output_max_chars must be positive")
         if self.tool_output_max_lines < 1:
             errors.append("tool_output_max_lines must be positive")
+        if self.ui.max_preview_chars < 1:
+            errors.append("ui.max_preview_chars must be positive")
+        if self.ui.max_preview_lines < 1:
+            errors.append("ui.max_preview_lines must be positive")
+        if self.ui.verbosity not in {"compact", "standard", "debug"}:
+            errors.append("ui.verbosity must be compact, standard, or debug")
+        if self.ui.tool_output not in {"errors", "summary", "preview", "full"}:
+            errors.append("ui.tool_output must be errors, summary, preview, or full")
+        if self.ui.reasoning_display not in {"hidden", "indicator", "inline"}:
+            errors.append(
+                "ui.reasoning_display must be hidden, indicator, or inline"
+            )
+        if self.ui.notification_threshold not in {
+            "debug",
+            "info",
+            "warning",
+            "error",
+        }:
+            errors.append(
+                "ui.notification_threshold must be debug, info, warning, or error"
+            )
         valid_actions = {"allow", "warn", "require_approval", "deny"}
         if (
             self.active_model_profile

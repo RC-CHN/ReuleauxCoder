@@ -68,6 +68,15 @@ CONFIG_SCHEMA = {
     "cli": {
         "history_file": "string (optional, default: ~/.rcoder/history)",
     },
+    "ui": {
+        "verbosity": "string (default: compact, one of compact/standard/debug)",
+        "tool_output": "string (default: summary, one of errors/summary/preview/full)",
+        "max_preview_lines": "int (default: 20)",
+        "max_preview_chars": "int (default: 1200)",
+        "show_tool_args": "bool (default: true)",
+        "reasoning_display": "string (default: indicator, one of hidden/indicator/inline)",
+        "notification_threshold": "string (default: info, one of debug/info/warning/error)",
+    },
     "skills": {
         "enabled": "bool (default: true)",
         "scan_project": "bool (default: true)",
@@ -163,6 +172,13 @@ DEFAULTS = {
     "session_dir": None,  # Will be computed at runtime
     "history_file": None,  # Will be computed at runtime
     "llm_debug_trace": False,
+    "ui_verbosity": "compact",
+    "ui_tool_output": "summary",
+    "ui_max_preview_lines": 20,
+    "ui_max_preview_chars": 1_200,
+    "ui_show_tool_args": True,
+    "ui_reasoning_display": "indicator",
+    "ui_notification_threshold": "info",
     "snip_keep_recent_tools": 2,
     "snip_threshold_chars": 1500,
     "snip_min_lines": 6,
