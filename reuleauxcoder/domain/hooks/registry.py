@@ -170,11 +170,23 @@ class HookRegistry:
         payload = {
             item.name: cls._freeze(getattr(context, item.name))
             for item in fields(context)
-            if item.name not in {"hook_point", "session_id", "trace_id", "metadata"}
+            if item.name
+            not in {
+                "hook_point",
+                "agent_id",
+                "session_generation",
+                "session_id",
+                "turn_id",
+                "trace_id",
+                "metadata",
+            }
         }
         return HookContextSnapshot(
             hook_point=context.hook_point,
+            agent_id=context.agent_id,
+            session_generation=context.session_generation,
             session_id=context.session_id,
+            turn_id=context.turn_id,
             trace_id=context.trace_id,
             metadata=cls._freeze(context.metadata),
             payload=MappingProxyType(payload),

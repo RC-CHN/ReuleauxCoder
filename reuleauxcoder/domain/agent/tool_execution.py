@@ -33,6 +33,10 @@ class ToolExecutor:
 
         before_context = BeforeToolExecuteContext(
             hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
+            agent_id=self.agent.agent_id,
+            session_generation=self.agent.session_generation,
+            session_id=self.agent.current_session_id,
+            turn_id=self.agent._current_turn_id,
             tool_call=tc,
             round_index=self.agent.state.current_round,
             metadata={
@@ -209,6 +213,10 @@ class ToolExecutor:
                 self.agent.runtime_working_directory = str(shell_cwd)
             after_context = AfterToolExecuteContext(
                 hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+                agent_id=self.agent.agent_id,
+                session_generation=self.agent.session_generation,
+                session_id=self.agent.current_session_id,
+                turn_id=self.agent._current_turn_id,
                 tool_call=tool_call,
                 result=result,
                 round_index=self.agent.state.current_round,

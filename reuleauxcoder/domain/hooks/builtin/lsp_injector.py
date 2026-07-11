@@ -20,7 +20,10 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
-from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
+from reuleauxcoder.extensions.lsp.diagnostics import (
+    DiagnosticRouteFilter,
+    render_blocks,
+)
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
@@ -73,9 +76,22 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if not self.lsp_manager.enabled:
             return context
 
-        blocks = self.lsp_manager.drain_diagnostics()
-        if not blocks:
+        batches = self.lsp_manager.consume_diagnostic_batches(
+            consumer_id=(
+                f"lsp-inject:{context.agent_id or 'unknown'}:"
+                f"{context.session_generation if context.session_generation is not None else 'unknown'}:"
+                f"{context.turn_id or 'unknown'}"
+            ),
+            route=DiagnosticRouteFilter(
+                agent_id=context.agent_id,
+                session_generation=context.session_generation,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+            ),
+        )
+        if not batches:
             return context
+        blocks = [batch.block for batch in batches]
 
         # Count errors / warnings for UI feedback
         err_count = 0

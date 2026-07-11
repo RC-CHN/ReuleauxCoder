@@ -23,7 +23,15 @@ from reuleauxcoder.extensions.lsp.client import LspClientError
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import (
     MAX_RESPWANS,
+    DiagnosticRequest,
     LspManager,
+)
+from reuleauxcoder.extensions.lsp.diagnostics import (
+    Diagnostic,
+    DiagnosticBatch,
+    DiagnosticBlock,
+    DiagnosticRoute,
+    DiagnosticRouteFilter,
 )
 from reuleauxcoder.extensions.lsp.registry import LanguageId
 
@@ -295,32 +303,114 @@ class TestEnqueueDiagnostics:
             manager._availability[LanguageId.PYTHON] = True
 
         assert len(manager._diagnostics_queue) == 0
-        manager.enqueue_diagnostics(Path("/tmp/test.py"), seq=1)
+        manager.enqueue_diagnostics(Path("/tmp/test.py"))
         assert len(manager._diagnostics_queue) == 1
 
     def test_no_enqueue_when_disabled(self, manager: LspManager) -> None:
         manager._config.enabled = False
-        manager.enqueue_diagnostics(Path("/tmp/test.py"), seq=1)
+        manager.enqueue_diagnostics(Path("/tmp/test.py"))
         assert len(manager._diagnostics_queue) == 0
 
 
-class TestDrainDiagnostics:
-    def test_drain_clears_results(self, manager: LspManager) -> None:
-        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
-
+class TestDiagnosticBatchConsumption:
+    def test_consume_acknowledges_exact_batch(self, manager: LspManager) -> None:
+        route = DiagnosticRoute(file_path=Path("/tmp/test.py"), agent_id="agent-1")
         block = DiagnosticBlock(
             file_path="test.py",
             items=[Diagnostic(line=1, character=1, message="err")],
         )
+        batch = DiagnosticBatch(
+            batch_id="batch-1",
+            route=route,
+            request_sequence=1,
+            document_version=2,
+            diagnostic_generation=3,
+            block=block,
+        )
         with manager._lock:
-            manager._results[Path("/tmp/test.py")] = block
+            manager._diagnostic_batches[batch.batch_id] = batch
 
-        drained = manager.drain_diagnostics()
-        assert len(drained) == 1
-        assert drained[0].file_path == "test.py"
-        # Should be empty after drain
-        drained2 = manager.drain_diagnostics()
-        assert len(drained2) == 0
+        consumed = manager.consume_diagnostic_batches(consumer_id="consumer-1")
+        assert consumed == (batch,)
+        assert manager.pending_diagnostic_batches() == ()
+        assert manager.diagnostic_batch_acknowledgement("batch-1") == "consumer-1"
+        assert not manager.acknowledge_diagnostic_batch(
+            "batch-1", consumer_id="consumer-2"
+        )
+
+    def test_route_filter_isolates_agent_generation_turn_and_two_files(
+        self, manager: LspManager
+    ) -> None:
+        def publish(batch_id: str, route: DiagnosticRoute) -> DiagnosticBatch:
+            batch = DiagnosticBatch(
+                batch_id=batch_id,
+                route=route,
+                request_sequence=len(manager._diagnostic_batches) + 1,
+                document_version=1,
+                diagnostic_generation=1,
+                block=DiagnosticBlock(file_path=str(route.file_path), items=[]),
+            )
+            manager._diagnostic_batches[batch_id] = batch
+            return batch
+
+        parent_a = publish(
+            "parent-a",
+            DiagnosticRoute(
+                file_path=Path("/tmp/a.py"),
+                agent_id="parent",
+                session_generation=2,
+                session_id="session",
+                turn_id="turn",
+                tool_call_id="tool-a",
+            ),
+        )
+        parent_b = publish(
+            "parent-b",
+            DiagnosticRoute(
+                file_path=Path("/tmp/b.py"),
+                agent_id="parent",
+                session_generation=2,
+                session_id="session",
+                turn_id="turn",
+                tool_call_id="tool-b",
+            ),
+        )
+        publish(
+            "old-generation",
+            DiagnosticRoute(
+                file_path=Path("/tmp/a.py"),
+                agent_id="parent",
+                session_generation=1,
+                session_id="session",
+                turn_id="turn",
+            ),
+        )
+        publish(
+            "subagent",
+            DiagnosticRoute(
+                file_path=Path("/tmp/a.py"),
+                agent_id="child",
+                session_generation=2,
+                session_id="session",
+                turn_id="turn",
+            ),
+        )
+
+        consumed = manager.consume_diagnostic_batches(
+            consumer_id="parent-injector",
+            route=DiagnosticRouteFilter(
+                agent_id="parent",
+                session_generation=2,
+                session_id="session",
+                turn_id="turn",
+            ),
+        )
+
+        assert consumed == (parent_a, parent_b)
+        assert {batch.batch_id for batch in manager.pending_diagnostic_batches()} == {
+            "old-generation",
+            "subagent",
+        }
 
 
 class TestNotifyDidSave:
@@ -341,7 +431,12 @@ class TestWorkerQueueOrdering:
     def test_pop_removes_exactly_one_queue_item(self, manager: LspManager) -> None:
         tool = object()
         manager._tool_queue.append(tool)
-        manager._diagnostics_queue.append((Path("/tmp/a.py"), 1))
+        request = DiagnosticRequest(
+            batch_id="batch-a",
+            route=DiagnosticRoute(file_path=Path("/tmp/a.py")),
+            request_sequence=1,
+        )
+        manager._diagnostics_queue.append(request)
         manager._notification_queue.append(("did_save", Path("/tmp/a.py")))
 
         assert manager._pop_next_work() == ("tool", tool)
@@ -352,71 +447,105 @@ class TestWorkerQueueOrdering:
         assert manager._pop_next_work()[0] == "notification"
         assert manager._pop_next_work() == (None, None)
 
-    def test_enqueue_replaces_older_pending_seq_for_same_file(
+    def test_enqueue_replaces_older_pending_request_for_same_owner_and_file(
         self, manager: LspManager
     ) -> None:
         manager._config.enabled = True
         manager._availability[LanguageId.PYTHON] = True
         path = Path("/tmp/test.py")
 
-        manager.enqueue_diagnostics(path, seq=1)
-        manager.enqueue_diagnostics(path, seq=2)
-        manager.enqueue_diagnostics(path, seq=1)
+        manager.enqueue_diagnostics(path)
+        manager.enqueue_diagnostics(path)
+        manager.enqueue_diagnostics(path)
 
-        assert manager._diagnostics_queue == [(path, 2)]
+        assert len(manager._diagnostics_queue) == 1
+        assert manager._diagnostics_queue[0].route.file_path == path
+        assert manager._diagnostics_queue[0].request_sequence == 3
 
 
 class TestDiagnosticReplacement:
-    def test_clean_batch_replaces_old_result(
+    def test_clean_publish_is_retained_as_explicit_batch(
         self, manager: LspManager, tmp_path: Path
     ) -> None:
         import asyncio
 
-        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
-
         path = tmp_path / "main.py"
         path.write_text("x = 1")
         server = MagicMock()
-        server.diagnostics_generation.return_value = 1
+        server.diagnostics_generation.side_effect = [1, 2]
+        server.diagnostic_document_version.return_value = 2
         server.wait_for_diagnostics = AsyncMock(return_value=[])
         manager._get_or_create_server = AsyncMock(return_value=server)
-        manager._latest_diagnostic_seq[path] = 2
-        manager._results[path] = DiagnosticBlock(
-            file_path="main.py",
-            items=[Diagnostic(line=1, character=1, message="old")],
+        manager._availability[LanguageId.PYTHON] = True
+        batch_id = manager.enqueue_diagnostics(
+            path,
+            route=DiagnosticRoute(
+                file_path=path,
+                agent_id="agent-1",
+                session_generation=4,
+                turn_id="turn-1",
+                tool_call_id="tool-1",
+            ),
         )
+        request = manager._diagnostics_queue.pop()
 
-        asyncio.run(manager._handle_diagnostics_request(path, 2))
+        asyncio.run(manager._handle_diagnostics_request(request))
 
-        assert manager._results[path].items == []
+        batches = manager.pending_diagnostic_batches(batch_id=batch_id)
+        assert len(batches) == 1
+        assert batches[0].block.items == []
+        assert batches[0].document_version == 2
+        assert batches[0].diagnostic_generation == 2
         server.wait_for_diagnostics.assert_awaited_once_with(
             path,
             timeout=manager.config.poll_timeout_ms / 1000,
             after_generation=1,
         )
 
-    def test_stale_seq_cannot_overwrite_newer_result(
+    def test_stale_request_cannot_publish_after_newer_request(
         self, manager: LspManager, tmp_path: Path
     ) -> None:
         import asyncio
 
-        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
-
         path = tmp_path / "main.py"
         path.write_text("x = 1")
         server = MagicMock()
-        server.diagnostics_generation.return_value = 4
+        server.diagnostics_generation.side_effect = [4, 5]
+        server.diagnostic_document_version.return_value = 7
         server.wait_for_diagnostics = AsyncMock(
             return_value=[Diagnostic(line=1, character=1, message="stale")]
         )
         manager._get_or_create_server = AsyncMock(return_value=server)
-        manager._latest_diagnostic_seq[path] = 2
-        current = DiagnosticBlock(
-            file_path="main.py",
-            items=[Diagnostic(line=1, character=1, message="new")],
+        manager._availability[LanguageId.PYTHON] = True
+        route = DiagnosticRoute(
+            file_path=path,
+            agent_id="agent-1",
+            session_generation=1,
         )
-        manager._results[path] = current
+        stale_id = manager.enqueue_diagnostics(path, route=route)
+        stale_request = manager._diagnostics_queue.pop()
+        current_id = manager.enqueue_diagnostics(path, route=route)
 
-        asyncio.run(manager._handle_diagnostics_request(path, 1))
+        asyncio.run(manager._handle_diagnostics_request(stale_request))
 
-        assert manager._results[path] is current
+        assert manager.pending_diagnostic_batches(batch_id=stale_id) == ()
+        assert current_id is not None
+
+    def test_timeout_does_not_publish_false_clean_batch(
+        self, manager: LspManager, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        path = tmp_path / "main.py"
+        path.write_text("x = 1")
+        server = MagicMock()
+        server.diagnostics_generation.return_value = 8
+        server.wait_for_diagnostics = AsyncMock(return_value=[])
+        manager._get_or_create_server = AsyncMock(return_value=server)
+        manager._availability[LanguageId.PYTHON] = True
+        batch_id = manager.enqueue_diagnostics(path)
+        request = manager._diagnostics_queue.pop()
+
+        asyncio.run(manager._handle_diagnostics_request(request))
+
+        assert manager.pending_diagnostic_batches(batch_id=batch_id) == ()

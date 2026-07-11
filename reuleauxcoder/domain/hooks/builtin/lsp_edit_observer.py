@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
-from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
+from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute, render_blocks
 from reuleauxcoder.interfaces.events import UIEventKind
 
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
@@ -102,20 +102,34 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
         self.lsp_manager.notify_did_save(path)
 
         # 2. Enqueue diagnostics request (fire-and-forget)
-        self.lsp_manager.enqueue_diagnostics(path, seq=context.round_index or 0)
+        route = DiagnosticRoute(
+            file_path=path,
+            agent_id=context.agent_id,
+            session_generation=context.session_generation,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            tool_call_id=tool_call.id,
+        )
+        batch_id = self.lsp_manager.enqueue_diagnostics(path, route=route)
+        if batch_id is None:
+            return context
 
         # 3. Short synchronous poll — if the worker has already produced
         #    diagnostics, append them directly to the tool result so the
         #    model sees them immediately.
         deadline = time.monotonic() + _DIAGNOSTICS_POLL_DEADLINE
-        blocks = []
+        batches = ()
         while time.monotonic() < deadline:
-            blocks = self.lsp_manager.drain_diagnostics(file_paths={path})
-            if blocks:
+            batches = self.lsp_manager.consume_diagnostic_batches(
+                consumer_id=f"lsp-edit:{tool_call.id}",
+                batch_id=batch_id,
+            )
+            if batches:
                 break
             time.sleep(_DIAGNOSTICS_POLL_INTERVAL)
 
-        if blocks:
+        if batches:
+            blocks = [batch.block for batch in batches]
             # Count errors / warnings for UI feedback
             err_count = 0
             warn_count = 0

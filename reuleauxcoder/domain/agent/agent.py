@@ -53,6 +53,7 @@ class Agent:
         loop: AgentLoop | None = None,
         executor: ToolExecutor | None = None,
         extension_runtime: "ToolExtensionRuntime" | None = None,
+        agent_id: str | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else []
@@ -63,6 +64,8 @@ class Agent:
 
         # Explicit runtime bindings. Adapters may replace these values, but
         # must not inject new attributes dynamically.
+        self.agent_id = agent_id or uuid.uuid4().hex
+        self.session_generation = 0
         self.current_session_id: str | None = None
         self.session_fingerprint: str | None = getattr(
             config, "session_fingerprint", None
@@ -474,6 +477,7 @@ class Agent:
 
     def reset(self) -> None:
         """Clear conversation history."""
+        self.session_generation += 1
         manager = getattr(self, "_subagent_manager", None)
         if manager is not None:
             manager.advance_generation(cancel_pending=True)

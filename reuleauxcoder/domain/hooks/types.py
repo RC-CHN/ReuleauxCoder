@@ -36,7 +36,10 @@ class HookContext:
     """Base context passed through hook execution."""
 
     hook_point: HookPoint
+    agent_id: str | None = None
+    session_generation: int | None = None
     session_id: str | None = None
+    turn_id: str | None = None
     trace_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -137,7 +140,10 @@ class HookContextSnapshot:
     """Immutable observer input detached from transform control flow."""
 
     hook_point: HookPoint
+    agent_id: str | None
+    session_generation: int | None
     session_id: str | None
+    turn_id: str | None
     trace_id: str | None
     metadata: Mapping[str, Any]
     payload: Mapping[str, Any]

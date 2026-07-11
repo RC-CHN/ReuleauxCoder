@@ -61,6 +61,7 @@ class LspClient:
         self._reader_task: asyncio.Task[None] | None = None
         self._diagnostics_buffer: dict[str, list[Diagnostic]] = {}
         self._diagnostic_generations: dict[str, int] = {}
+        self._diagnostic_document_versions: dict[str, int] = {}
         self._document_versions: dict[str, int] = {}
 
     # === Properties ===
@@ -240,6 +241,14 @@ class LspClient:
         """Return the latest publish generation observed for one document."""
         return self._diagnostic_generations.get(self._file_uri(file_path), 0)
 
+    def document_version(self, file_path: Path) -> int:
+        """Return the last monotonically increasing version sent for a document."""
+        return self._document_versions.get(self._file_uri(file_path), 0)
+
+    def diagnostic_document_version(self, file_path: Path) -> int:
+        """Return the document version associated with the latest publish."""
+        return self._diagnostic_document_versions.get(self._file_uri(file_path), 0)
+
     # === Active Tool Requests ===
 
     async def send_request(
@@ -307,6 +316,7 @@ class LspClient:
             self._initialized = False
             self._diagnostics_buffer.clear()
             self._diagnostic_generations.clear()
+            self._diagnostic_document_versions.clear()
             self._document_versions.clear()
 
     # === Internal: Request/Response ===
@@ -455,6 +465,20 @@ class LspClient:
     def _handle_publish_diagnostics(self, params: dict[str, Any]) -> None:
         """Process a textDocument/publishDiagnostics notification."""
         uri = params.get("uri", "")
+        published_version = params.get("version")
+        current_version = self._document_versions.get(uri, 0)
+        if (
+            isinstance(published_version, int)
+            and current_version
+            and published_version < current_version
+        ):
+            logger.debug(
+                "Ignoring stale diagnostics for %s at version %s (current %s)",
+                uri,
+                published_version,
+                current_version,
+            )
+            return
         diagnostics_raw = params.get("diagnostics", [])
 
         items: list[Diagnostic] = []
@@ -477,6 +501,11 @@ class LspClient:
         self._diagnostics_buffer[uri] = items
         self._diagnostic_generations[uri] = (
             self._diagnostic_generations.get(uri, 0) + 1
+        )
+        self._diagnostic_document_versions[uri] = (
+            published_version
+            if isinstance(published_version, int)
+            else current_version
         )
 
     def _fail_all_pending(self, reason: str) -> None:

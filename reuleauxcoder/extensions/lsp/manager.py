@@ -1,4 +1,4 @@
-"""LSP Manager — singleton coordinator for LSP server lifecycle.
+"""LSP Manager — workspace-scoped coordinator for LSP server lifecycle.
 
 Ownership:
 - All LSP subprocess communication (sole writer to stdin, via worker thread)
@@ -16,6 +16,7 @@ import concurrent.futures
 import logging
 import shutil
 import threading
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,7 +28,12 @@ from reuleauxcoder.extensions.lsp.client import (
     MAX_LSP_FILE_SIZE_BYTES,
 )
 from reuleauxcoder.extensions.lsp.config import LspConfig
-from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticBlock
+from reuleauxcoder.extensions.lsp.diagnostics import (
+    DiagnosticBatch,
+    DiagnosticBlock,
+    DiagnosticRoute,
+    DiagnosticRouteFilter,
+)
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
     detect_language,
@@ -71,8 +77,17 @@ class ToolRequest:
     needs_sync: bool = True  # Whether to sync file content before the query
 
 
+@dataclass(frozen=True, slots=True)
+class DiagnosticRequest:
+    """A routed diagnostics request owned by one edit operation."""
+
+    batch_id: str
+    route: DiagnosticRoute
+    request_sequence: int
+
+
 class LspManager:
-    """Singleton coordinator for all LSP server interactions.
+    """Workspace-scoped coordinator for LSP server interactions.
 
     All LSP I/O (subprocess stdin/stdout) passes through a single
     background worker thread.  This avoids locks — serialisation is
@@ -99,14 +114,19 @@ class LspManager:
         self._last_sync_time: dict[tuple[TransportKey, Path], float] = {}
 
         # Queues
-        self._diagnostics_queue: list[tuple[Path, int]] = []
+        self._diagnostics_queue: list[DiagnosticRequest] = []
         self._tool_queue: list[ToolRequest] = []
         self._notification_queue: list[tuple[str, Path]] = []
         # ("did_save", file_path)
 
-        # Results
-        self._results: dict[Path, DiagnosticBlock] = {}
-        self._latest_diagnostic_seq: dict[Path, int] = {}
+        # Routed results.  Clean publishes are retained as empty batches until
+        # the owning consumer acknowledges them.
+        self._diagnostic_batches: dict[str, DiagnosticBatch] = {}
+        self._acknowledged_batches: dict[str, str] = {}
+        self._latest_diagnostic_sequence: dict[
+            tuple[str | None, int | None, Path], int
+        ] = {}
+        self._next_diagnostic_sequence = 0
 
         # Lock (RLock for reentrancy in health_check)
         self._lock: threading.RLock = threading.RLock()
@@ -195,8 +215,9 @@ class LspManager:
             self._tool_queue.clear()
             self._diagnostics_queue.clear()
             self._notification_queue.clear()
-            self._results.clear()
-            self._latest_diagnostic_seq.clear()
+            self._diagnostic_batches.clear()
+            self._acknowledged_batches.clear()
+            self._latest_diagnostic_sequence.clear()
 
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT)
@@ -218,41 +239,103 @@ class LspManager:
 
     # === Diagnostics (fire-and-forget) ===
 
-    def enqueue_diagnostics(self, file_path: Path, seq: int) -> None:
-        """Enqueue a diagnostics request.  Returns immediately."""
+    def enqueue_diagnostics(
+        self,
+        file_path: Path,
+        *,
+        route: DiagnosticRoute | None = None,
+    ) -> str | None:
+        """Enqueue diagnostics and return the future batch identity.
+
+        Stale rejection uses a manager-owned monotonic sequence because round
+        numbers are not unique across multiple edits in one LLM response.
+        """
         if not self._enabled_for_file(file_path):
-            return
+            return None
+
+        path = Path(file_path)
+        if route is None:
+            route = DiagnosticRoute(file_path=path)
+        elif route.file_path != path:
+            raise ValueError("diagnostic route file_path must match request path")
 
         with self._lock:
-            latest = self._latest_diagnostic_seq.get(file_path, -1)
-            if seq < latest:
-                return
-            self._latest_diagnostic_seq[file_path] = seq
+            self._next_diagnostic_sequence += 1
+            request_sequence = self._next_diagnostic_sequence
+            key = (route.agent_id, route.session_generation, path)
+            self._latest_diagnostic_sequence[key] = request_sequence
+            batch_id = uuid.uuid4().hex
             self._diagnostics_queue = [
-                item for item in self._diagnostics_queue if item[0] != file_path
+                item
+                for item in self._diagnostics_queue
+                if (
+                    item.route.agent_id,
+                    item.route.session_generation,
+                    item.route.file_path,
+                )
+                != key
             ]
-            self._diagnostics_queue.append((file_path, seq))
+            self._diagnostics_queue.append(
+                DiagnosticRequest(
+                    batch_id=batch_id,
+                    route=route,
+                    request_sequence=request_sequence,
+                )
+            )
 
         with self._request_condition:
             self._request_condition.notify()
+        return batch_id
 
-    def drain_diagnostics(
-        self, *, file_paths: set[Path] | None = None
-    ) -> list[DiagnosticBlock]:
-        """Drain results, optionally scoped to exact edited documents.
-
-        Scoping is the deduplication mechanism: an edit observer consumes only
-        its own document. Concurrent results for other files remain available
-        to the before-request injector.
-        """
+    def pending_diagnostic_batches(
+        self,
+        *,
+        route: DiagnosticRouteFilter | None = None,
+        batch_id: str | None = None,
+    ) -> tuple[DiagnosticBatch, ...]:
+        """Return matching unacknowledged batches without consuming them."""
         with self._lock:
-            selected = [
-                path
-                for path in self._results
-                if file_paths is None or path in file_paths
-            ]
-            blocks = [self._results.pop(path) for path in selected]
-        return blocks
+            return tuple(
+                batch
+                for current_id, batch in self._diagnostic_batches.items()
+                if (batch_id is None or current_id == batch_id)
+                and (route is None or self._route_matches(batch.route, route))
+            )
+
+    def acknowledge_diagnostic_batch(
+        self, batch_id: str, *, consumer_id: str
+    ) -> bool:
+        """Acknowledge exactly one batch, preventing a second consumer."""
+        with self._lock:
+            if self._diagnostic_batches.pop(batch_id, None) is None:
+                return False
+            self._record_acknowledgement(batch_id, consumer_id)
+            return True
+
+    def consume_diagnostic_batches(
+        self,
+        *,
+        consumer_id: str,
+        route: DiagnosticRouteFilter | None = None,
+        batch_id: str | None = None,
+    ) -> tuple[DiagnosticBatch, ...]:
+        """Atomically select and acknowledge matching batches."""
+        with self._lock:
+            selected = tuple(
+                batch
+                for current_id, batch in self._diagnostic_batches.items()
+                if (batch_id is None or current_id == batch_id)
+                and (route is None or self._route_matches(batch.route, route))
+            )
+            for batch in selected:
+                self._diagnostic_batches.pop(batch.batch_id, None)
+                self._record_acknowledgement(batch.batch_id, consumer_id)
+            return selected
+
+    def diagnostic_batch_acknowledgement(self, batch_id: str) -> str | None:
+        """Return the consumer which acknowledged a batch, if any."""
+        with self._lock:
+            return self._acknowledged_batches.get(batch_id)
 
     # === Active Tools (synchronous bridge) ===
 
@@ -331,7 +414,7 @@ class LspManager:
                 if kind == "tool":
                     await self._handle_tool_request(work)
                 elif kind == "diagnostics":
-                    await self._handle_diagnostics_request(*work)
+                    await self._handle_diagnostics_request(work)
                 elif kind == "notification":
                     await self._handle_notification(*work)
                 else:
@@ -412,12 +495,9 @@ class LspManager:
         except Exception as e:
             req.future.set_exception(e)
 
-    async def _handle_diagnostics_request(
-        self,
-        file_path: Path,
-        seq: int,
-    ) -> None:
+    async def _handle_diagnostics_request(self, request: DiagnosticRequest) -> None:
         """Process a fire-and-forget diagnostics request."""
+        file_path = request.route.file_path
         lang = detect_language(file_path)
         if lang is None:
             return
@@ -452,21 +532,65 @@ class LspManager:
                 timeout=self._config.poll_timeout_ms / 1000,
                 after_generation=baseline_generation,
             )
+            diagnostic_generation = server.diagnostics_generation(file_path)
+            if diagnostic_generation <= baseline_generation:
+                # Timeout is not an explicit clean publish.  Retaining no batch
+                # is safer than clearing diagnostics from a previous version.
+                return
 
             block = DiagnosticBlock(
                 file_path=self._relativize_path(file_path),
                 items=diagnostics,
             )
+            batch = DiagnosticBatch(
+                batch_id=request.batch_id,
+                route=request.route,
+                request_sequence=request.request_sequence,
+                document_version=server.diagnostic_document_version(file_path),
+                diagnostic_generation=diagnostic_generation,
+                block=block,
+            )
             with self._lock:
                 # A slower obsolete request must not overwrite a newer batch.
-                if self._latest_diagnostic_seq.get(file_path) == seq:
-                    self._results[file_path] = block
+                key = (
+                    request.route.agent_id,
+                    request.route.session_generation,
+                    file_path,
+                )
+                if (
+                    self._latest_diagnostic_sequence.get(key)
+                    == request.request_sequence
+                ):
+                    self._diagnostic_batches[batch.batch_id] = batch
 
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             logger.warning("LSP transport error for %s: %s", lang.name, e)
             self._on_transport_error(lang, str(e))
         except Exception as e:
             logger.debug("LSP diagnostics error (swallowed): %s", e)
+
+    @staticmethod
+    def _route_matches(
+        actual: DiagnosticRoute, query: DiagnosticRouteFilter
+    ) -> bool:
+        if query.file_path is not None and actual.file_path != query.file_path:
+            return False
+        for name in (
+            "agent_id",
+            "session_generation",
+            "session_id",
+            "turn_id",
+            "tool_call_id",
+        ):
+            expected = getattr(query, name)
+            if expected is not None and getattr(actual, name) != expected:
+                return False
+        return True
+
+    def _record_acknowledgement(self, batch_id: str, consumer_id: str) -> None:
+        self._acknowledged_batches[batch_id] = consumer_id
+        while len(self._acknowledged_batches) > 1024:
+            self._acknowledged_batches.pop(next(iter(self._acknowledged_batches)))
 
     async def _handle_notification(
         self,

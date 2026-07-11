@@ -274,11 +274,14 @@ class LLM:
 
         before_context = BeforeLLMRequestContext(
             hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            agent_id=(metadata or {}).get("agent_id"),
+            session_generation=(metadata or {}).get("session_generation"),
             request_params=dict(params),
             messages=list(messages),
             tools=list(tools) if tools else [],
             model=self.model,
             session_id=session_id,
+            turn_id=(metadata or {}).get("turn_id"),
             trace_id=trace_id,
             metadata=dict(metadata or {}),
         )

@@ -32,6 +32,10 @@ class _AgentStub:
 
     def __init__(self, tool) -> None:
         self._tool = tool
+        self.agent_id = "agent-test"
+        self.session_generation = 0
+        self.current_session_id = "session-test"
+        self._current_turn_id = "turn-test"
         self.active_mode = "coder"
         self.state = SimpleNamespace(current_round=0)
         self.approval_provider = None

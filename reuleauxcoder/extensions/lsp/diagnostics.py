@@ -9,8 +9,10 @@ Follows the DS-TUI (DeepSeek-TUI) format:
 
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
 
 # LSP DiagnosticSeverity constants
 SEVERITY_ERROR = 1
@@ -58,6 +60,49 @@ class DiagnosticBlock:
 
     def is_empty(self) -> bool:
         return len(self.items) == 0
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticRoute:
+    """Ownership coordinates for one diagnostics request.
+
+    Optional values describe an explicitly unknown boundary; they are never
+    treated as wildcards when two concrete routes are compared.  Keeping the
+    coordinates on the batch prevents a late worker result from leaking into
+    another agent, session generation, turn, tool call, or document.
+    """
+
+    file_path: Path
+    agent_id: str | None = None
+    session_generation: int | None = None
+    session_id: str | None = None
+    turn_id: str | None = None
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticRouteFilter:
+    """Partial ownership coordinates used only for batch selection."""
+
+    file_path: Path | None = None
+    agent_id: str | None = None
+    session_generation: int | None = None
+    session_id: str | None = None
+    turn_id: str | None = None
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticBatch:
+    """One publishDiagnostics observation, including an explicit clean state."""
+
+    route: DiagnosticRoute
+    request_sequence: int
+    document_version: int
+    diagnostic_generation: int
+    block: DiagnosticBlock
+    batch_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    created_at: float = field(default_factory=time.time)
 
 
 def render_blocks(

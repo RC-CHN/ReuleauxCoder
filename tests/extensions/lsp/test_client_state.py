@@ -53,6 +53,27 @@ def test_publish_diagnostics_replaces_and_empty_clears(tmp_path: Path) -> None:
     assert client.diagnostics_generation(tmp_path / "main.py") == 2
 
 
+def test_publish_diagnostics_rejects_older_document_version(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    path = tmp_path / "main.py"
+    uri = path.resolve().as_uri()
+    client._document_versions[uri] = 3
+
+    client._handle_publish_diagnostics(
+        {"uri": uri, "version": 2, "diagnostics": []}
+    )
+
+    assert client.diagnostics_generation(path) == 0
+    assert uri not in client._diagnostics_buffer
+
+    client._handle_publish_diagnostics(
+        {"uri": uri, "version": 3, "diagnostics": []}
+    )
+
+    assert client.diagnostics_generation(path) == 1
+    assert client.diagnostic_document_version(path) == 3
+
+
 def test_wait_for_diagnostics_rejects_preexisting_stale_batch(tmp_path: Path) -> None:
     client = _client(tmp_path)
     path = tmp_path / "main.py"

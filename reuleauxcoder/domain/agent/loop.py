@@ -174,6 +174,9 @@ class AgentLoop:
                 hook_registry=self.agent.hook_registry,
                 session_id=getattr(self.agent, "current_session_id", None),
                 metadata={
+                    "agent_id": self.agent.agent_id,
+                    "session_generation": self.agent.session_generation,
+                    "turn_id": self.agent._current_turn_id,
                     "round_index": round_num,
                     "active_mode": self.agent.active_mode,
                     "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
@@ -285,6 +288,9 @@ class AgentLoop:
             hook_registry=self.agent.hook_registry,
             session_id=getattr(self.agent, "current_session_id", None),
             metadata={
+                "agent_id": self.agent.agent_id,
+                "session_generation": self.agent.session_generation,
+                "turn_id": self.agent._current_turn_id,
                 "round_index": self.agent.state.current_round,
                 "active_mode": self.agent.active_mode,
                 "summary_phase": True,

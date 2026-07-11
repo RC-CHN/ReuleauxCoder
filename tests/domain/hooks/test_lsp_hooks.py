@@ -24,6 +24,11 @@ from reuleauxcoder.domain.hooks.types import (
 )
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.lsp.config import LspConfig
+from reuleauxcoder.extensions.lsp.diagnostics import (
+    DiagnosticBatch,
+    DiagnosticBlock,
+    DiagnosticRoute,
+)
 from reuleauxcoder.extensions.lsp.manager import LspManager
 
 
@@ -34,6 +39,39 @@ def _make_manager() -> LspManager:
     for lang in range(10):  # all LanguageId values
         mgr._availability[lang] = False
     return mgr
+
+
+def _publish_batch(
+    mgr: LspManager,
+    block: DiagnosticBlock,
+    *,
+    batch_id: str,
+    route: DiagnosticRoute | None = None,
+) -> DiagnosticBatch:
+    route = route or DiagnosticRoute(file_path=Path(block.file_path))
+    batch = DiagnosticBatch(
+        batch_id=batch_id,
+        route=route,
+        request_sequence=1,
+        document_version=1,
+        diagnostic_generation=1,
+        block=block,
+    )
+    with mgr._lock:
+        mgr._diagnostic_batches[batch_id] = batch
+    return batch
+
+
+def _complete_enqueued_batch(mgr: LspManager, block: DiagnosticBlock) -> None:
+    """Make the edit hook observe a worker result for its exact request ID."""
+
+    def enqueue(file_path: Path, *, route=None):
+        assert route is not None
+        batch_id = f"batch-{route.tool_call_id}"
+        _publish_batch(mgr, block, batch_id=batch_id, route=route)
+        return batch_id
+
+    mgr.enqueue_diagnostics = MagicMock(side_effect=enqueue)  # type: ignore[method-assign]
 
 
 # === LspEditObserverHook ===
@@ -220,8 +258,7 @@ class TestLspDiagnosticsInjectorBasic:
             file_path="test.py",
             items=[Diagnostic(line=1, character=1, message="err")],
         )
-        with mgr._lock:
-            mgr._results[Path("/tmp/test.py")] = block
+        _publish_batch(mgr, block, batch_id="batch-1")
 
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
@@ -245,13 +282,9 @@ class TestLspDiagnosticsInjectorBasic:
             file_path="test.py",
             items=[Diagnostic(line=1, character=1, message="err")],
         )
-        with mgr._lock:
-            mgr._results[Path("/tmp/test.py")] = block
+        _publish_batch(mgr, block, batch_id="batch-1")
 
-        assert len(mgr.drain_diagnostics()) == 1  # confirm data is there
-        # Re-add for the hook test
-        with mgr._lock:
-            mgr._results[Path("/tmp/test.py")] = block
+        assert len(mgr.pending_diagnostic_batches()) == 1
 
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
@@ -260,7 +293,8 @@ class TestLspDiagnosticsInjectorBasic:
         )
         hook.run(context)
         # Results should be drained after hook runs
-        assert len(mgr.drain_diagnostics()) == 0
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") is not None
 
 
 class TestLspDiagnosticsInjectorCreateFromConfig:
@@ -300,13 +334,11 @@ class TestLspEditObserverDedup:
         with mgr._lock:
             mgr._availability[LanguageId.PYTHON] = True
 
-        # Pre-populate results so drain_diagnostics returns a block
         block = DiagnosticBlock(
             file_path="/tmp/test.py",
             items=[Diagnostic(line=1, character=1, message="err")],
         )
-        with mgr._lock:
-            mgr._results[Path("/tmp/test.py")] = block
+        _complete_enqueued_batch(mgr, block)
 
         hook = LspEditObserverHook(lsp_manager=mgr)
         context = AfterToolExecuteContext(
@@ -323,7 +355,8 @@ class TestLspEditObserverDedup:
         # Tool result should contain the diagnostics
         assert context.result is not None
         assert "err" in context.result
-        assert mgr.drain_diagnostics() == []
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
 
     def test_empty_diagnostics_leave_no_results(self) -> None:
         from reuleauxcoder.extensions.lsp.registry import LanguageId
@@ -333,6 +366,10 @@ class TestLspEditObserverDedup:
             mgr._availability[LanguageId.PYTHON] = True
 
         hook = LspEditObserverHook(lsp_manager=mgr)
+        _complete_enqueued_batch(
+            mgr,
+            DiagnosticBlock(file_path="/tmp/test.py", items=[]),
+        )
         context = AfterToolExecuteContext(
             hook_point=HookPoint.AFTER_TOOL_EXECUTE,
             tool_call=ToolCall(
@@ -343,7 +380,8 @@ class TestLspEditObserverDedup:
             round_index=1,
         )
         hook.run(context)
-        assert mgr.drain_diagnostics() == []
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
 
     def test_does_not_consume_other_file_batch(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import (
@@ -360,9 +398,8 @@ class TestLspEditObserverDedup:
             file_path="/tmp/other.py",
             items=[Diagnostic(line=1, character=1, message="other")],
         )
-        with mgr._lock:
-            mgr._results[Path("/tmp/test.py")] = edited
-            mgr._results[Path("/tmp/other.py")] = other
+        _complete_enqueued_batch(mgr, edited)
+        _publish_batch(mgr, other, batch_id="batch-other")
 
         hook = LspEditObserverHook(lsp_manager=mgr)
         tool_context = AfterToolExecuteContext(
@@ -377,8 +414,8 @@ class TestLspEditObserverDedup:
         hook.run(tool_context)
 
         assert "edited" in tool_context.result
-        remaining = mgr.drain_diagnostics()
-        assert [block.file_path for block in remaining] == ["/tmp/other.py"]
+        remaining = mgr.pending_diagnostic_batches()
+        assert [batch.block.file_path for batch in remaining] == ["/tmp/other.py"]
 
 
 # === LspDiagnosticsInjectorHook scoped dedup ===
@@ -393,8 +430,7 @@ class TestLspDiagnosticsInjectorDedup:
             file_path="/tmp/other.py",
             items=[Diagnostic(line=1, character=1, message="other")],
         )
-        with mgr._lock:
-            mgr._results[Path("/tmp/other.py")] = block
+        _publish_batch(mgr, block, batch_id="batch-other")
 
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
@@ -417,8 +453,7 @@ class TestLspDiagnosticsInjectorDedup:
             file_path="/tmp/test.py",
             items=[Diagnostic(line=1, character=1, message="err")],
         )
-        with mgr._lock:
-            mgr._results[Path("/tmp/test.py")] = block
+        _publish_batch(mgr, block, batch_id="batch-1")
 
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
@@ -431,4 +466,4 @@ class TestLspDiagnosticsInjectorDedup:
         assert "[LSP DIAGNOSTICS]" in result.messages[0]["content"]
         assert "err" in result.messages[0]["content"]
         # Queue drained
-        assert len(mgr.drain_diagnostics()) == 0
+        assert mgr.pending_diagnostic_batches() == ()
