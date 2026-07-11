@@ -20,7 +20,6 @@ from reuleauxcoder.domain.config.models import (
     RemoteExecConfig,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
-from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
@@ -331,14 +330,24 @@ class TestRunnerRemoteExec:
         finally:
             runner.cleanup(ctx.agent)
 
-    def test_runner_stream_chat_emits_startup_panel(self, tmp_path: Path) -> None:
+    def test_runner_stream_chat_reuses_peer_runtime_without_startup_panel(
+        self, tmp_path: Path
+    ) -> None:
         port = _free_port()
-        runner = _build_runner_with_fake_agent(f"127.0.0.1:{port}")
+
+        def chat_behavior(agent: FakeAgent, _prompt: str) -> str:
+            count = getattr(agent, "chat_call_count", 0) + 1
+            agent.chat_call_count = count
+            return f"call:{count}"
+
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+        )
         ctx = runner.initialize()
         try:
             assert runner._relay_server is not None
             assert runner._relay_http_service is not None
-            peer_id, peer_token = _register_peer(
+            _, peer_token = _register_peer(
                 runner._relay_http_service.base_url,
                 runner._relay_server.issue_bootstrap_token(ttl_sec=60),
                 str(tmp_path),
@@ -351,19 +360,24 @@ class TestRunnerRemoteExec:
             events = _collect_stream_events(
                 runner._relay_http_service.base_url, peer_token, start_body["chat_id"]
             )
-            terminal_outputs = [
-                event["payload"]["content"]
-                for event in events
-                if event["type"] == "output"
-                and event["payload"].get("format") == "terminal"
-            ]
-            merged = "\n".join(terminal_outputs)
-            assert "REMOTE PEER READY" in merged
-            assert peer_id in merged
-            assert "Session" in merged
-            assert "Fingerprint" in merged
-            assert "Mode" in merged
-            assert "Model" in merged
+            first_end = [event for event in events if event["type"] == "chat_end"][-1]
+            assert first_end["payload"]["response"] == "call:1"
+            assert "REMOTE PEER READY" not in str(events)
+
+            _, second_start = _json_request(
+                "POST",
+                f"{runner._relay_http_service.base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "again"},
+            )
+            second_events = _collect_stream_events(
+                runner._relay_http_service.base_url,
+                peer_token,
+                second_start["chat_id"],
+            )
+            second_end = [
+                event for event in second_events if event["type"] == "chat_end"
+            ][-1]
+            assert second_end["payload"]["response"] == "call:2"
         finally:
             runner.cleanup(ctx.agent)
 
@@ -383,12 +397,12 @@ class TestRunnerRemoteExec:
         try:
             assert runner._relay_server is not None
             assert runner._relay_http_service is not None
-            peer_a, token_a = _register_peer(
+            _peer_a, token_a = _register_peer(
                 runner._relay_http_service.base_url,
                 runner._relay_server.issue_bootstrap_token(ttl_sec=60),
                 str(tmp_path / "peer-a"),
             )
-            peer_b, token_b = _register_peer(
+            _peer_b, token_b = _register_peer(
                 runner._relay_http_service.base_url,
                 runner._relay_server.issue_bootstrap_token(ttl_sec=60),
                 str(tmp_path / "peer-b"),
@@ -418,23 +432,9 @@ class TestRunnerRemoteExec:
                 runner._relay_http_service.base_url, token_b, starts["beta"]["chat_id"]
             )
 
-            outputs_a = "\n".join(
-                event["payload"].get("content", "")
-                for event in events_a
-                if event["type"] == "output"
-            )
-            outputs_b = "\n".join(
-                event["payload"].get("content", "")
-                for event in events_b
-                if event["type"] == "output"
-            )
             end_a = [event for event in events_a if event["type"] == "chat_end"][-1]
             end_b = [event for event in events_b if event["type"] == "chat_end"][-1]
 
-            assert peer_a in outputs_a
-            assert peer_b in outputs_b
-            assert peer_b not in outputs_a
-            assert peer_a not in outputs_b
             assert end_a["payload"]["response"].startswith("reply:alpha:")
             assert end_b["payload"]["response"].startswith("reply:beta:")
             assert end_a["payload"]["response"] != end_b["payload"]["response"]
@@ -503,7 +503,7 @@ class TestRunnerRemoteExec:
                 and event["payload"].get("format") == "terminal"
             ]
             merged = "\n".join(terminal_outputs)
-            assert "REMOTE PEER READY" in merged
+            assert "REMOTE PEER READY" not in merged
             assert "Available commands" in merged or "/help" in merged
             assert not any(
                 event["type"] == "output"

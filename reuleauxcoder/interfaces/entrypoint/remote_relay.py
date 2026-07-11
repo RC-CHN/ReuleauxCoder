@@ -5,12 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import uuid
-from typing import Any, Callable
+from typing import Any
 
-from rich import box
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.panel import Panel
 
 from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
@@ -111,7 +109,33 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     )
     skills_service: SkillsService | None = getattr(agent, "skills_service", None)
     session_store = runner.dependencies.create_session_store(sessions_dir)
-    startup_announced: set[tuple[str, str, str]] = set()
+    peer_agents: dict[str, Agent] = {}
+    peer_connection_markers: dict[str, str] = {}
+    peer_presenters: dict[str, tuple[Console, CLIRenderer]] = {}
+
+    def _connection_marker(peer_id: str) -> str:
+        peer = relay_server.registry.get(peer_id)
+        return (
+            f"{getattr(peer, 'connected_at', 0):.6f}"
+            if peer is not None
+            else "0"
+        )
+
+    def _dispose_peer(peer_id: str) -> None:
+        presenter = peer_presenters.pop(peer_id, None)
+        if presenter is not None:
+            presenter[1].close()
+        peer_agent = peer_agents.pop(peer_id, None)
+        manager = getattr(peer_agent, "_subagent_manager", None)
+        if manager is not None:
+            manager.shutdown(wait=True)
+        peer_connection_markers.pop(peer_id, None)
+
+    def _dispose_all_peers() -> None:
+        for peer_id in tuple(peer_presenters):
+            _dispose_peer(peer_id)
+
+    runner._remote_chat_cleanup = _dispose_all_peers
 
     def _peer_fingerprint(peer_id: str) -> str:
         peer = relay_server.registry.get(peer_id)
@@ -127,10 +151,22 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 )
         return f"remote:{machine_key}:{workspace_root or '.'}"
 
-    def _create_peer_agent(
-        peer_id: str, remote_stream_handler: Callable[[str, Any], None] | None = None
-    ) -> Agent:
+    def _create_peer_agent(peer_id: str) -> Agent:
+        marker = _connection_marker(peer_id)
+        existing = peer_agents.get(peer_id)
+        if existing is not None and peer_connection_markers.get(peer_id) == marker:
+            return existing
+        _dispose_peer(peer_id)
         if config is None:
+            peer_agents[peer_id] = agent
+            peer_connection_markers[peer_id] = marker
+            console = Console(
+                record=True, force_terminal=True, color_system="truecolor"
+            )
+            peer_presenters[peer_id] = (
+                console,
+                CLIRenderer(console_override=console),
+            )
             return agent
 
         peer_llm = runner.dependencies.create_llm(config)
@@ -157,12 +193,23 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             if not isinstance(context, ExecutionContext):
                 continue
             context.peer_id = peer_id
-            context.remote_stream_handler = remote_stream_handler
             if workspace_root:
                 context.workspace_root = workspace_root
 
         fingerprint = _peer_fingerprint(peer_id)
         setattr(peer_agent, "session_fingerprint", fingerprint)
+
+        def _cache_created_agent() -> Agent:
+            peer_agents[peer_id] = peer_agent
+            peer_connection_markers[peer_id] = marker
+            console = Console(
+                record=True, force_terminal=True, color_system="truecolor"
+            )
+            peer_presenters[peer_id] = (
+                console,
+                CLIRenderer(console_override=console),
+            )
+            return peer_agent
 
         latest = session_store.get_latest(fingerprint=fingerprint)
         if latest:
@@ -170,11 +217,11 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             if loaded is not None:
                 apply_session_runtime_state(loaded, config, peer_agent)
                 setattr(peer_agent, "current_session_id", latest.id)
-                return peer_agent
+                return _cache_created_agent()
 
         restore_config_runtime_defaults(config, peer_agent)
         setattr(peer_agent, "current_session_id", session_store.generate_session_id())
-        return peer_agent
+        return _cache_created_agent()
 
     def _save_peer_session(peer_agent: Agent, peer_id: str) -> None:
         if config is None or not getattr(peer_agent, "messages", None):
@@ -203,43 +250,11 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
 
     def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
         peer_agent = _create_peer_agent(peer_id)
-
-        session_id = getattr(peer_agent, "current_session_id", "-") or "-"
-        peer_info = relay_server.registry.get(peer_id)
-        connection_marker = (
-            f"{getattr(peer_info, 'connected_at', 0):.6f}"
-            if peer_info is not None
-            else "0"
-        )
-        startup_key = (peer_id, str(session_id), connection_marker)
-        if startup_key not in startup_announced:
-            startup_console = Console(
-                record=True, force_terminal=True, color_system="truecolor"
-            )
-            startup_console.print(
-                Panel(
-                    (
-                        f"[bold]Peer[/bold]: {peer_id}\n"
-                        f"[bold]Session[/bold]: {session_id}\n"
-                        f"[bold]Fingerprint[/bold]: {_peer_fingerprint(peer_id)}\n"
-                        f"[bold]Mode[/bold]: {getattr(peer_agent, 'active_mode', '-') or '-'}\n"
-                        f"[bold]Model[/bold]: {getattr(getattr(peer_agent, 'llm', None), 'model', '-') or '-'}"
-                    ),
-                    title="REMOTE PEER READY",
-                    border_style="green",
-                    box=box.ROUNDED,
-                    padding=(0, 1),
-                )
-            )
-            startup_rendered = startup_console.export_text(clear=True, styles=True)
-            if startup_rendered:
-                remote_session.append_event(
-                    "output", {"format": "terminal", "content": startup_rendered}
-                )
-            startup_announced.add(startup_key)
+        ansi_console, renderer = peer_presenters[peer_id]
 
         if prompt.strip().startswith("/") and config is not None:
             command_bus = UIEventBus()
+            command_bus.subscribe(renderer.on_ui_event, replay_history=False)
             command_result = handle_command(
                 prompt.strip(),
                 peer_agent,
@@ -254,14 +269,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             if command_result["action"] != "chat":
                 setattr(peer_agent, "current_session_id", command_result["session_id"])
 
-                command_console = Console(
-                    record=True, force_terminal=True, color_system="truecolor"
-                )
-                command_renderer = CLIRenderer(console_override=command_console)
-                for event in getattr(command_bus, "_history", []):
-                    command_renderer.on_ui_event(event)
-                rendered = command_console.export_text(clear=True, styles=True)
-                command_renderer.close()
+                rendered = ansi_console.export_text(clear=True, styles=True)
                 if rendered:
                     remote_session.append_event(
                         "output", {"format": "terminal", "content": rendered}
@@ -278,11 +286,6 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 _save_peer_session(peer_agent, peer_id)
                 remote_session.append_event("chat_end", {"response": ""})
                 return
-
-        ansi_console = Console(
-            record=True, force_terminal=True, color_system="truecolor"
-        )
-        renderer = CLIRenderer(console_override=ansi_console)
 
         def _flush_output() -> None:
             rendered = ansi_console.export_text(clear=True, styles=True)
@@ -377,26 +380,18 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             )
 
         def _on_agent_event(event: AgentEvent) -> None:
-            if event.event_type == AgentEventType.TOOL_CALL_START:
-                remote_session.append_event(
-                    "tool_call_start",
-                    {"tool_name": event.tool_name, "tool_args": event.tool_args or {}},
-                )
-            elif event.event_type == AgentEventType.TOOL_CALL_END:
-                remote_session.append_event(
-                    "tool_call_end",
-                    {
-                        "tool_name": event.tool_name,
-                        "tool_success": event.tool_success,
-                        "tool_result": event.tool_result or "",
-                    },
-                )
-            elif event.event_type == AgentEventType.ERROR:
+            if event.event_type == AgentEventType.ERROR:
                 remote_session.append_event(
                     "error", {"message": event.error_message or "unknown error"}
                 )
             renderer.on_event(event)
             _flush_output()
+
+        for tool in peer_agent.tools:
+            backend = getattr(tool, "backend", None)
+            context = getattr(backend, "context", None)
+            if isinstance(context, ExecutionContext):
+                context.remote_stream_handler = _on_remote_stream
 
         previous_approval = peer_agent.approval_provider
         peer_agent.add_event_handler(_on_agent_event)
@@ -416,7 +411,6 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 peer_agent._event_handlers.remove(_on_agent_event)
             except ValueError:
                 pass
-            renderer.close()
 
     runner._relay_http_service.set_chat_handler(_chat)
     runner._relay_http_service.set_stream_chat_handler(_stream_chat)

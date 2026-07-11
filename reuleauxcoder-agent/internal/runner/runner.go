@@ -270,12 +270,6 @@ func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, 
 		return r.handleApprovalRequest(ctx, peerToken, chatID, event.Payload)
 	case "approval_resolved":
 		return nil
-	case "tool_call_start":
-		if name, _ := event.Payload["tool_name"].(string); name != "" {
-			fmt.Printf("\n[tool] %s\n", name)
-		}
-	case "tool_call_end":
-		return nil
 	case "chat_end":
 		if response, _ := event.Payload["response"].(string); strings.TrimSpace(response) != "" {
 			fmt.Println()

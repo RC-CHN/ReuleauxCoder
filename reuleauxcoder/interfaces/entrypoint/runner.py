@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from reuleauxcoder.app.runtime.session_state import (
     get_session_fingerprint,
@@ -74,6 +74,7 @@ class AppRunner:
         self._lsp_manager: LspManager | None = None
         self._agent: Agent | None = None
         self._ui_bus: UIEventBus | None = None
+        self._remote_chat_cleanup: Callable[[], None] | None = None
         self._extension_manager = ExtensionManager()
         self._extension_manager.register(
             ExtensionDefinition(
@@ -334,6 +335,9 @@ class AppRunner:
     def cleanup(self, agent: Agent | None = None) -> None:
         """Clean up resources (MCP connections, remote relay, etc.)."""
         agent = agent or self._agent
+        if self._remote_chat_cleanup is not None:
+            self._remote_chat_cleanup()
+            self._remote_chat_cleanup = None
         if agent is not None:
             subagent_manager = getattr(agent, "_subagent_manager", None)
             if subagent_manager is not None:
