@@ -122,6 +122,34 @@ class TestRegistration:
         finally:
             srv.stop()
 
+    def test_v2_capabilities_gate_process_dispatch_without_workspace_prefix(
+        self,
+    ) -> None:
+        srv = RelayServer()
+        srv.start()
+        try:
+            response = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=srv.issue_bootstrap_token(ttl_sec=60),
+                    cwd="/tmp",
+                    protocol_version=2,
+                    capabilities=["workspace.process.start"],
+                )
+            )
+
+            with pytest.raises(
+                RemoteExecError, match="REMOTE_CAPABILITY_UNAVAILABLE"
+            ):
+                srv.send_workspace_request(
+                    response.peer_id,
+                    WorkspaceRequest(
+                        operation="process.start",
+                        args={"command": "echo", "process_id": "p"},
+                    ),
+                )
+        finally:
+            srv.stop()
+
     def test_peer_token_uses_configured_ttl(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "reuleauxcoder.extensions.remote_exec.auth.time.time", lambda: 1000.0

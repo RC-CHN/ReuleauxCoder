@@ -7,6 +7,8 @@ from pathlib import Path
 import threading
 
 from reuleauxcoder.domain.workspace import WorkspacePort
+from reuleauxcoder.domain.process import ProcessPort
+from reuleauxcoder.infrastructure.process import LocalProcessPort
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
 
@@ -32,9 +34,11 @@ class ToolBackend:
         context: ExecutionContext | None = None,
         *,
         workspace: WorkspacePort | None = None,
+        process: ProcessPort | None = None,
     ):
         self.context = context or ExecutionContext()
         self.workspace = workspace
+        self.process = process
 
 
 class LocalToolBackend(ToolBackend):
@@ -47,6 +51,7 @@ class LocalToolBackend(ToolBackend):
         context: ExecutionContext | None = None,
         *,
         workspace: WorkspacePort | None = None,
+        process: ProcessPort | None = None,
     ):
         effective_context = context or ExecutionContext()
         root = effective_context.workspace_root or Path("/")
@@ -54,4 +59,5 @@ class LocalToolBackend(ToolBackend):
         super().__init__(
             effective_context,
             workspace=workspace or LocalWorkspacePort(root, cwd=cwd),
+            process=process or LocalProcessPort(),
         )

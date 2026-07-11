@@ -333,7 +333,12 @@ class RelayServer:
         peer = self._registry.get(peer_id)
         if peer is None:
             raise PeerNotFoundError(peer_id)
-        self._require_capability(peer, f"workspace.{request.operation}")
+        capability = (
+            request.operation
+            if request.operation.startswith("process.")
+            else f"workspace.{request.operation}"
+        )
+        self._require_capability(peer, capability)
         req_id = str(uuid.uuid4())
         envelope = RelayEnvelope(
             type="workspace_request",

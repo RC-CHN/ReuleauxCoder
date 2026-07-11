@@ -1007,6 +1007,31 @@ class TestRemoteRelayHTTPService:
             )
             assert "hi-from-agent" in shell_result
 
+            timeout_started = time.monotonic()
+            timeout_result = ShellTool(backend=backend).execute(
+                command="sleep 10", timeout=1
+            )
+            assert "timed out" in timeout_result.lower()
+            assert time.monotonic() - timeout_started < 3
+
+            cancellation = threading.Event()
+            backend.context.cancellation_event = cancellation
+            timer = threading.Timer(0.2, cancellation.set)
+            cancel_started = time.monotonic()
+            timer.start()
+            try:
+                cancel_result = ShellTool(backend=backend).execute(
+                    command="sleep 30", timeout=20
+                )
+            finally:
+                timer.cancel()
+                cancellation.clear()
+            assert "cancelled" in cancel_result.lower()
+            assert time.monotonic() - cancel_started < 3
+            assert "still-alive" in ShellTool(backend=backend).execute(
+                command="printf 'still-alive'"
+            )
+
             read_result = ReadFileTool(backend=backend).execute(
                 file_path=str(target_file)
             )

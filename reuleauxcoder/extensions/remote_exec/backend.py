@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
+import uuid
 
+from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
 from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
     WorkspaceError,
@@ -42,6 +45,7 @@ class RemoteRelayToolBackend(ToolBackend):
         self.relay_server = relay_server
         self.ui_bus = ui_bus
         self.workspace = RemoteWorkspacePort(self)
+        self.process = RemoteProcessPort(self)
 
     def resolve_peer_id(self) -> str:
         peer_id = self.context.peer_id
@@ -54,6 +58,17 @@ class RemoteRelayToolBackend(ToolBackend):
                 )
             peer_id = peer.peer_id
         return peer_id
+
+    def supports_capability(self, capability: str) -> bool:
+        try:
+            peer = self.relay_server.registry.get(self.resolve_peer_id())
+        except WorkspaceError:
+            return False
+        return bool(
+            peer is not None
+            and int(peer.meta.get("protocol_version", 1)) >= 2
+            and capability in peer.capabilities
+        )
 
     def exec_tool(self, tool_name: str, args: dict[str, Any]) -> str:
         """Execute a tool on the remote peer and return the text result.
@@ -252,3 +267,62 @@ class RemoteWorkspacePort:
             max_files=max_files,
             max_matches=max_matches,
         )
+
+
+class RemoteProcessPort:
+    """ProcessPort using start/poll/cancel peer primitives."""
+
+    def __init__(self, backend: RemoteRelayToolBackend):
+        self.backend = backend
+
+    def run(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        timeout: int,
+        cancellation_event=None,
+        stream_handler=None,
+    ) -> ProcessResult:
+        process_id = uuid.uuid4().hex
+        deadline_ms = int((time.time() + timeout) * 1000)
+        data = self.backend.workspace._request(
+            "process.start",
+            process_id=process_id,
+            idempotency_key=process_id,
+            command=command,
+            cwd=cwd,
+            deadline_unix_ms=deadline_ms,
+        )
+        process_id = str(data.get("process_id", process_id))
+        stdout_offset = 0
+        stderr_offset = 0
+        while True:
+            if cancellation_event is not None and cancellation_event.is_set():
+                self.backend.workspace._request(
+                    "process.cancel", process_id=process_id
+                )
+                return ProcessResult(cancelled=True)
+            state = self.backend.workspace._request(
+                "process.poll",
+                process_id=process_id,
+                stdout_offset=stdout_offset,
+                stderr_offset=stderr_offset,
+            )
+            stdout = str(state.get("stdout", ""))
+            stderr = str(state.get("stderr", ""))
+            stdout_offset = int(state.get("stdout_offset", stdout_offset))
+            stderr_offset = int(state.get("stderr_offset", stderr_offset))
+            if stdout and stream_handler is not None:
+                stream_handler(ProcessChunk("stdout", stdout))
+            if stderr and stream_handler is not None:
+                stream_handler(ProcessChunk("stderr", stderr))
+            if state.get("done"):
+                return ProcessResult(
+                    stdout=str(state.get("stdout_all", "")),
+                    stderr=str(state.get("stderr_all", "")),
+                    exit_code=int(state.get("exit_code", 0)),
+                    timed_out=bool(state.get("timed_out")),
+                    cancelled=bool(state.get("cancelled")),
+                )
+            time.sleep(0.05)

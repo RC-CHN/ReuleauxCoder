@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/client"
+	processops "github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/process"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/tools"
 	workspaceops "github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/workspace"
@@ -56,13 +57,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	if workspaceRoot == "" {
 		workspaceRoot = cwd
 	}
+	processManager := processops.NewManager(workspaceRoot, cwd)
+	defer processManager.Close()
 
 	registerResp, err := r.client.Register(ctx, protocol.RegisterRequest{
 		BootstrapToken: r.cfg.BootstrapToken,
 		CWD:            cwd,
 		WorkspaceRoot:  workspaceRoot,
 		Capabilities: []string{
-			"shell",
+			"shell", "process.start", "process.poll", "process.cancel",
 			"workspace.fs.stat", "workspace.fs.list", "workspace.fs.read_text",
 			"workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
 		},
@@ -86,7 +89,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		)
 	}
 	log.Printf("registered peer_id=%s", registerResp.PeerID)
-	fmt.Printf("\n=== REMOTE PEER CONNECTED ===\nPeer: %s\nWorkspace: %s\nHost: %s\n============================\n\n", registerResp.PeerID, workspaceRoot, r.cfg.Host)
+	fmt.Printf("Connected to %s as %s (%s)\n", r.cfg.Host, registerResp.PeerID, workspaceRoot)
 
 	heartbeatInterval := time.Duration(registerResp.HeartbeatIntervalSec) * time.Second
 	if heartbeatInterval <= 0 {
@@ -113,7 +116,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.Interactive {
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval)
+			errCh <- r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval, processManager)
 		}()
 
 		if err := r.runInteractiveLoop(childCtx, registerResp.PeerToken); err != nil {
@@ -130,10 +133,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		return nil
 	}
 
-	return r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval)
+	return r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval, processManager)
 }
 
-func (r *Runner) runPollLoop(ctx context.Context, peerToken, workspaceRoot, cwd string, pollInterval time.Duration) error {
+func (r *Runner) runPollLoop(
+	ctx context.Context,
+	peerToken, workspaceRoot, cwd string,
+	pollInterval time.Duration,
+	processManager *processops.Manager,
+) error {
 	retryDelay := 500 * time.Millisecond
 	for {
 		select {
@@ -194,7 +202,12 @@ func (r *Runner) runPollLoop(ctx context.Context, peerToken, workspaceRoot, cwd 
 				}
 				continue
 			}
-			result := workspaceops.Execute(workspaceReq, workspaceRoot, cwd)
+			var result protocol.WorkspaceResult
+			if strings.HasPrefix(workspaceReq.Operation, "process.") {
+				result = processManager.Execute(workspaceReq)
+			} else {
+				result = workspaceops.Execute(workspaceReq, workspaceRoot, cwd)
+			}
 			if sendErr := r.sendWorkspaceResult(ctx, peerToken, env.RequestID, result); sendErr != nil {
 				return sendErr
 			}
