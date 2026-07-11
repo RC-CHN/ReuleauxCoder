@@ -6,7 +6,9 @@ from reuleauxcoder.domain.extensions import (
     ExtensionDefinition,
     ExtensionManager,
     ExtensionManifest,
+    ExtensionPhase,
     ExtensionScope,
+    SubagentPolicy,
 )
 
 
@@ -20,6 +22,9 @@ def _definition(
     factory=lambda context: object(),
     api_version=1,
     config_namespace=None,
+    phase=ExtensionPhase.LIFECYCLE,
+    subagent_policy=SubagentPolicy.OMIT,
+    remote_compatible=False,
 ):
     return ExtensionDefinition(
         manifest=ExtensionManifest(
@@ -31,6 +36,9 @@ def _definition(
             after=after,
             scopes=scopes,
             config_namespace=config_namespace,
+            phase=phase,
+            subagent_policy=subagent_policy,
+            remote_compatible=remote_compatible,
         ),
         factory=factory,
     )
@@ -43,6 +51,14 @@ def test_dependency_and_ordering_constraints_are_deterministic() -> None:
     manager.register(_definition("processor", requires=frozenset({"auth"})))
 
     assert manager.resolve_order() == ("auth", "processor", "observer")
+
+
+def test_phase_orders_unconstrained_contributions_before_name() -> None:
+    manager = ExtensionManager()
+    manager.register(_definition("z-auth", phase=ExtensionPhase.AUTHORIZATION))
+    manager.register(_definition("a-observer", phase=ExtensionPhase.OBSERVATION))
+
+    assert manager.resolve_order() == ("z-auth", "a-observer")
 
 
 def test_missing_dependency_and_cycle_fail_before_instantiation() -> None:
@@ -88,6 +104,32 @@ def test_scope_filter_and_config_namespace() -> None:
     assert subagent.extension_ids == ()
     assert session.extension_ids == ("session-only",)
     assert seen == [{"enabled": True}]
+
+
+def test_subagent_and_remote_policies_are_enforced() -> None:
+    with pytest.raises(ValueError, match="subagent_policy='rebuild'"):
+        _definition("invalid", scopes=frozenset({ExtensionScope.SUBAGENT}))
+
+    manager = ExtensionManager()
+    manager.register(
+        _definition(
+            "child",
+            scopes=frozenset({ExtensionScope.SUBAGENT}),
+            subagent_policy=SubagentPolicy.REBUILD,
+        )
+    )
+    assert manager.open_scope(ExtensionScope.SUBAGENT, "child-1").extension_ids == (
+        "child",
+    )
+
+    remote = ExtensionManager()
+    remote.register(_definition("local-only"))
+    with pytest.raises(ValueError, match="not remote compatible"):
+        remote.open_scope(
+            ExtensionScope.SESSION,
+            "remote-1",
+            remote_target=True,
+        )
 
 
 def test_partial_construction_disposes_in_reverse_order() -> None:

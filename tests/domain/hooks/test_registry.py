@@ -135,6 +135,10 @@ def test_hook_registry_run_transforms_rejects_none_result() -> None:
             HookPoint.AFTER_TOOL_EXECUTE,
             HookContext(hook_point=HookPoint.AFTER_TOOL_EXECUTE),
         )
+    diagnostic = registry.drain_diagnostics()[0]
+    assert diagnostic.hook_name == "none"
+    assert diagnostic.hook_kind.value == "transform"
+    assert diagnostic.severity == "error"
 
 
 def test_hook_registry_run_transforms_rejects_wrong_type() -> None:

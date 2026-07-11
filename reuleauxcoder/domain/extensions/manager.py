@@ -9,7 +9,9 @@ from typing import Any, Protocol
 from reuleauxcoder.domain.extensions.manifest import (
     EXTENSION_API_VERSION,
     ExtensionManifest,
+    ExtensionPhase,
     ExtensionScope,
+    SubagentPolicy,
 )
 
 
@@ -129,7 +131,13 @@ class ExtensionManager:
             for successor in successors:
                 indegree[successor] += 1
 
-        ready = sorted(name for name, degree in indegree.items() if degree == 0)
+        def order_key(name: str) -> tuple[ExtensionPhase, str]:
+            return (self._definitions[name].manifest.phase, name)
+
+        ready = sorted(
+            (name for name, degree in indegree.items() if degree == 0),
+            key=order_key,
+        )
         ordered: list[str] = []
         while ready:
             current = ready.pop(0)
@@ -138,7 +146,7 @@ class ExtensionManager:
                 indegree[successor] -= 1
                 if indegree[successor] == 0:
                     ready.append(successor)
-                    ready.sort()
+                    ready.sort(key=order_key)
 
         if len(ordered) != len(ids):
             cycle = sorted(name for name, degree in indegree.items() if degree > 0)
@@ -152,6 +160,7 @@ class ExtensionManager:
         *,
         config: Mapping[str, Any] | None = None,
         services: Mapping[str, Any] | None = None,
+        remote_target: bool = False,
     ) -> ExtensionScopeContainer:
         """Instantiate extensions enabled for one explicit scope."""
         context = ExtensionContext(
@@ -166,6 +175,15 @@ class ExtensionManager:
                 definition = self._definitions[extension_id]
                 if scope not in definition.manifest.scopes:
                     continue
+                if (
+                    scope is ExtensionScope.SUBAGENT
+                    and definition.manifest.subagent_policy is SubagentPolicy.OMIT
+                ):
+                    continue
+                if remote_target and not definition.manifest.remote_compatible:
+                    raise ValueError(
+                        f"Extension '{extension_id}' is not remote compatible"
+                    )
                 namespace = definition.manifest.config_namespace
                 extension_config = (
                     context.config.get(namespace, {}) if namespace else context.config

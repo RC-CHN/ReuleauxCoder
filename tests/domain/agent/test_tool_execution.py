@@ -40,6 +40,16 @@ class _AgentStub:
             run_transforms=lambda point, ctx: ctx,
             run_observers=lambda point, ctx: None,
         )
+        self.extension_runtime = SimpleNamespace(
+            authorize_tool=lambda ctx: tuple(self.hook_registry.run_guards(None, ctx)),
+            contribute_tool_context=lambda ctx: self.hook_registry.run_transforms(
+                None, ctx
+            ),
+            process_tool_outcome=lambda ctx: self.hook_registry.run_transforms(
+                None, ctx
+            ),
+            observe=lambda point, ctx: self.hook_registry.run_observers(point, ctx),
+        )
         self.events = []
 
     def get_tool(self, name: str):  # noqa: ARG002

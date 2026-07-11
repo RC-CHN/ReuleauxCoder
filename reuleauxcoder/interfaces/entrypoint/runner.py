@@ -30,6 +30,7 @@ from reuleauxcoder.domain.hooks import (
 )
 from reuleauxcoder.domain.extensions import (
     ExtensionDefinition,
+    ExtensionPhase,
     ExtensionManager,
     ExtensionManifest,
     ExtensionScope,
@@ -82,6 +83,9 @@ class AppRunner:
                     extension_id="core.hooks",
                     version="1.0.0",
                     scopes=frozenset({ExtensionScope.RUNNER}),
+                    phase=ExtensionPhase.LIFECYCLE,
+                    remote_compatible=True,
+                    thread_safe=False,
                 ),
                 factory=lambda context: LegacyHookLifecycleParticipant(
                     agent=context.services["agent"],

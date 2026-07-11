@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.extensions.tools.base import Tool
     from reuleauxcoder.domain.config.models import Config
+    from reuleauxcoder.domain.extensions import ToolExtensionRuntime
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.loop import AgentLoop
@@ -19,6 +20,7 @@ from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.hooks import HookBase, HookDiagnostic, HookPoint, HookRegistry
+from reuleauxcoder.domain.extensions import HookExtensionAdapter
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.services.prompt.builder import system_prompt
@@ -50,6 +52,7 @@ class Agent:
         active_mode: str | None = None,
         loop: AgentLoop | None = None,
         executor: ToolExecutor | None = None,
+        extension_runtime: "ToolExtensionRuntime" | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else []
@@ -96,6 +99,9 @@ class Agent:
         # Hook runtime
         self.hook_registry = hook_registry or HookRegistry()
         self.hook_registry.set_diagnostic_sink(self._emit_hook_diagnostic)
+        self.extension_runtime = extension_runtime or HookExtensionAdapter(
+            self.hook_registry
+        )
 
         # Execution components
         self.approval_provider = approval_provider

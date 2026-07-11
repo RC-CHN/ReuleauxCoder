@@ -45,10 +45,10 @@ class ToolExecutor:
             },
         )
 
-        guard_decisions = self.agent.hook_registry.run_guards(
-            HookPoint.BEFORE_TOOL_EXECUTE,
-            before_context,
-        )
+        # Fixed core pipeline: authorize -> validate -> approve -> contribute
+        # -> execute -> process outcome -> observe -> publish. Extension code
+        # cannot reorder or bypass the core validation and approval stages.
+        guard_decisions = self.agent.extension_runtime.authorize_tool(before_context)
         denied = next((d for d in guard_decisions if not d.allowed), None)
         if denied is not None:
             message = denied.reason or f"Tool '{tc.name}' blocked by guard hook"
@@ -163,11 +163,27 @@ class ToolExecutor:
                 )
                 return message
 
-        before_context = self.agent.hook_registry.run_transforms(
-            HookPoint.BEFORE_TOOL_EXECUTE,
-            before_context,
-        )
-        self.agent.hook_registry.run_observers(
+        try:
+            before_context = self.agent.extension_runtime.contribute_tool_context(
+                before_context
+            )
+        except Exception as exc:
+            message = f"Tool '{tc.name}' context contribution failed: {exc}"
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(
+                    tc.name,
+                    message,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome.from_legacy(
+                        message,
+                        success=False,
+                        error_kind=ToolErrorKind.INTERNAL,
+                    ),
+                )
+            )
+            return message
+        self.agent.extension_runtime.observe(
             HookPoint.BEFORE_TOOL_EXECUTE, before_context
         )
 
@@ -197,11 +213,10 @@ class ToolExecutor:
                 result=result,
                 round_index=self.agent.state.current_round,
             )
-            after_context = self.agent.hook_registry.run_transforms(
-                HookPoint.AFTER_TOOL_EXECUTE,
-                after_context,
+            after_context = self.agent.extension_runtime.process_tool_outcome(
+                after_context
             )
-            self.agent.hook_registry.run_observers(
+            self.agent.extension_runtime.observe(
                 HookPoint.AFTER_TOOL_EXECUTE, after_context
             )
             self.agent._emit_event(

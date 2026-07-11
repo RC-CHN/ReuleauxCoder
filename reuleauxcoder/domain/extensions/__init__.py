@@ -7,10 +7,21 @@ from reuleauxcoder.domain.extensions.manager import (
     ExtensionManager,
     ExtensionScopeContainer,
 )
+from reuleauxcoder.domain.extensions.hook_adapter import HookExtensionAdapter
+from reuleauxcoder.domain.extensions.ports import (
+    AuthorizationPolicy,
+    ContextContributor,
+    LifecycleParticipant,
+    OutcomeProcessor,
+    RuntimeObserver,
+    ToolExtensionRuntime,
+)
 from reuleauxcoder.domain.extensions.manifest import (
     EXTENSION_API_VERSION,
+    ExtensionPhase,
     ExtensionManifest,
     ExtensionScope,
+    SubagentPolicy,
 )
 
 __all__ = [
@@ -20,6 +31,15 @@ __all__ = [
     "ExtensionDiagnostic",
     "ExtensionManager",
     "ExtensionManifest",
+    "ExtensionPhase",
     "ExtensionScope",
+    "SubagentPolicy",
     "ExtensionScopeContainer",
+    "HookExtensionAdapter",
+    "AuthorizationPolicy",
+    "ContextContributor",
+    "LifecycleParticipant",
+    "OutcomeProcessor",
+    "RuntimeObserver",
+    "ToolExtensionRuntime",
 ]

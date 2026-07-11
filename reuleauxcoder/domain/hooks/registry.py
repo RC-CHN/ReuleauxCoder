@@ -88,6 +88,7 @@ class HookRegistry:
             try:
                 decision = cast(GuardHook[HookContext], hook).run(context)
             except Exception as exc:
+                self._report_failure(hook, hook_point, HookKind.GUARD, exc)
                 decisions.append(
                     GuardDecision.deny(
                         f"guard hook '{hook.name}' failed at {hook_point.value}: {exc}"
@@ -105,16 +106,24 @@ class HookRegistry:
         """Run transform hooks, requiring same-type context results."""
         current = context
         for hook in self._iter_kind(hook_point, HookKind.TRANSFORM):
-            result = cast(TransformHook[HookContext], hook).run(current)
+            try:
+                result = cast(TransformHook[HookContext], hook).run(current)
+            except Exception as exc:
+                self._report_failure(hook, hook_point, HookKind.TRANSFORM, exc)
+                raise
             if result is None:
-                raise TypeError(
+                error = TypeError(
                     f"transform hook '{hook.name}' returned None for {hook_point.value}"
                 )
+                self._report_failure(hook, hook_point, HookKind.TRANSFORM, error)
+                raise error
             if not isinstance(result, current.__class__):
-                raise TypeError(
+                error = TypeError(
                     f"transform hook '{hook.name}' returned {type(result).__name__}, "
                     f"expected {current.__class__.__name__}"
                 )
+                self._report_failure(hook, hook_point, HookKind.TRANSFORM, error)
+                raise error
             current = result
         return current
 
@@ -128,16 +137,10 @@ class HookRegistry:
             try:
                 cast(ObserverHook[HookContext], hook).run(snapshot)
             except Exception as exc:
-                diagnostic = HookDiagnostic(
-                    hook_name=hook.name,
-                    hook_point=hook_point,
-                    hook_kind=HookKind.OBSERVER,
-                    message=str(exc),
+                diagnostic = self._report_failure(
+                    hook, hook_point, HookKind.OBSERVER, exc
                 )
                 diagnostics.append(diagnostic)
-                self._diagnostics.append(diagnostic)
-                if self._diagnostic_sink is not None:
-                    self._diagnostic_sink(diagnostic)
                 continue
         return tuple(diagnostics)
 
@@ -186,3 +189,22 @@ class HookRegistry:
         if isinstance(value, set):
             return frozenset(cls._freeze(item) for item in value)
         return value
+
+    def _report_failure(
+        self,
+        hook: HookBase[Any],
+        hook_point: HookPoint,
+        hook_kind: HookKind,
+        error: Exception,
+    ) -> HookDiagnostic:
+        diagnostic = HookDiagnostic(
+            hook_name=hook.name,
+            hook_point=hook_point,
+            hook_kind=hook_kind,
+            message=str(error),
+            severity="error" if hook_kind is not HookKind.OBSERVER else "warning",
+        )
+        self._diagnostics.append(diagnostic)
+        if self._diagnostic_sink is not None:
+            self._diagnostic_sink(diagnostic)
+        return diagnostic
