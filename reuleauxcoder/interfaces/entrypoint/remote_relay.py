@@ -22,6 +22,7 @@ from reuleauxcoder.domain.approval import (
     ApprovalDecision,
     ApprovalProvider,
     ApprovalRequest,
+    ApprovalSectionKind,
 )
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
@@ -30,9 +31,6 @@ from reuleauxcoder.extensions.remote_exec.protocol import TerminalCapabilities
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.backend import ExecutionContext
-from reuleauxcoder.interfaces.shared.approval_preview import (
-    build_preview_diff as _build_preview_diff,
-)
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
@@ -353,7 +351,32 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
                 request_id = str(uuid.uuid4())
                 remote_session.register_interaction(request_id)
-                diff_text = _build_preview_diff(request)
+                sections = request.preview.sections if request.preview is not None else ()
+                diff_section = next(
+                    (
+                        section
+                        for section in sections
+                        if section.kind is ApprovalSectionKind.DIFF
+                    ),
+                    None,
+                )
+                args_section = next(
+                    (
+                        section
+                        for section in sections
+                        if section.kind is ApprovalSectionKind.JSON
+                    ),
+                    None,
+                )
+                diff_text = (
+                    diff_section.content
+                    if diff_section is not None
+                    and isinstance(diff_section.content, str)
+                    else None
+                )
+                args_content = (
+                    args_section.content if args_section is not None else request.tool_args
+                )
                 approval_markdown = "\n\n".join(
                     part
                     for part in [
@@ -361,8 +384,8 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                         f"Tool `{request.tool_name}` from source `{request.tool_source}` requires approval.",
                         request.reason or "",
                         (
-                            f"```json\n{json.dumps(request.tool_args, ensure_ascii=False, indent=2)}\n```"
-                            if request.tool_args and diff_text is None
+                            f"```json\n{json.dumps(args_content, ensure_ascii=False, indent=2)}\n```"
+                            if args_content and diff_text is None
                             else ""
                         ),
                         f"```diff\n{diff_text}\n```" if diff_text else "",

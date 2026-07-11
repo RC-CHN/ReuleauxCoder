@@ -32,7 +32,7 @@ class CLIUIInteractor:
     def confirm(self, request: ConfirmRequest) -> ConfirmResponse:
         with self._interaction_lock:
             self.ui_bus.warning(
-                request.title, kind=UIEventKind.COMMAND, **request.details
+                request.title, kind=UIEventKind.COMMAND
             )
             self.ui_bus.info(request.message, kind=UIEventKind.COMMAND)
             while True:
@@ -47,7 +47,7 @@ class CLIUIInteractor:
 
     def choose_one(self, request: ChooseOneRequest) -> ChooseOneResponse:
         with self._interaction_lock:
-            self.ui_bus.info(request.title, kind=UIEventKind.COMMAND, **request.details)
+            self.ui_bus.info(request.title, kind=UIEventKind.COMMAND)
             if request.message:
                 self.ui_bus.info(request.message, kind=UIEventKind.COMMAND)
             if not request.items:
@@ -80,7 +80,7 @@ class CLIUIInteractor:
 
     def input_text(self, request: InputTextRequest) -> InputTextResponse:
         with self._interaction_lock:
-            self.ui_bus.info(request.title, kind=UIEventKind.COMMAND, **request.details)
+            self.ui_bus.info(request.title, kind=UIEventKind.COMMAND)
             prompt = request.prompt
             if request.placeholder:
                 prompt += f" ({request.placeholder})"
@@ -101,19 +101,16 @@ class CLIUIInteractor:
     def review(self, request: ReviewRequest) -> ReviewResponse:
         with self._interaction_lock:
             self.ui_bus.warning(
-                request.title, kind=UIEventKind.APPROVAL, **request.metadata
+                request.title, kind=UIEventKind.APPROVAL
             )
             self.ui_bus.info(request.summary, kind=UIEventKind.APPROVAL)
 
             for section in request.sections:
-                title = section.get("title", "Section")
-                kind = section.get("kind", "text")
-                content = section.get("content")
-                self.ui_bus.info(title, kind=UIEventKind.APPROVAL)
-                if kind == "diff" and isinstance(content, str):
-                    render_diff_panel(content)
-                elif content is not None:
-                    self.ui_bus.info(str(content), kind=UIEventKind.APPROVAL)
+                self.ui_bus.info(section.title, kind=UIEventKind.APPROVAL)
+                if section.kind.value == "diff" and isinstance(section.content, str):
+                    render_diff_panel(section.content)
+                else:
+                    self.ui_bus.info(str(section.content), kind=UIEventKind.APPROVAL)
 
             while True:
                 try:

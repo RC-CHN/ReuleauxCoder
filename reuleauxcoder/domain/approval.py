@@ -4,9 +4,31 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Protocol
+from enum import Enum
+from typing import Any, Callable, Literal, Mapping, Protocol
 
 ApprovalDecisionMode = Literal["allow_once", "deny_once"]
+
+
+class ApprovalSectionKind(str, Enum):
+    TEXT = "text"
+    DIFF = "diff"
+    JSON = "json"
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalSection:
+    id: str
+    title: str
+    kind: ApprovalSectionKind
+    content: str | Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalPreview:
+    """Adapter-neutral review content built once before user interaction."""
+
+    sections: tuple[ApprovalSection, ...] = ()
 
 
 @dataclass(slots=True)
@@ -20,6 +42,7 @@ class ApprovalRequest:
     reason: str | None = None
     profile: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    preview: ApprovalPreview | None = None
 
 
 @dataclass(slots=True)

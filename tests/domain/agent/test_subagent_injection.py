@@ -168,11 +168,16 @@ def test_reset_advances_generation_and_clears_pending_injections() -> None:
     manager = SubagentManager()
     agent._subagent_manager = manager
     agent._pending_subagent_injections.append((object(), "old", True))
+    cancelled = []
+    agent.ui_interactor = SimpleNamespace(
+        cancel_all=lambda *, reason: cancelled.append(reason)
+    )
 
     agent.reset()
 
     assert manager.generation == 1
     assert agent._pending_subagent_injections == []
+    assert cancelled == ["session reset"]
     manager.shutdown()
 
 

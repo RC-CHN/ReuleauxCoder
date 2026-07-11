@@ -493,6 +493,9 @@ class Agent:
 
     def reset(self) -> None:
         """Clear conversation history."""
+        cancel_interactions = getattr(self.ui_interactor, "cancel_all", None)
+        if callable(cancel_interactions):
+            cancel_interactions(reason="session reset")
         self.session_generation += 1
         manager = getattr(self, "_subagent_manager", None)
         if manager is not None:

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind, ToolOutcome
 from reuleauxcoder.domain.approval import ApprovalRequest
+from reuleauxcoder.domain.approval_preview import build_approval_preview
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeToolExecuteContext,
@@ -137,16 +138,20 @@ class ToolExecutor:
                 )
                 return message
             try:
-                decision = provider.request_approval(
-                    ApprovalRequest(
-                        tool_name=tc.name,
-                        tool_args=dict(tc.arguments),
-                        tool_source=getattr(tool, "tool_source", "builtin_tool")
-                        if tool is not None
-                        else "unknown",
-                        reason=approval_required.reason,
-                    )
+                approval_request = ApprovalRequest(
+                    tool_name=tc.name,
+                    tool_args=dict(tc.arguments),
+                    tool_source=getattr(tool, "tool_source", "builtin_tool")
+                    if tool is not None
+                    else "unknown",
+                    reason=approval_required.reason,
                 )
+                backend = getattr(tool, "backend", None)
+                approval_request.preview = build_approval_preview(
+                    approval_request,
+                    workspace=getattr(backend, "workspace", None),
+                )
+                decision = provider.request_approval(approval_request)
             except (KeyboardInterrupt, EOFError):
                 message = f"Tool '{tc.name}' approval interrupted by user"
                 self.agent._emit_event(

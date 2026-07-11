@@ -27,6 +27,7 @@ def run_repl(
     session_exit_time: str | None = None,
     skills_service=None,
     output_coordinator=None,
+    interaction_coordinator=None,
 ) -> None:
     ensure_user_dirs()
     show_banner(config.model, config.base_url, __version__)
@@ -55,7 +56,16 @@ def run_repl(
         if output_coordinator is not None:
             output_coordinator.drain()
         try:
-            user_input = pt_prompt("You > ", history=history).strip()
+            foreground = getattr(
+                interaction_coordinator, "foreground_input", None
+            )
+            if callable(foreground):
+                with foreground() as available:
+                    if not available:
+                        break
+                    user_input = pt_prompt("You > ", history=history).strip()
+            else:
+                user_input = pt_prompt("You > ", history=history).strip()
         except (EOFError, KeyboardInterrupt):
             ui_bus.info("\nBye!")
             if agent.messages and config.session_auto_save:

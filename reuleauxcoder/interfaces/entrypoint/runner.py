@@ -348,6 +348,12 @@ class AppRunner:
     def cleanup(self, agent: Agent | None = None) -> None:
         """Clean up resources (MCP connections, remote relay, etc.)."""
         agent = agent or self._agent
+        if agent is not None:
+            shutdown_interactions = getattr(
+                getattr(agent, "ui_interactor", None), "shutdown", None
+            )
+            if callable(shutdown_interactions):
+                shutdown_interactions(reason="application shutdown")
         if self._remote_chat_cleanup is not None:
             self._remote_chat_cleanup()
             self._remote_chat_cleanup = None

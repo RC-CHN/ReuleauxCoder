@@ -50,6 +50,7 @@ class ParentLLMJudge:
             tool_args=dict(request.tool_args),
             tool_source=request.tool_source,
             reason=request.reason,
+            preview=request.preview,
             metadata={
                 **request.metadata,
                 "is_subagent": True,

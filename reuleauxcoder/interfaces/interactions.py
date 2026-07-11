@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import uuid
-from typing import Any, Protocol
+from typing import Protocol
 
+from reuleauxcoder.domain.approval import ApprovalSection
 from reuleauxcoder.interfaces.events import UIEvent
 
 
@@ -16,7 +17,6 @@ class ConfirmRequest:
     title: str
     message: str
     severity: str = "info"
-    details: dict[str, Any] = field(default_factory=dict)
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float | None = None
 
@@ -36,7 +36,6 @@ class ChoiceItem:
     id: str
     label: str
     description: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -48,7 +47,6 @@ class ChooseOneRequest:
     message: str | None = None
     initial_id: str | None = None
     allow_cancel: bool = True
-    details: dict[str, Any] = field(default_factory=dict)
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float | None = None
 
@@ -70,7 +68,6 @@ class InputTextRequest:
     initial_value: str = ""
     placeholder: str | None = None
     allow_empty: bool = False
-    details: dict[str, Any] = field(default_factory=dict)
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float | None = None
 
@@ -83,6 +80,16 @@ class InputTextResponse:
     cancelled: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewContext:
+    tool_name: str
+    tool_source: str
+    reason: str | None = None
+    is_subagent: bool = False
+    subagent_mode: str | None = None
+    subagent_task: str | None = None
+
+
 @dataclass(slots=True)
 class ReviewRequest:
     """Structured review/approval request with optional preview sections."""
@@ -91,8 +98,8 @@ class ReviewRequest:
     summary: str
     approve_label: str = "Approve"
     reject_label: str = "Reject"
-    sections: list[dict[str, Any]] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    sections: tuple[ApprovalSection, ...] = ()
+    context: ReviewContext | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float | None = None
 
