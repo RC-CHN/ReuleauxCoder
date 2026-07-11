@@ -43,7 +43,8 @@ type RelayEnvelope struct {
 }
 
 type PollRequest struct {
-	PeerToken string `json:"peer_token"`
+	PeerToken  string  `json:"peer_token"`
+	TimeoutSec float64 `json:"timeout_sec,omitempty"`
 }
 
 type ResultRequest struct {

@@ -26,6 +26,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     ChatResponse,
     CleanupResult,
     ExecToolResult,
+    RelayEnvelope,
     WorkspaceResult,
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
@@ -89,6 +90,26 @@ def _cleanup_provider_build_dir(provider: object) -> None:
 
 
 class TestRemoteRelayHTTPService:
+    def test_peer_poll_waits_for_server_side_envelope(self) -> None:
+        relay = RelayServer()
+        service = RemoteRelayHTTPService(relay_server=relay, bind="127.0.0.1:0")
+        holder: dict[str, object] = {}
+
+        thread = threading.Thread(
+            target=lambda: holder.setdefault(
+                "envelope", service._next_envelope("peer-1", timeout_sec=1)
+            )
+        )
+        thread.start()
+        time.sleep(0.05)
+        assert thread.is_alive()
+
+        expected = RelayEnvelope(type="cleanup", request_id="request-1")
+        service._enqueue_outbound("peer-1", expected)
+        thread.join(timeout=1)
+
+        assert holder["envelope"] is expected
+
     def test_bootstrap_and_artifact_endpoints(self) -> None:
         relay = RelayServer()
         relay.start()

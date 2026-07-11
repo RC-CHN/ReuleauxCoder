@@ -129,8 +129,11 @@ func (r *Runner) runPollLoop(ctx context.Context, peerToken, workspaceRoot, cwd 
 		default:
 		}
 
-		pollCtx, cancelPoll := context.WithTimeout(ctx, 30*time.Second)
-		env, err := r.client.Poll(pollCtx, protocol.PollRequest{PeerToken: peerToken})
+		pollCtx, cancelPoll := context.WithTimeout(ctx, 35*time.Second)
+		env, err := r.client.Poll(pollCtx, protocol.PollRequest{
+			PeerToken:  peerToken,
+			TimeoutSec: 25,
+		})
 		cancelPoll()
 		if err != nil {
 			return fmt.Errorf("poll failed: %w", err)

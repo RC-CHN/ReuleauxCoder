@@ -297,10 +297,14 @@ class RemoteRelayHTTPService:
             peer_queue = self._queues.setdefault(peer_id, queue.Queue())
         peer_queue.put(envelope)
 
-    def _next_envelope(self, peer_id: str) -> RelayEnvelope | None:
+    def _next_envelope(
+        self, peer_id: str, *, timeout_sec: float = 0
+    ) -> RelayEnvelope | None:
         with self._queues_lock:
             peer_queue = self._queues.setdefault(peer_id, queue.Queue())
         try:
+            if timeout_sec > 0:
+                return peer_queue.get(timeout=min(timeout_sec, 30.0))
             return peer_queue.get_nowait()
         except queue.Empty:
             return None
@@ -492,6 +496,7 @@ class RemoteRelayHTTPService:
             def _handle_poll(self) -> None:
                 payload = self._read_json()
                 peer_token = payload.get("peer_token")
+                timeout_sec = float(payload.get("timeout_sec", 0) or 0)
                 if not isinstance(peer_token, str) or not peer_token:
                     self._send_json(
                         HTTPStatus.BAD_REQUEST, {"error": "peer_token_required"}
@@ -506,7 +511,9 @@ class RemoteRelayHTTPService:
                     )
                     return
                 service.relay_server.registry.update_heartbeat(peer_id)
-                env = service._next_envelope(peer_id)
+                env = service._next_envelope(
+                    peer_id, timeout_sec=max(0.0, timeout_sec)
+                )
                 if env is None:
                     self._send_json(HTTPStatus.OK, {"type": "noop", "payload": {}})
                     return
