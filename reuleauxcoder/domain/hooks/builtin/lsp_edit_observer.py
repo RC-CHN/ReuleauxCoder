@@ -1,6 +1,6 @@
-"""LSP edit observer hook — triggers diagnostics and didSave after file edits.
+"""LSP edit outcome processor — triggers diagnostics after file edits.
 
-AFTER_TOOL_EXECUTE observer (fail-open):
+AFTER_TOOL_EXECUTE transform:
 - Detects edit_file / write_file tool calls
 - Extracts edited file paths
 - Enqueues diagnostics request (fire-and-forget)
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
     from reuleauxcoder.extensions.lsp.manager import LspManager
 
-from reuleauxcoder.domain.hooks.base import ObserverHook
+from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
@@ -41,7 +41,7 @@ def _extract_file_path(tool_name: str, arguments: dict) -> str | None:
 
 @register_hook(HookPoint.AFTER_TOOL_EXECUTE, priority=200)
 @dataclass(slots=True)
-class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
+class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
     """Trigger LSP diagnostics and didSave after file edits."""
 
     lsp_manager: LspManager | None = field(default=None)
@@ -52,7 +52,7 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
         lsp_manager: LspManager | None = None,
         priority: int = 200,
     ):
-        ObserverHook.__init__(
+        TransformHook.__init__(
             self,
             name="lsp_edit_observer",
             priority=priority,
@@ -65,9 +65,9 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
         """Create hook instance from config.  LspManager injected later."""
         return cls(lsp_manager=None, priority=200)
 
-    def set_lsp_manager(self, mgr: "LspManager") -> None:
-        """Inject the LspManager reference post-construction."""
-        self.lsp_manager = mgr
+    def bind_runtime_service(self, name: str, service: object | None) -> None:
+        if name == "lsp_manager":
+            self.lsp_manager = service  # type: ignore[assignment]
 
     def clone_for_scope(self, scope: str) -> "LspEditObserverHook":
         # A subagent has no independent workspace LSP scope yet. Disabling the
@@ -75,26 +75,26 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
         manager = None if scope == "subagent" else self.lsp_manager
         return LspEditObserverHook(lsp_manager=manager, priority=self.priority)
 
-    def run(self, context: AfterToolExecuteContext) -> None:
+    def run(self, context: AfterToolExecuteContext) -> AfterToolExecuteContext:
         """Detect edit tools, enqueue diagnostics, and try to inject them
         immediately into the tool result.
         """
         if self.lsp_manager is None:
-            return
+            return context
 
         if not self.lsp_manager.enabled:
-            return
+            return context
 
         tool_call = context.tool_call
         if tool_call is None:
-            return
+            return context
 
         if tool_call.name not in EDIT_TOOLS:
-            return
+            return context
 
         file_path = _extract_file_path(tool_call.name, tool_call.arguments)
         if file_path is None:
-            return
+            return context
 
         path = Path(file_path)
 
@@ -148,3 +148,4 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
                         f"LSP: {', '.join(parts)} after {tool_call.name}",
                         kind=UIEventKind.SYSTEM,
                     )
+        return context

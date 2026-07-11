@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from copy import copy
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from reuleauxcoder.domain.hooks.types import GuardDecision, HookContext
 
@@ -27,6 +27,10 @@ class HookBase(Generic[ContextT]):
         those resources for the requested scope.
         """
         return copy(self)
+
+    def bind_runtime_service(self, name: str, service: Any | None) -> None:
+        """Bind or detach an optional scoped runtime service."""
+        return
 
 
 class GuardHook(HookBase[ContextT]):

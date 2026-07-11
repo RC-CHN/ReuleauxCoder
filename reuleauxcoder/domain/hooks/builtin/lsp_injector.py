@@ -5,7 +5,7 @@ BEFORE_LLM_REQUEST transform:
 - Renders them as XML diagnostics blocks
 - Prepends a synthetic user message to the message list
 
-The LspManager reference is injected post-construction via set_lsp_manager().
+The LspManager reference is bound through the agent's scoped hook registry.
 """
 
 from __future__ import annotations
@@ -50,9 +50,9 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         """Create hook instance from config.  LspManager injected later."""
         return cls(lsp_manager=None, priority=100)
 
-    def set_lsp_manager(self, mgr: "LspManager") -> None:
-        """Inject the LspManager reference post-construction."""
-        self.lsp_manager = mgr
+    def bind_runtime_service(self, name: str, service: object | None) -> None:
+        if name == "lsp_manager":
+            self.lsp_manager = service  # type: ignore[assignment]
 
     def clone_for_scope(self, scope: str) -> "LspDiagnosticsInjectorHook":
         manager = None if scope == "subagent" else self.lsp_manager

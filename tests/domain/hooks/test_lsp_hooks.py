@@ -157,11 +157,14 @@ class TestLspEditObserverCreateFromConfig:
         assert hook.lsp_manager is None
         assert hook.name == "lsp_edit_observer"
 
-    def test_set_lsp_manager(self) -> None:
+    def test_bind_lsp_manager_service(self) -> None:
         hook = LspEditObserverHook.create_from_config(MagicMock())
         mgr = _make_manager()
-        hook.set_lsp_manager(mgr)
+        hook.bind_runtime_service("lsp_manager", mgr)
         assert hook.lsp_manager is mgr
+
+        hook.bind_runtime_service("lsp_manager", None)
+        assert hook.lsp_manager is None
 
     def test_subagent_clone_does_not_share_manager(self) -> None:
         mgr = _make_manager()
@@ -266,10 +269,10 @@ class TestLspDiagnosticsInjectorCreateFromConfig:
         assert hook.lsp_manager is None
         assert hook.name == "lsp_diagnostics_injector"
 
-    def test_set_lsp_manager(self) -> None:
+    def test_bind_lsp_manager_service(self) -> None:
         hook = LspDiagnosticsInjectorHook.create_from_config(MagicMock())
         mgr = _make_manager()
-        hook.set_lsp_manager(mgr)
+        hook.bind_runtime_service("lsp_manager", mgr)
         assert hook.lsp_manager is mgr
 
     def test_subagent_clone_does_not_share_manager(self) -> None:

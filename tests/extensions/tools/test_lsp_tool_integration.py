@@ -19,7 +19,7 @@ import pytest
 from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.extensions.lsp.registry import LanguageId
-from reuleauxcoder.extensions.tools.builtin.lsp import LspTool, set_lsp_manager
+from reuleauxcoder.extensions.tools.builtin.lsp import LspTool
 
 RUN_LSP_INTEGRATION = os.environ.get("RCODER_RUN_LSP_INTEGRATION") == "1"
 pytestmark = pytest.mark.skipif(
@@ -39,14 +39,12 @@ def _setup_manager(tmp_path: Path, lang: LanguageId) -> LspManager:
     )
     mgr._availability[lang] = True
     mgr.start_worker()
-    set_lsp_manager(mgr)
     return mgr
 
 
 def _teardown_manager(mgr: LspManager) -> None:
     """Shut down the manager and clear the tool module reference."""
     mgr.shutdown_all()
-    set_lsp_manager(None)
 
 
 # ── tests ─────────────────────────────────────────────────────────────────
@@ -64,7 +62,7 @@ class TestLspToolIntegration:
 
         mgr = _setup_manager(tmp_path, LanguageId.PYTHON)
         try:
-            tool = LspTool()
+            tool = LspTool(lsp_manager=mgr)
             out = tool.execute(
                 operation="goToDefinition",
                 filePath=str(main),
@@ -87,7 +85,7 @@ class TestLspToolIntegration:
 
         mgr = _setup_manager(tmp_path, LanguageId.PYTHON)
         try:
-            tool = LspTool()
+            tool = LspTool(lsp_manager=mgr)
             out = tool.execute(
                 operation="findReferences",
                 filePath=str(lib),
@@ -111,7 +109,7 @@ class TestLspToolIntegration:
 
         mgr = _setup_manager(tmp_path, LanguageId.PYTHON)
         try:
-            tool = LspTool()
+            tool = LspTool(lsp_manager=mgr)
             out = tool.execute(
                 operation="documentSymbol",
                 filePath=str(f),
@@ -136,7 +134,7 @@ class TestLspToolIntegration:
 
         mgr = _setup_manager(tmp_path, LanguageId.TYPESCRIPT)
         try:
-            tool = LspTool()
+            tool = LspTool(lsp_manager=mgr)
             out = tool.execute(
                 operation="goToDefinition",
                 filePath=str(f),
@@ -165,7 +163,7 @@ class TestLspToolIntegration:
 
         mgr = _setup_manager(tmp_path, LanguageId.GO)
         try:
-            tool = LspTool()
+            tool = LspTool(lsp_manager=mgr)
             out = tool.execute(
                 operation="documentSymbol",
                 filePath=str(f),
@@ -194,7 +192,7 @@ class TestLspToolIntegration:
 
         mgr = _setup_manager(tmp_path, LanguageId.C)
         try:
-            tool = LspTool()
+            tool = LspTool(lsp_manager=mgr)
             out = tool.execute(
                 operation="documentSymbol",
                 filePath=str(f),
@@ -214,7 +212,7 @@ class TestLspToolIntegration:
 
         mgr = _setup_manager(tmp_path, LanguageId.PYTHON)
         try:
-            tool = LspTool()
+            tool = LspTool(lsp_manager=mgr)
             out = tool.execute(
                 operation="hover",  # not in our enum
                 filePath=str(f),

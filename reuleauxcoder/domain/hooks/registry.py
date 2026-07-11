@@ -48,6 +48,12 @@ class HookRegistry:
             for point, hooks in self._hooks.items()
         }
 
+    def bind_runtime_service(self, name: str, service: Any | None) -> None:
+        """Bind one scoped service without exposing registry internals."""
+        for hooks in self._hooks.values():
+            for hook in hooks:
+                hook.bind_runtime_service(name, service)
+
     def run_guards(
         self, hook_point: HookPoint, context: HookContext
     ) -> list[GuardDecision]:

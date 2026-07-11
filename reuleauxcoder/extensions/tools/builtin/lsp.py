@@ -27,20 +27,6 @@ from reuleauxcoder.extensions.tools.registry import register_tool
 
 _OPERATIONS = frozenset({"goToDefinition", "findReferences", "documentSymbol"})
 
-_lsp_manager: LspManager | None = None
-
-
-def set_lsp_manager(mgr: LspManager | None) -> None:
-    """Called by the app runner once the LSP infrastructure is ready."""
-    global _lsp_manager
-    _lsp_manager = mgr
-
-
-def _get_lsp_manager() -> LspManager | None:
-    """Return the singleton LspManager if the LSP infrastructure is active."""
-    return _lsp_manager
-
-
 # ── tool ───────────────────────────────────────────────────────────────────
 
 
@@ -96,6 +82,13 @@ class LspTool(Tool):
         "required": ["operation", "filePath", "line", "character"],
     }
 
+    def __init__(self, backend: Any = None, *, lsp_manager: LspManager | None = None):
+        super().__init__(backend=backend)
+        self.lsp_manager = lsp_manager
+
+    def bind_lsp_manager(self, manager: LspManager | None) -> None:
+        self.lsp_manager = manager
+
     def execute(
         self,
         *,
@@ -129,7 +122,7 @@ class LspTool(Tool):
                 return str(e)
 
         # 4. Get LSP manager
-        manager = _get_lsp_manager()
+        manager = self.lsp_manager
         if manager is None:
             return "LSP infrastructure is not available"
 

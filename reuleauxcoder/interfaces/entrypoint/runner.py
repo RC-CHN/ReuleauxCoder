@@ -207,6 +207,12 @@ class AppRunner:
         lsp_config = LspConfig.from_config(config)
         if not lsp_config.enabled:
             return
+        if any(getattr(tool, "backend_id", "local") == "remote_relay" for tool in agent.tools):
+            ui_bus.info(
+                "LSP: Host diagnostics disabled for the remote workspace target.",
+                kind=UIEventKind.SYSTEM,
+            )
+            return
 
         manager = LspManager(lsp_config, workspace_cwd=Path.cwd(), ui_bus=ui_bus)
         report = manager.health_check()
@@ -249,23 +255,11 @@ class AppRunner:
         manager.start_worker()
         self._lsp_manager = manager
 
-        # Inject LspManager into the two LSP hooks
-        for hooks in agent.hook_registry._hooks.values():
-            for hook in hooks:
-                if hasattr(hook, "set_lsp_manager"):
-                    hook.set_lsp_manager(manager)
-
-        setattr(agent, "lsp_manager", manager)
-
-        # Inject LspManager into the active LSP tool module as well
-        try:
-            from reuleauxcoder.extensions.tools.builtin.lsp import (
-                set_lsp_manager as set_lsp_tool_manager,
-            )
-
-            set_lsp_tool_manager(manager)
-        except Exception:
-            pass
+        agent.hook_registry.bind_runtime_service("lsp_manager", manager)
+        for tool in agent.tools:
+            bind = getattr(tool, "bind_lsp_manager", None)
+            if callable(bind):
+                bind(manager)
 
     @staticmethod
     def _wire_agent_tool_parent(agent: Agent) -> None:
@@ -377,16 +371,14 @@ class AppRunner:
             self._mcp_manager.stop()
             self._mcp_manager = None
         if self._lsp_manager:
+            if self._agent is not None:
+                self._agent.hook_registry.bind_runtime_service("lsp_manager", None)
+                for tool in self._agent.tools:
+                    bind = getattr(tool, "bind_lsp_manager", None)
+                    if callable(bind):
+                        bind(None)
             self._lsp_manager.shutdown_all()
             self._lsp_manager = None
-            try:
-                from reuleauxcoder.extensions.tools.builtin.lsp import (
-                    set_lsp_manager as set_lsp_tool_manager,
-                )
-
-                set_lsp_tool_manager(None)
-            except Exception:
-                pass
         self._agent = None
         self._ui_bus = None
 
