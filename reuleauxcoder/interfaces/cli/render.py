@@ -15,6 +15,7 @@ from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.runtime.events import (
     ChatCompleted,
     ErrorOccurred,
+    NotificationRaised,
     RuntimeEvent,
     StreamChunk,
     SubagentFinished,
@@ -166,6 +167,17 @@ class CLIRenderer:
             )
         elif isinstance(payload, ErrorOccurred):
             self._render_error(payload.message)
+        elif isinstance(payload, NotificationRaised) and changes:
+            self._render_runtime_notification(payload)
+
+    def _render_runtime_notification(self, payload: NotificationRaised) -> None:
+        level = payload.severity.lower()
+        if level == "error":
+            self.console.print(f"[red]{payload.message}[/red]")
+        elif level == "warning":
+            self.console.print(f"[yellow]{payload.message}[/yellow]")
+        elif self.policy.verbosity != "compact":
+            self.console.print(payload.message)
 
     def on_ui_event(self, event: UIEvent) -> None:
         """Handle a UI bus event."""

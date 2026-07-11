@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
+from reuleauxcoder.domain.hooks.types import GuardDecision
 from reuleauxcoder.domain.llm.models import ToolCall
 
 
@@ -102,3 +103,21 @@ def test_shell_tool_without_cwd_does_not_set_runtime_working_directory() -> None
     executor.execute(tc)
 
     assert not hasattr(agent, "runtime_working_directory")
+
+
+def test_guard_warning_is_emitted_as_structured_diagnostic() -> None:
+    tool = _ShellToolStub()
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.warn("command deserves review")
+    ]
+    executor = ToolExecutor(agent)
+
+    executor.execute(
+        ToolCall(id="call_warn", name="shell", arguments={"command": "echo hi"})
+    )
+
+    diagnostic = agent.events[0]
+    assert diagnostic.data["code"] == "tool.guard_warning"
+    assert diagnostic.data["message"] == "command deserves review"
+    assert diagnostic.data["details"]["tool_call_id"] == "call_warn"

@@ -12,6 +12,7 @@ from reuleauxcoder.domain.hooks.base import ObserverHook, TransformHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import (
     BeforeLLMRequestContext,
+    HookContextSnapshot,
     HookPoint,
     RunnerStartupContext,
 )
@@ -121,7 +122,7 @@ class ProjectContextStartupNotifier(ObserverHook[RunnerStartupContext]):
         """Create hook instance from config."""
         return cls(priority=0)
 
-    def run(self, context: RunnerStartupContext) -> None:
+    def run(self, context: HookContextSnapshot) -> None:
         cwd = Path.cwd()
         found: list[str] = []
         for filename in DEFAULT_CONTEXT_FILES:

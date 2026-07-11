@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable, Mapping
+from dataclasses import fields
+from types import MappingProxyType
 from typing import Any, cast
 
 from reuleauxcoder.domain.hooks.base import (
@@ -14,6 +17,8 @@ from reuleauxcoder.domain.hooks.base import (
 from reuleauxcoder.domain.hooks.types import (
     GuardDecision,
     HookContext,
+    HookContextSnapshot,
+    HookDiagnostic,
     HookKind,
     HookPoint,
 )
@@ -22,8 +27,14 @@ from reuleauxcoder.domain.hooks.types import (
 class HookRegistry:
     """Instance-scoped registry for hook registration and execution."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        diagnostic_sink: Callable[[HookDiagnostic], None] | None = None,
+    ):
         self._hooks: dict[HookPoint, list[HookBase[Any]]] = defaultdict(list)
+        self._diagnostic_sink = diagnostic_sink
+        self._diagnostics: list[HookDiagnostic] = []
 
     def register(self, hook_point: HookPoint, hook: HookBase[Any]) -> None:
         """Register a hook for a hook point."""
@@ -47,6 +58,20 @@ class HookRegistry:
             point.value: [h.name for h in self._sorted_hooks(hooks)]
             for point, hooks in self._hooks.items()
         }
+
+    def hooks_at(self, hook_point: HookPoint) -> tuple[HookBase[Any], ...]:
+        """Return an ordered, read-only view without exposing registry storage."""
+        return tuple(self._sorted_hooks(self._hooks.get(hook_point, [])))
+
+    def set_diagnostic_sink(
+        self, sink: Callable[[HookDiagnostic], None] | None
+    ) -> None:
+        self._diagnostic_sink = sink
+
+    def drain_diagnostics(self) -> tuple[HookDiagnostic, ...]:
+        diagnostics = tuple(self._diagnostics)
+        self._diagnostics.clear()
+        return diagnostics
 
     def bind_runtime_service(self, name: str, service: Any | None) -> None:
         """Bind one scoped service without exposing registry internals."""
@@ -93,13 +118,28 @@ class HookRegistry:
             current = result
         return current
 
-    def run_observers(self, hook_point: HookPoint, context: HookContext) -> None:
-        """Run observer hooks with fail-open semantics."""
+    def run_observers(
+        self, hook_point: HookPoint, context: HookContext
+    ) -> tuple[HookDiagnostic, ...]:
+        """Run observers against an immutable snapshot and report failures."""
+        snapshot = self._snapshot(context)
+        diagnostics: list[HookDiagnostic] = []
         for hook in self._iter_kind(hook_point, HookKind.OBSERVER):
             try:
-                cast(ObserverHook[HookContext], hook).run(context)
-            except Exception:
+                cast(ObserverHook[HookContext], hook).run(snapshot)
+            except Exception as exc:
+                diagnostic = HookDiagnostic(
+                    hook_name=hook.name,
+                    hook_point=hook_point,
+                    hook_kind=HookKind.OBSERVER,
+                    message=str(exc),
+                )
+                diagnostics.append(diagnostic)
+                self._diagnostics.append(diagnostic)
+                if self._diagnostic_sink is not None:
+                    self._diagnostic_sink(diagnostic)
                 continue
+        return tuple(diagnostics)
 
     def _iter_kind(self, hook_point: HookPoint, kind: HookKind) -> list[HookBase[Any]]:
         hooks = self._sorted_hooks(self._hooks.get(hook_point, []))
@@ -111,7 +151,7 @@ class HookRegistry:
 
     def clone(self, *, scope: str = "child") -> "HookRegistry":
         """Create a scope-aware copy of the registry and registered hooks."""
-        cloned = HookRegistry()
+        cloned = HookRegistry(diagnostic_sink=self._diagnostic_sink)
         for hook_point, hooks in self._hooks.items():
             cloned._hooks[hook_point] = [
                 hook.clone_for_scope(scope) for hook in hooks
@@ -121,3 +161,28 @@ class HookRegistry:
     @staticmethod
     def _sorted_hooks(hooks: list[HookBase[Any]]) -> list[HookBase[Any]]:
         return sorted(hooks, key=lambda hook: hook.priority, reverse=True)
+
+    @classmethod
+    def _snapshot(cls, context: HookContext) -> HookContextSnapshot:
+        payload = {
+            item.name: cls._freeze(getattr(context, item.name))
+            for item in fields(context)
+            if item.name not in {"hook_point", "session_id", "trace_id", "metadata"}
+        }
+        return HookContextSnapshot(
+            hook_point=context.hook_point,
+            session_id=context.session_id,
+            trace_id=context.trace_id,
+            metadata=cls._freeze(context.metadata),
+            payload=MappingProxyType(payload),
+        )
+
+    @classmethod
+    def _freeze(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return MappingProxyType({key: cls._freeze(item) for key, item in value.items()})
+        if isinstance(value, list):
+            return tuple(cls._freeze(item) for item in value)
+        if isinstance(value, set):
+            return frozenset(cls._freeze(item) for item in value)
+        return value

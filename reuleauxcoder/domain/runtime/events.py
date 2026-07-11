@@ -25,6 +25,7 @@ class RuntimeEventKind(str, Enum):
     TOOL_CALL_FINISHED = "tool_call_finished"
     SUBAGENT_FINISHED = "subagent_finished"
     ERROR_OCCURRED = "error_occurred"
+    NOTIFICATION_RAISED = "notification_raised"
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,17 @@ class ErrorOccurred:
     )
 
 
+@dataclass(frozen=True)
+class NotificationRaised:
+    message: str
+    code: str
+    severity: str = "info"
+    details: dict = field(default_factory=dict)
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.NOTIFICATION_RAISED, init=False
+    )
+
+
 RuntimePayload: TypeAlias = (
     ChatStarted
     | ChatCompleted
@@ -108,6 +120,7 @@ RuntimePayload: TypeAlias = (
     | ToolCallFinished
     | SubagentFinished
     | ErrorOccurred
+    | NotificationRaised
 )
 
 
@@ -180,6 +193,13 @@ def agent_event_to_runtime_event(
         )
     elif event.event_type is AgentEventType.ERROR:
         payload = ErrorOccurred(event.error_message or "Unknown agent error")
+    elif event.event_type is AgentEventType.DIAGNOSTIC:
+        payload = NotificationRaised(
+            message=str(event.data.get("message", "Runtime diagnostic")),
+            code=str(event.data.get("code", "runtime.diagnostic")),
+            severity=str(event.data.get("severity", "warning")),
+            details=dict(event.data.get("details") or {}),
+        )
     else:
         raise ValueError(f"Unsupported legacy agent event: {event.event_type.value}")
 

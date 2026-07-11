@@ -65,6 +65,16 @@ class ToolExecutor:
             )
             return message
 
+        for decision in guard_decisions:
+            if decision.warning:
+                self.agent._emit_event(
+                    AgentEvent.diagnostic(
+                        decision.warning,
+                        code="tool.guard_warning",
+                        details={"tool_name": tc.name, "tool_call_id": tc.id},
+                    )
+                )
+
         preflight_error = (
             tool.preflight_validate(**tc.arguments) if tool is not None else None
         )

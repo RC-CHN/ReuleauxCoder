@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from copy import copy
 from typing import Any, Generic, TypeVar
 
-from reuleauxcoder.domain.hooks.types import GuardDecision, HookContext
+from reuleauxcoder.domain.hooks.types import (
+    GuardDecision,
+    HookContext,
+    HookContextSnapshot,
+)
 
 ContextT = TypeVar("ContextT", bound=HookContext)
 
@@ -50,5 +54,5 @@ class TransformHook(HookBase[ContextT]):
 class ObserverHook(HookBase[ContextT]):
     """Observer hooks can inspect execution without mutating control flow."""
 
-    def run(self, context: ContextT) -> None:
+    def run(self, context: HookContextSnapshot) -> None:
         raise NotImplementedError

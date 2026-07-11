@@ -4,6 +4,7 @@ from reuleauxcoder.app.runtime.approval import (
     find_matching_rule,
     is_disabled_mcp_rule,
     parse_approval_target,
+    refresh_approval_runtime,
     resolve_mcp_server_action,
     same_rule_target,
 )
@@ -12,6 +13,8 @@ from reuleauxcoder.domain.config.models import (
     ApprovalRuleConfig,
     MCPServerConfig,
 )
+from reuleauxcoder.domain.hooks import HookPoint, HookRegistry
+from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
 
 
 def test_parse_approval_target_supports_tool_and_mcp_targets() -> None:
@@ -85,3 +88,15 @@ def test_is_disabled_mcp_rule_checks_server_enabled_flag() -> None:
 
     assert is_disabled_mcp_rule(config, rule) is True
     assert is_disabled_mcp_rule(config, non_mcp_rule) is False
+
+
+def test_refresh_approval_runtime_uses_public_registry_view() -> None:
+    registry = HookRegistry()
+    hook = ToolPolicyGuardHook(approval_config=ApprovalConfig(default_mode="deny"))
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, hook)
+    agent = SimpleNamespace(hook_registry=registry)
+
+    refresh_approval_runtime(agent, ApprovalConfig(default_mode="allow"))
+
+    assert hook.approval_engine is not None
+    assert hook.approval_engine.config.default_mode == "allow"

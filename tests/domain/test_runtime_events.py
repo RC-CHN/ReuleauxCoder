@@ -2,6 +2,7 @@ import pytest
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.runtime.events import (
+    NotificationRaised,
     RuntimeEventKind,
     ToolCallFinished,
     ToolCallStarted,
@@ -54,3 +55,18 @@ def test_unsupported_legacy_event_fails_loudly() -> None:
 
     with pytest.raises(ValueError, match="Unsupported legacy agent event"):
         agent_event_to_runtime_event(legacy)
+
+
+def test_structured_diagnostic_becomes_runtime_notification() -> None:
+    event = AgentEvent.diagnostic(
+        "observer failed",
+        code="hook.failure",
+        details={"hook_name": "demo"},
+    )
+
+    runtime = agent_event_to_runtime_event(event)
+
+    assert runtime.kind is RuntimeEventKind.NOTIFICATION_RAISED
+    assert isinstance(runtime.payload, NotificationRaised)
+    assert runtime.payload.code == "hook.failure"
+    assert runtime.payload.details == {"hook_name": "demo"}

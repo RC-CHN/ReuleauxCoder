@@ -18,7 +18,7 @@ from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
-from reuleauxcoder.domain.hooks import HookBase, HookPoint, HookRegistry
+from reuleauxcoder.domain.hooks import HookBase, HookDiagnostic, HookPoint, HookRegistry
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.services.prompt.builder import system_prompt
@@ -90,8 +90,12 @@ class Agent:
         else:
             self.context = ContextManager(max_tokens=max_context_tokens)
 
+        # Event handlers are available before hook diagnostics are wired.
+        self._event_handlers: List[Callable[[AgentEvent], None]] = []
+
         # Hook runtime
         self.hook_registry = hook_registry or HookRegistry()
+        self.hook_registry.set_diagnostic_sink(self._emit_hook_diagnostic)
 
         # Execution components
         self.approval_provider = approval_provider
@@ -101,9 +105,6 @@ class Agent:
             shell = get_platform_info().get_preferred_shell().value
             self._loop = AgentLoop(self, prompt_fn=system_prompt, shell_name=shell)
         self._executor = executor or ToolExecutor(self)
-
-        # Event handlers
-        self._event_handlers: List[Callable[[AgentEvent], None]] = []
 
         # Buffer for sub-agent injections that arrive during active tool execution.
         # Deferred to avoid interleaving assistant messages between a tool_calls
@@ -242,6 +243,21 @@ class Agent:
                 handler(event)
             except Exception:
                 pass  # Don't let handler errors break execution
+
+    def _emit_hook_diagnostic(self, diagnostic: HookDiagnostic) -> None:
+        self._emit_event(
+            AgentEvent.diagnostic(
+                f"Hook '{diagnostic.hook_name}' failed during "
+                f"{diagnostic.hook_point.value}: {diagnostic.message}",
+                code="hook.failure",
+                severity=diagnostic.severity,
+                details={
+                    "hook_name": diagnostic.hook_name,
+                    "hook_point": diagnostic.hook_point.value,
+                    "hook_kind": diagnostic.hook_kind.value,
+                },
+            )
+        )
 
     def register_hook(self, hook_point: HookPoint, hook: HookBase[object]) -> None:
         """Register a hook on the agent-scoped hook registry."""

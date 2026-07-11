@@ -22,6 +22,7 @@ class AgentEventType(Enum):
     COMPRESSION_START = "compression_start"
     COMPRESSION_END = "compression_end"
     ERROR = "error"
+    DIAGNOSTIC = "diagnostic"
 
 
 @dataclass
@@ -144,4 +145,24 @@ class AgentEvent:
         return cls(
             event_type=AgentEventType.ERROR,
             error_message=message,
+        )
+
+    @classmethod
+    def diagnostic(
+        cls,
+        message: str,
+        *,
+        code: str,
+        severity: str = "warning",
+        details: dict | None = None,
+    ) -> "AgentEvent":
+        """Create a structured non-fatal runtime diagnostic."""
+        return cls(
+            event_type=AgentEventType.DIAGNOSTIC,
+            data={
+                "message": message,
+                "code": code,
+                "severity": severity,
+                "details": dict(details or {}),
+            },
         )

@@ -55,6 +55,11 @@ class FailingObserver(ObserverHook[HookContext]):
         raise RuntimeError("boom")
 
 
+class MutatingObserver(ObserverHook[HookContext]):
+    def run(self, context) -> None:
+        context.metadata["mutated"] = True
+
+
 def test_hook_registry_register_list_and_unregister() -> None:
     registry = HookRegistry()
     registry.register(
@@ -151,12 +156,36 @@ def test_hook_registry_run_observers_fail_open() -> None:
         HookPoint.AFTER_LLM_RESPONSE, RecordingObserver(name="good", bucket=bucket)
     )
 
-    registry.run_observers(
+    diagnostics = registry.run_observers(
         HookPoint.AFTER_LLM_RESPONSE,
         HookContext(hook_point=HookPoint.AFTER_LLM_RESPONSE),
     )
 
     assert bucket == ["good"]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].hook_name == "bad"
+    assert diagnostics[0].message == "boom"
+
+
+def test_observer_receives_immutable_snapshot_and_failure_is_observable() -> None:
+    emitted = []
+    registry = HookRegistry(diagnostic_sink=emitted.append)
+    registry.register(
+        HookPoint.AFTER_LLM_RESPONSE,
+        MutatingObserver(name="mutator"),
+    )
+    context = HookContext(
+        hook_point=HookPoint.AFTER_LLM_RESPONSE,
+        metadata={"stable": True},
+    )
+
+    diagnostics = registry.run_observers(HookPoint.AFTER_LLM_RESPONSE, context)
+
+    assert context.metadata == {"stable": True}
+    assert diagnostics == tuple(emitted)
+    assert diagnostics[0].hook_name == "mutator"
+    assert registry.drain_diagnostics() == diagnostics
+    assert registry.drain_diagnostics() == ()
 
 
 def test_hook_registry_clone_is_isolated_copy() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from collections.abc import Mapping
 from typing import Any
 
 from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
@@ -129,3 +130,25 @@ class GuardDecision:
     @classmethod
     def require_approval(cls, reason: str | None = None) -> "GuardDecision":
         return cls(allowed=True, reason=reason, requires_approval=True)
+
+
+@dataclass(frozen=True, slots=True)
+class HookContextSnapshot:
+    """Immutable observer input detached from transform control flow."""
+
+    hook_point: HookPoint
+    session_id: str | None
+    trace_id: str | None
+    metadata: Mapping[str, Any]
+    payload: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class HookDiagnostic:
+    """Structured, observable failure raised by one hook stage."""
+
+    hook_name: str
+    hook_point: HookPoint
+    hook_kind: HookKind
+    message: str
+    severity: str = "warning"

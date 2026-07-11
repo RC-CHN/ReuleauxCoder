@@ -181,8 +181,7 @@ def resolve_mcp_server_action(config, server_name: str) -> str:
 
 def refresh_approval_runtime(agent, approval_config: ApprovalConfig) -> None:
     """Push approval config changes into live runtime hooks."""
-    hooks = agent.hook_registry._hooks.get(HookPoint.BEFORE_TOOL_EXECUTE, [])
-    for hook in hooks:
+    for hook in agent.hook_registry.hooks_at(HookPoint.BEFORE_TOOL_EXECUTE):
         if isinstance(hook, ToolPolicyGuardHook):
             hook.update_approval_config(approval_config)
 

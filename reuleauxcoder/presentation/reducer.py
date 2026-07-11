@@ -9,6 +9,7 @@ from reuleauxcoder.domain.runtime.events import (
     ChatCompleted,
     ChatStarted,
     ErrorOccurred,
+    NotificationRaised,
     RuntimeEvent,
     StreamChunk,
     SubagentFinished,
@@ -115,6 +116,15 @@ class PresentationReducer:
                     message=payload.message,
                     level="error",
                     category="agent",
+                )
+            )
+        if isinstance(payload, NotificationRaised):
+            return self._append(
+                NoticeCell(
+                    id=f"notice:{event.event_id}",
+                    message=payload.message,
+                    level=payload.severity,
+                    category=payload.code,
                 )
             )
         raise TypeError(f"Unsupported runtime payload: {type(payload).__name__}")
