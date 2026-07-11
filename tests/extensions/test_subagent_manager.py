@@ -9,6 +9,7 @@ from reuleauxcoder.extensions.subagent.manager import (
     _create_subagent_llm,
     _filter_subagent_tools,
 )
+from reuleauxcoder.extensions.subagent.approval import _get_parent_approval_lock
 
 
 class _FakeParentLLM:
@@ -301,3 +302,61 @@ def test_subagent_tools_are_distinct_instances() -> None:
 
     assert child_tool is not tool
     assert child_tool.mutable is not tool.mutable
+
+
+def test_subagent_tool_backend_context_is_isolated() -> None:
+    context = SimpleNamespace(cwd="/parent", peer_id="peer-a")
+    workspace = SimpleNamespace(root="/workspace")
+    backend = SimpleNamespace(context=context, workspace=workspace)
+    tool = SimpleNamespace(name="read_file", backend=backend)
+    parent = SimpleNamespace(tools=[tool])
+
+    (child_tool,) = _filter_subagent_tools(parent, "explore")
+    child_tool.backend.context.cwd = "/child"
+
+    assert child_tool.backend is not backend
+    assert child_tool.backend.context is not context
+    assert context.cwd == "/parent"
+    assert child_tool.backend.workspace is workspace
+
+
+def test_manager_honors_custom_max_timeout(monkeypatch) -> None:
+    captured: dict[str, int] = {}
+
+    def run(**kwargs):
+        captured["timeout"] = kwargs["timeout_seconds"]
+        return "done"
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    manager = SubagentManager(max_timeout_seconds=7)
+
+    manager.run_sync(
+        parent_agent=_Parent(),
+        task="bounded",
+        mode="execute",
+        timeout_seconds=999,
+    )
+
+    assert captured["timeout"] == 7
+    manager.shutdown()
+
+
+def test_parent_approval_lock_creation_is_race_free() -> None:
+    parent = SimpleNamespace()
+    barrier = threading.Barrier(8)
+    locks: list[object] = []
+
+    def resolve() -> None:
+        barrier.wait(timeout=2)
+        locks.append(_get_parent_approval_lock(parent))
+
+    threads = [threading.Thread(target=resolve) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert len(locks) == 8
+    assert len({id(lock) for lock in locks}) == 1

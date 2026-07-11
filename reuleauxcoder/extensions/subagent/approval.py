@@ -8,7 +8,7 @@ pre-approve or deny sub-agent tool calls, and
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 import threading
 
@@ -16,12 +16,12 @@ from reuleauxcoder.domain.approval import (
     ApprovalDecision,
     ApprovalProvider,
     ApprovalRequest,
-    ApprovalHandler,
     PendingApproval,
     SharedApprovalProvider,
 )
 
 _PARENT_LLM_JUDGE_TIMEOUT_SECONDS = 15
+_PARENT_APPROVAL_LOCK_CREATION = threading.Lock()
 
 
 # ── ParentLLMJudge (pre-approval judge for sub-agents) ─────────────────
@@ -164,9 +164,12 @@ def _get_parent_approval_lock(parent_agent):
     lock = getattr(parent_agent, "_subagent_approval_lock", None)
     if lock is not None and hasattr(lock, "acquire") and hasattr(lock, "release"):
         return lock
-    lock = threading.RLock()
-    setattr(parent_agent, "_subagent_approval_lock", lock)
-    return lock
+    with _PARENT_APPROVAL_LOCK_CREATION:
+        lock = getattr(parent_agent, "_subagent_approval_lock", None)
+        if lock is None or not hasattr(lock, "acquire"):
+            lock = threading.RLock()
+            setattr(parent_agent, "_subagent_approval_lock", lock)
+        return lock
 
 
 def _build_parent_judge_prompt(request: ApprovalRequest) -> str:

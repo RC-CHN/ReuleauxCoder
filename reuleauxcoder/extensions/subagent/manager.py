@@ -30,13 +30,16 @@ def _clamp_subagent_rounds(
 
 
 def _clamp_timeout_seconds(
-    value: int | None, default: int = _DEFAULT_TIMEOUT_SECONDS
+    value: int | None,
+    default: int = _DEFAULT_TIMEOUT_SECONDS,
+    maximum: int = _MAX_TIMEOUT_SECONDS,
 ) -> int:
     base = default if value is None else int(value)
+    maximum = max(1, int(maximum))
     if base < 1:
         return 1
-    if base > _MAX_TIMEOUT_SECONDS:
-        return _MAX_TIMEOUT_SECONDS
+    if base > maximum:
+        return maximum
     return base
 
 
@@ -77,8 +80,11 @@ class SubagentManager:
     ):
         self._max_parallel_explore = max(1, int(max_parallel_explore))
         self._default_max_rounds = _clamp_subagent_rounds(default_max_rounds)
-        self._default_timeout_seconds = _clamp_timeout_seconds(default_timeout_seconds)
-        self._max_timeout_seconds = max_timeout_seconds
+        self._max_timeout_seconds = max(1, int(max_timeout_seconds))
+        self._default_timeout_seconds = _clamp_timeout_seconds(
+            default_timeout_seconds,
+            maximum=self._max_timeout_seconds,
+        )
         self._runtime_parallel_explore = self._max_parallel_explore
         self._active_explore = 0
         self._explore_pool = ThreadPoolExecutor(max_workers=self._max_parallel_explore)
@@ -146,7 +152,9 @@ class SubagentManager:
             max_rounds, default=self._default_max_rounds
         )
         effective_timeout_seconds = _clamp_timeout_seconds(
-            timeout_seconds, default=self._default_timeout_seconds
+            timeout_seconds,
+            default=self._default_timeout_seconds,
+            maximum=self._max_timeout_seconds,
         )
         job_id = f"sj_{uuid.uuid4().hex[:10]}"
         now = time.time()
@@ -261,7 +269,9 @@ class SubagentManager:
             max_rounds, default=self._default_max_rounds
         )
         effective_timeout_seconds = _clamp_timeout_seconds(
-            timeout_seconds, default=self._default_timeout_seconds
+            timeout_seconds,
+            default=self._default_timeout_seconds,
+            maximum=self._max_timeout_seconds,
         )
         if mode == "explore":
             future = self._explore_pool.submit(
@@ -497,7 +507,7 @@ def _filter_subagent_tools(parent_agent, mode: str):
 
 
 def _clone_tool_for_subagent(tool):
-    """Clone tool-local mutable state while intentionally sharing its backend port."""
+    """Clone mutable tool and backend context for one child Agent scope."""
     cloned = copy.copy(tool)
     for name, value in vars(tool).items():
         if name == "backend":
@@ -508,6 +518,19 @@ def _clone_tool_for_subagent(tool):
             setattr(cloned, name, list(value))
         elif isinstance(value, set):
             setattr(cloned, name, set(value))
+
+    backend = getattr(tool, "backend", None)
+    if backend is not None:
+        cloned_backend = copy.copy(backend)
+        context = getattr(backend, "context", None)
+        if context is not None:
+            cloned_backend.context = copy.copy(context)
+        workspace = getattr(backend, "workspace", None)
+        if workspace is not None and getattr(workspace, "backend", None) is backend:
+            cloned_workspace = copy.copy(workspace)
+            cloned_workspace.backend = cloned_backend
+            cloned_backend.workspace = cloned_workspace
+        cloned.backend = cloned_backend
     return cloned
 
 
