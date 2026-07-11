@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from rich import box
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 
 from reuleauxcoder.app.runtime.session_state import (
@@ -35,7 +36,6 @@ from reuleauxcoder.interfaces.shared.approval_preview import (
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
-from reuleauxcoder.interfaces.entrypoint.dependencies import AppDependencies
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 
 
@@ -320,28 +320,36 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                             "content": request.tool_args,
                         }
                     )
+                approval_markdown = "\n\n".join(
+                    part
+                    for part in [
+                        f"## Approval required: {request.tool_name}",
+                        f"Tool `{request.tool_name}` from source `{request.tool_source}` requires approval.",
+                        request.reason or "",
+                        (
+                            f"```json\n{json.dumps(request.tool_args, ensure_ascii=False, indent=2)}\n```"
+                            if request.tool_args and diff_text is None
+                            else ""
+                        ),
+                        f"```diff\n{diff_text}\n```" if diff_text else "",
+                    ]
+                    if part
+                )
+                approval_console = Console(
+                    record=True, force_terminal=True, color_system="truecolor"
+                )
+                approval_console.print(Markdown(approval_markdown))
+                rendered_approval = approval_console.export_text(
+                    clear=True, styles=True
+                )
                 payload = {
                     "approval_id": approval_id,
                     "tool_name": request.tool_name,
                     "tool_source": request.tool_source,
                     "reason": request.reason,
                     "sections": sections,
-                    "format": "markdown",
-                    "content": "\n\n".join(
-                        part
-                        for part in [
-                            f"## Approval required: {request.tool_name}",
-                            f"Tool `{request.tool_name}` from source `{request.tool_source}` requires approval.",
-                            request.reason or "",
-                            (
-                                f"```json\n{json.dumps(request.tool_args, ensure_ascii=False, indent=2)}\n```"
-                                if request.tool_args and diff_text is None
-                                else ""
-                            ),
-                            f"```diff\n{diff_text}\n```" if diff_text else "",
-                        ]
-                        if part
-                    ),
+                    "format": "terminal",
+                    "content": rendered_approval,
                 }
                 remote_session.append_event("approval_request", payload)
                 decision, reason = remote_session.wait_approval(approval_id)

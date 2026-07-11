@@ -17,7 +17,6 @@ import (
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/tools"
 	workspaceops "github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/workspace"
-	"github.com/charmbracelet/glamour"
 )
 
 type Config struct {
@@ -30,25 +29,16 @@ type Config struct {
 }
 
 type Runner struct {
-	cfg      Config
-	client   *client.HTTPClient
-	scanner  *bufio.Scanner
-	mdRender *glamour.TermRenderer
+	cfg     Config
+	client  *client.HTTPClient
+	scanner *bufio.Scanner
 }
 
 func New(cfg Config) *Runner {
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(100),
-	)
-	if err != nil {
-		log.Printf("markdown renderer init failed: %v", err)
-	}
 	return &Runner{
-		cfg:      cfg,
-		client:   client.New(cfg.Host),
-		scanner:  bufio.NewScanner(os.Stdin),
-		mdRender: renderer,
+		cfg:     cfg,
+		client:  client.New(cfg.Host),
+		scanner: bufio.NewScanner(os.Stdin),
 	}
 }
 
@@ -337,27 +327,12 @@ func (r *Runner) handleApprovalRequest(ctx context.Context, peerToken, chatID st
 }
 
 func (r *Runner) renderOutputEvent(payload map[string]any) {
-	format, _ := payload["format"].(string)
 	content, _ := payload["content"].(string)
 	if content == "" {
 		return
 	}
 
-	switch format {
-	case "markdown":
-		if r.mdRender != nil {
-			rendered, err := r.mdRender.Render(content)
-			if err == nil {
-				fmt.Print(rendered)
-				return
-			}
-		}
-		fmt.Print(content)
-	case "plain", "terminal", "":
-		fmt.Print(content)
-	default:
-		fmt.Print(content)
-	}
+	fmt.Print(content)
 
 	if newline, ok := payload["newline"].(bool); ok && newline {
 		fmt.Print("\n")
