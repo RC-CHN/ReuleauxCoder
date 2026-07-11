@@ -189,6 +189,8 @@ class SubagentJobViewModel:
     started_at: float | None
     finished_at: float | None
     timeout_seconds: float | None
+    generation: int
+    result: str | None
     error: str | None
 
 
@@ -213,6 +215,8 @@ class SubagentJobsViewModel:
                     "started_at": job.started_at,
                     "finished_at": job.finished_at,
                     "timeout_seconds": job.timeout_seconds,
+                    "generation": job.generation,
+                    "result": job.result,
                     "error": job.error,
                 }
                 for job in self.jobs

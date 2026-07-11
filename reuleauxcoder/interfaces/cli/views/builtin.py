@@ -18,6 +18,7 @@ from reuleauxcoder.app.commands.view_models import (
     ModelListViewModel,
     ModesViewModel,
     SessionsViewModel,
+    SubagentJobsViewModel,
     EffectiveConfigViewModel,
     TokenUsageViewModel,
 )
@@ -262,6 +263,39 @@ def render_skills_view(renderer, event) -> bool:
     return True
 
 
+def render_subagent_jobs_view(renderer, event) -> bool:
+    model = event.data.get("view_model")
+    if not isinstance(model, SubagentJobsViewModel):
+        return False
+    stop_stream_and_clear(renderer)
+    renderer.console.print(
+        f"Explore workers: {model.runtime_parallel_explore}/"
+        f"{model.max_parallel_explore}"
+    )
+    table = Table(title="Sub-agent Jobs")
+    table.add_column("Job")
+    table.add_column("Status")
+    table.add_column("Mode")
+    table.add_column("Generation")
+    table.add_column("Task")
+    for job in model.jobs[:20]:
+        table.add_row(
+            job.job_id,
+            job.status,
+            job.mode,
+            str(job.generation),
+            job.task,
+        )
+    renderer.console.print(table)
+    if len(model.jobs) == 1:
+        job = model.jobs[0]
+        if job.error:
+            renderer.console.print(f"[red]{job.error}[/red]")
+        if job.result:
+            renderer.console.print(job.result)
+    return True
+
+
 def builtin_cli_view_specs() -> list[ViewRendererSpec]:
     """Return explicit CLI-owned view registrations."""
     specs: list[ViewRendererSpec] = []
@@ -286,6 +320,9 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
                 view_type="approval_rules", render=render_approval_rules_view
             ),
             ViewRendererSpec(view_type="skills", render=render_skills_view),
+            ViewRendererSpec(
+                view_type="subagent_jobs", render=render_subagent_jobs_view
+            ),
         ]
     )
     return specs

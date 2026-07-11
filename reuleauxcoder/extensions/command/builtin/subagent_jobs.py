@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import time
 
 from reuleauxcoder.app.commands.matchers import match_template
 from reuleauxcoder.app.commands.models import CommandResult
@@ -17,6 +16,10 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.view_models import (
+    SubagentJobsViewModel,
+    SubagentJobViewModel,
+)
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -66,59 +69,40 @@ def _parse_wait_job(user_input: str, parse_ctx):
     return WaitSubagentJobCommand(job_id=job_id)
 
 
-def _format_age(ts: float | None) -> str:
-    if ts is None:
-        return "-"
-    seconds = max(0, int(time.time() - ts))
-    return f"{seconds}s ago"
+def _build_jobs_view(manager, jobs) -> SubagentJobsViewModel:
+    return SubagentJobsViewModel(
+        jobs=tuple(
+            SubagentJobViewModel(
+                job_id=job.id,
+                status=job.status,
+                mode=job.mode,
+                task=job.task,
+                created_at=job.created_at,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+                timeout_seconds=job.timeout_seconds,
+                generation=job.generation,
+                result=job.result,
+                error=job.error,
+            )
+            for job in jobs
+        ),
+        runtime_parallel_explore=manager.runtime_parallel_explore,
+        max_parallel_explore=manager.max_parallel_explore,
+    )
 
 
 def _handle_list_jobs(command, ctx) -> CommandResult:
     manager = get_subagent_manager(ctx.agent)
     jobs = manager.list_jobs()
-
-    if not jobs:
-        ctx.ui_bus.info("No sub-agent jobs yet.", kind=UIEventKind.COMMAND)
-        return CommandResult(action="continue", payload={"jobs": []})
-
-    ctx.ui_bus.info(
-        (
-            f"Sub-agent jobs ({len(jobs)} total, "
-            f"parallel explore={manager.runtime_parallel_explore}/{manager.max_parallel_explore}):"
-        ),
-        kind=UIEventKind.COMMAND,
+    view = _build_jobs_view(manager, jobs)
+    ctx.ui_bus.open_view(
+        view.view_type,
+        title="Sub-agent Jobs",
+        view_model=view,
+        reuse_key=view.view_type,
     )
-    for job in jobs[:20]:
-        ctx.ui_bus.info(
-            (
-                f"- {job.id} [{job.status}] mode={job.mode}, timeout={job.timeout_seconds or '-'}s, "
-                f"created={_format_age(job.created_at)}"
-            ),
-            kind=UIEventKind.COMMAND,
-            job_id=job.id,
-            status=job.status,
-            mode=job.mode,
-        )
-
-    return CommandResult(
-        action="continue",
-        payload={
-            "jobs": [
-                {
-                    "id": job.id,
-                    "status": job.status,
-                    "mode": job.mode,
-                    "task": job.task,
-                    "created_at": job.created_at,
-                    "started_at": job.started_at,
-                    "finished_at": job.finished_at,
-                    "timeout_seconds": job.timeout_seconds,
-                    "error": job.error,
-                }
-                for job in jobs
-            ]
-        },
-    )
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_get_job(command, ctx) -> CommandResult:
@@ -130,44 +114,14 @@ def _handle_get_job(command, ctx) -> CommandResult:
         )
         return CommandResult(action="continue")
 
-    ctx.ui_bus.info(
-        (
-            f"Job {job.id}: status={job.status}, mode={job.mode}, "
-            f"timeout={job.timeout_seconds or '-'}s, task={job.task}"
-        ),
-        kind=UIEventKind.COMMAND,
-        job_id=job.id,
-        status=job.status,
-        mode=job.mode,
+    view = _build_jobs_view(manager, [job])
+    ctx.ui_bus.open_view(
+        view.view_type,
+        title=f"Sub-agent Job {job.id}",
+        view_model=view,
+        reuse_key=view.view_type,
     )
-    if job.error:
-        ctx.ui_bus.error(
-            f"Job {job.id} error: {job.error}", kind=UIEventKind.COMMAND, job_id=job.id
-        )
-    if job.result:
-        ctx.ui_bus.success(
-            f"Job {job.id} result:\n{job.result}",
-            kind=UIEventKind.COMMAND,
-            job_id=job.id,
-        )
-
-    return CommandResult(
-        action="continue",
-        payload={
-            "job": {
-                "id": job.id,
-                "status": job.status,
-                "mode": job.mode,
-                "task": job.task,
-                "created_at": job.created_at,
-                "started_at": job.started_at,
-                "finished_at": job.finished_at,
-                "timeout_seconds": job.timeout_seconds,
-                "result": job.result,
-                "error": job.error,
-            }
-        },
-    )
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_wait_job(command, ctx) -> CommandResult:
@@ -198,9 +152,14 @@ def _handle_wait_job(command, ctx) -> CommandResult:
             job_id=job.id,
         )
 
-    return CommandResult(
-        action="continue", payload={"job_id": job.id, "status": job.status}
+    view = _build_jobs_view(manager, manager.list_jobs())
+    ctx.ui_bus.refresh_view(
+        view.view_type,
+        title="Sub-agent Jobs",
+        view_model=view,
+        reuse_key=view.view_type,
     )
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 @register_command_module
