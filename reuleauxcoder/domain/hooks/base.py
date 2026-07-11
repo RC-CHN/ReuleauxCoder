@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import copy
 from typing import Generic, TypeVar
 
 from reuleauxcoder.domain.hooks.types import GuardDecision, HookContext
@@ -17,6 +18,15 @@ class HookBase(Generic[ContextT]):
     name: str
     priority: int = 0
     extension_name: str | None = None
+
+    def clone_for_scope(self, scope: str) -> "HookBase[ContextT]":
+        """Create a hook instance for another runtime scope.
+
+        Stateless hooks may use the default shallow copy. Hooks owning runtime
+        resources must override this method and explicitly detach or recreate
+        those resources for the requested scope.
+        """
+        return copy(self)
 
 
 class GuardHook(HookBase[ContextT]):

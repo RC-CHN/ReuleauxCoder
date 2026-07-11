@@ -163,6 +163,15 @@ class TestLspEditObserverCreateFromConfig:
         hook.set_lsp_manager(mgr)
         assert hook.lsp_manager is mgr
 
+    def test_subagent_clone_does_not_share_manager(self) -> None:
+        mgr = _make_manager()
+        hook = LspEditObserverHook(lsp_manager=mgr)
+
+        cloned = hook.clone_for_scope("subagent")
+
+        assert cloned is not hook
+        assert cloned.lsp_manager is None
+
 
 # === LspDiagnosticsInjectorHook ===
 
@@ -262,6 +271,15 @@ class TestLspDiagnosticsInjectorCreateFromConfig:
         mgr = _make_manager()
         hook.set_lsp_manager(mgr)
         assert hook.lsp_manager is mgr
+
+    def test_subagent_clone_does_not_share_manager(self) -> None:
+        mgr = _make_manager()
+        hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
+
+        cloned = hook.clone_for_scope("subagent")
+
+        assert cloned is not hook
+        assert cloned.lsp_manager is None
 
 
 # === LspEditObserverHook document-scoped consumption ===

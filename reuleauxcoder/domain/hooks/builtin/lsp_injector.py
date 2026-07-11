@@ -54,6 +54,12 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         """Inject the LspManager reference post-construction."""
         self.lsp_manager = mgr
 
+    def clone_for_scope(self, scope: str) -> "LspDiagnosticsInjectorHook":
+        manager = None if scope == "subagent" else self.lsp_manager
+        return LspDiagnosticsInjectorHook(
+            lsp_manager=manager, priority=self.priority
+        )
+
     def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
         """Drain diagnostics and append to the runtime system_context tail.
 

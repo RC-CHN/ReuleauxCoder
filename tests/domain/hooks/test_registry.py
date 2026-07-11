@@ -172,3 +172,19 @@ def test_hook_registry_clone_is_isolated_copy() -> None:
     assert cloned.list_hooks(HookPoint.BEFORE_TOOL_EXECUTE) == {
         "before_tool_execute": []
     }
+
+
+def test_registry_passes_explicit_clone_scope_to_hooks() -> None:
+    seen = []
+
+    class ScopedGuard(AllowGuard):
+        def clone_for_scope(self, scope: str):
+            seen.append(scope)
+            return ScopedGuard(name=self.name)
+
+    registry = HookRegistry()
+    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, ScopedGuard(name="scoped"))
+
+    registry.clone(scope="subagent")
+
+    assert seen == ["subagent"]

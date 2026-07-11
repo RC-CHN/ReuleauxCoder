@@ -69,6 +69,12 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
         """Inject the LspManager reference post-construction."""
         self.lsp_manager = mgr
 
+    def clone_for_scope(self, scope: str) -> "LspEditObserverHook":
+        # A subagent has no independent workspace LSP scope yet. Disabling the
+        # observer is safer than sharing/draining the parent's manager.
+        manager = None if scope == "subagent" else self.lsp_manager
+        return LspEditObserverHook(lsp_manager=manager, priority=self.priority)
+
     def run(self, context: AfterToolExecuteContext) -> None:
         """Detect edit tools, enqueue diagnostics, and try to inject them
         immediately into the tool result.

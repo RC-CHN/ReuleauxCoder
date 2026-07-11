@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from copy import copy
 from typing import Any, cast
 
 from reuleauxcoder.domain.hooks.base import (
@@ -104,11 +103,13 @@ class HookRegistry:
             return [h for h in hooks if isinstance(h, TransformHook)]
         return [h for h in hooks if isinstance(h, ObserverHook)]
 
-    def clone(self) -> "HookRegistry":
-        """Create an isolated copy of the registry and registered hooks."""
+    def clone(self, *, scope: str = "child") -> "HookRegistry":
+        """Create a scope-aware copy of the registry and registered hooks."""
         cloned = HookRegistry()
         for hook_point, hooks in self._hooks.items():
-            cloned._hooks[hook_point] = [copy(hook) for hook in hooks]
+            cloned._hooks[hook_point] = [
+                hook.clone_for_scope(scope) for hook in hooks
+            ]
         return cloned
 
     @staticmethod

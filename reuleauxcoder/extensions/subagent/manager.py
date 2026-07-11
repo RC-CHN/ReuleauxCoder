@@ -542,7 +542,7 @@ def run_subagent_task(
         tools=_filter_subagent_tools(parent_agent, mode),
         max_context_tokens=parent_agent.context.max_tokens,
         max_rounds=effective_max_rounds,
-        hook_registry=parent_agent.hook_registry.clone(),
+        hook_registry=parent_agent.hook_registry.clone(scope="subagent"),
         approval_provider=build_subagent_approval_provider(parent_agent, mode, task),
     )
 
