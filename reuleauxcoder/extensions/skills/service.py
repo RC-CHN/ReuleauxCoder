@@ -12,6 +12,8 @@ from reuleauxcoder.extensions.skills.models import (
     SkillReloadResult,
     SkillToggleResult,
     SkillsViewModel,
+    SkillsSummary,
+    SkillViewItem,
 )
 from reuleauxcoder.infrastructure.persistence.skills_config_store import (
     SkillsConfigStore,
@@ -160,71 +162,32 @@ class SkillsService:
 
     def build_view(self) -> SkillsViewModel:
         skills = self.all()
-        lines: list[str] = ["# Skills"]
-        items: list[dict] = []
-        summary = {
-            "discovered": len(skills),
-            "active": len(self._active_skills),
-            "disabled": len([s for s in skills if not s.enabled]),
-            "config_enabled": self.enabled,
-            "scan_project": self.scan_project,
-            "scan_user": self.scan_user,
-            "catalog_loaded": bool(self._catalog),
-        }
-
-        lines.append(
-            f"Discovered: **{summary['discovered']}** · Active: **{summary['active']}** · Disabled: **{summary['disabled']}**"
-        )
-        lines.append(
-            f"Config: enabled=`{self.enabled}` project_scan=`{self.scan_project}` user_scan=`{self.scan_user}`"
-        )
-        lines.append("")
-
         last = self._last_reload
-        if any((last.added, last.updated, last.removed, last.missing)):
-            lines.append("## Last reload")
-            if last.added:
-                lines.append(f"- Added: {', '.join(last.added)}")
-            if last.updated:
-                lines.append(f"- Updated: {', '.join(last.updated)}")
-            if last.removed:
-                lines.append(f"- Removed: {', '.join(last.removed)}")
-            if last.missing:
-                lines.append(f"- Missing: {', '.join(last.missing)}")
-            lines.append("")
-
-        if not skills:
-            lines.append("No skills discovered.")
-        else:
-            lines.append("## Skill list")
-            for skill in skills:
-                status = "enabled" if skill.enabled else "disabled"
-                scope = skill.scope
-                lines.append(f"- **{skill.name}** · `{status}` · `{scope}`")
-                lines.append(f"  - {skill.description}")
-                lines.append(f"  - location: `{skill.location}`")
-                items.append(
-                    {
-                        "name": skill.name,
-                        "description": skill.description,
-                        "scope": scope,
-                        "enabled": skill.enabled,
-                        "status": status,
-                        "location": skill.location,
-                    }
-                )
-
-        if last.diagnostics:
-            lines.append("")
-            lines.append("## Diagnostics")
-            for diagnostic in last.diagnostics:
-                prefix = "warning" if diagnostic.level == "warning" else "error"
-                lines.append(f"- `{prefix}` {diagnostic.message}")
-
         return SkillsViewModel(
-            markdown="\n".join(lines),
-            skills=tuple(items),
-            summary=summary,
+            skills=tuple(
+                SkillViewItem(
+                    name=skill.name,
+                    description=skill.description,
+                    scope=skill.scope,
+                    enabled=skill.enabled,
+                    location=skill.location,
+                )
+                for skill in skills
+            ),
+            summary=SkillsSummary(
+                discovered=len(skills),
+                active=len(self._active_skills),
+                disabled=len([skill for skill in skills if not skill.enabled]),
+                config_enabled=self.enabled,
+                scan_project=self.scan_project,
+                scan_user=self.scan_user,
+                catalog_loaded=bool(self._catalog),
+            ),
+            diagnostics=last.diagnostics,
+            added=last.added,
+            updated=last.updated,
+            removed=last.removed,
+            missing=last.missing,
         )
 
     @property

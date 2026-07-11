@@ -17,6 +17,7 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.extensions.skills.models import SkillsSummary, SkillsViewModel
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
@@ -76,27 +77,25 @@ def _build_reload_message(result) -> str:
     return "Skills reloaded: " + ", ".join(parts) + "."
 
 
-def _build_skills_payload(ctx) -> dict[str, object]:
+def _build_skills_view(ctx) -> SkillsViewModel:
     service = ctx.skills_service
     if service is None:
-        return {"markdown": "Skills service unavailable.", "skills": [], "summary": {}}
-    view = service.build_view()
-    return {
-        "markdown": view.markdown,
-        "skills": list(view.skills),
-        "summary": dict(view.summary),
-    }
+        return SkillsViewModel(
+            skills=(),
+            summary=SkillsSummary(0, 0, 0, False, False, False, False),
+        )
+    return service.build_view()
 
 
 def _handle_show_skills(command, ctx) -> CommandResult:
-    payload = _build_skills_payload(ctx)
+    view = _build_skills_view(ctx)
     ctx.ui_bus.open_view(
-        "skills",
+        view.view_type,
         title="Skills",
-        payload=payload,
+        view_model=view,
         reuse_key="skills",
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_reload_skills(command, ctx) -> CommandResult:
@@ -125,11 +124,14 @@ def _handle_reload_skills(command, ctx) -> CommandResult:
         emit = ctx.ui_bus.warning if diagnostic.level == "warning" else ctx.ui_bus.error
         emit(diagnostic.message, kind=UIEventKind.SYSTEM)
 
-    payload = _build_skills_payload(ctx)
+    view = _build_skills_view(ctx)
     ctx.ui_bus.refresh_view(
-        "skills", title="Skills", payload=payload, reuse_key="skills"
+        view.view_type,
+        title="Skills",
+        view_model=view,
+        reuse_key="skills",
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_toggle_skill(command: ToggleSkillCommand, ctx) -> CommandResult:
@@ -160,11 +162,14 @@ def _handle_toggle_skill(command: ToggleSkillCommand, ctx) -> CommandResult:
             result.message, kind=UIEventKind.SYSTEM, skill_name=command.skill_name
         )
 
-    payload = _build_skills_payload(ctx)
+    view = _build_skills_view(ctx)
     ctx.ui_bus.refresh_view(
-        "skills", title="Skills", payload=payload, reuse_key="skills"
+        view.view_type,
+        title="Skills",
+        view_model=view,
+        reuse_key="skills",
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 @register_command_module

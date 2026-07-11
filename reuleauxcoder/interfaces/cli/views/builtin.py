@@ -7,31 +7,20 @@ from rich.panel import Panel
 from rich.table import Table
 
 from reuleauxcoder.interfaces.cli.views.common import (
-    render_markdown_panel,
     stop_stream_and_clear,
 )
 from reuleauxcoder.interfaces.view_registry import ViewRendererSpec
 from reuleauxcoder.app.runtime.approval import ApprovalView
+from reuleauxcoder.extensions.skills.models import SkillsViewModel
 from reuleauxcoder.app.commands.view_models import (
     HelpViewModel,
     MCPServersViewModel,
-    MarkdownViewModel,
     ModelListViewModel,
     ModesViewModel,
     SessionsViewModel,
     EffectiveConfigViewModel,
     TokenUsageViewModel,
 )
-
-
-def _markdown_view(title: str):
-    def render(renderer, event) -> bool:
-        model = event.data.get("view_model")
-        return isinstance(model, MarkdownViewModel) and render_markdown_panel(
-            renderer, markdown_text=model.markdown, title=title
-        )
-
-    return render
 
 
 def render_mcp_servers_view(renderer, event) -> bool:
@@ -244,15 +233,38 @@ def render_approval_rules_view(renderer, event) -> bool:
     return True
 
 
+def render_skills_view(renderer, event) -> bool:
+    model = event.data.get("view_model")
+    if not isinstance(model, SkillsViewModel):
+        return False
+    stop_stream_and_clear(renderer)
+    summary = model.summary
+    renderer.console.print(
+        f"Skills: {summary.active} active / {summary.discovered} discovered / "
+        f"{summary.disabled} disabled"
+    )
+    table = Table(title="Skills")
+    table.add_column("Name")
+    table.add_column("State")
+    table.add_column("Scope")
+    table.add_column("Description")
+    for skill in model.skills:
+        table.add_row(
+            skill.name,
+            "enabled" if skill.enabled else "disabled",
+            skill.scope,
+            skill.description,
+        )
+    renderer.console.print(table)
+    for diagnostic in model.diagnostics:
+        color = "yellow" if diagnostic.level == "warning" else "red"
+        renderer.console.print(f"[{color}]{diagnostic.message}[/{color}]")
+    return True
+
+
 def builtin_cli_view_specs() -> list[ViewRendererSpec]:
     """Return explicit CLI-owned view registrations."""
-    markdown_views = {
-        "skills": "Skills",
-    }
-    specs = [
-        ViewRendererSpec(view_type=name, render=_markdown_view(title))
-        for name, title in markdown_views.items()
-    ]
+    specs: list[ViewRendererSpec] = []
     specs.extend(
         [
             ViewRendererSpec(
@@ -273,6 +285,7 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
             ViewRendererSpec(
                 view_type="approval_rules", render=render_approval_rules_view
             ),
+            ViewRendererSpec(view_type="skills", render=render_skills_view),
         ]
     )
     return specs
