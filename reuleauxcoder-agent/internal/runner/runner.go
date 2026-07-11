@@ -234,7 +234,7 @@ func (r *Runner) runPollLoop(
 				}
 				continue
 			}
-			result := tools.Execute(execReq, cwd, func(chunk protocol.ToolStreamChunk) {
+			result := tools.Execute(execReq, cwd, processManager, func(chunk protocol.ToolStreamChunk) {
 				if sendErr := r.sendToolStream(ctx, peerToken, env.RequestID, chunk); sendErr != nil {
 					log.Printf("stream send failed: %v", sendErr)
 				}
