@@ -215,6 +215,8 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         peer_tools = runner.dependencies.load_tools(peer_backend)
         peer_agent = runner.dependencies.create_agent(peer_llm, peer_tools, config)
         peer_agent.runtime_config = config
+        peer_agent.relay_server = relay_server
+        peer_agent.extension_manager = runner._extension_manager
         peer_agent.skills_service = skills_service
         peer_agent.skills_catalog = agent.skills_catalog
         runner._register_hooks(peer_agent, config)

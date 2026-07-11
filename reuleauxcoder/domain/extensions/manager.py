@@ -211,3 +211,18 @@ class ExtensionManager:
             diagnostics.extend(container.diagnostics)
         self._containers.clear()
         return tuple(diagnostics)
+
+    def describe_graph(self) -> tuple[str, ...]:
+        """Return a stable, secret-free extension ordering snapshot."""
+        return tuple(
+            f"{extension_id} [{self._definitions[extension_id].manifest.phase.value}]"
+            for extension_id in self.resolve_order()
+        )
+
+    def describe_scopes(self) -> tuple[str, ...]:
+        """Return active scope ownership without exposing extension instances."""
+        return tuple(
+            f"{container.scope.value}:{container.scope_id} -> "
+            + ", ".join(container.extension_ids)
+            for container in self._containers
+        )

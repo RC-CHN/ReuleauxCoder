@@ -160,6 +160,25 @@ class LspManager:
     def enabled(self) -> bool:
         return self._config.enabled
 
+    def describe_scopes(self) -> tuple[str, ...]:
+        """Return secret-free transport and pending-batch ownership diagnostics."""
+        with self._lock:
+            transports = tuple(
+                sorted(
+                    f"{get_language_id_string(language)}:{root}"
+                    for language, root in self._transports
+                )
+            )
+            pending = tuple(
+                sorted(
+                    f"pending:{batch.route.agent_id or '-'}:"
+                    f"g{batch.route.session_generation}:"
+                    f"{batch.route.file_path}"
+                    for batch in self._diagnostic_batches.values()
+                )
+            )
+        return (*transports, *pending)
+
     # === Lifecycle ===
 
     def health_check(self) -> LspHealthReport:

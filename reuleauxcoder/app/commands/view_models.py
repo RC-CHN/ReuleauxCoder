@@ -296,6 +296,11 @@ class EffectiveConfigRowViewModel:
 class EffectiveConfigViewModel:
     rows: tuple[EffectiveConfigRowViewModel, ...]
     diagnostics: tuple[str, ...] = ()
+    extension_graph: tuple[str, ...] = ()
+    extension_scopes: tuple[str, ...] = ()
+    lsp_scopes: tuple[str, ...] = ()
+    peer_capabilities: tuple[str, ...] = ()
+    active_jobs: tuple[str, ...] = ()
     view_type: str = "effective_config"
 
     def to_payload(self) -> dict[str, Any]:
@@ -305,4 +310,9 @@ class EffectiveConfigViewModel:
                 for row in self.rows
             ],
             "diagnostics": list(self.diagnostics),
+            "extension_graph": list(self.extension_graph),
+            "extension_scopes": list(self.extension_scopes),
+            "lsp_scopes": list(self.lsp_scopes),
+            "peer_capabilities": list(self.peer_capabilities),
+            "active_jobs": list(self.active_jobs),
         }

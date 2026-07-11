@@ -141,6 +141,8 @@ class AppRunner:
                 "session_id": current_session_id,
             },
         )
+        agent.extension_manager = self._extension_manager
+        agent.extension_scope = extension_scope
         extension_scope.get("core.hooks").start()
         return app_ctx
 
@@ -163,6 +165,7 @@ class AppRunner:
         tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
         agent.runtime_config = config
+        agent.relay_server = self._relay_server
         agent.current_session_id = None
         agent.session_fingerprint = get_session_fingerprint(config, agent)
         agent.context._ui_bus = ui_bus
@@ -264,6 +267,7 @@ class AppRunner:
 
         manager.start_worker()
         self._lsp_manager = manager
+        agent.lsp_manager = manager
 
         agent.hook_registry.bind_runtime_service("lsp_manager", manager)
         for tool in agent.tools:
@@ -392,6 +396,8 @@ class AppRunner:
                         bind(None)
             self._lsp_manager.shutdown_all()
             self._lsp_manager = None
+            if self._agent is not None:
+                self._agent.lsp_manager = None
         self._agent = None
         self._ui_bus = None
 

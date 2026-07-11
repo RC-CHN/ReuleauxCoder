@@ -81,6 +81,10 @@ class Agent:
         self.mcp_manager = None
         self.skills_service = None
         self.skills_catalog: str = ""
+        self.extension_manager = None
+        self.extension_scope = None
+        self.lsp_manager = None
+        self.relay_server = None
         self._subagent_manager = None
         self.ui_interactor = None
         self._subagent_approval_lock = None

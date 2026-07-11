@@ -79,4 +79,42 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
         f"{item.severity}: {item.path}: {item.message}"
         for item in getattr(config, "diagnostics", [])
     )
-    return EffectiveConfigViewModel(rows=rows, diagnostics=diagnostics)
+    extension_manager = getattr(agent, "extension_manager", None)
+    extension_graph = (
+        extension_manager.describe_graph() if extension_manager is not None else ()
+    )
+    extension_scopes = (
+        extension_manager.describe_scopes() if extension_manager is not None else ()
+    )
+    lsp_manager = getattr(agent, "lsp_manager", None)
+    lsp_scopes = lsp_manager.describe_scopes() if lsp_manager is not None else ()
+
+    relay_server = getattr(agent, "relay_server", None)
+    peers = (
+        relay_server.registry.list_online()
+        if relay_server is not None and getattr(relay_server, "registry", None)
+        else []
+    )
+    peer_capabilities = tuple(
+        f"{peer.peer_id}: v{peer.meta.get('protocol_version', 1)} "
+        + ",".join(sorted(peer.capabilities))
+        for peer in sorted(peers, key=lambda item: item.peer_id)
+    )
+
+    subagent_manager = getattr(agent, "_subagent_manager", None)
+    jobs = subagent_manager.list_jobs() if subagent_manager is not None else []
+    active_jobs = tuple(
+        f"{job.id}:{job.status}:g{job.generation}:{job.parent_agent_id or '-'}"
+        for job in jobs
+        if job.status
+        in {"queued", "running", "cancelling", "timed_out_detached"}
+    )
+    return EffectiveConfigViewModel(
+        rows=rows,
+        diagnostics=diagnostics,
+        extension_graph=extension_graph,
+        extension_scopes=extension_scopes,
+        lsp_scopes=lsp_scopes,
+        peer_capabilities=peer_capabilities,
+        active_jobs=active_jobs,
+    )

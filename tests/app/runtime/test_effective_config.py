@@ -47,3 +47,42 @@ def test_effective_config_view_never_exposes_credentials() -> None:
     payload = build_effective_config_view(config).to_payload()
 
     assert "super-secret" not in str(payload)
+
+
+def test_effective_config_includes_runtime_scope_diagnostics() -> None:
+    peer = SimpleNamespace(
+        peer_id="peer-1",
+        capabilities=["fs.read", "process.start"],
+        meta={"protocol_version": 2},
+    )
+    job = SimpleNamespace(
+        id="sj_1",
+        status="running",
+        generation=3,
+        parent_agent_id="agent-1",
+    )
+    agent = SimpleNamespace(
+        active_main_model_profile=None,
+        active_sub_model_profile=None,
+        active_mode=None,
+        llm=SimpleNamespace(model="runtime-model"),
+        extension_manager=SimpleNamespace(
+            describe_graph=lambda: ("core.hooks [50]",),
+            describe_scopes=lambda: ("runner:runner -> core.hooks",),
+        ),
+        lsp_manager=SimpleNamespace(
+            describe_scopes=lambda: ("python:/workspace",)
+        ),
+        relay_server=SimpleNamespace(
+            registry=SimpleNamespace(list_online=lambda: [peer])
+        ),
+        _subagent_manager=SimpleNamespace(list_jobs=lambda: [job]),
+    )
+
+    view = build_effective_config_view(Config(), agent)
+
+    assert view.extension_graph == ("core.hooks [50]",)
+    assert view.extension_scopes == ("runner:runner -> core.hooks",)
+    assert view.lsp_scopes == ("python:/workspace",)
+    assert view.peer_capabilities == ("peer-1: v2 fs.read,process.start",)
+    assert view.active_jobs == ("sj_1:running:g3:agent-1",)

@@ -100,6 +100,19 @@ def render_effective_config_view(renderer, event) -> bool:
     renderer.console.print(table)
     for diagnostic in model.diagnostics:
         renderer.console.print(f"[yellow]⚠ {diagnostic}[/yellow]")
+    sections = (
+        ("Extension Graph", model.extension_graph),
+        ("Extension Scopes", model.extension_scopes),
+        ("LSP Scopes", model.lsp_scopes),
+        ("Peer Capabilities", model.peer_capabilities),
+        ("Active Jobs", model.active_jobs),
+    )
+    for title, values in sections:
+        if not values:
+            continue
+        renderer.console.print(f"[bold]{title}[/bold]")
+        for value in values:
+            renderer.console.print(f"  {value}")
     return True
 
 
