@@ -1,0 +1,1 @@
+"""Extension domain tests."""
