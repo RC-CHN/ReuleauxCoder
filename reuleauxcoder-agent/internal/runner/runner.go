@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"runtime"
@@ -122,6 +123,7 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) runPollLoop(ctx context.Context, peerToken, workspaceRoot, cwd string, pollInterval time.Duration) error {
+	retryDelay := 500 * time.Millisecond
 	for {
 		select {
 		case <-ctx.Done():
@@ -136,8 +138,17 @@ func (r *Runner) runPollLoop(ctx context.Context, peerToken, workspaceRoot, cwd 
 		})
 		cancelPoll()
 		if err != nil {
-			return fmt.Errorf("poll failed: %w", err)
+			if isAuthenticationError(err) {
+				return fmt.Errorf("poll authentication failed: %w", err)
+			}
+			log.Printf("poll failed; reconnecting: %v", err)
+			if !waitForRetry(ctx, jitteredBackoff(retryDelay)) {
+				return nil
+			}
+			retryDelay = min(retryDelay*2, 15*time.Second)
+			continue
 		}
+		retryDelay = 500 * time.Millisecond
 
 		switch env.Type {
 		case "noop", "":
@@ -211,7 +222,8 @@ func (r *Runner) runInteractiveLoop(ctx context.Context, peerToken string) error
 			return nil
 		}
 		if err := r.runRemoteChat(ctx, peerToken, userInput); err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "\nRemote chat error: %v\n", err)
+			continue
 		}
 	}
 }
@@ -234,6 +246,7 @@ func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) er
 	}
 
 	cursor := 0
+	retryDelay := 500 * time.Millisecond
 	for {
 		streamCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 		streamResp, err := r.client.ChatStream(streamCtx, protocol.ChatStreamRequest{
@@ -244,8 +257,16 @@ func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) er
 		})
 		cancel()
 		if err != nil {
-			return fmt.Errorf("chat stream failed: %w", err)
+			if isAuthenticationError(err) {
+				return fmt.Errorf("chat stream authentication failed: %w", err)
+			}
+			if !waitForRetry(ctx, jitteredBackoff(retryDelay)) {
+				return nil
+			}
+			retryDelay = min(retryDelay*2, 15*time.Second)
+			continue
 		}
+		retryDelay = 500 * time.Millisecond
 		if strings.TrimSpace(streamResp.Error) != "" {
 			return fmt.Errorf("chat stream failed: %s", streamResp.Error)
 		}
@@ -259,6 +280,32 @@ func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) er
 			return nil
 		}
 	}
+}
+
+func jitteredBackoff(base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	return base + time.Duration(rand.Int63n(int64(base/2)+1))
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func isAuthenticationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "http 401") || strings.Contains(message, "http 403")
 }
 
 func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, event protocol.ChatEvent) error {
