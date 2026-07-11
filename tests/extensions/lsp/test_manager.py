@@ -331,6 +331,7 @@ class TestDiagnosticReplacement:
         path = tmp_path / "main.py"
         path.write_text("x = 1")
         server = MagicMock()
+        server.diagnostics_generation.return_value = 1
         server.wait_for_diagnostics = AsyncMock(return_value=[])
         manager._get_or_create_server = AsyncMock(return_value=server)
         manager._latest_diagnostic_seq[path] = 2
@@ -342,6 +343,11 @@ class TestDiagnosticReplacement:
         asyncio.run(manager._handle_diagnostics_request(path, 2))
 
         assert manager._results[path].items == []
+        server.wait_for_diagnostics.assert_awaited_once_with(
+            path,
+            timeout=manager.config.poll_timeout_ms / 1000,
+            after_generation=1,
+        )
 
     def test_stale_seq_cannot_overwrite_newer_result(
         self, manager: LspManager, tmp_path: Path
@@ -353,6 +359,7 @@ class TestDiagnosticReplacement:
         path = tmp_path / "main.py"
         path.write_text("x = 1")
         server = MagicMock()
+        server.diagnostics_generation.return_value = 4
         server.wait_for_diagnostics = AsyncMock(
             return_value=[Diagnostic(line=1, character=1, message="stale")]
         )

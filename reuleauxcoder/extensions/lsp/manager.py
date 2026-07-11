@@ -421,6 +421,8 @@ class LspManager:
             if server is None:
                 return
 
+            baseline_generation = server.diagnostics_generation(file_path)
+
             # Sync file content
             stale = self._check_stale(lang, file_path)
             if stale:
@@ -442,6 +444,7 @@ class LspManager:
             diagnostics = await server.wait_for_diagnostics(
                 file_path,
                 timeout=self._config.poll_timeout_ms / 1000,
+                after_generation=baseline_generation,
             )
 
             block = DiagnosticBlock(

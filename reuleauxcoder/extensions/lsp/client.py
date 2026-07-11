@@ -60,6 +60,7 @@ class LspClient:
         self._initialized: bool = False
         self._reader_task: asyncio.Task[None] | None = None
         self._diagnostics_buffer: dict[str, list[Diagnostic]] = {}
+        self._diagnostic_generations: dict[str, int] = {}
         self._document_versions: dict[str, int] = {}
 
     # === Properties ===
@@ -205,6 +206,8 @@ class LspClient:
         self,
         file_path: Path,
         timeout: float = 5.0,
+        *,
+        after_generation: int | None = None,
     ) -> list[Diagnostic]:
         """Poll for publishDiagnostics for a specific file.
 
@@ -213,14 +216,29 @@ class LspClient:
         for the given file, or returns whatever has accumulated after timeout.
         """
         file_uri = self._file_uri(file_path)
+        current_generation = self._diagnostic_generations.get(file_uri, 0)
+        if after_generation is None:
+            baseline = (
+                current_generation - 1
+                if file_uri in self._diagnostics_buffer
+                else current_generation
+            )
+        else:
+            baseline = after_generation
 
         # Give the server a moment to publish
         for _ in range(int(timeout * 10)):
             await asyncio.sleep(0.1)
-            if file_uri in self._diagnostics_buffer:
+            if self._diagnostic_generations.get(file_uri, 0) > baseline:
                 break
 
+        if self._diagnostic_generations.get(file_uri, 0) <= baseline:
+            return []
         return self._diagnostics_buffer.pop(file_uri, [])
+
+    def diagnostics_generation(self, file_path: Path) -> int:
+        """Return the latest publish generation observed for one document."""
+        return self._diagnostic_generations.get(self._file_uri(file_path), 0)
 
     # === Active Tool Requests ===
 
@@ -288,6 +306,7 @@ class LspClient:
             self._reader_task = None
             self._initialized = False
             self._diagnostics_buffer.clear()
+            self._diagnostic_generations.clear()
             self._document_versions.clear()
 
     # === Internal: Request/Response ===
@@ -456,6 +475,9 @@ class LspClient:
         # the key for an empty list is essential: it signals that stale errors
         # were explicitly cleared by the server.
         self._diagnostics_buffer[uri] = items
+        self._diagnostic_generations[uri] = (
+            self._diagnostic_generations.get(uri, 0) + 1
+        )
 
     def _fail_all_pending(self, reason: str) -> None:
         """Fail all outstanding requests (used on server crash / shutdown)."""
