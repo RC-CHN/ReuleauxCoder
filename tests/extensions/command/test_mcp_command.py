@@ -29,7 +29,7 @@ def test_show_mcp_rejects_non_local_runtime() -> None:
 
     result = _handle_show_mcp_servers(SimpleNamespace(), ctx)
 
-    assert result.payload == {"markdown": "MCP local-only."}
+    assert result.payload == {}
     assert any(
         event.level == UIEventLevel.ERROR
         and event.kind == UIEventKind.MCP
@@ -45,7 +45,7 @@ def test_toggle_mcp_rejects_non_local_runtime() -> None:
         ToggleMCPServerCommand(server_name="demo", enabled=True), ctx
     )
 
-    assert result.payload == {"markdown": "MCP local-only."}
+    assert result.payload == {}
     assert any(
         event.level == UIEventLevel.ERROR and event.kind == UIEventKind.MCP
         for event in ctx.ui_bus._history
@@ -65,6 +65,8 @@ def test_toggle_mcp_local_runtime_emits_success_and_refreshes(monkeypatch) -> No
         saved_path = "/tmp/config.yaml"
 
     class FakeView:
+        view_type = "mcp_servers"
+
         def to_payload(self) -> dict:
             return {
                 "servers": [

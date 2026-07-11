@@ -47,6 +47,7 @@ class MCPServersView:
     """Structured view payload for MCP server listings."""
 
     servers: list[MCPServerStatus] = field(default_factory=list)
+    view_type: str = "mcp_servers"
 
     def to_payload(self) -> dict[str, Any]:
         return {

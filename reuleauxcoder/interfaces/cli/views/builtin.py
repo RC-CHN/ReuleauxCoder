@@ -14,7 +14,6 @@ from reuleauxcoder.app.runtime.approval import ApprovalView
 from reuleauxcoder.extensions.skills.models import SkillsViewModel
 from reuleauxcoder.app.commands.view_models import (
     HelpViewModel,
-    MCPServersViewModel,
     ModelListViewModel,
     ModesViewModel,
     SessionsViewModel,
@@ -22,11 +21,12 @@ from reuleauxcoder.app.commands.view_models import (
     EffectiveConfigViewModel,
     TokenUsageViewModel,
 )
+from reuleauxcoder.extensions.mcp.models import MCPServersView
 
 
 def render_mcp_servers_view(renderer, event) -> bool:
     model = event.data.get("view_model")
-    if not isinstance(model, MCPServersViewModel):
+    if not isinstance(model, MCPServersView):
         return False
     servers = model.servers
     stop_stream_and_clear(renderer)

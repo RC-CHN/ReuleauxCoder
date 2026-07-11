@@ -77,18 +77,14 @@ def _handle_show_mcp_servers(command, ctx) -> CommandResult:
         ctx.ui_bus.error(
             "MCP commands are only available in local runtime.", kind=UIEventKind.MCP
         )
-        return CommandResult(action="continue", payload={"markdown": "MCP local-only."})
+        return CommandResult(action="continue")
 
     view = build_mcp_servers_view(ctx.config, ctx.agent)
     payload = view.to_payload()
-    if not view.servers:
-        ctx.ui_bus.info("No MCP servers configured.", kind=UIEventKind.MCP)
-        return CommandResult(action="continue", payload=payload)
-
     ctx.ui_bus.open_view(
-        "mcp_servers",
+        view.view_type,
         title="MCP Servers",
-        payload=payload,
+        view_model=view,
         reuse_key="mcp_servers",
     )
     return CommandResult(action="continue", payload=payload)
@@ -99,7 +95,7 @@ def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
         ctx.ui_bus.error(
             "MCP commands are only available in local runtime.", kind=UIEventKind.MCP
         )
-        return CommandResult(action="continue", payload={"markdown": "MCP local-only."})
+        return CommandResult(action="continue")
 
     result = toggle_mcp_server(
         command.server_name,
@@ -135,9 +131,9 @@ def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
 
     view = build_mcp_servers_view(ctx.config, ctx.agent)
     ctx.ui_bus.refresh_view(
-        "mcp_servers",
+        view.view_type,
         title="MCP Servers",
-        payload=view.to_payload(),
+        view_model=view,
         reuse_key="mcp_servers",
     )
     return CommandResult(action="continue", payload=view.to_payload())

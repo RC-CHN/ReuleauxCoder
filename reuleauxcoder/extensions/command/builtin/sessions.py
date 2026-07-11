@@ -16,6 +16,10 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.view_models import (
+    SessionsViewModel,
+    SessionSummaryViewModel,
+)
 from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
     build_session_runtime_state,
@@ -85,44 +89,27 @@ def _handle_list_sessions(command, ctx) -> CommandResult:
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     filter_fingerprint = None if command.show_all else fingerprint
     sessions = store.list(limit=command.limit, fingerprint=filter_fingerprint)
-    payload = {
-        "fingerprint": fingerprint,
-        "show_all": command.show_all,
-        "sessions": [
-            {
-                "id": s.id,
-                "model": s.model,
-                "saved_at": s.saved_at,
-                "preview": s.preview,
-                "fingerprint": s.fingerprint,
-            }
-            for s in sessions
-        ],
-    }
-
-    if not sessions:
-        if command.show_all:
-            ctx.ui_bus.info(
-                "No saved sessions across all fingerprints.",
-                kind=UIEventKind.SESSION,
-                fingerprint=fingerprint,
-                show_all=True,
+    view = SessionsViewModel(
+        fingerprint=fingerprint,
+        show_all=command.show_all,
+        sessions=tuple(
+            SessionSummaryViewModel(
+                session_id=session.id,
+                model=session.model,
+                saved_at=session.saved_at,
+                preview=session.preview,
+                fingerprint=session.fingerprint,
             )
-        else:
-            ctx.ui_bus.info(
-                f"No saved sessions for fingerprint: {fingerprint}",
-                kind=UIEventKind.SESSION,
-                fingerprint=fingerprint,
-            )
-    else:
-        ctx.ui_bus.open_view(
-            "sessions",
-            title="Saved Sessions",
-            payload=payload,
-            reuse_key="sessions",
-        )
-
-    return CommandResult(action="continue", payload=payload)
+            for session in sessions
+        ),
+    )
+    ctx.ui_bus.open_view(
+        view.view_type,
+        title="Saved Sessions",
+        view_model=view,
+        reuse_key=view.view_type,
+    )
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_resume_session(command, ctx) -> CommandResult:
