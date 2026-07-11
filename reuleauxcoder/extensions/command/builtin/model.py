@@ -6,6 +6,10 @@ from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.view_models import (
+    ModelListViewModel,
+    ModelProfileViewModel,
+)
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -126,19 +130,19 @@ def _parse_switch_model(user_input: str, parse_ctx):
 
 
 def _handle_show_model(command, ctx) -> CommandResult:
-    payload = _build_model_profiles_payload(
+    view = _build_model_profiles_view(
         ctx.config,
         runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
     )
 
     ctx.ui_bus.open_view(
-        "model_profiles",
+        view.view_type,
         title="Model Profiles",
-        payload=payload,
+        view_model=view,
         reuse_key="model_profiles",
     )
 
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _resolve_profile(ctx, profile_name: str):
@@ -166,18 +170,18 @@ def _apply_main_profile_to_runtime(ctx, profile_name: str, profile) -> None:
     ctx.agent.active_main_model_profile = profile_name
 
 
-def _refresh_model_view(ctx) -> dict:
-    payload = _build_model_profiles_payload(
+def _refresh_model_view(ctx) -> ModelListViewModel:
+    view = _build_model_profiles_view(
         ctx.config,
         runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
     )
     ctx.ui_bus.refresh_view(
-        "model_profiles",
+        view.view_type,
         title="Model Profiles",
-        payload=payload,
+        view_model=view,
         reuse_key="model_profiles",
     )
-    return payload
+    return view
 
 
 def _handle_switch_model(command, ctx) -> CommandResult:
@@ -187,14 +191,14 @@ def _handle_switch_model(command, ctx) -> CommandResult:
         return CommandResult(action="continue")
 
     _apply_main_profile_to_runtime(ctx, profile_name, profile)
-    payload = _refresh_model_view(ctx)
+    view = _refresh_model_view(ctx)
     ctx.ui_bus.success(
         f"Switched session main model profile to '{profile_name}' ({profile.model})",
         kind=UIEventKind.MODEL,
         profile_name=profile_name,
         model=profile.model,
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_use_main_model(command, ctx) -> CommandResult:
@@ -210,14 +214,14 @@ def _handle_use_sub_model(command, ctx) -> CommandResult:
         return CommandResult(action="continue")
 
     ctx.agent.active_sub_model_profile = profile_name
-    payload = _refresh_model_view(ctx)
+    view = _refresh_model_view(ctx)
     ctx.ui_bus.success(
         f"Switched session sub-agent model profile to '{profile_name}' ({profile.model})",
         kind=UIEventKind.MODEL,
         profile_name=profile_name,
         model=profile.model,
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_set_main_model(command, ctx) -> CommandResult:
@@ -237,7 +241,7 @@ def _handle_set_main_model(command, ctx) -> CommandResult:
     path = WorkspaceConfigStore().save_active_model_profile(profile_name)
 
     _apply_main_profile_to_runtime(ctx, profile_name, profile)
-    payload = _refresh_model_view(ctx)
+    view = _refresh_model_view(ctx)
     ctx.ui_bus.success(
         f"Set global main model profile to '{profile_name}' ({profile.model}) and saved to {path}",
         kind=UIEventKind.MODEL,
@@ -245,7 +249,7 @@ def _handle_set_main_model(command, ctx) -> CommandResult:
         model=profile.model,
         saved_path=str(path),
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_set_sub_model(command, ctx) -> CommandResult:
@@ -271,12 +275,12 @@ def _handle_set_sub_model(command, ctx) -> CommandResult:
         saved_path=str(path),
     )
 
-    payload = _refresh_model_view(ctx)
+    view = _refresh_model_view(ctx)
 
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
-def _build_model_profiles_payload(config, runtime_state=None) -> dict:
+def _build_model_profiles_view(config, runtime_state=None) -> ModelListViewModel:
     profiles = getattr(config, "model_profiles", {}) or {}
     runtime_main = (
         getattr(runtime_state, "active_main_model_profile", None)
@@ -300,95 +304,46 @@ def _build_model_profiles_payload(config, runtime_state=None) -> dict:
         runtime_sub or getattr(config, "active_sub_model_profile", None) or active_main
     )
 
-    lines: list[str] = ["## Model Routing"]
-    profile_items: list[dict] = []
-
-    if active_main:
-        lines.append(f"- main agent: `{active_main}`")
-    else:
-        lines.append(f"- main agent: runtime `{runtime_model or config.model}`")
-        if config.base_url:
-            lines.append(f"  - base_url: `{config.base_url}`")
-
-    if active_sub:
-        lines.append(f"- sub-agent default: `{active_sub}`")
-    else:
-        lines.append("- sub-agent default: inherits main agent runtime")
-
-    lines.append("")
-    lines.append("**Commands**")
-    lines.append(
-        "- `/model <profile>` or `/model use-main <profile>` → switch session main model"
-    )
-    lines.append("- `/model use-sub <profile>` → switch session sub-agent model")
-    lines.append("- `/model set-main <profile>` → set global default main model")
-    lines.append("- `/model set-sub <profile>` → set global default sub-agent model")
-    lines.append(
-        '- `agent(..., model="sub"|"main")` → route a sub-agent to the configured sub/main model'
-    )
-    lines.append("")
-
-    if not profiles:
-        lines.append(
-            "> No model profiles configured. Add `models.profiles` in config.yaml."
+    profile_items = []
+    for name in sorted(profiles):
+        profile = profiles[name]
+        api_key = getattr(profile, "api_key", "")
+        if api_key and len(api_key) >= 4:
+            api_hint = f"...{api_key[-4:]}"
+        elif api_key:
+            api_hint = f"...{api_key}"
+        else:
+            api_hint = "(empty)"
+        profile_items.append(
+            ModelProfileViewModel(
+                name=name,
+                model=profile.model,
+                active_main=active_main == name,
+                active_sub=active_sub == name,
+                base_url=profile.base_url,
+                max_tokens=profile.max_tokens,
+                temperature=profile.temperature,
+                max_context_tokens=profile.max_context_tokens,
+                api_key_hint=api_hint,
+            )
         )
-        lines.append("")
-        lines.append("**Current runtime config**")
-        lines.append(f"- model: `{config.model}`")
-        lines.append(f"- max_tokens: {config.max_tokens}")
-        lines.append(f"- temperature: {config.temperature}")
-        lines.append(f"- max_context_tokens: {config.max_context_tokens}")
-    else:
-        lines.append("## Profiles")
-        lines.append("")
-        for name in sorted(profiles):
-            p = profiles[name]
-            badges: list[str] = []
-            if active_main == name:
-                badges.append("MAIN")
-            if active_sub == name:
-                badges.append("SUB")
-            badge_text = f" [{' | '.join(badges)}]" if badges else ""
-            api_key = getattr(p, "api_key", "")
-            if api_key and len(api_key) >= 4:
-                api_hint = f"...{api_key[-4:]}"
-            elif api_key:
-                api_hint = f"...{api_key}"
-            else:
-                api_hint = "(empty)"
+    diagnostics = (
+        ("No model profiles configured. Add models.profiles in config.yaml.",)
+        if not profiles
+        else ()
+    )
+    return ModelListViewModel(
+        active_main=active_main,
+        active_sub=active_sub,
+        current_model=runtime_model or config.model,
+        profiles=tuple(profile_items),
+        diagnostics=diagnostics,
+    )
 
-            item = {
-                "name": name,
-                "active": active_main == name,
-                "active_main": active_main == name,
-                "active_sub": active_sub == name,
-                "model": p.model,
-                "base_url": p.base_url,
-                "max_tokens": p.max_tokens,
-                "temperature": p.temperature,
-                "max_context_tokens": p.max_context_tokens,
-                "api_key_hint": api_hint,
-            }
-            profile_items.append(item)
 
-            lines.append(f"### {name}{badge_text}")
-            lines.append(f"- model: `{p.model}`")
-            if p.base_url:
-                lines.append(f"- base_url: `{p.base_url}`")
-            lines.append(f"- max_tokens: {p.max_tokens}")
-            lines.append(f"- temperature: {p.temperature}")
-            lines.append(f"- max_context_tokens: {p.max_context_tokens}")
-            lines.append(f"- api_key: `{api_hint}`")
-            lines.append("")
-
-    return {
-        "active_profile": active_main,
-        "active_main_profile": active_main,
-        "active_sub_profile": active_sub,
-        "current_model": runtime_model or config.model,
-        "markdown": "\n".join(lines),
-        "profiles": profile_items,
-    }
+def _build_model_profiles_payload(config, runtime_state=None) -> dict:
+    """Serializable compatibility projection for callers outside presentation."""
+    return _build_model_profiles_view(config, runtime_state).to_payload()
 
 
 @register_command_module

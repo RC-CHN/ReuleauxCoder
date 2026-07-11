@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.view_models import ModeProfileViewModel, ModesViewModel
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -55,18 +56,18 @@ def _parse_switch_mode(user_input: str, parse_ctx):
 
 
 def _handle_show_mode(command, ctx) -> CommandResult:
-    payload = _build_mode_profiles_payload(
+    view = _build_mode_profiles_view(
         ctx.config, getattr(ctx.agent, "active_mode", None)
     )
 
     ctx.ui_bus.open_view(
-        "mode_profiles",
+        view.view_type,
         title="Modes",
-        payload=payload,
+        view_model=view,
         reuse_key="mode_profiles",
     )
 
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_current_mode(command, ctx) -> CommandResult:
@@ -108,90 +109,50 @@ def _handle_switch_mode(command, ctx) -> CommandResult:
         mode_name=mode_name,
     )
 
-    payload = _build_mode_profiles_payload(
+    view = _build_mode_profiles_view(
         ctx.config, getattr(ctx.agent, "active_mode", None)
     )
     ctx.ui_bus.refresh_view(
-        "mode_profiles",
+        view.view_type,
         title="Modes",
-        payload=payload,
+        view_model=view,
         reuse_key="mode_profiles",
     )
 
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
-def _build_mode_profiles_payload(config, active_mode: str | None) -> dict:
+def _build_mode_profiles_view(config, active_mode: str | None) -> ModesViewModel:
     modes = getattr(config, "modes", {}) or {}
     current = active_mode or getattr(config, "active_mode", None)
 
-    lines: list[str] = []
-    mode_items: list[dict] = []
+    mode_items = tuple(
+        ModeProfileViewModel(
+            name=name,
+            active=current == name,
+            description=getattr(mode, "description", "") or "",
+            tools=tuple(getattr(mode, "tools", []) or []),
+            prompt_append=getattr(mode, "prompt_append", "") or "",
+            allowed_subagent_modes=tuple(
+                getattr(mode, "allowed_subagent_modes", []) or []
+            ),
+        )
+        for name, mode in sorted(modes.items())
+    )
+    diagnostics = (
+        ("No modes configured. Add modes.profiles in config.yaml.",)
+        if not modes
+        else ()
+    )
+    return ModesViewModel(
+        active_mode=current,
+        modes=mode_items,
+        diagnostics=diagnostics,
+    )
 
-    if current:
-        lines.append(f"**Current active mode:** `{current}`")
-    else:
-        lines.append("**Current active mode:** `(none)`")
 
-    lines.append("")
-
-    if not modes:
-        lines.append("> No modes configured. Add `modes.profiles` in config.yaml.")
-    else:
-        lines.append("**Modes:**")
-        lines.append("")
-        for name in sorted(modes):
-            m = modes[name]
-            is_active = current == name
-            marker = " ✓" if is_active else ""
-
-            tools = list(getattr(m, "tools", []) or [])
-            allowed_subagent_modes = list(
-                getattr(m, "allowed_subagent_modes", []) or []
-            )
-            prompt_append = getattr(m, "prompt_append", "") or ""
-
-            mode_items.append(
-                {
-                    "name": name,
-                    "active": is_active,
-                    "description": getattr(m, "description", "") or "",
-                    "tools": tools,
-                    "prompt_append": prompt_append,
-                    "allowed_subagent_modes": allowed_subagent_modes,
-                }
-            )
-
-            lines.append(f"- **{name}**{marker}")
-            if getattr(m, "description", ""):
-                lines.append(f"  - description: {m.description}")
-            lines.append(
-                "  - tools: "
-                + (
-                    "`*`"
-                    if "*" in tools
-                    else ", ".join(f"`{t}`" for t in tools)
-                    if tools
-                    else "(none)"
-                )
-            )
-            lines.append(
-                "  - allowed_subagent_modes: "
-                + (
-                    ", ".join(f"`{n}`" for n in allowed_subagent_modes)
-                    if allowed_subagent_modes
-                    else "(none)"
-                )
-            )
-            if prompt_append:
-                lines.append(f"  - prompt_append: `{prompt_append}`")
-            lines.append("")
-
-    return {
-        "active_mode": current,
-        "markdown": "\n".join(lines),
-        "modes": mode_items,
-    }
+def _build_mode_profiles_payload(config, active_mode: str | None) -> dict:
+    return _build_mode_profiles_view(config, active_mode).to_payload()
 
 
 @register_command_module
