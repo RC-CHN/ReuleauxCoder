@@ -72,15 +72,7 @@ class ReadFileTool(Tool):
             return "Error: limit must be a positive integer"
         if not isinstance(override, bool):
             return "Error: override must be a boolean"
-        return self.backend.exec_tool(
-            "read_file",
-            {
-                "file_path": file_path,
-                "offset": offset,
-                "limit": limit,
-                "override": override,
-            },
-        )
+        return self._execute_local(file_path, offset, limit, override)
 
     @backend_handler("local")
     def _execute_local(

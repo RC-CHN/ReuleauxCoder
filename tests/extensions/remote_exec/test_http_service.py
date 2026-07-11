@@ -26,6 +26,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     ChatResponse,
     CleanupResult,
     ExecToolResult,
+    WorkspaceResult,
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
@@ -286,34 +287,12 @@ class TestRemoteRelayHTTPService:
 
             backend = RemoteRelayToolBackend(relay_server=relay)
             backend.context.peer_id = peer_id
-            cases = [
+            forwarded_cases = [
                 (
                     ShellTool(backend=backend),
                     {"command": "echo hello"},
                     "shell",
                     "shell-ok",
-                ),
-                (
-                    ReadFileTool(backend=backend),
-                    {"file_path": "/tmp/demo.txt"},
-                    "read_file",
-                    "read-ok",
-                ),
-                (
-                    WriteFileTool(backend=backend),
-                    {"file_path": "/tmp/demo.txt", "content": "hello"},
-                    "write_file",
-                    "write-ok",
-                ),
-                (
-                    EditFileTool(backend=backend),
-                    {
-                        "file_path": "/tmp/demo.txt",
-                        "old_string": "a",
-                        "new_string": "b",
-                    },
-                    "edit_file",
-                    "edit-ok",
                 ),
                 (
                     GlobTool(backend=backend),
@@ -329,7 +308,7 @@ class TestRemoteRelayHTTPService:
                 ),
             ]
 
-            for tool, kwargs, expected_name, expected_result in cases:
+            for tool, kwargs, expected_name, expected_result in forwarded_cases:
                 holder: dict[str, object] = {}
 
                 def run_tool(current_tool=tool, current_kwargs=kwargs) -> None:
@@ -367,6 +346,80 @@ class TestRemoteRelayHTTPService:
 
                 t.join(timeout=2)
                 assert holder["result"] == expected_result
+
+            def poll_workspace() -> dict:
+                time.sleep(0.05)
+                status, body = _json_request(
+                    "POST",
+                    f"{service.base_url}/remote/poll",
+                    {"peer_token": peer_token},
+                )
+                assert status == 200
+                assert body["type"] == "workspace_request"
+                return body
+
+            def reply_workspace(body: dict, data: dict) -> None:
+                status, result_body = _json_request(
+                    "POST",
+                    f"{service.base_url}/remote/result",
+                    {
+                        "peer_token": peer_token,
+                        "request_id": body["request_id"],
+                        "type": "workspace_result",
+                        "payload": WorkspaceResult(ok=True, data=data).to_dict(),
+                    },
+                )
+                assert status == 200
+                assert result_body["ok"] is True
+
+            holder = {}
+            thread = threading.Thread(
+                target=lambda: holder.setdefault(
+                    "result",
+                    ReadFileTool(backend=backend).execute("/tmp/demo.txt"),
+                )
+            )
+            thread.start()
+            body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.read_text"
+            reply_workspace(body, {"content": "read-ok\n"})
+            thread.join(timeout=2)
+            assert holder["result"] == "1\tread-ok"
+
+            holder = {}
+            thread = threading.Thread(
+                target=lambda: holder.setdefault(
+                    "result",
+                    WriteFileTool(backend=backend).execute(
+                        "/tmp/demo.txt", "hello"
+                    ),
+                )
+            )
+            thread.start()
+            body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.write_text_atomic"
+            reply_workspace(body, {"old_content": ""})
+            thread.join(timeout=2)
+            assert str(holder["result"]).startswith("Wrote 1 lines")
+
+            holder = {}
+            thread = threading.Thread(
+                target=lambda: holder.setdefault(
+                    "result",
+                    EditFileTool(backend=backend).execute(
+                        "/tmp/demo.txt", "a", "b"
+                    ),
+                )
+            )
+            thread.start()
+            body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.read_text"
+            reply_workspace(body, {"content": "a"})
+            body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.replace_exact_atomic"
+            reply_workspace(body, {"old_content": "a", "new_content": "b"})
+            thread.join(timeout=2)
+            assert str(holder["result"]).startswith("Edited /tmp/demo.txt")
         finally:
             service.stop()
             relay.stop()

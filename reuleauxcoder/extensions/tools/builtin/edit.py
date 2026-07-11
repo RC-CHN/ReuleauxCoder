@@ -43,14 +43,6 @@ class EditFileTool(Tool):
         self, file_path: str, old_string: str, new_string: str
     ) -> str | None:
         """Fast validation so invalid edit requests can be rejected before approval."""
-        if getattr(self.backend, "backend_id", "local") == "remote_relay":
-            if not isinstance(file_path, str) or not file_path:
-                return "Error: edit_file requires a valid string file_path"
-            if not isinstance(old_string, str) or not isinstance(new_string, str):
-                return "Error: edit_file requires string old_string and new_string"
-            if old_string == new_string:
-                return "Error: old_string and new_string must differ"
-            return None
         return _validate_edit_request(
             file_path, old_string, new_string, workspace=self.backend.workspace
         )
@@ -71,21 +63,7 @@ class EditFileTool(Tool):
 
     @backend_handler("remote_relay")
     def _execute_remote(self, file_path: str, old_string: str, new_string: str) -> str:
-        validation_error = self.preflight_validate(
-            file_path=file_path,
-            old_string=old_string,
-            new_string=new_string,
-        )
-        if validation_error:
-            return validation_error
-        return self.backend.exec_tool(
-            "edit_file",
-            {
-                "file_path": file_path,
-                "old_string": old_string,
-                "new_string": new_string,
-            },
-        )
+        return self._execute_local(file_path, old_string, new_string)
 
     @backend_handler("local")
     def _execute_local(self, file_path: str, old_string: str, new_string: str) -> str:

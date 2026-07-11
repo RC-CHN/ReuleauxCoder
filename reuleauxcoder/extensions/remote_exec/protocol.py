@@ -333,6 +333,56 @@ class ExecToolResult:
         )
 
 
+@dataclass
+class WorkspaceRequest:
+    operation: str
+    args: dict[str, Any] = field(default_factory=dict)
+    cwd: str | None = None
+    timeout_sec: int = 30
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "args": self.args,
+            "cwd": self.cwd,
+            "timeout_sec": self.timeout_sec,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WorkspaceRequest":
+        return cls(
+            operation=data["operation"],
+            args=dict(data.get("args", {})),
+            cwd=data.get("cwd"),
+            timeout_sec=int(data.get("timeout_sec", 30)),
+        )
+
+
+@dataclass
+class WorkspaceResult:
+    ok: bool
+    data: dict[str, Any] = field(default_factory=dict)
+    error_code: str | None = None
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "data": self.data,
+            "error_code": self.error_code,
+            "error_message": self.error_message,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WorkspaceResult":
+        return cls(
+            ok=bool(data["ok"]),
+            data=dict(data.get("data", {})),
+            error_code=data.get("error_code"),
+            error_message=data.get("error_message"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Stream chunk (MVP: shell only if needed; struct kept for forward-compat)
 # ---------------------------------------------------------------------------

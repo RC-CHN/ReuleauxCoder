@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.remote_exec.errors import (
     PeerNotFoundError,
     RemoteExecError,
@@ -11,6 +13,7 @@ from reuleauxcoder.extensions.remote_exec.errors import (
 from reuleauxcoder.extensions.remote_exec.protocol import (
     ExecToolRequest,
     ToolStreamChunk,
+    WorkspaceRequest,
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, ToolBackend
@@ -31,6 +34,19 @@ class RemoteRelayToolBackend(ToolBackend):
         super().__init__(context or ExecutionContext(execution_target="remote"))
         self.relay_server = relay_server
         self.ui_bus = ui_bus
+        self.workspace = RemoteWorkspacePort(self)
+
+    def resolve_peer_id(self) -> str:
+        peer_id = self.context.peer_id
+        if peer_id is None:
+            peer = self.relay_server.registry.pick_default_peer()
+            if peer is None:
+                raise WorkspaceError(
+                    WorkspaceErrorCode.IO_ERROR,
+                    "no remote peer is currently connected",
+                )
+            peer_id = peer.peer_id
+        return peer_id
 
     def exec_tool(self, tool_name: str, args: dict[str, Any]) -> str:
         """Execute a tool on the remote peer and return the text result.
@@ -108,3 +124,61 @@ class RemoteRelayToolBackend(ToolBackend):
                 )
 
         return _handle
+
+
+class RemoteWorkspacePort:
+    """WorkspacePort adapter backed by generic peer primitives."""
+
+    def __init__(self, backend: RemoteRelayToolBackend):
+        self.backend = backend
+        self.root = Path(
+            backend.context.workspace_root or backend.context.cwd or "/"
+        )
+
+    def resolve(self, path: str | Path) -> Path:
+        value = Path(path)
+        return value if value.is_absolute() else self.root / value
+
+    def _request(self, operation: str, **args: Any) -> dict[str, Any]:
+        try:
+            result = self.backend.relay_server.send_workspace_request(
+                self.backend.resolve_peer_id(),
+                WorkspaceRequest(
+                    operation=operation,
+                    args=args,
+                    cwd=self.backend.context.cwd,
+                ),
+            )
+        except WorkspaceError:
+            raise
+        except Exception as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR, str(error)
+            ) from error
+        if not result.ok:
+            try:
+                code = WorkspaceErrorCode(result.error_code or "io_error")
+            except ValueError:
+                code = WorkspaceErrorCode.IO_ERROR
+            raise WorkspaceError(
+                code, result.error_message or "remote workspace operation failed"
+            )
+        return result.data
+
+    def read_text(self, path: str | Path) -> str:
+        return str(self._request("fs.read_text", path=str(path)).get("content", ""))
+
+    def write_text_atomic(self, path: str | Path, content: str) -> str:
+        return str(
+            self._request("fs.write_text_atomic", path=str(path), content=content).get(
+                "old_content", ""
+            )
+        )
+
+    def replace_exact_atomic(
+        self, path: str | Path, old: str, new: str
+    ) -> tuple[str, str]:
+        data = self._request(
+            "fs.replace_exact_atomic", path=str(path), old=old, new=new
+        )
+        return str(data.get("old_content", "")), str(data.get("new_content", ""))

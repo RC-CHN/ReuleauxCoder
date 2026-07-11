@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -51,12 +50,6 @@ func Execute(
 	switch req.ToolName {
 	case "shell":
 		return prependWarning(runShell(req.Args, cwd, req.TimeoutSec, onStream), staleWarning)
-	case "read_file":
-		return prependWarning(readFile(req.Args, cwd), staleWarning)
-	case "write_file":
-		return prependWarning(writeFile(req.Args, cwd), staleWarning)
-	case "edit_file":
-		return prependWarning(editFile(req.Args, cwd), staleWarning)
 	case "glob":
 		return prependWarning(globFiles(req.Args, cwd), staleWarning)
 	case "grep":
@@ -199,149 +192,6 @@ func truncateOutput(out string) string {
 	return out[:keepHeadChars] +
 		fmt.Sprintf("\n\n... truncated (%d chars total) ...\n\n", len(out)) +
 		out[len(out)-keepTailChars:]
-}
-
-func readFile(args map[string]any, cwd string) protocol.ExecToolResult {
-	filePath, ok := args["file_path"].(string)
-	if !ok || filePath == "" {
-		return errorResult("REMOTE_TOOL_ERROR", "file_path must be a non-empty string")
-	}
-	offset, _ := asInt(args["offset"])
-	if offset <= 0 {
-		offset = 1
-	}
-	limit, _ := asInt(args["limit"])
-	if limit <= 0 {
-		limit = 2000
-	}
-	override, _ := args["override"].(bool)
-
-	resolved, err := resolvePath(cwd, filePath)
-	if err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	f, err := os.Open(resolved)
-	if err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	var lines []string
-	lineNo := 0
-	start := offset - 1
-	end := start + limit
-
-	for scanner.Scan() {
-		lineNo++
-		if override {
-			lines = append(lines, scanner.Text())
-			continue
-		}
-		if lineNo > start && lineNo <= end {
-			lines = append(lines, scanner.Text())
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-
-	if override {
-		return protocol.ExecToolResult{OK: true, Result: joinNumbered(lines, 0)}
-	}
-	if start >= lineNo {
-		return protocol.ExecToolResult{OK: true, Result: "(empty file)"}
-	}
-	result := joinNumbered(lines, start)
-	if result == "" {
-		result = "(empty file)"
-	}
-	if end < lineNo {
-		result += fmt.Sprintf("\n... (%d lines total, showing %d-%d; use override=true to read full file)", lineNo, start+1, min(end, lineNo))
-	}
-	return protocol.ExecToolResult{OK: true, Result: result}
-}
-
-func writeFile(args map[string]any, cwd string) protocol.ExecToolResult {
-	filePath, ok := args["file_path"].(string)
-	if !ok || filePath == "" {
-		return errorResult("REMOTE_TOOL_ERROR", "file_path must be a non-empty string")
-	}
-	content, ok := args["content"].(string)
-	if !ok {
-		return errorResult("REMOTE_TOOL_ERROR", "content must be a string")
-	}
-	resolved, err := resolvePath(cwd, filePath)
-	if err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	if err := os.WriteFile(resolved, []byte(content), 0o644); err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	lineCount := 0
-	if content != "" {
-		lineCount = strings.Count(content, "\n") + 1
-	}
-	return protocol.ExecToolResult{OK: true, Result: fmt.Sprintf("Wrote %d lines to %s", lineCount, filePath)}
-}
-
-func editFile(args map[string]any, cwd string) protocol.ExecToolResult {
-	filePath, ok := args["file_path"].(string)
-	if !ok || filePath == "" {
-		return errorResult("REMOTE_TOOL_ERROR", "file_path must be a non-empty string")
-	}
-	oldString, ok := args["old_string"].(string)
-	if !ok {
-		return errorResult("REMOTE_TOOL_ERROR", "old_string must be a string")
-	}
-	newString, ok := args["new_string"].(string)
-	if !ok {
-		return errorResult("REMOTE_TOOL_ERROR", "new_string must be a string")
-	}
-	if oldString == newString {
-		return errorResult("REMOTE_TOOL_ERROR", "old_string and new_string must differ")
-	}
-	resolved, err := resolvePath(cwd, filePath)
-	if err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	data, err := os.ReadFile(resolved)
-	if err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	content := string(data)
-	count := strings.Count(content, oldString)
-	if count == 0 {
-		return errorResult("REMOTE_TOOL_ERROR", fmt.Sprintf("old_string not found in %s", filePath))
-	}
-	if count > 1 {
-		return errorResult("REMOTE_TOOL_ERROR", fmt.Sprintf("old_string appears %d times in %s", count, filePath))
-	}
-	updated := strings.Replace(content, oldString, newString, 1)
-	if err := os.WriteFile(resolved, []byte(updated), 0o644); err != nil {
-		return errorResult("REMOTE_TOOL_ERROR", err.Error())
-	}
-	return protocol.ExecToolResult{OK: true, Result: formatDiff(filePath, oldString, newString)}
-}
-
-// formatDiff produces a unified-diff-style summary of an edit, truncated at 3k chars.
-func formatDiff(filePath string, oldStr, newStr string) string {
-	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("--- a/%s\n+++ b/%s\n", filePath, filePath))
-	for _, line := range strings.Split(oldStr, "\n") {
-		buf.WriteString("-" + line + "\n")
-	}
-	for _, line := range strings.Split(newStr, "\n") {
-		buf.WriteString("+" + line + "\n")
-	}
-	out := buf.String()
-	if len(out) > 3000 {
-		out = out[:3000] + "\n... (diff truncated)"
-	}
-	return out
 }
 
 func globFiles(args map[string]any, cwd string) protocol.ExecToolResult {
@@ -738,17 +588,6 @@ func resolvePath(cwd, path string) (string, error) {
 		return filepath.Abs(path)
 	}
 	return filepath.Abs(filepath.Join(cwd, path))
-}
-
-func joinNumbered(lines []string, start int) string {
-	if len(lines) == 0 {
-		return "(empty file)"
-	}
-	parts := make([]string, 0, len(lines))
-	for i, line := range lines {
-		parts = append(parts, fmt.Sprintf("%d\t%s", start+i+1, line))
-	}
-	return strings.Join(parts, "\n")
 }
 
 func errorResult(code, message string) protocol.ExecToolResult {

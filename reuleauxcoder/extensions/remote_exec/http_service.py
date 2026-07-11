@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from reuleauxcoder.extensions.remote_exec.bootstrap import generate_bootstrap_script
 from reuleauxcoder.extensions.remote_exec.errors import RegisterRejectedError
@@ -508,6 +508,13 @@ class RemoteRelayHTTPService:
                         request_id=request_id,
                         peer_id=peer_id,
                         payload=result.to_dict(),
+                    )
+                elif result_type == "workspace_result":
+                    env = RelayEnvelope(
+                        type="workspace_result",
+                        request_id=request_id,
+                        peer_id=peer_id,
+                        payload=result_payload,
                     )
                 elif result_type == "tool_stream":
                     env = RelayEnvelope(

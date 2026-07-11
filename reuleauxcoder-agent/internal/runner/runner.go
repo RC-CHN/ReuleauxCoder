@@ -16,6 +16,7 @@ import (
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/client"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/tools"
+	workspaceops "github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/workspace"
 	"github.com/charmbracelet/glamour"
 )
 
@@ -29,10 +30,10 @@ type Config struct {
 }
 
 type Runner struct {
-	cfg       Config
-	client    *client.HTTPClient
-	scanner   *bufio.Scanner
-	mdRender  *glamour.TermRenderer
+	cfg      Config
+	client   *client.HTTPClient
+	scanner  *bufio.Scanner
+	mdRender *glamour.TermRenderer
 }
 
 func New(cfg Config) *Runner {
@@ -69,7 +70,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		BootstrapToken: r.cfg.BootstrapToken,
 		CWD:            cwd,
 		WorkspaceRoot:  workspaceRoot,
-		Capabilities:   []string{"shell", "read_file", "write_file", "edit_file", "glob", "grep"},
+		Capabilities: []string{
+			"shell", "glob", "grep", "list_file",
+			"workspace.fs.read_text", "workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
+		},
 		HostInfoMin: map[string]any{
 			"os":       runtimeOS(),
 			"arch":     runtimeArch(),
@@ -107,7 +111,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.Interactive {
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- r.runPollLoop(childCtx, registerResp.PeerToken, cwd, pollInterval)
+			errCh <- r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval)
 		}()
 
 		if err := r.runInteractiveLoop(childCtx, registerResp.PeerToken); err != nil {
@@ -124,10 +128,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return nil
 	}
 
-	return r.runPollLoop(childCtx, registerResp.PeerToken, cwd, pollInterval)
+	return r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval)
 }
 
-func (r *Runner) runPollLoop(ctx context.Context, peerToken, cwd string, pollInterval time.Duration) error {
+func (r *Runner) runPollLoop(ctx context.Context, peerToken, workspaceRoot, cwd string, pollInterval time.Duration) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -164,6 +168,19 @@ func (r *Runner) runPollLoop(ctx context.Context, peerToken, cwd string, pollInt
 				}
 			})
 			if sendErr := r.sendToolResult(ctx, peerToken, env.RequestID, result); sendErr != nil {
+				return sendErr
+			}
+		case "workspace_request":
+			workspaceReq, err := protocol.DecodeWorkspaceRequest(env.Payload)
+			if err != nil {
+				result := protocol.WorkspaceResult{OK: false, ErrorCode: "invalid_path", ErrorMessage: err.Error()}
+				if sendErr := r.sendWorkspaceResult(ctx, peerToken, env.RequestID, result); sendErr != nil {
+					return sendErr
+				}
+				continue
+			}
+			result := workspaceops.Execute(workspaceReq, workspaceRoot, cwd)
+			if sendErr := r.sendWorkspaceResult(ctx, peerToken, env.RequestID, result); sendErr != nil {
 				return sendErr
 			}
 		case "cleanup":
@@ -400,6 +417,17 @@ func (r *Runner) sendToolStream(ctx context.Context, peerToken, requestID string
 		RequestID: requestID,
 		Type:      "tool_stream",
 		Payload:   mapFromStruct(chunk),
+	})
+}
+
+func (r *Runner) sendWorkspaceResult(ctx context.Context, peerToken, requestID string, result protocol.WorkspaceResult) error {
+	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return r.client.SendResult(sendCtx, protocol.ResultRequest{
+		PeerToken: peerToken,
+		RequestID: requestID,
+		Type:      "workspace_result",
+		Payload:   mapFromStruct(result),
 	})
 }
 

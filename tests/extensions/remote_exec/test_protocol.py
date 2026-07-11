@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from reuleauxcoder.extensions.remote_exec.protocol import (
     CleanupRequest,
     CleanupResult,
@@ -17,6 +15,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterResponse,
     RelayEnvelope,
     ToolStreamChunk,
+    WorkspaceRequest,
+    WorkspaceResult,
 )
 
 
@@ -117,6 +117,31 @@ class TestExecToolResult:
         assert restored.ok is False
         assert restored.error_code == "PEER_DISCONNECTED"
         assert restored.meta["exit_code"] == 1
+
+
+class TestWorkspaceProtocol:
+    def test_request_roundtrip(self) -> None:
+        request = WorkspaceRequest(
+            operation="fs.replace_exact_atomic",
+            args={"path": "src/app.py", "old": "a", "new": "b"},
+            cwd="/workspace",
+            timeout_sec=12,
+        )
+
+        restored = WorkspaceRequest.from_dict(request.to_dict())
+
+        assert restored == request
+
+    def test_result_roundtrip(self) -> None:
+        result = WorkspaceResult(
+            ok=False,
+            error_code="not_unique",
+            error_message="old text occurs twice",
+        )
+
+        restored = WorkspaceResult.from_dict(result.to_dict())
+
+        assert restored == result
 
 
 class TestToolStreamChunk:

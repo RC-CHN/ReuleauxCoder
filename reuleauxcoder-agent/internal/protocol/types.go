@@ -128,6 +128,20 @@ type ExecToolResult struct {
 	Meta         map[string]any `json:"meta,omitempty"`
 }
 
+type WorkspaceRequest struct {
+	Operation  string         `json:"operation"`
+	Args       map[string]any `json:"args"`
+	CWD        *string        `json:"cwd,omitempty"`
+	TimeoutSec int            `json:"timeout_sec,omitempty"`
+}
+
+type WorkspaceResult struct {
+	OK           bool           `json:"ok"`
+	Data         map[string]any `json:"data,omitempty"`
+	ErrorCode    string         `json:"error_code,omitempty"`
+	ErrorMessage string         `json:"error_message,omitempty"`
+}
+
 type ToolStreamChunk struct {
 	ChunkType string         `json:"chunk_type"`
 	Data      string         `json:"data,omitempty"`
@@ -149,6 +163,16 @@ type NoopEnvelope struct {
 // The marshal-unmarshal pattern is idiomatic Go for map-to-struct conversion.
 func DecodeExecToolRequest(payload map[string]any) (ExecToolRequest, error) {
 	var req ExecToolRequest
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return req, err
+	}
+	err = json.Unmarshal(buf, &req)
+	return req, err
+}
+
+func DecodeWorkspaceRequest(payload map[string]any) (WorkspaceRequest, error) {
+	var req WorkspaceRequest
 	buf, err := json.Marshal(payload)
 	if err != nil {
 		return req, err

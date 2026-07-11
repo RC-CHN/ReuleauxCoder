@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
-
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.errors import (
     PeerDisconnectedError,
-    PeerNotFoundError,
 )
 from reuleauxcoder.extensions.remote_exec.protocol import (
     ExecToolRequest,
     ExecToolResult,
+    RelayEnvelope,
+    WorkspaceResult,
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
@@ -181,6 +180,65 @@ class TestRemoteBackendDispatch:
             t.join(timeout=2)
 
             assert result_holder["result"] == "hello"
+        finally:
+            srv.stop()
+
+    def test_remote_workspace_uses_primitive_envelope(self) -> None:
+        srv = RelayServer()
+        received: list[tuple[str, RelayEnvelope]] = []
+        srv._send_fn = lambda peer_id, envelope: received.append((peer_id, envelope))
+        srv.start()
+        try:
+            from reuleauxcoder.extensions.remote_exec.protocol import RegisterRequest
+
+            token = srv.issue_bootstrap_token(ttl_sec=60)
+            peer = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=token,
+                    cwd="/workspace",
+                    workspace_root="/workspace",
+                )
+            )
+            backend = RemoteRelayToolBackend(relay_server=srv)
+            backend.context.peer_id = peer.peer_id
+
+            import threading
+            import time
+
+            holder: dict[str, str] = {}
+            thread = threading.Thread(
+                target=lambda: holder.setdefault(
+                    "result", ReadFileTool(backend=backend).execute("README.md")
+                )
+            )
+            thread.start()
+            deadline = time.time() + 2
+            while not received and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert len(received) == 1
+            envelope = received[0][1]
+            assert envelope.type == "workspace_request"
+            assert envelope.payload == {
+                "operation": "fs.read_text",
+                "args": {"path": "README.md"},
+                "cwd": None,
+                "timeout_sec": 30,
+            }
+            srv.handle_inbound(
+                peer.peer_id,
+                RelayEnvelope(
+                    type="workspace_result",
+                    request_id=envelope.request_id,
+                    peer_id=peer.peer_id,
+                    payload=WorkspaceResult(
+                        ok=True, data={"content": "hello\n"}
+                    ).to_dict(),
+                ),
+            )
+            thread.join(timeout=2)
+
+            assert holder["result"] == "1\thello"
         finally:
             srv.stop()
 

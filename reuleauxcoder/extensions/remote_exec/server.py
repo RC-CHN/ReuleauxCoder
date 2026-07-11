@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 import uuid
 from typing import Any, Callable
 
@@ -28,6 +27,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterResponse,
     RelayEnvelope,
     ToolStreamChunk,
+    WorkspaceRequest,
+    WorkspaceResult,
 )
 
 
@@ -177,7 +178,11 @@ class RelayServer:
             if req_id:
                 chunk = ToolStreamChunk.from_dict(payload)
                 with self._lock:
-                    handler = self._stream_handlers.get(req_id)
+                    handler = (
+                        self._stream_handlers.get(req_id)
+                        if self._pending_peer_ids.get(req_id) == peer_id
+                        else None
+                    )
                 if handler is not None:
                     try:
                         handler(chunk)
@@ -187,19 +192,21 @@ class RelayServer:
         elif msg_type == "tool_result":
             result = ExecToolResult.from_dict(payload)
             if req_id:
-                with self._lock:
-                    fut = self._pending.pop(req_id, None)
-                    self._pending_peer_ids.pop(req_id, None)
-                    self._stream_handlers.pop(req_id, None)
+                fut = self._take_pending(req_id, peer_id)
+                if fut is not None and not fut.done():
+                    fut.set_result(result)
+
+        elif msg_type == "workspace_result":
+            result = WorkspaceResult.from_dict(payload)
+            if req_id:
+                fut = self._take_pending(req_id, peer_id)
                 if fut is not None and not fut.done():
                     fut.set_result(result)
 
         elif msg_type == "cleanup_result":
             result = CleanupResult.from_dict(payload)
             if req_id:
-                with self._lock:
-                    fut = self._pending.pop(req_id, None)
-                    self._pending_peer_ids.pop(req_id, None)
+                fut = self._take_pending(req_id, peer_id)
                 if fut is not None and not fut.done():
                     fut.set_result(result)
 
@@ -211,16 +218,25 @@ class RelayServer:
         elif msg_type == "error":
             err = ErrorMessage.from_dict(payload)
             if req_id:
-                with self._lock:
-                    fut = self._pending.pop(req_id, None)
-                    self._pending_peer_ids.pop(req_id, None)
-                    self._stream_handlers.pop(req_id, None)
+                fut = self._take_pending(req_id, peer_id)
                 if fut is not None and not fut.done():
                     fut.set_exception(
                         PeerDisconnectedError(peer_id or "unknown")
                         if err.code == "PEER_DISCONNECTED"
                         else Exception(f"[{err.code}] {err.message}")
                     )
+
+    def _take_pending(
+        self, request_id: str, peer_id: str | None
+    ) -> asyncio.Future | None:
+        """Take a pending response only from the peer that owns the request."""
+        with self._lock:
+            if self._pending_peer_ids.get(request_id) != peer_id:
+                return None
+            future = self._pending.pop(request_id, None)
+            self._pending_peer_ids.pop(request_id, None)
+            self._stream_handlers.pop(request_id, None)
+            return future
 
     # ------------------------------------------------------------------
     # Public: host-initiated actions (sync API for callers)
@@ -297,6 +313,31 @@ class RelayServer:
             return future.result(timeout=timeout_sec + 2)
         except Exception as e:
             return CleanupResult(ok=False, error_message=str(e))
+
+    def send_workspace_request(
+        self,
+        peer_id: str,
+        request: WorkspaceRequest,
+        timeout_sec: int | None = None,
+    ) -> WorkspaceResult:
+        """Send one generic workspace primitive request."""
+        if self._loop is None:
+            raise RuntimeError("RelayServer not started")
+        if self._registry.get(peer_id) is None:
+            raise PeerNotFoundError(peer_id)
+        req_id = str(uuid.uuid4())
+        envelope = RelayEnvelope(
+            type="workspace_request",
+            request_id=req_id,
+            peer_id=peer_id,
+            payload=request.to_dict(),
+        )
+        effective_timeout = timeout_sec or request.timeout_sec
+        future = asyncio.run_coroutine_threadsafe(
+            self._send_and_wait(req_id, peer_id, envelope, effective_timeout),
+            self._loop,
+        )
+        return future.result()
 
     # ------------------------------------------------------------------
     # Internal: request/response correlation

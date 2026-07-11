@@ -179,6 +179,71 @@ class TestExecRequest:
         finally:
             srv.stop()
 
+    def test_response_from_wrong_peer_cannot_claim_request(self) -> None:
+        srv = RelayServer()
+        received: list[tuple[str, RelayEnvelope]] = []
+        srv._send_fn = lambda peer_id, env: received.append((peer_id, env))
+        srv.start()
+        try:
+            first = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=srv.issue_bootstrap_token(ttl_sec=60),
+                    cwd="/first",
+                )
+            )
+            second = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=srv.issue_bootstrap_token(ttl_sec=60),
+                    cwd="/second",
+                )
+            )
+
+            import threading
+
+            holder: dict[str, object] = {}
+            thread = threading.Thread(
+                target=lambda: holder.setdefault(
+                    "result",
+                    srv.send_exec_request(
+                        first.peer_id,
+                        ExecToolRequest(tool_name="shell", args={"command": "pwd"}),
+                        timeout_sec=2,
+                    ),
+                )
+            )
+            thread.start()
+            deadline = time.time() + 1
+            while not received and time.time() < deadline:
+                time.sleep(0.01)
+            request_id = received[0][1].request_id
+
+            srv.handle_inbound(
+                second.peer_id,
+                RelayEnvelope(
+                    type="tool_result",
+                    request_id=request_id,
+                    peer_id=second.peer_id,
+                    payload=ExecToolResult(ok=True, result="spoofed").to_dict(),
+                ),
+            )
+            time.sleep(0.05)
+            assert thread.is_alive()
+
+            srv.handle_inbound(
+                first.peer_id,
+                RelayEnvelope(
+                    type="tool_result",
+                    request_id=request_id,
+                    peer_id=first.peer_id,
+                    payload=ExecToolResult(ok=True, result="owned").to_dict(),
+                ),
+            )
+            thread.join(timeout=2)
+
+            assert holder["result"].result == "owned"
+        finally:
+            srv.stop()
+
 
 class TestCleanup:
     def test_cleanup_offline_peer(self) -> None:
