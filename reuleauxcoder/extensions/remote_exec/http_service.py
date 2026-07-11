@@ -15,6 +15,11 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from reuleauxcoder.extensions.remote_exec.bootstrap import generate_bootstrap_script
+from reuleauxcoder.extensions.remote_exec.artifacts import (
+    PEER_ARTIFACT_SHA256_HEADER,
+    peer_artifact_sha256,
+    validate_peer_artifact_size,
+)
 from reuleauxcoder.extensions.remote_exec.errors import RegisterRejectedError
 from reuleauxcoder.extensions.remote_exec.protocol import (
     ApprovalReplyRequest,
@@ -480,9 +485,20 @@ class RemoteRelayHTTPService:
                     )
                     return
                 content, content_type = artifact
+                try:
+                    validate_peer_artifact_size(content)
+                except ValueError as exc:
+                    self._send_json(
+                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                        {"error": "artifact_too_large", "message": str(exc)},
+                    )
+                    return
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(content)))
+                self.send_header(
+                    PEER_ARTIFACT_SHA256_HEADER, peer_artifact_sha256(content)
+                )
                 self.end_headers()
                 self.wfile.write(content)
 

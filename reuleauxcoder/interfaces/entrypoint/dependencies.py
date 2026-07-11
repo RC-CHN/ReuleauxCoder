@@ -16,6 +16,10 @@ from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.mcp.manager import MCPManager
+from reuleauxcoder.extensions.remote_exec.artifacts import (
+    MAX_PEER_ARTIFACT_BYTES,
+    validate_peer_artifact_size,
+)
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.backend import (
@@ -100,6 +104,20 @@ def _default_create_remote_artifact_provider(
     build_lock = threading.Lock()
     cache: dict[tuple[str, str], Path] = {}
 
+    def _read_artifact(path: Path) -> bytes:
+        size = path.stat().st_size
+        if size > MAX_PEER_ARTIFACT_BYTES:
+            raise RuntimeError(
+                "peer artifact exceeds size budget "
+                f"({size} > {MAX_PEER_ARTIFACT_BYTES} bytes)"
+            )
+        content = path.read_bytes()
+        try:
+            validate_peer_artifact_size(content)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+        return content
+
     def _find_prebuilt_binary(
         os_name: str, arch: str, artifact_name: str
     ) -> Path | None:
@@ -133,7 +151,7 @@ def _default_create_remote_artifact_provider(
                 arch=arch,
                 source="prebuilt",
             )
-            return prebuilt_binary.read_bytes(), "application/octet-stream"
+            return _read_artifact(prebuilt_binary), "application/octet-stream"
 
         if shutil.which("go") is None:
             raise RuntimeError(
@@ -170,7 +188,7 @@ def _default_create_remote_artifact_provider(
                     arch=arch,
                     source="built",
                 )
-        return binary_path.read_bytes(), "application/octet-stream"
+        return _read_artifact(binary_path), "application/octet-stream"
 
     setattr(provide, "_build_dir", build_dir)
     setattr(provide, "_artifact_root", artifact_root)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from hashlib import sha256
 from http import HTTPStatus
 import shutil
 import signal
@@ -151,13 +152,117 @@ class TestRemoteRelayHTTPService:
             assert "rcoder-peer" in script
             assert service.base_url in script
             assert "/remote/artifacts/{os}/{arch}/rcoder-peer" in script
+            assert "sha256sum" in script
+            assert "shasum -a 256" in script
+            assert "MAX_ARTIFACT_BYTES" in script
+            assert "did not include a SHA-256 checksum" in script
 
             with _URLOPEN(
                 f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer",
                 timeout=5,
             ) as resp:
                 assert resp.status == 200
+                assert resp.headers["X-ReuleauxCoder-SHA256"] == sha256(
+                    b"peer-binary"
+                ).hexdigest()
                 assert resp.read() == b"peer-binary"
+        finally:
+            service.stop()
+            relay.stop()
+
+    def test_artifact_endpoint_rejects_binary_over_size_budget(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{_free_port()}",
+            artifact_provider=lambda _os, _arch, _name: (
+                b"oversized",
+                "application/octet-stream",
+            ),
+        )
+        service.start()
+        try:
+            with patch(
+                "reuleauxcoder.extensions.remote_exec.artifacts.MAX_PEER_ARTIFACT_BYTES",
+                4,
+            ):
+                with pytest.raises(HTTPError) as raised:
+                    _URLOPEN(
+                        f"{service.base_url}/remote/artifacts/linux/amd64/rcoder-peer",
+                        timeout=5,
+                    )
+            assert raised.value.code == 413
+            body = json.loads(raised.value.read().decode("utf-8"))
+            assert body["error"] == "artifact_too_large"
+        finally:
+            service.stop()
+            relay.stop()
+
+    @pytest.mark.skipif(
+        os.name == "nt"
+        or shutil.which("sh") is None
+        or shutil.which("curl") is None
+        or (
+            shutil.which("sha256sum") is None
+            and shutil.which("shasum") is None
+        ),
+        reason="requires POSIX shell, curl and a SHA-256 utility",
+    )
+    def test_bootstrap_script_downloads_verifies_and_executes_peer(self) -> None:
+        peer_script = b"#!/bin/sh\nprintf 'verified-peer\\n'\n"
+        relay = RelayServer()
+        relay.start()
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{_free_port()}",
+            artifact_provider=lambda _os, _arch, _name: (
+                peer_script,
+                "application/octet-stream",
+            ),
+            bootstrap_access_secret="top-secret",
+        )
+        service.start()
+        try:
+            _, script = _text_request(
+                f"{service.base_url}/remote/bootstrap.sh",
+                headers={"X-RC-Bootstrap-Secret": "top-secret"},
+            )
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key.lower() not in {"all_proxy", "http_proxy", "https_proxy"}
+            }
+            env["NO_PROXY"] = "127.0.0.1,localhost"
+
+            completed = subprocess.run(
+                ["sh"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env=env,
+                timeout=15,
+                check=False,
+            )
+
+            assert completed.returncode == 0, completed.stderr
+            assert "verified-peer" in completed.stdout
+
+            with patch(
+                "reuleauxcoder.extensions.remote_exec.http_service.peer_artifact_sha256",
+                return_value="0" * 64,
+            ):
+                rejected = subprocess.run(
+                    ["sh"],
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                    timeout=15,
+                    check=False,
+                )
+            assert rejected.returncode != 0
+            assert "SHA-256 verification failed" in rejected.stderr
         finally:
             service.stop()
             relay.stop()
@@ -1021,6 +1126,35 @@ class TestRemoteRelayHTTPService:
             assert content == b"prebuilt-peer"
             assert content_type == "application/octet-stream"
             mock_run.assert_not_called()
+        finally:
+            _cleanup_provider_build_dir(provider)
+            prebuilt_path.unlink(missing_ok=True)
+            for parent in [
+                prebuilt_path.parent,
+                prebuilt_path.parent.parent,
+                artifact_root,
+            ]:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
+
+    def test_default_artifact_provider_rejects_oversized_prebuilt(
+        self, tmp_path: Path
+    ) -> None:
+        del tmp_path
+        provider = _default_create_remote_artifact_provider(UIEventBus())
+        artifact_root = getattr(provider, "_artifact_root")
+        prebuilt_path = artifact_root / "linux" / "amd64" / "rcoder-peer"
+        prebuilt_path.parent.mkdir(parents=True, exist_ok=True)
+        prebuilt_path.write_bytes(b"oversized")
+        try:
+            with patch(
+                "reuleauxcoder.interfaces.entrypoint.dependencies.MAX_PEER_ARTIFACT_BYTES",
+                4,
+            ):
+                with pytest.raises(RuntimeError, match="exceeds size budget"):
+                    provider("linux", "amd64", "rcoder-peer")
         finally:
             _cleanup_provider_build_dir(provider)
             prebuilt_path.unlink(missing_ok=True)
