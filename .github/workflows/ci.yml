@@ -36,3 +36,78 @@ jobs:
 
       - name: Build distributions
         run: uv build
+
+  peer-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: reuleauxcoder-agent/go.mod
+
+      - name: Enforce stdlib-only dependency budget
+        working-directory: reuleauxcoder-agent
+        run: test "$(go list -m all | wc -l)" -eq 1
+
+      - name: Run Go tests and protocol fixture drift checks
+        working-directory: reuleauxcoder-agent
+        run: go test ./...
+
+  peer-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            filename: rcoder-peer-linux-amd64
+          - goos: linux
+            goarch: arm64
+            filename: rcoder-peer-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            filename: rcoder-peer-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            filename: rcoder-peer-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            filename: rcoder-peer-windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            filename: rcoder-peer-windows-arm64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: reuleauxcoder-agent/go.mod
+
+      - name: Cross-build peer
+        working-directory: reuleauxcoder-agent
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags="-s -w" -o ../${{ matrix.filename }} ./cmd/reuleauxcoder-agent
+
+      - name: Enforce 20 MiB peer size budget
+        run: test "$(wc -c < '${{ matrix.filename }}')" -le 20971520
+
+      - name: Inspect Go build metadata
+        run: go version -m "${{ matrix.filename }}"
+
+      - name: Upload peer smoke artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.filename }}
+          path: ${{ matrix.filename }}
+          if-no-files-found: error

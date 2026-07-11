@@ -10,7 +10,67 @@ permissions:
   packages: write
 
 jobs:
+  peer-artifacts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            filename: rcoder-peer-linux-amd64
+          - goos: linux
+            goarch: arm64
+            filename: rcoder-peer-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            filename: rcoder-peer-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            filename: rcoder-peer-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            filename: rcoder-peer-windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            filename: rcoder-peer-windows-arm64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: reuleauxcoder-agent/go.mod
+
+      - name: Run Go release tests and dependency gate
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        working-directory: reuleauxcoder-agent
+        run: |
+          test "$(go list -m all | wc -l)" -eq 1
+          go test ./...
+
+      - name: Cross-build peer
+        working-directory: reuleauxcoder-agent
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags="-s -w" -o ../${{ matrix.filename }} ./cmd/reuleauxcoder-agent
+
+      - name: Enforce 20 MiB peer size budget
+        run: test "$(wc -c < '${{ matrix.filename }}')" -le 20971520
+
+      - name: Upload peer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.filename }}
+          path: ${{ matrix.filename }}
+          if-no-files-found: error
+
   release:
+    needs: peer-artifacts
     runs-on: ubuntu-latest
 
     steps:
@@ -33,6 +93,17 @@ jobs:
 
       - name: Build distributions
         run: uv build
+
+      - name: Download peer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rcoder-peer-*
+          path: dist/peer
+          merge-multiple: true
+
+      - name: Generate peer SHA-256 manifest
+        working-directory: dist/peer
+        run: sha256sum rcoder-peer-* > SHA256SUMS
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -73,3 +144,4 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.whl
+            dist/peer/*
