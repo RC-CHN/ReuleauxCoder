@@ -21,16 +21,18 @@ from reuleauxcoder.app.runtime.session_state import (
     get_session_fingerprint,
     restore_config_runtime_defaults,
 )
+from reuleauxcoder.app.runtime.extension_bridge import LegacyHookLifecycleParticipant
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.hooks import (
-    HookPoint,
-    RunnerShutdownContext,
-    RunnerStartupContext,
-    SessionSaveContext,
-    SessionStartContext,
     discover_hook_specs,
     instantiate_hooks,
+)
+from reuleauxcoder.domain.extensions import (
+    ExtensionDefinition,
+    ExtensionManager,
+    ExtensionManifest,
+    ExtensionScope,
 )
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
@@ -71,6 +73,22 @@ class AppRunner:
         self._relay_http_service: RemoteRelayHTTPService | None = None
         self._lsp_manager: LspManager | None = None
         self._agent: Agent | None = None
+        self._ui_bus: UIEventBus | None = None
+        self._extension_manager = ExtensionManager()
+        self._extension_manager.register(
+            ExtensionDefinition(
+                manifest=ExtensionManifest(
+                    extension_id="core.hooks",
+                    version="1.0.0",
+                    scopes=frozenset({ExtensionScope.RUNNER}),
+                ),
+                factory=lambda context: LegacyHookLifecycleParticipant(
+                    agent=context.services["agent"],
+                    ui_bus=context.services["ui_bus"],
+                    session_id=context.services.get("session_id"),
+                ),
+            )
+        )
 
     def initialize(self) -> AppContext:
         """Initialize all application components and return context."""
@@ -79,6 +97,7 @@ class AppRunner:
             config.remote_exec.enabled = True
             config.remote_exec.host_mode = True
         ui_bus = self.dependencies.create_ui_bus()
+        self._ui_bus = ui_bus
         action_registry = self.dependencies.create_action_registry()
         self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
@@ -108,23 +127,16 @@ class AppRunner:
             session_exit_time=session_exit_time,
             sessions_dir=sessions_dir,
         )
-        self._run_lifecycle_hooks(
-            agent,
-            HookPoint.RUNNER_STARTUP,
-            RunnerStartupContext(
-                hook_point=HookPoint.RUNNER_STARTUP,
-                metadata={"ui_bus": ui_bus},
-            ),
+        extension_scope = self._extension_manager.open_scope(
+            ExtensionScope.RUNNER,
+            "runner",
+            services={
+                "agent": agent,
+                "ui_bus": ui_bus,
+                "session_id": current_session_id,
+            },
         )
-        self._run_lifecycle_hooks(
-            agent,
-            HookPoint.SESSION_START,
-            SessionStartContext(
-                hook_point=HookPoint.SESSION_START,
-                session_id=current_session_id,
-                metadata={"ui_bus": ui_bus},
-            ),
-        )
+        extension_scope.get("core.hooks").start()
         return app_ctx
 
     def _build_core(
@@ -329,14 +341,16 @@ class AppRunner:
         """Clean up resources (MCP connections, remote relay, etc.)."""
         agent = agent or self._agent
         if agent is not None:
-            self._run_lifecycle_hooks(
-                agent,
-                HookPoint.RUNNER_SHUTDOWN,
-                RunnerShutdownContext(hook_point=HookPoint.RUNNER_SHUTDOWN),
-            )
             subagent_manager = getattr(agent, "_subagent_manager", None)
             if subagent_manager is not None:
                 subagent_manager.shutdown(wait=True)
+        extension_diagnostics = self._extension_manager.dispose_all()
+        if self._ui_bus is not None:
+            for diagnostic in extension_diagnostics:
+                self._ui_bus.warning(
+                    f"Extension {diagnostic.extension_id} {diagnostic.phase} failed: "
+                    f"{diagnostic.message}"
+                )
         if self._relay_http_service is not None:
             artifact_provider = getattr(
                 self._relay_http_service, "artifact_provider", None
@@ -374,22 +388,7 @@ class AppRunner:
             except Exception:
                 pass
         self._agent = None
-
-    @staticmethod
-    def _run_lifecycle_hooks(
-        agent: Agent,
-        hook_point: HookPoint,
-        context: RunnerStartupContext
-        | RunnerShutdownContext
-        | SessionStartContext
-        | SessionSaveContext,
-    ) -> None:
-        """Run hooks for a lifecycle event without mutating control flow."""
-        for decision in agent.hook_registry.run_guards(hook_point, context):
-            if not decision.allowed:
-                break
-        agent.hook_registry.run_transforms(hook_point, context)
-        agent.hook_registry.run_observers(hook_point, context)
+        self._ui_bus = None
 
     def _init_mcp(
         self, mcp_servers: list[Any], agent: Agent, ui_bus: UIEventBus
