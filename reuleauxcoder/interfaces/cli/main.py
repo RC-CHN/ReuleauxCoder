@@ -16,6 +16,7 @@ from reuleauxcoder.interfaces.cli.approval_handler import make_cli_handler
 from reuleauxcoder.interfaces.cli.args import parse_args
 from reuleauxcoder.interfaces.cli.registration import create_cli_registration
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
+from reuleauxcoder.interfaces.cli.output import CLIOutputCoordinator
 from reuleauxcoder.interfaces.cli.repl import run_repl
 from reuleauxcoder.interfaces.entrypoint import AppRunner, AppOptions
 from reuleauxcoder.interfaces.events import AgentEventBridge
@@ -42,9 +43,10 @@ def _install_sigint_handler(agent):
     signal.signal(signal.SIGINT, handler)
 
 
-def _run_once(agent, prompt: str):
+def _run_once(agent, prompt: str, output: CLIOutputCoordinator):
     """Run a single prompt and exit."""
     agent.chat(prompt)
+    output.drain()
 
 
 def main():
@@ -72,7 +74,8 @@ def main():
     cli_ui = ui_registry.require("cli")
 
     renderer = CLIRenderer(view_registry=cli_ui.view_registry)
-    ctx.ui_bus.subscribe(renderer.on_ui_event)
+    output = CLIOutputCoordinator(renderer)
+    ctx.ui_bus.subscribe(output.on_ui_event)
 
     remote_exec = getattr(ctx.config, "remote_exec", None)
     is_host_mode = remote_exec and remote_exec.enabled and remote_exec.host_mode
@@ -80,11 +83,12 @@ def main():
         ctx.ui_bus.info("Remote relay host mode active. Press Ctrl+C to stop.")
         try:
             while True:
-                time.sleep(1)
+                time.sleep(0.1)
+                output.drain()
         except KeyboardInterrupt:
             pass
         finally:
-            renderer.close()
+            output.close()
             runner.cleanup()
         return
 
@@ -101,13 +105,13 @@ def main():
     # Check for API key
     if not ctx.config.api_key:
         ctx.ui_bus.error("No API key found in config.yaml.")
-        renderer.close()
+        output.close()
         sys.exit(1)
 
     try:
         # One-shot mode
         if args.prompt:
-            _run_once(ctx.agent, args.prompt)
+            _run_once(ctx.agent, args.prompt, output)
             return
 
         # Interactive REPL mode
@@ -122,7 +126,8 @@ def main():
             ctx.sessions_dir,
             ctx.session_exit_time,
             ctx.skills_service,
+            output,
         )
     finally:
-        renderer.close()
+        output.close()
         runner.cleanup()

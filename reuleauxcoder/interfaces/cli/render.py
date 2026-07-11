@@ -275,15 +275,7 @@ class CLIRenderer:
         self._close_active_content_block()
         args_str = brief(args) if args else ""
         call_text = f"{name}({args_str})" if args_str else f"{name}()"
-        self.console.print(
-            Panel(
-                f"[bold cyan]{call_text}[/bold cyan]",
-                title="TOOL CALL",
-                border_style="cyan",
-                box=box.ROUNDED,
-                padding=(0, 1),
-            )
-        )
+        self.console.print(f"[cyan]›[/cyan] [bold]{call_text}[/bold]")
 
     def _render_tool_end(self, name: str, outcome: ToolOutcome) -> None:
         """Render tool call result."""
@@ -292,7 +284,7 @@ class CLIRenderer:
             return
         display = self.policy.tool_preview(outcome)
         if outcome.success:
-            self.console.print(f"[dim]{_escape_markup(display)}[/dim]")
+            self.console.print(f"  [dim]{_escape_markup(display)}[/dim]")
         else:
             self.console.print(
                 Panel(
@@ -306,17 +298,19 @@ class CLIRenderer:
 
     def _render_subagent_completed(self, payload: SubagentFinished) -> None:
         """Render a concise sub-agent completion notification."""
-        title = f"SUBAGENT · {payload.status.upper()}"
         body = f"id={payload.job_id} mode={payload.mode}"
-        self.console.print(
-            Panel(
-                body,
-                title=title,
-                border_style="magenta",
-                box=box.ROUNDED,
-                padding=(0, 1),
+        if payload.error:
+            self.console.print(
+                Panel(
+                    f"{body}\n{payload.error}",
+                    title=f"SUBAGENT · {payload.status.upper()}",
+                    border_style="red",
+                    box=box.ROUNDED,
+                    padding=(0, 1),
+                )
             )
-        )
+        else:
+            self.console.print(f"[magenta]↳ subagent[/magenta] {body} {payload.status}")
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""
@@ -367,6 +361,14 @@ class CLIRenderer:
             level=event.level.value,
             category=event.kind.value,
         )
+        if event.level is UIEventLevel.DEBUG and self.policy.verbosity.value != "debug":
+            return
+        if event.level is UIEventLevel.INFO:
+            self.console.print(f"[dim]{_escape_markup(event.message)}[/dim]")
+            return
+        if event.level is UIEventLevel.SUCCESS:
+            self.console.print(f"[green]✓[/green] {_escape_markup(event.message)}")
+            return
         title = f"{event.kind.value.upper()} · {event.level.value.upper()}"
         self.console.print(
             Panel(
@@ -427,8 +429,21 @@ def brief(kwargs: dict, maxlen: int = 80) -> str:
     """Brief representation of kwargs for display."""
     if not kwargs:
         return ""
-    s = ", ".join(f"{k}={repr(v)[:40]}" for k, v in kwargs.items())
-    return s[:maxlen] + ("..." if len(s) > maxlen else "")
+    parts: list[str] = []
+    for key, value in kwargs.items():
+        if isinstance(value, str) and len(repr(value)) > 42:
+            value_text = repr(value[:36] + "…")
+        else:
+            value_text = repr(value)
+            if len(value_text) > 42:
+                value_text = value_text[:41] + "…"
+        part = f"{key}={value_text}"
+        candidate = ", ".join([*parts, part])
+        if len(candidate) > maxlen:
+            parts.append("…")
+            break
+        parts.append(part)
+    return ", ".join(parts)
 
 
 def show_banner(model: str, base_url: str | None, version: str) -> None:

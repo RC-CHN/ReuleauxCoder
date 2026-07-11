@@ -26,6 +26,7 @@ def run_repl(
     sessions_dir: Path | None = None,
     session_exit_time: str | None = None,
     skills_service=None,
+    output_coordinator=None,
 ) -> None:
     ensure_user_dirs()
     show_banner(config.model, config.base_url, __version__)
@@ -51,6 +52,8 @@ def run_repl(
         )
 
     while True:
+        if output_coordinator is not None:
+            output_coordinator.drain()
         try:
             user_input = pt_prompt("You > ", history=history).strip()
         except (EOFError, KeyboardInterrupt):
@@ -66,7 +69,12 @@ def run_repl(
                     active_mode=getattr(agent, "active_mode", None),
                 )
                 ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
+            if output_coordinator is not None:
+                output_coordinator.drain()
             break
+
+        if output_coordinator is not None:
+            output_coordinator.drain()
 
         if not user_input:
             continue
@@ -82,6 +90,8 @@ def run_repl(
             sessions_dir,
             skills_service,
         )
+        if output_coordinator is not None:
+            output_coordinator.drain()
         prev_session_id = current_session_id
         current_session_id = result["session_id"]
         setattr(agent, "current_session_id", current_session_id)
@@ -109,6 +119,8 @@ def run_repl(
 
         try:
             agent.chat(chat_input)
+            if output_coordinator is not None:
+                output_coordinator.drain()
         except KeyboardInterrupt:
             agent.request_stop()
             ui_bus.warning("Interrupted.")
