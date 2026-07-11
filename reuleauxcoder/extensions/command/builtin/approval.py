@@ -29,9 +29,7 @@ from reuleauxcoder.app.runtime.session_state import get_runtime_approval_config
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
     WorkspaceConfigStore,
 )
-from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEventKind
-from reuleauxcoder.interfaces.view_registration import register_view
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,17 +76,6 @@ def _parse_set_global_approval(user_input: str, parse_ctx):
         return SetGlobalApprovalRuleCommand(target="", action="")
 
     return SetGlobalApprovalRuleCommand(target=target, action=action)
-
-
-@register_view(view_type="approval_rules", ui_targets={"cli"})
-def render_approval_rules_view(renderer, event) -> bool:
-    payload = event.data.get("payload") or {}
-    markdown = payload.get("markdown")
-    return isinstance(markdown, str) and render_markdown_panel(
-        renderer,
-        markdown_text=markdown,
-        title="Approval Rules",
-    )
 
 
 def _build_approval_payload(ctx) -> dict:

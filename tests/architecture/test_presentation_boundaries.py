@@ -43,3 +43,14 @@ def test_cli_renderer_does_not_restore_legacy_string_protocols() -> None:
     assert "_compact_tool_output" not in source
     assert "[truncated]" not in source
     assert 'name == "edit_file"' not in source
+
+
+def test_command_extensions_do_not_import_cli_or_ui_frameworks() -> None:
+    forbidden = ("rich", "textual", "reuleauxcoder.interfaces.cli")
+    violations = []
+    command_root = ROOT / "reuleauxcoder" / "extensions" / "command"
+    for path in command_root.rglob("*.py"):
+        for imported in _imports(path):
+            if imported.startswith(forbidden):
+                violations.append(f"{path.relative_to(ROOT)} imports {imported}")
+    assert violations == []

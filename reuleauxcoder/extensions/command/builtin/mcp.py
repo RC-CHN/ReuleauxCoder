@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rich.markdown import Markdown
-from rich.panel import Panel
-
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
 from reuleauxcoder.app.commands.module_registry import register_command_module
@@ -24,9 +21,7 @@ from reuleauxcoder.extensions.mcp.runtime import (
     build_mcp_servers_view,
     toggle_mcp_server,
 )
-from reuleauxcoder.interfaces.cli.views.common import stop_stream_and_clear
 from reuleauxcoder.interfaces.events import UIEventKind
-from reuleauxcoder.interfaces.view_registration import register_view
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,34 +60,6 @@ def _parse_disable_mcp(user_input: str, parse_ctx):
         return None
 
     return ToggleMCPServerCommand(server_name=server_name, enabled=False)
-
-
-@register_view(view_type="mcp_servers", ui_targets={"cli"})
-def render_mcp_servers_view(renderer, event) -> bool:
-    payload = event.data.get("payload") or {}
-    servers = payload.get("servers") or []
-    stop_stream_and_clear(renderer)
-    if not servers:
-        renderer.console.print(
-            Panel(
-                "No MCP servers configured.", title="MCP Servers", border_style="blue"
-            )
-        )
-        return True
-
-    lines = []
-    for server in servers:
-        enabled_mark = "enabled" if server.get("enabled") else "disabled"
-        runtime_mark = (
-            "connected" if server.get("runtime_connected") else "disconnected"
-        )
-        lines.append(
-            f"- **{server.get('name', '')}**: {enabled_mark}, runtime={runtime_mark}"
-        )
-    renderer.console.print(
-        Panel(Markdown("\n".join(lines)), title="MCP Servers", border_style="blue")
-    )
-    return True
 
 
 def _is_local_runtime(ctx) -> bool:

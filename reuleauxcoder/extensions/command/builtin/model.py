@@ -21,9 +21,7 @@ from reuleauxcoder.app.runtime.session_state import build_session_runtime_state
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
     WorkspaceConfigStore,
 )
-from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEventKind
-from reuleauxcoder.interfaces.view_registration import register_view
 from reuleauxcoder.services.llm.factory import reconfigure_llm_from_settings
 
 
@@ -125,17 +123,6 @@ def _parse_switch_model(user_input: str, parse_ctx):
         return None
 
     return SwitchModelCommand(profile_name=profile)
-
-
-@register_view(view_type="model_profiles", ui_targets={"cli"})
-def render_model_profiles_view(renderer, event) -> bool:
-    payload = event.data.get("payload") or {}
-    markdown = payload.get("markdown")
-    return isinstance(markdown, str) and render_markdown_panel(
-        renderer,
-        markdown_text=markdown,
-        title="Model Profiles",
-    )
 
 
 def _handle_show_model(command, ctx) -> CommandResult:
