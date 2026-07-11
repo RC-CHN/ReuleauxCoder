@@ -582,6 +582,22 @@ class ToolStreamChunk:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class DisconnectRequest:
+    peer_token: str
+    reason: str = "peer_initiated"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"peer_token": self.peer_token, "reason": self.reason}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DisconnectRequest":
+        return cls(
+            peer_token=str(data["peer_token"]),
+            reason=str(data.get("reason", "peer_initiated")),
+        )
+
+
 @dataclass
 class DisconnectNotice:
     reason: str = "peer_initiated"

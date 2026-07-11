@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import pytest
+
 from reuleauxcoder.extensions.remote_exec.protocol import (
     CleanupRequest,
     CleanupResult,
     DisconnectNotice,
+    DisconnectRequest,
     ErrorMessage,
     ExecToolRequest,
     ExecToolResult,
@@ -24,6 +30,40 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     WorkspaceResult,
     REMOTE_PROTOCOL_VERSION,
 )
+
+
+_CONTRACT_FIXTURES = (
+    Path(__file__).resolve().parents[3]
+    / "protocol"
+    / "fixtures"
+    / "remote_contract.json"
+)
+
+_FIXTURE_MODELS = {
+    model.__name__: model
+    for model in (
+        RegisterRequest,
+        TokenRefreshRequest,
+        DisconnectRequest,
+        InteractionReplyRequest,
+        RelayEnvelope,
+        WorkspaceRequest,
+        WorkspaceResult,
+        ToolStreamChunk,
+        ExecToolRequest,
+    )
+}
+
+
+@pytest.mark.parametrize(
+    "case", json.loads(_CONTRACT_FIXTURES.read_text(encoding="utf-8"))
+)
+def test_shared_contract_fixture_roundtrips_through_python(case: dict) -> None:
+    model = _FIXTURE_MODELS[case["model"]]
+
+    restored = model.from_dict(case["payload"])
+
+    assert restored.to_dict() == case["payload"]
 
 
 class TestRelayEnvelope:

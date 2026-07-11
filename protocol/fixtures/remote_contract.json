@@ -1,0 +1,132 @@
+[
+  {
+    "name": "register-v2",
+    "protocol_version": 2,
+    "model": "RegisterRequest",
+    "payload": {
+      "bootstrap_token": "bt_fixture",
+      "host_info_min": {"hostname": "fixture-peer", "machine_id": "device-1"},
+      "cwd": "/workspace/project",
+      "workspace_root": "/workspace",
+      "capabilities": ["process.start", "process.poll", "fs.write_text_atomic"],
+      "protocol_version": 2,
+      "terminal": {
+        "width": 120,
+        "color_level": "truecolor",
+        "unicode": true,
+        "interactive": true
+      }
+    }
+  },
+  {
+    "name": "token-refresh-v2",
+    "protocol_version": 2,
+    "model": "TokenRefreshRequest",
+    "payload": {"peer_token": "pt_fixture"}
+  },
+  {
+    "name": "disconnect-v2",
+    "protocol_version": 2,
+    "model": "DisconnectRequest",
+    "payload": {"peer_token": "pt_fixture", "reason": "user_exit"}
+  },
+  {
+    "name": "interaction-reply-v2",
+    "protocol_version": 2,
+    "model": "InteractionReplyRequest",
+    "payload": {
+      "peer_token": "pt_fixture",
+      "chat_id": "chat-1",
+      "request_id": "interaction-1",
+      "value": "approve",
+      "cancelled": true,
+      "reason": "fixture decision"
+    }
+  },
+  {
+    "name": "interaction-frame-v2",
+    "protocol_version": 2,
+    "model": "RelayEnvelope",
+    "payload": {
+      "type": "interaction_request",
+      "request_id": "interaction-1",
+      "peer_id": "peer-1",
+      "payload": {
+        "kind": "review",
+        "rendered_frame": "Review change?",
+        "input_constraints": {"choices": ["approve", "deny"]}
+      }
+    }
+  },
+  {
+    "name": "fs-write-v2",
+    "protocol_version": 2,
+    "model": "WorkspaceRequest",
+    "payload": {
+      "operation": "fs.write_text_atomic",
+      "args": {"path": "src/main.py", "content": "print('ok')\n"},
+      "cwd": "/workspace/project",
+      "timeout_sec": 30
+    }
+  },
+  {
+    "name": "process-start-v2",
+    "protocol_version": 2,
+    "model": "WorkspaceRequest",
+    "payload": {
+      "operation": "process.start",
+      "args": {
+        "process_id": "process-1",
+        "idempotency_key": "turn-1:tool-1",
+        "command": "printf ok",
+        "cwd": "/workspace/project",
+        "deadline_unix_ms": 4102444800000
+      },
+      "cwd": "/workspace/project",
+      "timeout_sec": 30
+    }
+  },
+  {
+    "name": "process-cancel-v2",
+    "protocol_version": 2,
+    "model": "WorkspaceRequest",
+    "payload": {
+      "operation": "process.cancel",
+      "args": {"process_id": "process-1"},
+      "cwd": "/workspace/project",
+      "timeout_sec": 5
+    }
+  },
+  {
+    "name": "workspace-error-v2",
+    "protocol_version": 2,
+    "model": "WorkspaceResult",
+    "payload": {
+      "ok": false,
+      "data": {"operation": "fs.replace_exact_atomic"},
+      "error_code": "not_unique",
+      "error_message": "old text occurs twice"
+    }
+  },
+  {
+    "name": "process-stream-v2",
+    "protocol_version": 2,
+    "model": "ToolStreamChunk",
+    "payload": {
+      "chunk_type": "stdout",
+      "data": "ok\n",
+      "meta": {"process_id": "process-1", "offset": 3}
+    }
+  },
+  {
+    "name": "exec-tool-shell-v1",
+    "protocol_version": 1,
+    "model": "ExecToolRequest",
+    "payload": {
+      "tool_name": "shell",
+      "args": {"command": "printf legacy", "timeout": 12},
+      "cwd": "/workspace/project",
+      "timeout_sec": 12
+    }
+  }
+]

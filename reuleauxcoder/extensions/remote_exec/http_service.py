@@ -29,6 +29,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     ChatStreamResponse,
     CleanupResult,
     DisconnectNotice,
+    DisconnectRequest,
     ExecToolResult,
     Heartbeat,
     InteractionReplyRequest,
@@ -859,10 +860,9 @@ class RemoteRelayHTTPService:
                 )
 
             def _handle_disconnect(self) -> None:
-                payload = self._read_json()
-                peer_token = payload.get("peer_token")
+                request = DisconnectRequest.from_dict(self._read_json())
                 peer_id = service.relay_server.token_manager.verify_peer_token(
-                    peer_token
+                    request.peer_token
                 )
                 if peer_id is None:
                     self._send_json(
@@ -870,7 +870,7 @@ class RemoteRelayHTTPService:
                     )
                     return
                 notice = DisconnectNotice(
-                    reason=payload.get("reason", "peer_initiated")
+                    reason=request.reason
                 )
                 service._abort_peer_chat_sessions(
                     peer_id, f"peer_disconnected: {notice.reason}"
