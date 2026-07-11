@@ -89,3 +89,42 @@ def test_same_event_sequence_produces_equal_state() -> None:
 
     assert left.state.transcript.cells == right.state.transcript.cells
     assert left.state.seen_event_ids == right.state.seen_event_ids
+
+
+def test_late_event_from_older_session_generation_is_rejected() -> None:
+    reducer = PresentationReducer()
+    current = AgentEvent.stream_token("current")
+    current.agent_id = "agent-1"
+    current.session_generation = 2
+    current.session_id = "session-1"
+    stale = AgentEvent.stream_token(" stale")
+    stale.agent_id = "agent-1"
+    stale.session_generation = 1
+    stale.session_id = "session-1"
+
+    reducer.apply(_runtime(current))
+    changes = reducer.apply(_runtime(stale))
+
+    assert changes == ()
+    assert reducer.state.transcript.cells == (
+        AssistantCell(id="assistant:agent-1:turn-1", text="current"),
+    )
+
+
+def test_generation_watermarks_are_isolated_by_agent_and_session() -> None:
+    reducer = PresentationReducer()
+    parent = AgentEvent.stream_token("parent")
+    parent.agent_id = "parent"
+    parent.session_generation = 3
+    parent.session_id = "session"
+    child = AgentEvent.stream_token("child")
+    child.agent_id = "child"
+    child.session_generation = 1
+    child.session_id = "session"
+
+    assert reducer.apply(_runtime(parent))
+    assert reducer.apply(_runtime(child))
+    assert reducer.state.transcript.cells == (
+        AssistantCell(id="assistant:parent:turn-1", text="parent"),
+        AssistantCell(id="assistant:child:turn-1", text="child"),
+    )

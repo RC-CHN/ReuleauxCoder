@@ -131,6 +131,8 @@ class RuntimeEvent:
     payload: RuntimePayload
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: float = field(default_factory=time.time)
+    agent_id: str | None = None
+    session_generation: int | None = None
     session_id: str | None = None
     turn_id: str | None = None
     correlation_id: str | None = None
@@ -143,6 +145,8 @@ class RuntimeEvent:
 def agent_event_to_runtime_event(
     event: AgentEvent,
     *,
+    agent_id: str | None = None,
+    session_generation: int | None = None,
     session_id: str | None = None,
     turn_id: str | None = None,
 ) -> RuntimeEvent:
@@ -207,6 +211,12 @@ def agent_event_to_runtime_event(
         payload=payload,
         event_id=event.event_id,
         timestamp=event.timestamp,
+        agent_id=agent_id or event.agent_id,
+        session_generation=(
+            session_generation
+            if session_generation is not None
+            else event.session_generation
+        ),
         session_id=session_id or event.session_id,
         turn_id=turn_id or event.turn_id,
         correlation_id=event.correlation_id,

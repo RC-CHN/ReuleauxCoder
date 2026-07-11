@@ -133,7 +133,8 @@ class CLIRenderer:
         self._active_content_block = None
         self.reducer.state.transcript.clear()
         self.reducer.state.seen_event_ids.clear()
-        self.reducer.state.active_assistant_cell_id = None
+        self.reducer.state.session_generations.clear()
+        self.reducer.state.active_assistant_cells.clear()
 
     def on_event(self, event: AgentEvent) -> None:
         """Compatibility entry point for callers still emitting AgentEvent."""

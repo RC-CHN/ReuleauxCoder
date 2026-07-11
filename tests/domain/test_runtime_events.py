@@ -27,6 +27,17 @@ def test_tool_start_adapter_preserves_correlation_and_context() -> None:
     assert runtime.payload.arguments == {"command": "pwd"}
 
 
+def test_adapter_preserves_agent_and_session_generation() -> None:
+    legacy = AgentEvent.chat_start("hello")
+    legacy.agent_id = "agent-1"
+    legacy.session_generation = 7
+
+    runtime = agent_event_to_runtime_event(legacy)
+
+    assert runtime.agent_id == "agent-1"
+    assert runtime.session_generation == 7
+
+
 def test_tool_end_adapter_preserves_full_structured_outcome() -> None:
     result = "x" * 10_000
     legacy = AgentEvent.tool_call_end(

@@ -47,7 +47,12 @@ class PresentationChange:
 class RuntimeViewState:
     transcript: TranscriptModel = field(default_factory=TranscriptModel)
     seen_event_ids: set[str] = field(default_factory=set)
-    active_assistant_cell_id: str | None = None
+    session_generations: dict[tuple[str, str | None], int] = field(
+        default_factory=dict
+    )
+    active_assistant_cells: dict[
+        tuple[str | None, str | None, int | None, str | None], str
+    ] = field(default_factory=dict)
 
 
 class PresentationReducer:
@@ -66,10 +71,12 @@ class PresentationReducer:
         if event.event_id in self.state.seen_event_ids:
             return ()
         self.state.seen_event_ids.add(event.event_id)
+        if self._is_stale_generation(event):
+            return ()
 
         payload = event.payload
         if isinstance(payload, ChatStarted):
-            self._complete_active_assistant()
+            self._complete_active_assistant(event)
             return ()
         if isinstance(payload, StreamChunk):
             if payload.reasoning:
@@ -129,6 +136,17 @@ class PresentationReducer:
             )
         raise TypeError(f"Unsupported runtime payload: {type(payload).__name__}")
 
+    def _is_stale_generation(self, event: RuntimeEvent) -> bool:
+        if event.agent_id is None or event.session_generation is None:
+            return False
+        key = (event.agent_id, event.session_id)
+        current = self.state.session_generations.get(key)
+        if current is not None and event.session_generation < current:
+            return True
+        if current is None or event.session_generation > current:
+            self.state.session_generations[key] = event.session_generation
+        return False
+
     def append_notice(
         self,
         *,
@@ -153,15 +171,21 @@ class PresentationReducer:
     def _append_stream(
         self, event: RuntimeEvent, text: str
     ) -> tuple[PresentationChange, ...]:
-        cell_id = self.state.active_assistant_cell_id
+        route = self._assistant_route(event)
+        cell_id = self.state.active_assistant_cells.get(route)
         existing = self.state.transcript.get(cell_id) if cell_id else None
         if not isinstance(existing, AssistantCell) or existing.complete:
-            cell_id = f"assistant:{event.turn_id or event.event_id}"
+            identity = event.turn_id or event.event_id
+            cell_id = (
+                f"assistant:{event.agent_id}:{identity}"
+                if event.agent_id
+                else f"assistant:{identity}"
+            )
             existing_same_id = self.state.transcript.get(cell_id)
             if isinstance(existing_same_id, AssistantCell):
                 cell_id = f"{cell_id}:{event.event_id}"
             cell = AssistantCell(id=cell_id, text=text)
-            self.state.active_assistant_cell_id = cell_id
+            self.state.active_assistant_cells[route] = cell_id
             return self._append(cell)
         updated = next_revision(existing, text=existing.text + text)
         return self._replace(updated)
@@ -169,29 +193,47 @@ class PresentationReducer:
     def _complete_chat(
         self, event: RuntimeEvent, payload: ChatCompleted
     ) -> tuple[PresentationChange, ...]:
-        cell_id = self.state.active_assistant_cell_id
+        route = self._assistant_route(event)
+        cell_id = self.state.active_assistant_cells.get(route)
         existing = self.state.transcript.get(cell_id) if cell_id else None
         if isinstance(existing, AssistantCell) and not existing.complete:
             updated = next_revision(existing, complete=True)
-            self.state.active_assistant_cell_id = None
+            self.state.active_assistant_cells.pop(route, None)
             return self._replace(updated)
-        self.state.active_assistant_cell_id = None
+        self.state.active_assistant_cells.pop(route, None)
         if payload.response and payload.render_response:
+            identity = event.turn_id or event.event_id
             return self._append(
                 AssistantCell(
-                    id=f"assistant:{event.turn_id or event.event_id}",
+                    id=(
+                        f"assistant:{event.agent_id}:{identity}"
+                        if event.agent_id
+                        else f"assistant:{identity}"
+                    ),
                     text=payload.response,
                     complete=True,
                 )
             )
         return ()
 
-    def _complete_active_assistant(self) -> None:
-        cell_id = self.state.active_assistant_cell_id
+    def _complete_active_assistant(self, event: RuntimeEvent) -> None:
+        route = self._assistant_route(event)
+        cell_id = self.state.active_assistant_cells.get(route)
         existing = self.state.transcript.get(cell_id) if cell_id else None
         if isinstance(existing, AssistantCell) and not existing.complete:
             self.state.transcript.replace(next_revision(existing, complete=True))
-        self.state.active_assistant_cell_id = None
+        self.state.active_assistant_cells.pop(route, None)
+
+    @staticmethod
+    def _assistant_route(
+        event: RuntimeEvent,
+    ) -> tuple[str | None, str | None, int | None, str | None]:
+        return (
+            event.agent_id,
+            event.session_id,
+            event.session_generation,
+            event.turn_id,
+        )
 
     def _finish_tool(
         self, payload: ToolCallFinished

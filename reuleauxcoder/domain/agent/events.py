@@ -32,6 +32,8 @@ class AgentEvent:
     event_type: AgentEventType
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: float = field(default_factory=time.time)
+    agent_id: Optional[str] = None
+    session_generation: Optional[int] = None
     session_id: Optional[str] = None
     turn_id: Optional[str] = None
     correlation_id: Optional[str] = None

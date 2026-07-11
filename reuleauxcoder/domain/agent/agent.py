@@ -269,6 +269,10 @@ class Agent:
 
     def _emit_event(self, event: AgentEvent) -> None:
         """Emit an event to all handlers."""
+        if event.agent_id is None:
+            event.agent_id = self.agent_id
+        if event.session_generation is None:
+            event.session_generation = self.session_generation
         if event.session_id is None:
             event.session_id = getattr(self, "current_session_id", None)
         if event.turn_id is None:
