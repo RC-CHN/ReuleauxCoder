@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from reuleauxcoder.interfaces.interactions import UIInteractor
 from reuleauxcoder.interfaces.ui_registry import UIProfile
+from reuleauxcoder.app.commands.view_models import ViewModel, view_model_from_payload
 
 if TYPE_CHECKING:
     from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -22,10 +23,15 @@ class OpenViewRequest:
 
     view_type: str
     title: str
-    payload: dict[str, object] = field(default_factory=dict)
+    view_model: ViewModel
     focus: bool = True
     reuse_key: str | None = None
     action: Literal["open", "refresh"] = "open"
+
+    @property
+    def payload(self) -> dict[str, Any]:
+        """Serializable compatibility view of the typed model."""
+        return self.view_model.to_payload()
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +113,7 @@ class CommandEffectBuilder:
             OpenViewRequest(
                 view_type=view_type,
                 title=title,
-                payload=payload or {},
+                view_model=view_model_from_payload(view_type, payload),
                 focus=focus,
                 reuse_key=reuse_key,
                 action="open",
@@ -126,7 +132,7 @@ class CommandEffectBuilder:
             OpenViewRequest(
                 view_type=view_type,
                 title=title or view_type,
-                payload=payload or {},
+                view_model=view_model_from_payload(view_type, payload),
                 focus=False,
                 reuse_key=reuse_key,
                 action="refresh",

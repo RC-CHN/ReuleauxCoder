@@ -10,22 +10,28 @@ from reuleauxcoder.interfaces.cli.views.common import (
     stop_stream_and_clear,
 )
 from reuleauxcoder.interfaces.view_registry import ViewRendererSpec
+from reuleauxcoder.app.commands.view_models import (
+    MCPServersViewModel,
+    MarkdownViewModel,
+    SessionsViewModel,
+)
 
 
 def _markdown_view(title: str):
     def render(renderer, event) -> bool:
-        payload = event.data.get("payload") or {}
-        markdown = payload.get("markdown")
-        return isinstance(markdown, str) and render_markdown_panel(
-            renderer, markdown_text=markdown, title=title
+        model = event.data.get("view_model")
+        return isinstance(model, MarkdownViewModel) and render_markdown_panel(
+            renderer, markdown_text=model.markdown, title=title
         )
 
     return render
 
 
 def render_mcp_servers_view(renderer, event) -> bool:
-    payload = event.data.get("payload") or {}
-    servers = payload.get("servers") or []
+    model = event.data.get("view_model")
+    if not isinstance(model, MCPServersViewModel):
+        return False
+    servers = model.servers
     stop_stream_and_clear(renderer)
     if not servers:
         renderer.console.print(
@@ -37,12 +43,12 @@ def render_mcp_servers_view(renderer, event) -> bool:
 
     lines = []
     for server in servers:
-        enabled = "enabled" if server.get("enabled") else "disabled"
+        enabled = "enabled" if server.enabled else "disabled"
         connected = (
-            "connected" if server.get("runtime_connected") else "disconnected"
+            "connected" if server.runtime_connected else "disconnected"
         )
         lines.append(
-            f"- **{server.get('name', '')}**: {enabled}, runtime={connected}"
+            f"- **{server.name}**: {enabled}, runtime={connected}"
         )
     renderer.console.print(
         Panel(Markdown("\n".join(lines)), title="MCP Servers", border_style="blue")
@@ -51,10 +57,12 @@ def render_mcp_servers_view(renderer, event) -> bool:
 
 
 def render_sessions_view(renderer, event) -> bool:
-    payload = event.data.get("payload") or {}
-    sessions = payload.get("sessions") or []
-    fingerprint = payload.get("fingerprint")
-    show_all = bool(payload.get("show_all"))
+    model = event.data.get("view_model")
+    if not isinstance(model, SessionsViewModel):
+        return False
+    sessions = model.sessions
+    fingerprint = model.fingerprint
+    show_all = model.show_all
     scope = "all fingerprints" if show_all else f"fingerprint: {fingerprint or 'local'}"
     stop_stream_and_clear(renderer)
     if not sessions:
@@ -69,11 +77,11 @@ def render_sessions_view(renderer, event) -> bool:
 
     lines = [f"Scope: `{scope}`", ""]
     for session in sessions:
-        suffix = f" [{session.get('fingerprint', '')}]" if show_all else ""
+        suffix = f" [{session.fingerprint or ''}]" if show_all else ""
         lines.append(
-            f"- `{session.get('id', '')}` "
-            f"({session.get('model', '')}, {session.get('saved_at', '')})"
-            f"{suffix} {session.get('preview', '')}"
+            f"- `{session.session_id}` "
+            f"({session.model}, {session.saved_at})"
+            f"{suffix} {session.preview}"
         )
     renderer.console.print(
         Panel(Markdown("\n".join(lines)), title="Saved Sessions", border_style="blue")

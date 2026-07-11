@@ -6,6 +6,7 @@ from reuleauxcoder.interfaces.cli.interactor import CLIUIInteractor
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.events import UIEventBus
 from reuleauxcoder.interfaces.ui_registry import UICapability, UIProfile, UIRegistration
+from reuleauxcoder.app.runtime.interactions import InteractionCoordinator
 
 
 CLI_PROFILE = UIProfile(
@@ -27,5 +28,5 @@ def create_cli_registration(ui_bus: UIEventBus) -> UIRegistration:
     return UIRegistration(
         profile=CLI_PROFILE,
         view_registry=create_cli_view_registry(),
-        interactor=CLIUIInteractor(ui_bus),
+        interactor=InteractionCoordinator(CLIUIInteractor(ui_bus)),
     )

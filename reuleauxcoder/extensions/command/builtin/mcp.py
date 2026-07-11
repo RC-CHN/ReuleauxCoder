@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.models import CommandResult
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -91,18 +91,7 @@ def _handle_show_mcp_servers(command, ctx) -> CommandResult:
         payload=payload,
         reuse_key="mcp_servers",
     )
-    return CommandResult(
-        action="continue",
-        view_requests=[
-            OpenViewRequest(
-                view_type="mcp_servers",
-                title="MCP Servers",
-                payload=payload,
-                reuse_key="mcp_servers",
-            )
-        ],
-        payload=payload,
-    )
+    return CommandResult(action="continue", payload=payload)
 
 
 def _handle_toggle_mcp_server(command, ctx) -> CommandResult:

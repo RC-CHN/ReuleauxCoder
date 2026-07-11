@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.models import CommandResult
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -95,18 +95,7 @@ def _handle_show_approval(command, ctx) -> CommandResult:
         payload=payload,
         reuse_key="approval_rules",
     )
-    return CommandResult(
-        action="continue",
-        view_requests=[
-            OpenViewRequest(
-                view_type="approval_rules",
-                title="Approval Rules",
-                payload=payload,
-                reuse_key="approval_rules",
-            )
-        ],
-        payload=payload,
-    )
+    return CommandResult(action="continue", payload=payload)
 
 
 def _validate_approval_rule(command, ctx):

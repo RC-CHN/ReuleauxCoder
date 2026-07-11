@@ -209,6 +209,7 @@ class UIEventBus:
         payload: dict[str, Any] | None = None,
         focus: bool = True,
         reuse_key: str | None = None,
+        view_model: Any = None,
     ) -> None:
         """Broadcast a structured request for the UI to open a view/panel/tab."""
         self.emit(
@@ -221,6 +222,7 @@ class UIEventBus:
                 payload=payload or {},
                 focus=focus,
                 reuse_key=reuse_key,
+                view_model=view_model,
             )
         )
 
@@ -231,6 +233,7 @@ class UIEventBus:
         title: str | None = None,
         payload: dict[str, Any] | None = None,
         reuse_key: str | None = None,
+        view_model: Any = None,
     ) -> None:
         """Broadcast a structured request for the UI to refresh a view."""
         self.emit(
@@ -242,6 +245,7 @@ class UIEventBus:
                 title=title or view_type,
                 payload=payload or {},
                 reuse_key=reuse_key,
+                view_model=view_model,
             )
         )
 

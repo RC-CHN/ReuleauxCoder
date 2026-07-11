@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.models import CommandResult
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -138,18 +138,7 @@ def _handle_show_model(command, ctx) -> CommandResult:
         reuse_key="model_profiles",
     )
 
-    return CommandResult(
-        action="continue",
-        view_requests=[
-            OpenViewRequest(
-                view_type="model_profiles",
-                title="Model Profiles",
-                payload=payload,
-                reuse_key="model_profiles",
-            )
-        ],
-        payload=payload,
-    )
+    return CommandResult(action="continue", payload=payload)
 
 
 def _resolve_profile(ctx, profile_name: str):

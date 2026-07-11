@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.help import build_help_markdown
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult, OpenViewRequest
+from reuleauxcoder.app.commands.models import CommandResult
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -107,18 +107,7 @@ def _handle_show_help(command, ctx) -> CommandResult:
     ctx.ui_bus.open_view(
         "help", title="ReuleauxCoder Help", payload=payload, reuse_key="help"
     )
-    return CommandResult(
-        action="continue",
-        view_requests=[
-            OpenViewRequest(
-                view_type="help",
-                title="ReuleauxCoder Help",
-                payload=payload,
-                reuse_key="help",
-            )
-        ],
-        payload=payload,
-    )
+    return CommandResult(action="continue", payload=payload)
 
 
 def _handle_exit(command, ctx) -> CommandResult:
@@ -251,18 +240,7 @@ def _handle_tokens(command, ctx) -> CommandResult:
         reuse_key="token_usage",
     )
 
-    return CommandResult(
-        action="continue",
-        view_requests=[
-            OpenViewRequest(
-                view_type="token_usage",
-                title="Token Usage",
-                payload=payload,
-                reuse_key="token_usage",
-            )
-        ],
-        payload=payload,
-    )
+    return CommandResult(action="continue", payload=payload)
 
 
 def _handle_debug(command, ctx) -> CommandResult:

@@ -5,6 +5,7 @@ from reuleauxcoder.app.commands.models import (
     CommandEffectBuilder,
     OpenViewRequest,
 )
+from reuleauxcoder.app.commands.view_models import MarkdownViewModel
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.interfaces.cli.commands import _apply_command_effect
@@ -46,13 +47,26 @@ def test_builder_deduplicates_legacy_returned_view_request() -> None:
         CommandEffect(
             view_requests=[
                 OpenViewRequest(
-                    view_type="sessions", title="Sessions", reuse_key="sessions"
+                    view_type="sessions",
+                    title="Sessions",
+                    view_model=builder.view_requests[0].view_model,
+                    reuse_key="sessions",
                 )
             ]
         )
     )
 
     assert len(result.view_requests) == 1
+
+
+def test_builder_creates_typed_view_models() -> None:
+    builder = CommandEffectBuilder()
+    builder.open_view("help", title="Help", payload={"markdown": "# Help"})
+
+    (view,) = builder.view_requests
+
+    assert isinstance(view.view_model, MarkdownViewModel)
+    assert view.payload == {"markdown": "# Help"}
 
 
 def test_cli_applies_command_effect_once() -> None:

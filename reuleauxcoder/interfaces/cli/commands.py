@@ -173,6 +173,7 @@ def _apply_command_effect(result: CommandEffect, ui_bus: UIEventBus) -> None:
                 title=view.title,
                 payload=view.payload,
                 reuse_key=view.reuse_key,
+                view_model=view.view_model,
             )
         else:
             ui_bus.open_view(
@@ -181,4 +182,5 @@ def _apply_command_effect(result: CommandEffect, ui_bus: UIEventBus) -> None:
                 payload=view.payload,
                 focus=view.focus,
                 reuse_key=view.reuse_key,
+                view_model=view.view_model,
             )

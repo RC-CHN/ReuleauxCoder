@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import uuid
 from typing import Any, Protocol
 
 from reuleauxcoder.interfaces.events import UIEvent
@@ -16,6 +17,8 @@ class ConfirmRequest:
     message: str
     severity: str = "info"
     details: dict[str, Any] = field(default_factory=dict)
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    deadline: float | None = None
 
 
 @dataclass(slots=True)
@@ -46,6 +49,8 @@ class ChooseOneRequest:
     initial_id: str | None = None
     allow_cancel: bool = True
     details: dict[str, Any] = field(default_factory=dict)
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    deadline: float | None = None
 
 
 @dataclass(slots=True)
@@ -66,6 +71,8 @@ class InputTextRequest:
     placeholder: str | None = None
     allow_empty: bool = False
     details: dict[str, Any] = field(default_factory=dict)
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    deadline: float | None = None
 
 
 @dataclass(slots=True)
@@ -86,6 +93,8 @@ class ReviewRequest:
     reject_label: str = "Reject"
     sections: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    deadline: float | None = None
 
 
 @dataclass(slots=True)
