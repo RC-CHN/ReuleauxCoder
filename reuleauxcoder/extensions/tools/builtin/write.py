@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import difflib
-from pathlib import Path
-
+from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -51,15 +50,15 @@ class WriteFileTool(Tool):
     @backend_handler("local")
     def _execute_local(self, file_path: str, content: str) -> str:
         try:
-            p = Path(file_path).expanduser().resolve()
-            old_content = p.read_text() if p.exists() else ""
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content)
+            old_content = self.backend.workspace.write_text_atomic(file_path, content)
             n_lines = content.count("\n") + (
                 1 if content and not content.endswith("\n") else 0
             )
-            diff = _unified_diff(old_content, content, str(p))
+            resolved = self.backend.workspace.resolve(file_path)
+            diff = _unified_diff(old_content, content, str(resolved))
             return f"Wrote {n_lines} lines to {file_path}\n{diff}"
+        except WorkspaceError as e:
+            return f"Error [{e.code.value}]: {e.message}"
         except Exception as e:
             return f"Error: {e}"
 

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import difflib
-from pathlib import Path
-
+from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -52,7 +51,9 @@ class EditFileTool(Tool):
             if old_string == new_string:
                 return "Error: old_string and new_string must differ"
             return None
-        return _validate_edit_request(file_path, old_string, new_string)
+        return _validate_edit_request(
+            file_path, old_string, new_string, workspace=self.backend.workspace
+        )
 
     def execute(self, file_path: str, old_string: str, new_string: str) -> str:
         validation_error = self.preflight_validate(
@@ -89,19 +90,20 @@ class EditFileTool(Tool):
     @backend_handler("local")
     def _execute_local(self, file_path: str, old_string: str, new_string: str) -> str:
         try:
-            p = Path(file_path).expanduser().resolve()
-            content = p.read_text()
-            new_content = content.replace(old_string, new_string, 1)
-            p.write_text(new_content)
-
-            diff = _unified_diff(content, new_content, str(p))
+            content, new_content = self.backend.workspace.replace_exact_atomic(
+                file_path, old_string, new_string
+            )
+            resolved = self.backend.workspace.resolve(file_path)
+            diff = _unified_diff(content, new_content, str(resolved))
             return f"Edited {file_path}\n{diff}"
+        except WorkspaceError as e:
+            return f"Error [{e.code.value}]: {e.message}"
         except Exception as e:
             return f"Error: {e}"
 
 
 def _validate_edit_request(
-    file_path: str, old_string: str, new_string: str
+    file_path: str, old_string: str, new_string: str, *, workspace=None
 ) -> str | None:
     if not isinstance(file_path, str) or not file_path:
         return "Error: edit_file requires a valid string file_path"
@@ -110,20 +112,21 @@ def _validate_edit_request(
     if old_string == new_string:
         return "Error: old_string and new_string must differ"
 
-    p = Path(file_path).expanduser().resolve()
-    if not p.exists():
-        return f"Error: {file_path} not found"
-
-    content = p.read_text()
+    if workspace is None:
+        workspace = LocalToolBackend().workspace
+    try:
+        content = workspace.read_text(file_path)
+    except WorkspaceError as error:
+        return f"Error [{error.code.value}]: {error.message}"
     occurrences = content.count(old_string)
     if occurrences == 0:
         return (
-            f"Error: old_string not found in {file_path}. "
+            f"Error [{WorkspaceErrorCode.NOT_FOUND.value}]: old_string not found in {file_path}. "
             "Include exact text with enough surrounding context."
         )
     if occurrences > 1:
         return (
-            f"Error: old_string appears {occurrences} times in {file_path}. "
+            f"Error [{WorkspaceErrorCode.NOT_UNIQUE.value}]: old_string appears {occurrences} times in {file_path}. "
             "Include more surrounding lines to make it unique."
         )
     return None

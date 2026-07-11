@@ -18,7 +18,11 @@ from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
-from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
+from reuleauxcoder.extensions.tools.backend import (
+    ExecutionContext,
+    LocalToolBackend,
+    ToolBackend,
+)
 from reuleauxcoder.extensions.tools.registry import build_tools
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
@@ -41,7 +45,9 @@ def _default_create_llm(config: Config) -> LLM:
 
 
 def _default_create_tool_backend(config: Config, ui_bus: UIEventBus) -> ToolBackend:
-    return LocalToolBackend()
+    return LocalToolBackend(
+        ExecutionContext(workspace_root=str(Path.cwd()), cwd=str(Path.cwd()))
+    )
 
 
 def _default_load_tools(tool_backend: ToolBackend) -> list[Any]:

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
+from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -92,13 +91,7 @@ class ReadFileTool(Tool):
         override: bool = False,
     ) -> str:
         try:
-            p = Path(file_path).expanduser().resolve()
-            if not p.exists():
-                return f"Error: {file_path} not found"
-            if not p.is_file():
-                return f"Error: {file_path} is a directory, not a file"
-
-            text = p.read_text(errors="replace")
+            text = self.backend.workspace.read_text(file_path)
             lines = text.splitlines()
             total = len(lines)
 
@@ -117,5 +110,7 @@ class ReadFileTool(Tool):
                     "use override=true to read full file)"
                 )
             return result or "(empty file)"
+        except WorkspaceError as e:
+            return f"Error [{e.code.value}]: {e.message}"
         except Exception as e:
             return f"Error: {e}"

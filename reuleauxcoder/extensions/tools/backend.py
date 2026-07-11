@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+
+from reuleauxcoder.domain.workspace import WorkspacePort
+from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
 
 @dataclass(slots=True)
@@ -21,11 +25,31 @@ class ToolBackend:
 
     backend_id = "base"
 
-    def __init__(self, context: ExecutionContext | None = None):
+    def __init__(
+        self,
+        context: ExecutionContext | None = None,
+        *,
+        workspace: WorkspacePort | None = None,
+    ):
         self.context = context or ExecutionContext()
+        self.workspace = workspace
 
 
 class LocalToolBackend(ToolBackend):
     """Default backend representing local in-process execution."""
 
     backend_id = "local"
+
+    def __init__(
+        self,
+        context: ExecutionContext | None = None,
+        *,
+        workspace: WorkspacePort | None = None,
+    ):
+        effective_context = context or ExecutionContext()
+        root = effective_context.workspace_root or Path("/")
+        cwd = effective_context.cwd or Path.cwd()
+        super().__init__(
+            effective_context,
+            workspace=workspace or LocalWorkspacePort(root, cwd=cwd),
+        )
