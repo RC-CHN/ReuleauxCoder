@@ -47,6 +47,7 @@ class RelayServer:
         send_fn: SendFn | None = None,
         heartbeat_interval_sec: int = 10,
         heartbeat_timeout_sec: int = 30,
+        peer_token_ttl_sec: int = 3600,
         default_tool_timeout_sec: int = 30,
         shell_timeout_sec: int = 120,
     ):
@@ -54,6 +55,7 @@ class RelayServer:
         self._token_manager = TokenManager()
         self._registry = PeerRegistry(heartbeat_timeout_sec=heartbeat_timeout_sec)
         self._heartbeat_interval_sec = heartbeat_interval_sec
+        self._peer_token_ttl_sec = max(1, int(peer_token_ttl_sec))
         self._default_tool_timeout_sec = default_tool_timeout_sec
         self._shell_timeout_sec = shell_timeout_sec
 
@@ -410,7 +412,9 @@ class RelayServer:
             "host_info_min": req.host_info_min,
         }
         peer_id = self._registry.register(meta=meta)
-        peer_token = self._token_manager.issue_peer_token(peer_id, ttl_sec=3600)
+        peer_token = self._token_manager.issue_peer_token(
+            peer_id, ttl_sec=self._peer_token_ttl_sec
+        )
         return RegisterResponse(
             peer_id=peer_id,
             peer_token=peer_token,

@@ -33,6 +33,13 @@ class TestLspConfigDefaults:
         assert lsp.max_diagnostics == 10
         assert lsp.include_warnings is True
 
+    def test_partial_section_preserves_include_warnings_default(self) -> None:
+        config = Config(lsp={"enabled": True})
+
+        lsp = LspConfig.from_config(config)
+
+        assert lsp.include_warnings is True
+
     def test_parse_server_overrides(self) -> None:
         config = Config()
         config.lsp = {  # type: ignore[attr-defined]

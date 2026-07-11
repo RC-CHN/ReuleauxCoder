@@ -46,7 +46,7 @@ class LspConfig:
         enabled = bool(lsp_raw.get("enabled", True))
         poll_timeout_ms = int(lsp_raw.get("poll_timeout_ms", 5000))
         max_diagnostics = int(lsp_raw.get("max_diagnostics", 20))
-        include_warnings = bool(lsp_raw.get("include_warnings", False))
+        include_warnings = bool(lsp_raw.get("include_warnings", True))
 
         overrides: dict[str, LspServerOverride] = {}
         servers_raw = lsp_raw.get("servers", {}) or {}

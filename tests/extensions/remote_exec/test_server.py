@@ -72,6 +72,25 @@ class TestRegistration:
         finally:
             srv.stop()
 
+    def test_peer_token_uses_configured_ttl(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "reuleauxcoder.extensions.remote_exec.auth.time.time", lambda: 1000.0
+        )
+        srv = RelayServer(peer_token_ttl_sec=42)
+        srv.start()
+        try:
+            response = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=srv.issue_bootstrap_token(ttl_sec=60),
+                    cwd="/tmp",
+                )
+            )
+
+            entry = srv.token_manager._peers[response.peer_token]
+            assert entry.expires_at == 1042.0
+        finally:
+            srv.stop()
+
 
 class TestHeartbeat:
     def test_heartbeat_updates_peer(self) -> None:

@@ -84,6 +84,7 @@ def _default_create_remote_relay_server(config: Config) -> RelayServer | None:
     return RelayServer(
         heartbeat_interval_sec=config.remote_exec.heartbeat_interval_sec,
         heartbeat_timeout_sec=config.remote_exec.heartbeat_timeout_sec,
+        peer_token_ttl_sec=config.remote_exec.peer_token_ttl_sec,
         default_tool_timeout_sec=config.remote_exec.default_tool_timeout_sec,
         shell_timeout_sec=config.remote_exec.shell_timeout_sec,
     )
