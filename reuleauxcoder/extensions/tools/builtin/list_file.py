@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import datetime
 import fnmatch
-import os
 import re
 import stat
-from pathlib import Path
+from pathlib import Path, PurePath
 
+from reuleauxcoder.domain.workspace import WorkspaceEntry, WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -122,16 +122,7 @@ class ListFileTool(Tool):
         recursive: bool = False,
         pattern: str | None = None,
     ) -> str:
-        return self.backend.exec_tool(
-            "list_file",
-            {
-                "path": path,
-                "all": all,
-                "long": long,
-                "recursive": recursive,
-                "pattern": pattern,
-            },
-        )
+        return self._execute_workspace(path, all, long, recursive, pattern)
 
     @backend_handler("local")
     def _execute_local(
@@ -142,114 +133,120 @@ class ListFileTool(Tool):
         recursive: bool = False,
         pattern: str | None = None,
     ) -> str:
-        resolved = Path(path).expanduser().resolve()
-        if not resolved.exists():
-            return f"Error: '{path}' does not exist"
+        return self._execute_workspace(path, all, long, recursive, pattern)
 
-        # Single file
-        if resolved.is_file():
-            return self._format_single(resolved, long=long)
-
-        # Directory
-        lines = self._list_dir(resolved, all=all, long=long, pattern=pattern)
-        if not lines:
-            note = (
-                f"(no entries matching '{pattern}' in '{path}')"
-                if pattern
-                else f"(empty directory: '{path}')"
+    def _execute_workspace(
+        self,
+        path: str,
+        all: bool,
+        long: bool,
+        recursive: bool,
+        pattern: str | None,
+    ) -> str:
+        if not isinstance(path, str) or not path:
+            return "Error: path must be a non-empty string"
+        if pattern is not None and not isinstance(pattern, str):
+            return "Error: pattern must be a string when provided"
+        try:
+            base = self.backend.workspace.stat_entry(path)
+            if base.is_file:
+                return self._format_single(base, long=long)
+            if not base.is_dir:
+                return f"Error: '{path}' is not a directory"
+            listing = self.backend.workspace.list_entries(
+                path,
+                recursive=recursive,
+                include_hidden=all,
+                max_entries=20_000,
             )
-            return note
-
-        header = f"{resolved}{'/' if resolved.is_dir() else ''}:\n" if long else ""
-        output = header + "\n".join(lines)
-
-        if recursive:
-            subdirs = self._collect_subdirs(resolved, all=all)
-            for sub in sorted(subdirs):
-                sub_output = self._execute_local(
-                    path=str(sub),
-                    all=all,
-                    long=long,
-                    recursive=True,
-                    pattern=pattern,
+            entries = [
+                entry
+                for entry in listing.entries
+                if self._matches(entry, pattern, recursive=recursive)
+            ]
+            if not entries:
+                return (
+                    f"(no entries matching '{pattern}' in '{path}')"
+                    if pattern
+                    else f"(empty directory: '{path}')"
                 )
-                output += "\n\n" + sub_output
-
-        return output
+            entries.sort(
+                key=lambda entry: (
+                    str(PurePath(entry.relative_path).parent).lower(),
+                    not entry.is_dir,
+                    entry.name.lower(),
+                )
+            )
+            if recursive and not long:
+                output = "\n".join(
+                    self._format_entry(
+                        entry,
+                        long=False,
+                        display_name=entry.relative_path,
+                    )
+                    for entry in entries
+                )
+            elif recursive:
+                output = self._format_recursive(base, entries)
+            else:
+                header = f"{base.path}/:\n" if long else ""
+                output = header + "\n".join(
+                    self._format_entry(entry, long=long) for entry in entries
+                )
+            if listing.truncated:
+                output += "\n... (workspace listing limit reached)"
+            return output
+        except WorkspaceError as error:
+            if error.code.value == "not_found":
+                return f"Error: '{path}' does not exist"
+            return f"Error [{error.code.value}]: {error.message}"
+        except Exception as error:
+            return f"Error: {error}"
 
     # -----------------------------------------------------------------
     # Internal helpers
     # -----------------------------------------------------------------
 
     @staticmethod
-    def _format_single(resolved: Path, *, long: bool) -> str:
-        st = resolved.stat()
-        name = _sanitize_name(resolved.name)
-        if long:
-            return (
-                f"{_format_mode(st.st_mode)}  "
-                f"{st.st_size:>8}  "
-                f"{_format_mtime(st.st_mtime)}  "
-                f"{name}"
-            )
-        return name
+    def _format_single(entry: WorkspaceEntry, *, long: bool) -> str:
+        return ListFileTool._format_entry(entry, long=long)
 
     @staticmethod
-    def _list_dir(
-        root: Path,
+    def _format_entry(
+        entry: WorkspaceEntry,
         *,
-        all: bool,
         long: bool,
-        pattern: str | None,
-    ) -> list[str]:
-        """Collect and format entries in *root*.  Returns formatted lines."""
-        entries: list[tuple[str, int, int, float]] = []  # name, mode, size, mtime
-        try:
-            with os.scandir(root) as it:
-                for entry in it:
-                    if not all and entry.name.startswith("."):
-                        continue
-                    try:
-                        st = entry.stat()
-                    except OSError:
-                        continue
-                    if pattern and not fnmatch.fnmatch(entry.name, pattern):
-                        continue
-                    entries.append((entry.name, st.st_mode, st.st_size, st.st_mtime))
-        except PermissionError:
-            return [f"(permission denied: {root})"]
-        except OSError as exc:
-            return [f"(error: {exc})"]
-
-        if not entries:
-            return []
-
-        # Sort: directories first, then by name (case-insensitive)
-        entries.sort(key=lambda e: (not stat.S_ISDIR(e[1]), e[0].lower()))
-
-        if long:
-            return [
-                f"{_format_mode(mode)}  {size:>8}  {_format_mtime(mtime)}  {_sanitize_name(name)}"
-                f"{'/' if stat.S_ISDIR(mode) else ''}"
-                for name, mode, size, mtime in entries
-            ]
-        else:
-            return [
-                f"{_sanitize_name(name)}{'/' if stat.S_ISDIR(mode) else ''}"
-                for name, mode, _size, _mtime in entries
-            ]
+        display_name: str | None = None,
+    ) -> str:
+        name = _sanitize_name(display_name or entry.name)
+        suffix = "/" if entry.is_dir else ""
+        if not long:
+            return name + suffix
+        return (
+            f"{_format_mode(entry.mode)}  {entry.size:>8}  "
+            f"{_format_mtime(entry.mtime)}  {name}{suffix}"
+        )
 
     @staticmethod
-    def _collect_subdirs(root: Path, *, all: bool) -> list[Path]:
-        """Return subdirectories to recurse into."""
-        subdirs: list[Path] = []
-        try:
-            with os.scandir(root) as it:
-                for entry in it:
-                    if not all and entry.name.startswith("."):
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        subdirs.append(root / entry.name)
-        except OSError:
-            pass
-        return subdirs
+    def _matches(
+        entry: WorkspaceEntry, pattern: str | None, *, recursive: bool
+    ) -> bool:
+        if pattern is None:
+            return True
+        candidate = entry.relative_path if recursive else entry.name
+        return fnmatch.fnmatch(candidate, pattern)
+
+    @classmethod
+    def _format_recursive(
+        cls, base: WorkspaceEntry, entries: list[WorkspaceEntry]
+    ) -> str:
+        groups: dict[str, list[WorkspaceEntry]] = {}
+        for entry in entries:
+            parent = str(PurePath(entry.relative_path).parent)
+            groups.setdefault(parent, []).append(entry)
+        sections = []
+        for parent, children in groups.items():
+            directory = Path(base.path) if parent == "." else Path(base.path) / parent
+            lines = "\n".join(cls._format_entry(item, long=True) for item in children)
+            sections.append(f"{directory}/:\n{lines}")
+        return "\n\n".join(sections)

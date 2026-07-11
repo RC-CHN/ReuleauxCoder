@@ -15,12 +15,6 @@ from urllib import request
 from urllib.error import HTTPError
 
 import pytest
-
-
-_URLOPEN = request.build_opener(request.ProxyHandler({})).open
-
-_GO_AVAILABLE = shutil.which("go") is not None
-
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.protocol import (
     ChatResponse,
@@ -33,14 +27,21 @@ from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
 from reuleauxcoder.extensions.tools.builtin.grep import GrepTool
+from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.interfaces.entrypoint.runner import (
     _default_create_remote_artifact_provider,
 )
 from reuleauxcoder.interfaces.events import UIEventBus
+
+
+_URLOPEN = request.build_opener(request.ProxyHandler({})).open
+
+_GO_AVAILABLE = shutil.which("go") is not None
 
 
 def _free_port() -> int:
@@ -1039,6 +1040,25 @@ class TestRemoteRelayHTTPService:
             )
             assert str(target_file) in grep_result
             assert "gamma" in grep_result
+
+            local_backend = LocalToolBackend(
+                ExecutionContext(
+                    cwd=str(work_dir), workspace_root=str(work_dir)
+                )
+            )
+            assert glob_result == GlobTool(backend=local_backend).execute(
+                pattern="*.txt", path=str(work_dir)
+            )
+            assert grep_result == GrepTool(backend=local_backend).execute(
+                pattern="gamma", path=str(work_dir)
+            )
+            remote_list = ListFileTool(backend=backend).execute(
+                path=str(work_dir), long=False, recursive=True
+            )
+            local_list = ListFileTool(backend=local_backend).execute(
+                path=str(work_dir), long=False, recursive=True
+            )
+            assert remote_list == local_list
         finally:
             proc.terminate()
             try:

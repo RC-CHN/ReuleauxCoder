@@ -62,8 +62,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		CWD:            cwd,
 		WorkspaceRoot:  workspaceRoot,
 		Capabilities: []string{
-			"shell", "glob", "grep", "list_file",
-			"workspace.fs.read_text", "workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
+			"shell",
+			"workspace.fs.stat", "workspace.fs.list", "workspace.fs.read_text",
+			"workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
 		},
 		ProtocolVersion: 2,
 		HostInfoMin: map[string]any{

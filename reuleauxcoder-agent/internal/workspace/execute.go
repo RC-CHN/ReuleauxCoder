@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 )
 
 func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.WorkspaceResult {
-	if req.Operation != "fs.read_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.replace_exact_atomic" {
+	if req.Operation != "fs.read_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.replace_exact_atomic" && req.Operation != "fs.stat" && req.Operation != "fs.list" {
 		return failure("invalid_path", fmt.Sprintf("unsupported workspace operation %q", req.Operation))
 	}
 	cwd := defaultCWD
@@ -26,6 +27,17 @@ func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.Wo
 		return failure("path_outside_workspace", err.Error())
 	}
 	switch req.Operation {
+	case "fs.stat":
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return failure("not_found", fmt.Sprintf("%s not found", pathValue))
+			}
+			return failure("io_error", err.Error())
+		}
+		return success(map[string]any{"entry": workspaceEntry(path, filepath.Dir(path), info)})
+	case "fs.list":
+		return listEntries(path, pathValue, req.Args)
 	case "fs.read_text":
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -81,6 +93,104 @@ func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.Wo
 		})
 	}
 	return failure("invalid_path", fmt.Sprintf("unsupported workspace operation %q", req.Operation))
+}
+
+func listEntries(path, pathValue string, args map[string]any) protocol.WorkspaceResult {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return failure("not_found", fmt.Sprintf("%s not found", pathValue))
+		}
+		return failure("io_error", err.Error())
+	}
+	if !info.IsDir() {
+		if info.Mode().IsRegular() {
+			return success(map[string]any{
+				"entries":   []map[string]any{workspaceEntry(path, filepath.Dir(path), info)},
+				"truncated": false,
+			})
+		}
+		return failure("not_a_directory", fmt.Sprintf("%s is not a directory", pathValue))
+	}
+	recursive, _ := args["recursive"].(bool)
+	includeHidden := true
+	if value, ok := args["include_hidden"].(bool); ok {
+		includeHidden = value
+	}
+	maxEntries := intArg(args["max_entries"], 10_000)
+	if maxEntries < 1 {
+		return failure("invalid_path", "max_entries must be positive")
+	}
+
+	entries := make([]map[string]any, 0)
+	pending := []string{path}
+	truncated := false
+	for len(pending) > 0 && !truncated {
+		directory := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		children, readErr := os.ReadDir(directory)
+		if readErr != nil {
+			return failure("io_error", readErr.Error())
+		}
+		sort.Slice(children, func(i, j int) bool {
+			return strings.ToLower(children[i].Name()) < strings.ToLower(children[j].Name())
+		})
+		for _, child := range children {
+			if !includeHidden && strings.HasPrefix(child.Name(), ".") {
+				continue
+			}
+			childPath := filepath.Join(directory, child.Name())
+			childInfo, infoErr := os.Lstat(childPath)
+			if infoErr != nil {
+				continue
+			}
+			entries = append(entries, workspaceEntry(childPath, path, childInfo))
+			if len(entries) >= maxEntries {
+				truncated = true
+				break
+			}
+			if recursive && childInfo.IsDir() && childInfo.Mode()&os.ModeSymlink == 0 {
+				pending = append(pending, childPath)
+			}
+		}
+	}
+	return success(map[string]any{"entries": entries, "truncated": truncated})
+}
+
+func workspaceEntry(path, base string, info os.FileInfo) map[string]any {
+	relative, err := filepath.Rel(base, path)
+	if err != nil {
+		relative = info.Name()
+	}
+	mode := int64(info.Mode().Perm())
+	if info.IsDir() {
+		mode |= 0o040000
+	} else if info.Mode().IsRegular() {
+		mode |= 0o100000
+	}
+	return map[string]any{
+		"path":          path,
+		"relative_path": filepath.ToSlash(relative),
+		"name":          info.Name(),
+		"is_file":       info.Mode().IsRegular(),
+		"is_dir":        info.IsDir(),
+		"size":          info.Size(),
+		"mtime":         float64(info.ModTime().UnixNano()) / 1e9,
+		"mode":          mode,
+	}
+}
+
+func intArg(value any, fallback int) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	default:
+		return fallback
+	}
 }
 
 func confinedPath(root, cwd, value string) (string, error) {

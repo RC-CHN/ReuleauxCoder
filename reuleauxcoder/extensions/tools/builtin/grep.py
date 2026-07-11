@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
+from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -63,51 +61,44 @@ class GrepTool(Tool):
             return "Error: path must be a non-empty string"
         if include is not None and not isinstance(include, str):
             return "Error: include must be a string when provided"
-        return self.backend.exec_tool(
-            "grep", {"pattern": pattern, "path": path, "include": include}
-        )
+        return self._execute_workspace(pattern, path, include)
 
     @backend_handler("local")
     def _execute_local(
         self, pattern: str, path: str = ".", include: str | None = None
     ) -> str:
+        return self._execute_workspace(pattern, path, include)
+
+    def _execute_workspace(
+        self, pattern: str, path: str, include: str | None
+    ) -> str:
+        if not isinstance(pattern, str) or not pattern:
+            return "Error: pattern must be a non-empty string"
+        if not isinstance(path, str) or not path:
+            return "Error: path must be a non-empty string"
+        if include is not None and not isinstance(include, str):
+            return "Error: include must be a string when provided"
         try:
-            regex = re.compile(pattern)
-        except re.error as e:
-            return f"Invalid regex: {e}"
-
-        base = Path(path).expanduser().resolve()
-        if not base.exists():
-            return f"Error: {path} not found"
-
-        if base.is_file():
-            files = [base]
-        else:
-            files = self._walk(base, include)
-
-        matches = []
-        for fp in files:
-            try:
-                text = fp.read_text(errors="ignore")
-            except OSError:
-                continue
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if regex.search(line):
-                    matches.append(f"{fp}:{lineno}: {line.rstrip()}")
-                    if len(matches) >= 200:
-                        matches.append("... (200 match limit reached)")
-                        return "\n".join(matches)
-
-        return "\n".join(matches) if matches else "No matches found."
-
-    @staticmethod
-    def _walk(root: Path, include: str | None) -> list[Path]:
-        results = []
-        for item in root.rglob(include or "*"):
-            if any(part in _SKIP_DIRS for part in item.parts):
-                continue
-            if item.is_file():
-                results.append(item)
-            if len(results) >= 5000:
-                break
-        return results
+            result = self.backend.workspace.search_text(
+                pattern,
+                path,
+                include=include,
+                exclude_dirs=tuple(sorted(_SKIP_DIRS)),
+                max_files=5_000,
+                max_matches=200,
+            )
+            lines = [
+                f"{match.path}:{match.line_number}: {match.line}"
+                for match in result.matches
+            ]
+            if result.truncated:
+                lines.append("... (200 match limit reached)")
+            return "\n".join(lines) if lines else "No matches found."
+        except WorkspaceError as e:
+            if e.code.value == "invalid_path" and e.message.startswith(
+                "invalid regex:"
+            ):
+                return "Invalid regex:" + e.message.removeprefix("invalid regex:")
+            return f"Error [{e.code.value}]: {e.message}"
+        except Exception as e:
+            return f"Error: {e}"

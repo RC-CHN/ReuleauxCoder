@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
+from reuleauxcoder.domain.workspace import (
+    WorkspaceEntry,
+    WorkspaceError,
+    WorkspaceErrorCode,
+    WorkspaceListResult,
+    WorkspaceSearchResult,
+    search_text_via_primitives,
+)
 from reuleauxcoder.extensions.remote_exec.errors import (
     PeerNotFoundError,
     RemoteExecError,
@@ -168,6 +175,19 @@ class RemoteWorkspacePort:
     def read_text(self, path: str | Path) -> str:
         return str(self._request("fs.read_text", path=str(path)).get("content", ""))
 
+    def stat_entry(self, path: str | Path) -> WorkspaceEntry:
+        item = self._request("fs.stat", path=str(path))["entry"]
+        return WorkspaceEntry(
+            path=str(item["path"]),
+            relative_path=str(item["relative_path"]),
+            name=str(item["name"]),
+            is_file=bool(item["is_file"]),
+            is_dir=bool(item["is_dir"]),
+            size=int(item["size"]),
+            mtime=float(item["mtime"]),
+            mode=int(item["mode"]),
+        )
+
     def write_text_atomic(self, path: str | Path, content: str) -> str:
         return str(
             self._request("fs.write_text_atomic", path=str(path), content=content).get(
@@ -182,3 +202,53 @@ class RemoteWorkspacePort:
             "fs.replace_exact_atomic", path=str(path), old=old, new=new
         )
         return str(data.get("old_content", "")), str(data.get("new_content", ""))
+
+    def list_entries(
+        self,
+        path: str | Path,
+        *,
+        recursive: bool = False,
+        include_hidden: bool = True,
+        max_entries: int = 10_000,
+    ) -> WorkspaceListResult:
+        data = self._request(
+            "fs.list",
+            path=str(path),
+            recursive=recursive,
+            include_hidden=include_hidden,
+            max_entries=max_entries,
+        )
+        entries = tuple(
+            WorkspaceEntry(
+                path=str(item["path"]),
+                relative_path=str(item["relative_path"]),
+                name=str(item["name"]),
+                is_file=bool(item["is_file"]),
+                is_dir=bool(item["is_dir"]),
+                size=int(item["size"]),
+                mtime=float(item["mtime"]),
+                mode=int(item["mode"]),
+            )
+            for item in data.get("entries", [])
+        )
+        return WorkspaceListResult(entries, truncated=bool(data.get("truncated")))
+
+    def search_text(
+        self,
+        pattern: str,
+        path: str | Path,
+        *,
+        include: str | None = None,
+        exclude_dirs: tuple[str, ...] = (),
+        max_files: int = 5_000,
+        max_matches: int = 200,
+    ) -> WorkspaceSearchResult:
+        return search_text_via_primitives(
+            self,
+            pattern,
+            path,
+            include=include,
+            exclude_dirs=exclude_dirs,
+            max_files=max_files,
+            max_matches=max_matches,
+        )

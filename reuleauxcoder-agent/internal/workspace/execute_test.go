@@ -40,6 +40,62 @@ func TestExecuteWorkspacePrimitives(t *testing.T) {
 	}
 }
 
+func TestStructuredStatAndListPrimitives(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "demo.py"), []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".hidden"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	statResult := Execute(request("fs.stat", map[string]any{"path": "nested/demo.py"}), root, root)
+	if !statResult.OK {
+		t.Fatalf("unexpected stat result: %#v", statResult)
+	}
+	entry := statResult.Data["entry"].(map[string]any)
+	if entry["name"] != "demo.py" || entry["is_file"] != true {
+		t.Fatalf("unexpected stat entry: %#v", entry)
+	}
+
+	listResult := Execute(request("fs.list", map[string]any{
+		"path": ".", "recursive": true, "include_hidden": false, "max_entries": 10,
+	}), root, root)
+	if !listResult.OK {
+		t.Fatalf("unexpected list result: %#v", listResult)
+	}
+	entries := listResult.Data["entries"].([]map[string]any)
+	if len(entries) != 2 {
+		t.Fatalf("expected directory and nested file, got %#v", entries)
+	}
+	for _, item := range entries {
+		if item["name"] == ".hidden" {
+			t.Fatalf("hidden entry leaked: %#v", entries)
+		}
+	}
+}
+
+func TestListPrimitiveIsBounded(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a", "b", "c"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := Execute(request("fs.list", map[string]any{
+		"path": ".", "max_entries": 2,
+	}), root, root)
+	if !result.OK || result.Data["truncated"] != true {
+		t.Fatalf("expected truncated list, got %#v", result)
+	}
+	if len(result.Data["entries"].([]map[string]any)) != 2 {
+		t.Fatalf("expected two entries, got %#v", result)
+	}
+}
+
 func TestExecuteRejectsWorkspaceEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(filepath.Dir(root), "outside.txt")
