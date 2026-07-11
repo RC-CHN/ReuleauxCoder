@@ -1,7 +1,5 @@
 """Default configuration values."""
 
-from reuleauxcoder.domain.config.schema import DEFAULTS
-
 # Session defaults (actual defaults computed at runtime in paths.py)
 # These are fallback values when workspace is not writable
 SESSION_DIR_DEFAULT = "~/.rcoder/sessions"

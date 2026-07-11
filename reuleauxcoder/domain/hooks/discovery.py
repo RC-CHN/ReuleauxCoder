@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from reuleauxcoder.domain.hooks.base import HookBase
@@ -69,15 +69,10 @@ def discover_hook_specs() -> list[HookSpec]:
 
     Import builtin hooks module first to ensure decorators are executed.
     """
-    # Ensure builtin hooks are imported so decorators run
-    from reuleauxcoder.domain.hooks.builtin import (
-        ToolOutputTruncationHook,
-        ToolPolicyGuardHook,
-        ProjectContextHook,
-        ProjectContextStartupNotifier,
-        LspEditObserverHook,
-        LspDiagnosticsInjectorHook,
-    )
+    # Ensure builtin hooks are imported so decorators run.
+    from reuleauxcoder.domain.hooks import builtin as _builtin_hooks
+
+    del _builtin_hooks
 
     return list(_HOOK_SPECS)
 

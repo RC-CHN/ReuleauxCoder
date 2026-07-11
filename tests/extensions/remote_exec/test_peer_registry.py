@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
-from reuleauxcoder.extensions.remote_exec.peer_registry import PeerInfo, PeerRegistry
+from reuleauxcoder.extensions.remote_exec.peer_registry import PeerRegistry
 
 
 class TestPeerRegistry:

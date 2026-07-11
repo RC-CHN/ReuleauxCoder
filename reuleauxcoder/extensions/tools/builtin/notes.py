@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
-from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.extensions.tools.registry import register_tool
 from reuleauxcoder.infrastructure.persistence.notes_store import (
     delete_note,

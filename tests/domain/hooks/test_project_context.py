@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from reuleauxcoder.domain.hooks.builtin.project_context import (
     ProjectContextHook,
     DEFAULT_CONTEXT_FILES,

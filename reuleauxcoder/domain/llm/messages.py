@@ -1,7 +1,7 @@
 """LLM domain messages - message structures for conversation."""
 
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional
 
 
 @dataclass

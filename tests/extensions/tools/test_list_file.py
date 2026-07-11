@@ -61,7 +61,7 @@ class TestListFileExecute:
         # header line
         assert lines[0] == f"{tmp_path}/:"
         # .hidden before visible (dirs first, then name — .hidden is a file)
-        names = [l.split()[-1] for l in lines[1:]]
+        names = [line.split()[-1] for line in lines[1:]]
         assert ".hidden" in names
         assert "README.md" in names
         assert "main.py" in names

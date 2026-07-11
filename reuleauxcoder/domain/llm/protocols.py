@@ -1,7 +1,7 @@
 """LLM domain protocols - abstract interfaces for LLM providers."""
 
 from collections.abc import Callable
-from typing import Protocol, Optional, Any
+from typing import Protocol, Optional
 from reuleauxcoder.domain.llm.models import LLMResponse
 
 

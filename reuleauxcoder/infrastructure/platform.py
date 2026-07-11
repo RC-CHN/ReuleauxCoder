@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import platform
 import shutil
-import sys
 from enum import Enum
 from pathlib import Path
 
