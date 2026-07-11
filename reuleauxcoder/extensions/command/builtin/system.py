@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reuleauxcoder.app.commands.help import build_help_markdown
+from reuleauxcoder.app.commands.help import build_help_view
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.view_models import HelpViewModel, TokenUsageViewModel
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -105,16 +106,22 @@ def _parse_debug(user_input: str, parse_ctx):
 
 def _handle_show_help(command, ctx) -> CommandResult:
     if ctx.ui_profile is None:
-        markdown = "No active UI profile; help unavailable."
+        view = HelpViewModel(
+            sections=(), diagnostic="No active UI profile; help unavailable."
+        )
     elif ctx.action_registry is None:
-        markdown = "No action registry available; help unavailable."
+        view = HelpViewModel(
+            sections=(), diagnostic="No action registry available; help unavailable."
+        )
     else:
-        markdown = build_help_markdown(ctx.ui_profile, ctx.action_registry)
-    payload = {"markdown": markdown}
+        view = build_help_view(ctx.ui_profile, ctx.action_registry)
     ctx.ui_bus.open_view(
-        "help", title="ReuleauxCoder Help", payload=payload, reuse_key="help"
+        view.view_type,
+        title="ReuleauxCoder Help",
+        view_model=view,
+        reuse_key="help",
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_exit(command, ctx) -> CommandResult:
@@ -206,49 +213,32 @@ def _handle_tokens(command, ctx) -> CommandResult:
     summarize_exhausted = getattr(ctx.agent.context, "_summarize_exhausted", False)
     max_hits = getattr(ctx.agent.context, "_max_hits", 3)
 
-    payload = {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "lifetime_total": lifetime_total,
-        "current_context_tokens": current_context_tokens,
-        "max_context_tokens": max_context_tokens,
-        "context_percent": context_percent,
-        "message_count": len(ctx.agent.messages),
-        "snip_at": getattr(ctx.agent.context, "_snip_at", None),
-        "summarize_at": getattr(ctx.agent.context, "_summarize_at", None),
-        "collapse_at": getattr(ctx.agent.context, "_collapse_at", None),
-        "snip_hit_count": snip_hit_count,
-        "summarize_hit_count": summarize_hit_count,
-        "snip_exhausted": snip_exhausted,
-        "summarize_exhausted": summarize_exhausted,
-        "max_hits": max_hits,
-        "markdown": _build_tokens_markdown(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            lifetime_total=lifetime_total,
-            current_context_tokens=current_context_tokens,
-            max_context_tokens=max_context_tokens,
-            context_percent=context_percent,
-            message_count=len(ctx.agent.messages),
-            snip_at=getattr(ctx.agent.context, "_snip_at", None),
-            summarize_at=getattr(ctx.agent.context, "_summarize_at", None),
-            collapse_at=getattr(ctx.agent.context, "_collapse_at", None),
-            snip_hit_count=snip_hit_count,
-            summarize_hit_count=summarize_hit_count,
-            snip_exhausted=snip_exhausted,
-            summarize_exhausted=summarize_exhausted,
-            max_hits=max_hits,
-        ),
-    }
+    view = TokenUsageViewModel(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        lifetime_total=lifetime_total,
+        current_context_tokens=current_context_tokens,
+        max_context_tokens=max_context_tokens,
+        context_percent=context_percent,
+        message_count=len(ctx.agent.messages),
+        snip_at=getattr(ctx.agent.context, "_snip_at", None),
+        summarize_at=getattr(ctx.agent.context, "_summarize_at", None),
+        collapse_at=getattr(ctx.agent.context, "_collapse_at", None),
+        snip_hit_count=snip_hit_count,
+        summarize_hit_count=summarize_hit_count,
+        snip_exhausted=snip_exhausted,
+        summarize_exhausted=summarize_exhausted,
+        max_hits=max_hits,
+    )
 
     ctx.ui_bus.open_view(
-        "token_usage",
+        view.view_type,
         title="Token Usage",
-        payload=payload,
+        view_model=view,
         reuse_key="token_usage",
     )
 
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_debug(command, ctx) -> CommandResult:

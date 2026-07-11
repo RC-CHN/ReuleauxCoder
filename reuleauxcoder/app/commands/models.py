@@ -106,6 +106,7 @@ class CommandEffectBuilder:
         *,
         title: str,
         payload: dict[str, Any] | None = None,
+        view_model: ViewModel | None = None,
         focus: bool = True,
         reuse_key: str | None = None,
     ) -> None:
@@ -113,7 +114,7 @@ class CommandEffectBuilder:
             OpenViewRequest(
                 view_type=view_type,
                 title=title,
-                view_model=view_model_from_payload(view_type, payload),
+                view_model=view_model or view_model_from_payload(view_type, payload),
                 focus=focus,
                 reuse_key=reuse_key,
                 action="open",
@@ -126,13 +127,14 @@ class CommandEffectBuilder:
         *,
         title: str | None = None,
         payload: dict[str, Any] | None = None,
+        view_model: ViewModel | None = None,
         reuse_key: str | None = None,
     ) -> None:
         self.view_requests.append(
             OpenViewRequest(
                 view_type=view_type,
                 title=title or view_type,
-                view_model=view_model_from_payload(view_type, payload),
+                view_model=view_model or view_model_from_payload(view_type, payload),
                 focus=False,
                 reuse_key=reuse_key,
                 action="refresh",

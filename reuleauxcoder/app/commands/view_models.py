@@ -13,6 +13,214 @@ class ViewModel(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class HelpCommandViewModel:
+    usage: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class HelpSectionViewModel:
+    feature_id: str
+    commands: tuple[HelpCommandViewModel, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HelpViewModel:
+    sections: tuple[HelpSectionViewModel, ...]
+    diagnostic: str | None = None
+    view_type: str = "help"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "sections": [
+                {
+                    "feature_id": section.feature_id,
+                    "commands": [
+                        {
+                            "usage": command.usage,
+                            "description": command.description,
+                        }
+                        for command in section.commands
+                    ],
+                }
+                for section in self.sections
+            ],
+            "diagnostic": self.diagnostic,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ModelProfileViewModel:
+    name: str
+    model: str
+    active_main: bool
+    active_sub: bool
+    base_url: str | None
+    max_tokens: int
+    temperature: float
+    max_context_tokens: int
+    api_key_hint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ModelListViewModel:
+    active_main: str | None
+    active_sub: str | None
+    current_model: str
+    profiles: tuple[ModelProfileViewModel, ...]
+    diagnostics: tuple[str, ...] = ()
+    available_actions: tuple[str, ...] = (
+        "use-main",
+        "use-sub",
+        "set-main",
+        "set-sub",
+    )
+    view_type: str = "model_profiles"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "active_main_profile": self.active_main,
+            "active_sub_profile": self.active_sub,
+            "current_model": self.current_model,
+            "profiles": [
+                {
+                    "name": profile.name,
+                    "model": profile.model,
+                    "active": profile.active_main,
+                    "active_main": profile.active_main,
+                    "active_sub": profile.active_sub,
+                    "base_url": profile.base_url,
+                    "max_tokens": profile.max_tokens,
+                    "temperature": profile.temperature,
+                    "max_context_tokens": profile.max_context_tokens,
+                    "api_key_hint": profile.api_key_hint,
+                }
+                for profile in self.profiles
+            ],
+            "diagnostics": list(self.diagnostics),
+            "available_actions": list(self.available_actions),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ModeProfileViewModel:
+    name: str
+    active: bool
+    description: str
+    tools: tuple[str, ...]
+    prompt_append: str
+    allowed_subagent_modes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ModesViewModel:
+    active_mode: str | None
+    modes: tuple[ModeProfileViewModel, ...]
+    diagnostics: tuple[str, ...] = ()
+    view_type: str = "mode_profiles"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "active_mode": self.active_mode,
+            "modes": [
+                {
+                    "name": mode.name,
+                    "active": mode.active,
+                    "description": mode.description,
+                    "tools": list(mode.tools),
+                    "prompt_append": mode.prompt_append,
+                    "allowed_subagent_modes": list(mode.allowed_subagent_modes),
+                }
+                for mode in self.modes
+            ],
+            "diagnostics": list(self.diagnostics),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TokenUsageViewModel:
+    prompt_tokens: int
+    completion_tokens: int
+    lifetime_total: int
+    current_context_tokens: int
+    max_context_tokens: int
+    context_percent: float | None
+    message_count: int
+    snip_at: float | None
+    summarize_at: float | None
+    collapse_at: float | None
+    snip_hit_count: int
+    summarize_hit_count: int
+    snip_exhausted: bool
+    summarize_exhausted: bool
+    max_hits: int
+    view_type: str = "token_usage"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            name: getattr(self, name)
+            for name in (
+                "prompt_tokens",
+                "completion_tokens",
+                "lifetime_total",
+                "current_context_tokens",
+                "max_context_tokens",
+                "context_percent",
+                "message_count",
+                "snip_at",
+                "summarize_at",
+                "collapse_at",
+                "snip_hit_count",
+                "summarize_hit_count",
+                "snip_exhausted",
+                "summarize_exhausted",
+                "max_hits",
+            )
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentJobViewModel:
+    job_id: str
+    status: str
+    mode: str
+    task: str
+    created_at: float
+    started_at: float | None
+    finished_at: float | None
+    timeout_seconds: float | None
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentJobsViewModel:
+    jobs: tuple[SubagentJobViewModel, ...]
+    runtime_parallel_explore: int
+    max_parallel_explore: int
+    view_type: str = "subagent_jobs"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "runtime_parallel_explore": self.runtime_parallel_explore,
+            "max_parallel_explore": self.max_parallel_explore,
+            "jobs": [
+                {
+                    "id": job.job_id,
+                    "status": job.status,
+                    "mode": job.mode,
+                    "task": job.task,
+                    "created_at": job.created_at,
+                    "started_at": job.started_at,
+                    "finished_at": job.finished_at,
+                    "timeout_seconds": job.timeout_seconds,
+                    "error": job.error,
+                }
+                for job in self.jobs
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class MarkdownViewModel:
     view_type: str
     markdown: str
@@ -142,6 +350,66 @@ def view_model_from_payload(
                 )
                 for session in data.get("sessions", [])
             ),
+        )
+    if view_type == "model_profiles":
+        return ModelListViewModel(
+            active_main=data.get("active_main_profile") or data.get("active_profile"),
+            active_sub=data.get("active_sub_profile"),
+            current_model=str(data.get("current_model", "")),
+            profiles=tuple(
+                ModelProfileViewModel(
+                    name=str(profile.get("name", "")),
+                    model=str(profile.get("model", "")),
+                    active_main=bool(
+                        profile.get("active_main", profile.get("active"))
+                    ),
+                    active_sub=bool(profile.get("active_sub")),
+                    base_url=profile.get("base_url"),
+                    max_tokens=int(profile.get("max_tokens", 0)),
+                    temperature=float(profile.get("temperature", 0)),
+                    max_context_tokens=int(profile.get("max_context_tokens", 0)),
+                    api_key_hint=str(profile.get("api_key_hint", "")),
+                )
+                for profile in data.get("profiles", [])
+            ),
+            diagnostics=tuple(str(item) for item in data.get("diagnostics", [])),
+        )
+    if view_type == "mode_profiles":
+        return ModesViewModel(
+            active_mode=data.get("active_mode"),
+            modes=tuple(
+                ModeProfileViewModel(
+                    name=str(mode.get("name", "")),
+                    active=bool(mode.get("active")),
+                    description=str(mode.get("description", "")),
+                    tools=tuple(str(item) for item in mode.get("tools", [])),
+                    prompt_append=str(mode.get("prompt_append", "")),
+                    allowed_subagent_modes=tuple(
+                        str(item)
+                        for item in mode.get("allowed_subagent_modes", [])
+                    ),
+                )
+                for mode in data.get("modes", [])
+            ),
+            diagnostics=tuple(str(item) for item in data.get("diagnostics", [])),
+        )
+    if view_type == "token_usage":
+        return TokenUsageViewModel(
+            prompt_tokens=int(data.get("prompt_tokens", 0)),
+            completion_tokens=int(data.get("completion_tokens", 0)),
+            lifetime_total=int(data.get("lifetime_total", 0)),
+            current_context_tokens=int(data.get("current_context_tokens", 0)),
+            max_context_tokens=int(data.get("max_context_tokens", 0)),
+            context_percent=data.get("context_percent"),
+            message_count=int(data.get("message_count", 0)),
+            snip_at=data.get("snip_at"),
+            summarize_at=data.get("summarize_at"),
+            collapse_at=data.get("collapse_at"),
+            snip_hit_count=int(data.get("snip_hit_count", 0)),
+            summarize_hit_count=int(data.get("summarize_hit_count", 0)),
+            snip_exhausted=bool(data.get("snip_exhausted")),
+            summarize_exhausted=bool(data.get("summarize_exhausted")),
+            max_hits=int(data.get("max_hits", 0)),
         )
     markdown = data.pop("markdown", None)
     if isinstance(markdown, str):
