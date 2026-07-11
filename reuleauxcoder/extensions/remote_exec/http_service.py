@@ -482,9 +482,7 @@ class RemoteRelayHTTPService:
             def _handle_heartbeat(self) -> None:
                 payload = self._read_json()
                 hb = Heartbeat.from_dict(payload)
-                peer_id = service.relay_server.token_manager.verify_peer_token(
-                    hb.peer_token
-                )
+                peer_id = service.relay_server.refresh_peer_token(hb.peer_token)
                 if peer_id is None:
                     self._send_json(
                         HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}

@@ -56,6 +56,7 @@ class RelayServer:
         self._registry = PeerRegistry(heartbeat_timeout_sec=heartbeat_timeout_sec)
         self._heartbeat_interval_sec = heartbeat_interval_sec
         self._peer_token_ttl_sec = max(1, int(peer_token_ttl_sec))
+        self._peer_token_refresh_grace_sec = max(0, int(heartbeat_timeout_sec))
         self._default_tool_timeout_sec = default_tool_timeout_sec
         self._shell_timeout_sec = shell_timeout_sec
 
@@ -428,6 +429,17 @@ class RelayServer:
     def issue_bootstrap_token(self, ttl_sec: int = 300) -> str:
         """Host API: issue a one-time bootstrap token for a new peer."""
         return self._token_manager.issue_bootstrap_token(ttl_sec=ttl_sec)
+
+    def refresh_peer_token(self, token: str) -> str | None:
+        """Refresh an online peer's sliding token lease."""
+        peer_id = self._token_manager.refresh_peer_token(
+            token,
+            ttl_sec=self._peer_token_ttl_sec,
+            grace_sec=self._peer_token_refresh_grace_sec,
+        )
+        if peer_id is None or self._registry.get(peer_id) is None:
+            return None
+        return peer_id
 
     # ------------------------------------------------------------------
     # Maintenance

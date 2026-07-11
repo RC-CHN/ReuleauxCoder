@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from dataclasses import dataclass, field
-
-from reuleauxcoder.extensions.remote_exec.errors import AuthError, RegisterRejectedError
+from dataclasses import dataclass
 
 
 @dataclass
@@ -77,6 +75,19 @@ class TokenManager:
     def revoke_peer_token(self, token: str) -> None:
         """Revoke a peer token explicitly (e.g. on disconnect)."""
         self._peers.pop(token, None)
+
+    def refresh_peer_token(
+        self, token: str, *, ttl_sec: int, grace_sec: int = 0
+    ) -> str | None:
+        """Extend a peer lease, allowing a bounded reconnect grace window."""
+        entry = self._peers.get(token)
+        if entry is None or entry.peer_id is None:
+            return None
+        now = time.time()
+        if now > entry.expires_at + max(0, grace_sec):
+            return None
+        entry.expires_at = now + max(1, ttl_sec)
+        return entry.peer_id
 
     # ------------------------------------------------------------------
     # Helpers

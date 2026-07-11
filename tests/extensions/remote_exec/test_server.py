@@ -91,6 +91,28 @@ class TestRegistration:
         finally:
             srv.stop()
 
+    def test_online_peer_token_refresh_uses_sliding_lease(self, monkeypatch) -> None:
+        now = [1000.0]
+        monkeypatch.setattr(
+            "reuleauxcoder.extensions.remote_exec.auth.time.time", lambda: now[0]
+        )
+        srv = RelayServer(peer_token_ttl_sec=10, heartbeat_timeout_sec=5)
+        srv.start()
+        try:
+            response = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=srv.issue_bootstrap_token(ttl_sec=60),
+                    cwd="/tmp",
+                )
+            )
+            now[0] = 1014.0
+
+            assert srv.refresh_peer_token(response.peer_token) == response.peer_id
+            now[0] = 1023.0
+            assert srv.token_manager.verify_peer_token(response.peer_token) == response.peer_id
+        finally:
+            srv.stop()
+
 
 class TestHeartbeat:
     def test_heartbeat_updates_peer(self) -> None:

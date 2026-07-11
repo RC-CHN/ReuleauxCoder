@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from reuleauxcoder.extensions.remote_exec.auth import TokenManager
 
 
@@ -62,6 +60,33 @@ class TestPeerToken:
     def test_unknown_peer_token(self) -> None:
         tm = TokenManager()
         assert tm.verify_peer_token("pt_nope") is None
+
+    def test_refresh_extends_same_token_lease(self, monkeypatch) -> None:
+        now = [1000.0]
+        monkeypatch.setattr(
+            "reuleauxcoder.extensions.remote_exec.auth.time.time", lambda: now[0]
+        )
+        tm = TokenManager()
+        token = tm.issue_peer_token("peer-1", ttl_sec=10)
+        now[0] = 1009.0
+
+        assert tm.refresh_peer_token(token, ttl_sec=20) == "peer-1"
+        now[0] = 1028.0
+        assert tm.verify_peer_token(token) == "peer-1"
+
+    def test_refresh_allows_bounded_grace_only(self, monkeypatch) -> None:
+        now = [1000.0]
+        monkeypatch.setattr(
+            "reuleauxcoder.extensions.remote_exec.auth.time.time", lambda: now[0]
+        )
+        tm = TokenManager()
+        token = tm.issue_peer_token("peer-1", ttl_sec=10)
+        now[0] = 1015.0
+        assert tm.refresh_peer_token(token, ttl_sec=10, grace_sec=5) == "peer-1"
+
+        second = tm.issue_peer_token("peer-2", ttl_sec=10)
+        now[0] = 1031.0
+        assert tm.refresh_peer_token(second, ttl_sec=10, grace_sec=5) is None
 
 
 class TestPruneExpired:
