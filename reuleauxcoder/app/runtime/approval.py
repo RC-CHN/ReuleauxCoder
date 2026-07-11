@@ -37,13 +37,28 @@ class ApprovalRuleView:
 
 
 @dataclass(slots=True)
+class ApprovalEffectiveToolView:
+    name: str
+    action: str
+    source: str
+
+
+@dataclass(slots=True)
 class ApprovalEffectivePolicyView:
     """Structured presentation model for one MCP server's effective policy."""
 
     server_name: str
     action: str
     source: str
-    tools: list[dict[str, str]] = field(default_factory=list)
+    tools: list[ApprovalEffectiveToolView] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalEditorHint:
+    supports_text_command: bool
+    set_command_format: str
+    future_ui_editor: bool
+    targets: tuple[str, ...]
 
 
 @dataclass(slots=True)
@@ -68,7 +83,10 @@ class ApprovalView:
     effective_mcp_policies: list[ApprovalEffectivePolicyView] = field(
         default_factory=list
     )
-    editor_hint: dict[str, Any] = field(default_factory=dict)
+    editor_hint: ApprovalEditorHint = field(
+        default_factory=lambda: ApprovalEditorHint(False, "", False, ())
+    )
+    view_type: str = "approval_rules"
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -102,12 +120,23 @@ class ApprovalView:
                     "server_name": item.server_name,
                     "action": item.action,
                     "source": item.source,
-                    "tools": item.tools,
+                    "tools": [
+                        {
+                            "name": tool.name,
+                            "action": tool.action,
+                            "source": tool.source,
+                        }
+                        for tool in item.tools
+                    ],
                 }
                 for item in self.effective_mcp_policies
             ],
-            "editor_hint": self.editor_hint,
-            "markdown": build_approval_markdown(self),
+            "editor_hint": {
+                "supports_text_command": self.editor_hint.supports_text_command,
+                "set_command_format": self.editor_hint.set_command_format,
+                "future_ui_editor": self.editor_hint.future_ui_editor,
+                "targets": list(self.editor_hint.targets),
+            },
         }
 
 
@@ -426,7 +455,9 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
                     else f"inherited from server {server_name}"
                 )
                 tools.append(
-                    {"name": tool_name, "action": tool_action, "source": tool_source}
+                    ApprovalEffectiveToolView(
+                        name=tool_name, action=tool_action, source=tool_source
+                    )
                 )
             effective_policies.append(
                 ApprovalEffectivePolicyView(
@@ -443,12 +474,14 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
         rules=visible_rules,
         tool_policies=tool_policies,
         effective_mcp_policies=effective_policies,
-        editor_hint={
-            "supports_text_command": True,
-            "set_command_format": "/approval set <target> <allow|warn|require_approval|deny>",
-            "future_ui_editor": True,
-            "targets": ["tool:<name>", "mcp", "mcp:<server>", "mcp:<server>:<tool>"],
-        },
+        editor_hint=ApprovalEditorHint(
+            supports_text_command=True,
+            set_command_format=(
+                "/approval set <target> <allow|warn|require_approval|deny>"
+            ),
+            future_ui_editor=True,
+            targets=("tool:<name>", "mcp", "mcp:<server>", "mcp:<server>:<tool>"),
+        ),
     )
 
 
@@ -485,6 +518,6 @@ def build_approval_markdown(view: ApprovalView) -> str:
             lines.append(f"  - source: {item.source}")
             for tool in item.tools:
                 lines.append(
-                    f"  - tool `{tool['name']}` -> `{tool['action']}` ({tool['source']})"
+                    f"  - tool `{tool.name}` -> `{tool.action}` ({tool.source})"
                 )
     return "\n".join(lines)

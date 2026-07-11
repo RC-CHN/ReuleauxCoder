@@ -78,24 +78,24 @@ def _parse_set_global_approval(user_input: str, parse_ctx):
     return SetGlobalApprovalRuleCommand(target=target, action=action)
 
 
-def _build_approval_payload(ctx) -> dict:
+def _build_approval_view(ctx):
     approval = get_runtime_approval_config(ctx.config, ctx.agent)
     view = build_approval_view(
         SimpleNamespace(approval=approval, mcp_servers=ctx.config.mcp_servers),
         ctx.agent,
     )
-    return view.to_payload()
+    return view
 
 
 def _handle_show_approval(command, ctx) -> CommandResult:
-    payload = _build_approval_payload(ctx)
+    view = _build_approval_view(ctx)
     ctx.ui_bus.open_view(
-        "approval_rules",
+        view.view_type,
         title="Approval Rules",
-        payload=payload,
+        view_model=view,
         reuse_key="approval_rules",
     )
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _validate_approval_rule(command, ctx):
@@ -131,7 +131,7 @@ def _handle_set_approval_rule(command, ctx) -> CommandResult:
         ctx.agent, get_runtime_approval_config(ctx.config, ctx.agent)
     )
 
-    payload = _build_approval_payload(ctx)
+    view = _build_approval_view(ctx)
     ctx.ui_bus.success(
         "Updated session approval rule",
         kind=UIEventKind.APPROVAL,
@@ -139,13 +139,13 @@ def _handle_set_approval_rule(command, ctx) -> CommandResult:
         action_name=command.action,
     )
     ctx.ui_bus.refresh_view(
-        "approval_rules",
+        view.view_type,
         title="Approval Rules",
-        payload=payload,
+        view_model=view,
         reuse_key="approval_rules",
     )
 
-    return CommandResult(action="continue", payload=payload)
+    return CommandResult(action="continue", payload=view.to_payload())
 
 
 def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
@@ -163,7 +163,7 @@ def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
     approval = get_runtime_approval_config(ctx.config, ctx.agent)
     refresh_approval_runtime(ctx.agent, approval)
 
-    payload = _build_approval_payload(ctx)
+    view = _build_approval_view(ctx)
     ctx.ui_bus.success(
         f"Updated global approval rule and saved to {path}",
         kind=UIEventKind.APPROVAL,
@@ -172,14 +172,14 @@ def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
         saved_path=str(path),
     )
     ctx.ui_bus.refresh_view(
-        "approval_rules",
+        view.view_type,
         title="Approval Rules",
-        payload=payload,
+        view_model=view,
         reuse_key="approval_rules",
     )
 
     return CommandResult(
-        action="continue", payload={"saved_path": str(path), **payload}
+        action="continue", payload={"saved_path": str(path), **view.to_payload()}
     )
 
 

@@ -11,6 +11,7 @@ from reuleauxcoder.interfaces.cli.views.common import (
     stop_stream_and_clear,
 )
 from reuleauxcoder.interfaces.view_registry import ViewRendererSpec
+from reuleauxcoder.app.runtime.approval import ApprovalView
 from reuleauxcoder.app.commands.view_models import (
     HelpViewModel,
     MCPServersViewModel,
@@ -215,10 +216,37 @@ def render_token_usage_view(renderer, event) -> bool:
     return True
 
 
+def render_approval_rules_view(renderer, event) -> bool:
+    model = event.data.get("view_model")
+    if not isinstance(model, ApprovalView):
+        return False
+    stop_stream_and_clear(renderer)
+    renderer.console.print(
+        f"Default: {model.default_mode} ({model.default_mode_source})"
+    )
+    rules = Table(title="Approval Rules")
+    rules.add_column("Scope")
+    rules.add_column("Target")
+    rules.add_column("Action")
+    rules.add_column("Source")
+    for rule in model.rules:
+        target = rule.tool_name or rule.mcp_server or rule.tool_source or "all"
+        rules.add_row(rule.scope, target, rule.action, rule.source)
+    renderer.console.print(rules)
+
+    policies = Table(title="Effective Tool Policies")
+    policies.add_column("Tool")
+    policies.add_column("Action")
+    policies.add_column("Source")
+    for policy in model.tool_policies:
+        policies.add_row(policy.tool_name, policy.action, policy.source)
+    renderer.console.print(policies)
+    return True
+
+
 def builtin_cli_view_specs() -> list[ViewRendererSpec]:
     """Return explicit CLI-owned view registrations."""
     markdown_views = {
-        "approval_rules": "Approval Rules",
         "skills": "Skills",
     }
     specs = [
@@ -241,6 +269,9 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
             ViewRendererSpec(view_type="mode_profiles", render=render_modes_view),
             ViewRendererSpec(
                 view_type="token_usage", render=render_token_usage_view
+            ),
+            ViewRendererSpec(
+                view_type="approval_rules", render=render_approval_rules_view
             ),
         ]
     )
