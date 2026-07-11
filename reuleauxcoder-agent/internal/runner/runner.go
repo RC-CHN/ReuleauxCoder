@@ -520,23 +520,32 @@ func (r *Runner) handleInteractionRequest(
 		return fmt.Errorf("interaction request missing request_id")
 	}
 
-	fmt.Print("Respond? [y/N]: ")
-	value := false
+	value := any(nil)
 	cancelled := false
-	select {
-	case <-ctx.Done():
-		cancelled = true
-	case <-interrupts:
-		r.cancelRemoteChat(peerToken, chatID)
-		return errChatCancelled
-	case line, ok := <-r.lines:
-		if !ok {
+	answered := false
+	for !answered {
+		fmt.Print(interactionPrompt(payload))
+		select {
+		case <-ctx.Done():
 			cancelled = true
-			break
-		}
-		answer := strings.ToLower(strings.TrimSpace(line))
-		if answer == "y" || answer == "yes" || answer == "a" || answer == "allow" {
-			value = true
+			answered = true
+		case <-interrupts:
+			r.cancelRemoteChat(peerToken, chatID)
+			return errChatCancelled
+		case line, ok := <-r.lines:
+			if !ok {
+				cancelled = true
+				answered = true
+				continue
+			}
+			parsed, inputCancelled, parseErr := parseInteractionInput(payload, line)
+			if parseErr != nil {
+				fmt.Fprintf(os.Stderr, "%s\n", parseErr)
+				continue
+			}
+			value = parsed
+			cancelled = inputCancelled
+			answered = true
 		}
 	}
 
@@ -564,6 +573,60 @@ func (r *Runner) handleInteractionRequest(
 		return fmt.Errorf("interaction reply failed: %s", replyResp.Error)
 	}
 	return nil
+}
+
+func interactionPrompt(payload map[string]any) string {
+	constraints, _ := payload["input_constraints"].(map[string]any)
+	valueType, _ := constraints["value_type"].(string)
+	switch valueType {
+	case "choice_id":
+		return "Choose: "
+	case "string":
+		return "Input: "
+	default:
+		return "Respond? [y/N]: "
+	}
+}
+
+func parseInteractionInput(payload map[string]any, line string) (any, bool, error) {
+	constraints, _ := payload["input_constraints"].(map[string]any)
+	valueType, _ := constraints["value_type"].(string)
+	trimmed := strings.TrimSpace(line)
+	if strings.EqualFold(trimmed, "cancel") {
+		return nil, true, nil
+	}
+	switch valueType {
+	case "string":
+		allowEmpty, _ := constraints["allow_empty"].(bool)
+		if trimmed == "" && !allowEmpty {
+			return nil, false, fmt.Errorf("input cannot be empty")
+		}
+		return line, false, nil
+	case "choice_id":
+		choices, _ := constraints["choices"].([]any)
+		if index, err := strconv.Atoi(trimmed); err == nil {
+			if index >= 1 && index <= len(choices) {
+				if choice, ok := choices[index-1].(string); ok {
+					return choice, false, nil
+				}
+			}
+		}
+		for _, candidate := range choices {
+			if choice, ok := candidate.(string); ok && trimmed == choice {
+				return choice, false, nil
+			}
+		}
+		return nil, false, fmt.Errorf("enter a listed choice number or id")
+	default:
+		switch strings.ToLower(trimmed) {
+		case "y", "yes", "true", "1":
+			return true, false, nil
+		case "", "n", "no", "false", "0":
+			return false, false, nil
+		default:
+			return nil, false, fmt.Errorf("enter y or n")
+		}
+	}
 }
 
 func (r *Runner) renderOutputEvent(payload map[string]any) {

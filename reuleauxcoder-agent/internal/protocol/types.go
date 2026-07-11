@@ -134,19 +134,6 @@ type ChatCancelResponse struct {
 	Error       string `json:"error,omitempty"`
 }
 
-type ApprovalReplyRequest struct {
-	PeerToken  string `json:"peer_token"`
-	ChatID     string `json:"chat_id"`
-	ApprovalID string `json:"approval_id"`
-	Decision   string `json:"decision"`
-	Reason     string `json:"reason,omitempty"`
-}
-
-type ApprovalReplyResponse struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
-}
-
 type InteractionReplyRequest struct {
 	PeerToken string `json:"peer_token"`
 	ChatID    string `json:"chat_id"`
