@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
 import threading
 import time
+import sys
 from pathlib import Path
 from unittest.mock import patch
 from urllib import request
@@ -632,6 +635,74 @@ class TestRemoteRelayHTTPService:
             service.stop()
             relay.stop()
 
+    def test_chat_cancel_invokes_runtime_callback_and_resolves_waiters(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+        cancelled = threading.Event()
+
+        def stream_chat_handler(_peer_id: str, _prompt: str, session) -> None:
+            session.cancel_callback = cancelled.set
+            session.register_interaction("hold")
+            session.wait_interaction("hold", timeout_sec=3)
+
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            stream_chat_handler=stream_chat_handler,
+        )
+        service.start()
+        try:
+            _, register_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/peer",
+                },
+            )
+            peer_token = register_body["payload"]["peer_token"]
+            _, start_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "cancel me"},
+            )
+            chat_id = start_body["chat_id"]
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                session = service._get_chat_session(chat_id)
+                if session is not None and session.cancel_callback is not None:
+                    break
+                time.sleep(0.01)
+
+            status, cancel_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/cancel",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": chat_id,
+                    "reason": "test_interrupt",
+                },
+            )
+
+            assert status == 200
+            assert cancel_body["ok"] is True
+            assert cancelled.wait(timeout=1)
+            _, stream_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/stream",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": chat_id,
+                    "cursor": 0,
+                    "timeout_sec": 2,
+                },
+            )
+            assert stream_body["done"] is True
+        finally:
+            service.stop()
+            relay.stop()
+
     def test_approval_reply_routes_to_matching_chat_session_only(self) -> None:
         relay = RelayServer()
         relay.start()
@@ -987,6 +1058,14 @@ class TestRemoteRelayHTTPService:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env={
+                **os.environ,
+                "COLUMNS": "97",
+                "COLORTERM": "truecolor",
+                "TERM": "xterm-256color",
+                "LANG": "en_US.UTF-8",
+                "NO_COLOR": "",
+            },
         )
         try:
             deadline = time.time() + 10
@@ -998,6 +1077,14 @@ class TestRemoteRelayHTTPService:
                     break
                 time.sleep(0.1)
             assert peer_id is not None
+            peer = relay.registry.get(peer_id)
+            assert peer is not None
+            assert peer.meta["terminal"] == {
+                "width": 97,
+                "color_level": "truecolor",
+                "unicode": True,
+                "interactive": False,
+            }
 
             backend = RemoteRelayToolBackend(relay_server=relay)
             backend.context.peer_id = peer_id
@@ -1091,5 +1178,82 @@ class TestRemoteRelayHTTPService:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+            service.stop()
+            relay.stop()
+
+    @pytest.mark.skipif(
+        not _GO_AVAILABLE or sys.platform == "win32",
+        reason="requires Go and POSIX process signals",
+    )
+    def test_interactive_go_peer_ctrl_c_cancels_host_chat(
+        self, tmp_path: Path
+    ) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+        callback_ready = threading.Event()
+        cancelled = threading.Event()
+
+        def stream_chat_handler(_peer_id: str, _prompt: str, session) -> None:
+            session.cancel_callback = cancelled.set
+            session.register_interaction("hold")
+            callback_ready.set()
+            session.wait_interaction("hold", timeout_sec=10)
+
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            stream_chat_handler=stream_chat_handler,
+        )
+        service.start()
+        binary = _build_go_agent_binary()
+        work_dir = tmp_path / "interactive-peer"
+        work_dir.mkdir()
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--host",
+                service.base_url,
+                "--bootstrap-token",
+                relay.issue_bootstrap_token(ttl_sec=60),
+                "--cwd",
+                str(work_dir),
+                "--workspace-root",
+                str(work_dir),
+                "--interactive",
+                "--poll-interval",
+                "100ms",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline and not relay.registry.list_online():
+                time.sleep(0.05)
+            assert relay.registry.list_online()
+            assert proc.stdin is not None
+            proc.stdin.write("long running chat\n")
+            proc.stdin.flush()
+            assert callback_ready.wait(timeout=5)
+
+            proc.send_signal(signal.SIGINT)
+
+            assert cancelled.wait(timeout=3)
+            time.sleep(0.2)
+            assert proc.poll() is None
+            proc.stdin.write("/exit\n")
+            proc.stdin.flush()
+            assert proc.wait(timeout=5) == 0
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
             service.stop()
             relay.stop()

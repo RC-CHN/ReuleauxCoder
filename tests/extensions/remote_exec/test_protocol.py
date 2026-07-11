@@ -15,6 +15,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterRejected,
     RegisterRequest,
     RegisterResponse,
+    TerminalCapabilities,
     RelayEnvelope,
     ToolStreamChunk,
     WorkspaceRequest,
@@ -47,6 +48,12 @@ class TestRegisterRequest:
             workspace_root="/workspace",
             capabilities=["shell", "read_file"],
             protocol_version=REMOTE_PROTOCOL_VERSION,
+            terminal=TerminalCapabilities(
+                width=132,
+                color_level="256",
+                unicode=False,
+                interactive=True,
+            ),
         )
         d = req.to_dict()
         restored = RegisterRequest.from_dict(d)
@@ -55,6 +62,15 @@ class TestRegisterRequest:
         assert restored.workspace_root == "/workspace"
         assert restored.capabilities == ["shell", "read_file"]
         assert restored.protocol_version == REMOTE_PROTOCOL_VERSION
+        assert restored.terminal == req.terminal
+
+    def test_terminal_capabilities_are_safely_normalized(self) -> None:
+        terminal = TerminalCapabilities.from_dict(
+            {"width": 9999, "color_level": "invented"}
+        )
+
+        assert terminal.width == 500
+        assert terminal.color_level == "none"
 
 
 class TestRegisterResponse:

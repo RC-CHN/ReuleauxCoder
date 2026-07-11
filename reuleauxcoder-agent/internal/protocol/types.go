@@ -3,12 +3,20 @@ package protocol
 import "encoding/json"
 
 type RegisterRequest struct {
-	BootstrapToken  string         `json:"bootstrap_token"`
-	HostInfoMin     map[string]any `json:"host_info_min,omitempty"`
-	CWD             string         `json:"cwd,omitempty"`
-	WorkspaceRoot   string         `json:"workspace_root,omitempty"`
-	Capabilities    []string       `json:"capabilities,omitempty"`
-	ProtocolVersion int            `json:"protocol_version,omitempty"`
+	BootstrapToken  string               `json:"bootstrap_token"`
+	HostInfoMin     map[string]any       `json:"host_info_min,omitempty"`
+	CWD             string               `json:"cwd,omitempty"`
+	WorkspaceRoot   string               `json:"workspace_root,omitempty"`
+	Capabilities    []string             `json:"capabilities,omitempty"`
+	ProtocolVersion int                  `json:"protocol_version,omitempty"`
+	Terminal        TerminalCapabilities `json:"terminal,omitempty"`
+}
+
+type TerminalCapabilities struct {
+	Width       int    `json:"width"`
+	ColorLevel  string `json:"color_level"`
+	Unicode     bool   `json:"unicode"`
+	Interactive bool   `json:"interactive"`
 }
 
 type RegisterResponseEnvelope struct {
@@ -101,6 +109,18 @@ type ChatStreamResponse struct {
 	Done       bool        `json:"done"`
 	NextCursor int         `json:"next_cursor"`
 	Error      string      `json:"error,omitempty"`
+}
+
+type ChatCancelRequest struct {
+	PeerToken string `json:"peer_token"`
+	ChatID    string `json:"chat_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type ChatCancelResponse struct {
+	OK          bool   `json:"ok"`
+	AlreadyDone bool   `json:"already_done,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type ApprovalReplyRequest struct {

@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,16 +33,20 @@ type Config struct {
 }
 
 type Runner struct {
-	cfg     Config
-	client  *client.HTTPClient
-	scanner *bufio.Scanner
+	cfg      Config
+	client   *client.HTTPClient
+	scanner  *bufio.Scanner
+	lines    chan string
+	inputErr chan error
 }
 
 func New(cfg Config) *Runner {
 	return &Runner{
-		cfg:     cfg,
-		client:  client.New(cfg.Host),
-		scanner: bufio.NewScanner(os.Stdin),
+		cfg:      cfg,
+		client:   client.New(cfg.Host),
+		scanner:  bufio.NewScanner(os.Stdin),
+		lines:    make(chan string),
+		inputErr: make(chan error, 1),
 	}
 }
 
@@ -70,6 +76,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			"workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
 		},
 		ProtocolVersion: 2,
+		Terminal:        detectTerminalCapabilities(r.cfg.Interactive),
 		HostInfoMin: map[string]any{
 			"os":       runtimeOS(),
 			"arch":     runtimeArch(),
@@ -100,7 +107,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		pollInterval = 500 * time.Millisecond
 	}
 
-	childCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	var childCtx context.Context
+	var cancel context.CancelFunc
+	interrupts := make(chan os.Signal, 1)
+	if r.cfg.Interactive {
+		childCtx, cancel = signal.NotifyContext(ctx, syscall.SIGTERM)
+		signal.Notify(interrupts, os.Interrupt)
+		defer signal.Stop(interrupts)
+		r.startInputPump()
+	} else {
+		childCtx, cancel = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	}
 	defer cancel()
 	defer func() {
 		disconnectCtx, cancelDisconnect := context.WithTimeout(context.Background(), 5*time.Second)
@@ -119,7 +136,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			errCh <- r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval, processManager)
 		}()
 
-		if err := r.runInteractiveLoop(childCtx, registerResp.PeerToken); err != nil {
+		if err := r.runInteractiveLoop(childCtx, registerResp.PeerToken, interrupts); err != nil {
 			return err
 		}
 		cancel()
@@ -134,6 +151,30 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	return r.runPollLoop(childCtx, registerResp.PeerToken, workspaceRoot, cwd, pollInterval, processManager)
+}
+
+func detectTerminalCapabilities(interactive bool) protocol.TerminalCapabilities {
+	width := 80
+	if parsed, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && parsed >= 20 {
+		width = min(parsed, 500)
+	}
+	colorLevel := "none"
+	term := strings.ToLower(os.Getenv("TERM"))
+	colorTerm := strings.ToLower(os.Getenv("COLORTERM"))
+	if os.Getenv("NO_COLOR") == "" && term != "" && term != "dumb" {
+		colorLevel = "standard"
+		if strings.Contains(term, "256color") {
+			colorLevel = "256"
+		}
+		if strings.Contains(colorTerm, "truecolor") || strings.Contains(colorTerm, "24bit") {
+			colorLevel = "truecolor"
+		}
+	}
+	locale := strings.ToLower(os.Getenv("LC_ALL") + os.Getenv("LC_CTYPE") + os.Getenv("LANG"))
+	unicode := strings.Contains(locale, "utf-8") || strings.Contains(locale, "utf8")
+	return protocol.TerminalCapabilities{
+		Width: width, ColorLevel: colorLevel, Unicode: unicode, Interactive: interactive,
+	}
 }
 
 func (r *Runner) runPollLoop(
@@ -223,36 +264,67 @@ func (r *Runner) runPollLoop(
 	}
 }
 
-func (r *Runner) runInteractiveLoop(ctx context.Context, peerToken string) error {
+func (r *Runner) startInputPump() {
+	go func() {
+		defer close(r.lines)
+		for r.scanner.Scan() {
+			r.lines <- r.scanner.Text()
+		}
+		r.inputErr <- r.scanner.Err()
+	}()
+}
+
+func (r *Runner) runInteractiveLoop(
+	ctx context.Context, peerToken string, interrupts <-chan os.Signal,
+) error {
+	var lastIdleInterrupt time.Time
 	for {
+		fmt.Print("You > ")
+		var rawInput string
 		select {
 		case <-ctx.Done():
 			return nil
-		default:
-		}
-
-		fmt.Print("You > ")
-		if !r.scanner.Scan() {
-			if err := r.scanner.Err(); err != nil {
-				return err
+		case <-interrupts:
+			now := time.Now()
+			if !lastIdleInterrupt.IsZero() && now.Sub(lastIdleInterrupt) <= 2*time.Second {
+				fmt.Println("\nExiting.")
+				return nil
 			}
-			return nil
+			lastIdleInterrupt = now
+			fmt.Println("\nPress Ctrl+C again within 2s to exit.")
+			continue
+		case line, ok := <-r.lines:
+			if !ok {
+				return <-r.inputErr
+			}
+			rawInput = line
 		}
-		userInput := strings.TrimSpace(r.scanner.Text())
+		lastIdleInterrupt = time.Time{}
+		userInput := strings.TrimSpace(rawInput)
 		if userInput == "" {
 			continue
 		}
 		if userInput == "/quit" || userInput == "/exit" {
 			return nil
 		}
-		if err := r.runRemoteChat(ctx, peerToken, userInput); err != nil {
+		if err := r.runRemoteChat(ctx, peerToken, userInput, interrupts); err != nil {
+			if err == errChatCancelled {
+				fmt.Println("\nCancelled.")
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "\nRemote chat error: %v\n", err)
 			continue
 		}
 	}
 }
 
-func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) error {
+var errChatCancelled = errors.New("remote chat cancelled")
+
+func (r *Runner) runRemoteChat(
+	ctx context.Context,
+	peerToken, prompt string,
+	interrupts <-chan os.Signal,
+) error {
 	chatCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	startResp, err := r.client.ChatStart(chatCtx, protocol.ChatStartRequest{
 		PeerToken: peerToken,
@@ -273,13 +345,31 @@ func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) er
 	retryDelay := 500 * time.Millisecond
 	for {
 		streamCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-		streamResp, err := r.client.ChatStream(streamCtx, protocol.ChatStreamRequest{
-			PeerToken:  peerToken,
-			ChatID:     startResp.ChatID,
-			Cursor:     cursor,
-			TimeoutSec: 30,
-		})
-		cancel()
+		type streamResult struct {
+			response protocol.ChatStreamResponse
+			err      error
+		}
+		resultCh := make(chan streamResult, 1)
+		go func() {
+			response, streamErr := r.client.ChatStream(streamCtx, protocol.ChatStreamRequest{
+				PeerToken: peerToken, ChatID: startResp.ChatID,
+				Cursor: cursor, TimeoutSec: 30,
+			})
+			resultCh <- streamResult{response: response, err: streamErr}
+		}()
+		var streamResp protocol.ChatStreamResponse
+		select {
+		case <-ctx.Done():
+			cancel()
+			return nil
+		case <-interrupts:
+			cancel()
+			r.cancelRemoteChat(peerToken, startResp.ChatID)
+			return errChatCancelled
+		case result := <-resultCh:
+			cancel()
+			streamResp, err = result.response, result.err
+		}
 		if err != nil {
 			if isAuthenticationError(err) {
 				return fmt.Errorf("chat stream authentication failed: %w", err)
@@ -295,7 +385,7 @@ func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) er
 			return fmt.Errorf("chat stream failed: %s", streamResp.Error)
 		}
 		for _, event := range streamResp.Events {
-			if err := r.handleChatEvent(ctx, peerToken, startResp.ChatID, event); err != nil {
+			if err := r.handleChatEvent(ctx, peerToken, startResp.ChatID, event, interrupts); err != nil {
 				return err
 			}
 		}
@@ -304,6 +394,14 @@ func (r *Runner) runRemoteChat(ctx context.Context, peerToken, prompt string) er
 			return nil
 		}
 	}
+}
+
+func (r *Runner) cancelRemoteChat(peerToken, chatID string) {
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = r.client.ChatCancel(cancelCtx, protocol.ChatCancelRequest{
+		PeerToken: peerToken, ChatID: chatID, Reason: "user_interrupt",
+	})
 }
 
 func jitteredBackoff(base time.Duration) time.Duration {
@@ -332,7 +430,12 @@ func isAuthenticationError(err error) bool {
 	return strings.Contains(message, "http 401") || strings.Contains(message, "http 403")
 }
 
-func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, event protocol.ChatEvent) error {
+func (r *Runner) handleChatEvent(
+	ctx context.Context,
+	peerToken, chatID string,
+	event protocol.ChatEvent,
+	interrupts <-chan os.Signal,
+) error {
 	switch event.Type {
 	case "chat_start":
 		return nil
@@ -341,7 +444,7 @@ func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, 
 	case "tool_call_stream":
 		r.renderToolStream(event.Payload)
 	case "interaction_request":
-		return r.handleInteractionRequest(ctx, peerToken, chatID, event.Payload)
+		return r.handleInteractionRequest(ctx, peerToken, chatID, event.Payload, interrupts)
 	case "interaction_resolved":
 		return nil
 	case "chat_end":
@@ -358,7 +461,12 @@ func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, 
 	return nil
 }
 
-func (r *Runner) handleInteractionRequest(ctx context.Context, peerToken, chatID string, payload map[string]any) error {
+func (r *Runner) handleInteractionRequest(
+	ctx context.Context,
+	peerToken, chatID string,
+	payload map[string]any,
+	interrupts <-chan os.Signal,
+) error {
 	if frame, _ := payload["rendered_frame"].(string); frame != "" {
 		fmt.Print(frame)
 	}
@@ -370,15 +478,21 @@ func (r *Runner) handleInteractionRequest(ctx context.Context, peerToken, chatID
 	fmt.Print("Respond? [y/N]: ")
 	value := false
 	cancelled := false
-	if r.scanner.Scan() {
-		answer := strings.ToLower(strings.TrimSpace(r.scanner.Text()))
+	select {
+	case <-ctx.Done():
+		cancelled = true
+	case <-interrupts:
+		r.cancelRemoteChat(peerToken, chatID)
+		return errChatCancelled
+	case line, ok := <-r.lines:
+		if !ok {
+			cancelled = true
+			break
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer == "y" || answer == "yes" || answer == "a" || answer == "allow" {
 			value = true
 		}
-	} else if err := r.scanner.Err(); err != nil {
-		return err
-	} else {
-		cancelled = true
 	}
 
 	replyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

@@ -20,6 +20,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     ApprovalReplyRequest,
     ApprovalReplyResponse,
     ChatRequest,
+    ChatCancelRequest,
+    ChatCancelResponse,
     ChatResponse,
     ChatStartRequest,
     ChatStartResponse,
@@ -51,6 +53,8 @@ class _RemoteChatSession:
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cond: threading.Condition = field(default_factory=threading.Condition)
+    cancel_callback: Callable[[], None] | None = None
+    cancel_requested: bool = False
 
     def append_event(
         self, event_type: str, payload: dict[str, Any] | None = None
@@ -169,6 +173,24 @@ class _RemoteChatSession:
                 waiter["cancelled"] = True
                 waiter["reason"] = reason
             self.cond.notify_all()
+
+    def request_cancel(self, reason: str) -> bool:
+        with self.cond:
+            if self.done:
+                return False
+            self.cancel_requested = True
+            callback = self.cancel_callback
+            for waiter in self.interaction_waiters.values():
+                if waiter.get("done"):
+                    continue
+                waiter["done"] = True
+                waiter["value"] = None
+                waiter["cancelled"] = True
+                waiter["reason"] = reason
+            self.cond.notify_all()
+        if callback is not None:
+            callback()
+        return True
 
 
 class RemoteRelayHTTPService:
@@ -351,6 +373,9 @@ class RemoteRelayHTTPService:
                     return
                 if parsed.path == "/remote/chat/stream":
                     self._handle_chat_stream()
+                    return
+                if parsed.path == "/remote/chat/cancel":
+                    self._handle_chat_cancel()
                     return
                 if parsed.path == "/remote/approval/reply":
                     self._handle_approval_reply()
@@ -678,6 +703,41 @@ class RemoteRelayHTTPService:
                     HTTPStatus.OK,
                     ChatStreamResponse(
                         events=events, done=done, next_cursor=next_cursor
+                    ).to_dict(),
+                )
+
+            def _handle_chat_cancel(self) -> None:
+                payload = self._read_json()
+                try:
+                    req = ChatCancelRequest.from_dict(payload)
+                except Exception:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        ChatCancelResponse(ok=False, error="invalid_request").to_dict(),
+                    )
+                    return
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    req.peer_token
+                )
+                if peer_id is None:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
+                    return
+                session = service._get_chat_session(req.chat_id)
+                if session is None or session.peer_id != peer_id:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        ChatCancelResponse(ok=False, error="chat_not_found").to_dict(),
+                    )
+                    return
+                already_done = session.done
+                accepted = session.request_cancel(req.reason)
+                self._send_json(
+                    HTTPStatus.OK,
+                    ChatCancelResponse(
+                        ok=accepted or already_done,
+                        already_done=already_done,
                     ).to_dict(),
                 )
 

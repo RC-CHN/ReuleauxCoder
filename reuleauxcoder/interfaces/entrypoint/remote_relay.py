@@ -26,6 +26,7 @@ from reuleauxcoder.domain.approval import (
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse
+from reuleauxcoder.extensions.remote_exec.protocol import TerminalCapabilities
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.backend import ExecutionContext
@@ -36,6 +37,35 @@ from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+
+
+def create_remote_console(terminal: TerminalCapabilities) -> Console:
+    """Create the Host renderer sink from negotiated peer terminal facts."""
+    color_system = {
+        "none": None,
+        "standard": "standard",
+        "256": "256",
+        "truecolor": "truecolor",
+    }[terminal.color_level]
+    return Console(
+        file=io.StringIO(),
+        record=True,
+        width=terminal.width,
+        # This is a record-only Host sink, never the Host's real terminal.
+        # ANSI is added explicitly by export_remote_console when supported.
+        force_terminal=False,
+        force_jupyter=False,
+        color_system=color_system,
+        emoji=terminal.unicode,
+    )
+
+
+def export_remote_console(console: Console, *, clear: bool = True) -> str:
+    """Export ANSI only when the peer declared color support."""
+    return console.export_text(
+        clear=clear,
+        styles=console.color_system is not None,
+    )
 
 
 def init_remote_relay(runner, config: Config, ui_bus: UIEventBus) -> None:
@@ -114,6 +144,15 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     peer_connection_markers: dict[str, str] = {}
     peer_presenters: dict[str, tuple[Console, CLIRenderer]] = {}
 
+    def _console_for_peer(peer_id: str) -> Console:
+        peer = relay_server.registry.get(peer_id)
+        terminal = TerminalCapabilities.from_dict(
+            peer.meta.get("terminal")
+            if peer is not None and isinstance(peer.meta, dict)
+            else None
+        )
+        return create_remote_console(terminal)
+
     def _connection_marker(peer_id: str) -> str:
         peer = relay_server.registry.get(peer_id)
         return (
@@ -163,12 +202,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         if config is None:
             peer_agents[peer_id] = agent
             peer_connection_markers[peer_id] = marker
-            console = Console(
-                file=io.StringIO(),
-                record=True,
-                force_terminal=True,
-                color_system="truecolor",
-            )
+            console = _console_for_peer(peer_id)
             peer_presenters[peer_id] = (
                 console,
                 CLIRenderer(console_override=console),
@@ -208,12 +242,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         def _cache_created_agent(reason: str) -> Agent:
             peer_agents[peer_id] = peer_agent
             peer_connection_markers[peer_id] = marker
-            console = Console(
-                file=io.StringIO(),
-                record=True,
-                force_terminal=True,
-                color_system="truecolor",
-            )
+            console = _console_for_peer(peer_id)
             peer_presenters[peer_id] = (
                 console,
                 CLIRenderer(console_override=console),
@@ -272,6 +301,8 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
 
     def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
         peer_agent = _create_peer_agent(peer_id)
+        peer_agent.clear_stop_request()
+        remote_session.cancel_callback = peer_agent.request_stop
         ansi_console, renderer = peer_presenters[peer_id]
 
         if prompt.strip().startswith("/") and config is not None:
@@ -291,7 +322,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             if command_result["action"] != "chat":
                 peer_agent.current_session_id = command_result["session_id"]
 
-                rendered = ansi_console.export_text(clear=True, styles=True)
+                rendered = export_remote_console(ansi_console)
                 if rendered:
                     remote_session.append_event(
                         "output", {"format": "terminal", "content": rendered}
@@ -310,7 +341,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 return
 
         def _flush_output() -> None:
-            rendered = ansi_console.export_text(clear=True, styles=True)
+            rendered = export_remote_console(ansi_console)
             if rendered:
                 remote_session.append_event(
                     "output", {"format": "terminal", "content": rendered}
@@ -336,16 +367,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                     ]
                     if part
                 )
-                approval_console = Console(
-                    file=io.StringIO(),
-                    record=True,
-                    force_terminal=True,
-                    color_system="truecolor",
-                )
+                approval_console = _console_for_peer(peer_id)
                 approval_console.print(Markdown(approval_markdown))
-                rendered_approval = approval_console.export_text(
-                    clear=True, styles=True
-                )
+                rendered_approval = export_remote_console(approval_console)
                 payload = {
                     "request_id": request_id,
                     "kind": "review",

@@ -432,6 +432,7 @@ class RelayServer:
             "capabilities": req.capabilities,
             "host_info_min": req.host_info_min,
             "protocol_version": req.protocol_version,
+            "terminal": req.terminal.to_dict(),
         }
         peer_id = self._registry.register(meta=meta)
         peer_token = self._token_manager.issue_peer_token(

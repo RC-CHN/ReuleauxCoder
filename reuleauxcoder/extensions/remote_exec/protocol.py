@@ -41,6 +41,36 @@ class RelayEnvelope:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalCapabilities:
+    width: int = 80
+    color_level: str = "none"
+    unicode: bool = True
+    interactive: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "width": self.width,
+            "color_level": self.color_level,
+            "unicode": self.unicode,
+            "interactive": self.interactive,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "TerminalCapabilities":
+        values = data or {}
+        width = int(values.get("width", 80) or 80)
+        color_level = str(values.get("color_level", "none"))
+        if color_level not in {"none", "standard", "256", "truecolor"}:
+            color_level = "none"
+        return cls(
+            width=max(20, min(width, 500)),
+            color_level=color_level,
+            unicode=bool(values.get("unicode", True)),
+            interactive=bool(values.get("interactive", False)),
+        )
+
+
 @dataclass
 class RegisterRequest:
     bootstrap_token: str
@@ -49,6 +79,7 @@ class RegisterRequest:
     workspace_root: str | None = None
     capabilities: list[str] = field(default_factory=list)
     protocol_version: int = REMOTE_PROTOCOL_MIN_VERSION
+    terminal: TerminalCapabilities = field(default_factory=TerminalCapabilities)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +89,7 @@ class RegisterRequest:
             "workspace_root": self.workspace_root,
             "capabilities": self.capabilities,
             "protocol_version": self.protocol_version,
+            "terminal": self.terminal.to_dict(),
         }
 
     @classmethod
@@ -71,6 +103,7 @@ class RegisterRequest:
             protocol_version=int(
                 d.get("protocol_version", REMOTE_PROTOCOL_MIN_VERSION)
             ),
+            terminal=TerminalCapabilities.from_dict(d.get("terminal")),
         )
 
 
@@ -244,6 +277,50 @@ class ChatStreamResponse:
             done=bool(d.get("done", False)),
             next_cursor=int(d.get("next_cursor", 0)),
             error=d.get("error"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCancelRequest:
+    peer_token: str
+    chat_id: str
+    reason: str = "user_interrupt"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "peer_token": self.peer_token,
+            "chat_id": self.chat_id,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatCancelRequest":
+        return cls(
+            peer_token=str(data["peer_token"]),
+            chat_id=str(data["chat_id"]),
+            reason=str(data.get("reason", "user_interrupt")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCancelResponse:
+    ok: bool
+    already_done: bool = False
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "already_done": self.already_done,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatCancelResponse":
+        return cls(
+            ok=bool(data.get("ok")),
+            already_done=bool(data.get("already_done")),
+            error=data.get("error"),
         )
 
 

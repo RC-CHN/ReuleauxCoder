@@ -79,6 +79,14 @@ func (c *HTTPClient) ChatStream(ctx context.Context, req protocol.ChatStreamRequ
 	return resp, nil
 }
 
+func (c *HTTPClient) ChatCancel(ctx context.Context, req protocol.ChatCancelRequest) (protocol.ChatCancelResponse, error) {
+	var resp protocol.ChatCancelResponse
+	if err := c.postJSON(ctx, "/remote/chat/cancel", req, &resp); err != nil {
+		return protocol.ChatCancelResponse{}, err
+	}
+	return resp, nil
+}
+
 func (c *HTTPClient) ApprovalReply(ctx context.Context, req protocol.ApprovalReplyRequest) (protocol.ApprovalReplyResponse, error) {
 	var resp protocol.ApprovalReplyResponse
 	if err := c.postJSON(ctx, "/remote/approval/reply", req, &resp); err != nil {
