@@ -221,13 +221,31 @@ class ConfigLoader:
         if explicit_data:
             config_data = self._merge_dicts(config_data, explicit_data)
 
-        migrated_data, _ = migrate_legacy_config(config_data)
+        migrated_data, migration_diagnostics = self._migrate_config(config_data)
         migrated_data, _ = migrate_bash_to_shell(migrated_data)
         self._bootstrap_workspace_snapshot(migrated_data, workspace_data)
 
         config = self._parse_config(migrated_data)
+        config.diagnostics[:0] = migration_diagnostics
         self._backfill_workspace_modes(config)
         return config
+
+    def _migrate_config(self, data: dict) -> tuple[dict, list[ConfigDiagnostic]]:
+        models = data.get("models") if isinstance(data.get("models"), dict) else {}
+        uses_legacy_active = "active" in models and "active_main" not in models
+        migrated, _ = migrate_legacy_config(data)
+        diagnostics = []
+        if uses_legacy_active:
+            diagnostics.append(
+                ConfigDiagnostic(
+                    code="legacy_config_alias",
+                    path="models.active",
+                    message="models.active was migrated to models.active_main.",
+                    severity="info",
+                    source=self._effective_sources.get("models.active"),
+                )
+            )
+        return migrated, diagnostics
 
     def _parse_config(self, data: dict) -> Config:
         """Parse YAML data into Config model."""
@@ -278,18 +296,6 @@ class ConfigLoader:
                             "using a compatible fallback."
                         ),
                         source=self._effective_sources.get("models.active_main"),
-                    )
-                )
-            legacy_active = models_config.get("active")
-            active_main_model_profile = legacy_active
-            if requested_main is None and legacy_active is not None:
-                diagnostics.append(
-                    ConfigDiagnostic(
-                        code="legacy_config_alias",
-                        path="models.active",
-                        message="models.active is legacy; migrate to models.active_main.",
-                        severity="info",
-                        source=self._effective_sources.get("models.active"),
                     )
                 )
         if (

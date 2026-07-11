@@ -1,4 +1,42 @@
-from reuleauxcoder.compat.config_migration import migrate_bash_to_shell
+from reuleauxcoder.compat.config_migration import (
+    migrate_bash_to_shell,
+    migrate_legacy_config,
+)
+
+
+def test_models_active_is_consumed_only_by_migration_boundary() -> None:
+    source = {
+        "models": {
+            "active": "main",
+            "profiles": {"main": {"model": "demo"}},
+        }
+    }
+
+    migrated, changed = migrate_legacy_config(source)
+
+    assert changed is True
+    assert migrated["models"]["active_main"] == "main"
+    assert "active" not in migrated["models"]
+    assert source["models"]["active"] == "main"
+
+
+def test_explicit_active_main_wins_while_legacy_alias_is_removed() -> None:
+    migrated, changed = migrate_legacy_config(
+        {
+            "models": {
+                "active": "old",
+                "active_main": "main",
+                "profiles": {
+                    "old": {"model": "old"},
+                    "main": {"model": "main"},
+                },
+            }
+        }
+    )
+
+    assert changed is True
+    assert migrated["models"]["active_main"] == "main"
+    assert "active" not in migrated["models"]
 
 
 def test_migrate_bash_to_shell_replaces_mode_tools() -> None:

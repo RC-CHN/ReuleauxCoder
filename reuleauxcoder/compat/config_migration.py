@@ -23,7 +23,7 @@ def migrate_legacy_config(data: dict) -> tuple[dict, bool]:
 
     if not has_profiles:
         migrated["models"] = {
-            "active": "default",
+            "active_main": "default",
             "profiles": {
                 "default": {
                     "model": app.get("model", "gpt-4o"),
@@ -37,13 +37,23 @@ def migrate_legacy_config(data: dict) -> tuple[dict, bool]:
         }
         changed = True
 
+    # Migrate the legacy alias at this boundary; core config parsing never
+    # consumes ``models.active`` directly.
+    if isinstance(migrated.get("models"), dict):
+        had_legacy_active = "active" in migrated["models"]
+        legacy_active = migrated["models"].pop("active", None)
+        if had_legacy_active:
+            changed = True
+        if "active_main" not in migrated["models"] and legacy_active is not None:
+            migrated["models"]["active_main"] = legacy_active
+
     # Normalize active profile: if missing/invalid, pick first profile key.
     if isinstance(migrated.get("models"), dict):
         profiles = migrated["models"].get("profiles", {})
-        active = migrated["models"].get("active")
+        active = migrated["models"].get("active_main")
         if isinstance(profiles, dict) and profiles:
             if not isinstance(active, str) or active not in profiles:
-                migrated["models"]["active"] = next(iter(profiles.keys()))
+                migrated["models"]["active_main"] = next(iter(profiles.keys()))
                 changed = True
 
     # Cleanup legacy fields in app section after migration.

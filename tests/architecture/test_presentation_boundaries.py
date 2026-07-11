@@ -89,6 +89,15 @@ def test_remote_commands_reuse_the_peer_presentation_bus() -> None:
     assert "presentation.ui_bus" in source
 
 
+def test_core_config_parser_does_not_consume_legacy_model_alias() -> None:
+    source = (
+        ROOT / "reuleauxcoder" / "services" / "config" / "loader.py"
+    ).read_text(encoding="utf-8")
+    parser_source = source.split("def _parse_config", 1)[1]
+
+    assert 'models_config.get("active")' not in parser_source
+
+
 def test_runtime_does_not_dynamically_inject_agent_dependencies() -> None:
     violations = []
     root = ROOT / "reuleauxcoder"

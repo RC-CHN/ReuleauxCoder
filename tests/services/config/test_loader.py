@@ -193,7 +193,7 @@ def test_parse_config_reports_legacy_active_alias() -> None:
     loader = ConfigLoader()
     loader._effective_sources["models.active"] = "workspace"
 
-    config = loader._parse_config(
+    migrated, diagnostics = loader._migrate_config(
         {
             "models": {
                 "active": "first",
@@ -204,11 +204,15 @@ def test_parse_config_reports_legacy_active_alias() -> None:
             "modes": {"profiles": {"coder": {}}},
         }
     )
+    config = loader._parse_config(migrated)
 
-    diagnostic = next(
-        item for item in config.diagnostics if item.code == "legacy_config_alias"
-    )
+    diagnostic = diagnostics[0]
     assert diagnostic.source == "workspace"
+    assert "active" not in migrated["models"]
+    assert migrated["models"]["active_main"] == "first"
+    assert not any(
+        item.code == "legacy_config_alias" for item in config.diagnostics
+    )
     assert config.active_main_model_profile == "first"
 
 
