@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import difflib
 from reuleauxcoder.domain.agent.tool_outcome import (
-    ToolDiff,
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
 )
+from reuleauxcoder.extensions.tools.builtin._diff import build_tool_diff
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -86,12 +85,12 @@ class EditFileTool(Tool):
                 file_path, old_string, new_string
             )
             resolved = self.backend.workspace.resolve(file_path)
-            diff = _unified_diff(content, new_content, str(resolved))
+            diff = build_tool_diff(content, new_content, str(resolved))
             summary = f"Edited {file_path}"
             return ToolOutcome(
                 summary=summary,
                 content=summary,
-                diff=ToolDiff(path=str(resolved), unified=diff),
+                diff=diff,
                 metadata={"file_path": file_path, "resolved_path": str(resolved)},
             )
         except WorkspaceError as e:
@@ -132,19 +131,6 @@ def _validate_edit_request(
             "Include more surrounding lines to make it unique."
         )
     return None
-
-
-def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
-    old_lines = old.splitlines(keepends=True)
-    new_lines = new.splitlines(keepends=True)
-    diff = difflib.unified_diff(
-        old_lines,
-        new_lines,
-        fromfile=f"a/{filename}",
-        tofile=f"b/{filename}",
-        n=context,
-    )
-    return "".join(diff)
 
 
 def _workspace_failure(error: WorkspaceError) -> ToolOutcome:

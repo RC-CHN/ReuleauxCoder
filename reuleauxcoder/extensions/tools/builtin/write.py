@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import difflib
 from reuleauxcoder.domain.agent.tool_outcome import (
-    ToolDiff,
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
 )
+from reuleauxcoder.extensions.tools.builtin._diff import build_tool_diff
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -59,12 +58,12 @@ class WriteFileTool(Tool):
                 1 if content and not content.endswith("\n") else 0
             )
             resolved = self.backend.workspace.resolve(file_path)
-            diff = _unified_diff(old_content, content, str(resolved))
+            diff = build_tool_diff(old_content, content, str(resolved))
             summary = f"Wrote {n_lines} lines to {file_path}"
             return ToolOutcome(
                 summary=summary,
                 content=summary,
-                diff=ToolDiff(path=str(resolved), unified=diff),
+                diff=diff,
                 metadata={
                     "file_path": file_path,
                     "resolved_path": str(resolved),
@@ -89,19 +88,6 @@ class WriteFileTool(Tool):
                 content=f"Error: {e}",
                 error_kind=ToolErrorKind.EXECUTION,
             )
-
-
-def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str:
-    old_lines = old.splitlines(keepends=True)
-    new_lines = new.splitlines(keepends=True)
-    diff = difflib.unified_diff(
-        old_lines,
-        new_lines,
-        fromfile=f"a/{filename}",
-        tofile=f"b/{filename}",
-        n=context,
-    )
-    return "".join(diff)
 
 
 def _invalid(message: str) -> ToolOutcome:

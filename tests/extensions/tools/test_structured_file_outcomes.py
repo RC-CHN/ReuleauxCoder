@@ -21,6 +21,9 @@ def test_write_and_edit_return_structured_unbounded_diffs(tmp_path: Path) -> Non
     assert write.diff is not None
     assert write.diff.path == str(tmp_path / "demo.txt")
     assert "+alpha" in write.diff.unified
+    assert write.diff.additions == 2
+    assert write.diff.deletions == 0
+    assert write.diff.original_chars == 0
 
     edit = EditFileTool(backend).execute("demo.txt", "beta", "gamma")
 
@@ -28,6 +31,9 @@ def test_write_and_edit_return_structured_unbounded_diffs(tmp_path: Path) -> Non
     assert edit.diff is not None
     assert "-beta" in edit.diff.unified
     assert "+gamma" in edit.diff.unified
+    assert edit.diff.additions == 1
+    assert edit.diff.deletions == 1
+    assert edit.diff.original_chars == len("alpha\nbeta\n")
     assert edit.model_text.startswith("Edited demo.txt\n--- a/")
 
 

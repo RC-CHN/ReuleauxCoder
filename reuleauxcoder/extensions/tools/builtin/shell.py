@@ -202,12 +202,13 @@ class ShellTool(Tool):
         )
         if len(first_line) > 120:
             first_line = first_line[:117] + "..."
+        elapsed = _format_duration(duration)
         return ToolOutcome(
             status=(ToolOutcomeStatus.FAILED if failed else ToolOutcomeStatus.SUCCEEDED),
             summary=(
-                f"Command failed (exit {result.exit_code}) · {first_line}"
+                f"Command failed (exit {result.exit_code}) · {elapsed} · {first_line}"
                 if failed
-                else f"Command completed · {first_line}"
+                else f"Command completed · {elapsed} · {first_line}"
             ),
             content=(
                 "(no output)" if not result.stdout and not result.stderr else None
@@ -244,3 +245,11 @@ def _invalid(message: str) -> ToolOutcome:
         content=message,
         error_kind=ToolErrorKind.INVALID_ARGUMENTS,
     )
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds < 0.01:
+        return "<0.01s"
+    if seconds < 10:
+        return f"{seconds:.2f}s"
+    return f"{seconds:.1f}s"
