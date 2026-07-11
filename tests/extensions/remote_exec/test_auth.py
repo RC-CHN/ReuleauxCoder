@@ -108,3 +108,16 @@ class TestPruneExpired:
         assert removed == 0
         assert tm.consume_bootstrap_token(bt) is True
         assert tm.verify_peer_token(pt) == "p1"
+
+    def test_peer_token_is_retained_for_refresh_grace(self, monkeypatch) -> None:
+        now = [1000.0]
+        monkeypatch.setattr(
+            "reuleauxcoder.extensions.remote_exec.auth.time.time",
+            lambda: now[0],
+        )
+        tm = TokenManager()
+        token = tm.issue_peer_token("p1", ttl_sec=1)
+        now[0] = 1002.0
+
+        assert tm.prune_expired(peer_grace_sec=5) == 0
+        assert tm.refresh_peer_token(token, ttl_sec=10, grace_sec=5) == "p1"

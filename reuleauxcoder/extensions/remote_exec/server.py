@@ -490,7 +490,13 @@ class RelayServer:
             stale = self._registry.prune_stale()
             for pid in stale:
                 self._fail_pending_for_peer(pid)
-            self._token_manager.prune_expired()
+            self._token_manager.prune_expired(
+                peer_grace_sec=self._peer_token_refresh_grace_sec
+            )
+
+    @property
+    def peer_token_ttl_sec(self) -> int:
+        return self._peer_token_ttl_sec
 
     @property
     def registry(self) -> PeerRegistry:

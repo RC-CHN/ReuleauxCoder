@@ -39,6 +39,14 @@ func (c *HTTPClient) Heartbeat(ctx context.Context, req protocol.Heartbeat) erro
 	return c.postJSON(ctx, "/remote/heartbeat", req, nil)
 }
 
+func (c *HTTPClient) RefreshToken(ctx context.Context, req protocol.TokenRefreshRequest) (protocol.TokenRefreshResponse, error) {
+	var response protocol.TokenRefreshResponse
+	if err := c.postJSON(ctx, "/remote/token/refresh", req, &response); err != nil {
+		return protocol.TokenRefreshResponse{}, err
+	}
+	return response, nil
+}
+
 func (c *HTTPClient) Poll(ctx context.Context, req protocol.PollRequest) (protocol.RelayEnvelope, error) {
 	var env protocol.RelayEnvelope
 	if err := c.postJSON(ctx, "/remote/poll", req, &env); err != nil {

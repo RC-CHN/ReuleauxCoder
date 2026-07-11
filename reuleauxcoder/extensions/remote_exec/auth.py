@@ -99,12 +99,15 @@ class TokenManager:
             return "***"
         return token[:6] + "..." + token[-4:]
 
-    def prune_expired(self) -> int:
+    def prune_expired(self, *, peer_grace_sec: int = 0) -> int:
         """Remove expired tokens. Returns count of removed entries."""
         now = time.time()
         removed = 0
-        for store in (self._bootstrap, self._peers):
-            expired = [k for k, v in store.items() if now > v.expires_at]
+        for store, grace in (
+            (self._bootstrap, 0),
+            (self._peers, max(0, peer_grace_sec)),
+        ):
+            expired = [k for k, v in store.items() if now > v.expires_at + grace]
             for k in expired:
                 store.pop(k, None)
                 removed += 1

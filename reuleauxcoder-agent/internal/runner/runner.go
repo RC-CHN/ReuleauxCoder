@@ -199,7 +199,15 @@ func (r *Runner) runPollLoop(
 		cancelPoll()
 		if err != nil {
 			if isAuthenticationError(err) {
-				return fmt.Errorf("poll authentication failed: %w", err)
+				if refreshErr := r.refreshLease(ctx, peerToken); refreshErr == nil {
+					log.Print("peer lease refreshed after poll authentication failure")
+					continue
+				} else {
+					return fmt.Errorf(
+						"peer lease expired and refresh failed; obtain a new bootstrap token: %w",
+						refreshErr,
+					)
+				}
 			}
 			log.Printf("poll failed; reconnecting: %v", err)
 			if !waitForRetry(ctx, jitteredBackoff(retryDelay)) {
@@ -331,6 +339,20 @@ func (r *Runner) runRemoteChat(
 		Prompt:    prompt,
 	})
 	cancel()
+	if isAuthenticationError(err) {
+		if refreshErr := r.refreshLease(ctx, peerToken); refreshErr != nil {
+			return fmt.Errorf(
+				"chat lease expired and refresh failed; obtain a new bootstrap token: %w",
+				refreshErr,
+			)
+		}
+		chatCtx, cancel = context.WithTimeout(ctx, 10*time.Minute)
+		startResp, err = r.client.ChatStart(chatCtx, protocol.ChatStartRequest{
+			PeerToken: peerToken,
+			Prompt:    prompt,
+		})
+		cancel()
+	}
 	if err != nil {
 		return fmt.Errorf("chat start failed: %w", err)
 	}
@@ -372,7 +394,14 @@ func (r *Runner) runRemoteChat(
 		}
 		if err != nil {
 			if isAuthenticationError(err) {
-				return fmt.Errorf("chat stream authentication failed: %w", err)
+				if refreshErr := r.refreshLease(ctx, peerToken); refreshErr == nil {
+					continue
+				} else {
+					return fmt.Errorf(
+						"chat lease expired and refresh failed; obtain a new bootstrap token: %w",
+						refreshErr,
+					)
+				}
 			}
 			if !waitForRetry(ctx, jitteredBackoff(retryDelay)) {
 				return nil
@@ -428,6 +457,22 @@ func isAuthenticationError(err error) bool {
 	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "http 401") || strings.Contains(message, "http 403")
+}
+
+func (r *Runner) refreshLease(ctx context.Context, peerToken string) error {
+	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	response, err := r.client.RefreshToken(
+		refreshCtx,
+		protocol.TokenRefreshRequest{PeerToken: peerToken},
+	)
+	if err != nil {
+		return err
+	}
+	if !response.OK || response.PeerToken != peerToken {
+		return fmt.Errorf("lease refresh rejected: %s", response.Error)
+	}
+	return nil
 }
 
 func (r *Runner) handleChatEvent(
@@ -504,6 +549,14 @@ func (r *Runner) handleInteractionRequest(
 		Value:     value,
 		Cancelled: cancelled,
 	})
+	if isAuthenticationError(err) {
+		if refreshErr := r.refreshLease(ctx, peerToken); refreshErr == nil {
+			replyResp, err = r.client.InteractionReply(replyCtx, protocol.InteractionReplyRequest{
+				PeerToken: peerToken, ChatID: chatID, RequestID: requestID,
+				Value: value, Cancelled: cancelled,
+			})
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("interaction reply failed: %w", err)
 	}
@@ -554,16 +607,20 @@ func (r *Runner) heartbeatLoop(ctx context.Context, peerToken string, interval t
 			})
 			cancel()
 			if err != nil {
-				log.Printf("heartbeat failed: %v", err)
+				if isAuthenticationError(err) {
+					if refreshErr := r.refreshLease(ctx, peerToken); refreshErr != nil {
+						log.Printf("heartbeat lease refresh failed: %v", refreshErr)
+					}
+				} else {
+					log.Printf("heartbeat failed: %v", err)
+				}
 			}
 		}
 	}
 }
 
 func (r *Runner) sendToolResult(ctx context.Context, peerToken, requestID string, result protocol.ExecToolResult) error {
-	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return r.client.SendResult(sendCtx, protocol.ResultRequest{
+	return r.sendResultWithLeaseRefresh(ctx, peerToken, protocol.ResultRequest{
 		PeerToken: peerToken,
 		RequestID: requestID,
 		Type:      "tool_result",
@@ -572,9 +629,7 @@ func (r *Runner) sendToolResult(ctx context.Context, peerToken, requestID string
 }
 
 func (r *Runner) sendToolStream(ctx context.Context, peerToken, requestID string, chunk protocol.ToolStreamChunk) error {
-	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return r.client.SendResult(sendCtx, protocol.ResultRequest{
+	return r.sendResultWithLeaseRefresh(ctx, peerToken, protocol.ResultRequest{
 		PeerToken: peerToken,
 		RequestID: requestID,
 		Type:      "tool_stream",
@@ -583,9 +638,7 @@ func (r *Runner) sendToolStream(ctx context.Context, peerToken, requestID string
 }
 
 func (r *Runner) sendWorkspaceResult(ctx context.Context, peerToken, requestID string, result protocol.WorkspaceResult) error {
-	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return r.client.SendResult(sendCtx, protocol.ResultRequest{
+	return r.sendResultWithLeaseRefresh(ctx, peerToken, protocol.ResultRequest{
 		PeerToken: peerToken,
 		RequestID: requestID,
 		Type:      "workspace_result",
@@ -594,14 +647,32 @@ func (r *Runner) sendWorkspaceResult(ctx context.Context, peerToken, requestID s
 }
 
 func (r *Runner) sendCleanupResult(ctx context.Context, peerToken, requestID string, result protocol.CleanupResult) error {
-	sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	return r.client.SendResult(sendCtx, protocol.ResultRequest{
+	return r.sendResultWithLeaseRefresh(ctx, peerToken, protocol.ResultRequest{
 		PeerToken: peerToken,
 		RequestID: requestID,
 		Type:      "cleanup_result",
 		Payload:   mapFromStruct(result),
 	})
+}
+
+func (r *Runner) sendResultWithLeaseRefresh(
+	ctx context.Context,
+	peerToken string,
+	request protocol.ResultRequest,
+) error {
+	send := func() error {
+		sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		return r.client.SendResult(sendCtx, request)
+	}
+	err := send()
+	if !isAuthenticationError(err) {
+		return err
+	}
+	if refreshErr := r.refreshLease(ctx, peerToken); refreshErr != nil {
+		return fmt.Errorf("result lease refresh failed: %w", refreshErr)
+	}
+	return send()
 }
 
 // mapFromStruct converts a struct to map[string]any via JSON roundtrip.

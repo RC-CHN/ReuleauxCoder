@@ -45,6 +45,17 @@ type Heartbeat struct {
 	TS        float64 `json:"ts"`
 }
 
+type TokenRefreshRequest struct {
+	PeerToken string `json:"peer_token"`
+}
+
+type TokenRefreshResponse struct {
+	OK           bool   `json:"ok"`
+	PeerToken    string `json:"peer_token,omitempty"`
+	ExpiresInSec int    `json:"expires_in_sec,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
 type RelayEnvelope struct {
 	Type      string         `json:"type"`
 	RequestID string         `json:"request_id,omitempty"`

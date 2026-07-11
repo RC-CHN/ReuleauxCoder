@@ -164,6 +164,43 @@ class Heartbeat:
         return cls(peer_token=d["peer_token"], ts=d.get("ts", 0.0))
 
 
+@dataclass(frozen=True, slots=True)
+class TokenRefreshRequest:
+    peer_token: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"peer_token": self.peer_token}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TokenRefreshRequest":
+        return cls(peer_token=str(data["peer_token"]))
+
+
+@dataclass(frozen=True, slots=True)
+class TokenRefreshResponse:
+    ok: bool
+    peer_token: str | None = None
+    expires_in_sec: int = 0
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "peer_token": self.peer_token,
+            "expires_in_sec": self.expires_in_sec,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TokenRefreshResponse":
+        return cls(
+            ok=bool(data.get("ok")),
+            peer_token=data.get("peer_token"),
+            expires_in_sec=int(data.get("expires_in_sec", 0)),
+            error=data.get("error"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Chat proxy (interactive peer -> host agent)
 # ---------------------------------------------------------------------------

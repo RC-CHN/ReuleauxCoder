@@ -16,6 +16,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterRequest,
     RegisterResponse,
     TerminalCapabilities,
+    TokenRefreshRequest,
+    TokenRefreshResponse,
     RelayEnvelope,
     ToolStreamChunk,
     WorkspaceRequest,
@@ -104,6 +106,16 @@ class TestHeartbeat:
         restored = Heartbeat.from_dict(d)
         assert restored.peer_token == "pt_tok"
         assert restored.ts == 1234.5
+
+
+def test_token_refresh_models_roundtrip() -> None:
+    request = TokenRefreshRequest(peer_token="pt_demo")
+    response = TokenRefreshResponse(
+        ok=True, peer_token="pt_demo", expires_in_sec=60
+    )
+
+    assert TokenRefreshRequest.from_dict(request.to_dict()) == request
+    assert TokenRefreshResponse.from_dict(response.to_dict()) == response
 
 
 class TestExecToolRequest:

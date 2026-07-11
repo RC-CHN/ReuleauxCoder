@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from http import HTTPStatus
 import shutil
 import signal
 import socket
@@ -570,6 +571,75 @@ class TestRemoteRelayHTTPService:
 
             assert "p1" in results and "p2" in results
             assert elapsed < 0.55
+        finally:
+            service.stop()
+            relay.stop()
+
+    def test_expired_peer_lease_refreshes_within_bounded_grace(
+        self, monkeypatch
+    ) -> None:
+        now = [1000.0]
+        monkeypatch.setattr(
+            "reuleauxcoder.extensions.remote_exec.auth.time.time",
+            lambda: now[0],
+        )
+        relay = RelayServer(
+            peer_token_ttl_sec=1,
+            heartbeat_timeout_sec=5,
+        )
+        relay.start()
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{_free_port()}",
+        )
+        service.start()
+        try:
+            _, register_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/peer",
+                },
+            )
+            peer_token = register_body["payload"]["peer_token"]
+            now[0] = 1002.0
+
+            with pytest.raises(HTTPError) as expired:
+                _json_request(
+                    "POST",
+                    f"{service.base_url}/remote/poll",
+                    {"peer_token": peer_token},
+                )
+            assert expired.value.code == HTTPStatus.UNAUTHORIZED
+
+            status, refreshed = _json_request(
+                "POST",
+                f"{service.base_url}/remote/token/refresh",
+                {"peer_token": peer_token},
+            )
+            assert status == HTTPStatus.OK
+            assert refreshed == {
+                "ok": True,
+                "peer_token": peer_token,
+                "expires_in_sec": 1,
+                "error": None,
+            }
+
+            status, _ = _json_request(
+                "POST",
+                f"{service.base_url}/remote/poll",
+                {"peer_token": peer_token},
+            )
+            assert status == HTTPStatus.OK
+            now[0] = 1010.0
+            with pytest.raises(HTTPError) as rejected:
+                _json_request(
+                    "POST",
+                    f"{service.base_url}/remote/token/refresh",
+                    {"peer_token": peer_token},
+                )
+            assert rejected.value.code == HTTPStatus.UNAUTHORIZED
         finally:
             service.stop()
             relay.stop()
@@ -1178,6 +1248,73 @@ class TestRemoteRelayHTTPService:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+            service.stop()
+            relay.stop()
+
+    @pytest.mark.skipif(not _GO_AVAILABLE, reason="go toolchain is not installed")
+    def test_go_peer_refreshes_expired_lease_and_retries_result(
+        self, tmp_path: Path
+    ) -> None:
+        relay = RelayServer(
+            peer_token_ttl_sec=1,
+            heartbeat_interval_sec=30,
+            heartbeat_timeout_sec=5,
+        )
+        relay.start()
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{_free_port()}",
+        )
+        service.start()
+        binary = _build_go_agent_binary()
+        work_dir = tmp_path / "lease-peer"
+        work_dir.mkdir()
+        target = work_dir / "lease.txt"
+        target.write_text("lease survived\n")
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--host",
+                service.base_url,
+                "--bootstrap-token",
+                relay.issue_bootstrap_token(ttl_sec=60),
+                "--cwd",
+                str(work_dir),
+                "--workspace-root",
+                str(work_dir),
+                "--poll-interval",
+                "50ms",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.time() + 10
+            peer_id = None
+            while time.time() < deadline:
+                peers = relay.registry.list_online()
+                if peers:
+                    peer_id = peers[0].peer_id
+                    break
+                time.sleep(0.05)
+            assert peer_id is not None
+            time.sleep(2)
+
+            backend = RemoteRelayToolBackend(relay_server=relay)
+            backend.context.peer_id = peer_id
+            result = ReadFileTool(backend=backend).execute(file_path=str(target))
+
+            assert "lease survived" in result
+            assert proc.poll() is None
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
             service.stop()
             relay.stop()
 

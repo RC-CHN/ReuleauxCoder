@@ -35,6 +35,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     InteractionReplyResponse,
     RegisterRejected,
     RegisterRequest,
+    TokenRefreshRequest,
+    TokenRefreshResponse,
     RelayEnvelope,
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
@@ -356,6 +358,9 @@ class RemoteRelayHTTPService:
                 if parsed.path == "/remote/heartbeat":
                     self._handle_heartbeat()
                     return
+                if parsed.path == "/remote/token/refresh":
+                    self._handle_token_refresh()
+                    return
                 if parsed.path == "/remote/poll":
                     self._handle_poll()
                     return
@@ -515,6 +520,37 @@ class RemoteRelayHTTPService:
                     return
                 service.relay_server.registry.update_heartbeat(peer_id)
                 self._send_json(HTTPStatus.OK, {"ok": True, "peer_id": peer_id})
+
+            def _handle_token_refresh(self) -> None:
+                payload = self._read_json()
+                try:
+                    req = TokenRefreshRequest.from_dict(payload)
+                except Exception:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        TokenRefreshResponse(
+                            ok=False, error="peer_token_required"
+                        ).to_dict(),
+                    )
+                    return
+                peer_id = service.relay_server.refresh_peer_token(req.peer_token)
+                if peer_id is None:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED,
+                        TokenRefreshResponse(
+                            ok=False, error="lease_refresh_rejected"
+                        ).to_dict(),
+                    )
+                    return
+                service.relay_server.registry.update_heartbeat(peer_id)
+                self._send_json(
+                    HTTPStatus.OK,
+                    TokenRefreshResponse(
+                        ok=True,
+                        peer_token=req.peer_token,
+                        expires_in_sec=service.relay_server.peer_token_ttl_sec,
+                    ).to_dict(),
+                )
 
             def _handle_poll(self) -> None:
                 payload = self._read_json()
