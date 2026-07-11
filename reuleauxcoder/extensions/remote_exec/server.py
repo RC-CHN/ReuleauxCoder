@@ -11,6 +11,7 @@ from reuleauxcoder.extensions.remote_exec.auth import TokenManager
 from reuleauxcoder.extensions.remote_exec.errors import (
     PeerDisconnectedError,
     PeerNotFoundError,
+    RemoteExecError,
     RemoteTimeoutError,
     RegisterRejectedError,
 )
@@ -25,6 +26,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterRejected,
     RegisterRequest,
     RegisterResponse,
+    REMOTE_PROTOCOL_MIN_VERSION,
+    REMOTE_PROTOCOL_VERSION,
     RelayEnvelope,
     ToolStreamChunk,
     WorkspaceRequest,
@@ -259,6 +262,7 @@ class RelayServer:
         peer = self._registry.get(peer_id)
         if peer is None:
             raise PeerNotFoundError(peer_id)
+        self._require_capability(peer, request.tool_name)
 
         req_id = str(uuid.uuid4())
         envelope = RelayEnvelope(
@@ -326,8 +330,10 @@ class RelayServer:
         """Send one generic workspace primitive request."""
         if self._loop is None:
             raise RuntimeError("RelayServer not started")
-        if self._registry.get(peer_id) is None:
+        peer = self._registry.get(peer_id)
+        if peer is None:
             raise PeerNotFoundError(peer_id)
+        self._require_capability(peer, f"workspace.{request.operation}")
         req_id = str(uuid.uuid4())
         envelope = RelayEnvelope(
             type="workspace_request",
@@ -403,6 +409,15 @@ class RelayServer:
     # ------------------------------------------------------------------
 
     def _on_register(self, req: RegisterRequest) -> RegisterResponse | RegisterRejected:
+        if not (
+            REMOTE_PROTOCOL_MIN_VERSION
+            <= req.protocol_version
+            <= REMOTE_PROTOCOL_VERSION
+        ):
+            raise RegisterRejectedError(
+                f"Unsupported protocol version {req.protocol_version}; "
+                f"host supports {REMOTE_PROTOCOL_MIN_VERSION}-{REMOTE_PROTOCOL_VERSION}"
+            )
         if not self._token_manager.consume_bootstrap_token(req.bootstrap_token):
             raise RegisterRejectedError("Invalid or expired bootstrap token")
 
@@ -411,6 +426,7 @@ class RelayServer:
             "workspace_root": req.workspace_root,
             "capabilities": req.capabilities,
             "host_info_min": req.host_info_min,
+            "protocol_version": req.protocol_version,
         }
         peer_id = self._registry.register(meta=meta)
         peer_token = self._token_manager.issue_peer_token(
@@ -420,7 +436,19 @@ class RelayServer:
             peer_id=peer_id,
             peer_token=peer_token,
             heartbeat_interval_sec=self._heartbeat_interval_sec,
+            protocol_version=min(req.protocol_version, REMOTE_PROTOCOL_VERSION),
         )
+
+    @staticmethod
+    def _require_capability(peer, capability: str) -> None:
+        protocol_version = int(peer.meta.get("protocol_version", 1))
+        if protocol_version <= 1 and not peer.capabilities:
+            return
+        if capability not in peer.capabilities:
+            raise RemoteExecError(
+                "REMOTE_CAPABILITY_UNAVAILABLE",
+                f"Peer '{peer.peer_id}' does not advertise '{capability}'",
+            )
 
     # ------------------------------------------------------------------
     # Token helpers

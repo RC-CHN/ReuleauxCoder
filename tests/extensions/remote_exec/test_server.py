@@ -10,6 +10,7 @@ from reuleauxcoder.extensions.remote_exec.errors import (
     PeerNotFoundError,
     RegisterRejectedError,
     RemoteTimeoutError,
+    RemoteExecError,
 )
 from reuleauxcoder.extensions.remote_exec.protocol import (
     ExecToolRequest,
@@ -18,6 +19,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterRequest,
     RegisterResponse,
     RelayEnvelope,
+    WorkspaceRequest,
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 
@@ -69,6 +71,54 @@ class TestRegistration:
             srv._on_register(req)
             with pytest.raises(RegisterRejectedError):
                 srv._on_register(req)
+        finally:
+            srv.stop()
+
+    def test_protocol_negotiation_rejects_unknown_version_without_using_token(
+        self,
+    ) -> None:
+        srv = RelayServer()
+        srv.start()
+        try:
+            token = srv.issue_bootstrap_token(ttl_sec=60)
+            with pytest.raises(RegisterRejectedError, match="Unsupported protocol"):
+                srv._on_register(
+                    RegisterRequest(
+                        bootstrap_token=token, cwd="/tmp", protocol_version=99
+                    )
+                )
+
+            response = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=token, cwd="/tmp", protocol_version=2
+                )
+            )
+            assert response.protocol_version == 2
+        finally:
+            srv.stop()
+
+    def test_v2_capabilities_gate_workspace_dispatch(self) -> None:
+        srv = RelayServer()
+        srv.start()
+        try:
+            response = srv._on_register(
+                RegisterRequest(
+                    bootstrap_token=srv.issue_bootstrap_token(ttl_sec=60),
+                    cwd="/tmp",
+                    protocol_version=2,
+                    capabilities=["shell"],
+                )
+            )
+
+            with pytest.raises(
+                RemoteExecError, match="REMOTE_CAPABILITY_UNAVAILABLE"
+            ):
+                srv.send_workspace_request(
+                    response.peer_id,
+                    WorkspaceRequest(
+                        operation="fs.read_text", args={"path": "README.md"}
+                    ),
+                )
         finally:
             srv.stop()
 

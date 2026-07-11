@@ -65,6 +65,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			"shell", "glob", "grep", "list_file",
 			"workspace.fs.read_text", "workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
 		},
+		ProtocolVersion: 2,
 		HostInfoMin: map[string]any{
 			"os":       runtimeOS(),
 			"arch":     runtimeArch(),
@@ -73,6 +74,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("register failed: %w", err)
+	}
+	if registerResp.ProtocolVersion == 0 {
+		registerResp.ProtocolVersion = 1
+	}
+	if registerResp.ProtocolVersion < 1 || registerResp.ProtocolVersion > 2 {
+		return fmt.Errorf(
+			"host negotiated unsupported protocol version %d",
+			registerResp.ProtocolVersion,
+		)
 	}
 	log.Printf("registered peer_id=%s", registerResp.PeerID)
 	fmt.Printf("\n=== REMOTE PEER CONNECTED ===\nPeer: %s\nWorkspace: %s\nHost: %s\n============================\n\n", registerResp.PeerID, workspaceRoot, r.cfg.Host)

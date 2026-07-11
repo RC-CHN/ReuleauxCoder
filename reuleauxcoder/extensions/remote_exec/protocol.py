@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+REMOTE_PROTOCOL_VERSION = 2
+REMOTE_PROTOCOL_MIN_VERSION = 1
+
 
 @dataclass
 class RelayEnvelope:
@@ -45,6 +48,7 @@ class RegisterRequest:
     cwd: str = "."
     workspace_root: str | None = None
     capabilities: list[str] = field(default_factory=list)
+    protocol_version: int = REMOTE_PROTOCOL_MIN_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +57,7 @@ class RegisterRequest:
             "cwd": self.cwd,
             "workspace_root": self.workspace_root,
             "capabilities": self.capabilities,
+            "protocol_version": self.protocol_version,
         }
 
     @classmethod
@@ -63,6 +68,9 @@ class RegisterRequest:
             cwd=d.get("cwd", "."),
             workspace_root=d.get("workspace_root"),
             capabilities=d.get("capabilities", []),
+            protocol_version=int(
+                d.get("protocol_version", REMOTE_PROTOCOL_MIN_VERSION)
+            ),
         )
 
 
@@ -71,12 +79,14 @@ class RegisterResponse:
     peer_id: str
     peer_token: str
     heartbeat_interval_sec: int = 10
+    protocol_version: int = REMOTE_PROTOCOL_MIN_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "peer_id": self.peer_id,
             "peer_token": self.peer_token,
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
+            "protocol_version": self.protocol_version,
         }
 
     @classmethod
@@ -85,6 +95,9 @@ class RegisterResponse:
             peer_id=d["peer_id"],
             peer_token=d["peer_token"],
             heartbeat_interval_sec=d.get("heartbeat_interval_sec", 10),
+            protocol_version=int(
+                d.get("protocol_version", REMOTE_PROTOCOL_MIN_VERSION)
+            ),
         )
 
 

@@ -19,6 +19,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     ToolStreamChunk,
     WorkspaceRequest,
     WorkspaceResult,
+    REMOTE_PROTOCOL_VERSION,
 )
 
 
@@ -45,6 +46,7 @@ class TestRegisterRequest:
             cwd="/tmp",
             workspace_root="/workspace",
             capabilities=["shell", "read_file"],
+            protocol_version=REMOTE_PROTOCOL_VERSION,
         )
         d = req.to_dict()
         restored = RegisterRequest.from_dict(d)
@@ -52,18 +54,23 @@ class TestRegisterRequest:
         assert restored.cwd == "/tmp"
         assert restored.workspace_root == "/workspace"
         assert restored.capabilities == ["shell", "read_file"]
+        assert restored.protocol_version == REMOTE_PROTOCOL_VERSION
 
 
 class TestRegisterResponse:
     def test_roundtrip(self) -> None:
         resp = RegisterResponse(
-            peer_id="p1", peer_token="pt_xyz", heartbeat_interval_sec=15
+            peer_id="p1",
+            peer_token="pt_xyz",
+            heartbeat_interval_sec=15,
+            protocol_version=REMOTE_PROTOCOL_VERSION,
         )
         d = resp.to_dict()
         restored = RegisterResponse.from_dict(d)
         assert restored.peer_id == "p1"
         assert restored.peer_token == "pt_xyz"
         assert restored.heartbeat_interval_sec == 15
+        assert restored.protocol_version == REMOTE_PROTOCOL_VERSION
 
 
 class TestRegisterRejected:

@@ -3,11 +3,12 @@ package protocol
 import "encoding/json"
 
 type RegisterRequest struct {
-	BootstrapToken string         `json:"bootstrap_token"`
-	HostInfoMin    map[string]any `json:"host_info_min,omitempty"`
-	CWD            string         `json:"cwd,omitempty"`
-	WorkspaceRoot  string         `json:"workspace_root,omitempty"`
-	Capabilities   []string       `json:"capabilities,omitempty"`
+	BootstrapToken  string         `json:"bootstrap_token"`
+	HostInfoMin     map[string]any `json:"host_info_min,omitempty"`
+	CWD             string         `json:"cwd,omitempty"`
+	WorkspaceRoot   string         `json:"workspace_root,omitempty"`
+	Capabilities    []string       `json:"capabilities,omitempty"`
+	ProtocolVersion int            `json:"protocol_version,omitempty"`
 }
 
 type RegisterResponseEnvelope struct {
@@ -24,6 +25,7 @@ type RegisterResponse struct {
 	PeerID               string `json:"peer_id"`
 	PeerToken            string `json:"peer_token"`
 	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
+	ProtocolVersion      int    `json:"protocol_version"`
 }
 
 type RegisterRejected struct {
