@@ -4,6 +4,7 @@ import pytest
 from rich.console import Console
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
@@ -18,6 +19,10 @@ from reuleauxcoder.presentation import (
     ToolOutputMode,
     Verbosity,
 )
+
+
+def render_agent_event(renderer: CLIRenderer, event: AgentEvent) -> None:
+    renderer.on_runtime_event(agent_event_to_runtime_event(event))
 
 
 @pytest.mark.parametrize(
@@ -36,9 +41,7 @@ from reuleauxcoder.presentation import (
     ],
 )
 def test_compact_tool_lifecycle_width_snapshot(width: int, expected: str) -> None:
-    console = Console(
-        record=True, width=width, color_system=None, force_terminal=False
-    )
+    console = Console(record=True, width=width, color_system=None, force_terminal=False)
     renderer = CLIRenderer(
         view_registry=ViewRendererRegistry([]), console_override=console
     )
@@ -48,22 +51,21 @@ def test_compact_tool_lifecycle_width_snapshot(width: int, expected: str) -> Non
         "description": "run focused regression tests",
     }
 
-    renderer.on_event(
-        AgentEvent.tool_call_start("shell", arguments, tool_call_id="call-1")
+    render_agent_event(
+        renderer, AgentEvent.tool_call_start("shell", arguments, tool_call_id="call-1")
     )
-    renderer.on_event(
+    render_agent_event(
+        renderer,
         AgentEvent.tool_call_end(
             "shell", "540 passed in 120.63s", tool_call_id="call-1"
-        )
+        ),
     )
 
     assert console.export_text() == expected
 
 
 def test_compact_notification_snapshot() -> None:
-    console = Console(
-        record=True, width=80, color_system=None, force_terminal=False
-    )
+    console = Console(record=True, width=80, color_system=None, force_terminal=False)
     renderer = CLIRenderer(
         view_registry=ViewRendererRegistry([]), console_override=console
     )
@@ -133,9 +135,7 @@ def test_verbosity_and_width_tool_snapshot(
     width: int,
     expected: str,
 ) -> None:
-    console = Console(
-        record=True, width=width, color_system=None, force_terminal=False
-    )
+    console = Console(record=True, width=width, color_system=None, force_terminal=False)
     renderer = CLIRenderer(
         view_registry=ViewRendererRegistry([]),
         console_override=console,
@@ -159,16 +159,18 @@ def test_verbosity_and_width_tool_snapshot(
         exit_code=0,
     )
 
-    renderer.on_event(
-        AgentEvent.tool_call_start("shell", arguments, tool_call_id="call-mode")
+    render_agent_event(
+        renderer,
+        AgentEvent.tool_call_start("shell", arguments, tool_call_id="call-mode"),
     )
-    renderer.on_event(
+    render_agent_event(
+        renderer,
         AgentEvent.tool_call_end(
             "shell",
             outcome.model_text,
             tool_call_id="call-mode",
             outcome=outcome,
-        )
+        ),
     )
 
     assert console.export_text() == expected
@@ -185,10 +187,11 @@ def test_compact_tool_error_is_a_single_line_snapshot() -> None:
         error_kind=ToolErrorKind.DENIED,
     )
 
-    renderer.on_event(
+    render_agent_event(
+        renderer,
         AgentEvent.tool_call_end(
             "shell", outcome.model_text, tool_call_id="failed", outcome=outcome
-        )
+        ),
     )
 
     assert console.export_text() == "  × shell: permission denied\n"

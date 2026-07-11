@@ -43,7 +43,7 @@ from reuleauxcoder.interfaces.interactions import (
     ReviewRequest,
     ReviewResponse,
 )
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.interfaces.events import AgentEventBridge, UIEventBus, UIEventKind
 from reuleauxcoder.presentation import PresentationPolicy
 
 
@@ -54,6 +54,7 @@ class PeerPresentation:
     console: Console
     renderer: CLIRenderer
     ui_bus: UIEventBus
+    agent_bridge: AgentEventBridge
 
 
 def create_remote_console(terminal: TerminalCapabilities) -> Console:
@@ -183,7 +184,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         renderer = _renderer_for(console)
         command_bus = UIEventBus()
         command_bus.subscribe(renderer.on_ui_event, replay_history=False)
-        return PeerPresentation(console, renderer, command_bus)
+        return PeerPresentation(
+            console, renderer, command_bus, AgentEventBridge(command_bus)
+        )
 
     def _connection_marker(peer_id: str) -> str:
         peer = relay_server.registry.get(peer_id)
@@ -458,7 +461,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 remote_session.append_event(
                     "error", {"message": event.error_message or "unknown error"}
                 )
-            renderer.on_event(event)
+            presentation.agent_bridge.on_agent_event(event)
             _flush_output()
 
         for tool in peer_agent.tools:

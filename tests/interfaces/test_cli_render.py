@@ -3,6 +3,7 @@ from unittest.mock import Mock
 from rich.markdown import Markdown
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEvent, UIEventKind
@@ -14,15 +15,23 @@ def _renderer() -> CLIRenderer:
     return CLIRenderer(view_registry=ViewRendererRegistry([]))
 
 
+def render_agent_event(renderer: CLIRenderer, event: AgentEvent) -> None:
+    renderer.on_runtime_event(agent_event_to_runtime_event(event))
+
+
 def test_cli_renderer_buffers_until_tool_output_then_flushes_plain_text() -> None:
     renderer = _renderer()
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
 
-    renderer.on_event(AgentEvent.stream_token("hello "))
-    renderer.on_event(AgentEvent.stream_token("world"))
-    renderer.on_event(AgentEvent.tool_call_start("shell", {"command": "pwd"}))
-    renderer.on_event(AgentEvent.chat_end("hello world", render_response=False))
+    render_agent_event(renderer, AgentEvent.stream_token("hello "))
+    render_agent_event(renderer, AgentEvent.stream_token("world"))
+    render_agent_event(
+        renderer, AgentEvent.tool_call_start("shell", {"command": "pwd"})
+    )
+    render_agent_event(
+        renderer, AgentEvent.chat_end("hello world", render_response=False)
+    )
 
     renderer.render_content_markdown.assert_called_once_with("hello world")
     renderer.render_plain_text.assert_called_once_with("\n")
@@ -32,7 +41,9 @@ def test_cli_renderer_renders_chat_end_when_requested() -> None:
     renderer = _renderer()
     renderer.render_content_markdown = Mock()
 
-    renderer.on_event(AgentEvent.chat_end("final answer", render_response=True))
+    render_agent_event(
+        renderer, AgentEvent.chat_end("final answer", render_response=True)
+    )
 
     renderer.render_content_markdown.assert_called_once_with("final answer")
 
@@ -44,8 +55,10 @@ def test_cli_renderer_finalizes_stream_without_rendering_duplicate_chat_end_resp
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
 
-    renderer.on_event(AgentEvent.stream_token("hello world"))
-    renderer.on_event(AgentEvent.chat_end("hello world", render_response=False))
+    render_agent_event(renderer, AgentEvent.stream_token("hello world"))
+    render_agent_event(
+        renderer, AgentEvent.chat_end("hello world", render_response=False)
+    )
 
     renderer.render_content_markdown.assert_called_once_with("hello world")
     renderer.render_plain_text.assert_called_once_with("\n")
@@ -56,8 +69,10 @@ def test_cli_renderer_finalizes_stream_without_tail_patch() -> None:
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
 
-    renderer.on_event(AgentEvent.stream_token("hello"))
-    renderer.on_event(AgentEvent.chat_end("hello world", render_response=False))
+    render_agent_event(renderer, AgentEvent.stream_token("hello"))
+    render_agent_event(
+        renderer, AgentEvent.chat_end("hello world", render_response=False)
+    )
 
     renderer.render_content_markdown.assert_called_once_with("hello")
     renderer.render_plain_text.assert_called_once_with("\n")
@@ -68,14 +83,14 @@ def test_cli_renderer_tracks_completed_content_and_tool_blocks() -> None:
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
 
-    renderer.on_event(AgentEvent.stream_token("hello"))
-    renderer.on_event(
-        AgentEvent.tool_call_start(
-            "shell", {"command": "pwd"}, tool_call_id="call-1"
-        )
+    render_agent_event(renderer, AgentEvent.stream_token("hello"))
+    render_agent_event(
+        renderer,
+        AgentEvent.tool_call_start("shell", {"command": "pwd"}, tool_call_id="call-1"),
     )
-    renderer.on_event(
-        AgentEvent.tool_call_end("shell", "ok", success=True, tool_call_id="call-1")
+    render_agent_event(
+        renderer,
+        AgentEvent.tool_call_end("shell", "ok", success=True, tool_call_id="call-1"),
     )
 
     assert renderer._active_content_block is None
@@ -92,7 +107,7 @@ def test_cli_renderer_tracks_notification_block_after_stream() -> None:
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
 
-    renderer.on_event(AgentEvent.stream_token("hello"))
+    render_agent_event(renderer, AgentEvent.stream_token("hello"))
     renderer.on_ui_event(UIEvent.info("debug note", kind=UIEventKind.SYSTEM))
 
     assert renderer._active_content_block is None
@@ -109,7 +124,7 @@ def test_render_markdown_panel_closes_active_stream_block() -> None:
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
 
-    renderer.on_event(AgentEvent.stream_token("hello"))
+    render_agent_event(renderer, AgentEvent.stream_token("hello"))
     rendered = render_markdown_panel(renderer, markdown_text="# Help", title="Help")
 
     assert rendered is True
@@ -124,7 +139,7 @@ def test_cli_renderer_flushes_completed_paragraph_as_markdown() -> None:
     renderer.render_content_markdown = Mock()
     renderer.render_plain_text = Mock()
 
-    renderer.on_event(AgentEvent.stream_token("# Title\nline 1\n\nrest"))
+    render_agent_event(renderer, AgentEvent.stream_token("# Title\nline 1\n\nrest"))
 
     # With markdown-it block commitment, "# Title" (heading) and "line 1"
     # (paragraph) are two complete blocks; only "rest" stays pending.

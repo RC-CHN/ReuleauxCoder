@@ -9,7 +9,6 @@ from rich.markdown import Markdown
 from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 
-from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
@@ -28,7 +27,6 @@ from reuleauxcoder.domain.runtime.events import (
     ToolCallStarted,
     ToolOutputDelta,
     TurnFinished,
-    agent_event_to_runtime_event,
 )
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
@@ -160,10 +158,6 @@ class CLIRenderer:
         self.reducer.state.seen_event_ids.clear()
         self.reducer.state.session_generations.clear()
         self.reducer.state.active_assistant_cells.clear()
-
-    def on_event(self, event: AgentEvent) -> None:
-        """Compatibility entry point for callers still emitting AgentEvent."""
-        self.on_runtime_event(agent_event_to_runtime_event(event))
 
     def on_runtime_event(self, event: RuntimeEvent) -> None:
         """Render one typed runtime event after reducing shared state."""

@@ -45,6 +45,7 @@ def test_cli_renderer_does_not_restore_legacy_string_protocols() -> None:
     assert "[truncated]" not in source
     assert 'name == "edit_file"' not in source
     assert "event.data" not in source
+    assert "AgentEvent" not in source
     assert "event.data" not in view_source
 
 
