@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from reuleauxcoder.app.commands.models import CommandEffect
 
 from reuleauxcoder.domain.config.models import ApprovalConfig, Config
 from reuleauxcoder.domain.hooks.registry import HookRegistry
@@ -14,7 +15,7 @@ from reuleauxcoder.extensions.command.builtin.sessions import (
     _handle_resume_session,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind, UIEventLevel
+from reuleauxcoder.interfaces.events import UIEventKind
 
 
 class FakeLLM:
@@ -66,9 +67,9 @@ def _build_ctx(tmp_path: Path, *, fingerprint: str = "local") -> SimpleNamespace
     config = Config(api_key="key", approval=ApprovalConfig(), session_dir=str(tmp_path))
     agent = FakeAgent()
     setattr(agent, "session_fingerprint", fingerprint)
-    ui_bus = UIEventBus()
+    effect = CommandEffect()
     return SimpleNamespace(
-        config=config, agent=agent, ui_bus=ui_bus, sessions_dir=tmp_path
+        config=config, agent=agent, effect=effect, sessions_dir=tmp_path
     )
 
 
@@ -88,9 +89,9 @@ def test_list_sessions_defaults_to_current_fingerprint(tmp_path: Path) -> None:
 
     result = _handle_list_sessions(ListSessionsCommand(), ctx)
 
-    assert [item["id"] for item in result.payload["sessions"]] == [local_id]
-    assert result.payload["show_all"] is False
-    assert result.payload["fingerprint"] == "local"
+    assert [item["id"] for item in result.state["sessions"]] == [local_id]
+    assert result.state["show_all"] is False
+    assert result.state["fingerprint"] == "local"
 
 
 def test_list_sessions_all_shows_all_fingerprints(tmp_path: Path) -> None:
@@ -109,9 +110,9 @@ def test_list_sessions_all_shows_all_fingerprints(tmp_path: Path) -> None:
 
     result = _handle_list_sessions(ListSessionsCommand(show_all=True), ctx)
 
-    assert {item["id"] for item in result.payload["sessions"]} == {local_id, remote_id}
-    assert result.payload["show_all"] is True
-    assert {item["fingerprint"] for item in result.payload["sessions"]} == {
+    assert {item["id"] for item in result.state["sessions"]} == {local_id, remote_id}
+    assert result.state["show_all"] is True
+    assert {item["fingerprint"] for item in result.state["sessions"]} == {
         "local",
         "remote:abc",
     }
@@ -138,10 +139,10 @@ def test_resume_latest_uses_current_fingerprint_only(tmp_path: Path) -> None:
     assert result.session_id == local_id
     assert ctx.agent.session_fingerprint == "local"
     assert any(
-        event.level == UIEventLevel.SUCCESS
-        and event.kind == UIEventKind.SESSION
+        event.level == "success"
+        and event.kind == UIEventKind.SESSION.value
         and local_id in event.message
-        for event in ctx.ui_bus._history
+        for event in ctx.effect.notifications
     )
 
 
@@ -160,10 +161,10 @@ def test_resume_cross_fingerprint_by_id_warns_but_allows(tmp_path: Path) -> None
     assert result.session_id == remote_id
     assert ctx.agent.session_fingerprint == "remote:abc"
     assert any(
-        event.level == UIEventLevel.WARNING
-        and event.kind == UIEventKind.SESSION
+        event.level == "warning"
+        and event.kind == UIEventKind.SESSION.value
         and "belongs to fingerprint 'remote:abc'" in event.message
-        for event in ctx.ui_bus._history
+        for event in ctx.effect.notifications
     )
 
 

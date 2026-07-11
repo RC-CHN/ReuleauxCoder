@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from reuleauxcoder.app.commands.dispatcher import dispatch_command
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.specs import ActionSpec, TriggerKind, TriggerSpec
 from reuleauxcoder.interfaces.ui_registry import UICapability, UIProfile
@@ -75,9 +75,11 @@ def test_action_registry_dispatch_returns_continue_when_handler_missing() -> Non
         action=_slash_action(handler=None), command={"x": 1}, registry=registry
     )
 
-    result = registry.dispatch(parsed, ctx=SimpleNamespace())
+    effect = CommandEffect()
+    result = registry.dispatch(parsed, ctx=SimpleNamespace(effect=effect))
 
-    assert result == CommandResult(action="continue")
+    assert result is effect
+    assert result.control == "continue"
 
 
 def test_dispatch_command_delegates_to_registry_dispatch() -> None:
@@ -85,15 +87,15 @@ def test_dispatch_command_delegates_to_registry_dispatch() -> None:
 
     def handler(command, ctx):
         called.append((command, ctx))
-        return CommandResult(action="exit")
+        return ctx.effect.finish(control="exit")
 
     registry = ActionRegistry([_slash_action(handler=handler)])
     parsed = SimpleNamespace(
         action=_slash_action(handler=handler), command={"ok": True}, registry=registry
     )
-    ctx = SimpleNamespace()
+    ctx = SimpleNamespace(effect=CommandEffect())
 
     result = dispatch_command(parsed, ctx)
 
-    assert result.action == "exit"
+    assert result.control == "exit"
     assert called == [({"ok": True}, ctx)]

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
-from reuleauxcoder.app.commands.models import CommandContext, CommandResult
+from reuleauxcoder.app.commands.models import CommandContext, CommandEffect
 from reuleauxcoder.interfaces.ui_registry import UICapability, UIProfile
 
 
@@ -51,7 +51,7 @@ class CommandParseContext:
 
 
 ActionParser = Callable[[str, CommandParseContext], object | None]
-ActionHandler = Callable[[object, CommandContext], CommandResult]
+ActionHandler = Callable[[object, CommandContext], CommandEffect]
 
 
 @dataclass(frozen=True, slots=True)

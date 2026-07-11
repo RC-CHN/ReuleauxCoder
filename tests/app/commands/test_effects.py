@@ -2,10 +2,8 @@ from types import SimpleNamespace
 
 from reuleauxcoder.app.commands.models import (
     CommandEffect,
-    CommandEffectBuilder,
-    OpenViewRequest,
 )
-from reuleauxcoder.app.commands.view_models import MarkdownViewModel
+from reuleauxcoder.app.commands.view_models import HelpViewModel
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.interfaces.cli.commands import _apply_command_effect
@@ -24,12 +22,12 @@ def _action(handler) -> ActionSpec:
 
 def test_dispatch_records_notifications_without_publishing() -> None:
     real_bus = UIEventBus()
-    builder = CommandEffectBuilder()
-    ctx = SimpleNamespace(ui_bus=builder)
+    effect = CommandEffect()
+    ctx = SimpleNamespace(effect=effect)
 
     def handler(command, command_ctx):
-        command_ctx.ui_bus.success("done")
-        return CommandEffect(action="continue")
+        command_ctx.effect.success("done")
+        return command_ctx.effect.finish(control="continue")
 
     action = _action(handler)
     parsed = SimpleNamespace(action=action, command=object())
@@ -39,41 +37,23 @@ def test_dispatch_records_notifications_without_publishing() -> None:
     assert [notice.message for notice in result.notifications] == ["done"]
 
 
-def test_builder_deduplicates_legacy_returned_view_request() -> None:
-    builder = CommandEffectBuilder()
-    builder.open_view("sessions", title="Sessions", reuse_key="sessions")
+def test_effect_requires_and_preserves_typed_view_model() -> None:
+    effect = CommandEffect()
+    model = HelpViewModel(sections=())
+    effect.open_view("help", title="Help", view_model=model)
 
-    result = builder.build(
-        CommandEffect(
-            view_requests=[
-                OpenViewRequest(
-                    view_type="sessions",
-                    title="Sessions",
-                    view_model=builder.view_requests[0].view_model,
-                    reuse_key="sessions",
-                )
-            ]
-        )
-    )
+    (view,) = effect.views
 
-    assert len(result.view_requests) == 1
-
-
-def test_builder_creates_typed_view_models() -> None:
-    builder = CommandEffectBuilder()
-    builder.open_view("help", title="Help", payload={"markdown": "# Help"})
-
-    (view,) = builder.view_requests
-
-    assert isinstance(view.view_model, MarkdownViewModel)
-    assert view.payload == {"markdown": "# Help"}
+    assert view.view_model is model
 
 
 def test_cli_applies_command_effect_once() -> None:
-    builder = CommandEffectBuilder()
-    builder.info("hello")
-    builder.open_view("help", title="Help", payload={"markdown": "# Help"})
-    result = builder.build(CommandEffect())
+    result = CommandEffect()
+    result.info("hello")
+    result.open_view(
+        "help", title="Help", view_model=HelpViewModel(sections=())
+    )
+    result.finish()
     bus = UIEventBus()
 
     _apply_command_effect(result, bus)

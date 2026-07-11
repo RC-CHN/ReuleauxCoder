@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Literal
 
 from reuleauxcoder.interfaces.interactions import UIInteractor
 from reuleauxcoder.interfaces.ui_registry import UIProfile
-from reuleauxcoder.app.commands.view_models import ViewModel, view_model_from_payload
+from reuleauxcoder.app.commands.view_models import ViewModel
 
 if TYPE_CHECKING:
     from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -28,12 +29,6 @@ class OpenViewRequest:
     reuse_key: str | None = None
     action: Literal["open", "refresh"] = "open"
 
-    @property
-    def payload(self) -> dict[str, Any]:
-        """Serializable compatibility view of the typed model."""
-        return self.view_model.to_payload()
-
-
 @dataclass(frozen=True, slots=True)
 class NotificationEffect:
     """Framework-neutral notification requested by a command."""
@@ -41,80 +36,81 @@ class NotificationEffect:
     message: str
     level: Literal["info", "success", "warning", "error", "debug"] = "info"
     kind: str = "command"
-    data: dict[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class StateChangeEffect:
+    """One typed key/value runtime state observation returned by a command."""
+
+    key: str
+    value: object
 
 
 @dataclass(slots=True)
 class CommandEffect:
     """The only externally visible result returned by a command use case."""
 
-    action: Literal["continue", "chat", "exit"] = "continue"
+    control: Literal["continue", "chat", "exit"] = "continue"
     session_id: str | None = None
     session_exit_time: str | None = None
     notifications: list[NotificationEffect] = field(default_factory=list)
-    view_requests: list[OpenViewRequest] = field(default_factory=list)
-    payload: dict[str, object] = field(default_factory=dict)
+    views: list[OpenViewRequest] = field(default_factory=list)
+    interactions: list[object] = field(default_factory=list)
+    state_changes: list[StateChangeEffect] = field(default_factory=list)
 
-
-# Compatibility name while command modules migrate their imports.
-CommandResult = CommandEffect
-
-
-class CommandEffectBuilder:
-    """Imperative compatibility builder used inside existing command handlers.
-
-    It deliberately has the small surface of ``UIEventBus`` that handlers used,
-    but records typed effects and never publishes to a UI.
-    """
-
-    def __init__(self) -> None:
-        self.notifications: list[NotificationEffect] = []
-        self.view_requests: list[OpenViewRequest] = []
+    @property
+    def state(self) -> dict[str, object]:
+        """Convenient read-only-by-convention projection of typed state changes."""
+        return {change.key: change.value for change in self.state_changes}
 
     @staticmethod
     def _kind_value(kind: object) -> str:
         return str(getattr(kind, "value", kind or "command"))
 
-    def _notify(self, level: str, message: str, *, kind=None, **data: Any) -> None:
+    def _notify(
+        self, level: str, message: str, *, kind=None, **metadata: object
+    ) -> None:
         self.notifications.append(
             NotificationEffect(
                 message=message,
                 level=level,  # type: ignore[arg-type]
                 kind=self._kind_value(kind),
-                data=dict(data),
+                metadata=dict(metadata),
             )
         )
 
-    def info(self, message: str, *, kind=None, **data: Any) -> None:
-        self._notify("info", message, kind=kind, **data)
+    def info(self, message: str, *, kind=None, **metadata: object) -> None:
+        self._notify("info", message, kind=kind, **metadata)
 
-    def success(self, message: str, *, kind=None, **data: Any) -> None:
-        self._notify("success", message, kind=kind, **data)
+    def success(self, message: str, *, kind=None, **metadata: object) -> None:
+        self._notify("success", message, kind=kind, **metadata)
 
-    def warning(self, message: str, *, kind=None, **data: Any) -> None:
-        self._notify("warning", message, kind=kind, **data)
+    def warning(self, message: str, *, kind=None, **metadata: object) -> None:
+        self._notify("warning", message, kind=kind, **metadata)
 
-    def error(self, message: str, *, kind=None, **data: Any) -> None:
-        self._notify("error", message, kind=kind, **data)
+    def error(self, message: str, *, kind=None, **metadata: object) -> None:
+        self._notify("error", message, kind=kind, **metadata)
 
-    def debug(self, message: str, *, kind=None, **data: Any) -> None:
-        self._notify("debug", message, kind=kind, **data)
+    def debug(self, message: str, *, kind=None, **metadata: object) -> None:
+        self._notify("debug", message, kind=kind, **metadata)
 
     def open_view(
         self,
         view_type: str,
         *,
         title: str,
-        payload: dict[str, Any] | None = None,
-        view_model: ViewModel | None = None,
+        view_model: ViewModel,
         focus: bool = True,
         reuse_key: str | None = None,
     ) -> None:
-        self.view_requests.append(
+        if view_model.view_type != view_type:
+            raise ValueError("view_type must match view_model.view_type")
+        self.views.append(
             OpenViewRequest(
                 view_type=view_type,
                 title=title,
-                view_model=view_model or view_model_from_payload(view_type, payload),
+                view_model=view_model,
                 focus=focus,
                 reuse_key=reuse_key,
                 action="open",
@@ -126,39 +122,40 @@ class CommandEffectBuilder:
         view_type: str,
         *,
         title: str | None = None,
-        payload: dict[str, Any] | None = None,
-        view_model: ViewModel | None = None,
+        view_model: ViewModel,
         reuse_key: str | None = None,
     ) -> None:
-        self.view_requests.append(
+        if view_model.view_type != view_type:
+            raise ValueError("view_type must match view_model.view_type")
+        self.views.append(
             OpenViewRequest(
                 view_type=view_type,
                 title=title or view_type,
-                view_model=view_model or view_model_from_payload(view_type, payload),
+                view_model=view_model,
                 focus=False,
                 reuse_key=reuse_key,
                 action="refresh",
             )
         )
 
-    def build(self, base: CommandEffect) -> CommandEffect:
-        views = list(self.view_requests)
-        seen = {
-            (view.action, view.view_type, view.reuse_key, view.title) for view in views
-        }
-        for view in base.view_requests:
-            key = (view.action, view.view_type, view.reuse_key, view.title)
-            if key not in seen:
-                views.append(view)
-                seen.add(key)
-        return CommandEffect(
-            action=base.action,
-            session_id=base.session_id,
-            session_exit_time=base.session_exit_time,
-            notifications=[*self.notifications, *base.notifications],
-            view_requests=views,
-            payload=dict(base.payload),
-        )
+    def finish(
+        self,
+        *,
+        control: Literal["continue", "chat", "exit"] = "continue",
+        session_id: str | None = None,
+        session_exit_time: str | None = None,
+        state_changes: Mapping[str, object] | None = None,
+    ) -> "CommandEffect":
+        """Finalize and return this same effect instance."""
+        self.control = control
+        self.session_id = session_id
+        self.session_exit_time = session_exit_time
+        if state_changes:
+            self.state_changes.extend(
+                StateChangeEffect(key=key, value=value)
+                for key, value in state_changes.items()
+            )
+        return self
 
 
 @dataclass(slots=True)
@@ -167,7 +164,7 @@ class CommandContext:
 
     agent: Agent
     config: Config
-    ui_bus: CommandEffectBuilder
+    effect: CommandEffect
     ui_profile: UIProfile | None = None
     action_registry: ActionRegistry | None = None
     ui_interactor: UIInteractor | None = None

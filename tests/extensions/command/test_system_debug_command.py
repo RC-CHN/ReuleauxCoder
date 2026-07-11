@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from reuleauxcoder.app.commands.models import CommandEffect
 
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.command.builtin.system import (
@@ -9,7 +10,6 @@ from reuleauxcoder.extensions.command.builtin.system import (
     _parse_debug,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
-from reuleauxcoder.interfaces.events import UIEventBus
 
 
 def test_parse_debug_on_off() -> None:
@@ -19,31 +19,29 @@ def test_parse_debug_on_off() -> None:
 
 
 def test_handle_debug_toggles_runtime_flag() -> None:
-    ui_bus = UIEventBus()
+    effect = CommandEffect()
     llm = SimpleNamespace(debug_trace=False)
     config = SimpleNamespace(llm_debug_trace=False)
     ctx = SimpleNamespace(
         config=config,
         agent=SimpleNamespace(llm=llm),
-        ui_bus=ui_bus,
+        effect=effect,
     )
 
     result = _handle_debug(SimpleNamespace(enabled=True), ctx)
     assert ctx.config.llm_debug_trace is False
     assert ctx.agent.llm.debug_trace is True
-    assert result.payload == {"llm_debug_trace": True}
+    assert result.state == {"llm_debug_trace": True}
 
     result = _handle_debug(SimpleNamespace(enabled=False), ctx)
     assert ctx.config.llm_debug_trace is False
     assert ctx.agent.llm.debug_trace is False
-    assert result.payload == {"llm_debug_trace": False}
+    assert result.state == {"llm_debug_trace": False}
 
 
 def test_config_command_emits_typed_effective_view() -> None:
     assert _parse_config("/config", None) is not None
-    ui_bus = UIEventBus()
-    seen = []
-    ui_bus.subscribe(seen.append, replay_history=False)
+    effect = CommandEffect()
     config = Config()
     agent = SimpleNamespace(
         active_main_model_profile=None,
@@ -52,12 +50,12 @@ def test_config_command_emits_typed_effective_view() -> None:
         llm=SimpleNamespace(model="demo"),
     )
 
-    result = _handle_config(None, SimpleNamespace(config=config, agent=agent, ui_bus=ui_bus))
+    result = _handle_config(None, SimpleNamespace(config=config, agent=agent, effect=effect))
 
-    event = seen[-1]
-    assert event.data["view_type"] == "effective_config"
-    assert event.data["view_model"].view_type == "effective_config"
-    assert result.payload["rows"]
+    view = result.views[-1]
+    assert view.view_type == "effective_config"
+    assert view.view_model.view_type == "effective_config"
+    assert result.state["rows"]
 
 
 def test_exit_respects_disabled_auto_save(tmp_path) -> None:
@@ -71,13 +69,13 @@ def test_exit_respects_disabled_auto_save(tmp_path) -> None:
     ctx = SimpleNamespace(
         config=config,
         agent=agent,
-        ui_bus=UIEventBus(),
+        effect=CommandEffect(),
         sessions_dir=tmp_path,
     )
 
     result = _handle_exit(SimpleNamespace(current_session_id=None), ctx)
 
-    assert result.action == "exit"
+    assert result.control == "exit"
     assert not list(tmp_path.iterdir())
 
 
@@ -97,7 +95,7 @@ def test_exit_routes_auto_save_through_lifecycle(tmp_path) -> None:
     ctx = SimpleNamespace(
         config=config,
         agent=agent,
-        ui_bus=UIEventBus(),
+        effect=CommandEffect(),
         sessions_dir=tmp_path,
     )
 

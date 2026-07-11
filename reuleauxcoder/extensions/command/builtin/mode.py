@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.view_models import ModeProfileViewModel, ModesViewModel
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
@@ -55,22 +55,22 @@ def _parse_switch_mode(user_input: str, parse_ctx):
     return SwitchModeCommand(mode_name=mode)
 
 
-def _handle_show_mode(command, ctx) -> CommandResult:
+def _handle_show_mode(command, ctx) -> CommandEffect:
     view = _build_mode_profiles_view(
         ctx.config, getattr(ctx.agent, "active_mode", None)
     )
 
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Modes",
         view_model=view,
         reuse_key="mode_profiles",
     )
 
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_current_mode(command, ctx) -> CommandResult:
+def _handle_current_mode(command, ctx) -> CommandEffect:
     mode_name = getattr(ctx.agent, "active_mode", None) or getattr(
         ctx.config, "active_mode", None
     )
@@ -78,32 +78,32 @@ def _handle_current_mode(command, ctx) -> CommandResult:
         mode = (getattr(ctx.config, "modes", {}) or {}).get(mode_name)
         description = getattr(mode, "description", "") if mode is not None else ""
         suffix = f" - {description}" if description else ""
-        ctx.ui_bus.info(
+        ctx.effect.info(
             f"Current mode: {mode_name}{suffix}",
             kind=UIEventKind.COMMAND,
             mode_name=mode_name,
         )
-        return CommandResult(action="continue", payload={"active_mode": mode_name})
+        return ctx.effect.finish(control="continue", state_changes={"active_mode": mode_name})
 
-    ctx.ui_bus.warning("No active mode set.", kind=UIEventKind.COMMAND)
-    return CommandResult(action="continue", payload={"active_mode": None})
+    ctx.effect.warning("No active mode set.", kind=UIEventKind.COMMAND)
+    return ctx.effect.finish(control="continue", state_changes={"active_mode": None})
 
 
-def _handle_switch_mode(command, ctx) -> CommandResult:
+def _handle_switch_mode(command, ctx) -> CommandEffect:
     mode_name = command.mode_name
     modes = getattr(ctx.config, "modes", {}) or {}
 
     if mode_name not in modes:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             f"Unknown mode '{mode_name}'. Use /mode to list available modes.",
             kind=UIEventKind.COMMAND,
             mode_name=mode_name,
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     ctx.agent.set_mode(mode_name)
 
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Switched session mode to '{mode_name}'",
         kind=UIEventKind.COMMAND,
         mode_name=mode_name,
@@ -112,14 +112,14 @@ def _handle_switch_mode(command, ctx) -> CommandResult:
     view = _build_mode_profiles_view(
         ctx.config, getattr(ctx.agent, "active_mode", None)
     )
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="Modes",
         view_model=view,
         reuse_key="mode_profiles",
     )
 
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 def _build_mode_profiles_view(config, active_mode: str | None) -> ModesViewModel:

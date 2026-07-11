@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.runtime.events import RuntimeEvent, agent_event_to_runtime_event
@@ -36,6 +36,10 @@ class UIEventKind(Enum):
     AGENT = "agent"
     CONTEXT = "context"
     REMOTE = "remote"
+
+
+class ViewModelPort(Protocol):
+    view_type: str
 
 
 @dataclass
@@ -216,12 +220,13 @@ class UIEventBus:
         view_type: str,
         *,
         title: str,
-        payload: dict[str, Any] | None = None,
         focus: bool = True,
         reuse_key: str | None = None,
-        view_model: Any = None,
+        view_model: ViewModelPort,
     ) -> None:
         """Broadcast a structured request for the UI to open a view/panel/tab."""
+        if view_model.view_type != view_type:
+            raise ValueError("view_type must match view_model.view_type")
         self.emit(
             UIEvent.info(
                 f"Open view: {title}",
@@ -229,7 +234,6 @@ class UIEventBus:
                 action="open",
                 view_type=view_type,
                 title=title,
-                payload=payload or {},
                 focus=focus,
                 reuse_key=reuse_key,
                 view_model=view_model,
@@ -241,11 +245,12 @@ class UIEventBus:
         view_type: str,
         *,
         title: str | None = None,
-        payload: dict[str, Any] | None = None,
         reuse_key: str | None = None,
-        view_model: Any = None,
+        view_model: ViewModelPort,
     ) -> None:
         """Broadcast a structured request for the UI to refresh a view."""
+        if view_model.view_type != view_type:
+            raise ValueError("view_type must match view_model.view_type")
         self.emit(
             UIEvent.info(
                 f"Refresh view: {title or view_type}",
@@ -253,7 +258,6 @@ class UIEventBus:
                 action="refresh",
                 view_type=view_type,
                 title=title or view_type,
-                payload=payload or {},
                 reuse_key=reuse_key,
                 view_model=view_model,
             )

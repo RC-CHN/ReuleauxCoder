@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -87,89 +87,89 @@ def _build_skills_view(ctx) -> SkillsViewModel:
     return service.build_view()
 
 
-def _handle_show_skills(command, ctx) -> CommandResult:
+def _handle_show_skills(command, ctx) -> CommandEffect:
     view = _build_skills_view(ctx)
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Skills",
         view_model=view,
         reuse_key="skills",
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_reload_skills(command, ctx) -> CommandResult:
+def _handle_reload_skills(command, ctx) -> CommandEffect:
     service = ctx.skills_service
     if service is None:
-        ctx.ui_bus.error("Skills service unavailable.", kind=UIEventKind.SYSTEM)
-        return CommandResult(action="continue")
+        ctx.effect.error("Skills service unavailable.", kind=UIEventKind.SYSTEM)
+        return ctx.effect.finish(control="continue")
 
     result = service.reload()
     ctx.agent.skills_catalog = result.catalog
-    ctx.ui_bus.success(
+    ctx.effect.success(
         _build_reload_message(result),
         kind=UIEventKind.SYSTEM,
     )
     for name in result.added:
-        ctx.ui_bus.info(f"Skill added: {name}", kind=UIEventKind.SYSTEM)
+        ctx.effect.info(f"Skill added: {name}", kind=UIEventKind.SYSTEM)
     for name in result.updated:
-        ctx.ui_bus.info(f"Skill updated: {name}", kind=UIEventKind.SYSTEM)
+        ctx.effect.info(f"Skill updated: {name}", kind=UIEventKind.SYSTEM)
     for name in result.removed:
-        ctx.ui_bus.warning(f"Skill removed: {name}", kind=UIEventKind.SYSTEM)
+        ctx.effect.warning(f"Skill removed: {name}", kind=UIEventKind.SYSTEM)
     for name in result.missing:
-        ctx.ui_bus.warning(
+        ctx.effect.warning(
             f"Skill not found and skipped: {name}", kind=UIEventKind.SYSTEM
         )
     for diagnostic in result.diagnostics:
-        emit = ctx.ui_bus.warning if diagnostic.level == "warning" else ctx.ui_bus.error
+        emit = ctx.effect.warning if diagnostic.level == "warning" else ctx.effect.error
         emit(diagnostic.message, kind=UIEventKind.SYSTEM)
 
     view = _build_skills_view(ctx)
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="Skills",
         view_model=view,
         reuse_key="skills",
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_toggle_skill(command: ToggleSkillCommand, ctx) -> CommandResult:
+def _handle_toggle_skill(command: ToggleSkillCommand, ctx) -> CommandEffect:
     service = ctx.skills_service
     if service is None:
-        ctx.ui_bus.error("Skills service unavailable.", kind=UIEventKind.SYSTEM)
-        return CommandResult(action="continue")
+        ctx.effect.error("Skills service unavailable.", kind=UIEventKind.SYSTEM)
+        return ctx.effect.finish(control="continue")
 
     result = service.set_enabled(command.skill_name, command.enabled)
     if not result.found:
-        ctx.ui_bus.warning(
+        ctx.effect.warning(
             result.message, kind=UIEventKind.SYSTEM, skill_name=command.skill_name
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     ctx.agent.skills_catalog = service.build_catalog()
     if result.changed:
         if hasattr(ctx.config, "skills"):
             ctx.config.skills.disabled = list(service.disabled_names)
-        ctx.ui_bus.success(
+        ctx.effect.success(
             result.message,
             kind=UIEventKind.SYSTEM,
             skill_name=command.skill_name,
             saved_path=result.saved_path,
         )
     else:
-        ctx.ui_bus.info(
+        ctx.effect.info(
             result.message, kind=UIEventKind.SYSTEM, skill_name=command.skill_name
         )
 
     view = _build_skills_view(ctx)
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="Skills",
         view_model=view,
         reuse_key="skills",
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 @register_command_module

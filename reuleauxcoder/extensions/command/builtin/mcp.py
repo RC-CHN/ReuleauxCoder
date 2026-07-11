@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -72,30 +72,30 @@ def _is_local_runtime(ctx) -> bool:
     return True
 
 
-def _handle_show_mcp_servers(command, ctx) -> CommandResult:
+def _handle_show_mcp_servers(command, ctx) -> CommandEffect:
     if not _is_local_runtime(ctx):
-        ctx.ui_bus.error(
+        ctx.effect.error(
             "MCP commands are only available in local runtime.", kind=UIEventKind.MCP
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     view = build_mcp_servers_view(ctx.config, ctx.agent)
     payload = view.to_payload()
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="MCP Servers",
         view_model=view,
         reuse_key="mcp_servers",
     )
-    return CommandResult(action="continue", payload=payload)
+    return ctx.effect.finish(control="continue", state_changes=payload)
 
 
-def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
+def _handle_toggle_mcp_server(command, ctx) -> CommandEffect:
     if not _is_local_runtime(ctx):
-        ctx.ui_bus.error(
+        ctx.effect.error(
             "MCP commands are only available in local runtime.", kind=UIEventKind.MCP
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     result = toggle_mcp_server(
         command.server_name,
@@ -105,23 +105,23 @@ def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
     )
 
     if result.error:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             result.error, kind=UIEventKind.MCP, server_name=result.server_name
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     if result.message and result.already_in_desired_state:
-        ctx.ui_bus.info(
+        ctx.effect.info(
             result.message, kind=UIEventKind.MCP, server_name=result.server_name
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     if result.warning:
-        ctx.ui_bus.warning(
+        ctx.effect.warning(
             result.warning, kind=UIEventKind.MCP, server_name=result.server_name
         )
     if result.message:
-        ctx.ui_bus.success(
+        ctx.effect.success(
             result.message,
             kind=UIEventKind.MCP,
             server_name=result.server_name,
@@ -130,13 +130,13 @@ def _handle_toggle_mcp_server(command, ctx) -> CommandResult:
         )
 
     view = build_mcp_servers_view(ctx.config, ctx.agent)
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="MCP Servers",
         view_model=view,
         reuse_key="mcp_servers",
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 @register_command_module

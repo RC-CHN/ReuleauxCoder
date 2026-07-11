@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.help import build_help_view
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.view_models import HelpViewModel, TokenUsageViewModel
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
@@ -104,7 +104,7 @@ def _parse_debug(user_input: str, parse_ctx):
     return None
 
 
-def _handle_show_help(command, ctx) -> CommandResult:
+def _handle_show_help(command, ctx) -> CommandEffect:
     if ctx.ui_profile is None:
         view = HelpViewModel(
             sections=(), diagnostic="No active UI profile; help unavailable."
@@ -115,16 +115,16 @@ def _handle_show_help(command, ctx) -> CommandResult:
         )
     else:
         view = build_help_view(ctx.ui_profile, ctx.action_registry)
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="ReuleauxCoder Help",
         view_model=view,
         reuse_key="help",
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_exit(command, ctx) -> CommandResult:
+def _handle_exit(command, ctx) -> CommandEffect:
     if ctx.agent.messages and ctx.config.session_auto_save:
         sid = SessionStore(ctx.sessions_dir).save(
             ctx.agent.messages,
@@ -138,27 +138,27 @@ def _handle_exit(command, ctx) -> CommandResult:
             fingerprint=get_session_fingerprint(ctx.config, ctx.agent),
         )
         ctx.agent.lifecycle.session_saved(sid)
-        ctx.ui_bus.info(f"Session auto-saved: {sid}")
-    return CommandResult(action="exit", session_id=command.current_session_id)
+        ctx.effect.info(f"Session auto-saved: {sid}")
+    return ctx.effect.finish(control="exit", session_id=command.current_session_id)
 
 
-def _handle_reset(command, ctx) -> CommandResult:
+def _handle_reset(command, ctx) -> CommandEffect:
     ctx.agent.reset()
     restore_config_runtime_defaults(ctx.config, ctx.agent)
-    ctx.ui_bus.warning(
+    ctx.effect.warning(
         "Conversation reset (in-memory only, does not delete saved sessions)."
     )
-    return CommandResult(action="continue")
+    return ctx.effect.finish(control="continue")
 
 
-def _handle_compact(command, ctx) -> CommandResult:
+def _handle_compact(command, ctx) -> CommandEffect:
     before = estimate_tokens(ctx.agent.messages)
 
     if command.force_strategy == "":
-        ctx.ui_bus.warning(
+        ctx.effect.warning(
             "Invalid compact strategy. Use: /compact force <snip|summarize|collapse>"
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     if command.force_strategy:
         compressed = ctx.agent.context.force_compress(
@@ -168,29 +168,29 @@ def _handle_compact(command, ctx) -> CommandResult:
         )
         after = estimate_tokens(ctx.agent.messages)
         if compressed:
-            ctx.ui_bus.success(
+            ctx.effect.success(
                 f"Forced {command.force_strategy}: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
             )
         else:
-            ctx.ui_bus.info(
+            ctx.effect.info(
                 f"Forced {command.force_strategy}: no change ({before} tokens, {len(ctx.agent.messages)} messages)"
             )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     compressed = ctx.agent.context.maybe_compress(ctx.agent.messages, ctx.agent.llm)
     after = estimate_tokens(ctx.agent.messages)
     if compressed:
-        ctx.ui_bus.success(
+        ctx.effect.success(
             f"Compressed: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
         )
     else:
-        ctx.ui_bus.info(
+        ctx.effect.info(
             f"Nothing to compress ({before} tokens, {len(ctx.agent.messages)} messages)"
         )
-    return CommandResult(action="continue")
+    return ctx.effect.finish(control="continue")
 
 
-def _handle_tokens(command, ctx) -> CommandResult:
+def _handle_tokens(command, ctx) -> CommandEffect:
     prompt_tokens = ctx.agent.state.total_prompt_tokens
     completion_tokens = ctx.agent.state.total_completion_tokens
     lifetime_total = prompt_tokens + completion_tokens
@@ -231,34 +231,34 @@ def _handle_tokens(command, ctx) -> CommandResult:
         max_hits=max_hits,
     )
 
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Token Usage",
         view_model=view,
         reuse_key="token_usage",
     )
 
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_debug(command, ctx) -> CommandResult:
+def _handle_debug(command, ctx) -> CommandEffect:
     ctx.agent.llm.debug_trace = command.enabled
     state = "on" if command.enabled else "off"
-    ctx.ui_bus.info(f"LLM debug trace for this session: {state}")
-    return CommandResult(
-        action="continue", payload={"llm_debug_trace": command.enabled}
+    ctx.effect.info(f"LLM debug trace for this session: {state}")
+    return ctx.effect.finish(
+        control="continue", state_changes={"llm_debug_trace": command.enabled}
     )
 
 
-def _handle_config(command, ctx) -> CommandResult:
+def _handle_config(command, ctx) -> CommandEffect:
     view = build_effective_config_view(ctx.config, ctx.agent)
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Effective Configuration",
         view_model=view,
         reuse_key=view.view_type,
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 def _format_percent(value: float | None) -> str:

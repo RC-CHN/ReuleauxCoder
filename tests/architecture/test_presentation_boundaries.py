@@ -56,6 +56,27 @@ def test_command_extensions_do_not_import_cli_or_ui_frameworks() -> None:
     assert violations == []
 
 
+def test_command_handlers_only_use_single_typed_effect_channel() -> None:
+    command_root = ROOT / "reuleauxcoder" / "extensions" / "command"
+    sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in command_root.rglob("*.py")
+    )
+    assert "ctx.ui_bus" not in sources
+    assert "CommandEffectBuilder" not in sources
+    assert "CommandResult" not in sources
+
+    models = (ROOT / "reuleauxcoder" / "app" / "commands" / "models.py").read_text(
+        encoding="utf-8"
+    )
+    view_models = (
+        ROOT / "reuleauxcoder" / "app" / "commands" / "view_models.py"
+    ).read_text(encoding="utf-8")
+    assert "CommandEffectBuilder" not in models
+    assert "MarkdownViewModel" not in view_models
+    assert "DataViewModel" not in view_models
+    assert "view_model_from_payload" not in view_models
+
+
 def test_runtime_does_not_dynamically_inject_agent_dependencies() -> None:
     violations = []
     root = ROOT / "reuleauxcoder"

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 
 class ViewModel(Protocol):
@@ -47,7 +47,6 @@ class HelpViewModel:
             ],
             "diagnostic": self.diagnostic,
         }
-
 
 @dataclass(frozen=True, slots=True)
 class ModelProfileViewModel:
@@ -225,16 +224,6 @@ class SubagentJobsViewModel:
 
 
 @dataclass(frozen=True, slots=True)
-class MarkdownViewModel:
-    view_type: str
-    markdown: str
-    data: Mapping[str, Any] = field(default_factory=dict)
-
-    def to_payload(self) -> dict[str, Any]:
-        return {**self.data, "markdown": self.markdown}
-
-
-@dataclass(frozen=True, slots=True)
 class MCPServerViewModel:
     name: str
     enabled: bool
@@ -293,15 +282,6 @@ class SessionsViewModel:
 
 
 @dataclass(frozen=True, slots=True)
-class DataViewModel:
-    view_type: str
-    data: Mapping[str, Any]
-
-    def to_payload(self) -> dict[str, Any]:
-        return dict(self.data)
-
-
-@dataclass(frozen=True, slots=True)
 class EffectiveConfigRowViewModel:
     path: str
     value: str
@@ -322,100 +302,3 @@ class EffectiveConfigViewModel:
             ],
             "diagnostics": list(self.diagnostics),
         }
-
-
-def view_model_from_payload(
-    view_type: str, payload: Mapping[str, Any] | None
-) -> ViewModel:
-    """Single legacy payload adapter used while command builders migrate."""
-    data = dict(payload or {})
-    if view_type == "mcp_servers":
-        return MCPServersViewModel(
-            servers=tuple(
-                MCPServerViewModel(
-                    name=str(server.get("name", "")),
-                    enabled=bool(server.get("enabled")),
-                    runtime_connected=bool(server.get("runtime_connected")),
-                )
-                for server in data.get("servers", [])
-            )
-        )
-    if view_type == "sessions":
-        return SessionsViewModel(
-            fingerprint=data.get("fingerprint"),
-            show_all=bool(data.get("show_all")),
-            sessions=tuple(
-                SessionSummaryViewModel(
-                    session_id=str(session.get("id", "")),
-                    model=str(session.get("model", "")),
-                    saved_at=str(session.get("saved_at", "")),
-                    preview=str(session.get("preview", "")),
-                    fingerprint=session.get("fingerprint"),
-                )
-                for session in data.get("sessions", [])
-            ),
-        )
-    if view_type == "model_profiles":
-        return ModelListViewModel(
-            active_main=data.get("active_main_profile") or data.get("active_profile"),
-            active_sub=data.get("active_sub_profile"),
-            current_model=str(data.get("current_model", "")),
-            profiles=tuple(
-                ModelProfileViewModel(
-                    name=str(profile.get("name", "")),
-                    model=str(profile.get("model", "")),
-                    active_main=bool(
-                        profile.get("active_main", profile.get("active"))
-                    ),
-                    active_sub=bool(profile.get("active_sub")),
-                    base_url=profile.get("base_url"),
-                    max_tokens=int(profile.get("max_tokens", 0)),
-                    temperature=float(profile.get("temperature", 0)),
-                    max_context_tokens=int(profile.get("max_context_tokens", 0)),
-                    api_key_hint=str(profile.get("api_key_hint", "")),
-                )
-                for profile in data.get("profiles", [])
-            ),
-            diagnostics=tuple(str(item) for item in data.get("diagnostics", [])),
-        )
-    if view_type == "mode_profiles":
-        return ModesViewModel(
-            active_mode=data.get("active_mode"),
-            modes=tuple(
-                ModeProfileViewModel(
-                    name=str(mode.get("name", "")),
-                    active=bool(mode.get("active")),
-                    description=str(mode.get("description", "")),
-                    tools=tuple(str(item) for item in mode.get("tools", [])),
-                    prompt_append=str(mode.get("prompt_append", "")),
-                    allowed_subagent_modes=tuple(
-                        str(item)
-                        for item in mode.get("allowed_subagent_modes", [])
-                    ),
-                )
-                for mode in data.get("modes", [])
-            ),
-            diagnostics=tuple(str(item) for item in data.get("diagnostics", [])),
-        )
-    if view_type == "token_usage":
-        return TokenUsageViewModel(
-            prompt_tokens=int(data.get("prompt_tokens", 0)),
-            completion_tokens=int(data.get("completion_tokens", 0)),
-            lifetime_total=int(data.get("lifetime_total", 0)),
-            current_context_tokens=int(data.get("current_context_tokens", 0)),
-            max_context_tokens=int(data.get("max_context_tokens", 0)),
-            context_percent=data.get("context_percent"),
-            message_count=int(data.get("message_count", 0)),
-            snip_at=data.get("snip_at"),
-            summarize_at=data.get("summarize_at"),
-            collapse_at=data.get("collapse_at"),
-            snip_hit_count=int(data.get("snip_hit_count", 0)),
-            summarize_hit_count=int(data.get("summarize_hit_count", 0)),
-            snip_exhausted=bool(data.get("snip_exhausted")),
-            summarize_exhausted=bool(data.get("summarize_exhausted")),
-            max_hits=int(data.get("max_hits", 0)),
-        )
-    markdown = data.pop("markdown", None)
-    if isinstance(markdown, str):
-        return MarkdownViewModel(view_type=view_type, markdown=markdown, data=data)
-    return DataViewModel(view_type=view_type, data=data)

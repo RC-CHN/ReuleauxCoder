@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -84,7 +84,7 @@ def _parse_new_session(user_input: str, parse_ctx):
     return None
 
 
-def _handle_list_sessions(command, ctx) -> CommandResult:
+def _handle_list_sessions(command, ctx) -> CommandEffect:
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     filter_fingerprint = None if command.show_all else fingerprint
@@ -103,21 +103,21 @@ def _handle_list_sessions(command, ctx) -> CommandResult:
             for session in sessions
         ),
     )
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Saved Sessions",
         view_model=view,
         reuse_key=view.view_type,
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_resume_session(command, ctx) -> CommandResult:
+def _handle_resume_session(command, ctx) -> CommandEffect:
     if not command.target:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             "Usage: /session <session_id|latest>", kind=UIEventKind.SESSION
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
@@ -125,21 +125,21 @@ def _handle_resume_session(command, ctx) -> CommandResult:
     if command.target == "latest":
         latest = store.get_latest(fingerprint=fingerprint)
         if latest is None:
-            ctx.ui_bus.error(
+            ctx.effect.error(
                 f"No saved sessions for fingerprint: {fingerprint}",
                 kind=UIEventKind.SESSION,
                 fingerprint=fingerprint,
             )
-            return CommandResult(action="continue")
+            return ctx.effect.finish(control="continue")
         session_id = latest.id
 
     loaded = store.load(session_id)
     if loaded is None:
-        ctx.ui_bus.error(f"Session '{session_id}' not found.", kind=UIEventKind.SESSION)
-        return CommandResult(action="continue")
+        ctx.effect.error(f"Session '{session_id}' not found.", kind=UIEventKind.SESSION)
+        return ctx.effect.finish(control="continue")
 
     if loaded.fingerprint != fingerprint:
-        ctx.ui_bus.warning(
+        ctx.effect.warning(
             f"Session '{session_id}' belongs to fingerprint '{loaded.fingerprint}', current fingerprint is '{fingerprint}'.",
             kind=UIEventKind.SESSION,
             session_id=session_id,
@@ -153,34 +153,34 @@ def _handle_resume_session(command, ctx) -> CommandResult:
 
     runtime = loaded.runtime_state
     if runtime.active_mode:
-        ctx.ui_bus.info(
+        ctx.effect.info(
             f"Mode restored from session: {runtime.active_mode}",
             kind=UIEventKind.SESSION,
             mode_name=runtime.active_mode,
         )
     if runtime.model:
-        ctx.ui_bus.info(
+        ctx.effect.info(
             f"Model restored from session: {runtime.model}",
             kind=UIEventKind.SESSION,
             model=runtime.model,
         )
 
     exit_time = store.get_exit_time(loaded.messages)
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Resumed session: {session_id}",
         kind=UIEventKind.SESSION,
         session_id=session_id,
     )
 
-    return CommandResult(
-        action="continue",
+    return ctx.effect.finish(
+        control="continue",
         session_id=session_id,
         session_exit_time=exit_time,
-        payload={"session_id": session_id, "session_exit_time": exit_time},
+        state_changes={"session_id": session_id, "session_exit_time": exit_time},
     )
 
 
-def _handle_save_session(command, ctx) -> CommandResult:
+def _handle_save_session(command, ctx) -> CommandEffect:
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     session_id = store.save(
@@ -194,22 +194,22 @@ def _handle_save_session(command, ctx) -> CommandResult:
         fingerprint=fingerprint,
     )
     ctx.agent.lifecycle.session_saved(session_id)
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Session saved: {session_id}", kind=UIEventKind.SESSION, session_id=session_id
     )
-    ctx.ui_bus.info(
+    ctx.effect.info(
         f"Resume with: rcoder -r {session_id}",
         kind=UIEventKind.SESSION,
         session_id=session_id,
     )
-    return CommandResult(
-        action="continue",
+    return ctx.effect.finish(
+        control="continue",
         session_id=session_id,
-        payload={"session_id": session_id, "fingerprint": fingerprint},
+        state_changes={"session_id": session_id, "fingerprint": fingerprint},
     )
 
 
-def _handle_new_session(command, ctx) -> CommandResult:
+def _handle_new_session(command, ctx) -> CommandEffect:
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     previous_session_id = command.current_session_id
@@ -226,7 +226,7 @@ def _handle_new_session(command, ctx) -> CommandResult:
         )
         previous_session_id = sid
         ctx.agent.lifecycle.session_saved(sid)
-        ctx.ui_bus.info(
+        ctx.effect.info(
             f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid
         )
 
@@ -235,19 +235,19 @@ def _handle_new_session(command, ctx) -> CommandResult:
     restore_config_runtime_defaults(ctx.config, ctx.agent)
     ctx.agent.session_fingerprint = fingerprint
     ctx.agent.lifecycle.session_started(new_session_id, reason="new")
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Started a new conversation: {new_session_id}",
         kind=UIEventKind.SESSION,
         session_id=new_session_id,
     )
     if previous_session_id:
-        ctx.ui_bus.info(
+        ctx.effect.info(
             f"Resume previous with: /session {previous_session_id}",
             kind=UIEventKind.SESSION,
             session_id=previous_session_id,
         )
-    return CommandResult(
-        action="continue", session_id=new_session_id, session_exit_time=None
+    return ctx.effect.finish(
+        control="continue", session_id=new_session_id, session_exit_time=None
     )
 
 

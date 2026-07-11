@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from reuleauxcoder.app.commands.models import CommandEffect
 
 from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
@@ -17,7 +18,6 @@ from reuleauxcoder.extensions.command.builtin.model import (
     _handle_use_main_model,
     _handle_use_sub_model,
 )
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 
 
 class FakeLLM:
@@ -75,8 +75,8 @@ def _build_ctx() -> SimpleNamespace:
         active_sub_model_profile="alpha",
         active_mode="coder",
     )
-    ui_bus = UIEventBus()
-    return SimpleNamespace(config=config, agent=agent, ui_bus=ui_bus)
+    effect = CommandEffect()
+    return SimpleNamespace(config=config, agent=agent, effect=effect)
 
 
 def test_switch_model_is_session_scoped() -> None:
@@ -88,8 +88,8 @@ def test_switch_model_is_session_scoped() -> None:
     assert ctx.agent.active_main_model_profile == "beta"
     assert ctx.config.active_main_model_profile == "alpha"
     assert ctx.config.active_model_profile == "alpha"
-    assert result.payload["active_main_profile"] == "beta"
-    assert result.payload["active_sub_profile"] == "alpha"
+    assert result.state["active_main_profile"] == "beta"
+    assert result.state["active_sub_profile"] == "alpha"
 
 
 def test_use_main_model_alias_switches_session_main_model() -> None:
@@ -99,7 +99,7 @@ def test_use_main_model_alias_switches_session_main_model() -> None:
 
     assert ctx.agent.active_main_model_profile == "beta"
     assert ctx.config.active_main_model_profile == "alpha"
-    assert result.payload["current_model"] == "model-beta"
+    assert result.state["current_model"] == "model-beta"
 
 
 def test_set_main_model_updates_global_and_runtime(monkeypatch) -> None:
@@ -122,7 +122,7 @@ def test_set_main_model_updates_global_and_runtime(monkeypatch) -> None:
     assert ctx.config.active_model_profile == "beta"
     assert ctx.config.model == "model-beta"
     assert ctx.agent.active_main_model_profile == "beta"
-    assert result.payload["active_main_profile"] == "beta"
+    assert result.state["active_main_profile"] == "beta"
 
 
 def test_use_sub_model_alias_switches_session_sub_model() -> None:
@@ -132,11 +132,11 @@ def test_use_sub_model_alias_switches_session_sub_model() -> None:
 
     assert ctx.agent.active_sub_model_profile == "beta"
     assert ctx.config.active_sub_model_profile == "alpha"
-    assert result.payload["active_sub_profile"] == "beta"
+    assert result.state["active_sub_profile"] == "beta"
     assert any(
-        event.level == UIEventLevel.SUCCESS
+        event.level == "success"
         and "session sub-agent model profile" in event.message
-        for event in ctx.ui_bus._history
+        for event in ctx.effect.notifications
     )
 
 
@@ -158,9 +158,9 @@ def test_set_sub_model_updates_global_sub_profile(monkeypatch) -> None:
     assert saved["profile_name"] == "beta"
     assert ctx.config.active_sub_model_profile == "beta"
     assert ctx.agent.active_sub_model_profile == "alpha"
-    assert result.payload["active_sub_profile"] == "alpha"
+    assert result.state["active_sub_profile"] == "alpha"
     assert any(
-        event.level == UIEventLevel.SUCCESS
+        event.level == "success"
         and "global sub-agent model profile" in event.message
-        for event in ctx.ui_bus._history
+        for event in ctx.effect.notifications
     )

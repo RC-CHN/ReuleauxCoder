@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from reuleauxcoder.app.commands.models import (
     CommandContext,
     CommandEffect,
-    CommandEffectBuilder,
-    CommandResult,
 )
 from reuleauxcoder.app.commands.specs import (
     ActionSpec,
@@ -71,9 +69,10 @@ class ActionRegistry:
     def dispatch(self, parsed: ParsedAction, ctx: CommandContext) -> CommandEffect:
         """Dispatch a parsed action to its handler."""
         if parsed.action.handler is None:
-            return CommandResult(action="continue")
+            return ctx.effect.finish(control="continue")
         result = parsed.action.handler(parsed.command, ctx)
-        builder = getattr(ctx, "ui_bus", None)
-        if isinstance(builder, CommandEffectBuilder):
-            return builder.build(result)
+        if result is not ctx.effect:
+            raise RuntimeError(
+                f"Command handler {parsed.action.action_id} returned a foreign effect"
+            )
         return result

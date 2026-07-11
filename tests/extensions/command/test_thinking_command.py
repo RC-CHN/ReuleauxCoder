@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from reuleauxcoder.app.commands.models import CommandEffect
 
-from reuleauxcoder.domain.agent.events import AgentEventType
 from reuleauxcoder.app.commands.shared import EmptyCommand
 from reuleauxcoder.extensions.command.builtin.thinking import (
     SetEffortCommand,
@@ -18,7 +18,6 @@ from reuleauxcoder.extensions.command.builtin.thinking import (
     _parse_inline,
     _parse_show,
 )
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +61,8 @@ def _build_ctx(
     llm: FakeLLM | None = None,
 ) -> SimpleNamespace:
     ag = agent or FakeAgent()
-    l = llm or FakeLLM()
-    ag.llm = l
+    llm_runtime = llm or FakeLLM()
+    ag.llm = llm_runtime
     from reuleauxcoder.domain.config.models import (
         ApprovalConfig,
         Config,
@@ -88,8 +87,8 @@ def _build_ctx(
             ),
         },
     )
-    ui_bus = UIEventBus()
-    return SimpleNamespace(config=config, agent=ag, ui_bus=ui_bus)
+    effect = CommandEffect()
+    return SimpleNamespace(config=config, agent=ag, effect=effect)
 
 
 # ---------------------------------------------------------------------------
@@ -136,11 +135,11 @@ class TestHandleShow:
         agent.last_reasoning_content = None
         ctx = _build_ctx(agent=agent)
         result = _handle_show(None, ctx)
-        assert result.action == "continue"
+        assert result.control == "continue"
         assert any(
-            e.level == UIEventLevel.INFO
+            e.level == "info"
             and "No reasoning content" in e.message
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )
 
     def test_has_reasoning_content(self):
@@ -148,12 +147,12 @@ class TestHandleShow:
         agent.last_reasoning_content = "Let me think about this..."
         ctx = _build_ctx(agent=agent)
         result = _handle_show(None, ctx)
-        assert result.action == "continue"
+        assert result.control == "continue"
         assert any(
-            e.level == UIEventLevel.INFO
-            and e.data.get("is_reasoning") is True
+            e.level == "info"
+            and e.metadata.get("is_reasoning") is True
             and e.message == "Let me think about this..."
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )
 
 
@@ -167,24 +166,24 @@ class TestHandleInline:
         agent = FakeAgent()
         agent.reasoning_display_mode = "quiet"
         ctx = _build_ctx(agent=agent)
-        result = _handle_inline(ToggleInlineCommand(), ctx)
+        _handle_inline(ToggleInlineCommand(), ctx)
         assert agent.reasoning_display_mode == "inline"
         assert any(
-            e.level == UIEventLevel.INFO
+            e.level == "info"
             and "inline" in e.message
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )
 
     def test_toggle_inline_to_quiet(self):
         agent = FakeAgent()
         agent.reasoning_display_mode = "inline"
         ctx = _build_ctx(agent=agent)
-        result = _handle_inline(ToggleInlineCommand(), ctx)
+        _handle_inline(ToggleInlineCommand(), ctx)
         assert agent.reasoning_display_mode == "quiet"
         assert any(
-            e.level == UIEventLevel.INFO
+            e.level == "info"
             and "quiet" in e.message
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )
 
 
@@ -199,12 +198,12 @@ class TestHandleEffortShow:
         llm.reasoning_effort = "medium"
         ctx = _build_ctx(llm=llm)
         result = _handle_effort_show(None, ctx)
-        assert result.action == "continue"
+        assert result.control == "continue"
         assert any(
-            e.level == UIEventLevel.INFO
+            e.level == "info"
             and "medium" in e.message
             and "high" in e.message  # profile default
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )
 
     def test_custom_mapping(self):
@@ -214,10 +213,10 @@ class TestHandleEffortShow:
         llm.reasoning_effort_param = "thinking_level"
         ctx = _build_ctx(llm=llm)
         result = _handle_effort_show(None, ctx)
-        assert result.action == "continue"
+        assert result.control == "continue"
         msg = next(
-            e.message for e in ctx.ui_bus._history
-            if e.level == UIEventLevel.INFO and "thinking_level" in e.message
+            e.message for e in ctx.effect.notifications
+            if e.level == "info" and "thinking_level" in e.message
         )
         assert "low → high" in msg
         assert "high → max ✓" in msg
@@ -233,13 +232,13 @@ class TestHandleEffortSet:
         llm = FakeLLM()
         llm.reasoning_effort = "medium"
         ctx = _build_ctx(llm=llm)
-        result = _handle_effort_set(SetEffortCommand(level="high"), ctx)
+        _handle_effort_set(SetEffortCommand(level="high"), ctx)
         assert llm.reasoning_effort == "high"
         assert any(
-            e.level == UIEventLevel.SUCCESS
+            e.level == "success"
             and "high" in e.message
             and "medium" in e.message
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )
 
     def test_set_not_in_mapping(self):
@@ -247,12 +246,12 @@ class TestHandleEffortSet:
         llm.reasoning_effort = "medium"
         llm.reasoning_effort_values = {"high": "max"}
         ctx = _build_ctx(llm=llm)
-        result = _handle_effort_set(SetEffortCommand(level="low"), ctx)
+        _handle_effort_set(SetEffortCommand(level="low"), ctx)
         assert llm.reasoning_effort == "medium"  # unchanged
         assert any(
-            e.level == UIEventLevel.ERROR
+            e.level == "error"
             and "not available" in e.message
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )
 
     def test_set_with_custom_mapping(self):
@@ -261,11 +260,11 @@ class TestHandleEffortSet:
         llm.reasoning_effort_values = {"low": 1, "medium": 5, "high": 10}
         llm.reasoning_effort_param = "think"
         ctx = _build_ctx(llm=llm)
-        result = _handle_effort_set(SetEffortCommand(level="high"), ctx)
+        _handle_effort_set(SetEffortCommand(level="high"), ctx)
         assert llm.reasoning_effort == "high"
         assert any(
-            e.level == UIEventLevel.SUCCESS
+            e.level == "success"
             and "10" in e.message
             and "think" in e.message
-            for e in ctx.ui_bus._history
+            for e in ctx.effect.notifications
         )

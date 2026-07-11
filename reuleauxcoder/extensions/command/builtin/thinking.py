@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import EnumParam, ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -80,36 +80,36 @@ def _parse_effort_set(user_input: str, _parse_ctx):
 # ---------------------------------------------------------------------------
 
 
-def _handle_show(_command, ctx) -> CommandResult:
+def _handle_show(_command, ctx) -> CommandEffect:
     content = getattr(ctx.agent, "last_reasoning_content", None)
     if not content:
-        ctx.ui_bus.info(
+        ctx.effect.info(
             "No reasoning content in last turn.",
             kind=UIEventKind.COMMAND,
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
-    ctx.ui_bus.info(
+    ctx.effect.info(
         content,
         kind=UIEventKind.COMMAND,
         title="Reasoning",
         is_reasoning=True,
     )
-    return CommandResult(action="continue")
+    return ctx.effect.finish(control="continue")
 
 
-def _handle_inline(_command, ctx) -> CommandResult:
+def _handle_inline(_command, ctx) -> CommandEffect:
     current = getattr(ctx.agent, "reasoning_display_mode", "quiet")
     new_mode = "inline" if current == "quiet" else "quiet"
     ctx.agent.reasoning_display_mode = new_mode
-    ctx.ui_bus.info(
+    ctx.effect.info(
         f"Reasoning display: {new_mode}.",
         kind=UIEventKind.COMMAND,
     )
-    return CommandResult(action="continue")
+    return ctx.effect.finish(control="continue")
 
 
-def _handle_effort_show(_command, ctx) -> CommandResult:
+def _handle_effort_show(_command, ctx) -> CommandEffect:
     llm = ctx.agent.llm
     current = getattr(llm, "reasoning_effort", None) or "(not set)"
 
@@ -144,14 +144,14 @@ def _handle_effort_show(_command, ctx) -> CommandResult:
         f"(profile default: {profile_default})",
     ]
 
-    ctx.ui_bus.info(
+    ctx.effect.info(
         "\n".join(lines),
         kind=UIEventKind.COMMAND,
     )
-    return CommandResult(action="continue")
+    return ctx.effect.finish(control="continue")
 
 
-def _handle_effort_set(command, ctx) -> CommandResult:
+def _handle_effort_set(command, ctx) -> CommandEffect:
     level = command.level
     llm = ctx.agent.llm
     old = getattr(llm, "reasoning_effort", None) or "(not set)"
@@ -160,11 +160,11 @@ def _handle_effort_set(command, ctx) -> CommandResult:
     mapping = getattr(llm, "reasoning_effort_values", None) or DEFAULT_REASONING_EFFORT_VALUES
     if level not in mapping:
         available = ", ".join(sorted(mapping.keys()))
-        ctx.ui_bus.error(
+        ctx.effect.error(
             f"'{level}' is not available. Available values: {available}.",
             kind=UIEventKind.COMMAND,
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     api_val = mapping[level]
     param = getattr(llm, "reasoning_effort_param", "reasoning_effort")
@@ -172,12 +172,12 @@ def _handle_effort_set(command, ctx) -> CommandResult:
     # Apply to LLM client (session only, no config write)
     llm.reasoning_effort = level
 
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Reasoning effort set to: [bold]{level}[/bold] "
         f"(API: [dim]{api_val}[/dim] via [dim]{param}[/dim], was: {old}).",
         kind=UIEventKind.COMMAND,
     )
-    return CommandResult(action="continue")
+    return ctx.effect.finish(control="continue")
 
 
 # ---------------------------------------------------------------------------

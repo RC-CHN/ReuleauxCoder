@@ -1,11 +1,11 @@
 from types import SimpleNamespace
+from reuleauxcoder.app.commands.models import CommandEffect
 
 from reuleauxcoder.domain.config.models import ApprovalConfig, Config, ModeConfig
 from reuleauxcoder.extensions.command.builtin.mode import (
     SwitchModeCommand,
     _handle_switch_mode,
 )
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 
 
 class FakeAgent:
@@ -27,8 +27,8 @@ def _build_ctx() -> SimpleNamespace:
         active_mode="coder",
     )
     agent = FakeAgent()
-    ui_bus = UIEventBus()
-    return SimpleNamespace(config=config, agent=agent, ui_bus=ui_bus)
+    effect = CommandEffect()
+    return SimpleNamespace(config=config, agent=agent, effect=effect)
 
 
 def test_switch_mode_is_session_scoped() -> None:
@@ -38,11 +38,11 @@ def test_switch_mode_is_session_scoped() -> None:
 
     assert ctx.agent.active_mode == "debugger"
     assert ctx.config.active_mode == "coder"
-    assert result.payload["active_mode"] == "debugger"
+    assert result.state["active_mode"] == "debugger"
     assert any(
-        event.level == UIEventLevel.SUCCESS
+        event.level == "success"
         and event.message == "Switched session mode to 'debugger'"
-        for event in ctx.ui_bus._history
+        for event in ctx.effect.notifications
     )
 
 
@@ -51,6 +51,6 @@ def test_switch_mode_rejects_unknown_mode() -> None:
 
     result = _handle_switch_mode(SwitchModeCommand(mode_name="planner"), ctx)
 
-    assert result.action == "continue"
+    assert result.control == "continue"
     assert ctx.agent.active_mode == "coder"
-    assert any(event.level == UIEventLevel.ERROR for event in ctx.ui_bus._history)
+    assert any(event.level == "error" for event in ctx.effect.notifications)

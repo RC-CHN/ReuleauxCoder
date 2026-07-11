@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
-from reuleauxcoder.app.commands.models import CommandEffect, CommandEffectBuilder
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.ui_registry import UIProfile
@@ -118,13 +118,13 @@ def handle_command(
     )
     if parsed_action is not None:
         try:
-            effects = CommandEffectBuilder()
+            effect = CommandEffect()
             result = dispatch_command(
                 parsed_action,
                 CommandContext(
                     agent=agent,
                     config=config,
-                    ui_bus=effects,
+                    effect=effect,
                     ui_profile=ui_profile,
                     action_registry=parsed_action.registry,
                     ui_interactor=getattr(agent, "ui_interactor", None),
@@ -133,14 +133,14 @@ def handle_command(
                 ),
             )
         except Exception as exc:
-            ui_bus.error(
-                f"Command failed: {exc}",
-                kind=UIEventKind.COMMAND,
+            result = CommandEffect()
+            result.error(
+                f"Command failed: {exc}", kind=UIEventKind.COMMAND
             )
-            return {"action": "continue", "session_id": current_session_id}
+            result.finish(control="continue")
         _apply_command_effect(result, ui_bus)
         return {
-            "action": result.action,
+            "action": result.control,
             "session_id": result.session_id
             if result.session_id is not None
             else current_session_id,
@@ -164,14 +164,13 @@ def _apply_command_effect(result: CommandEffect, ui_bus: UIEventBus) -> None:
         except ValueError:
             kind = UIEventKind.COMMAND
         emit = getattr(ui_bus, notice.level)
-        emit(notice.message, kind=kind, **notice.data)
+        emit(notice.message, kind=kind, **notice.metadata)
 
-    for view in result.view_requests:
+    for view in result.views:
         if view.action == "refresh":
             ui_bus.refresh_view(
                 view.view_type,
                 title=view.title,
-                payload=view.payload,
                 reuse_key=view.reuse_key,
                 view_model=view.view_model,
             )
@@ -179,7 +178,6 @@ def _apply_command_effect(result: CommandEffect, ui_bus: UIEventBus) -> None:
             ui_bus.open_view(
                 view.view_type,
                 title=view.title,
-                payload=view.payload,
                 focus=view.focus,
                 reuse_key=view.reuse_key,
                 view_model=view.view_model,

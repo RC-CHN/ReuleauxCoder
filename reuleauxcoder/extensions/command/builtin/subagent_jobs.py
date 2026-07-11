@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -92,74 +92,74 @@ def _build_jobs_view(manager, jobs) -> SubagentJobsViewModel:
     )
 
 
-def _handle_list_jobs(command, ctx) -> CommandResult:
+def _handle_list_jobs(command, ctx) -> CommandEffect:
     manager = get_subagent_manager(ctx.agent)
     jobs = manager.list_jobs()
     view = _build_jobs_view(manager, jobs)
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Sub-agent Jobs",
         view_model=view,
         reuse_key=view.view_type,
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_get_job(command, ctx) -> CommandResult:
+def _handle_get_job(command, ctx) -> CommandEffect:
     manager = get_subagent_manager(ctx.agent)
     job = manager.get_job(command.job_id)
     if job is None:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             f"Sub-agent job '{command.job_id}' not found.", kind=UIEventKind.COMMAND
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     view = _build_jobs_view(manager, [job])
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title=f"Sub-agent Job {job.id}",
         view_model=view,
         reuse_key=view.view_type,
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_wait_job(command, ctx) -> CommandResult:
+def _handle_wait_job(command, ctx) -> CommandEffect:
     manager = get_subagent_manager(ctx.agent)
     job = manager.wait_job(command.job_id)
     if job is None:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             f"Sub-agent job '{command.job_id}' not found.", kind=UIEventKind.COMMAND
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     if job.status == "completed":
-        ctx.ui_bus.success(
+        ctx.effect.success(
             f"Job {job.id} completed.\n{job.result or ''}",
             kind=UIEventKind.COMMAND,
             job_id=job.id,
         )
     elif job.status == "failed":
-        ctx.ui_bus.error(
+        ctx.effect.error(
             f"Job {job.id} failed: {job.error or 'unknown error'}",
             kind=UIEventKind.COMMAND,
             job_id=job.id,
         )
     else:
-        ctx.ui_bus.warning(
+        ctx.effect.warning(
             f"Job {job.id} status: {job.status}",
             kind=UIEventKind.COMMAND,
             job_id=job.id,
         )
 
     view = _build_jobs_view(manager, manager.list_jobs())
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="Sub-agent Jobs",
         view_model=view,
         reuse_key=view.view_type,
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 @register_command_module

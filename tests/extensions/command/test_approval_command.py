@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from reuleauxcoder.app.commands.models import CommandEffect
 
 from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
@@ -14,7 +15,6 @@ from reuleauxcoder.extensions.command.builtin.approval import (
     _handle_set_approval_rule,
     _handle_set_global_approval_rule,
 )
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 
 
 def _build_ctx() -> SimpleNamespace:
@@ -25,8 +25,8 @@ def _build_ctx() -> SimpleNamespace:
         ToolPolicyGuardHook(approval_config=config.approval),
     )
     agent = SimpleNamespace(hook_registry=hook_registry)
-    ui_bus = UIEventBus()
-    return SimpleNamespace(config=config, agent=agent, ui_bus=ui_bus)
+    effect = CommandEffect()
+    return SimpleNamespace(config=config, agent=agent, effect=effect)
 
 
 def test_set_approval_rule_is_session_scoped() -> None:
@@ -42,11 +42,11 @@ def test_set_approval_rule_is_session_scoped() -> None:
     assert len(session_rules) == 1
     assert session_rules[0].tool_name == "shell"
     assert session_rules[0].action == "deny"
-    assert result.payload["rules"][0]["tool_name"] == "shell"
+    assert result.state["rules"][0]["tool_name"] == "shell"
     assert any(
-        event.level == UIEventLevel.SUCCESS
+        event.level == "success"
         and event.message == "Updated session approval rule"
-        for event in ctx.ui_bus._history
+        for event in ctx.effect.notifications
     )
 
 
@@ -74,11 +74,11 @@ def test_set_global_approval_rule_updates_config_and_runtime(monkeypatch) -> Non
     assert ctx.config.approval.rules[0].tool_name == "shell"
     assert ctx.config.approval.rules[0].action == "warn"
     assert getattr(ctx.agent, "session_approval_rules", []) == []
-    assert result.payload["saved_path"] == "/tmp/config.yaml"
+    assert result.state["saved_path"] == "/tmp/config.yaml"
     assert any(
-        event.level == UIEventLevel.SUCCESS
+        event.level == "success"
         and "Updated global approval rule" in event.message
-        for event in ctx.ui_bus._history
+        for event in ctx.effect.notifications
     )
 
 

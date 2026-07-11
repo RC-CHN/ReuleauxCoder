@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -87,20 +87,20 @@ def _build_approval_view(ctx):
     return view
 
 
-def _handle_show_approval(command, ctx) -> CommandResult:
+def _handle_show_approval(command, ctx) -> CommandEffect:
     view = _build_approval_view(ctx)
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Approval Rules",
         view_model=view,
         reuse_key="approval_rules",
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 def _validate_approval_rule(command, ctx):
     if command.action not in VALID_APPROVAL_ACTIONS:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             "approval action must be one of allow, warn, require_approval, deny",
             kind=UIEventKind.APPROVAL,
         )
@@ -108,7 +108,7 @@ def _validate_approval_rule(command, ctx):
 
     rule = parse_approval_target(command.target, command.action)
     if rule is None:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             "target must be one of tool:<name>, mcp, mcp:<server>, or mcp:<server>:<tool>",
             kind=UIEventKind.APPROVAL,
         )
@@ -116,10 +116,10 @@ def _validate_approval_rule(command, ctx):
     return rule
 
 
-def _handle_set_approval_rule(command, ctx) -> CommandResult:
+def _handle_set_approval_rule(command, ctx) -> CommandEffect:
     rule = _validate_approval_rule(command, ctx)
     if rule is None:
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     session_rules = list(getattr(ctx.agent, "session_approval_rules", []) or [])
     session_rules = [
@@ -132,26 +132,26 @@ def _handle_set_approval_rule(command, ctx) -> CommandResult:
     )
 
     view = _build_approval_view(ctx)
-    ctx.ui_bus.success(
+    ctx.effect.success(
         "Updated session approval rule",
         kind=UIEventKind.APPROVAL,
         target=command.target,
         action_name=command.action,
     )
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="Approval Rules",
         view_model=view,
         reuse_key="approval_rules",
     )
 
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
+def _handle_set_global_approval_rule(command, ctx) -> CommandEffect:
     rule = _validate_approval_rule(command, ctx)
     if rule is None:
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     ctx.config.approval.rules = [
         existing
@@ -164,22 +164,22 @@ def _handle_set_global_approval_rule(command, ctx) -> CommandResult:
     refresh_approval_runtime(ctx.agent, approval)
 
     view = _build_approval_view(ctx)
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Updated global approval rule and saved to {path}",
         kind=UIEventKind.APPROVAL,
         target=command.target,
         action_name=command.action,
         saved_path=str(path),
     )
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="Approval Rules",
         view_model=view,
         reuse_key="approval_rules",
     )
 
-    return CommandResult(
-        action="continue", payload={"saved_path": str(path), **view.to_payload()}
+    return ctx.effect.finish(
+        control="continue", state_changes={"saved_path": str(path), **view.to_payload()}
     )
 
 

@@ -45,26 +45,28 @@ def test_ui_event_bus_emit_ignores_handler_exceptions() -> None:
 
 
 def test_ui_event_bus_open_view_emits_structured_view_event() -> None:
+    from reuleauxcoder.app.commands.view_models import HelpViewModel
+
     bus = UIEventBus()
     seen = []
     bus.subscribe(lambda event: seen.append(event), replay_history=False)
 
     bus.open_view(
-        "skills",
-        title="Skills",
-        payload={"markdown": "# Skills"},
+        "help",
+        title="Help",
+        view_model=HelpViewModel(sections=()),
         focus=False,
-        reuse_key="skills",
+        reuse_key="help",
     )
 
     event = seen[0]
     assert event.kind is UIEventKind.VIEW
     assert event.data["action"] == "open"
-    assert event.data["view_type"] == "skills"
-    assert event.data["title"] == "Skills"
-    assert event.data["payload"] == {"markdown": "# Skills"}
+    assert event.data["view_type"] == "help"
+    assert event.data["title"] == "Help"
+    assert event.data["view_model"].view_type == "help"
     assert event.data["focus"] is False
-    assert event.data["reuse_key"] == "skills"
+    assert event.data["reuse_key"] == "help"
 
 
 def test_agent_event_bridge_maps_error_to_error_level() -> None:

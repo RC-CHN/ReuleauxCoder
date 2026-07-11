@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
-from reuleauxcoder.app.commands.models import CommandResult
+from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.view_models import (
     ModelListViewModel,
     ModelProfileViewModel,
@@ -129,27 +129,27 @@ def _parse_switch_model(user_input: str, parse_ctx):
     return SwitchModelCommand(profile_name=profile)
 
 
-def _handle_show_model(command, ctx) -> CommandResult:
+def _handle_show_model(command, ctx) -> CommandEffect:
     view = _build_model_profiles_view(
         ctx.config,
         runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
     )
 
-    ctx.ui_bus.open_view(
+    ctx.effect.open_view(
         view.view_type,
         title="Model Profiles",
         view_model=view,
         reuse_key="model_profiles",
     )
 
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 def _resolve_profile(ctx, profile_name: str):
     profiles = getattr(ctx.config, "model_profiles", {}) or {}
     profile = profiles.get(profile_name)
     if profile is None:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             f"Unknown model profile '{profile_name}'. Use /model to list available profiles.",
             kind=UIEventKind.MODEL,
             profile_name=profile_name,
@@ -175,7 +175,7 @@ def _refresh_model_view(ctx) -> ModelListViewModel:
         ctx.config,
         runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
     )
-    ctx.ui_bus.refresh_view(
+    ctx.effect.refresh_view(
         view.view_type,
         title="Model Profiles",
         view_model=view,
@@ -184,51 +184,51 @@ def _refresh_model_view(ctx) -> ModelListViewModel:
     return view
 
 
-def _handle_switch_model(command, ctx) -> CommandResult:
+def _handle_switch_model(command, ctx) -> CommandEffect:
     profile_name = command.profile_name
     profile = _resolve_profile(ctx, profile_name)
     if profile is None:
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     _apply_main_profile_to_runtime(ctx, profile_name, profile)
     view = _refresh_model_view(ctx)
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Switched session main model profile to '{profile_name}' ({profile.model})",
         kind=UIEventKind.MODEL,
         profile_name=profile_name,
         model=profile.model,
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_use_main_model(command, ctx) -> CommandResult:
+def _handle_use_main_model(command, ctx) -> CommandEffect:
     return _handle_switch_model(
         SwitchModelCommand(profile_name=command.profile_name), ctx
     )
 
 
-def _handle_use_sub_model(command, ctx) -> CommandResult:
+def _handle_use_sub_model(command, ctx) -> CommandEffect:
     profile_name = command.profile_name
     profile = _resolve_profile(ctx, profile_name)
     if profile is None:
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     ctx.agent.active_sub_model_profile = profile_name
     view = _refresh_model_view(ctx)
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Switched session sub-agent model profile to '{profile_name}' ({profile.model})",
         kind=UIEventKind.MODEL,
         profile_name=profile_name,
         model=profile.model,
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_set_main_model(command, ctx) -> CommandResult:
+def _handle_set_main_model(command, ctx) -> CommandEffect:
     profile_name = command.profile_name
     profile = _resolve_profile(ctx, profile_name)
     if profile is None:
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     ctx.config.active_model_profile = profile_name
     ctx.config.active_main_model_profile = profile_name
@@ -242,32 +242,32 @@ def _handle_set_main_model(command, ctx) -> CommandResult:
 
     _apply_main_profile_to_runtime(ctx, profile_name, profile)
     view = _refresh_model_view(ctx)
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Set global main model profile to '{profile_name}' ({profile.model}) and saved to {path}",
         kind=UIEventKind.MODEL,
         profile_name=profile_name,
         model=profile.model,
         saved_path=str(path),
     )
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
-def _handle_set_sub_model(command, ctx) -> CommandResult:
+def _handle_set_sub_model(command, ctx) -> CommandEffect:
     profile_name = command.profile_name
     profiles = getattr(ctx.config, "model_profiles", {}) or {}
     profile = profiles.get(profile_name)
     if profile is None:
-        ctx.ui_bus.error(
+        ctx.effect.error(
             f"Unknown model profile '{profile_name}'. Use /model to list available profiles.",
             kind=UIEventKind.MODEL,
             profile_name=profile_name,
         )
-        return CommandResult(action="continue")
+        return ctx.effect.finish(control="continue")
 
     ctx.config.active_sub_model_profile = profile_name
     path = WorkspaceConfigStore().save_active_sub_model_profile(profile_name)
 
-    ctx.ui_bus.success(
+    ctx.effect.success(
         f"Set global sub-agent model profile to '{profile_name}' ({profile.model}) and saved to {path}",
         kind=UIEventKind.MODEL,
         profile_name=profile_name,
@@ -277,7 +277,7 @@ def _handle_set_sub_model(command, ctx) -> CommandResult:
 
     view = _refresh_model_view(ctx)
 
-    return CommandResult(action="continue", payload=view.to_payload())
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 def _build_model_profiles_view(config, runtime_state=None) -> ModelListViewModel:

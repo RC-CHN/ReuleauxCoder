@@ -10,9 +10,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib import request
 
-
-_URLOPEN = request.build_opener(request.ProxyHandler({})).open
-
 from reuleauxcoder.domain.config.models import (
     Config,
     ContextConfig,
@@ -20,6 +17,7 @@ from reuleauxcoder.domain.config.models import (
     RemoteExecConfig,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.extensions.lifecycle import LifecycleCoordinator
 from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
@@ -29,6 +27,9 @@ from reuleauxcoder.interfaces.entrypoint.runner import (
     AppOptions,
     AppRunner,
 )
+
+
+_URLOPEN = request.build_opener(request.ProxyHandler({})).open
 
 
 def _free_port() -> int:
@@ -96,7 +97,9 @@ class FakeAgent:
         self.active_sub_model_profile = None
         self.session_fingerprint = "local"
         self.hook_registry = HookRegistry()
+        self.lifecycle = LifecycleCoordinator(self.hook_registry)
         self._event_handlers = []
+        self._stop_requested = False
         self.approval_provider = None
         self._chat_behavior = chat_behavior or (lambda _agent, prompt: f"ok:{prompt}")
 
@@ -108,6 +111,12 @@ class FakeAgent:
 
     def set_mode(self, mode_name: str) -> None:
         self.active_mode = mode_name
+
+    def clear_stop_request(self) -> None:
+        self._stop_requested = False
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
 
     def chat(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
@@ -361,7 +370,9 @@ class TestRunnerRemoteExec:
             events = _collect_stream_events(
                 runner._relay_http_service.base_url, peer_token, start_body["chat_id"]
             )
-            first_end = [event for event in events if event["type"] == "chat_end"][-1]
+            chat_ends = [event for event in events if event["type"] == "chat_end"]
+            assert chat_ends, events
+            first_end = chat_ends[-1]
             assert first_end["payload"]["response"] == "call:1"
             assert "REMOTE PEER READY" not in str(events)
 
