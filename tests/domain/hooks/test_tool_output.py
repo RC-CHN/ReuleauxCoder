@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from reuleauxcoder.domain.hooks.builtin.tool_output import ToolOutputTruncationHook
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.domain.llm.models import ToolCall
 
@@ -28,6 +29,23 @@ def test_tool_output_truncates_regular_read_file_output() -> None:
     out = hook.run(ctx)
 
     assert "[truncated]" in out.result
+
+
+def test_tool_output_retains_structured_source_while_bounding_model_projection() -> None:
+    hook = ToolOutputTruncationHook(max_chars=12, max_lines=2, store_full_output=False)
+    source = "line1\nline2\nline3"
+    ctx = _ctx("/tmp/notes.md", source)
+    ctx.outcome = ToolOutcome(summary="read notes", content=source)
+
+    out = hook.run(ctx)
+
+    assert out.outcome is not None
+    assert out.outcome.content == source
+    assert out.outcome.summary == "read notes"
+    assert out.outcome.truncation is not None
+    assert out.outcome.truncation.original_chars == len(source)
+    assert "[truncated]" in out.outcome.model_text
+    assert out.outcome.ui_text(include_details=True) == source
 
 
 def test_tool_output_bypasses_truncation_for_workspace_skills_markdown(

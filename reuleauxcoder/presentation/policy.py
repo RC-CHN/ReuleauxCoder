@@ -23,9 +23,9 @@ class PresentationPolicy:
     def tool_preview(self, outcome: ToolOutcome) -> str:
         """Create a display-only preview without mutating model text."""
         if self.verbosity is Verbosity.DEBUG:
-            return outcome.display_text
+            return outcome.ui_text(include_details=True)
 
-        text = outcome.display_text
+        text = outcome.ui_text(include_details=self.verbosity is Verbosity.STANDARD)
         lines = text.splitlines()
         visible_lines = lines[: self.tool_preview_lines]
         preview = "\n".join(visible_lines)

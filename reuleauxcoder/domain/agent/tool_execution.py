@@ -208,7 +208,12 @@ class ToolExecutor:
             return message
 
         try:
-            result = tool.execute(**tool_call.arguments)
+            raw_result = tool.execute(**tool_call.arguments)
+            outcome = (
+                raw_result
+                if isinstance(raw_result, ToolOutcome)
+                else ToolOutcome.from_legacy(raw_result)
+            )
             if (shell_cwd := getattr(tool, "_cwd", None)) is not None:
                 self.agent.runtime_working_directory = str(shell_cwd)
             after_context = AfterToolExecuteContext(
@@ -218,24 +223,33 @@ class ToolExecutor:
                 session_id=self.agent.current_session_id,
                 turn_id=self.agent._current_turn_id,
                 tool_call=tool_call,
-                result=result,
+                result=outcome.model_text,
+                outcome=outcome,
                 round_index=self.agent.state.current_round,
             )
             after_context = self.agent.extension_runtime.process_tool_outcome(
                 after_context
             )
+            outcome = after_context.outcome or ToolOutcome.from_legacy(
+                after_context.result
+            )
+            # Legacy transforms may still replace ``result``.  Preserve that
+            # compatibility at this single hook boundary.
+            if after_context.result != outcome.model_text:
+                outcome = outcome.with_model_projection(after_context.result)
+                after_context.outcome = outcome
             self.agent.extension_runtime.observe(
                 HookPoint.AFTER_TOOL_EXECUTE, after_context
             )
             self.agent._emit_event(
                 AgentEvent.tool_call_end(
                     tool_call.name,
-                    after_context.result,
+                    outcome.model_text,
                     tool_call_id=tc.id,
-                    outcome=ToolOutcome.from_legacy(after_context.result),
+                    outcome=outcome,
                 )
             )
-            return after_context.result
+            return outcome.model_text
         except KeyboardInterrupt:
             message = f"Tool '{tool_call.name}' interrupted by user."
             self.agent._emit_event(

@@ -6,8 +6,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any
 
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 
-BackendHandler = Callable[..., str]
+
+ToolResult = str | ToolOutcome
+BackendHandler = Callable[..., ToolResult]
 
 
 def backend_handler(backend_id: str) -> Callable[[BackendHandler], BackendHandler]:
@@ -53,7 +56,7 @@ class Tool(ABC):
     def backend_id(self) -> str:
         return getattr(self.backend, "backend_id", "local")
 
-    def run_backend(self, *args, **kwargs) -> str:
+    def run_backend(self, *args, **kwargs) -> ToolResult:
         """Dispatch to a tool-local implementation for the active backend."""
         handler_name = self._backend_handlers.get(self.backend_id)
         if handler_name is None:
@@ -66,8 +69,8 @@ class Tool(ABC):
         return handler(*args, **kwargs)
 
     @abstractmethod
-    def execute(self, **kwargs) -> str:
-        """Run the tool and return a text result."""
+    def execute(self, **kwargs) -> ToolResult:
+        """Run the tool and return a structured or legacy text result."""
         ...
 
     def schema(self) -> dict:

@@ -1,6 +1,10 @@
 import pytest
 
-from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind, ToolOutcome
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 
 
 def test_legacy_outcome_keeps_model_and_display_text_unbounded() -> None:
@@ -22,4 +26,17 @@ def test_failed_outcome_can_carry_stable_error_kind() -> None:
 
 def test_successful_outcome_rejects_error_kind() -> None:
     with pytest.raises(ValueError):
-        ToolOutcome("bad", success=True, error_kind=ToolErrorKind.INTERNAL)
+        ToolOutcome(
+            status=ToolOutcomeStatus.SUCCEEDED,
+            content="bad",
+            error_kind=ToolErrorKind.INTERNAL,
+        )
+
+
+def test_model_and_ui_projections_are_independent() -> None:
+    outcome = ToolOutcome(summary="short", content="full details")
+    bounded = outcome.with_model_projection("model limit")
+
+    assert bounded.model_text == "model limit"
+    assert bounded.ui_text(include_details=False) == "short"
+    assert bounded.ui_text(include_details=True) == "full details"

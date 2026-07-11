@@ -11,6 +11,11 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
 
 from reuleauxcoder.domain.hooks.base import TransformHook
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolArchiveReference,
+    ToolOutcome,
+    ToolTruncation,
+)
 from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.infrastructure.fs.paths import get_tool_outputs_dir
@@ -56,7 +61,8 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         if self._should_bypass_truncation(tool_call.name, tool_call.arguments):
             return context
 
-        result = context.result
+        outcome = context.outcome or ToolOutcome.from_legacy(context.result)
+        result = outcome.model_text
         line_count = len(result.splitlines())
         char_count = len(result)
         if line_count <= self.max_lines and char_count <= self.max_chars:
@@ -83,12 +89,27 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
                 "To recover the full archived output, call read_file on that path with override=true."
             )
 
-        context.result = (
+        model_projection = (
             "\n".join(summary_lines)
             + "\n\n--- BEGIN TRUNCATED OUTPUT ---\n"
             + truncated_text
             + "\n--- END TRUNCATED OUTPUT ---"
         )
+        context.outcome = outcome.with_model_projection(
+            model_projection,
+            truncation=ToolTruncation(
+                original_chars=char_count,
+                original_lines=line_count,
+                retained_chars=len(truncated_text),
+                retained_lines=len(truncated_text.splitlines()),
+            ),
+            archive_reference=(
+                ToolArchiveReference(path=str(archive_path))
+                if archive_path is not None
+                else None
+            ),
+        )
+        context.result = context.outcome.model_text
         return context
 
     def _archive_output(

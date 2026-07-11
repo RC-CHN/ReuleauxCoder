@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 
 
 class HookKind(str, Enum):
@@ -58,6 +59,7 @@ class AfterToolExecuteContext(HookContext):
 
     tool_call: ToolCall | None = None
     result: str = ""
+    outcome: ToolOutcome | None = None
     round_index: int | None = None
 
 
