@@ -33,6 +33,7 @@ from reuleauxcoder.presentation.models import (
     AssistantCell,
     ApprovalCell,
     DiagnosticCell,
+    DiffCell,
     NoticeCell,
     SubagentCell,
     ToolCell,
@@ -62,9 +63,7 @@ class PresentationChange:
 class RuntimeViewState:
     transcript: TranscriptModel = field(default_factory=TranscriptModel)
     seen_event_ids: set[str] = field(default_factory=set)
-    session_generations: dict[tuple[str, str | None], int] = field(
-        default_factory=dict
-    )
+    session_generations: dict[tuple[str, str | None], int] = field(default_factory=dict)
     active_session_id: str | None = None
     runtime_state: str = "idle"
     view_revisions: dict[tuple[str, str], int] = field(default_factory=dict)
@@ -281,9 +280,7 @@ class PresentationReducer:
             event.turn_id,
         )
 
-    def _finish_tool(
-        self, payload: ToolCallFinished
-    ) -> tuple[PresentationChange, ...]:
+    def _finish_tool(self, payload: ToolCallFinished) -> tuple[PresentationChange, ...]:
         cell_id = f"tool:{payload.tool_call_id}"
         existing = self.state.transcript.get(cell_id)
         status = (
@@ -292,20 +289,32 @@ class PresentationReducer:
             else ToolCellStatus.FAILED
         )
         if isinstance(existing, ToolCell):
-            updated = next_revision(
-                existing, status=status, outcome=payload.outcome
+            updated = next_revision(existing, status=status, outcome=payload.outcome)
+            changes = self._replace(updated)
+        else:
+            orphan = ToolCell(
+                id=cell_id,
+                tool_call_id=payload.tool_call_id,
+                name=payload.tool_name,
+                arguments=None,
+                status=status,
+                outcome=payload.outcome,
+                orphaned=True,
             )
-            return self._replace(updated)
-        orphan = ToolCell(
-            id=cell_id,
-            tool_call_id=payload.tool_call_id,
-            name=payload.tool_name,
-            arguments=None,
-            status=status,
-            outcome=payload.outcome,
-            orphaned=True,
-        )
-        return self._append(orphan)
+            changes = self._append(orphan)
+        return changes + self._record_diff(payload)
+
+    def _record_diff(self, payload: ToolCallFinished) -> tuple[PresentationChange, ...]:
+        diff = payload.outcome.diff
+        if diff is None or not diff.unified:
+            return ()
+        cell_id = f"diff:{payload.tool_call_id}"
+        existing = self.state.transcript.get(cell_id)
+        if isinstance(existing, DiffCell):
+            return self._replace(
+                next_revision(existing, path=diff.path, diff=diff.unified)
+            )
+        return self._append(DiffCell(id=cell_id, path=diff.path, diff=diff.unified))
 
     def _append_tool_output(
         self, payload: ToolOutputDelta

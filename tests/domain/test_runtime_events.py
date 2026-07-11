@@ -1,16 +1,32 @@
+import json
+
 import pytest
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolArchiveReference,
+    ToolDiagnostic,
+    ToolDiff,
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+    ToolTruncation,
+)
 from reuleauxcoder.domain.runtime.events import (
     AssistantContentDelta,
     NotificationRaised,
     ReasoningDelta,
     RuntimeEventKind,
+    RuntimeEvent,
     ToolCallFinished,
     ToolCallStarted,
     TurnFinished,
     TurnStarted,
     agent_event_to_runtime_event,
+)
+from reuleauxcoder.domain.runtime.serialization import (
+    runtime_event_from_dict,
+    runtime_event_to_dict,
 )
 
 
@@ -104,3 +120,59 @@ def test_structured_diagnostic_becomes_runtime_notification() -> None:
     assert isinstance(runtime.payload, NotificationRaised)
     assert runtime.payload.code == "hook.failure"
     assert runtime.payload.details == {"hook_name": "demo"}
+
+
+def test_runtime_event_json_round_trip_preserves_structured_tool_outcome() -> None:
+    event = RuntimeEvent(
+        payload=ToolCallFinished(
+            tool_call_id="call-1",
+            tool_name="edit_file",
+            outcome=ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                summary="edit failed",
+                stdout="partial",
+                stderr="broken",
+                diff=ToolDiff(path="main.py", unified="--- a/main.py\n+++ b/main.py\n"),
+                diagnostics=(
+                    ToolDiagnostic(
+                        path="main.py",
+                        line=2,
+                        character=4,
+                        message="invalid",
+                        severity="error",
+                    ),
+                ),
+                exit_code=1,
+                duration_seconds=0.25,
+                truncation=ToolTruncation(100, 10, 20, 2),
+                archive_reference=ToolArchiveReference("/tmp/output.txt"),
+                metadata={"attempt": 2, "labels": ["lsp"]},
+                error_kind=ToolErrorKind.EXECUTION,
+                model_content="bounded",
+            ),
+        ),
+        event_id="event-1",
+        timestamp=123.5,
+        agent_id="agent-1",
+        session_generation=3,
+        session_id="session-1",
+        turn_id="turn-1",
+        correlation_id="call-1",
+    )
+
+    encoded = json.loads(json.dumps(runtime_event_to_dict(event)))
+
+    assert runtime_event_from_dict(encoded) == event
+
+
+def test_runtime_event_codec_rejects_unknown_version_and_payload() -> None:
+    event = RuntimeEvent(payload=TurnStarted("hello"), event_id="event-1")
+    encoded = runtime_event_to_dict(event)
+    encoded["version"] = 999
+    with pytest.raises(ValueError, match="Unsupported runtime event version"):
+        runtime_event_from_dict(encoded)
+
+    encoded = runtime_event_to_dict(event)
+    encoded["payload"]["type"] = "OpaquePayload"
+    with pytest.raises(ValueError, match="Unknown runtime payload type"):
+        runtime_event_from_dict(encoded)

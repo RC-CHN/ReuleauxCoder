@@ -30,6 +30,11 @@ from reuleauxcoder.domain.runtime.events import (
     ViewRequested,
     agent_event_to_runtime_event,
 )
+from reuleauxcoder.domain.runtime.serialization import (
+    RUNTIME_EVENT_CODEC_VERSION,
+    runtime_event_from_dict,
+    runtime_event_to_dict,
+)
 
 __all__ = [
     "ApprovalRequested",
@@ -42,6 +47,7 @@ __all__ = [
     "ErrorOccurred",
     "NotificationRaised",
     "ReasoningDelta",
+    "RUNTIME_EVENT_CODEC_VERSION",
     "RuntimeEvent",
     "RuntimeEventKind",
     "RuntimeDiagnostic",
@@ -60,4 +66,6 @@ __all__ = [
     "ViewRefreshed",
     "ViewRequested",
     "agent_event_to_runtime_event",
+    "runtime_event_from_dict",
+    "runtime_event_to_dict",
 ]

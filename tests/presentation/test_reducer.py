@@ -1,4 +1,5 @@
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.agent.tool_outcome import ToolDiff, ToolOutcome
 from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
@@ -9,6 +10,7 @@ from reuleauxcoder.domain.runtime.events import (
     RuntimeEvent,
     RuntimeStateChanged,
     SessionChanged,
+    ToolCallFinished,
     ToolOutputDelta,
     ViewRefreshed,
     ViewRequested,
@@ -17,6 +19,7 @@ from reuleauxcoder.presentation.models import (
     ApprovalCell,
     AssistantCell,
     DiagnosticCell,
+    DiffCell,
     ToolCell,
     ToolCellStatus,
 )
@@ -36,24 +39,22 @@ def test_stream_deltas_merge_into_one_assistant_cell() -> None:
     reducer.apply(_runtime(AgentEvent.chat_end("hello world", render_response=False)))
 
     assert reducer.state.transcript.cells == (
-        AssistantCell(id="assistant:turn-1", text="hello world", complete=True, revision=2),
+        AssistantCell(
+            id="assistant:turn-1", text="hello world", complete=True, revision=2
+        ),
     )
 
 
 def test_parallel_tool_ends_update_their_own_cells_out_of_order() -> None:
     reducer = PresentationReducer()
-    reducer.apply(
-        _runtime(AgentEvent.tool_call_start("shell", {}, tool_call_id="a"))
-    )
+    reducer.apply(_runtime(AgentEvent.tool_call_start("shell", {}, tool_call_id="a")))
     reducer.apply(
         _runtime(AgentEvent.tool_call_start("read_file", {}, tool_call_id="b"))
     )
     reducer.apply(
         _runtime(AgentEvent.tool_call_end("read_file", "B", tool_call_id="b"))
     )
-    reducer.apply(
-        _runtime(AgentEvent.tool_call_end("shell", "A", tool_call_id="a"))
-    )
+    reducer.apply(_runtime(AgentEvent.tool_call_end("shell", "A", tool_call_id="a")))
 
     first, second = reducer.state.transcript.cells
     assert isinstance(first, ToolCell) and first.outcome.model_text == "A"
@@ -72,6 +73,33 @@ def test_orphan_tool_end_is_explicit_and_deduplicated() -> None:
     (cell,) = reducer.state.transcript.cells
     assert isinstance(cell, ToolCell)
     assert cell.orphaned is True
+
+
+def test_structured_tool_diff_becomes_a_correlated_diff_cell() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(
+        _runtime(AgentEvent.tool_call_start("edit_file", {}, tool_call_id="x"))
+    )
+    event = RuntimeEvent(
+        payload=ToolCallFinished(
+            tool_call_id="x",
+            tool_name="edit_file",
+            outcome=ToolOutcome(
+                summary="Edited main.py",
+                diff=ToolDiff(path="main.py", unified="--- a/main.py\n+++ b/main.py\n"),
+            ),
+        )
+    )
+
+    changes = reducer.apply(event)
+
+    assert [change.cell.id for change in changes if change.cell is not None] == [
+        "tool:x",
+        "diff:x",
+    ]
+    diff = reducer.state.transcript.get("diff:x")
+    assert isinstance(diff, DiffCell)
+    assert diff.path == "main.py"
 
 
 def test_transcript_retention_is_bounded_and_reindexed() -> None:
@@ -171,9 +199,7 @@ def test_diagnostic_publish_and_clear_update_same_typed_cell() -> None:
             file_path="main.py",
             document_version=2,
             diagnostic_generation=4,
-            diagnostics=(
-                RuntimeDiagnostic(line=1, character=2, message="broken"),
-            ),
+            diagnostics=(RuntimeDiagnostic(line=1, character=2, message="broken"),),
         ),
         agent_id="agent-1",
     )
@@ -232,9 +258,7 @@ def test_session_runtime_and_view_events_update_typed_view_state() -> None:
     )
     reducer.apply(
         RuntimeEvent(
-            payload=ViewRefreshed(
-                request_id="v-1", view_type="models", revision=2
-            )
+            payload=ViewRefreshed(request_id="v-1", view_type="models", revision=2)
         )
     )
 
