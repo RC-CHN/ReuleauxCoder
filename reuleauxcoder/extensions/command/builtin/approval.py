@@ -126,7 +126,7 @@ def _handle_set_approval_rule(command, ctx) -> CommandResult:
         existing for existing in session_rules if not same_rule_target(existing, rule)
     ]
     session_rules.append(rule)
-    setattr(ctx.agent, "session_approval_rules", session_rules)
+    ctx.agent.session_approval_rules = session_rules
     refresh_approval_runtime(
         ctx.agent, get_runtime_approval_config(ctx.config, ctx.agent)
     )

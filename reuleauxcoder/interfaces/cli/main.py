@@ -93,7 +93,7 @@ def main():
         return
 
     ctx.ui_interactor = cli_ui.interactor
-    setattr(ctx.agent, "ui_interactor", cli_ui.interactor)
+    ctx.agent.ui_interactor = cli_ui.interactor
     ctx.agent.approval_provider = SharedApprovalProvider(
         handler=make_cli_handler(cli_ui.interactor)
     )

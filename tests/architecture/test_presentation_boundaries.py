@@ -54,3 +54,21 @@ def test_command_extensions_do_not_import_cli_or_ui_frameworks() -> None:
             if imported.startswith(forbidden):
                 violations.append(f"{path.relative_to(ROOT)} imports {imported}")
     assert violations == []
+
+
+def test_runtime_does_not_dynamically_inject_agent_dependencies() -> None:
+    violations = []
+    root = ROOT / "reuleauxcoder"
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name) or node.func.id != "setattr":
+                continue
+            if not node.args:
+                continue
+            target = ast.unparse(node.args[0])
+            if target.endswith("agent") or target.endswith(".agent"):
+                violations.append(f"{path.relative_to(ROOT)} dynamically mutates {target}")
+    assert violations == []

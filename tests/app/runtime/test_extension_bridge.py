@@ -1,6 +1,5 @@
-from types import SimpleNamespace
-
 from reuleauxcoder.app.runtime.extension_bridge import LegacyHookLifecycleParticipant
+from reuleauxcoder.domain.extensions import LifecycleCoordinator
 from reuleauxcoder.domain.hooks import HookPoint
 
 
@@ -23,7 +22,7 @@ class _Registry:
 def test_legacy_hook_lifecycle_is_exactly_once() -> None:
     registry = _Registry()
     participant = LegacyHookLifecycleParticipant(
-        agent=SimpleNamespace(hook_registry=registry),
+        coordinator=LifecycleCoordinator(registry),
         ui_bus=object(),
         session_id="session-1",
     )

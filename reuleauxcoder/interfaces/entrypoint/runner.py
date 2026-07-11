@@ -88,7 +88,7 @@ class AppRunner:
                     thread_safe=False,
                 ),
                 factory=lambda context: LegacyHookLifecycleParticipant(
-                    agent=context.services["agent"],
+                    coordinator=context.services["agent"].lifecycle,
                     ui_bus=context.services["ui_bus"],
                     session_id=context.services.get("session_id"),
                 ),
@@ -162,9 +162,9 @@ class AppRunner:
             )
         tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
-        setattr(agent, "runtime_config", config)
-        setattr(agent, "current_session_id", None)
-        setattr(agent, "session_fingerprint", get_session_fingerprint(config, agent))
+        agent.runtime_config = config
+        agent.current_session_id = None
+        agent.session_fingerprint = get_session_fingerprint(config, agent)
         agent.context._ui_bus = ui_bus
 
         self._register_hooks(agent, config)
@@ -285,7 +285,7 @@ class AppRunner:
         mcp_manager = None
         if config.mcp_servers:
             mcp_manager = self._init_mcp(config.mcp_servers, agent, ui_bus)
-        setattr(agent, "mcp_manager", mcp_manager)
+        agent.mcp_manager = mcp_manager
         return mcp_manager
 
     def _init_skills(
@@ -301,8 +301,8 @@ class AppRunner:
             disabled_names=list(config.skills.disabled),
         )
         reload_result = skills_service.reload()
-        setattr(agent, "skills_service", skills_service)
-        setattr(agent, "skills_catalog", reload_result.catalog)
+        agent.skills_service = skills_service
+        agent.skills_catalog = reload_result.catalog
 
         if not config.skills.enabled:
             ui_bus.info("Skills disabled by config.", kind=UIEventKind.SYSTEM)

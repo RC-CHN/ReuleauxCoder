@@ -113,13 +113,11 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
         agent.context.reconfigure(profile.max_context_tokens)
     else:
         agent.llm.debug_trace = getattr(config, "llm_debug_trace", False)
-    setattr(agent, "active_main_model_profile", main_profile_name)
-    setattr(
-        agent,
-        "active_sub_model_profile",
-        getattr(config, "active_sub_model_profile", None),
+    agent.active_main_model_profile = main_profile_name
+    agent.active_sub_model_profile = getattr(
+        config, "active_sub_model_profile", None
     )
-    setattr(agent, "session_approval_rules", [])
+    agent.session_approval_rules = []
     refresh_approval_runtime(agent, config.approval)
 
     default_mode = getattr(config, "active_mode", None)
@@ -159,7 +157,7 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
             )
             for rule in runtime.approval_rules
         ]
-        setattr(agent, "session_approval_rules", session_rules)
+        agent.session_approval_rules = session_rules
         refresh_approval_runtime(
             agent, merge_approval_config(config.approval, session_rules)
         )
@@ -185,9 +183,9 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
             debug_trace=agent.llm.debug_trace,
         )
         agent.context.reconfigure(profile.max_context_tokens)
-        setattr(agent, "active_main_model_profile", main_profile)
+        agent.active_main_model_profile = main_profile
     elif runtime.model:
         agent.llm.model = runtime.model
-        setattr(agent, "active_main_model_profile", None)
+        agent.active_main_model_profile = None
 
-    setattr(agent, "active_sub_model_profile", runtime.active_sub_model_profile)
+    agent.active_sub_model_profile = runtime.active_sub_model_profile

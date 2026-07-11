@@ -8,6 +8,7 @@ from reuleauxcoder.domain.extensions.manager import (
     ExtensionScopeContainer,
 )
 from reuleauxcoder.domain.extensions.hook_adapter import HookExtensionAdapter
+from reuleauxcoder.domain.extensions.lifecycle import LifecycleCoordinator
 from reuleauxcoder.domain.extensions.ports import (
     AuthorizationPolicy,
     ContextContributor,
@@ -36,6 +37,7 @@ __all__ = [
     "SubagentPolicy",
     "ExtensionScopeContainer",
     "HookExtensionAdapter",
+    "LifecycleCoordinator",
     "AuthorizationPolicy",
     "ContextContributor",
     "LifecycleParticipant",

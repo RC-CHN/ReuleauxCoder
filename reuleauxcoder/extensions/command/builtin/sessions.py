@@ -22,7 +22,6 @@ from reuleauxcoder.app.runtime.session_state import (
     get_session_fingerprint,
     restore_config_runtime_defaults,
 )
-from reuleauxcoder.domain.hooks import HookPoint, SessionSaveContext
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -162,7 +161,8 @@ def _handle_resume_session(command, ctx) -> CommandResult:
         )
 
     apply_session_runtime_state(loaded, ctx.config, ctx.agent)
-    setattr(ctx.agent, "session_fingerprint", loaded.fingerprint)
+    ctx.agent.session_fingerprint = loaded.fingerprint
+    ctx.agent.lifecycle.session_started(session_id, reason="restore")
 
     runtime = loaded.runtime_state
     if runtime.active_mode:
@@ -206,7 +206,7 @@ def _handle_save_session(command, ctx) -> CommandResult:
         runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
         fingerprint=fingerprint,
     )
-    _emit_session_save_hooks(ctx.agent, session_id)
+    ctx.agent.lifecycle.session_saved(session_id)
     ctx.ui_bus.success(
         f"Session saved: {session_id}", kind=UIEventKind.SESSION, session_id=session_id
     )
@@ -238,7 +238,7 @@ def _handle_new_session(command, ctx) -> CommandResult:
             fingerprint=fingerprint,
         )
         previous_session_id = sid
-        _emit_session_save_hooks(ctx.agent, sid)
+        ctx.agent.lifecycle.session_saved(sid)
         ctx.ui_bus.info(
             f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid
         )
@@ -246,7 +246,8 @@ def _handle_new_session(command, ctx) -> CommandResult:
     new_session_id = store.generate_session_id()
     ctx.agent.reset()
     restore_config_runtime_defaults(ctx.config, ctx.agent)
-    setattr(ctx.agent, "session_fingerprint", fingerprint)
+    ctx.agent.session_fingerprint = fingerprint
+    ctx.agent.lifecycle.session_started(new_session_id, reason="new")
     ctx.ui_bus.success(
         f"Started a new conversation: {new_session_id}",
         kind=UIEventKind.SESSION,
@@ -309,16 +310,3 @@ def register_actions(registry: ActionRegistry) -> None:
             ),
         ]
     )
-
-
-def _emit_session_save_hooks(agent, session_id: str) -> None:
-    """Emit SESSION_SAVE lifecycle hooks."""
-    context = SessionSaveContext(
-        hook_point=HookPoint.SESSION_SAVE,
-        session_id=session_id,
-    )
-    for decision in agent.hook_registry.run_guards(HookPoint.SESSION_SAVE, context):
-        if not decision.allowed:
-            break
-    agent.hook_registry.run_transforms(HookPoint.SESSION_SAVE, context)
-    agent.hook_registry.run_observers(HookPoint.SESSION_SAVE, context)

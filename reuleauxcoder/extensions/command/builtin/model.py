@@ -163,7 +163,7 @@ def _apply_main_profile_to_runtime(ctx, profile_name: str, profile) -> None:
         debug_trace=debug_trace,
     )
     ctx.agent.context.reconfigure(profile.max_context_tokens)
-    setattr(ctx.agent, "active_main_model_profile", profile_name)
+    ctx.agent.active_main_model_profile = profile_name
 
 
 def _refresh_model_view(ctx) -> dict:
@@ -209,7 +209,7 @@ def _handle_use_sub_model(command, ctx) -> CommandResult:
     if profile is None:
         return CommandResult(action="continue")
 
-    setattr(ctx.agent, "active_sub_model_profile", profile_name)
+    ctx.agent.active_sub_model_profile = profile_name
     payload = _refresh_model_view(ctx)
     ctx.ui_bus.success(
         f"Switched session sub-agent model profile to '{profile_name}' ({profile.model})",

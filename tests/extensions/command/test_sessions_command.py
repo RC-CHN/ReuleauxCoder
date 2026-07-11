@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from reuleauxcoder.domain.config.models import ApprovalConfig, Config
 from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.extensions import LifecycleCoordinator
 from reuleauxcoder.domain.session.models import SessionRuntimeState
 from reuleauxcoder.extensions.command.builtin.sessions import (
     ListSessionsCommand,
@@ -48,6 +49,7 @@ class FakeAgent:
         self.available_modes = {"coder": SimpleNamespace(name="coder", description="")}
         self.active_mode = None
         self.hook_registry = HookRegistry()
+        self.lifecycle = LifecycleCoordinator(self.hook_registry)
 
     def set_mode(self, mode_name: str) -> None:
         self.active_mode = mode_name

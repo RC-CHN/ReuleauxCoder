@@ -454,7 +454,7 @@ def get_subagent_manager(agent) -> SubagentManager:
 
     default_rounds = getattr(agent, "max_rounds", 50)
     manager = SubagentManager(max_parallel_explore=4, default_max_rounds=default_rounds)
-    setattr(agent, "_subagent_manager", manager)
+    agent._subagent_manager = manager
     return manager
 
 

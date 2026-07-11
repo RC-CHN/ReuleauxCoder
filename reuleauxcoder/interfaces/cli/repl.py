@@ -41,7 +41,7 @@ def run_repl(
         if hist_path
         else FileHistory(str(Path.cwd() / ".rcoder" / "history"))
     )
-    setattr(agent, "current_session_id", current_session_id)
+    agent.current_session_id = current_session_id
 
     pending_resume_prefix: str | None = None
     if session_exit_time is not None:
@@ -68,6 +68,7 @@ def run_repl(
                     total_completion_tokens=agent.state.total_completion_tokens,
                     active_mode=getattr(agent, "active_mode", None),
                 )
+                agent.lifecycle.session_saved(sid)
                 ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)
             if output_coordinator is not None:
                 output_coordinator.drain()
@@ -94,7 +95,7 @@ def run_repl(
             output_coordinator.drain()
         prev_session_id = current_session_id
         current_session_id = result["session_id"]
-        setattr(agent, "current_session_id", current_session_id)
+        agent.current_session_id = current_session_id
 
         resumed_exit_time = result.get("session_exit_time")
         if resumed_exit_time is not None:

@@ -130,6 +130,7 @@ def _handle_exit(command, ctx) -> CommandResult:
             runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
             fingerprint=get_session_fingerprint(ctx.config, ctx.agent),
         )
+        ctx.agent.lifecycle.session_saved(sid)
         ctx.ui_bus.info(f"Session auto-saved: {sid}")
     return CommandResult(action="exit", session_id=command.current_session_id)
 

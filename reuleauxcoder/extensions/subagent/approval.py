@@ -168,7 +168,7 @@ def _get_parent_approval_lock(parent_agent):
         lock = getattr(parent_agent, "_subagent_approval_lock", None)
         if lock is None or not hasattr(lock, "acquire"):
             lock = threading.RLock()
-            setattr(parent_agent, "_subagent_approval_lock", lock)
+            parent_agent._subagent_approval_lock = lock
         return lock
 
 

@@ -38,9 +38,9 @@ def restore_session(
                     kind=UIEventKind.SESSION,
                 )
             apply_session_runtime_state(loaded, config, agent)
-            setattr(agent, "session_fingerprint", loaded.fingerprint)
+            agent.session_fingerprint = loaded.fingerprint
             current_session_id = options.resume_session_id
-            setattr(agent, "current_session_id", current_session_id)
+            agent.current_session_id = current_session_id
             session_exit_time = session_store.get_exit_time(loaded.messages)
             ui_bus.success(
                 f"Resumed session: {options.resume_session_id}",
@@ -57,9 +57,9 @@ def restore_session(
             loaded = session_store.load(latest.id)
             if loaded:
                 apply_session_runtime_state(loaded, config, agent)
-                setattr(agent, "session_fingerprint", loaded.fingerprint)
+                agent.session_fingerprint = loaded.fingerprint
                 current_session_id = latest.id
-                setattr(agent, "current_session_id", current_session_id)
+                agent.current_session_id = current_session_id
                 session_exit_time = session_store.get_exit_time(loaded.messages)
                 ui_bus.info(
                     f"Auto-resumed latest session: {latest.id} ({latest.saved_at})",

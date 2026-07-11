@@ -8,6 +8,7 @@ from reuleauxcoder.extensions.command.builtin.system import (
     _parse_config,
     _parse_debug,
 )
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.events import UIEventBus
 
 
@@ -78,3 +79,29 @@ def test_exit_respects_disabled_auto_save(tmp_path) -> None:
 
     assert result.action == "exit"
     assert not list(tmp_path.iterdir())
+
+
+def test_exit_routes_auto_save_through_lifecycle(tmp_path) -> None:
+    saved = []
+    config = Config(session_auto_save=True)
+    agent = SimpleNamespace(
+        messages=[{"role": "user", "content": "persist"}],
+        llm=SimpleNamespace(model="demo"),
+        state=SimpleNamespace(total_prompt_tokens=0, total_completion_tokens=0),
+        active_mode=None,
+        lifecycle=SimpleNamespace(session_saved=saved.append),
+        session_approval_rules=[],
+        active_main_model_profile=None,
+        active_sub_model_profile=None,
+    )
+    ctx = SimpleNamespace(
+        config=config,
+        agent=agent,
+        ui_bus=UIEventBus(),
+        sessions_dir=tmp_path,
+    )
+
+    _handle_exit(SimpleNamespace(current_session_id=None), ctx)
+
+    assert len(saved) == 1
+    assert SessionStore(tmp_path).load(saved[0]) is not None

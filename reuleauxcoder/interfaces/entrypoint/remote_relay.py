@@ -130,6 +130,8 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         manager = getattr(peer_agent, "_subagent_manager", None)
         if manager is not None:
             manager.shutdown(wait=True)
+        if peer_agent is not None and peer_agent is not agent:
+            peer_agent.lifecycle.runner_shutdown()
         peer_connection_markers.pop(peer_id, None)
 
     def _dispose_all_peers() -> None:
@@ -178,9 +180,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         peer_backend = RemoteRelayToolBackend(relay_server=relay_server, ui_bus=ui_bus)
         peer_tools = runner.dependencies.load_tools(peer_backend)
         peer_agent = runner.dependencies.create_agent(peer_llm, peer_tools, config)
-        setattr(peer_agent, "runtime_config", config)
-        setattr(peer_agent, "skills_service", skills_service)
-        setattr(peer_agent, "skills_catalog", getattr(agent, "skills_catalog", ""))
+        peer_agent.runtime_config = config
+        peer_agent.skills_service = skills_service
+        peer_agent.skills_catalog = agent.skills_catalog
         runner._register_hooks(peer_agent, config)
         runner._wire_agent_tool_parent(peer_agent)
 
@@ -188,7 +190,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         workspace_root = peer.workspace_root if peer is not None else None
         runtime_cwd = workspace_root or (peer.cwd if peer is not None else None)
         if runtime_cwd:
-            setattr(peer_agent, "runtime_working_directory", runtime_cwd)
+            peer_agent.runtime_working_directory = runtime_cwd
         for tool in peer_agent.tools:
             backend = getattr(tool, "backend", None)
             if getattr(backend, "backend_id", None) != "remote_relay":
@@ -201,9 +203,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 context.workspace_root = workspace_root
 
         fingerprint = _peer_fingerprint(peer_id)
-        setattr(peer_agent, "session_fingerprint", fingerprint)
+        peer_agent.session_fingerprint = fingerprint
 
-        def _cache_created_agent() -> Agent:
+        def _cache_created_agent(reason: str) -> Agent:
             peer_agents[peer_id] = peer_agent
             peer_connection_markers[peer_id] = marker
             console = Console(
@@ -216,6 +218,14 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 console,
                 CLIRenderer(console_override=console),
             )
+            peer_agent.lifecycle.runner_started(
+                metadata={"ui_bus": ui_bus, "peer_id": peer_id}
+            )
+            peer_agent.lifecycle.session_started(
+                peer_agent.current_session_id,
+                reason=reason,
+                metadata={"peer_id": peer_id},
+            )
             return peer_agent
 
         latest = session_store.get_latest(fingerprint=fingerprint)
@@ -223,12 +233,12 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             loaded = session_store.load(latest.id)
             if loaded is not None:
                 apply_session_runtime_state(loaded, config, peer_agent)
-                setattr(peer_agent, "current_session_id", latest.id)
-                return _cache_created_agent()
+                peer_agent.current_session_id = latest.id
+                return _cache_created_agent("remote_restore")
 
         restore_config_runtime_defaults(config, peer_agent)
-        setattr(peer_agent, "current_session_id", session_store.generate_session_id())
-        return _cache_created_agent()
+        peer_agent.current_session_id = session_store.generate_session_id()
+        return _cache_created_agent("remote_new")
 
     def _save_peer_session(peer_agent: Agent, peer_id: str) -> None:
         if (
@@ -247,7 +257,8 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             runtime_state=build_session_runtime_state(config, peer_agent),
             fingerprint=_peer_fingerprint(peer_id),
         )
-        setattr(peer_agent, "current_session_id", sid)
+        peer_agent.current_session_id = sid
+        peer_agent.lifecycle.session_saved(sid)
 
     def _chat(peer_id: str, prompt: str) -> ChatResponse:
         peer_agent = _create_peer_agent(peer_id)
@@ -278,7 +289,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 skills_service,
             )
             if command_result["action"] != "chat":
-                setattr(peer_agent, "current_session_id", command_result["session_id"])
+                peer_agent.current_session_id = command_result["session_id"]
 
                 rendered = ansi_console.export_text(clear=True, styles=True)
                 if rendered:

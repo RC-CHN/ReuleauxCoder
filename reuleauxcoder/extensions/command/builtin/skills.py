@@ -106,7 +106,7 @@ def _handle_reload_skills(command, ctx) -> CommandResult:
         return CommandResult(action="continue")
 
     result = service.reload()
-    setattr(ctx.agent, "skills_catalog", result.catalog)
+    ctx.agent.skills_catalog = result.catalog
     ctx.ui_bus.success(
         _build_reload_message(result),
         kind=UIEventKind.SYSTEM,
@@ -145,7 +145,7 @@ def _handle_toggle_skill(command: ToggleSkillCommand, ctx) -> CommandResult:
         )
         return CommandResult(action="continue")
 
-    setattr(ctx.agent, "skills_catalog", service.build_catalog())
+    ctx.agent.skills_catalog = service.build_catalog()
     if result.changed:
         if hasattr(ctx.config, "skills"):
             ctx.config.skills.disabled = list(service.disabled_names)

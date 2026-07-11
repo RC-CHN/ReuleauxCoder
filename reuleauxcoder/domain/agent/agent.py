@@ -20,7 +20,7 @@ from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.hooks import HookBase, HookDiagnostic, HookPoint, HookRegistry
-from reuleauxcoder.domain.extensions import HookExtensionAdapter
+from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.services.prompt.builder import system_prompt
@@ -57,8 +57,30 @@ class Agent:
         self.llm = llm
         self.tools = tools if tools is not None else []
         self.config = config
+        self.runtime_config = config
         self.max_context_tokens = max_context_tokens
         self.max_rounds = max_rounds
+
+        # Explicit runtime bindings. Adapters may replace these values, but
+        # must not inject new attributes dynamically.
+        self.current_session_id: str | None = None
+        self.session_fingerprint: str | None = getattr(
+            config, "session_fingerprint", None
+        )
+        self.session_approval_rules: list = []
+        self.active_main_model_profile: str | None = getattr(
+            config, "active_main_model_profile", None
+        )
+        self.active_sub_model_profile: str | None = getattr(
+            config, "active_sub_model_profile", None
+        )
+        self.runtime_working_directory: str | None = None
+        self.mcp_manager = None
+        self.skills_service = None
+        self.skills_catalog: str = ""
+        self._subagent_manager = None
+        self.ui_interactor = None
+        self._subagent_approval_lock = None
 
         # Mode state
         self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
@@ -101,6 +123,10 @@ class Agent:
         self.hook_registry.set_diagnostic_sink(self._emit_hook_diagnostic)
         self.extension_runtime = extension_runtime or HookExtensionAdapter(
             self.hook_registry
+        )
+        self.lifecycle = LifecycleCoordinator(
+            self.hook_registry,
+            notification_sink=self._emit_runtime_diagnostic,
         )
 
         # Execution components
@@ -251,17 +277,27 @@ class Agent:
                 pass  # Don't let handler errors break execution
 
     def _emit_hook_diagnostic(self, diagnostic: HookDiagnostic) -> None:
+        self._emit_runtime_diagnostic(
+            f"Hook '{diagnostic.hook_name}' failed during "
+            f"{diagnostic.hook_point.value}: {diagnostic.message}",
+            "hook.failure",
+            diagnostic.severity,
+            {
+                "hook_name": diagnostic.hook_name,
+                "hook_point": diagnostic.hook_point.value,
+                "hook_kind": diagnostic.hook_kind.value,
+            },
+        )
+
+    def _emit_runtime_diagnostic(
+        self, message: str, code: str, severity: str, details: dict
+    ) -> None:
         self._emit_event(
             AgentEvent.diagnostic(
-                f"Hook '{diagnostic.hook_name}' failed during "
-                f"{diagnostic.hook_point.value}: {diagnostic.message}",
-                code="hook.failure",
-                severity=diagnostic.severity,
-                details={
-                    "hook_name": diagnostic.hook_name,
-                    "hook_point": diagnostic.hook_point.value,
-                    "hook_kind": diagnostic.hook_kind.value,
-                },
+                message,
+                code=code,
+                severity=severity,
+                details=details,
             )
         )
 
