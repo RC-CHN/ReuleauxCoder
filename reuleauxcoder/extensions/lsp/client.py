@@ -60,6 +60,7 @@ class LspClient:
         self._initialized: bool = False
         self._reader_task: asyncio.Task[None] | None = None
         self._diagnostics_buffer: dict[str, list[Diagnostic]] = {}
+        self._document_versions: dict[str, int] = {}
 
     # === Properties ===
 
@@ -154,11 +155,13 @@ class LspClient:
 
     async def did_open(self, file_path: Path, content: str) -> None:
         """Notify the server that a file has been opened."""
+        uri = self._file_uri(file_path)
+        self._document_versions[uri] = 1
         await self._send_notification(
             "textDocument/didOpen",
             {
                 "textDocument": {
-                    "uri": self._file_uri(file_path),
+                    "uri": uri,
                     "languageId": self._language_id_string,
                     "version": 1,
                     "text": content,
@@ -166,14 +169,20 @@ class LspClient:
             },
         )
 
-    async def did_change(self, file_path: Path, content: str, version: int = 2) -> None:
+    async def did_change(
+        self, file_path: Path, content: str, version: int | None = None
+    ) -> None:
         """Notify the server that a file has changed."""
+        uri = self._file_uri(file_path)
+        current = self._document_versions.get(uri, 0)
+        next_version = current + 1 if version is None else max(version, current + 1)
+        self._document_versions[uri] = next_version
         await self._send_notification(
             "textDocument/didChange",
             {
                 "textDocument": {
-                    "uri": self._file_uri(file_path),
-                    "version": version,
+                    "uri": uri,
+                    "version": next_version,
                 },
                 "contentChanges": [{"text": content}],
             },
@@ -279,6 +288,7 @@ class LspClient:
             self._reader_task = None
             self._initialized = False
             self._diagnostics_buffer.clear()
+            self._document_versions.clear()
 
     # === Internal: Request/Response ===
 
@@ -442,9 +452,10 @@ class LspClient:
                 )
             )
 
-        # Accumulate — caller drains via wait_for_diagnostics()
-        existing = self._diagnostics_buffer.get(uri, [])
-        self._diagnostics_buffer[uri] = existing + items
+        # publishDiagnostics is a full replacement for this document. Keeping
+        # the key for an empty list is essential: it signals that stale errors
+        # were explicitly cleared by the server.
+        self._diagnostics_buffer[uri] = items
 
     def _fail_all_pending(self, reason: str) -> None:
         """Fail all outstanding requests (used on server crash / shutdown)."""

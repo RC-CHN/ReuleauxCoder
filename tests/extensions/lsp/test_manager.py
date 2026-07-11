@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -23,9 +23,7 @@ from reuleauxcoder.extensions.lsp.client import LspClientError
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import (
     MAX_RESPWANS,
-    LspHealthReport,
     LspManager,
-    ToolRequest,
 )
 from reuleauxcoder.extensions.lsp.registry import LanguageId
 
@@ -291,3 +289,81 @@ class TestNotifyDidSave:
         kind, path = manager._notification_queue[0]
         assert kind == "did_save"
         assert path == Path("/tmp/test.py")
+
+
+class TestWorkerQueueOrdering:
+    def test_pop_removes_exactly_one_queue_item(self, manager: LspManager) -> None:
+        tool = object()
+        manager._tool_queue.append(tool)
+        manager._diagnostics_queue.append((Path("/tmp/a.py"), 1))
+        manager._notification_queue.append(("did_save", Path("/tmp/a.py")))
+
+        assert manager._pop_next_work() == ("tool", tool)
+        assert len(manager._diagnostics_queue) == 1
+        assert len(manager._notification_queue) == 1
+        assert manager._pop_next_work()[0] == "diagnostics"
+        assert len(manager._notification_queue) == 1
+        assert manager._pop_next_work()[0] == "notification"
+        assert manager._pop_next_work() == (None, None)
+
+    def test_enqueue_replaces_older_pending_seq_for_same_file(
+        self, manager: LspManager
+    ) -> None:
+        manager._config.enabled = True
+        manager._availability[LanguageId.PYTHON] = True
+        path = Path("/tmp/test.py")
+
+        manager.enqueue_diagnostics(path, seq=1)
+        manager.enqueue_diagnostics(path, seq=2)
+        manager.enqueue_diagnostics(path, seq=1)
+
+        assert manager._diagnostics_queue == [(path, 2)]
+
+
+class TestDiagnosticReplacement:
+    def test_clean_batch_replaces_old_result(
+        self, manager: LspManager, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
+
+        path = tmp_path / "main.py"
+        path.write_text("x = 1")
+        server = MagicMock()
+        server.wait_for_diagnostics = AsyncMock(return_value=[])
+        manager._get_or_create_server = AsyncMock(return_value=server)
+        manager._latest_diagnostic_seq[path] = 2
+        manager._results[path] = DiagnosticBlock(
+            file_path="main.py",
+            items=[Diagnostic(line=1, character=1, message="old")],
+        )
+
+        asyncio.run(manager._handle_diagnostics_request(path, 2))
+
+        assert manager._results[path].items == []
+
+    def test_stale_seq_cannot_overwrite_newer_result(
+        self, manager: LspManager, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
+
+        path = tmp_path / "main.py"
+        path.write_text("x = 1")
+        server = MagicMock()
+        server.wait_for_diagnostics = AsyncMock(
+            return_value=[Diagnostic(line=1, character=1, message="stale")]
+        )
+        manager._get_or_create_server = AsyncMock(return_value=server)
+        manager._latest_diagnostic_seq[path] = 2
+        current = DiagnosticBlock(
+            file_path="main.py",
+            items=[Diagnostic(line=1, character=1, message="new")],
+        )
+        manager._results[path] = current
+
+        asyncio.run(manager._handle_diagnostics_request(path, 1))
+
+        assert manager._results[path] is current

@@ -26,7 +26,7 @@ from reuleauxcoder.extensions.lsp.client import (
     LspClientError,
     MAX_LSP_FILE_SIZE_BYTES,
 )
-from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
+from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticBlock
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
@@ -104,6 +104,7 @@ class LspManager:
 
         # Results
         self._results: dict[Path, DiagnosticBlock] = {}
+        self._latest_diagnostic_seq: dict[Path, int] = {}
 
         # Dedup: when edit observer already fed diagnostics to the model,
         # the injector should skip this turn to avoid double-reporting.
@@ -196,6 +197,7 @@ class LspManager:
             self._diagnostics_queue.clear()
             self._notification_queue.clear()
             self._results.clear()
+            self._latest_diagnostic_seq.clear()
 
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT)
@@ -223,6 +225,13 @@ class LspManager:
             return
 
         with self._lock:
+            latest = self._latest_diagnostic_seq.get(file_path, -1)
+            if seq < latest:
+                return
+            self._latest_diagnostic_seq[file_path] = seq
+            self._diagnostics_queue = [
+                item for item in self._diagnostics_queue if item[0] != file_path
+            ]
             self._diagnostics_queue.append((file_path, seq))
 
         with self._request_condition:
@@ -329,26 +338,13 @@ class LspManager:
 
         try:
             while not self._stop_event.is_set():
-                # Collect work
-                with self._lock:
-                    tool = self._tool_queue.pop(0) if self._tool_queue else None
-                    diag = (
-                        self._diagnostics_queue.pop(0)
-                        if self._diagnostics_queue
-                        else None
-                    )
-                    notif = (
-                        self._notification_queue.pop(0)
-                        if self._notification_queue
-                        else None
-                    )
-
-                if tool is not None:
-                    await self._handle_tool_request(tool)
-                elif diag is not None:
-                    await self._handle_diagnostics_request(*diag)
-                elif notif is not None:
-                    await self._handle_notification(*notif)
+                kind, work = self._pop_next_work()
+                if kind == "tool":
+                    await self._handle_tool_request(work)
+                elif kind == "diagnostics":
+                    await self._handle_diagnostics_request(*work)
+                elif kind == "notification":
+                    await self._handle_notification(*work)
                 else:
                     # No work — poll briefly, then check again.
                     # Using asyncio.sleep avoids blocking the event loop
@@ -360,6 +356,17 @@ class LspManager:
             await self._shutdown_clients_async()
             self._worker_loop = None
             logger.info("LSP worker loop exited")
+
+    def _pop_next_work(self) -> tuple[str | None, Any]:
+        """Pop exactly one queued item without discarding lower-priority work."""
+        with self._lock:
+            if self._tool_queue:
+                return "tool", self._tool_queue.pop(0)
+            if self._diagnostics_queue:
+                return "diagnostics", self._diagnostics_queue.pop(0)
+            if self._notification_queue:
+                return "notification", self._notification_queue.pop(0)
+        return None, None
 
     async def _handle_tool_request(self, req: ToolRequest) -> None:
         """Process a synchronous active-tool request."""
@@ -451,12 +458,13 @@ class LspManager:
                 timeout=self._config.poll_timeout_ms / 1000,
             )
 
-            if diagnostics:
-                block = DiagnosticBlock(
-                    file_path=self._relativize_path(file_path),
-                    items=diagnostics,
-                )
-                with self._lock:
+            block = DiagnosticBlock(
+                file_path=self._relativize_path(file_path),
+                items=diagnostics,
+            )
+            with self._lock:
+                # A slower obsolete request must not overwrite a newer batch.
+                if self._latest_diagnostic_seq.get(file_path) == seq:
                     self._results[file_path] = block
 
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
