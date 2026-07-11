@@ -55,6 +55,11 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
             source("lsp.include_warnings"),
         ),
         EffectiveConfigRowViewModel(
+            "lsp.typescript_mode",
+            lsp.typescript_mode,
+            source("lsp.typescript_mode"),
+        ),
+        EffectiveConfigRowViewModel(
             "session.auto_save",
             str(config.session_auto_save).lower(),
             source("session.auto_save"),

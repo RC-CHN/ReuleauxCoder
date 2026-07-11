@@ -153,3 +153,92 @@ def test_wait_without_baseline_consumes_already_published_batch(tmp_path: Path) 
     diagnostics = asyncio.run(client.wait_for_diagnostics(path, timeout=0.01))
 
     assert [item.message for item in diagnostics] == ["ready"]
+
+
+def test_pull_diagnostics_full_and_unchanged_track_fresh_versions(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    path = tmp_path / "main.py"
+    client._supports_pull_diagnostics = True
+    client._send_notification = AsyncMock()
+    client._send_request = AsyncMock(
+        side_effect=[
+            {
+                "kind": "full",
+                "resultId": "result-1",
+                "items": [
+                    {
+                        "range": {"start": {"line": 1, "character": 2}},
+                        "message": "broken",
+                        "severity": 1,
+                    }
+                ],
+            },
+            {"kind": "unchanged", "resultId": "result-1"},
+        ]
+    )
+
+    async def run() -> tuple[list, list]:
+        await client.did_open(path, "broken")
+        first = await client.wait_for_diagnostics(path, timeout=0.01)
+        baseline = client.diagnostics_generation(path)
+        await client.did_change(path, "still broken")
+        second = await client.wait_for_diagnostics(
+            path, timeout=0.01, after_generation=baseline
+        )
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert [item.message for item in first] == ["broken"]
+    assert second == first
+    assert client.diagnostics_generation(path) == 2
+    assert client.diagnostic_document_version(path) == 2
+    second_params = client._send_request.await_args_list[1].args[1]
+    assert second_params["previousResultId"] == "result-1"
+
+
+def test_initialize_detects_pull_diagnostic_capability(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client._process = object()  # type: ignore[assignment]
+    client._send_request = AsyncMock(
+        return_value={
+            "capabilities": {"diagnosticProvider": {"interFileDependencies": True}},
+            "serverInfo": {"name": "native-test"},
+        }
+    )
+    client._send_notification = AsyncMock()
+
+    asyncio.run(client.initialize())
+
+    assert client._supports_pull_diagnostics is True
+    params = client._send_request.await_args.args[1]
+    assert params["capabilities"]["textDocument"]["diagnostic"] == {
+        "dynamicRegistration": False,
+        "relatedDocumentSupport": False,
+    }
+
+
+def test_server_configuration_request_receives_json_rpc_response(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    client._write_message = AsyncMock()
+
+    async def run() -> None:
+        client._dispatch_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "workspace/configuration",
+                "params": {"items": [{"section": "formatting"}]},
+            }
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    client._write_message.assert_awaited_once_with(
+        {"jsonrpc": "2.0", "id": 7, "result": [{}]}
+    )

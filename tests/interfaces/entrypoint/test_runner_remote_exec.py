@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib import request
 
 from reuleauxcoder.domain.config.models import (
@@ -241,6 +242,32 @@ class TestRunnerRemoteExec:
         )
         runner.cleanup(ctx.agent)
         assert runner._relay_server is None
+
+    def test_remote_workspace_never_starts_host_lsp(self, tmp_path: Path) -> None:
+        del tmp_path
+        config = Config(
+            remote_exec=RemoteExecConfig(enabled=True, host_mode=True),
+            lsp={"enabled": True},
+        )
+        runner = AppRunner(
+            options=AppOptions(),
+            dependencies=AppDependencies(load_config=lambda _: config),
+        )
+
+        with patch(
+            "reuleauxcoder.interfaces.entrypoint.runner.LspManager"
+        ) as manager_type:
+            ctx = runner.initialize()
+        try:
+            manager_type.assert_not_called()
+            assert ctx.agent.lsp_manager is None
+            assert runner._lsp_manager is None
+            assert all(
+                isinstance(tool.backend, RemoteRelayToolBackend)
+                for tool in ctx.agent.tools
+            )
+        finally:
+            runner.cleanup(ctx.agent)
 
     def test_remote_init_failure_does_not_crash(self, tmp_path: Path) -> None:
         def bad_relay_factory(_config: Config) -> RelayServer:

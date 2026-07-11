@@ -46,6 +46,7 @@ from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
     detect_language,
     get_language_id_string,
+    resolve_server_launch,
     get_server_command,
     resolve_workspace_root,
 )
@@ -136,6 +137,7 @@ class LspManager:
         self._latest_diagnostic_sequence: dict[
             tuple[str | None, int | None, Path], int
         ] = {}
+        self._session_generations: dict[str, int] = {}
         self._next_diagnostic_sequence = 0
 
         # Lock (RLock for reentrancy in health_check)
@@ -247,6 +249,7 @@ class LspManager:
             self._diagnostic_batches.clear()
             self._acknowledged_batches.clear()
             self._latest_diagnostic_sequence.clear()
+            self._session_generations.clear()
 
         if self._worker_thread is not None:
             self._worker_thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT)
@@ -289,6 +292,23 @@ class LspManager:
             raise ValueError("diagnostic route file_path must match request path")
 
         with self._lock:
+            if (
+                route.agent_id is not None
+                and route.session_generation is not None
+            ):
+                current_generation = self._session_generations.get(route.agent_id)
+                if (
+                    current_generation is not None
+                    and route.session_generation < current_generation
+                ):
+                    return None
+                if (
+                    current_generation is None
+                    or route.session_generation > current_generation
+                ):
+                    self._advance_session_generation_locked(
+                        route.agent_id, route.session_generation
+                    )
             self._next_diagnostic_sequence += 1
             request_sequence = self._next_diagnostic_sequence
             key = (route.agent_id, route.session_generation, path)
@@ -315,6 +335,52 @@ class LspManager:
         with self._request_condition:
             self._request_condition.notify()
         return batch_id
+
+    def advance_session_generation(self, agent_id: str, generation: int) -> None:
+        """Reject and evict diagnostics owned by an older Agent session."""
+        if not agent_id:
+            raise ValueError("agent_id must be non-empty")
+        if generation < 0:
+            raise ValueError("generation cannot be negative")
+        with self._lock:
+            current = self._session_generations.get(agent_id)
+            if current is not None and generation <= current:
+                return
+            self._advance_session_generation_locked(agent_id, generation)
+
+    def _advance_session_generation_locked(
+        self, agent_id: str, generation: int
+    ) -> None:
+        self._session_generations[agent_id] = generation
+        self._diagnostics_queue = [
+            request
+            for request in self._diagnostics_queue
+            if not self._is_older_generation(request.route, agent_id, generation)
+        ]
+        self._diagnostic_batches = {
+            batch_id: batch
+            for batch_id, batch in self._diagnostic_batches.items()
+            if not self._is_older_generation(batch.route, agent_id, generation)
+        }
+        self._latest_diagnostic_sequence = {
+            key: sequence
+            for key, sequence in self._latest_diagnostic_sequence.items()
+            if not (
+                key[0] == agent_id
+                and key[1] is not None
+                and key[1] < generation
+            )
+        }
+
+    @staticmethod
+    def _is_older_generation(
+        route: DiagnosticRoute, agent_id: str, generation: int
+    ) -> bool:
+        return (
+            route.agent_id == agent_id
+            and route.session_generation is not None
+            and route.session_generation < generation
+        )
 
     def pending_diagnostic_batches(
         self,
@@ -590,6 +656,7 @@ class LspManager:
                 if (
                     self._latest_diagnostic_sequence.get(key)
                     == request.request_sequence
+                    and self._route_generation_is_current(request.route)
                 ):
                     self._diagnostic_batches[batch.batch_id] = batch
                     accepted = True
@@ -601,6 +668,12 @@ class LspManager:
             self._on_transport_error(lang, str(e))
         except Exception as e:
             logger.debug("LSP diagnostics error (swallowed): %s", e)
+
+    def _route_generation_is_current(self, route: DiagnosticRoute) -> bool:
+        if route.agent_id is None or route.session_generation is None:
+            return True
+        current = self._session_generations.get(route.agent_id)
+        return current is None or route.session_generation >= current
 
     @staticmethod
     def _route_matches(
@@ -728,8 +801,21 @@ class LspManager:
 
         root = self._resolve_root(lang, file_path)
         key = (lang, root)
-        cmd, args = self._resolve_command(lang)
-        init_opts = self._resolve_init_opts(lang)
+        override = self._config.get_override(lang.name.lower())
+        if override is not None and any(
+            value is not None
+            for value in (override.cmd, override.args, override.init_opts)
+        ):
+            cmd, args = self._resolve_command(lang)
+            init_opts = self._resolve_init_opts(lang)
+        else:
+            launch = resolve_server_launch(
+                lang,
+                root,
+                typescript_mode=self._config.typescript_mode,
+            )
+            cmd, args = launch.command, list(launch.args)
+            init_opts = launch.initialization_options
 
         client = LspClient(language_id=lang, workspace_root=root)
 
@@ -865,7 +951,7 @@ class LspManager:
     def _resolve_init_opts(self, lang: LanguageId) -> dict[str, Any] | None:
         """Get initialization options from config override."""
         cfg_override = self._config.get_override(lang.name.lower())
-        if cfg_override:
+        if cfg_override and cfg_override.init_opts is not None:
             return cfg_override.init_opts
         return None
 

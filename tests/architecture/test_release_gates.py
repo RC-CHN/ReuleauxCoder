@@ -39,6 +39,12 @@ def test_ci_runs_go_contract_tests_and_cross_builds_all_peer_targets() -> None:
     assert _targets(jobs["peer-build"]) == EXPECTED_TARGETS
     assert str(MAX_PEER_ARTIFACT_BYTES) in source
     assert "actions/upload-artifact@v4" in source
+    assert "lsp-integration" in jobs
+    assert "typescript@7" in (
+        ROOT / "reuleauxcoder" / "extensions" / "lsp" / "registry.py"
+    ).read_text(encoding="utf-8")
+    assert "@typescript/typescript6@6" in source
+    assert "RCODER_RUN_LSP_INTEGRATION" in source
 
 
 def test_release_publishes_cross_platform_peers_with_checksum_manifest() -> None:

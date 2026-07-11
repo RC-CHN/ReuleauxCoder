@@ -497,6 +497,12 @@ class Agent:
         if callable(cancel_interactions):
             cancel_interactions(reason="session reset")
         self.session_generation += 1
+        lsp_manager = getattr(self, "lsp_manager", None)
+        advance_lsp_generation = getattr(
+            lsp_manager, "advance_session_generation", None
+        )
+        if callable(advance_lsp_generation):
+            advance_lsp_generation(self.agent_id, self.session_generation)
         manager = getattr(self, "_subagent_manager", None)
         if manager is not None:
             manager.advance_generation(

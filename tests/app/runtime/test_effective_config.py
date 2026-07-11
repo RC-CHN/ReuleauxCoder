@@ -38,6 +38,7 @@ def test_effective_config_view_marks_session_overrides_and_sources() -> None:
     assert rows["models.active_sub"].source == "global"
     assert rows["modes.active"].source == "session"
     assert rows["lsp.enabled"].source == "default"
+    assert rows["lsp.typescript_mode"].value == "auto"
     assert "models.active: legacy alias" in view.diagnostics[0]
 
 

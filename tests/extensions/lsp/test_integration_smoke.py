@@ -20,10 +20,20 @@ from pathlib import Path
 import pytest
 
 from reuleauxcoder.extensions.lsp.client import LspClient, LspClientError
+from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
+from reuleauxcoder.extensions.lsp.manager import LspManager
+from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
+from reuleauxcoder.domain.hooks.builtin.lsp_injector import (
+    LspDiagnosticsInjectorHook,
+)
+from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.hooks.types import HookPoint
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
     get_language_id_string,
+    resolve_server_launch,
     get_server_command,
 )
 
@@ -169,9 +179,15 @@ async def _start_python_client(root: Path) -> LspClient:
 
 
 async def _run_diagnostic_case(
-    case: DiagnosticCase, tmp_path: Path
+    case: DiagnosticCase,
+    tmp_path: Path,
+    *,
+    typescript_mode: str = "auto",
 ) -> list[Diagnostic]:
-    cmd, args = get_server_command(case.language)
+    launch = resolve_server_launch(
+        case.language, tmp_path, typescript_mode=typescript_mode
+    )
+    cmd, args = launch.command, list(launch.args)
     if shutil.which(cmd) is None:
         pytest.skip(f"{cmd} is not available on PATH")
 
@@ -190,7 +206,10 @@ async def _run_diagnostic_case(
     try:
         await asyncio.wait_for(client.spawn(cmd, args), timeout=30.0)
         try:
-            await asyncio.wait_for(client.initialize(), timeout=30.0)
+            await asyncio.wait_for(
+                client.initialize(launch.initialization_options),
+                timeout=30.0,
+            )
         except LspClientError as exc:
             if case.language in {
                 LanguageId.TYPESCRIPT,
@@ -240,6 +259,27 @@ def test_installed_lsp_reports_diagnostics(
 
     messages = "\n".join(d.message for d in diagnostics)
     assert any(expected in messages for expected in case.expected_messages), messages
+
+
+@pytest.mark.parametrize(
+    "case",
+    tuple(
+        case
+        for case in DIAGNOSTIC_CASES
+        if case.language in {LanguageId.TYPESCRIPT, LanguageId.JAVASCRIPT}
+    ),
+    ids=lambda case: f"legacy-{get_language_id_string(case.language)}",
+)
+def test_typescript_legacy_v6_adapter_reports_diagnostics(
+    case: DiagnosticCase,
+    tmp_path: Path,
+) -> None:
+    diagnostics = asyncio.run(
+        _run_diagnostic_case(case, tmp_path, typescript_mode="legacy")
+    )
+
+    assert diagnostics
+    assert any(item.is_error for item in diagnostics)
 
 
 @pytest.mark.parametrize(
@@ -380,3 +420,71 @@ def test_python_workspace_roots_use_independent_real_transports(
             )
 
     asyncio.run(run())
+
+
+def test_python_parent_transport_remains_owned_while_subagent_scope_is_omitted(
+    tmp_path: Path,
+) -> None:
+    """The explicit subagent policy is omission, never sharing parent transport."""
+    path = tmp_path / "parent.py"
+    content = "def parent(:\n    pass\n"
+    path.write_text(content, encoding="utf-8")
+    manager = LspManager(
+        LspConfig(enabled=True, poll_timeout_ms=20_000),
+        workspace_cwd=tmp_path,
+    )
+    report = manager.health_check()
+    if not any(
+        name == "python" and available
+        for name, available, _details in report.languages
+    ):
+        pytest.skip("Python language server is not available")
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.AFTER_TOOL_EXECUTE,
+        LspEditObserverHook(lsp_manager=manager),
+    )
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        LspDiagnosticsInjectorHook(lsp_manager=manager),
+    )
+    manager.start_worker()
+    try:
+        batch_id = manager.enqueue_diagnostics(
+            path,
+            route=DiagnosticRoute(
+                file_path=path,
+                agent_id="parent",
+                session_generation=0,
+                session_id="session",
+                turn_id="turn",
+                tool_call_id="tool",
+            ),
+        )
+        assert batch_id is not None
+
+        child_registry = registry.clone(scope="subagent")
+        child_hooks = (
+            *child_registry.hooks_at(HookPoint.AFTER_TOOL_EXECUTE),
+            *child_registry.hooks_at(HookPoint.BEFORE_LLM_REQUEST),
+        )
+        assert child_hooks
+        assert all(getattr(hook, "lsp_manager", None) is None for hook in child_hooks)
+
+        deadline = time.monotonic() + 30
+        batches = ()
+        while time.monotonic() < deadline and not batches:
+            batches = manager.pending_diagnostic_batches(batch_id=batch_id)
+            if not batches:
+                time.sleep(0.1)
+        assert len(batches) == 1
+        assert batches[0].block.items
+        assert batches[0].route.agent_id == "parent"
+
+        manager.advance_session_generation("parent", 1)
+        assert manager.pending_diagnostic_batches() == ()
+    finally:
+        manager.shutdown_all()
+
+    assert manager._worker_thread is None
+    assert manager._transports == {}

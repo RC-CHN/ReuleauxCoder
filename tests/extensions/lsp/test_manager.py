@@ -467,6 +467,66 @@ class TestWorkerQueueOrdering:
         assert manager._diagnostics_queue[0].request_sequence == 3
 
 
+class TestSessionGenerationWatermark:
+    def test_advance_evicts_old_queue_and_batches_and_rejects_old_enqueue(
+        self, manager: LspManager
+    ) -> None:
+        manager._availability[LanguageId.PYTHON] = True
+        path = Path("/tmp/session.py")
+        old_route = DiagnosticRoute(
+            file_path=path,
+            agent_id="agent-1",
+            session_generation=1,
+        )
+        batch_id = manager.enqueue_diagnostics(path, route=old_route)
+        assert batch_id is not None
+        manager._diagnostic_batches["completed-old"] = DiagnosticBatch(
+            batch_id="completed-old",
+            route=old_route,
+            request_sequence=1,
+            document_version=1,
+            diagnostic_generation=1,
+            block=DiagnosticBlock(file_path=str(path), items=[]),
+        )
+
+        manager.advance_session_generation("agent-1", 2)
+
+        assert manager._diagnostics_queue == []
+        assert manager.pending_diagnostic_batches() == ()
+        assert manager.enqueue_diagnostics(path, route=old_route) is None
+
+    def test_inflight_old_generation_cannot_publish_after_reset(
+        self, manager: LspManager, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        path = tmp_path / "main.py"
+        path.write_text("x = 1")
+        manager._availability[LanguageId.PYTHON] = True
+        events = []
+        manager._runtime_event_sink = events.append
+        server = MagicMock()
+        server.diagnostics_generation.side_effect = [1, 2]
+        server.diagnostic_document_version.return_value = 1
+        server.wait_for_diagnostics = AsyncMock(
+            return_value=[Diagnostic(line=1, character=1, message="late")]
+        )
+        manager._get_or_create_server = AsyncMock(return_value=server)
+        route = DiagnosticRoute(
+            file_path=path,
+            agent_id="agent-1",
+            session_generation=1,
+        )
+        manager.enqueue_diagnostics(path, route=route)
+        inflight = manager._diagnostics_queue.pop()
+
+        manager.advance_session_generation("agent-1", 2)
+        asyncio.run(manager._handle_diagnostics_request(inflight))
+
+        assert manager.pending_diagnostic_batches() == ()
+        assert events == []
+
+
 class TestDiagnosticReplacement:
     def test_clean_publish_is_retained_as_explicit_batch(
         self, manager: LspManager, tmp_path: Path

@@ -57,6 +57,40 @@ jobs:
         working-directory: reuleauxcoder-agent
         run: go test ./...
 
+  lsp-integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Sync Python dependencies
+        run: uv sync --extra dev
+
+      - name: Provision real LSP servers
+        run: |
+          npm install -g pyright
+          npm install --prefix .lsp-legacy @typescript/typescript6@6 typescript-language-server@5
+          rustup component add rust-analyzer
+
+      - name: Run Python, native TS7, legacy TS6, JS and Rust matrix
+        env:
+          RCODER_RUN_LSP_INTEGRATION: "1"
+        run: PATH="${{ github.workspace }}/.lsp-legacy/node_modules/.bin:$PATH" uv run pytest tests/extensions/lsp/test_integration_smoke.py -k "python or typescript or javascript or rust" -q -rs
+
   peer-build:
     runs-on: ubuntu-latest
     strategy:

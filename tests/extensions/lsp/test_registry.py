@@ -1,15 +1,13 @@
-import os
 import tempfile
 from pathlib import Path
 
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
-    _EXT_TO_LANGUAGE,
-    _ROOT_MARKERS,
     detect_language,
     get_language_id_string,
     get_root_markers,
     get_server_command,
+    resolve_server_launch,
     iter_supported_extensions,
     iter_supported_languages,
     resolve_workspace_root,
@@ -95,31 +93,68 @@ class TestServerCommands:
             "--stdio",
         ]
 
-    def test_typescript_server_includes_typescript_package(self) -> None:
+    def test_typescript_server_uses_native_v7_lsp(self) -> None:
         cmd, args = get_server_command(LanguageId.TYPESCRIPT)
         assert cmd == "npx"
         assert args == [
             "-y",
             "--package",
-            "typescript",
-            "--package",
-            "typescript-language-server",
-            "typescript-language-server",
+            "typescript@7",
+            "tsc",
+            "--lsp",
             "--stdio",
         ]
 
-    def test_javascript_server_includes_typescript_package(self) -> None:
+    def test_javascript_server_uses_native_v7_lsp(self) -> None:
         cmd, args = get_server_command(LanguageId.JAVASCRIPT)
         assert cmd == "npx"
         assert args == [
             "-y",
             "--package",
-            "typescript",
-            "--package",
-            "typescript-language-server",
-            "typescript-language-server",
+            "typescript@7",
+            "tsc",
+            "--lsp",
             "--stdio",
         ]
+
+    def test_typescript_auto_selects_native_without_workspace_package(
+        self, tmp_path: Path
+    ) -> None:
+        launch = resolve_server_launch(LanguageId.TYPESCRIPT, tmp_path)
+
+        assert launch.implementation == "typescript-native"
+        assert launch.args[-2:] == ("--lsp", "--stdio")
+        assert launch.initialization_options is None
+
+    def test_typescript_auto_selects_workspace_native_v7(
+        self, tmp_path: Path
+    ) -> None:
+        package = tmp_path / "node_modules" / "typescript"
+        (package / "bin").mkdir(parents=True)
+        (package / "package.json").write_text('{"version":"7.0.2"}')
+        (package / "bin" / "tsc").touch()
+
+        launch = resolve_server_launch(LanguageId.TYPESCRIPT, tmp_path)
+
+        assert launch.implementation == "typescript-native"
+        assert launch.args[0] == str(package / "bin" / "tsc")
+
+    def test_typescript_auto_selects_legacy_adapter_for_v6_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        package = tmp_path / "node_modules" / "typescript"
+        (package / "lib").mkdir(parents=True)
+        (package / "package.json").write_text('{"version":"6.0.2"}')
+        tsserver = package / "lib" / "tsserver.js"
+        tsserver.touch()
+
+        launch = resolve_server_launch(LanguageId.JAVASCRIPT, tmp_path)
+
+        assert launch.implementation == "typescript-legacy"
+        assert "@typescript/typescript6@6" in launch.args
+        assert launch.initialization_options == {
+            "tsserver": {"path": str(tsserver)}
+        }
 
     def test_rust_analyzer_is_native(self) -> None:
         cmd, args = get_server_command(LanguageId.RUST)

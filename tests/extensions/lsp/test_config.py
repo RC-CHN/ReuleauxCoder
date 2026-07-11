@@ -1,3 +1,5 @@
+import pytest
+
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 
@@ -10,6 +12,7 @@ class TestLspConfigDefaults:
         assert lsp.poll_timeout_ms == 5000
         assert lsp.max_diagnostics == 20
         assert lsp.include_warnings is True
+        assert lsp.typescript_mode == "auto"
         assert lsp.server_overrides == {}
 
     def test_defaults_when_lsp_is_none(self) -> None:
@@ -26,12 +29,14 @@ class TestLspConfigDefaults:
             "poll_timeout_ms": 10000,
             "max_diagnostics": 10,
             "include_warnings": True,
+            "typescript_mode": "native",
         }
         lsp = LspConfig.from_config(config)
         assert lsp.enabled is False
         assert lsp.poll_timeout_ms == 10000
         assert lsp.max_diagnostics == 10
         assert lsp.include_warnings is True
+        assert lsp.typescript_mode == "native"
 
     def test_partial_section_preserves_include_warnings_default(self) -> None:
         config = Config(lsp={"enabled": True})
@@ -39,6 +44,12 @@ class TestLspConfigDefaults:
         lsp = LspConfig.from_config(config)
 
         assert lsp.include_warnings is True
+
+    def test_invalid_typescript_mode_is_rejected(self) -> None:
+        config = Config(lsp={"typescript_mode": "guess"})
+
+        with pytest.raises(ValueError, match="typescript_mode"):
+            LspConfig.from_config(config)
 
     def test_parse_server_overrides(self) -> None:
         config = Config()

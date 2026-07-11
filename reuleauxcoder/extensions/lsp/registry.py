@@ -7,6 +7,10 @@ from __future__ import annotations
 
 from enum import Enum, auto
 from pathlib import Path
+from typing import Any
+from dataclasses import dataclass
+import json
+import shutil
 
 
 class LanguageId(Enum):
@@ -82,10 +86,9 @@ _SERVER_COMMANDS: dict[LanguageId, tuple[str, list[str]]] = {
         [
             "-y",
             "--package",
-            "typescript",
-            "--package",
-            "typescript-language-server",
-            "typescript-language-server",
+            "typescript@7",
+            "tsc",
+            "--lsp",
             "--stdio",
         ],
     ),
@@ -94,10 +97,9 @@ _SERVER_COMMANDS: dict[LanguageId, tuple[str, list[str]]] = {
         [
             "-y",
             "--package",
-            "typescript",
-            "--package",
-            "typescript-language-server",
-            "typescript-language-server",
+            "typescript@7",
+            "tsc",
+            "--lsp",
             "--stdio",
         ],
     ),
@@ -106,6 +108,13 @@ _SERVER_COMMANDS: dict[LanguageId, tuple[str, list[str]]] = {
     LanguageId.BASH: ("npx", ["-y", "bash-language-server", "start"]),
     LanguageId.YAML: ("npx", ["-y", "yaml-language-server", "--stdio"]),
 }
+
+@dataclass(frozen=True, slots=True)
+class LspServerLaunch:
+    command: str
+    args: tuple[str, ...]
+    initialization_options: dict[str, Any] | None = None
+    implementation: str = "default"
 
 # === Workspace root markers ===
 #
@@ -144,6 +153,72 @@ def get_language_id_string(lang: LanguageId) -> str:
 def get_server_command(lang: LanguageId) -> tuple[str, list[str]]:
     """Return the default (command, args) for a language's LSP server."""
     return _SERVER_COMMANDS.get(lang, ("", []))
+
+
+def resolve_server_launch(
+    lang: LanguageId,
+    workspace_root: Path,
+    *,
+    typescript_mode: str = "auto",
+) -> LspServerLaunch:
+    """Select native TS7 LSP or the maintained TS6 compatibility adapter."""
+    command, args = get_server_command(lang)
+    if lang not in {LanguageId.TYPESCRIPT, LanguageId.JAVASCRIPT}:
+        return LspServerLaunch(command, tuple(args))
+    if typescript_mode not in {"auto", "native", "legacy"}:
+        raise ValueError(f"Unsupported TypeScript LSP mode: {typescript_mode}")
+
+    installed = _workspace_typescript(workspace_root)
+    if typescript_mode == "native" or (
+        typescript_mode == "auto" and installed is not None and installed[0] >= 7
+    ):
+        if installed is not None and installed[0] >= 7:
+            node = shutil.which("node") or "node"
+            return LspServerLaunch(
+                node,
+                (str(installed[1] / "bin" / "tsc"), "--lsp", "--stdio"),
+                implementation="typescript-native",
+            )
+        return LspServerLaunch(command, tuple(args), implementation="typescript-native")
+
+    if typescript_mode == "legacy" or installed is not None:
+        tsserver_path = None
+        if installed is not None and installed[0] < 7:
+            candidate = installed[1] / "lib" / "tsserver.js"
+            if candidate.is_file():
+                tsserver_path = str(candidate)
+        legacy_args = (
+            "-y",
+            "--package",
+            "@typescript/typescript6@6",
+            "--package",
+            "typescript-language-server@5",
+            "typescript-language-server",
+            "--stdio",
+        )
+        return LspServerLaunch(
+            "npx",
+            legacy_args,
+            {
+                "tsserver": {
+                    "path": tsserver_path or shutil.which("tsserver") or "tsserver"
+                }
+            },
+            implementation="typescript-legacy",
+        )
+
+    return LspServerLaunch(command, tuple(args), implementation="typescript-native")
+
+
+def _workspace_typescript(root: Path) -> tuple[int, Path] | None:
+    package_root = root / "node_modules" / "typescript"
+    package_json = package_root / "package.json"
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+        major = int(str(data["version"]).split(".", 1)[0])
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return major, package_root
 
 
 def get_root_markers(lang: LanguageId) -> list[str]:

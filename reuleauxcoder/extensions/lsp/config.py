@@ -27,6 +27,7 @@ class LspConfig:
     poll_timeout_ms: int = 5000
     max_diagnostics: int = 20
     include_warnings: bool = True
+    typescript_mode: str = "auto"
     server_overrides: dict[str, LspServerOverride] = field(default_factory=dict)
 
     def get_override(self, language_key: str) -> LspServerOverride | None:
@@ -47,6 +48,11 @@ class LspConfig:
         poll_timeout_ms = int(lsp_raw.get("poll_timeout_ms", 5000))
         max_diagnostics = int(lsp_raw.get("max_diagnostics", 20))
         include_warnings = bool(lsp_raw.get("include_warnings", True))
+        typescript_mode = str(lsp_raw.get("typescript_mode", "auto")).lower()
+        if typescript_mode not in {"auto", "native", "legacy"}:
+            raise ValueError(
+                "lsp.typescript_mode must be one of: auto, native, legacy"
+            )
 
         overrides: dict[str, LspServerOverride] = {}
         servers_raw = lsp_raw.get("servers", {}) or {}
@@ -64,5 +70,6 @@ class LspConfig:
             poll_timeout_ms=poll_timeout_ms,
             max_diagnostics=max_diagnostics,
             include_warnings=include_warnings,
+            typescript_mode=typescript_mode,
             server_overrides=overrides,
         )

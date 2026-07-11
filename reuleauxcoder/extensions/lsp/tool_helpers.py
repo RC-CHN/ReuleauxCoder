@@ -12,7 +12,6 @@ from typing import Any
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
     detect_language,
-    get_language_id_string,
 )
 
 # Maximum references to display before truncating
@@ -155,7 +154,7 @@ def format_locations(
     # Normalise location → destination info
     formatted: list[str] = []
     for i, loc in enumerate(locations):
-        label = f"  " if len(locations) > 1 else ""
+        label = "  " if len(locations) > 1 else ""
         loc_str = format_location(loc, prefix=label)
         if loc_str:
             formatted.append(loc_str)

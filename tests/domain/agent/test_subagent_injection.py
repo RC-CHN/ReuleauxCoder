@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEventType
@@ -179,6 +180,18 @@ def test_reset_advances_generation_and_clears_pending_injections() -> None:
     assert agent._pending_subagent_injections == []
     assert cancelled == ["session reset"]
     manager.shutdown()
+
+
+def test_reset_advances_lsp_generation_watermark() -> None:
+    agent = _make_agent()
+    manager = MagicMock()
+    agent.lsp_manager = manager
+
+    agent.reset()
+
+    manager.advance_session_generation.assert_called_once_with(
+        agent.agent_id, agent.session_generation
+    )
 
 
 def test_old_generation_job_is_rejected_by_agent_injection() -> None:

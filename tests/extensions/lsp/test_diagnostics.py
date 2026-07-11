@@ -1,8 +1,5 @@
 from reuleauxcoder.extensions.lsp.diagnostics import (
     SEVERITY_ERROR,
-    SEVERITY_HINT,
-    SEVERITY_INFORMATION,
-    SEVERITY_WARNING,
     Diagnostic,
     DiagnosticBlock,
     render_blocks,

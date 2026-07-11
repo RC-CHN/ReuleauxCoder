@@ -60,9 +60,12 @@ class LspClient:
         self._initialized: bool = False
         self._reader_task: asyncio.Task[None] | None = None
         self._diagnostics_buffer: dict[str, list[Diagnostic]] = {}
+        self._diagnostics_snapshots: dict[str, list[Diagnostic]] = {}
         self._diagnostic_generations: dict[str, int] = {}
         self._diagnostic_document_versions: dict[str, int] = {}
+        self._diagnostic_result_ids: dict[str, str] = {}
         self._document_versions: dict[str, int] = {}
+        self._supports_pull_diagnostics = False
 
     # === Properties ===
 
@@ -126,12 +129,17 @@ class LspClient:
             "capabilities": {
                 "textDocument": {
                     "publishDiagnostics": {},
+                    "diagnostic": {
+                        "dynamicRegistration": False,
+                        "relatedDocumentSupport": False,
+                    },
                     "definition": {"linkSupport": True},
                     "references": {},
                     "documentSymbol": {
                         "hierarchicalDocumentSymbolSupport": True,
                     },
                 },
+                "workspace": {"diagnostics": {"refreshSupport": True}},
             },
         }
 
@@ -140,6 +148,11 @@ class LspClient:
 
         capabilities = await self._send_request(
             "initialize", params, timeout=INITIALIZE_TIMEOUT
+        )
+
+        server_capabilities = capabilities.get("capabilities", {})
+        self._supports_pull_diagnostics = bool(
+            server_capabilities.get("diagnosticProvider")
         )
 
         # Send initialized notification
@@ -170,6 +183,7 @@ class LspClient:
                 }
             },
         )
+        await self._pull_document_diagnostics(file_path)
 
     async def did_change(
         self, file_path: Path, content: str, version: int | None = None
@@ -189,6 +203,7 @@ class LspClient:
                 "contentChanges": [{"text": content}],
             },
         )
+        await self._pull_document_diagnostics(file_path)
 
     async def did_save(self, file_path: Path) -> None:
         """Notify the server that a file has been saved."""
@@ -200,6 +215,7 @@ class LspClient:
                 }
             },
         )
+        await self._pull_document_diagnostics(file_path)
 
     # === Diagnostics ===
 
@@ -315,9 +331,12 @@ class LspClient:
             self._reader_task = None
             self._initialized = False
             self._diagnostics_buffer.clear()
+            self._diagnostics_snapshots.clear()
             self._diagnostic_generations.clear()
             self._diagnostic_document_versions.clear()
+            self._diagnostic_result_ids.clear()
             self._document_versions.clear()
+            self._supports_pull_diagnostics = False
 
     # === Internal: Request/Response ===
 
@@ -442,6 +461,11 @@ class LspClient:
     def _dispatch_message(self, message: dict[str, Any]) -> None:
         """Route an incoming JSON-RPC message."""
         req_id = message.get("id")
+        method = message.get("method")
+
+        if req_id is not None and isinstance(method, str):
+            self._handle_server_request(req_id, method, message.get("params", {}))
+            return
 
         if req_id is not None:
             # Response to a request
@@ -481,24 +505,13 @@ class LspClient:
             return
         diagnostics_raw = params.get("diagnostics", [])
 
-        items: list[Diagnostic] = []
-        for d in diagnostics_raw:
-            rng = d.get("range", {})
-            start = rng.get("start", {})
-            items.append(
-                Diagnostic(
-                    line=start.get("line", 0) + 1,  # 0-based → 1-based
-                    character=start.get("character", 0) + 1,
-                    message=d.get("message", ""),
-                    severity=d.get("severity", SEVERITY_ERROR),
-                    code=d.get("code"),
-                )
-            )
+        items = self._decode_diagnostics(diagnostics_raw)
 
         # publishDiagnostics is a full replacement for this document. Keeping
         # the key for an empty list is essential: it signals that stale errors
         # were explicitly cleared by the server.
         self._diagnostics_buffer[uri] = items
+        self._diagnostics_snapshots[uri] = items
         self._diagnostic_generations[uri] = (
             self._diagnostic_generations.get(uri, 0) + 1
         )
@@ -506,6 +519,75 @@ class LspClient:
             published_version
             if isinstance(published_version, int)
             else current_version
+        )
+
+    async def _pull_document_diagnostics(self, file_path: Path) -> None:
+        if not self._supports_pull_diagnostics:
+            return
+        uri = self._file_uri(file_path)
+        params: dict[str, Any] = {"textDocument": {"uri": uri}}
+        if result_id := self._diagnostic_result_ids.get(uri):
+            params["previousResultId"] = result_id
+        result = await self._send_request(
+            "textDocument/diagnostic", params, timeout=REQUEST_TIMEOUT
+        )
+        if not isinstance(result, dict):
+            return
+        kind = result.get("kind")
+        if kind == "unchanged":
+            items = list(self._diagnostics_snapshots.get(uri, []))
+        elif kind == "full":
+            raw_items = result.get("items", [])
+            if not isinstance(raw_items, list):
+                return
+            items = self._decode_diagnostics(raw_items)
+        else:
+            return
+        result_id = result.get("resultId")
+        if isinstance(result_id, str):
+            self._diagnostic_result_ids[uri] = result_id
+        self._diagnostics_buffer[uri] = items
+        self._diagnostics_snapshots[uri] = items
+        self._diagnostic_generations[uri] = (
+            self._diagnostic_generations.get(uri, 0) + 1
+        )
+        self._diagnostic_document_versions[uri] = self._document_versions.get(uri, 0)
+
+    @staticmethod
+    def _decode_diagnostics(diagnostics_raw: list[dict[str, Any]]) -> list[Diagnostic]:
+        items: list[Diagnostic] = []
+        for diagnostic in diagnostics_raw:
+            rng = diagnostic.get("range", {})
+            start = rng.get("start", {})
+            items.append(
+                Diagnostic(
+                    line=start.get("line", 0) + 1,
+                    character=start.get("character", 0) + 1,
+                    message=diagnostic.get("message", ""),
+                    severity=diagnostic.get("severity", SEVERITY_ERROR),
+                    code=diagnostic.get("code"),
+                )
+            )
+        return items
+
+    def _handle_server_request(
+        self, request_id: int | str, method: str, params: dict[str, Any]
+    ) -> None:
+        if method == "workspace/configuration":
+            items = params.get("items", [])
+            result: Any = [{} for _ in items] if isinstance(items, list) else []
+        else:
+            # Registration, progress and diagnostic refresh requests do not
+            # require product-specific state in this minimal client.
+            result = None
+        asyncio.create_task(
+            self._write_message(
+                {
+                    "jsonrpc": LSP_PROTOCOL_VERSION,
+                    "id": request_id,
+                    "result": result,
+                }
+            )
         )
 
     def _fail_all_pending(self, reason: str) -> None:
