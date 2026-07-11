@@ -10,6 +10,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     ExecToolRequest,
     ExecToolResult,
     Heartbeat,
+    InteractionReplyRequest,
+    InteractionReplyResponse,
     RegisterRejected,
     RegisterRequest,
     RegisterResponse,
@@ -151,6 +153,20 @@ class TestToolStreamChunk:
         restored = ToolStreamChunk.from_dict(d)
         assert restored.chunk_type == "stdout"
         assert restored.data == "hello"
+
+
+class TestInteractionReply:
+    def test_roundtrip(self) -> None:
+        request = InteractionReplyRequest(
+            peer_token="pt_1",
+            chat_id="chat_1",
+            request_id="interaction_1",
+            value=True,
+        )
+
+        assert InteractionReplyRequest.from_dict(request.to_dict()) == request
+        response = InteractionReplyResponse(ok=True)
+        assert InteractionReplyResponse.from_dict(response.to_dict()) == response
 
 
 class TestDisconnectNotice:

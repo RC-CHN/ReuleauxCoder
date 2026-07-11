@@ -753,6 +753,101 @@ class TestRemoteRelayHTTPService:
             service.stop()
             relay.stop()
 
+    def test_generic_interaction_reply_routes_opaque_value(self) -> None:
+        relay = RelayServer()
+        relay.start()
+        port = _free_port()
+
+        def stream_chat_handler(_peer_id: str, _prompt: str, session) -> None:
+            session.register_interaction("request-1")
+            session.append_event(
+                "interaction_request",
+                {
+                    "request_id": "request-1",
+                    "kind": "choose_one",
+                    "rendered_frame": "Pick one\n",
+                    "input_constraints": {"options": ["a", "b"]},
+                },
+            )
+            value, cancelled, reason = session.wait_interaction(
+                "request-1", timeout_sec=2
+            )
+            session.append_event(
+                "interaction_resolved",
+                {"value": value, "cancelled": cancelled, "reason": reason},
+            )
+
+        service = RemoteRelayHTTPService(
+            relay_server=relay,
+            bind=f"127.0.0.1:{port}",
+            stream_chat_handler=stream_chat_handler,
+        )
+        service.start()
+        try:
+            _, register_body = _json_request(
+                "POST",
+                f"{service.base_url}/remote/register",
+                {
+                    "bootstrap_token": relay.issue_bootstrap_token(ttl_sec=60),
+                    "cwd": "/tmp/peer",
+                },
+            )
+            peer_token = register_body["payload"]["peer_token"]
+            _, start = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "choose"},
+            )
+            _, first = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/stream",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": start["chat_id"],
+                    "cursor": 0,
+                    "timeout_sec": 1,
+                },
+            )
+            interaction = next(
+                event
+                for event in first["events"]
+                if event["type"] == "interaction_request"
+            )
+
+            status, reply = _json_request(
+                "POST",
+                f"{service.base_url}/remote/interaction/reply",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": start["chat_id"],
+                    "request_id": interaction["payload"]["request_id"],
+                    "value": "b",
+                    "cancelled": False,
+                },
+            )
+
+            assert status == 200
+            assert reply["ok"] is True
+            _, resolved = _json_request(
+                "POST",
+                f"{service.base_url}/remote/chat/stream",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": start["chat_id"],
+                    "cursor": first["next_cursor"],
+                    "timeout_sec": 1,
+                },
+            )
+            event = next(
+                event
+                for event in resolved["events"]
+                if event["type"] == "interaction_resolved"
+            )
+            assert event["payload"]["value"] == "b"
+        finally:
+            service.stop()
+            relay.stop()
+
     def test_default_artifact_provider_prefers_prebuilt_binary(
         self, tmp_path: Path
     ) -> None:

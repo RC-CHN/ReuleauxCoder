@@ -29,6 +29,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     DisconnectNotice,
     ExecToolResult,
     Heartbeat,
+    InteractionReplyRequest,
+    InteractionReplyResponse,
     RegisterRejected,
     RegisterRequest,
     RelayEnvelope,
@@ -45,7 +47,7 @@ class _RemoteChatSession:
     done: bool = False
     running: bool = False
     seq_next: int = 1
-    approval_waiters: dict[str, dict[str, Any]] = field(default_factory=dict)
+    interaction_waiters: dict[str, dict[str, Any]] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cond: threading.Condition = field(default_factory=threading.Condition)
@@ -89,37 +91,43 @@ class _RemoteChatSession:
             self.running = False
             self.done = True
             self.finished_at = time.time()
-            for waiter in self.approval_waiters.values():
+            for waiter in self.interaction_waiters.values():
                 if waiter.get("done"):
                     continue
                 waiter["done"] = True
-                waiter["decision"] = "deny_once"
+                waiter["value"] = None
+                waiter["cancelled"] = True
                 waiter["reason"] = "chat_closed"
             self.cond.notify_all()
 
-    def register_approval(self, approval_id: str) -> None:
+    def register_interaction(self, request_id: str) -> None:
         with self.cond:
-            self.approval_waiters[approval_id] = {}
+            self.interaction_waiters[request_id] = {}
 
-    def resolve_approval(
-        self, approval_id: str, decision: str, reason: str | None
+    def resolve_interaction(
+        self,
+        request_id: str,
+        value: Any,
+        cancelled: bool,
+        reason: str | None,
     ) -> bool:
         with self.cond:
-            waiter = self.approval_waiters.get(approval_id)
+            waiter = self.interaction_waiters.get(request_id)
             if waiter is None:
                 return False
             waiter["done"] = True
-            waiter["decision"] = decision
+            waiter["value"] = value
+            waiter["cancelled"] = cancelled
             waiter["reason"] = reason
             self.cond.notify_all()
             return True
 
-    def wait_approval(
-        self, approval_id: str, timeout_sec: float | None = None
-    ) -> tuple[str, str | None]:
+    def wait_interaction(
+        self, request_id: str, timeout_sec: float | None = None
+    ) -> tuple[Any, bool, str | None]:
         deadline = time.time() + timeout_sec if timeout_sec else None
         with self.cond:
-            waiter = self.approval_waiters.setdefault(approval_id, {})
+            waiter = self.interaction_waiters.setdefault(request_id, {})
             while not waiter.get("done"):
                 if deadline is None:
                     self.cond.wait(timeout=0.5)
@@ -128,18 +136,37 @@ class _RemoteChatSession:
                 if remaining <= 0:
                     break
                 self.cond.wait(timeout=remaining)
-            decision = str(waiter.get("decision", "deny_once"))
+            value = waiter.get("value")
+            cancelled = bool(waiter.get("cancelled", not waiter.get("done")))
             reason = waiter.get("reason")
-            self.approval_waiters.pop(approval_id, None)
-            return decision, reason if isinstance(reason, str) else None
+            self.interaction_waiters.pop(request_id, None)
+            return value, cancelled, reason if isinstance(reason, str) else None
+
+    # Protocol v1 compatibility aliases.
+    def register_approval(self, approval_id: str) -> None:
+        self.register_interaction(approval_id)
+
+    def resolve_approval(
+        self, approval_id: str, decision: str, reason: str | None
+    ) -> bool:
+        return self.resolve_interaction(
+            approval_id, decision == "allow_once", False, reason
+        )
+
+    def wait_approval(
+        self, approval_id: str, timeout_sec: float | None = None
+    ) -> tuple[str, str | None]:
+        value, cancelled, reason = self.wait_interaction(approval_id, timeout_sec)
+        return "allow_once" if value is True and not cancelled else "deny_once", reason
 
     def cancel_pending_approvals(self, reason: str) -> None:
         with self.cond:
-            for waiter in self.approval_waiters.values():
+            for waiter in self.interaction_waiters.values():
                 if waiter.get("done"):
                     continue
                 waiter["done"] = True
-                waiter["decision"] = "deny_once"
+                waiter["value"] = None
+                waiter["cancelled"] = True
                 waiter["reason"] = reason
             self.cond.notify_all()
 
@@ -323,6 +350,9 @@ class RemoteRelayHTTPService:
                     return
                 if parsed.path == "/remote/approval/reply":
                     self._handle_approval_reply()
+                    return
+                if parsed.path == "/remote/interaction/reply":
+                    self._handle_interaction_reply()
                     return
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
@@ -684,6 +714,48 @@ class RemoteRelayHTTPService:
                     )
                     return
                 self._send_json(HTTPStatus.OK, ApprovalReplyResponse(ok=True).to_dict())
+
+            def _handle_interaction_reply(self) -> None:
+                payload = self._read_json()
+                try:
+                    req = InteractionReplyRequest.from_dict(payload)
+                except Exception:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "invalid_interaction_reply_request"},
+                    )
+                    return
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    req.peer_token
+                )
+                if peer_id is None:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
+                    return
+                session = service._get_chat_session(req.chat_id)
+                if session is None or session.peer_id != peer_id:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        InteractionReplyResponse(
+                            ok=False, error="chat_not_found"
+                        ).to_dict(),
+                    )
+                    return
+                ok = session.resolve_interaction(
+                    req.request_id, req.value, req.cancelled, req.reason
+                )
+                if not ok:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        InteractionReplyResponse(
+                            ok=False, error="interaction_not_found"
+                        ).to_dict(),
+                    )
+                    return
+                self._send_json(
+                    HTTPStatus.OK, InteractionReplyResponse(ok=True).to_dict()
+                )
 
             def _handle_disconnect(self) -> None:
                 payload = self._read_json()

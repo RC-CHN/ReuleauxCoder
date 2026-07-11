@@ -113,6 +113,20 @@ type ApprovalReplyResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+type InteractionReplyRequest struct {
+	PeerToken string `json:"peer_token"`
+	ChatID    string `json:"chat_id"`
+	RequestID string `json:"request_id"`
+	Value     any    `json:"value,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type InteractionReplyResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
 type ExecToolRequest struct {
 	ToolName   string         `json:"tool_name"`
 	Args       map[string]any `json:"args"`

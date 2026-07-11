@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 import uuid
 from typing import Any
@@ -161,7 +162,10 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             peer_agents[peer_id] = agent
             peer_connection_markers[peer_id] = marker
             console = Console(
-                record=True, force_terminal=True, color_system="truecolor"
+                file=io.StringIO(),
+                record=True,
+                force_terminal=True,
+                color_system="truecolor",
             )
             peer_presenters[peer_id] = (
                 console,
@@ -203,7 +207,10 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             peer_agents[peer_id] = peer_agent
             peer_connection_markers[peer_id] = marker
             console = Console(
-                record=True, force_terminal=True, color_system="truecolor"
+                file=io.StringIO(),
+                record=True,
+                force_terminal=True,
+                color_system="truecolor",
             )
             peer_presenters[peer_id] = (
                 console,
@@ -296,33 +303,9 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
 
         class _RemoteApprovalProvider(ApprovalProvider):
             def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-                approval_id = str(uuid.uuid4())
-                remote_session.register_approval(approval_id)
+                request_id = str(uuid.uuid4())
+                remote_session.register_interaction(request_id)
                 diff_text = _build_preview_diff(request)
-                sections: list[dict[str, Any]] = []
-                if diff_text is not None:
-                    title = (
-                        "Proposed file diff"
-                        if request.tool_name == "write_file"
-                        else "Proposed edit diff"
-                    )
-                    sections.append(
-                        {
-                            "id": "diff",
-                            "title": title,
-                            "kind": "diff",
-                            "content": diff_text,
-                        }
-                    )
-                elif request.tool_args:
-                    sections.append(
-                        {
-                            "id": "args",
-                            "title": "Arguments",
-                            "kind": "json",
-                            "content": request.tool_args,
-                        }
-                    )
                 approval_markdown = "\n\n".join(
                     part
                     for part in [
@@ -339,32 +322,36 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                     if part
                 )
                 approval_console = Console(
-                    record=True, force_terminal=True, color_system="truecolor"
+                    file=io.StringIO(),
+                    record=True,
+                    force_terminal=True,
+                    color_system="truecolor",
                 )
                 approval_console.print(Markdown(approval_markdown))
                 rendered_approval = approval_console.export_text(
                     clear=True, styles=True
                 )
                 payload = {
-                    "approval_id": approval_id,
-                    "tool_name": request.tool_name,
-                    "tool_source": request.tool_source,
-                    "reason": request.reason,
-                    "sections": sections,
-                    "format": "terminal",
-                    "content": rendered_approval,
+                    "request_id": request_id,
+                    "kind": "review",
+                    "rendered_frame": rendered_approval,
+                    "input_constraints": {
+                        "value_type": "boolean",
+                        "approve_label": "Approve",
+                        "reject_label": "Reject",
+                    },
                 }
-                remote_session.append_event("approval_request", payload)
-                decision, reason = remote_session.wait_approval(approval_id)
+                remote_session.append_event("interaction_request", payload)
+                value, cancelled, reason = remote_session.wait_interaction(request_id)
                 remote_session.append_event(
-                    "approval_resolved",
+                    "interaction_resolved",
                     {
-                        "approval_id": approval_id,
-                        "decision": decision,
+                        "request_id": request_id,
+                        "cancelled": cancelled,
                         "reason": reason,
                     },
                 )
-                if decision == "allow_once":
+                if value is True and not cancelled:
                     return ApprovalDecision.allow_once(reason)
                 return ApprovalDecision.deny_once(reason)
 

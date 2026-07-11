@@ -275,6 +275,50 @@ class ApprovalReplyResponse:
         return cls(ok=bool(d.get("ok", False)), error=d.get("error"))
 
 
+@dataclass
+class InteractionReplyRequest:
+    peer_token: str
+    chat_id: str
+    request_id: str
+    value: Any = None
+    cancelled: bool = False
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "peer_token": self.peer_token,
+            "chat_id": self.chat_id,
+            "request_id": self.request_id,
+            "value": self.value,
+            "cancelled": self.cancelled,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "InteractionReplyRequest":
+        return cls(
+            peer_token=data["peer_token"],
+            chat_id=data["chat_id"],
+            request_id=data["request_id"],
+            value=data.get("value"),
+            cancelled=bool(data.get("cancelled", False)),
+            reason=data.get("reason"),
+        )
+
+
+@dataclass
+class InteractionReplyResponse:
+    ok: bool
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "error": self.error}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "InteractionReplyResponse":
+        return cls(ok=bool(data.get("ok", False)), error=data.get("error"))
+
+
 # ---------------------------------------------------------------------------
 # Tool execution
 # ---------------------------------------------------------------------------

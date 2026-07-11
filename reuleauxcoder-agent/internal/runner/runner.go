@@ -266,9 +266,9 @@ func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, 
 		r.renderOutputEvent(event.Payload)
 	case "tool_call_stream":
 		r.renderToolStream(event.Payload)
-	case "approval_request":
-		return r.handleApprovalRequest(ctx, peerToken, chatID, event.Payload)
-	case "approval_resolved":
+	case "interaction_request":
+		return r.handleInteractionRequest(ctx, peerToken, chatID, event.Payload)
+	case "interaction_resolved":
 		return nil
 	case "chat_end":
 		if response, _ := event.Payload["response"].(string); strings.TrimSpace(response) != "" {
@@ -284,38 +284,43 @@ func (r *Runner) handleChatEvent(ctx context.Context, peerToken, chatID string, 
 	return nil
 }
 
-func (r *Runner) handleApprovalRequest(ctx context.Context, peerToken, chatID string, payload map[string]any) error {
-	r.renderOutputEvent(payload)
-
-	approvalID, _ := payload["approval_id"].(string)
-	if approvalID == "" {
-		return fmt.Errorf("approval request missing approval_id")
+func (r *Runner) handleInteractionRequest(ctx context.Context, peerToken, chatID string, payload map[string]any) error {
+	if frame, _ := payload["rendered_frame"].(string); frame != "" {
+		fmt.Print(frame)
+	}
+	requestID, _ := payload["request_id"].(string)
+	if requestID == "" {
+		return fmt.Errorf("interaction request missing request_id")
 	}
 
-	fmt.Print("Approve? [y/N]: ")
-	decision := "deny_once"
+	fmt.Print("Respond? [y/N]: ")
+	value := false
+	cancelled := false
 	if r.scanner.Scan() {
 		answer := strings.ToLower(strings.TrimSpace(r.scanner.Text()))
 		if answer == "y" || answer == "yes" || answer == "a" || answer == "allow" {
-			decision = "allow_once"
+			value = true
 		}
 	} else if err := r.scanner.Err(); err != nil {
 		return err
+	} else {
+		cancelled = true
 	}
 
 	replyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	replyResp, err := r.client.ApprovalReply(replyCtx, protocol.ApprovalReplyRequest{
-		PeerToken:  peerToken,
-		ChatID:     chatID,
-		ApprovalID: approvalID,
-		Decision:   decision,
+	replyResp, err := r.client.InteractionReply(replyCtx, protocol.InteractionReplyRequest{
+		PeerToken: peerToken,
+		ChatID:    chatID,
+		RequestID: requestID,
+		Value:     value,
+		Cancelled: cancelled,
 	})
 	if err != nil {
-		return fmt.Errorf("approval reply failed: %w", err)
+		return fmt.Errorf("interaction reply failed: %w", err)
 	}
 	if !replyResp.OK {
-		return fmt.Errorf("approval reply failed: %s", replyResp.Error)
+		return fmt.Errorf("interaction reply failed: %s", replyResp.Error)
 	}
 	return nil
 }

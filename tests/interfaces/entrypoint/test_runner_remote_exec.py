@@ -20,6 +20,7 @@ from reuleauxcoder.domain.config.models import (
     RemoteExecConfig,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
@@ -511,5 +512,91 @@ class TestRunnerRemoteExec:
                 and "Open view:" in event["payload"].get("content", "")
                 for event in events
             )
+        finally:
+            runner.cleanup(ctx.agent)
+
+    def test_runner_routes_approval_as_generic_interaction(
+        self, tmp_path: Path
+    ) -> None:
+        port = _free_port()
+
+        def chat_behavior(agent: FakeAgent, _prompt: str) -> str:
+            decision = agent.approval_provider.request_approval(
+                ApprovalRequest(
+                    tool_name="shell",
+                    tool_args={"command": "echo hi"},
+                    tool_source="builtin",
+                    reason="test",
+                )
+            )
+            return "approved" if decision.approved else "denied"
+
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+        )
+        ctx = runner.initialize()
+        try:
+            assert runner._relay_server is not None
+            assert runner._relay_http_service is not None
+            _, peer_token = _register_peer(
+                runner._relay_http_service.base_url,
+                runner._relay_server.issue_bootstrap_token(ttl_sec=60),
+                str(tmp_path),
+            )
+            _, start = _json_request(
+                "POST",
+                f"{runner._relay_http_service.base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "run"},
+            )
+            cursor = 0
+            first_events: list[dict] = []
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                _, first = _json_request(
+                    "POST",
+                    f"{runner._relay_http_service.base_url}/remote/chat/stream",
+                    {
+                        "peer_token": peer_token,
+                        "chat_id": start["chat_id"],
+                        "cursor": cursor,
+                        "timeout_sec": 0.5,
+                    },
+                )
+                first_events.extend(first["events"])
+                cursor = first["next_cursor"]
+                if any(
+                    event["type"] == "interaction_request"
+                    for event in first_events
+                ):
+                    break
+            interaction = next(
+                event
+                for event in first_events
+                if event["type"] == "interaction_request"
+            )
+            assert interaction["payload"]["kind"] == "review"
+            assert "Approval required" in interaction["payload"]["rendered_frame"]
+            assert not any(
+                event["type"] == "approval_request" for event in first_events
+            )
+
+            status, reply = _json_request(
+                "POST",
+                f"{runner._relay_http_service.base_url}/remote/interaction/reply",
+                {
+                    "peer_token": peer_token,
+                    "chat_id": start["chat_id"],
+                    "request_id": interaction["payload"]["request_id"],
+                    "value": True,
+                },
+            )
+            assert status == 200 and reply["ok"] is True
+            events = _collect_stream_events(
+                runner._relay_http_service.base_url,
+                peer_token,
+                start["chat_id"],
+            )
+            end = [event for event in events if event["type"] == "chat_end"][-1]
+            assert end["payload"]["response"] == "approved"
         finally:
             runner.cleanup(ctx.agent)

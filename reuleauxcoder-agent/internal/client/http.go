@@ -87,6 +87,14 @@ func (c *HTTPClient) ApprovalReply(ctx context.Context, req protocol.ApprovalRep
 	return resp, nil
 }
 
+func (c *HTTPClient) InteractionReply(ctx context.Context, req protocol.InteractionReplyRequest) (protocol.InteractionReplyResponse, error) {
+	var resp protocol.InteractionReplyResponse
+	if err := c.postJSON(ctx, "/remote/interaction/reply", req, &resp); err != nil {
+		return protocol.InteractionReplyResponse{}, err
+	}
+	return resp, nil
+}
+
 func (c *HTTPClient) postJSON(ctx context.Context, path string, reqBody any, out any) error {
 	buf, err := json.Marshal(reqBody)
 	if err != nil {
