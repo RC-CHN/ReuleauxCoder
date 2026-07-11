@@ -106,10 +106,6 @@ class LspManager:
         self._results: dict[Path, DiagnosticBlock] = {}
         self._latest_diagnostic_seq: dict[Path, int] = {}
 
-        # Dedup: when edit observer already fed diagnostics to the model,
-        # the injector should skip this turn to avoid double-reporting.
-        self._diagnostics_fed: bool = False
-
         # Lock (RLock for reentrancy in health_check)
         self._lock: threading.RLock = threading.RLock()
 
@@ -237,33 +233,23 @@ class LspManager:
         with self._request_condition:
             self._request_condition.notify()
 
-    def drain_diagnostics(self) -> list[DiagnosticBlock]:
-        """Drain accumulated diagnostics results."""
+    def drain_diagnostics(
+        self, *, file_paths: set[Path] | None = None
+    ) -> list[DiagnosticBlock]:
+        """Drain results, optionally scoped to exact edited documents.
+
+        Scoping is the deduplication mechanism: an edit observer consumes only
+        its own document. Concurrent results for other files remain available
+        to the before-request injector.
+        """
         with self._lock:
-            blocks = list(self._results.values())
-            self._results.clear()
+            selected = [
+                path
+                for path in self._results
+                if file_paths is None or path in file_paths
+            ]
+            blocks = [self._results.pop(path) for path in selected]
         return blocks
-
-    def mark_diagnostics_fed(self) -> None:
-        """Mark that diagnostics were already fed to the model this turn.
-
-        Called by the edit observer after it appends diagnostics to the
-        tool result.  The injector will check this flag and skip its own
-        injection to avoid double-reporting the same issue batch.
-        """
-        with self._lock:
-            self._diagnostics_fed = True
-
-    def consume_diagnostics_fed_flag(self) -> bool:
-        """Check and reset the diagnostics-fed flag.
-
-        Returns True if the edit observer already handled diagnostics
-        for the current turn.
-        """
-        with self._lock:
-            result = self._diagnostics_fed
-            self._diagnostics_fed = False
-        return result
 
     # === Active Tools (synchronous bridge) ===
 

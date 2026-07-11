@@ -104,7 +104,7 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
         deadline = time.monotonic() + _DIAGNOSTICS_POLL_DEADLINE
         blocks = []
         while time.monotonic() < deadline:
-            blocks = self.lsp_manager.drain_diagnostics()
+            blocks = self.lsp_manager.drain_diagnostics(file_paths={path})
             if blocks:
                 break
             time.sleep(_DIAGNOSTICS_POLL_INTERVAL)
@@ -128,10 +128,6 @@ class LspEditObserverHook(ObserverHook[AfterToolExecuteContext]):
             if rendered:
                 suffix = "\n\n" + rendered
                 context.result = (context.result or "") + suffix
-
-            # Mark that diagnostics were already fed to the model so the
-            # BEFORE_LLM_REQUEST injector skips this turn.
-            self.lsp_manager.mark_diagnostics_fed()
 
             # Emit a compact UI feedback panel
             ui_bus = getattr(self.lsp_manager, "ui_bus", None)
