@@ -70,6 +70,11 @@ class Agent:
         self._state_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._current_turn_id: str | None = None
+        for tool in self.tools:
+            backend = getattr(tool, "backend", None)
+            backend_context = getattr(backend, "context", None)
+            if backend_context is not None:
+                backend_context.cancellation_event = self._stop_event
 
         # Context manager
         context_cfg = getattr(config, "context", None)

@@ -178,6 +178,7 @@ class AgentLoop:
                     "active_mode": self.agent.active_mode,
                     "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
                 },
+                cancellation_event=self.agent._stop_event,
             )
 
             # Store reasoning content for /thinking command
@@ -279,6 +280,7 @@ class AgentLoop:
         summary_resp = self.agent.llm.chat(
             messages=self._full_messages(),
             tools=None,
+            cancellation_event=self.agent._stop_event,
             on_token=_on_summary_token,
             hook_registry=self.agent.hook_registry,
             session_id=getattr(self.agent, "current_session_id", None),

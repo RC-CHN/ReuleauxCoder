@@ -1,6 +1,7 @@
 """LLM client - wraps OpenAI-compatible APIs."""
 
 import json
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -29,6 +30,10 @@ from reuleauxcoder.services.llm.sanitizer import (
 
 MAX_DEBUG_CONTENT_CHARS = 400
 MAX_DEBUG_STREAM_EVENTS = 200
+
+
+class LLMRequestCancelled(RuntimeError):
+    """Raised when a scoped Agent cancels an in-flight streamed request."""
 
 
 def _mask_api_key(api_key: str) -> str:
@@ -204,6 +209,7 @@ class LLM:
         session_id: str | None = None,
         trace_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        cancellation_event: threading.Event | None = None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
         raw_messages = [dict(msg) for msg in messages]
@@ -301,6 +307,8 @@ class LLM:
         debug_stream_options_enabled = False
 
         try:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise LLMRequestCancelled("LLM request cancelled before dispatch")
             # stream_options is an OpenAI extension
             try:
                 params["stream_options"] = {"include_usage": True}
@@ -319,6 +327,11 @@ class LLM:
             completion_tok = 0
 
             for chunk in stream:
+                if cancellation_event is not None and cancellation_event.is_set():
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
+                    raise LLMRequestCancelled("LLM stream cancelled")
                 if (
                     self.debug_trace
                     and len(debug_stream_events) < MAX_DEBUG_STREAM_EVENTS
@@ -495,6 +508,8 @@ class LLM:
             # Narrow back from HookContext (same reasoning as above).
             after_context = cast(AfterLLMResponseContext, after_context)
             return after_context.response or response
+        except LLMRequestCancelled:
+            raise
         except Exception as e:
             diagnostic_path = persist_llm_error_diagnostic(
                 model=self.model,
@@ -518,7 +533,7 @@ class LLM:
         for attempt in range(max_retries):
             try:
                 return self.client.chat.completions.create(**params)
-            except (RateLimitError, APITimeoutError, APIConnectionError) as e:
+            except (RateLimitError, APITimeoutError, APIConnectionError):
                 if attempt == max_retries - 1:
                     raise
                 wait = 2**attempt

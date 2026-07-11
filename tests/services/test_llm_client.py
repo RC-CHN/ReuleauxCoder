@@ -1,4 +1,5 @@
 import json
+import threading
 
 from reuleauxcoder.domain.llm.models import (
     EMPTY_ASSISTANT_CONTENT_PLACEHOLDER,
@@ -6,7 +7,7 @@ from reuleauxcoder.domain.llm.models import (
     ToolCall,
 )
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
-from reuleauxcoder.services.llm.client import LLM
+from reuleauxcoder.services.llm.client import LLM, LLMRequestCancelled
 from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
 
 
@@ -394,6 +395,41 @@ class _FakeChunk:
     def __init__(self, *, content: str = "", usage=None):
         self.usage = usage
         self.choices = [_FakeChoice(_FakeDelta(content=content))]
+
+
+def test_llm_stream_closes_when_agent_scope_is_cancelled() -> None:
+    cancellation = threading.Event()
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    class Stream:
+        def __init__(self) -> None:
+            self._chunks = iter([_FakeChunk(content="first"), _FakeChunk(content="late")])
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._chunks)
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = Stream()
+    llm._call_with_retry = lambda params: stream  # type: ignore[method-assign]
+
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            on_token=lambda token: cancellation.set(),
+            cancellation_event=cancellation,
+        )
+    except LLMRequestCancelled:
+        pass
+    else:
+        raise AssertionError("cancelled stream must raise LLMRequestCancelled")
+
+    assert stream.closed is True
 
 
 def test_llm_chat_sends_explicit_thinking_enabled_state() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 
 from reuleauxcoder.domain.workspace import WorkspacePort
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
@@ -18,6 +19,7 @@ class ExecutionContext:
     workspace_root: str | None = None
     execution_target: str = "local"
     remote_stream_handler: object | None = None
+    cancellation_event: threading.Event | None = None
 
 
 class ToolBackend:

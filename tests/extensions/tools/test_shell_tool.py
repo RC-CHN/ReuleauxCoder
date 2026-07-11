@@ -2,11 +2,13 @@
 cross-platform shell execution behaviour."""
 
 import os
-import subprocess
 import tempfile
+import threading
+import time
 from unittest import mock
 
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.infrastructure.platform import ShellType
 
 
@@ -236,3 +238,23 @@ def test_execute_local_falls_back_to_shell_true_when_no_shell():
         "Should fall back to shell=True when no shell detected"
     )
     assert "ok" in result
+
+
+def test_agent_cancellation_terminates_running_shell_process() -> None:
+    cancellation = threading.Event()
+    backend = LocalToolBackend(
+        ExecutionContext(cancellation_event=cancellation)
+    )
+    tool = ShellTool(backend=backend)
+    timer = threading.Timer(0.2, cancellation.set)
+    started = time.monotonic()
+    timer.start()
+    try:
+        result = tool._execute_local(
+            "python -c 'import time; time.sleep(30)'", timeout=20
+        )
+    finally:
+        timer.cancel()
+
+    assert "cancelled" in result.lower()
+    assert time.monotonic() - started < 3

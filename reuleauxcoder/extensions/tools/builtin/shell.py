@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
+import signal
 import subprocess
+import time
 
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
 from reuleauxcoder.infrastructure.platform import ShellType, get_platform_info
+
+
+class ShellCancelled(RuntimeError):
+    pass
 
 
 @register_tool
@@ -127,21 +132,15 @@ class ShellTool(Tool):
                 # (e.g. minimal containers without bash/sh).
                 shell_cmd = platform_info.get_shell_executable()
                 if shell_cmd:
-                    proc = subprocess.run(
-                        shell_cmd + [command],
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                        cwd=actual_cwd,
+                    proc = self._run_process(
+                        shell_cmd + [command], cwd=actual_cwd, timeout=timeout
                     )
                 else:
-                    proc = subprocess.run(
+                    proc = self._run_process(
                         command,
                         shell=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
                         cwd=actual_cwd,
+                        timeout=timeout,
                     )
 
             out = proc.stdout
@@ -158,6 +157,8 @@ class ShellTool(Tool):
             return out.strip() or "(no output)"
         except subprocess.TimeoutExpired:
             return f"Error: timed out after {timeout}s"
+        except ShellCancelled:
+            return "Error: shell command cancelled"
         except Exception as e:
             return f"Error running command: {e}"
 
@@ -182,11 +183,95 @@ class ShellTool(Tool):
         else:
             normalized = command
 
-        proc = subprocess.run(
-            shell_cmd + [normalized],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd,
+        return self._run_process(
+            shell_cmd + [normalized], cwd=cwd, timeout=timeout
         )
-        return proc
+
+    def _run_process(
+        self,
+        command: str | list[str],
+        *,
+        cwd: str,
+        timeout: int,
+        shell: bool = False,
+    ) -> subprocess.CompletedProcess:
+        cancellation_event = getattr(
+            getattr(self.backend, "context", None), "cancellation_event", None
+        )
+        if cancellation_event is None:
+            return subprocess.run(
+                command,
+                cwd=cwd,
+                timeout=timeout,
+                shell=shell,
+                capture_output=True,
+                text=True,
+            )
+        return self._run_cancellable(
+            command, cwd=cwd, timeout=timeout, shell=shell
+        )
+
+    def _run_cancellable(
+        self,
+        command: str | list[str],
+        *,
+        cwd: str,
+        timeout: int,
+        shell: bool = False,
+    ) -> subprocess.CompletedProcess:
+        cancellation_event = self.backend.context.cancellation_event
+        popen_kwargs = {
+            "cwd": cwd,
+            "shell": shell,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+        process = subprocess.Popen(command, **popen_kwargs)
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancellation_event is not None and cancellation_event.is_set():
+                self._terminate_process_tree(process)
+                raise ShellCancelled
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._terminate_process_tree(process)
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                return subprocess.CompletedProcess(
+                    command, process.returncode, stdout, stderr
+                )
+            except subprocess.TimeoutExpired:
+                continue
+
+    @staticmethod
+    def _terminate_process_tree(process: subprocess.Popen) -> None:
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                process.kill()
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            process.wait(timeout=1.0)
