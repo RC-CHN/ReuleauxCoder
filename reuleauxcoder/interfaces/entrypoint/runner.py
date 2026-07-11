@@ -219,7 +219,12 @@ class AppRunner:
             )
             return
 
-        manager = LspManager(lsp_config, workspace_cwd=Path.cwd(), ui_bus=ui_bus)
+        manager = LspManager(
+            lsp_config,
+            workspace_cwd=Path.cwd(),
+            ui_bus=ui_bus,
+            runtime_event_sink=ui_bus.emit_runtime,
+        )
         report = manager.health_check()
 
         if report.available == 0:

@@ -7,6 +7,7 @@ from enum import Enum
 from typing import TypeAlias
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.runtime.events import RuntimeDiagnostic
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class ToolCell:
     tool_call_id: str
     name: str
     arguments: dict | None
+    output: str = ""
     status: ToolCellStatus = ToolCellStatus.RUNNING
     outcome: ToolOutcome | None = None
     orphaned: bool = False
@@ -47,7 +49,10 @@ class DiffCell:
 class DiagnosticCell:
     id: str
     path: str
-    diagnostics: tuple[dict, ...]
+    batch_id: str
+    document_version: int
+    diagnostic_generation: int
+    diagnostics: tuple[RuntimeDiagnostic, ...]
     revision: int = 0
 
 
@@ -78,6 +83,8 @@ class ApprovalCell:
     request_id: str
     title: str
     status: str
+    preview: str | None = None
+    reason: str | None = None
     revision: int = 0
 
 

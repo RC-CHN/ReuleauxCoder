@@ -20,7 +20,15 @@ import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
+
+from reuleauxcoder.domain.runtime.events import (
+    DiagnosticsCleared,
+    DiagnosticsPublished,
+    RuntimeDiagnostic,
+    RuntimeEvent,
+)
 
 from reuleauxcoder.extensions.lsp.client import (
     LspClient,
@@ -100,10 +108,12 @@ class LspManager:
         workspace_cwd: Path,
         *,
         ui_bus: Any = None,
+        runtime_event_sink: Callable[[RuntimeEvent], None] | None = None,
     ) -> None:
         self._config = config
         self._workspace_cwd = workspace_cwd
         self.ui_bus = ui_bus
+        self._runtime_event_sink = runtime_event_sink
 
         # Per-language/workspace state. One language server must never index
         # files from an unrelated workspace root.
@@ -550,6 +560,7 @@ class LspManager:
                 diagnostic_generation=diagnostic_generation,
                 block=block,
             )
+            accepted = False
             with self._lock:
                 # A slower obsolete request must not overwrite a newer batch.
                 key = (
@@ -562,6 +573,9 @@ class LspManager:
                     == request.request_sequence
                 ):
                     self._diagnostic_batches[batch.batch_id] = batch
+                    accepted = True
+            if accepted:
+                self._publish_diagnostic_event(batch)
 
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             logger.warning("LSP transport error for %s: %s", lang.name, e)
@@ -591,6 +605,48 @@ class LspManager:
         self._acknowledged_batches[batch_id] = consumer_id
         while len(self._acknowledged_batches) > 1024:
             self._acknowledged_batches.pop(next(iter(self._acknowledged_batches)))
+
+    def _publish_diagnostic_event(self, batch: DiagnosticBatch) -> None:
+        sink = self._runtime_event_sink
+        if sink is None:
+            return
+        if batch.block.items:
+            payload = DiagnosticsPublished(
+                batch_id=batch.batch_id,
+                file_path=batch.block.file_path,
+                document_version=batch.document_version,
+                diagnostic_generation=batch.diagnostic_generation,
+                diagnostics=tuple(
+                    RuntimeDiagnostic(
+                        line=item.line,
+                        character=item.character,
+                        message=item.message,
+                        severity=item.severity_label.lower(),
+                        code=item.code,
+                    )
+                    for item in batch.block.items
+                ),
+            )
+        else:
+            payload = DiagnosticsCleared(
+                batch_id=batch.batch_id,
+                file_path=batch.block.file_path,
+                document_version=batch.document_version,
+                diagnostic_generation=batch.diagnostic_generation,
+            )
+        try:
+            sink(
+                RuntimeEvent(
+                    payload=payload,
+                    agent_id=batch.route.agent_id,
+                    session_generation=batch.route.session_generation,
+                    session_id=batch.route.session_id,
+                    turn_id=batch.route.turn_id,
+                    correlation_id=batch.route.tool_call_id or batch.batch_id,
+                )
+            )
+        except Exception:
+            logger.exception("Runtime diagnostics event sink failed")
 
     async def _handle_notification(
         self,

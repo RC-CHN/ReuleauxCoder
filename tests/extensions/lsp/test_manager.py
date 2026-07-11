@@ -19,6 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from reuleauxcoder.domain.runtime.events import (
+    DiagnosticsCleared,
+    DiagnosticsPublished,
+)
 from reuleauxcoder.extensions.lsp.client import LspClientError
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import (
@@ -476,6 +480,8 @@ class TestDiagnosticReplacement:
         server.diagnostic_document_version.return_value = 2
         server.wait_for_diagnostics = AsyncMock(return_value=[])
         manager._get_or_create_server = AsyncMock(return_value=server)
+        runtime_events = []
+        manager._runtime_event_sink = runtime_events.append
         manager._availability[LanguageId.PYTHON] = True
         batch_id = manager.enqueue_diagnostics(
             path,
@@ -496,11 +502,48 @@ class TestDiagnosticReplacement:
         assert batches[0].block.items == []
         assert batches[0].document_version == 2
         assert batches[0].diagnostic_generation == 2
+        assert len(runtime_events) == 1
+        assert isinstance(runtime_events[0].payload, DiagnosticsCleared)
+        assert runtime_events[0].agent_id == "agent-1"
+        assert runtime_events[0].correlation_id == "tool-1"
         server.wait_for_diagnostics.assert_awaited_once_with(
             path,
             timeout=manager.config.poll_timeout_ms / 1000,
             after_generation=1,
         )
+
+    def test_non_empty_batch_publishes_typed_runtime_diagnostics(
+        self, manager: LspManager
+    ) -> None:
+        events = []
+        manager._runtime_event_sink = events.append
+        batch = DiagnosticBatch(
+            batch_id="batch-errors",
+            route=DiagnosticRoute(
+                file_path=Path("/tmp/main.py"),
+                agent_id="agent-1",
+                session_generation=2,
+                session_id="session-1",
+                turn_id="turn-1",
+                tool_call_id="tool-1",
+            ),
+            request_sequence=1,
+            document_version=3,
+            diagnostic_generation=5,
+            block=DiagnosticBlock(
+                file_path="main.py",
+                items=[Diagnostic(line=2, character=4, message="broken")],
+            ),
+        )
+
+        manager._publish_diagnostic_event(batch)
+
+        assert len(events) == 1
+        event = events[0]
+        assert isinstance(event.payload, DiagnosticsPublished)
+        assert event.payload.batch_id == "batch-errors"
+        assert event.payload.diagnostics[0].message == "broken"
+        assert event.session_generation == 2
 
     def test_stale_request_cannot_publish_after_newer_request(
         self, manager: LspManager, tmp_path: Path

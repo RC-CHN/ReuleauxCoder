@@ -1,6 +1,25 @@
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
-from reuleauxcoder.presentation.models import AssistantCell, ToolCell, ToolCellStatus
+from reuleauxcoder.domain.runtime.events import (
+    ApprovalRequested,
+    ApprovalResolved,
+    DiagnosticsCleared,
+    DiagnosticsPublished,
+    RuntimeDiagnostic,
+    RuntimeEvent,
+    RuntimeStateChanged,
+    SessionChanged,
+    ToolOutputDelta,
+    ViewRefreshed,
+    ViewRequested,
+)
+from reuleauxcoder.presentation.models import (
+    ApprovalCell,
+    AssistantCell,
+    DiagnosticCell,
+    ToolCell,
+    ToolCellStatus,
+)
 from reuleauxcoder.presentation.reducer import PresentationReducer, RuntimeViewState
 from reuleauxcoder.presentation.models import TranscriptModel
 
@@ -128,3 +147,97 @@ def test_generation_watermarks_are_isolated_by_agent_and_session() -> None:
         AssistantCell(id="assistant:parent:turn-1", text="parent"),
         AssistantCell(id="assistant:child:turn-1", text="child"),
     )
+
+
+def test_tool_output_delta_correlates_with_running_tool() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(_runtime(AgentEvent.tool_call_start("shell", {}, tool_call_id="x")))
+
+    changes = reducer.apply(
+        RuntimeEvent(payload=ToolOutputDelta(tool_call_id="x", text="hello"))
+    )
+
+    assert changes
+    cell = reducer.state.transcript.get("tool:x")
+    assert isinstance(cell, ToolCell)
+    assert cell.output == "hello"
+
+
+def test_diagnostic_publish_and_clear_update_same_typed_cell() -> None:
+    reducer = PresentationReducer()
+    published = RuntimeEvent(
+        payload=DiagnosticsPublished(
+            batch_id="batch-1",
+            file_path="main.py",
+            document_version=2,
+            diagnostic_generation=4,
+            diagnostics=(
+                RuntimeDiagnostic(line=1, character=2, message="broken"),
+            ),
+        ),
+        agent_id="agent-1",
+    )
+    reducer.apply(published)
+
+    cleared = RuntimeEvent(
+        payload=DiagnosticsCleared(
+            batch_id="batch-2",
+            file_path="main.py",
+            document_version=3,
+            diagnostic_generation=5,
+        ),
+        agent_id="agent-1",
+    )
+    changes = reducer.apply(cleared)
+
+    assert changes
+    cell = reducer.state.transcript.get("diagnostic:agent-1:main.py")
+    assert isinstance(cell, DiagnosticCell)
+    assert cell.batch_id == "batch-2"
+    assert cell.document_version == 3
+    assert cell.diagnostics == ()
+
+
+def test_approval_request_and_resolution_correlate_by_request_id() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(
+        RuntimeEvent(
+            payload=ApprovalRequested(
+                request_id="approval-1", title="Run shell", preview="echo ok"
+            )
+        )
+    )
+    reducer.apply(
+        RuntimeEvent(
+            payload=ApprovalResolved(
+                request_id="approval-1", approved=False, reason="user denied"
+            )
+        )
+    )
+
+    cell = reducer.state.transcript.get("approval:approval-1")
+    assert isinstance(cell, ApprovalCell)
+    assert cell.status == "denied"
+    assert cell.reason == "user denied"
+
+
+def test_session_runtime_and_view_events_update_typed_view_state() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(
+        RuntimeEvent(payload=SessionChanged(action="restore", session_id="s-1"))
+    )
+    reducer.apply(RuntimeEvent(payload=RuntimeStateChanged(state="running")))
+    reducer.apply(
+        RuntimeEvent(payload=ViewRequested(request_id="v-1", view_type="models"))
+    )
+    reducer.apply(
+        RuntimeEvent(
+            payload=ViewRefreshed(
+                request_id="v-1", view_type="models", revision=2
+            )
+        )
+    )
+
+    assert reducer.state.active_session_id == "s-1"
+    assert reducer.state.runtime_state == "running"
+    assert reducer.state.view_revisions[("v-1", "models")] == 2

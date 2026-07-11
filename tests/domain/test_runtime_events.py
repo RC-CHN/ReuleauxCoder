@@ -2,10 +2,14 @@ import pytest
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.runtime.events import (
+    AssistantContentDelta,
     NotificationRaised,
+    ReasoningDelta,
     RuntimeEventKind,
     ToolCallFinished,
     ToolCallStarted,
+    TurnFinished,
+    TurnStarted,
     agent_event_to_runtime_event,
 )
 
@@ -36,6 +40,25 @@ def test_adapter_preserves_agent_and_session_generation() -> None:
 
     assert runtime.agent_id == "agent-1"
     assert runtime.session_generation == 7
+
+
+def test_legacy_turn_and_stream_events_map_to_canonical_payloads() -> None:
+    assert isinstance(
+        agent_event_to_runtime_event(AgentEvent.chat_start("hello")).payload,
+        TurnStarted,
+    )
+    assert isinstance(
+        agent_event_to_runtime_event(AgentEvent.chat_end("done")).payload,
+        TurnFinished,
+    )
+    assert isinstance(
+        agent_event_to_runtime_event(AgentEvent.stream_token("a")).payload,
+        AssistantContentDelta,
+    )
+    assert isinstance(
+        agent_event_to_runtime_event(AgentEvent.stream_reasoning("r")).payload,
+        ReasoningDelta,
+    )
 
 
 def test_tool_end_adapter_preserves_full_structured_outcome() -> None:

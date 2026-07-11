@@ -13,14 +13,22 @@ from rich.syntax import Syntax
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.runtime.events import (
+    ApprovalRequested,
+    ApprovalResolved,
+    AssistantContentDelta,
     ChatCompleted,
+    DiagnosticsCleared,
+    DiagnosticsPublished,
     ErrorOccurred,
     NotificationRaised,
+    ReasoningDelta,
     RuntimeEvent,
     StreamChunk,
     SubagentFinished,
     ToolCallFinished,
     ToolCallStarted,
+    ToolOutputDelta,
+    TurnFinished,
     agent_event_to_runtime_event,
 )
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
@@ -148,20 +156,25 @@ class CLIRenderer:
             return
 
         payload = event.payload
-        if isinstance(payload, StreamChunk):
+        if isinstance(payload, AssistantContentDelta):
+            if changes:
+                self._render_token(payload.text)
+        elif isinstance(payload, ReasoningDelta):
+            self._render_reasoning(payload.text, payload.display_mode)
+        elif isinstance(payload, StreamChunk):
             if payload.reasoning:
-                self._render_reasoning(
-                    {"token": payload.text, "display_mode": payload.display_mode}
-                )
+                self._render_reasoning(payload.text, payload.display_mode)
             elif changes:
                 self._render_token(payload.text)
         elif isinstance(payload, ToolCallStarted) and changes:
             self._render_tool_start(payload.tool_name, payload.arguments)
         elif isinstance(payload, ToolCallFinished) and changes:
             self._render_tool_end(payload.tool_name, payload.outcome)
+        elif isinstance(payload, ToolOutputDelta) and changes:
+            self.console.print(payload.text, end="", markup=False, highlight=False)
         elif isinstance(payload, SubagentFinished) and changes:
             self._render_subagent_completed(payload)
-        elif isinstance(payload, ChatCompleted):
+        elif isinstance(payload, (TurnFinished, ChatCompleted)):
             self.finalize_response(
                 payload.response,
                 render_response=payload.render_response,
@@ -170,6 +183,20 @@ class CLIRenderer:
             self._render_error(payload.message)
         elif isinstance(payload, NotificationRaised) and changes:
             self._render_runtime_notification(payload)
+        elif isinstance(payload, DiagnosticsPublished) and changes:
+            if payload.diagnostics:
+                self.console.print(
+                    f"LSP: {len(payload.diagnostics)} diagnostic(s) in "
+                    f"{payload.file_path}"
+                )
+        elif isinstance(payload, DiagnosticsCleared) and changes:
+            if self.policy.verbosity != "compact":
+                self.console.print(f"LSP: clean {payload.file_path}")
+        elif isinstance(payload, ApprovalRequested) and changes:
+            self.console.print(f"Approval requested: {payload.title}")
+        elif isinstance(payload, ApprovalResolved) and changes:
+            status = "approved" if payload.approved else "denied"
+            self.console.print(f"Approval {status}: {payload.request_id}")
 
     def _render_runtime_notification(self, payload: NotificationRaised) -> None:
         level = payload.severity.lower()
@@ -212,7 +239,9 @@ class CLIRenderer:
         self._active_content_block.append(token)
         self._flush_completed_paragraphs()
 
-    def _render_reasoning(self, data: dict) -> None:
+    def _render_reasoning(
+        self, token: str, display_mode: str | None = None
+    ) -> None:
         """Render a streamed reasoning token.
 
         In *quiet* mode (default): prints ``🤔 Thinking...`` once, then
@@ -220,8 +249,7 @@ class CLIRenderer:
         In *inline* mode: streams reasoning tokens in dim grey, raw text
         (no Markdown parsing).
         """
-        mode = data.get("display_mode", "quiet")
-        token: str = data.get("token", "")
+        mode = display_mode or "quiet"
 
         if mode == "quiet":
             if not self._reasoning_label_printed:

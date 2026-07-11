@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
-from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
+from reuleauxcoder.domain.runtime.events import RuntimeEvent, agent_event_to_runtime_event
 
 
 class UIEventLevel(Enum):
@@ -200,6 +200,16 @@ class UIEventBus:
         self, message: str, *, kind: UIEventKind = UIEventKind.SYSTEM, **data: Any
     ) -> None:
         self.emit(UIEvent.debug(message, kind=kind, **data))
+
+    def emit_runtime(self, event: RuntimeEvent) -> None:
+        """Publish one typed runtime event through the shared UI scheduler."""
+        self.emit(
+            UIEvent(
+                message=event.kind.value,
+                kind=UIEventKind.AGENT,
+                data={"runtime_event": event},
+            )
+        )
 
     def open_view(
         self,

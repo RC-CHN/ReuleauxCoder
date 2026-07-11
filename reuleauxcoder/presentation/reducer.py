@@ -6,18 +6,33 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from reuleauxcoder.domain.runtime.events import (
+    ApprovalRequested,
+    ApprovalResolved,
+    AssistantContentDelta,
     ChatCompleted,
     ChatStarted,
+    DiagnosticsCleared,
+    DiagnosticsPublished,
     ErrorOccurred,
     NotificationRaised,
+    ReasoningDelta,
+    RuntimeStateChanged,
     RuntimeEvent,
+    SessionChanged,
     StreamChunk,
     SubagentFinished,
     ToolCallFinished,
     ToolCallStarted,
+    ToolOutputDelta,
+    TurnFinished,
+    TurnStarted,
+    ViewRefreshed,
+    ViewRequested,
 )
 from reuleauxcoder.presentation.models import (
     AssistantCell,
+    ApprovalCell,
+    DiagnosticCell,
     NoticeCell,
     SubagentCell,
     ToolCell,
@@ -50,6 +65,9 @@ class RuntimeViewState:
     session_generations: dict[tuple[str, str | None], int] = field(
         default_factory=dict
     )
+    active_session_id: str | None = None
+    runtime_state: str = "idle"
+    view_revisions: dict[tuple[str, str], int] = field(default_factory=dict)
     active_assistant_cells: dict[
         tuple[str | None, str | None, int | None, str | None], str
     ] = field(default_factory=dict)
@@ -75,14 +93,18 @@ class PresentationReducer:
             return ()
 
         payload = event.payload
-        if isinstance(payload, ChatStarted):
+        if isinstance(payload, (TurnStarted, ChatStarted)):
             self._complete_active_assistant(event)
+            return ()
+        if isinstance(payload, AssistantContentDelta):
+            return self._append_stream(event, payload.text)
+        if isinstance(payload, ReasoningDelta):
             return ()
         if isinstance(payload, StreamChunk):
             if payload.reasoning:
                 return ()
             return self._append_stream(event, payload.text)
-        if isinstance(payload, ChatCompleted):
+        if isinstance(payload, (TurnFinished, ChatCompleted)):
             return self._complete_chat(event, payload)
         if isinstance(payload, ToolCallStarted):
             cell = ToolCell(
@@ -94,6 +116,8 @@ class PresentationReducer:
             return self._append(cell)
         if isinstance(payload, ToolCallFinished):
             return self._finish_tool(payload)
+        if isinstance(payload, ToolOutputDelta):
+            return self._append_tool_output(payload)
         if isinstance(payload, SubagentFinished):
             cell = SubagentCell(
                 id=f"subagent:{payload.job_id}",
@@ -134,6 +158,28 @@ class PresentationReducer:
                     category=payload.code,
                 )
             )
+        if isinstance(payload, DiagnosticsPublished):
+            return self._publish_diagnostics(event, payload)
+        if isinstance(payload, DiagnosticsCleared):
+            return self._clear_diagnostics(event, payload)
+        if isinstance(payload, ApprovalRequested):
+            return self._request_approval(payload)
+        if isinstance(payload, ApprovalResolved):
+            return self._resolve_approval(payload)
+        if isinstance(payload, SessionChanged):
+            self.state.active_session_id = payload.session_id
+            return ()
+        if isinstance(payload, RuntimeStateChanged):
+            self.state.runtime_state = payload.state
+            return ()
+        if isinstance(payload, ViewRequested):
+            self.state.view_revisions[(payload.request_id, payload.view_type)] = 0
+            return ()
+        if isinstance(payload, ViewRefreshed):
+            self.state.view_revisions[(payload.request_id, payload.view_type)] = (
+                payload.revision
+            )
+            return ()
         raise TypeError(f"Unsupported runtime payload: {type(payload).__name__}")
 
     def _is_stale_generation(self, event: RuntimeEvent) -> bool:
@@ -260,6 +306,112 @@ class PresentationReducer:
             orphaned=True,
         )
         return self._append(orphan)
+
+    def _append_tool_output(
+        self, payload: ToolOutputDelta
+    ) -> tuple[PresentationChange, ...]:
+        cell_id = f"tool:{payload.tool_call_id}"
+        existing = self.state.transcript.get(cell_id)
+        if isinstance(existing, ToolCell):
+            return self._replace(
+                next_revision(existing, output=existing.output + payload.text)
+            )
+        return self._append(
+            ToolCell(
+                id=cell_id,
+                tool_call_id=payload.tool_call_id,
+                name="unknown_tool",
+                arguments=None,
+                output=payload.text,
+                orphaned=True,
+            )
+        )
+
+    @staticmethod
+    def _diagnostic_cell_id(event: RuntimeEvent, file_path: str) -> str:
+        owner = event.agent_id or "unknown"
+        return f"diagnostic:{owner}:{file_path}"
+
+    def _publish_diagnostics(
+        self, event: RuntimeEvent, payload: DiagnosticsPublished
+    ) -> tuple[PresentationChange, ...]:
+        cell = DiagnosticCell(
+            id=self._diagnostic_cell_id(event, payload.file_path),
+            path=payload.file_path,
+            batch_id=payload.batch_id,
+            document_version=payload.document_version,
+            diagnostic_generation=payload.diagnostic_generation,
+            diagnostics=payload.diagnostics,
+        )
+        existing = self.state.transcript.get(cell.id)
+        if isinstance(existing, DiagnosticCell):
+            return self._replace(
+                next_revision(
+                    existing,
+                    batch_id=cell.batch_id,
+                    document_version=cell.document_version,
+                    diagnostic_generation=cell.diagnostic_generation,
+                    diagnostics=cell.diagnostics,
+                )
+            )
+        return self._append(cell)
+
+    def _clear_diagnostics(
+        self, event: RuntimeEvent, payload: DiagnosticsCleared
+    ) -> tuple[PresentationChange, ...]:
+        return self._publish_diagnostics(
+            event,
+            DiagnosticsPublished(
+                batch_id=payload.batch_id,
+                file_path=payload.file_path,
+                document_version=payload.document_version,
+                diagnostic_generation=payload.diagnostic_generation,
+                diagnostics=(),
+            ),
+        )
+
+    def _request_approval(
+        self, payload: ApprovalRequested
+    ) -> tuple[PresentationChange, ...]:
+        cell = ApprovalCell(
+            id=f"approval:{payload.request_id}",
+            request_id=payload.request_id,
+            title=payload.title,
+            status="pending",
+            preview=payload.preview,
+        )
+        existing = self.state.transcript.get(cell.id)
+        if isinstance(existing, ApprovalCell):
+            return self._replace(
+                next_revision(
+                    existing,
+                    title=payload.title,
+                    status="pending",
+                    preview=payload.preview,
+                    reason=None,
+                )
+            )
+        return self._append(cell)
+
+    def _resolve_approval(
+        self, payload: ApprovalResolved
+    ) -> tuple[PresentationChange, ...]:
+        cell_id = f"approval:{payload.request_id}"
+        existing = self.state.transcript.get(cell_id)
+        status = "approved" if payload.approved else "denied"
+        if isinstance(existing, ApprovalCell):
+            return self._replace(
+                next_revision(existing, status=status, reason=payload.reason)
+            )
+        return self._append(
+            ApprovalCell(
+                id=cell_id,
+                request_id=payload.request_id,
+                title="Approval",
+                status=status,
+                reason=payload.reason,
+            )
+        )
 
     def _append(self, cell: TranscriptCell) -> tuple[PresentationChange, ...]:
         evicted = self.state.transcript.append(cell)

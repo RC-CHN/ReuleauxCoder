@@ -17,15 +17,65 @@ from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 
 
 class RuntimeEventKind(str, Enum):
-    CHAT_STARTED = "chat_started"
-    CHAT_COMPLETED = "chat_completed"
+    TURN_STARTED = "turn_started"
+    TURN_FINISHED = "turn_finished"
+    CHAT_STARTED = "turn_started"
+    CHAT_COMPLETED = "turn_finished"
+    ASSISTANT_CONTENT_DELTA = "assistant_content_delta"
+    REASONING_DELTA = "reasoning_delta"
     STREAM_CHUNK = "stream_chunk"
     REASONING_CHUNK = "reasoning_chunk"
-    TOOL_CALL_STARTED = "tool_call_started"
-    TOOL_CALL_FINISHED = "tool_call_finished"
-    SUBAGENT_FINISHED = "subagent_finished"
+    TOOL_STARTED = "tool_started"
+    TOOL_OUTPUT_DELTA = "tool_output_delta"
+    TOOL_FINISHED = "tool_finished"
+    TOOL_CALL_STARTED = "tool_started"
+    TOOL_CALL_FINISHED = "tool_finished"
+    SUBAGENT_JOB_CHANGED = "subagent_job_changed"
+    SUBAGENT_FINISHED = "subagent_job_changed"
+    DIAGNOSTICS_PUBLISHED = "diagnostics_published"
+    DIAGNOSTICS_CLEARED = "diagnostics_cleared"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_RESOLVED = "approval_resolved"
     ERROR_OCCURRED = "error_occurred"
     NOTIFICATION_RAISED = "notification_raised"
+    SESSION_CHANGED = "session_changed"
+    RUNTIME_STATE_CHANGED = "runtime_state_changed"
+    VIEW_REQUESTED = "view_requested"
+    VIEW_REFRESHED = "view_refreshed"
+
+
+@dataclass(frozen=True)
+class TurnStarted:
+    user_input: str
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.TURN_STARTED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class TurnFinished:
+    response: str
+    render_response: bool = True
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.TURN_FINISHED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class AssistantContentDelta:
+    text: str
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.ASSISTANT_CONTENT_DELTA, init=False
+    )
+
+
+@dataclass(frozen=True)
+class ReasoningDelta:
+    text: str
+    display_mode: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.REASONING_DELTA, init=False
+    )
 
 
 @dataclass(frozen=True)
@@ -81,7 +131,54 @@ class ToolCallFinished:
 
 
 @dataclass(frozen=True)
-class SubagentFinished:
+class ToolOutputDelta:
+    tool_call_id: str
+    text: str
+    stream: str = "stdout"
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.TOOL_OUTPUT_DELTA, init=False
+    )
+
+
+# Temporary import compatibility while ToolCall-prefixed consumers migrate.
+ToolStarted = ToolCallStarted
+ToolFinished = ToolCallFinished
+
+
+@dataclass(frozen=True)
+class RuntimeDiagnostic:
+    line: int
+    character: int
+    message: str
+    severity: str = "error"
+    code: str | None = None
+
+
+@dataclass(frozen=True)
+class DiagnosticsPublished:
+    batch_id: str
+    file_path: str
+    document_version: int
+    diagnostic_generation: int
+    diagnostics: tuple[RuntimeDiagnostic, ...]
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.DIAGNOSTICS_PUBLISHED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class DiagnosticsCleared:
+    batch_id: str
+    file_path: str
+    document_version: int
+    diagnostic_generation: int
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.DIAGNOSTICS_CLEARED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class SubagentJobChanged:
     job_id: str
     mode: str
     task: str
@@ -89,7 +186,31 @@ class SubagentFinished:
     result: str | None = None
     error: str | None = None
     kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.SUBAGENT_FINISHED, init=False
+        default=RuntimeEventKind.SUBAGENT_JOB_CHANGED, init=False
+    )
+
+
+# Temporary import compatibility while interface adapters migrate.
+SubagentFinished = SubagentJobChanged
+
+
+@dataclass(frozen=True)
+class ApprovalRequested:
+    request_id: str
+    title: str
+    preview: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.APPROVAL_REQUESTED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class ApprovalResolved:
+    request_id: str
+    approved: bool
+    reason: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.APPROVAL_RESOLVED, init=False
     )
 
 
@@ -112,15 +233,65 @@ class NotificationRaised:
     )
 
 
+@dataclass(frozen=True)
+class SessionChanged:
+    action: str
+    session_id: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.SESSION_CHANGED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class RuntimeStateChanged:
+    state: str
+    reason: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.RUNTIME_STATE_CHANGED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class ViewRequested:
+    request_id: str
+    view_type: str
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.VIEW_REQUESTED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class ViewRefreshed:
+    request_id: str
+    view_type: str
+    revision: int
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.VIEW_REFRESHED, init=False
+    )
+
+
 RuntimePayload: TypeAlias = (
-    ChatStarted
+    TurnStarted
+    | TurnFinished
+    | AssistantContentDelta
+    | ReasoningDelta
+    | ChatStarted
     | ChatCompleted
     | StreamChunk
     | ToolCallStarted
+    | ToolOutputDelta
     | ToolCallFinished
-    | SubagentFinished
+    | SubagentJobChanged
+    | DiagnosticsPublished
+    | DiagnosticsCleared
+    | ApprovalRequested
+    | ApprovalResolved
     | ErrorOccurred
     | NotificationRaised
+    | SessionChanged
+    | RuntimeStateChanged
+    | ViewRequested
+    | ViewRefreshed
 )
 
 
@@ -157,18 +328,17 @@ def agent_event_to_runtime_event(
     """
 
     if event.event_type is AgentEventType.CHAT_START:
-        payload: RuntimePayload = ChatStarted(event.data.get("user_input", ""))
+        payload: RuntimePayload = TurnStarted(event.data.get("user_input", ""))
     elif event.event_type is AgentEventType.CHAT_END:
-        payload = ChatCompleted(
+        payload = TurnFinished(
             event.data.get("response", ""),
             render_response=event.data.get("render_response", True),
         )
     elif event.event_type is AgentEventType.STREAM_TOKEN:
-        payload = StreamChunk(event.data.get("token", ""))
+        payload = AssistantContentDelta(event.data.get("token", ""))
     elif event.event_type is AgentEventType.STREAM_REASONING:
-        payload = StreamChunk(
+        payload = ReasoningDelta(
             event.data.get("token", ""),
-            reasoning=True,
             display_mode=event.data.get("display_mode"),
         )
     elif event.event_type is AgentEventType.TOOL_CALL_START:
@@ -187,7 +357,7 @@ def agent_event_to_runtime_event(
             outcome=outcome,
         )
     elif event.event_type is AgentEventType.SUBAGENT_COMPLETED:
-        payload = SubagentFinished(
+        payload = SubagentJobChanged(
             job_id=str(event.data.get("job_id", "")),
             mode=str(event.data.get("mode", "")),
             task=str(event.data.get("task", "")),
