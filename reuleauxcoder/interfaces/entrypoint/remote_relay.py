@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,15 @@ from reuleauxcoder.interfaces.interactions import (
 )
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.presentation import PresentationPolicy
+
+
+@dataclass(slots=True)
+class PeerPresentation:
+    """Long-lived presentation path owned by one connected peer."""
+
+    console: Console
+    renderer: CLIRenderer
+    ui_bus: UIEventBus
 
 
 def create_remote_console(terminal: TerminalCapabilities) -> Console:
@@ -149,7 +159,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     session_store = runner.dependencies.create_session_store(sessions_dir)
     peer_agents: dict[str, Agent] = {}
     peer_connection_markers: dict[str, str] = {}
-    peer_presenters: dict[str, tuple[Console, CLIRenderer]] = {}
+    peer_presenters: dict[str, PeerPresentation] = {}
 
     def _renderer_for(console: Console) -> CLIRenderer:
         policy = (
@@ -168,6 +178,13 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         )
         return create_remote_console(terminal)
 
+    def _presentation_for_peer(peer_id: str) -> PeerPresentation:
+        console = _console_for_peer(peer_id)
+        renderer = _renderer_for(console)
+        command_bus = UIEventBus()
+        command_bus.subscribe(renderer.on_ui_event, replay_history=False)
+        return PeerPresentation(console, renderer, command_bus)
+
     def _connection_marker(peer_id: str) -> str:
         peer = relay_server.registry.get(peer_id)
         return (
@@ -179,7 +196,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     def _dispose_peer(peer_id: str) -> None:
         presenter = peer_presenters.pop(peer_id, None)
         if presenter is not None:
-            presenter[1].close()
+            presenter.renderer.close()
         peer_agent = peer_agents.pop(peer_id, None)
         manager = getattr(peer_agent, "_subagent_manager", None)
         if manager is not None:
@@ -217,11 +234,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         if config is None:
             peer_agents[peer_id] = agent
             peer_connection_markers[peer_id] = marker
-            console = _console_for_peer(peer_id)
-            peer_presenters[peer_id] = (
-                console,
-                _renderer_for(console),
-            )
+            peer_presenters[peer_id] = _presentation_for_peer(peer_id)
             return agent
 
         peer_llm = runner.dependencies.create_llm(config)
@@ -262,11 +275,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         def _cache_created_agent(reason: str) -> Agent:
             peer_agents[peer_id] = peer_agent
             peer_connection_markers[peer_id] = marker
-            console = _console_for_peer(peer_id)
-            peer_presenters[peer_id] = (
-                console,
-                _renderer_for(console),
-            )
+            peer_presenters[peer_id] = _presentation_for_peer(peer_id)
             peer_agent.lifecycle.runner_started(
                 metadata={"ui_bus": ui_bus, "peer_id": peer_id}
             )
@@ -323,17 +332,17 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         peer_agent = _create_peer_agent(peer_id)
         peer_agent.clear_stop_request()
         remote_session.cancel_callback = peer_agent.request_stop
-        ansi_console, renderer = peer_presenters[peer_id]
+        presentation = peer_presenters[peer_id]
+        ansi_console = presentation.console
+        renderer = presentation.renderer
 
         if prompt.strip().startswith("/") and config is not None:
-            command_bus = UIEventBus()
-            command_bus.subscribe(renderer.on_ui_event, replay_history=False)
             command_result = handle_command(
                 prompt.strip(),
                 peer_agent,
                 config,
                 getattr(peer_agent, "current_session_id", None),
-                command_bus,
+                presentation.ui_bus,
                 CLI_PROFILE,
                 runner.dependencies.create_action_registry(),
                 sessions_dir,

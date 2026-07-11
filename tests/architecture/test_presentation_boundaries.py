@@ -80,6 +80,15 @@ def test_command_handlers_only_use_single_typed_effect_channel() -> None:
     assert "view_model_from_payload" not in view_models
 
 
+def test_remote_commands_reuse_the_peer_presentation_bus() -> None:
+    source = (
+        ROOT / "reuleauxcoder" / "interfaces" / "entrypoint" / "remote_relay.py"
+    ).read_text(encoding="utf-8")
+
+    assert source.count("command_bus = UIEventBus()") == 1
+    assert "presentation.ui_bus" in source
+
+
 def test_runtime_does_not_dynamically_inject_agent_dependencies() -> None:
     violations = []
     root = ROOT / "reuleauxcoder"
