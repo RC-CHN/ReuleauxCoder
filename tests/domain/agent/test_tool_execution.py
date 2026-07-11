@@ -39,6 +39,7 @@ class _AgentStub:
             run_transforms=lambda point, ctx: ctx,
             run_observers=lambda point, ctx: None,
         )
+        self.events = []
 
     def get_tool(self, name: str):  # noqa: ARG002
         return self._tool
@@ -53,7 +54,7 @@ class _AgentStub:
         return SimpleNamespace(prompt_append="")
 
     def _emit_event(self, event) -> None:
-        pass
+        self.events.append(event)
 
 
 def test_shell_cwd_syncs_to_runtime_working_directory() -> None:
@@ -68,6 +69,8 @@ def test_shell_cwd_syncs_to_runtime_working_directory() -> None:
     executor.execute(tc)
 
     assert getattr(agent, "runtime_working_directory", None) == "/tmp/cool-dir"
+    assert agent.events[-1].correlation_id == "call_1"
+    assert agent.events[-1].tool_outcome.model_text == "(no output)"
 
 
 def test_non_shell_tool_does_not_set_runtime_working_directory() -> None:

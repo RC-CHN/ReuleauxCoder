@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 
 
 class UIEventLevel(Enum):
@@ -263,6 +264,7 @@ class AgentEventBridge:
         ):
             level = UIEventLevel.DEBUG
 
+        runtime_event = agent_event_to_runtime_event(event)
         self.bus.emit(
             UIEvent(
                 message=event.event_type.value,
@@ -270,11 +272,14 @@ class AgentEventBridge:
                 kind=UIEventKind.AGENT,
                 data={
                     "agent_event": event,
+                    "runtime_event": runtime_event,
                     "event_type": event.event_type.value,
                     "tool_name": event.tool_name,
                     "tool_args": event.tool_args,
                     "tool_result": event.tool_result,
                     "tool_success": event.tool_success,
+                    "tool_call_id": event.correlation_id,
+                    "tool_outcome": event.tool_outcome,
                     "error_message": event.error_message,
                 },
             )

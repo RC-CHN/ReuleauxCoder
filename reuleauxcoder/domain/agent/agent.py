@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 import threading
+import uuid
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.approval import ApprovalProvider
@@ -12,7 +13,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.extensions.tools.base import Tool
     from reuleauxcoder.domain.config.models import Config
 
-from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
@@ -68,6 +69,7 @@ class Agent:
         self.state = AgentState()
         self._state_lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._current_turn_id: str | None = None
 
         # Context manager
         context_cfg = getattr(config, "context", None)
@@ -226,6 +228,10 @@ class Agent:
 
     def _emit_event(self, event: AgentEvent) -> None:
         """Emit an event to all handlers."""
+        if event.session_id is None:
+            event.session_id = getattr(self, "current_session_id", None)
+        if event.turn_id is None:
+            event.turn_id = self._current_turn_id
         for handler in self._event_handlers:
             try:
                 handler(event)
@@ -362,6 +368,7 @@ class Agent:
     def chat(self, user_input: str) -> str:
         """Process one user message."""
         self.clear_stop_request()
+        self._current_turn_id = uuid.uuid4().hex
 
         # Inject completed background sub-agent results before each new user turn.
         self._inject_completed_subagent_jobs()
@@ -406,6 +413,7 @@ class Agent:
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0
         self.state.current_round = 0
+        self._current_turn_id = None
 
     @property
     def messages(self) -> list[dict]:

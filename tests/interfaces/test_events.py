@@ -1,4 +1,5 @@
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.runtime.events import ToolCallFinished
 from reuleauxcoder.interfaces.events import (
     AgentEventBridge,
     UIEvent,
@@ -92,3 +93,21 @@ def test_agent_event_bridge_maps_tool_events_to_debug_level() -> None:
     assert event.kind is UIEventKind.AGENT
     assert event.level is UIEventLevel.DEBUG
     assert event.data["tool_name"] == "shell"
+
+
+def test_agent_event_bridge_exposes_tool_correlation_and_outcome() -> None:
+    bus = UIEventBus()
+    seen = []
+    bus.subscribe(lambda event: seen.append(event), replay_history=False)
+
+    AgentEventBridge(bus).on_agent_event(
+        AgentEvent.tool_call_end(
+            "shell", "ok", tool_call_id="call-7", success=True
+        )
+    )
+
+    event = seen[0]
+    assert event.data["tool_call_id"] == "call-7"
+    assert event.data["tool_outcome"].model_text == "ok"
+    assert isinstance(event.data["runtime_event"].payload, ToolCallFinished)
+    assert event.data["runtime_event"].payload.tool_call_id == "call-7"

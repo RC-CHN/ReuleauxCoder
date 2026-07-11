@@ -7,6 +7,7 @@ from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.views.common import render_markdown_panel
 from reuleauxcoder.interfaces.events import UIEvent, UIEventKind
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
+from reuleauxcoder.presentation.models import AssistantCell, NoticeCell, ToolCell
 
 
 def _renderer() -> CLIRenderer:
@@ -68,16 +69,22 @@ def test_cli_renderer_tracks_completed_content_and_tool_blocks() -> None:
     renderer.render_plain_text = Mock()
 
     renderer.on_event(AgentEvent.stream_token("hello"))
-    renderer.on_event(AgentEvent.tool_call_start("shell", {"command": "pwd"}))
-    renderer.on_event(AgentEvent.tool_call_end("shell", "ok", success=True))
+    renderer.on_event(
+        AgentEvent.tool_call_start(
+            "shell", {"command": "pwd"}, tool_call_id="call-1"
+        )
+    )
+    renderer.on_event(
+        AgentEvent.tool_call_end("shell", "ok", success=True, tool_call_id="call-1")
+    )
 
     assert renderer._active_content_block is None
-    assert len(renderer._completed_blocks) == 3
-    assert renderer._completed_blocks[0].text == "hello"
-    assert renderer._completed_blocks[1].name == "shell"
-    assert renderer._completed_blocks[1].args == {"command": "pwd"}
-    assert renderer._completed_blocks[2].result == "ok"
-    assert renderer._completed_blocks[2].success is True
+    assistant, tool = renderer.reducer.state.transcript.cells
+    assert isinstance(assistant, AssistantCell)
+    assert assistant.text == "hello"
+    assert isinstance(tool, ToolCell)
+    assert tool.arguments == {"command": "pwd"}
+    assert tool.outcome is not None and tool.outcome.model_text == "ok"
 
 
 def test_cli_renderer_tracks_notification_block_after_stream() -> None:
@@ -89,10 +96,12 @@ def test_cli_renderer_tracks_notification_block_after_stream() -> None:
     renderer.on_ui_event(UIEvent.info("debug note", kind=UIEventKind.SYSTEM))
 
     assert renderer._active_content_block is None
-    assert len(renderer._completed_blocks) == 2
-    assert renderer._completed_blocks[0].text == "hello"
-    assert renderer._completed_blocks[1].message == "debug note"
-    assert renderer._completed_blocks[1].kind == UIEventKind.SYSTEM
+    assistant, notice = renderer.reducer.state.transcript.cells
+    assert isinstance(assistant, AssistantCell)
+    assert assistant.text == "hello"
+    assert isinstance(notice, NoticeCell)
+    assert notice.message == "debug note"
+    assert notice.category == UIEventKind.SYSTEM.value
 
 
 def test_render_markdown_panel_closes_active_stream_block() -> None:
@@ -105,7 +114,7 @@ def test_render_markdown_panel_closes_active_stream_block() -> None:
 
     assert rendered is True
     assert renderer._active_content_block is None
-    assert renderer._completed_blocks[0].text == "hello"
+    assert renderer.reducer.state.transcript.cells[0].text == "hello"
     renderer.render_content_markdown.assert_called_once_with("hello")
     renderer.render_plain_text.assert_called_once_with("\n")
 

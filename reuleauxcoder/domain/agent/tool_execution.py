@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.llm.models import ToolCall
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind, ToolOutcome
 from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
@@ -52,7 +53,15 @@ class ToolExecutor:
         if denied is not None:
             message = denied.reason or f"Tool '{tc.name}' blocked by guard hook"
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tc.name, message, success=False)
+                AgentEvent.tool_call_end(
+                    tc.name,
+                    message,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome.from_legacy(
+                        message, success=False, error_kind=ToolErrorKind.DENIED
+                    ),
+                )
             )
             return message
 
@@ -61,7 +70,17 @@ class ToolExecutor:
         )
         if preflight_error:
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tc.name, preflight_error, success=False)
+                AgentEvent.tool_call_end(
+                    tc.name,
+                    preflight_error,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome.from_legacy(
+                        preflight_error,
+                        success=False,
+                        error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+                    ),
+                )
             )
             return preflight_error
 
@@ -81,7 +100,9 @@ class ToolExecutor:
                     f"Tool '{tc.name}' is not available in current mode '{mode_name}'"
                 )
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tc.name, message, success=False)
+                AgentEvent.tool_call_end(
+                    tc.name, message, success=False, tool_call_id=tc.id
+                )
             )
             return message
 
@@ -96,7 +117,9 @@ class ToolExecutor:
                     or f"Tool '{tc.name}' requires approval, but no approval provider is configured"
                 )
                 self.agent._emit_event(
-                    AgentEvent.tool_call_end(tc.name, message, success=False)
+                    AgentEvent.tool_call_end(
+                        tc.name, message, success=False, tool_call_id=tc.id
+                    )
                 )
                 return message
             try:
@@ -113,7 +136,9 @@ class ToolExecutor:
             except (KeyboardInterrupt, EOFError):
                 message = f"Tool '{tc.name}' approval interrupted by user"
                 self.agent._emit_event(
-                    AgentEvent.tool_call_end(tc.name, message, success=False)
+                    AgentEvent.tool_call_end(
+                        tc.name, message, success=False, tool_call_id=tc.id
+                    )
                 )
                 return message
 
@@ -122,7 +147,9 @@ class ToolExecutor:
                     decision.reason or f"Tool '{tc.name}' denied by approval provider"
                 )
                 self.agent._emit_event(
-                    AgentEvent.tool_call_end(tc.name, message, success=False)
+                    AgentEvent.tool_call_end(
+                        tc.name, message, success=False, tool_call_id=tc.id
+                    )
                 )
                 return message
 
@@ -144,7 +171,9 @@ class ToolExecutor:
         if tool is None:
             message = f"Error: unknown tool '{tool_call.name}'"
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+                AgentEvent.tool_call_end(
+                    tool_call.name, message, success=False, tool_call_id=tc.id
+                )
             )
             return message
 
@@ -166,13 +195,28 @@ class ToolExecutor:
                 HookPoint.AFTER_TOOL_EXECUTE, after_context
             )
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tool_call.name, after_context.result)
+                AgentEvent.tool_call_end(
+                    tool_call.name,
+                    after_context.result,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome.from_legacy(after_context.result),
+                )
             )
             return after_context.result
         except KeyboardInterrupt:
             message = f"Tool '{tool_call.name}' interrupted by user."
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+                AgentEvent.tool_call_end(
+                    tool_call.name,
+                    message,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome.from_legacy(
+                        message,
+                        success=False,
+                        error_kind=ToolErrorKind.INTERRUPTED,
+                    ),
+                )
             )
             if not self.agent.stop_requested():
                 self.agent.request_stop()
@@ -180,13 +224,33 @@ class ToolExecutor:
         except TypeError as e:
             message = f"Error: bad arguments for {tool_call.name}: {e}"
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+                AgentEvent.tool_call_end(
+                    tool_call.name,
+                    message,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome.from_legacy(
+                        message,
+                        success=False,
+                        error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+                    ),
+                )
             )
             return message
         except Exception as e:
             message = f"Error executing {tool_call.name}: {e}"
             self.agent._emit_event(
-                AgentEvent.tool_call_end(tool_call.name, message, success=False)
+                AgentEvent.tool_call_end(
+                    tool_call.name,
+                    message,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome.from_legacy(
+                        message,
+                        success=False,
+                        error_kind=ToolErrorKind.EXECUTION,
+                    ),
+                )
             )
             return message
 

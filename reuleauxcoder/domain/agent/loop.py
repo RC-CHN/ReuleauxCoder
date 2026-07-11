@@ -203,7 +203,9 @@ class AgentLoop:
             if len(resp.tool_calls) == 1:
                 tc = resp.tool_calls[0]
                 self.agent._emit_event(
-                    AgentEvent.tool_call_start(tc.name, tc.arguments)
+                    AgentEvent.tool_call_start(
+                        tc.name, tc.arguments, tool_call_id=tc.id
+                    )
                 )
                 result = self.agent._executor.execute(tc)
                 self.agent.state.messages.append(
@@ -220,7 +222,9 @@ class AgentLoop:
                         if self.agent.stop_requested():
                             return "(stopped by cancellation request)"
                         self.agent._emit_event(
-                            AgentEvent.tool_call_start(tc.name, tc.arguments)
+                            AgentEvent.tool_call_start(
+                                tc.name, tc.arguments, tool_call_id=tc.id
+                            )
                         )
                         result = self.agent._executor.execute(tc)
                         self.agent.state.messages.append(
@@ -236,7 +240,9 @@ class AgentLoop:
                         return "(stopped by cancellation request)"
                     for tc in resp.tool_calls:
                         self.agent._emit_event(
-                            AgentEvent.tool_call_start(tc.name, tc.arguments)
+                            AgentEvent.tool_call_start(
+                                tc.name, tc.arguments, tool_call_id=tc.id
+                            )
                         )
                     results = self.agent._executor.execute_parallel(resp.tool_calls)
                     for tc, result in zip(resp.tool_calls, results):

@@ -1,9 +1,12 @@
 """Agent events - event types for telemetry and hooks."""
 
 import time
+import uuid
 from dataclasses import dataclass, field
-from typing import Optional, Any
+from typing import Optional
 from enum import Enum
+
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 
 
 class AgentEventType(Enum):
@@ -26,7 +29,11 @@ class AgentEvent:
     """An event emitted by the agent during execution."""
 
     event_type: AgentEventType
+    event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: float = field(default_factory=time.time)
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    correlation_id: Optional[str] = None
     data: dict = field(default_factory=dict)
 
     # Tool call specific fields
@@ -34,6 +41,7 @@ class AgentEvent:
     tool_args: Optional[dict] = None
     tool_result: Optional[str] = None
     tool_success: Optional[bool] = None
+    tool_outcome: Optional[ToolOutcome] = None
 
     # Error specific fields
     error_message: Optional[str] = None
@@ -55,10 +63,17 @@ class AgentEvent:
         )
 
     @classmethod
-    def tool_call_start(cls, tool_name: str, tool_args: dict) -> "AgentEvent":
+    def tool_call_start(
+        cls,
+        tool_name: str,
+        tool_args: dict,
+        *,
+        tool_call_id: str | None = None,
+    ) -> "AgentEvent":
         """Create a tool call start event."""
         return cls(
             event_type=AgentEventType.TOOL_CALL_START,
+            correlation_id=tool_call_id,
             tool_name=tool_name,
             tool_args=tool_args,
         )
@@ -70,15 +85,17 @@ class AgentEvent:
         result: str,
         *,
         success: bool = True,
+        tool_call_id: str | None = None,
+        outcome: ToolOutcome | None = None,
     ) -> "AgentEvent":
         """Create a tool call end event."""
         return cls(
             event_type=AgentEventType.TOOL_CALL_END,
+            correlation_id=tool_call_id,
             tool_name=tool_name,
-            tool_result=result[:500]
-            if len(result) > 500
-            else result,  # Truncate for events
+            tool_result=result,
             tool_success=success,
+            tool_outcome=outcome or ToolOutcome.from_legacy(result, success=success),
         )
 
     @classmethod

@@ -10,10 +10,22 @@ from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.runtime.events import (
+    ChatCompleted,
+    ErrorOccurred,
+    RuntimeEvent,
+    StreamChunk,
+    SubagentFinished,
+    ToolCallFinished,
+    ToolCallStarted,
+    agent_event_to_runtime_event,
+)
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.events import UIEvent, UIEventKind, UIEventLevel
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
+from reuleauxcoder.presentation import PresentationPolicy, PresentationReducer
 
 if TYPE_CHECKING:
     from markdown_it import MarkdownIt
@@ -96,21 +108,6 @@ class _ContentBlock:
         return not self.text_parts
 
 
-@dataclass
-class _ToolCallBlock:
-    name: str
-    args: dict | None
-    result: str | None = None
-    success: bool = True
-
-
-@dataclass
-class _NotificationBlock:
-    level: UIEventLevel
-    kind: UIEventKind
-    message: str
-
-
 class CLIRenderer:
     """Event-driven CLI renderer - subscribes to agent events."""
 
@@ -119,12 +116,13 @@ class CLIRenderer:
         view_registry: ViewRendererRegistry | None = None,
         *,
         console_override: Console | None = None,
+        reducer: PresentationReducer | None = None,
+        policy: PresentationPolicy | None = None,
     ):
         self.console = console_override or console
         self._active_content_block: _ContentBlock | None = None
-        self._completed_blocks: list[
-            _ContentBlock | _ToolCallBlock | _NotificationBlock
-        ] = []
+        self.reducer = reducer or PresentationReducer(policy=policy)
+        self.policy = self.reducer.policy
         self.view_registry = view_registry or create_cli_view_registry()
         # Reasoning streaming state
         self._reasoning_label_printed: bool = False
@@ -132,35 +130,50 @@ class CLIRenderer:
     def close(self) -> None:
         """Release terminal handlers/resources held by the renderer."""
         self._active_content_block = None
-        self._completed_blocks.clear()
+        self.reducer.state.transcript.clear()
+        self.reducer.state.seen_event_ids.clear()
+        self.reducer.state.active_assistant_cell_id = None
 
     def on_event(self, event: AgentEvent) -> None:
-        """Handle an agent event."""
-        if event.event_type == AgentEventType.STREAM_TOKEN:
-            self._render_token(event.data["token"])
-        elif event.event_type == AgentEventType.STREAM_REASONING:
-            self._render_reasoning(event.data)
-        elif event.event_type == AgentEventType.TOOL_CALL_START:
-            self._render_tool_start(event.tool_name, event.tool_args)
-        elif event.event_type == AgentEventType.TOOL_CALL_END:
-            self._render_tool_end(
-                event.tool_name,
-                event.tool_result,
-                success=event.tool_success if event.tool_success is not None else True,
-            )
-        elif event.event_type == AgentEventType.SUBAGENT_COMPLETED:
-            self._render_subagent_completed(event.data)
-        elif event.event_type == AgentEventType.CHAT_END:
+        """Compatibility entry point for callers still emitting AgentEvent."""
+        self.on_runtime_event(agent_event_to_runtime_event(event))
+
+    def on_runtime_event(self, event: RuntimeEvent) -> None:
+        """Render one typed runtime event after reducing shared state."""
+        was_seen = event.event_id in self.reducer.state.seen_event_ids
+        changes = self.reducer.apply(event)
+        if was_seen:
+            return
+
+        payload = event.payload
+        if isinstance(payload, StreamChunk):
+            if payload.reasoning:
+                self._render_reasoning(
+                    {"token": payload.text, "display_mode": payload.display_mode}
+                )
+            elif changes:
+                self._render_token(payload.text)
+        elif isinstance(payload, ToolCallStarted) and changes:
+            self._render_tool_start(payload.tool_name, payload.arguments)
+        elif isinstance(payload, ToolCallFinished) and changes:
+            self._render_tool_end(payload.tool_name, payload.outcome)
+        elif isinstance(payload, SubagentFinished) and changes:
+            self._render_subagent_completed(payload)
+        elif isinstance(payload, ChatCompleted):
             self.finalize_response(
-                event.data.get("response", ""),
-                render_response=event.data.get("render_response", True),
+                payload.response,
+                render_response=payload.render_response,
             )
-        elif event.event_type == AgentEventType.ERROR:
-            self._render_error(event.error_message)
+        elif isinstance(payload, ErrorOccurred):
+            self._render_error(payload.message)
 
     def on_ui_event(self, event: UIEvent) -> None:
         """Handle a UI bus event."""
         if event.kind == UIEventKind.AGENT:
+            runtime_event = event.data.get("runtime_event")
+            if isinstance(runtime_event, RuntimeEvent):
+                self.on_runtime_event(runtime_event)
+                return
             agent_event = event.data.get("agent_event")
             if isinstance(agent_event, AgentEvent):
                 self.on_event(agent_event)
@@ -255,13 +268,11 @@ class CLIRenderer:
         self._flush_remaining_content()
         if not block.is_empty and not block.text.endswith("\n"):
             self.render_plain_text("\n")
-        self._completed_blocks.append(block)
         self._active_content_block = None
 
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
         self._close_active_content_block()
-        self._completed_blocks.append(_ToolCallBlock(name=name, args=args))
         args_str = brief(args) if args else ""
         call_text = f"{name}({args_str})" if args_str else f"{name}()"
         self.console.print(
@@ -274,40 +285,29 @@ class CLIRenderer:
             )
         )
 
-    def _render_tool_end(
-        self, name: str, result: str | None, success: bool = True
-    ) -> None:
+    def _render_tool_end(self, name: str, outcome: ToolOutcome) -> None:
         """Render tool call result."""
-        self._completed_blocks.append(
-            _ToolCallBlock(name=name, args=None, result=result, success=success)
-        )
+        result = outcome.display_text
         if not result:
             return
-        # Special rendering for edit_file with diff
-        if name == "edit_file" and "---" in result:
-            self._render_diff(result)
+        display = self.policy.tool_preview(outcome)
+        if outcome.success:
+            self.console.print(f"[dim]{_escape_markup(display)}[/dim]")
         else:
-            display = self._compact_tool_output(name, result)
-            if success:
-                self.console.print(f"[dim]{_escape_markup(display)}[/dim]")
-            else:
-                self.console.print(
-                    Panel(
-                        f"[red]{_escape_markup(display)}[/red]",
-                        title=f"TOOL ERROR · {name}",
-                        border_style="red",
-                        box=box.ROUNDED,
-                        padding=(0, 1),
-                    )
+            self.console.print(
+                Panel(
+                    f"[red]{_escape_markup(display)}[/red]",
+                    title=f"TOOL ERROR · {name}",
+                    border_style="red",
+                    box=box.ROUNDED,
+                    padding=(0, 1),
                 )
+            )
 
-    def _render_subagent_completed(self, data: dict) -> None:
+    def _render_subagent_completed(self, payload: SubagentFinished) -> None:
         """Render a concise sub-agent completion notification."""
-        job_id = data.get("job_id", "?")
-        mode = data.get("mode", "?")
-        status = data.get("status", "?")
-        title = f"SUBAGENT · {status.upper()}"
-        body = f"id={job_id} mode={mode}"
+        title = f"SUBAGENT · {payload.status.upper()}"
+        body = f"id={payload.job_id} mode={payload.mode}"
         self.console.print(
             Panel(
                 body,
@@ -317,66 +317,6 @@ class CLIRenderer:
                 padding=(0, 1),
             )
         )
-
-    def _compact_tool_output(self, tool_name: str, result: str) -> str:
-        """Compact noisy tool output for terminal readability.
-
-        When the result has already been truncated by
-        ``ToolOutputTruncationHook`` (detected via the ``[truncated]``
-        prefix), we preserve the header / footer lines containing the
-        real stats and archive path, and show only the first and last
-        3 lines of the wrapped content body.
-        """
-        # ── Already wrapped by ToolOutputTruncationHook ──
-        if result.startswith("[truncated]"):
-            lines = result.splitlines()
-            try:
-                begin = next(
-                    i
-                    for i, ln in enumerate(lines)
-                    if ln.startswith("--- BEGIN TRUNCATED OUTPUT ---")
-                )
-                end = next(
-                    i
-                    for i, ln in enumerate(lines)
-                    if ln.startswith("--- END TRUNCATED OUTPUT ---")
-                )
-            except StopIteration:
-                return result  # malformed — show as-is
-
-            header = lines[: begin + 1]  # stats + BEGIN marker
-            body = lines[begin + 1 : end]
-            footer = lines[end:]  # END marker
-
-            if len(body) <= 6:
-                return result  # small enough, no need to compact
-
-            return (
-                "\n".join(header)
-                + "\n"
-                + "\n".join(body[:3])
-                + "\n"
-                + f"... ({len(body) - 6} more lines) ...\n"
-                + "\n".join(body[-3:])
-                + "\n"
-                + "\n".join(footer)
-            )
-
-        # ── Not pre-truncated — apply simple length cap ──
-        text = result[:1200] + "..." if len(result) > 1200 else result
-        lines = text.splitlines()
-        if not lines:
-            return text
-
-        # read_file output is usually the noisiest; collapse more aggressively
-        max_lines = 5 if tool_name == "read_file" else 20
-        if len(lines) <= max_lines:
-            return text
-
-        kept = "\n".join(lines[:max_lines])
-        omitted = len(lines) - max_lines
-        total = len(result.splitlines())
-        return f"{kept}\n... ({omitted} more lines hidden, {total} total)"
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""
@@ -421,12 +361,12 @@ class CLIRenderer:
         }[event.level]
 
         self._close_active_content_block()
-        self._completed_blocks.append(
-            _NotificationBlock(
-                level=event.level, kind=event.kind, message=event.message
-            )
+        self.reducer.append_notice(
+            notice_id=f"{event.timestamp}:{event.kind.value}:{event.message}",
+            message=event.message,
+            level=event.level.value,
+            category=event.kind.value,
         )
-
         title = f"{event.kind.value.upper()} · {event.level.value.upper()}"
         self.console.print(
             Panel(
@@ -465,7 +405,6 @@ class CLIRenderer:
             block = _ContentBlock()
             block.append(response)
             block.rendered_length = len(response)
-            self._completed_blocks.append(block)
             self.render_content_markdown(response)
 
     def render_content_markdown(self, text: str) -> None:
