@@ -212,6 +212,27 @@ def test_fast_background_completion_never_loses_job_registration(monkeypatch) ->
     manager.shutdown()
 
 
+def test_background_exception_becomes_failed_job(monkeypatch) -> None:
+    def fail(**kwargs):
+        raise RuntimeError("child exploded")
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", fail
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+
+    job_id = manager.submit_background(
+        parent_agent=parent, task="fail", mode="explore"
+    )
+    job = manager.wait_job(job_id, timeout=2)
+
+    assert job is not None and job.status == "failed"
+    assert job.error == "child exploded"
+    assert job.result is None
+    manager.shutdown()
+
+
 def test_manager_rejects_cross_parent_reuse(monkeypatch) -> None:
     monkeypatch.setattr(
         "reuleauxcoder.extensions.subagent.manager.run_subagent_task",
@@ -322,21 +343,51 @@ def test_shutdown_rejects_new_jobs() -> None:
         raise AssertionError("submission after shutdown must fail")
 
 
+def test_shutdown_cancels_running_job_and_prune_releases_terminal_state(
+    monkeypatch,
+) -> None:
+    def run(**kwargs):
+        kwargs["cancel_event"].wait(timeout=2)
+        return "[Sub-agent finished status=cancelled]"
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    job_id = manager.submit_background(
+        parent_agent=_Parent(), task="running", mode="explore"
+    )
+
+    manager.shutdown(wait=True)
+
+    job = manager.get_job(job_id)
+    assert job is not None and job.status == "cancelled"
+    assert manager.prune(keep=0) == 1
+    assert manager.get_job(job_id) is None
+
+
 def test_subagent_tools_are_distinct_instances() -> None:
-    tool = SimpleNamespace(name="read_file", mutable=[])
+    from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
+
+    tool = ReadFileTool()
     parent = SimpleNamespace(tools=[tool])
 
     (child_tool,) = _filter_subagent_tools(parent, "explore")
 
     assert child_tool is not tool
-    assert child_tool.mutable is not tool.mutable
+    assert child_tool.backend is not tool.backend
 
 
 def test_subagent_tool_backend_context_is_isolated() -> None:
-    context = SimpleNamespace(cwd="/parent", peer_id="peer-a")
-    workspace = SimpleNamespace(root="/workspace")
-    backend = SimpleNamespace(context=context, workspace=workspace)
-    tool = SimpleNamespace(name="read_file", backend=backend)
+    from reuleauxcoder.extensions.tools.backend import (
+        ExecutionContext,
+        LocalToolBackend,
+    )
+    from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
+
+    context = ExecutionContext(cwd="/tmp", workspace_root="/tmp")
+    backend = LocalToolBackend(context)
+    tool = ReadFileTool(backend)
     parent = SimpleNamespace(tools=[tool])
 
     (child_tool,) = _filter_subagent_tools(parent, "explore")
@@ -344,8 +395,29 @@ def test_subagent_tool_backend_context_is_isolated() -> None:
 
     assert child_tool.backend is not backend
     assert child_tool.backend.context is not context
-    assert context.cwd == "/parent"
-    assert child_tool.backend.workspace is workspace
+    assert context.cwd == "/tmp"
+    assert child_tool.backend.workspace is not backend.workspace
+    assert child_tool.backend.process is not backend.process
+
+
+def test_subagent_shell_cwd_state_is_not_shared() -> None:
+    from reuleauxcoder.extensions.tools.backend import (
+        ExecutionContext,
+        LocalToolBackend,
+    )
+    from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
+
+    parent_tool = ShellTool(
+        LocalToolBackend(ExecutionContext(cwd="/tmp", workspace_root="/tmp"))
+    )
+    parent_tool._cwd = "/tmp/parent"
+    parent = SimpleNamespace(tools=[parent_tool])
+
+    (child_tool,) = _filter_subagent_tools(parent, "execute")
+    child_tool._cwd = "/tmp/child"
+
+    assert parent_tool._cwd == "/tmp/parent"
+    assert child_tool.backend.context is not parent_tool.backend.context
 
 
 def test_manager_honors_custom_max_timeout(monkeypatch) -> None:

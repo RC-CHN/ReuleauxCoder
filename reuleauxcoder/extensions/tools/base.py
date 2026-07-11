@@ -83,3 +83,15 @@ class Tool(ABC):
                 "parameters": self.parameters,
             },
         }
+
+    def clone_for_scope(self, scope: str) -> "Tool":
+        """Build a fresh Tool and backend for one child Agent scope."""
+        clone_backend = getattr(self.backend, "clone_for_scope", None)
+        if not callable(clone_backend):
+            raise TypeError(
+                f"Tool '{self.name}' backend does not support scoped materialization"
+            )
+        cloned = type(self)(backend=clone_backend(scope))
+        if hasattr(self, "_agent_config"):
+            cloned._agent_config = self._agent_config
+        return cloned

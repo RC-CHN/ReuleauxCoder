@@ -52,6 +52,23 @@ class RemoteRelayToolBackend(ToolBackend):
         self.workspace = RemoteWorkspacePort(self)
         self.process = RemoteProcessPort(self)
 
+    def clone_for_scope(self, scope: str) -> "RemoteRelayToolBackend":
+        """Rebuild remote adapters while sharing only the relay transport."""
+        del scope
+        context = ExecutionContext(
+            peer_id=self.context.peer_id,
+            cwd=self.context.cwd,
+            workspace_root=self.context.workspace_root,
+            execution_target=self.context.execution_target,
+            remote_stream_handler=self.context.remote_stream_handler,
+            cancellation_event=None,
+        )
+        return RemoteRelayToolBackend(
+            relay_server=self.relay_server,
+            context=context,
+            ui_bus=self.ui_bus,
+        )
+
     def resolve_peer_id(self) -> str:
         peer_id = self.context.peer_id
         if peer_id is None:

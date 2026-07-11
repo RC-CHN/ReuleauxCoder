@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
-import copy
 from dataclasses import dataclass
 import threading
 import time
@@ -547,31 +546,11 @@ def _filter_subagent_tools(parent_agent, mode: str):
 
 
 def _clone_tool_for_subagent(tool):
-    """Clone mutable tool and backend context for one child Agent scope."""
-    cloned = copy.copy(tool)
-    for name, value in vars(tool).items():
-        if name == "backend":
-            continue
-        if isinstance(value, dict):
-            setattr(cloned, name, dict(value))
-        elif isinstance(value, list):
-            setattr(cloned, name, list(value))
-        elif isinstance(value, set):
-            setattr(cloned, name, set(value))
-
-    backend = getattr(tool, "backend", None)
-    if backend is not None:
-        cloned_backend = copy.copy(backend)
-        context = getattr(backend, "context", None)
-        if context is not None:
-            cloned_backend.context = copy.copy(context)
-        workspace = getattr(backend, "workspace", None)
-        if workspace is not None and getattr(workspace, "backend", None) is backend:
-            cloned_workspace = copy.copy(workspace)
-            cloned_workspace.backend = cloned_backend
-            cloned_backend.workspace = cloned_workspace
-        cloned.backend = cloned_backend
-    return cloned
+    """Materialize one Tool scope without shallow-copying runtime services."""
+    clone = getattr(tool, "clone_for_scope", None)
+    if not callable(clone):
+        raise TypeError(f"Tool '{tool.name}' does not support scoped materialization")
+    return clone("subagent")
 
 
 def run_subagent_task(

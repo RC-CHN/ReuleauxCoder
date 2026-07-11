@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
 
@@ -39,6 +39,12 @@ class ToolBackend:
         self.context = context or ExecutionContext()
         self.workspace = workspace
         self.process = process
+
+    def clone_for_scope(self, scope: str) -> "ToolBackend":
+        """Materialize a backend adapter for an independent Agent scope."""
+        del scope
+        context = replace(self.context, cancellation_event=None)
+        return type(self)(context=context)
 
 
 class LocalToolBackend(ToolBackend):
