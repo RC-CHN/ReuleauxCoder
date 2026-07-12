@@ -49,6 +49,21 @@ def _trim_text(value: Any, limit: int = MAX_DEBUG_CONTENT_CHARS) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def canonicalize_request_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Detach the JSON-compatible provider payload from mutable hook state."""
+
+    def snapshot(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): snapshot(child) for key, child in value.items()}
+        if isinstance(value, list | tuple):
+            return [snapshot(child) for child in value]
+        if value is None or isinstance(value, str | int | float | bool):
+            return value
+        return str(value)
+
+    return snapshot(params)
+
+
 def _extract_stream_event(chunk: Any) -> list[dict[str, Any]]:
     """Extract readable, ordered stream events from a chunk."""
     events: list[dict[str, Any]] = []
@@ -147,6 +162,7 @@ class LLM:
         self.reasoning_replay_placeholder = reasoning_replay_placeholder
         self.debug_trace = debug_trace
         self.ui_bus = ui_bus
+        self.last_dispatched_request: dict[str, Any] | None = None
 
     def reconfigure(
         self,
@@ -212,6 +228,7 @@ class LLM:
         cancellation_event: threading.Event | None = None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
+        self.last_dispatched_request = None
         raw_messages = [dict(msg) for msg in messages]
         messages = sanitize_messages_for_llm(
             messages,
@@ -320,6 +337,9 @@ class LLM:
             except Exception:
                 params.pop("stream_options", None)
                 stream = self._call_with_retry(params)
+            # This is the exact hook-transformed payload accepted by the client,
+            # retained without credentials for request-boundary audit/replay.
+            self.last_dispatched_request = canonicalize_request_params(params)
 
             # Accumulate response
             content_parts: list[str] = []

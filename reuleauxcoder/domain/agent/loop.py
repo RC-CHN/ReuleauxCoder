@@ -30,6 +30,33 @@ class AgentLoop:
         self._shell = shell_name
         self.last_response_streamed = False
 
+    def _wire_settings(self) -> dict:
+        """Return canonical settings that can change the provider wire payload."""
+        llm = self.agent.llm
+        effort = getattr(llm, "reasoning_effort", None)
+        effort_values = getattr(llm, "reasoning_effort_values", None) or {}
+        effort_value = effort_values.get(effort, effort) if effort else None
+        return {
+            "stream": True,
+            "temperature": getattr(llm, "temperature", None),
+            "max_tokens": getattr(llm, "max_tokens", None),
+            "reasoning_effort_param": getattr(
+                llm, "reasoning_effort_param", "reasoning_effort"
+            ),
+            "reasoning_effort_value": effort_value,
+            "thinking_enabled": getattr(llm, "thinking_enabled", None),
+            "preserve_reasoning_content": getattr(
+                llm, "preserve_reasoning_content", True
+            ),
+            "backfill_reasoning_content_for_tool_calls": getattr(
+                llm, "backfill_reasoning_content_for_tool_calls", False
+            ),
+            "reasoning_replay_mode": getattr(llm, "reasoning_replay_mode", None),
+            "reasoning_replay_placeholder": getattr(
+                llm, "reasoning_replay_placeholder", None
+            ),
+        }
+
     @staticmethod
     def _dir_listing(cwd: str, max_entries: int = 50) -> tuple[int, str] | None:
         """Return (count, text) for non-recursive directory listing, or None."""
@@ -166,26 +193,64 @@ class AgentLoop:
             available_modes=available_modes,
             skills_catalog=getattr(self.agent, "skills_catalog", ""),
         )
-        system_message = {"role": "system", "content": system}
+        current_system = {"role": "system", "content": system}
+        system_message = current_system
         restored = getattr(self.agent, "_restored_replay_envelope", None)
         if restored is not None and restored.validate() and restored.instructions:
-            model_matches = restored.model_profile == str(
-                getattr(self.agent.llm, "model", "unknown")
+            system_message = dict(restored.instructions[0])
+            current_descriptor = {
+                "model_profile": str(getattr(self.agent.llm, "model", "unknown")),
+                "instructions": [current_system],
+                "tools": self._tool_schemas(),
+                "request_settings": self._wire_settings(),
+            }
+            restored_descriptor = {
+                "model_profile": restored.model_profile,
+                "instructions": list(restored.instructions),
+                "tools": list(restored.tools),
+                "request_settings": dict(restored.request_settings),
+            }
+            previous_descriptor_hash = (
+                self.agent._resume_runtime_descriptor_hash
+                or content_hash(restored_descriptor)
             )
-            instructions_match = content_hash([system_message]) == content_hash(
-                restored.instructions
-            )
-            if model_matches and instructions_match:
-                system_message = dict(restored.instructions[0])
-            else:
+            current_descriptor_hash = content_hash(current_descriptor)
+            if current_descriptor_hash != previous_descriptor_hash:
+                changed = {
+                    "kind": "runtime_context_update",
+                    "previous_replay_hash": restored.stable_prefix_hash,
+                    "model_profile": current_descriptor["model_profile"],
+                    "instructions": [current_system],
+                    "tool_schema_hash": content_hash(current_descriptor["tools"]),
+                    "tool_names": [
+                        str(tool.get("function", {}).get("name") or "unknown")
+                        for tool in current_descriptor["tools"]
+                    ],
+                    "request_settings": current_descriptor["request_settings"],
+                }
+                update_message = {
+                    "role": "system",
+                    "content": "[Runtime context update]\n"
+                    + json.dumps(
+                        changed,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                }
+                self.agent._append_message(
+                    update_message, source="resume_runtime_context_update"
+                )
                 self.agent.history_ledger.append(
                     "stable_context_updated",
                     {
-                        "reason": "model or instructions changed since resume",
+                        "reason": "runtime descriptor changed since resume",
                         "previous_hash": restored.stable_prefix_hash,
+                        "previous_descriptor_hash": previous_descriptor_hash,
+                        "current_descriptor_hash": current_descriptor_hash,
                     },
                 )
-                self.agent._restored_replay_envelope = None
+            self.agent._resume_runtime_descriptor_hash = current_descriptor_hash
         return [
             system_message,
             *self.agent.state.messages,
@@ -196,32 +261,26 @@ class AgentLoop:
         self,
         request_messages: list[dict],
         request_tools: list[dict],
+        *,
+        request_settings: dict | None = None,
+        model_profile: str | None = None,
+        canonical_request_payload: dict | None = None,
     ) -> None:
         instructions = [dict(request_messages[0])]
         overlay = dict(request_messages[-1])
-        restored = getattr(self.agent, "_restored_replay_envelope", None)
-        if restored is not None and content_hash(request_tools) != content_hash(
-            restored.tools
-        ):
-            self.agent.history_ledger.append(
-                "stable_context_updated",
-                {
-                    "reason": "tool schema changed since resume",
-                    "previous_hash": restored.stable_prefix_hash,
-                },
-            )
-            self.agent._restored_replay_envelope = None
 
         replay = ReplayEnvelope.create(
             session_id=getattr(self.agent, "current_session_id", None),
             cache_epoch=self.agent.context.cache_epoch,
             history_version=self.agent.context.history_version,
-            model_profile=str(getattr(self.agent.llm, "model", "unknown")),
+            model_profile=model_profile
+            or str(getattr(self.agent.llm, "model", "unknown")),
             provider_family="openai-compatible",
             request_mode="chat-completions",
+            request_settings=request_settings or self._wire_settings(),
             instructions=instructions,
             tools=request_tools,
-            items=list(self.agent.state.messages),
+            items=[dict(item) for item in request_messages[1:-1]],
         )
         request = RequestEnvelope.create(
             replay=replay,
@@ -229,6 +288,7 @@ class AgentLoop:
             overlay_revision=len(self.agent.request_envelopes) + 1,
             overlay_tokens=self.agent.context.get_context_tokens([overlay]),
             plan_revision=self.agent.plan_controller.state.revision,
+            canonical_request_payload=canonical_request_payload,
         )
         self.agent.replay_envelope = replay
         self.agent.request_envelopes.append(request)
@@ -327,7 +387,6 @@ class AgentLoop:
             local_history_estimate = self.agent.context.get_context_tokens(
                 self.agent.state.messages
             )
-            self._record_request_envelopes(request_messages, request_tools)
             resp = self.agent.llm.chat(
                 messages=request_messages,
                 tools=request_tools,
@@ -345,6 +404,35 @@ class AgentLoop:
                 },
                 cancellation_event=self.agent._stop_event,
             )
+            dispatched = getattr(
+                self.agent.llm, "last_dispatched_request", None
+            )
+            if isinstance(dispatched, dict):
+                actual_messages = [
+                    dict(message) for message in dispatched.get("messages") or []
+                ]
+                actual_tools = [
+                    dict(tool) for tool in dispatched.get("tools") or []
+                ]
+                if not actual_messages:
+                    actual_messages = request_messages
+                actual_settings = {
+                    key: value
+                    for key, value in dispatched.items()
+                    if key not in {"model", "messages", "tools"}
+                }
+                self._record_request_envelopes(
+                    actual_messages,
+                    actual_tools,
+                    request_settings=actual_settings,
+                    model_profile=str(
+                        dispatched.get("model")
+                        or getattr(self.agent.llm, "model", "unknown")
+                    ),
+                    canonical_request_payload=dispatched,
+                )
+            else:
+                self._record_request_envelopes(request_messages, request_tools)
 
             # Store reasoning content for /thinking command
             if resp.reasoning_content:

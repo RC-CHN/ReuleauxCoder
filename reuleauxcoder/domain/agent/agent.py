@@ -127,6 +127,7 @@ class Agent:
         self.replay_envelope = None
         self.request_envelopes: list = []
         self._restored_replay_envelope = None
+        self._resume_runtime_descriptor_hash: str | None = None
         self.plan_controller = PlanController(self)
         self._session_persist_callback = None
         for tool in self.tools:
@@ -326,6 +327,7 @@ class Agent:
         self._session_persist_callback = None
         self.replay_envelope = getattr(session, "replay_envelope", None)
         self._restored_replay_envelope = self.replay_envelope
+        self._resume_runtime_descriptor_hash = None
         self.request_envelopes = list(getattr(session, "request_envelopes", ()))
         self.history_completeness = getattr(
             session, "history_completeness", "legacy_compacted_or_unknown"
@@ -372,6 +374,7 @@ class Agent:
         )
         self.replay_envelope = None
         self._restored_replay_envelope = None
+        self._resume_runtime_descriptor_hash = None
         self.request_envelopes = []
         self.history_completeness = "complete"
         self._session_persist_callback = None
@@ -884,6 +887,8 @@ class Agent:
                 generation=self.session_generation, cancel_pending=True
             )
         self.context.invalidate_replay_prefix()
+        self._restored_replay_envelope = None
+        self._resume_runtime_descriptor_hash = None
         self.history_ledger.append_context_view(
             [],
             reason="runtime reset",

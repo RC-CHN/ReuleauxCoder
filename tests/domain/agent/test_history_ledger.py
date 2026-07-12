@@ -1,5 +1,5 @@
 from reuleauxcoder.domain.agent.agent import Agent
-from reuleauxcoder.domain.context.replay import ReplayEnvelope
+from reuleauxcoder.domain.context.replay import ReplayEnvelope, content_hash
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.session.models import Session
 
@@ -69,6 +69,34 @@ def test_request_audit_keeps_overlay_out_of_replay_items() -> None:
     )
 
 
+def test_request_audit_hashes_exact_dispatched_payload() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    messages = agent._loop._full_messages()
+    payload = {
+        "model": "hook-selected-model",
+        "messages": messages,
+        "tools": [],
+        "stream": True,
+        "temperature": 0.25,
+        "stream_options": {"include_usage": True},
+    }
+
+    agent._loop._record_request_envelopes(
+        messages,
+        [],
+        request_settings={
+            "stream": True,
+            "temperature": 0.25,
+            "stream_options": {"include_usage": True},
+        },
+        model_profile="hook-selected-model",
+        canonical_request_payload=payload,
+    )
+
+    assert agent.replay_envelope.request_settings["temperature"] == 0.25
+    assert agent.request_envelopes[-1].canonical_request_hash == content_hash(payload)
+
+
 def test_resume_restores_committed_history_and_cache_watermarks() -> None:
     agent = Agent(llm=_LLM(), tools=[])
     replay = ReplayEnvelope.create(
@@ -96,6 +124,45 @@ def test_resume_restores_committed_history_and_cache_watermarks() -> None:
     assert agent.messages[0]["content"] == "restored"
     assert agent.context.history_version == 7
     assert agent.context.cache_epoch == 3
+    assert agent._restored_replay_envelope is replay
+
+
+def test_resume_appends_runtime_changes_without_rewriting_old_prefix() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    replay = ReplayEnvelope.create(
+        session_id="session",
+        cache_epoch=3,
+        history_version=7,
+        model_profile="old-model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        request_settings={},
+        instructions=[{"role": "system", "content": "old stable instructions"}],
+        tools=[],
+        items=[{"role": "user", "content": "restored user message"}],
+    )
+    session = Session(
+        id="session",
+        model="old-model",
+        saved_at="now",
+        messages=list(replay.items),
+        replay_envelope=replay,
+        history_completeness="complete",
+    )
+    agent.restore_history_runtime(session)
+
+    first = agent._loop._full_messages()
+    second = agent._loop._full_messages()
+
+    assert first[0] == {"role": "system", "content": "old stable instructions"}
+    assert first[1] == {"role": "user", "content": "restored user message"}
+    updates = [
+        item
+        for item in agent.messages
+        if str(item.get("content", "")).startswith("[Runtime context update]")
+    ]
+    assert len(updates) == 1
+    assert second[0] == first[0]
     assert agent._restored_replay_envelope is replay
 
 

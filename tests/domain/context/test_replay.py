@@ -32,6 +32,26 @@ def test_replay_hash_detects_tampering() -> None:
     assert tampered.validate() is False
 
 
+def test_replay_hash_includes_wire_affecting_settings() -> None:
+    replay = ReplayEnvelope.create(
+        session_id="session",
+        cache_epoch=0,
+        history_version=0,
+        model_profile="model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        request_settings={"temperature": 0.0, "max_tokens": 4096},
+        instructions=[],
+        tools=[],
+        items=[],
+    )
+
+    changed = replace(replay, request_settings={"temperature": 0.7, "max_tokens": 4096})
+
+    assert replay.validate() is True
+    assert changed.validate() is False
+
+
 def test_replay_protocol_rejects_missing_tool_result() -> None:
     replay = _replay(
         [

@@ -111,6 +111,9 @@ class SessionStore:
                 request_mode=(
                     base_replay.request_mode if base_replay else "chat-completions"
                 ),
+                request_settings=(
+                    dict(base_replay.request_settings) if base_replay else {}
+                ),
                 instructions=list(base_replay.instructions) if base_replay else [],
                 tools=list(base_replay.tools) if base_replay else [],
                 items=saved_messages,
@@ -134,7 +137,7 @@ class SessionStore:
                     or (
                         "complete"
                         if history_events is not None
-                        else "legacy_snapshot_only"
+                        else "legacy_compacted_or_unknown"
                     )
                 ),
             )

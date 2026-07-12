@@ -47,6 +47,7 @@ class ReplayEnvelope:
     model_profile: str
     provider_family: str
     request_mode: str
+    request_settings: dict[str, Any]
     instructions: tuple[dict, ...]
     tools: tuple[dict, ...]
     items: tuple[dict, ...]
@@ -63,18 +64,21 @@ class ReplayEnvelope:
         model_profile: str,
         provider_family: str,
         request_mode: str,
+        request_settings: dict[str, Any] | None = None,
         instructions: list[dict],
         tools: list[dict],
         items: list[dict],
     ) -> "ReplayEnvelope":
+        settings = canonicalize(request_settings or {})
         core = {
-            "schema_version": 1,
+            "schema_version": 2,
             "session_id": session_id,
             "cache_epoch": cache_epoch,
             "history_version": history_version,
             "model_profile": model_profile,
             "provider_family": provider_family,
             "request_mode": request_mode,
+            "request_settings": settings,
             "instructions": instructions,
             "tools": tools,
             "items": items,
@@ -84,13 +88,14 @@ class ReplayEnvelope:
                 "model_profile": model_profile,
                 "provider_family": provider_family,
                 "request_mode": request_mode,
+                "request_settings": settings,
                 "instructions": instructions,
                 "tools": tools,
                 "items": items,
             }
         )
         return cls(
-            schema_version=1,
+            schema_version=2,
             session_id=session_id,
             view_id=f"rv_{uuid.uuid4().hex[:12]}",
             cache_epoch=cache_epoch,
@@ -98,6 +103,7 @@ class ReplayEnvelope:
             model_profile=model_profile,
             provider_family=provider_family,
             request_mode=request_mode,
+            request_settings=settings,
             instructions=tuple(canonicalize(instructions)),
             tools=tuple(canonicalize(tools)),
             items=tuple(canonicalize(items)),
@@ -119,6 +125,7 @@ class ReplayEnvelope:
             model_profile=str(data.get("model_profile") or "unknown"),
             provider_family=str(data.get("provider_family") or "openai-compatible"),
             request_mode=str(data.get("request_mode") or "chat-completions"),
+            request_settings=canonicalize(data.get("request_settings") or {}),
             instructions=tuple(dict(item) for item in data.get("instructions", [])),
             tools=tuple(dict(item) for item in data.get("tools", [])),
             items=tuple(dict(item) for item in data.get("items", [])),
@@ -127,6 +134,34 @@ class ReplayEnvelope:
         )
 
     def validate(self) -> bool:
+        if self.schema_version < 2:
+            legacy_core = {
+                "schema_version": 1,
+                "session_id": self.session_id,
+                "cache_epoch": self.cache_epoch,
+                "history_version": self.history_version,
+                "model_profile": self.model_profile,
+                "provider_family": self.provider_family,
+                "request_mode": self.request_mode,
+                "instructions": list(self.instructions),
+                "tools": list(self.tools),
+                "items": list(self.items),
+            }
+            legacy_stable = {
+                key: legacy_core[key]
+                for key in (
+                    "model_profile",
+                    "provider_family",
+                    "request_mode",
+                    "instructions",
+                    "tools",
+                    "items",
+                )
+            }
+            return (
+                content_hash(legacy_stable) == self.stable_prefix_hash
+                and content_hash(legacy_core) == self.canonical_payload_hash
+            )
         rebuilt = ReplayEnvelope.create(
             session_id=self.session_id,
             cache_epoch=self.cache_epoch,
@@ -134,6 +169,7 @@ class ReplayEnvelope:
             model_profile=self.model_profile,
             provider_family=self.provider_family,
             request_mode=self.request_mode,
+            request_settings=self.request_settings,
             instructions=list(self.instructions),
             tools=list(self.tools),
             items=list(self.items),
@@ -172,6 +208,7 @@ class RequestEnvelope:
         overlay_revision: int,
         overlay_tokens: int,
         plan_revision: int = 0,
+        canonical_request_payload: dict[str, Any] | None = None,
     ) -> "RequestEnvelope":
         overlay_hash = content_hash(overlay)
         return cls(
@@ -182,7 +219,9 @@ class RequestEnvelope:
             execution_overlay_hash=overlay_hash,
             execution_overlay_tokens=overlay_tokens,
             canonical_request_hash=content_hash(
-                {"replay": replay.to_dict(), "overlay": overlay}
+                canonical_request_payload
+                if canonical_request_payload is not None
+                else {"replay": replay.to_dict(), "overlay": overlay}
             ),
             plan_revision=max(0, int(plan_revision)),
         )
