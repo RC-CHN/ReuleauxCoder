@@ -130,6 +130,7 @@ class Agent:
         self._resume_runtime_descriptor_hash: str | None = None
         self.plan_controller = PlanController(self)
         self._session_persist_callback = None
+        self._control_plane_recovery_required = False
         for tool in self.tools:
             backend = getattr(tool, "backend", None)
             backend_context = getattr(backend, "context", None)
@@ -264,6 +265,29 @@ class Agent:
         callback = self._session_persist_callback
         if callable(callback):
             callback()
+
+    def recover_control_plane_if_required(self) -> bool:
+        """Recover ledger-first control commits before another model request."""
+        if not self._control_plane_recovery_required:
+            return True
+        self.plan_controller.recover_from_ledger()
+        callback = self._session_persist_callback
+        try:
+            if callable(callback):
+                callback()
+        except Exception:
+            return False
+        self._control_plane_recovery_required = False
+        self.history_ledger.append(
+            "control_state_recovered",
+            {
+                "plan_revision": self.plan_controller.state.revision,
+                "progress_revision": self.plan_controller.progress.revision,
+            },
+            agent_id=self.agent_id,
+            turn_id=self._current_turn_id,
+        )
+        return True
 
     def _replace_context_messages(
         self,
@@ -909,6 +933,7 @@ class Agent:
             self._pending_user_steering.clear()
             self._accepting_user_steering = False
         self.plan_controller.reset()
+        self._control_plane_recovery_required = False
         self.persist_runtime_snapshot()
 
     @property

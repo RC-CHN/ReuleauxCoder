@@ -75,3 +75,48 @@ def test_same_tool_call_cannot_commit_different_control_data() -> None:
         agent.plan_controller.update(
             [], explanation=None, tool_call_id="call", session_generation=0
         )
+
+
+def test_snapshot_failure_recovers_control_state_and_idempotency_from_ledger() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    calls = 0
+
+    def persist():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("disk temporarily unavailable")
+
+    agent._session_persist_callback = persist
+    state, changed = agent.plan_controller.update(
+        _items(),
+        explanation="ledger is authoritative",
+        tool_call_id="call_recover",
+        session_generation=0,
+    )
+    assert changed is True and state.revision == 1
+    assert agent._control_plane_recovery_required is True
+    agent.plan_controller.restore(None, None)
+
+    assert agent.recover_control_plane_if_required() is True
+    assert agent.plan_controller.state.revision == 1
+    same, changed_again = agent.plan_controller.update(
+        _items(),
+        explanation="ledger is authoritative",
+        tool_call_id="call_recover",
+        session_generation=0,
+    )
+    assert changed_again is False and same.revision == 1
+    assert agent._control_plane_recovery_required is False
+    assert agent.history_ledger.events[-1].kind == "control_state_recovered"
+
+
+def test_unrecoverable_control_snapshot_blocks_next_request_boundary() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent._session_persist_callback = lambda: (_ for _ in ()).throw(OSError("disk"))
+    agent.plan_controller.update(
+        _items(), explanation=None, tool_call_id="call", session_generation=0
+    )
+
+    assert agent._control_plane_recovery_required is True
+    assert agent.recover_control_plane_if_required() is False

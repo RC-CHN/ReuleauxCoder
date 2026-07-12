@@ -372,6 +372,11 @@ class AgentLoop:
                     )
                 )
 
+            if not self.agent.recover_control_plane_if_required():
+                raise RuntimeError(
+                    "Control state persistence is unavailable; refusing to issue "
+                    "another model request until ledger recovery can be saved."
+                )
             request_messages = self._full_messages()
             request_tools = self._tool_schemas()
             restored = getattr(self.agent, "_restored_replay_envelope", None)

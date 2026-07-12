@@ -128,7 +128,7 @@ class PlanController:
                 event_id=event.event_id,
             )
             self._committed_calls[tool_call_id] = (fingerprint, revision)
-            self._agent.persist_runtime_snapshot()
+            self._persist_or_require_recovery()
             self._agent._emit_event(
                 AgentEvent.plan_updated(
                     revision=revision,
@@ -194,7 +194,7 @@ class PlanController:
             self._committed_calls[tool_call_id] = (fingerprint, revision)
             if phase != previous_phase:
                 self._agent.context.mark_phase_boundary()
-            self._agent.persist_runtime_snapshot()
+            self._persist_or_require_recovery()
             self._agent._emit_event(
                 AgentEvent.progress_reported(
                     revision=revision,
@@ -204,6 +204,84 @@ class PlanController:
                 )
             )
             return self._progress, True
+
+    def _persist_or_require_recovery(self) -> None:
+        try:
+            self._agent.persist_runtime_snapshot()
+        except Exception as error:
+            self._agent._control_plane_recovery_required = True
+            self._agent._emit_runtime_diagnostic(
+                "Control state was committed to the ledger but its runtime "
+                "snapshot could not be persisted; recovery is required before "
+                "the next model request.",
+                "control.persistence_recovery_required",
+                "error",
+                {"error": str(error)},
+            )
+
+    def recover_from_ledger(self) -> bool:
+        """Rebuild authoritative plan/progress and idempotency from the ledger."""
+        plan_payload = None
+        plan_event_id = None
+        progress_payload = None
+        progress_event_id = None
+        events = getattr(self._agent.history_ledger, "events", ())
+        for event in events:
+            if event.session_generation != self._agent.session_generation:
+                continue
+            if event.kind == "plan_updated":
+                plan_payload = dict(event.payload)
+                plan_event_id = event.event_id
+            elif event.kind == "progress_reported":
+                progress_payload = dict(event.payload)
+                progress_event_id = event.event_id
+        plan = None
+        if plan_payload is not None:
+            plan = {
+                "revision": plan_payload.get("revision", 0),
+                "items": plan_payload.get("items", []),
+                "explanation": plan_payload.get("explanation"),
+                "event_id": plan_event_id,
+            }
+        progress = None
+        if progress_payload is not None:
+            progress = {
+                "revision": progress_payload.get("revision", 0),
+                "phase": progress_payload.get("phase"),
+                "summary": progress_payload.get("summary"),
+                "next": progress_payload.get("next"),
+                "event_id": progress_event_id,
+            }
+        self.restore(plan, progress)
+        with self._lock:
+            for event in events:
+                if event.session_generation != self._agent.session_generation:
+                    continue
+                payload = event.payload
+                tool_call_id = str(payload.get("tool_call_id") or "")
+                if not tool_call_id:
+                    continue
+                if event.kind == "plan_updated":
+                    items = self._validate_items(list(payload.get("items") or []))
+                    fingerprint = self._fingerprint(
+                        items, (str(payload.get("explanation") or "").strip() or None)
+                    )
+                    revision = int(payload.get("revision") or 0)
+                elif event.kind == "progress_reported":
+                    fingerprint = json.dumps(
+                        [
+                            payload.get("phase"),
+                            payload.get("summary"),
+                            payload.get("next"),
+                        ],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    revision = int(payload.get("revision") or 0)
+                else:
+                    continue
+                self._committed_calls[tool_call_id] = (fingerprint, revision)
+        return plan is not None or progress is not None
 
     def restore(self, plan: dict | None, progress: dict | None) -> None:
         with self._lock:
