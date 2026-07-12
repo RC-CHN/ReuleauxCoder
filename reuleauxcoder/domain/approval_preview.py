@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
 from dataclasses import dataclass
 
 from reuleauxcoder.domain.approval import (
@@ -11,7 +10,12 @@ from reuleauxcoder.domain.approval import (
     ApprovalSection,
     ApprovalSectionKind,
 )
-from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode, WorkspacePort
+from reuleauxcoder.domain.diff import build_tool_diff, build_unified_diff
+from reuleauxcoder.domain.workspace import (
+    WorkspaceError,
+    WorkspaceErrorCode,
+    WorkspacePort,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,14 +47,11 @@ def diff_approval_documents(
     before: ApprovalDocumentSnapshot, after: ApprovalDocumentSnapshot
 ) -> str:
     """Describe user/editor changes made while an approval was pending."""
-    return "".join(
-        difflib.unified_diff(
-            (before.content or "").splitlines(keepends=True),
-            (after.content or "").splitlines(keepends=True),
-            fromfile=f"before-approval/{before.path}",
-            tofile=f"after-approval/{after.path}",
-            n=3,
-        )
+    return build_unified_diff(
+        before.content or "",
+        after.content or "",
+        fromfile=f"before-approval/{before.path}",
+        tofile=f"after-approval/{after.path}",
     )
 
 
@@ -119,9 +120,7 @@ def _read_only_preview(request: ApprovalRequest) -> str | None:
         return f"{args.get('path', '.')}{pattern}{recursive}"
     if request.tool_name == "grep":
         include = f" · files {args['include']}" if args.get("include") else ""
-        return (
-            f"{args.get('pattern', '')} · under {args.get('path', '.')}{include}"
-        )
+        return f"{args.get('pattern', '')} · under {args.get('path', '.')}{include}"
     if request.tool_name == "lsp":
         operation = args.get("operation", "query")
         path = args.get("file_path") or args.get("path") or "."
@@ -176,13 +175,5 @@ def _build_diff(
 
 
 def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str | None:
-    result = "".join(
-        difflib.unified_diff(
-            old.splitlines(keepends=True),
-            new.splitlines(keepends=True),
-            fromfile=f"a/{filename}",
-            tofile=f"b/{filename}",
-            n=context,
-        )
-    )
+    result = build_tool_diff(old, new, filename, context=context).unified
     return result or None

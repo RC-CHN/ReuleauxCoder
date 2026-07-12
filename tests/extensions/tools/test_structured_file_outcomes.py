@@ -4,8 +4,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
     ToolRetentionStrategy,
 )
+from reuleauxcoder.domain.diff import build_tool_diff
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
-from reuleauxcoder.extensions.tools.builtin._diff import build_tool_diff
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
