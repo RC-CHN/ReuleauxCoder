@@ -406,7 +406,12 @@ class MiniTUIApplication:
         if self.interactor.active_request is not None:
             self.interactor.submit(text)
             return True
-        if not text or self.running:
+        if not text:
+            return True
+        if self.running:
+            if self.agent.submit_user_steering(text):
+                self.events.append_user_command(text)
+                self.ui_bus.info("Direction queued for the next safe boundary.")
             return True
         self.exit_confirm = False
         self.session_header_expanded = False
@@ -622,7 +627,7 @@ def _cell_fragments(cell) -> list[tuple[str, str]]:
         return fragments
     if isinstance(cell, NoticeCell):
         if cell.category == "user" or cell.level == "user":
-            return [("class:user", f" CMD  {cell.message}\n")]
+            return [("class:user", f" YOU  {cell.message}\n")]
         style = {
             "error": "class:error",
             "warning": "class:warning",

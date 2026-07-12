@@ -98,6 +98,9 @@ class Agent:
         self.ui_interactor = None
         self._subagent_approval_lock = None
         self._external_message_source = None
+        self._steering_lock = threading.Lock()
+        self._pending_user_steering: list[tuple[str, int, str]] = []
+        self._accepting_user_steering = False
 
         # Mode state
         self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
@@ -369,6 +372,52 @@ class Agent:
     def stop_requested(self) -> bool:
         """Return True when cooperative stop has been requested."""
         return self._stop_event.is_set()
+
+    def submit_user_steering(self, text: str) -> bool:
+        """Queue user direction for the next protocol-safe inference boundary."""
+        content = text.strip()
+        if not content:
+            return False
+        with self._steering_lock:
+            if not self._accepting_user_steering or self._current_turn_id is None:
+                return False
+            generation = self.session_generation
+            turn_id = self._current_turn_id
+            event = self.history_ledger.append_message(
+                {"role": "user", "content": content},
+                source="user_steering",
+                agent_id=self.agent_id,
+                turn_id=turn_id,
+                api_round_id=f"{turn_id}:{self.state.current_round}",
+            )
+            self._pending_user_steering.append(
+                (content, generation, event.event_id)
+            )
+        self.persist_runtime_snapshot()
+        return True
+
+    def _has_user_steering(self) -> bool:
+        with self._steering_lock:
+            return any(
+                generation == self.session_generation
+                for _, generation, _ in self._pending_user_steering
+            )
+
+    def _drain_user_steering(self) -> int:
+        """Project already-ledgered user messages into the runtime context."""
+        with self._steering_lock:
+            pending = self._pending_user_steering
+            self._pending_user_steering = []
+        accepted = [
+            content
+            for content, generation, _event_id in pending
+            if generation == self.session_generation
+        ]
+        for content in accepted:
+            self.state.messages.append({"role": "user", "content": content})
+        if accepted:
+            self.persist_runtime_snapshot()
+        return len(accepted)
 
     def get_active_mode_config(self) -> ModeConfig | None:
         """Return active mode config if mode is enabled."""
@@ -677,6 +726,8 @@ class Agent:
         """Process one user message."""
         self.clear_stop_request()
         self._current_turn_id = uuid.uuid4().hex
+        with self._steering_lock:
+            self._accepting_user_steering = True
 
         # Inject completed background sub-agent results before each new user turn.
         self._inject_completed_subagent_jobs()
@@ -699,8 +750,21 @@ class Agent:
 
         # Run the loop
         try:
-            result = self._loop.run()
+            while True:
+                result = self._loop.run()
+                with self._steering_lock:
+                    pending = any(
+                        generation == self.session_generation
+                        for _, generation, _ in self._pending_user_steering
+                    )
+                    if not pending or self.stop_requested():
+                        self._accepting_user_steering = False
+                        if self.stop_requested():
+                            self._pending_user_steering.clear()
+                        break
         except BaseException as e:
+            with self._steering_lock:
+                self._accepting_user_steering = False
             # Ensure tool-call/response parity before bubbling the failure upward.
             self.reconcile_pending_tool_calls(
                 reason=f"Interrupted due to {type(e).__name__}."
@@ -715,6 +779,7 @@ class Agent:
                 ),
             )
         )
+        self._current_turn_id = None
         return result
 
     def reset(self) -> None:
@@ -750,6 +815,9 @@ class Agent:
         self.state.current_round = 0
         self._current_turn_id = None
         self._pending_subagent_injections.clear()
+        with self._steering_lock:
+            self._pending_user_steering.clear()
+            self._accepting_user_steering = False
         self.plan_controller.reset()
         self.persist_runtime_snapshot()
 
