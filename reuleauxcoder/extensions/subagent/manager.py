@@ -159,7 +159,9 @@ class SubagentManager:
                 self._parent_agent_id = parent_agent_id
                 self._generation = parent_generation
             if self._parent_agent_id != parent_agent_id:
-                raise ValueError("SubagentManager cannot be shared across parent agents")
+                raise ValueError(
+                    "SubagentManager cannot be shared across parent agents"
+                )
             if self._generation != parent_generation:
                 raise ValueError(
                     "SubagentManager generation does not match the parent session"
@@ -190,6 +192,7 @@ class SubagentManager:
             generation=parent_generation,
         )
         cancel_event = threading.Event()
+
         def _runner() -> str:
             with self._slot_cv:
                 while self._active_explore >= self._runtime_parallel_explore:
@@ -228,7 +231,7 @@ class SubagentManager:
 
         def _on_done(done: Future) -> None:
             tracked_for_injection = None
-            with self._lock:
+            with self._slot_cv:
                 tracked = self._jobs.get(job_id)
                 if tracked is None:
                     return
@@ -265,6 +268,7 @@ class SubagentManager:
                             tracked.result = result
                             tracked.status = "completed"
                             tracked_for_injection = tracked
+                self._slot_cv.notify_all()
 
             if tracked_for_injection is not None:
                 inject = getattr(parent_agent, "inject_subagent_job_result", None)
@@ -325,6 +329,7 @@ class SubagentManager:
             return self._jobs.get(job_id)
 
     def wait_job(self, job_id: str, timeout: float | None = None) -> SubagentJob | None:
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._lock:
             future = self._futures.get(job_id)
         if future is None:
@@ -333,8 +338,25 @@ class SubagentManager:
         try:
             future.result(timeout=timeout)
         except Exception:
-            pass
-        return self.get_job(job_id)
+            return self.get_job(job_id)
+
+        terminal = {
+            "completed",
+            "failed",
+            "cancelled",
+            "cancelled_detached",
+            "timed_out_detached",
+            "stale",
+        }
+        with self._slot_cv:
+            job = self._jobs.get(job_id)
+            while job is not None and job.status not in terminal:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    break
+                self._slot_cv.wait(timeout=remaining)
+                job = self._jobs.get(job_id)
+            return job
 
     def cancel_job(self, job_id: str) -> bool:
         """Request cancellation and prevent later parent injection."""
@@ -342,14 +364,19 @@ class SubagentManager:
             job = self._jobs.get(job_id)
             event = self._cancel_events.get(job_id)
             future = self._futures.get(job_id)
-            if job is None or event is None or job.status in {
-                "completed",
-                "failed",
-                "cancelled",
-                "cancelled_detached",
-                "timed_out_detached",
-                "stale",
-            }:
+            if (
+                job is None
+                or event is None
+                or job.status
+                in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "cancelled_detached",
+                    "timed_out_detached",
+                    "stale",
+                }
+            ):
                 return False
             job.cancel_requested = True
             event.set()
