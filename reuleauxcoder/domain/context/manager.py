@@ -3,6 +3,14 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, Optional, Any
 
+from reuleauxcoder.domain.context.budget import ContextBudget
+from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
+from reuleauxcoder.domain.context.rounds import (
+    group_api_rounds,
+    normalize_history,
+    recent_round_start,
+)
+
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.interfaces.events import UIEventBus
@@ -181,6 +189,10 @@ class ContextManager:
         snip_min_lines: int = 6,
         summarize_keep_recent_turns: int = 5,
         token_fudge_factor: float = 1.1,
+        reserved_output_tokens: int = 8_192,
+        fixed_prompt_tokens: int = 0,
+        tool_schema_tokens: int = 0,
+        safety_margin_tokens: int = 2_048,
     ):
         self.max_tokens = max_tokens
         self._ui_bus = ui_bus
@@ -192,10 +204,17 @@ class ContextManager:
         self._summarize_keep_recent_turns = summarize_keep_recent_turns
         # Token fudge factor for safety margin
         self._token_fudge_factor = token_fudge_factor
-        # Layer thresholds (fraction of max_tokens)
-        self._snip_at = int(max_tokens * 0.50)  # 50% -> snip tool outputs
-        self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
-        self._collapse_at = int(max_tokens * 0.90)  # 90% -> hard collapse
+        self._budget = ContextBudget(
+            model_window=max_tokens,
+            reserved_output=reserved_output_tokens,
+            fixed_prompt_tokens=fixed_prompt_tokens,
+            tool_schema_tokens=tool_schema_tokens,
+            safety_margin=safety_margin_tokens,
+        )
+        self._recompute_thresholds()
+        self._history_version = 0
+        self._checkpoints: list[CompactionCheckpoint] = []
+        self._consecutive_summary_failures = 0
         # State tracking
         self._last_compact_tokens = 0
         self._last_compact_strategy: str | None = None
@@ -220,10 +239,32 @@ class ContextManager:
     def reconfigure(self, max_tokens: int) -> None:
         """Update context budget and recompute layer thresholds."""
         self.max_tokens = max_tokens
-        self._snip_at = int(max_tokens * 0.50)
-        self._summarize_at = int(max_tokens * 0.70)
-        self._collapse_at = int(max_tokens * 0.90)
+        self._budget = ContextBudget(
+            model_window=max_tokens,
+            reserved_output=self._budget.reserved_output,
+            fixed_prompt_tokens=self._budget.fixed_prompt_tokens,
+            tool_schema_tokens=self._budget.tool_schema_tokens,
+            safety_margin=self._budget.safety_margin,
+        )
+        self._recompute_thresholds()
         self._reset_compression_state()
+
+    def _recompute_thresholds(self) -> None:
+        self._snip_at = self._budget.threshold(0.50)
+        self._summarize_at = self._budget.threshold(0.70)
+        self._collapse_at = self._budget.threshold(0.90)
+
+    @property
+    def effective_input_tokens(self) -> int:
+        return self._budget.available_input
+
+    @property
+    def history_version(self) -> int:
+        return self._history_version
+
+    @property
+    def checkpoints(self) -> tuple[CompactionCheckpoint, ...]:
+        return tuple(self._checkpoints)
 
     def maybe_compress(
         self,
@@ -242,7 +283,15 @@ class ContextManager:
 
         current = before_tokens
 
-        # Layer 3: Hard collapse - unconditional fallback
+        # Cheap-first even above the emergency wall. A single large observation
+        # must not cause an avoidable destructive collapse.
+        if current > self._snip_at and not self._snip_exhausted:
+            if self._snip_tool_outputs(messages):
+                compressed = True
+                applied_layers.append("snip_tool_outputs")
+                current = self.get_context_tokens(messages)
+
+        # Layer 3: Hard collapse - unconditional last resort
         if current > self._collapse_at and len(messages) > 4:
             self._hard_collapse(messages, llm)
             compressed = True
@@ -348,6 +397,22 @@ class ContextManager:
 
         if compressed:
             self._last_compact_tokens = current
+            source_version = self._history_version
+            self._history_version += 1
+            self._checkpoints.append(
+                CompactionCheckpoint.create(
+                    trigger="auto",
+                    strategy=applied_layers,
+                    source_history_version=source_version,
+                    replacement_history=messages,
+                    tokens_before=before_tokens,
+                    tokens_after=current,
+                    preserved_rounds=min(
+                        self._summarize_keep_recent_turns,
+                        len(group_api_rounds(messages)),
+                    ),
+                )
+            )
             self._emit_compression_events(
                 before_tokens=before_tokens,
                 before_message_count=before_message_count,
@@ -447,9 +512,7 @@ class ContextManager:
         keep_recent_user_turns: int = 20,
     ) -> bool:
         """Layer 2: Summarize old conversation while keeping recent user turns intact."""
-        split_index = self._find_recent_user_turn_boundary(
-            messages, keep_recent_user_turns
-        )
+        split_index = recent_round_start(messages, keep_recent_user_turns)
         if split_index <= 0 or split_index >= len(messages):
             return False
 
@@ -458,20 +521,11 @@ class ContextManager:
 
         summary = self._get_summary(old, llm)
 
-        messages.clear()
-        messages.append(
-            {
-                "role": "user",
-                "content": f"[Context compressed - conversation summary]\n{summary}",
-            }
-        )
-        messages.append(
-            {
-                "role": "assistant",
-                "content": "Got it, I have the context from our earlier conversation.",
-            }
-        )
-        messages.extend(tail)
+        replacement = [
+            {"role": "user", "content": f"[Context checkpoint summary]\n{summary}"},
+            *tail,
+        ]
+        messages[:] = normalize_history(replacement, reason="context compaction")
         return True
 
     @staticmethod
@@ -495,23 +549,23 @@ class ContextManager:
         llm: Optional["LLM"],
     ) -> None:
         """Layer 3: Emergency compression."""
-        tail = messages[-4:] if len(messages) > 4 else messages[-2:]
-        summary = self._get_summary(messages[: -len(tail)], llm)
+        split_index = recent_round_start(messages, 2)
+        tail = messages[split_index:]
+        summary = self._get_summary(messages[:split_index], llm)
 
         messages.clear()
-        messages.append(
-            {
-                "role": "user",
-                "content": f"[Hard context reset]\n{summary}",
-            }
+        messages.extend(
+            normalize_history(
+                [
+                    {
+                        "role": "user",
+                        "content": f"[Hard context checkpoint]\n{summary}",
+                    },
+                    *tail,
+                ],
+                reason="hard context compaction",
+            )
         )
-        messages.append(
-            {
-                "role": "assistant",
-                "content": "Context restored. Continuing from where we left off.",
-            }
-        )
-        messages.extend(tail)
 
     def _get_summary(
         self,
@@ -532,9 +586,10 @@ class ContextManager:
                         {"role": "user", "content": flat[:20000]},
                     ],
                 )
+                self._consecutive_summary_failures = 0
                 return resp.content
             except Exception:
-                pass
+                self._consecutive_summary_failures += 1
 
         # Fallback: extract key lines
         return self._extract_key_info(messages)
@@ -650,7 +705,7 @@ class ContextManager:
                 {
                     "layer": "summarize_old",
                     "threshold": self._summarize_at,
-                    "description": "When context usage exceeds 70% of the budget and enough history exists, summarize older conversation and keep the most recent 20 user turns.",
+                    "description": f"When context usage exceeds 70% of the effective input budget, summarize older conversation and keep the most recent {self._summarize_keep_recent_turns} API rounds.",
                 },
                 {
                     "layer": "hard_collapse",
