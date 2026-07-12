@@ -2,6 +2,7 @@ import threading
 import time
 from types import SimpleNamespace
 from dataclasses import replace
+from prompt_toolkit.utils import get_cwidth
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.approval import ApprovalSection, ApprovalSectionKind
@@ -352,6 +353,84 @@ def test_transcript_scroll_reenables_tail_follow_at_bottom() -> None:
     app._scroll_transcript(10)
     assert app.transcript_pane.vertical_scroll == 30
     assert app._follow_transcript is True
+
+
+def test_before_render_keeps_scrolled_view_stable_and_tail_sticky() -> None:
+    app = object.__new__(MiniTUIApplication)
+    line_count = [100]
+    app.events = SimpleNamespace(
+        transcript_layout=lambda _width: SimpleNamespace(line_count=line_count[0])
+    )
+    app.application = SimpleNamespace(
+        output=SimpleNamespace(
+            get_size=lambda: SimpleNamespace(columns=80, rows=40)
+        )
+    )
+    app.transcript_control = SimpleNamespace(last_height=30)
+    app.transcript_pane = SimpleNamespace(vertical_scroll=0)
+    app._panel_height = lambda: 3
+    app._interaction_height = lambda: 2
+    app._last_terminal_rows = 40
+    app._follow_transcript = True
+
+    app._before_render(None)
+    assert app.transcript_pane.vertical_scroll == 70
+
+    app._follow_transcript = False
+    app.transcript_pane.vertical_scroll = 25
+    line_count[0] = 130
+    app._before_render(None)
+    assert app.transcript_pane.vertical_scroll == 25
+    assert app._follow_transcript is False
+
+    app.transcript_pane.vertical_scroll = app._transcript_max_scroll
+    app.invalidate = lambda: None
+    app._scroll_transcript(0)
+    line_count[0] = 135
+    app._before_render(None)
+    assert app.transcript_pane.vertical_scroll == 105
+    assert app._follow_transcript is True
+
+
+def test_mixed_transcript_repeated_resize_never_reuses_old_width_rows() -> None:
+    adapter = MiniTUIEventAdapter()
+    transcript = adapter.transcript.state.transcript
+    transcript.append(
+        mini_tui_module.AssistantCell(
+            id="mixed:markdown",
+            text=(
+                "**粗体中文 🚀**\n\n"
+                "| 项目 | 状态 |\n| --- | --- |\n| parser | ready |"
+            ),
+            complete=True,
+        )
+    )
+    transcript.append(
+        mini_tui_module.DiffCell(
+            id="mixed:diff",
+            path="demo.py",
+            diff="--- a/demo.py\n+++ b/demo.py\n-old 中文\n+new 🚀",
+        )
+    )
+
+    layouts = [adapter.transcript_layout(width) for width in (72, 31, 90, 31)]
+
+    assert all(
+        before.lines is after.lines
+        for before, after in zip(layouts[1].cells, layouts[3].cells, strict=True)
+    )
+    assert layouts[0] is not layouts[1]
+    for width, layout in zip((72, 31, 90, 31), layouts, strict=True):
+        assert all(cell.key[2] == width for cell in layout.cells)
+        for line_number in range(layout.line_count):
+            text = "".join(fragment for _style, fragment in layout.get_line(line_number))
+            assert get_cwidth(text) <= width
+    narrow = "\n".join(
+        "".join(text for _style, text in layouts[1].get_line(line))
+        for line in range(layouts[1].line_count)
+    )
+    assert "**" not in narrow
+    assert "| 项目 |" not in narrow
 
 
 def test_session_switch_replaces_execution_projection() -> None:
