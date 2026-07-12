@@ -120,6 +120,10 @@ class PresentationReducer:
         if isinstance(payload, (TurnFinished, ChatCompleted)):
             return self._complete_chat(event, payload)
         if isinstance(payload, ToolCallStarted):
+            # A provider can continue streaming prose after a tool result.
+            # Close the pre-tool block so that continuation is appended after
+            # the tool/review cells instead of mutating old text above them.
+            self._complete_active_assistant(event)
             cell = ToolCell(
                 id=f"tool:{payload.tool_call_id}",
                 tool_call_id=payload.tool_call_id,

@@ -29,6 +29,7 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame
 
 from reuleauxcoder import __version__
@@ -90,9 +91,18 @@ MINI_TUI_STYLE = Style.from_dict(
         "diff.header": "bold #67e8f9 bg:#102b33",
         "input": "#ffffff bg:#191827",
         "interaction": "#fff7d6 bg:#332a12",
-        "scrollbar.background": "bg:#172126",
-        "scrollbar.button": "bg:#4c7b83",
-        "scrollbar.arrow": "#67e8f9 bg:#172126",
+        "review.border": "bold #ffd75f",
+        "review.approved": "bold #67e8f9",
+        "review.denied": "bold #ff8193",
+        "review.title.pending": "bold #071013 bg:#ffd75f",
+        "review.title.approved": "bold #071013 bg:#67e8f9",
+        "review.title.denied": "bold #071013 bg:#ff8193",
+        "review.body": "#f8fafc",
+        "scrollbar.background": "#29434a bg:#101a1e",
+        "scrollbar.button": "#071013 bg:#67e8f9",
+        "scrollbar.start": "underline",
+        "scrollbar.end": "underline",
+        "scrollbar.arrow": "bold #071013 bg:#67e8f9",
     }
 )
 
@@ -459,6 +469,8 @@ class MiniTUIApplication:
             keep_focused_window_visible=False,
             show_scrollbar=True,
             display_arrows=True,
+            up_arrow_symbol="▲",
+            down_arrow_symbol="▼",
         )
         self.interaction_control = FormattedTextControl(self._interaction_text)
         self.input_window = Window(
@@ -880,19 +892,37 @@ def _cell_fragments(cell, *, width: int = 100) -> list[tuple[str, str]]:
 
 def _approval_fragments(cell: ApprovalCell, *, width: int) -> list[tuple[str, str]]:
     """Render the v0.4-style review card in the scrollable transcript."""
-    inner = max(16, min(100, width) - 2)
+    frame_width = max(24, min(100, width - 1))
+    inner = frame_width - 4
     status = cell.status.upper()
     title = f" {cell.title.upper()} · {status} "
-    rule = "─" * max(1, inner - len(title))
-    fragments: list[tuple[str, str]] = [("class:warning", f"┌─{title}{rule}┐\n")]
+    title = _fit_display(title, frame_width - 4)
+    rule = "━" * max(1, frame_width - get_cwidth(title) - 3)
+    state_style = {
+        "approved": "class:review.approved",
+        "denied": "class:review.denied",
+    }.get(cell.status, "class:review.border")
+    title_style = {
+        "approved": "class:review.title.approved",
+        "denied": "class:review.title.denied",
+    }.get(cell.status, "class:review.title.pending")
+    fragments: list[tuple[str, str]] = [
+        (state_style, "┏━"),
+        (title_style, title),
+        (state_style, f"{rule}┓\n"),
+    ]
 
     def add_line(style: str, text: str = "") -> None:
-        fragments.append(("class:warning", "│ "))
-        fragments.append((style, text + "\n"))
+        fitted = _fit_display(text, inner)
+        padding = " " * max(0, inner - get_cwidth(fitted))
+        fragments.append((state_style, "┃ "))
+        fragments.append((style, fitted))
+        fragments.append(("class:review.body", padding))
+        fragments.append((state_style, " ┃\n"))
 
     if cell.summary:
         for line in cell.summary.splitlines():
-            add_line("class:interaction", line)
+            add_line("class:review.body", line)
     for section in cell.sections:
         add_line("class:panel.header", f" {section.title.upper()} ")
         content = section.content
@@ -901,7 +931,7 @@ def _approval_fragments(cell: ApprovalCell, *, width: int) -> list[tuple[str, st
         lines = content.splitlines()
         visible = lines[:20]
         for line in visible:
-            style = "class:interaction"
+            style = "class:review.body"
             if section.kind is ApprovalSectionKind.DIFF:
                 if line.startswith("+") and not line.startswith("+++"):
                     style = "class:diff.add"
@@ -915,14 +945,31 @@ def _approval_fragments(cell: ApprovalCell, *, width: int) -> list[tuple[str, st
     if not cell.sections and cell.preview:
         add_line("class:muted", cell.preview)
     if cell.reason:
-        add_line("class:error", cell.reason)
+        reason_style = "class:success" if cell.status == "approved" else "class:error"
+        add_line(reason_style, cell.reason)
     fragments.extend(
         [
-            ("class:warning", f"└{'─' * (inner + 1)}┘\n"),
+            (state_style, f"┗{'━' * (frame_width - 2)}┛\n"),
             ("", "\n"),
         ]
     )
     return fragments
+
+
+def _fit_display(text: str, width: int) -> str:
+    """Clip a review row by terminal cell width, including CJK and emoji."""
+    if get_cwidth(text) <= width:
+        return text
+    target = max(1, width - 1)
+    result: list[str] = []
+    used = 0
+    for char in text:
+        char_width = max(0, get_cwidth(char))
+        if used + char_width > target:
+            break
+        result.append(char)
+        used += char_width
+    return "".join(result) + "…"
 
 
 def _interaction_lines(request) -> list[str]:

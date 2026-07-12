@@ -46,6 +46,36 @@ def test_stream_deltas_merge_into_one_assistant_cell() -> None:
     )
 
 
+def test_tool_call_splits_pre_and_post_tool_assistant_text_in_visual_order() -> None:
+    reducer = PresentationReducer()
+
+    reducer.apply(_runtime(AgentEvent.stream_token("before tool")))
+    reducer.apply(
+        _runtime(AgentEvent.tool_call_start("shell", {}, tool_call_id="tool-1"))
+    )
+    reducer.apply(
+        RuntimeEvent(
+            payload=ApprovalRequested(
+                request_id="approval-1",
+                title="Approval required: shell",
+            )
+        )
+    )
+    reducer.apply(
+        _runtime(AgentEvent.tool_call_end("shell", "done", tool_call_id="tool-1"))
+    )
+    reducer.apply(_runtime(AgentEvent.stream_token("after tool")))
+
+    before, tool, approval, after = reducer.state.transcript.cells
+    assert isinstance(before, AssistantCell)
+    assert before.text == "before tool"
+    assert before.complete is True
+    assert isinstance(tool, ToolCell)
+    assert isinstance(approval, ApprovalCell)
+    assert isinstance(after, AssistantCell)
+    assert after.text == "after tool"
+
+
 def test_user_cell_hides_resume_lifecycle_prefix() -> None:
     reducer = PresentationReducer()
     reducer.apply(
