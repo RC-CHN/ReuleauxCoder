@@ -613,7 +613,7 @@ class TestRunnerRemoteExec:
                 if event["type"] == "interaction_request"
             )
             assert interaction["payload"]["kind"] == "review"
-            assert "Approval required" in interaction["payload"]["rendered_frame"]
+            assert "APPROVAL REQUIRED" in interaction["payload"]["rendered_frame"]
             assert not any(
                 event["type"] == "approval_request" for event in first_events
             )
