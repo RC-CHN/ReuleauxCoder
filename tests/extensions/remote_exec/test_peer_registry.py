@@ -40,6 +40,14 @@ class TestPeerRegistry:
         reg = PeerRegistry()
         assert reg.update_heartbeat("nope") is False
 
+    def test_terminal_capabilities_can_be_replaced_after_resize(self) -> None:
+        reg = PeerRegistry()
+        peer_id = reg.register(meta={"terminal": {"width": 80}})
+
+        assert reg.update_terminal(peer_id, {"width": 132}) is True
+        assert reg.get(peer_id).meta["terminal"] == {"width": 132}
+        assert reg.update_terminal("missing", {"width": 40}) is False
+
     def test_mark_disconnected(self) -> None:
         reg = PeerRegistry()
         pid = reg.register()

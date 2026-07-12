@@ -536,6 +536,10 @@ class RemoteRelayHTTPService:
                     )
                     return
                 service.relay_server.registry.update_heartbeat(peer_id)
+                if hb.terminal is not None:
+                    service.relay_server.registry.update_terminal(
+                        peer_id, hb.terminal.to_dict()
+                    )
                 self._send_json(HTTPStatus.OK, {"ok": True, "peer_id": peer_id})
 
             def _handle_token_refresh(self) -> None:

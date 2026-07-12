@@ -155,13 +155,25 @@ class RegisterRejected:
 class Heartbeat:
     peer_token: str
     ts: float = 0.0
+    terminal: TerminalCapabilities | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"peer_token": self.peer_token, "ts": self.ts}
+        result: dict[str, Any] = {"peer_token": self.peer_token, "ts": self.ts}
+        if self.terminal is not None:
+            result["terminal"] = self.terminal.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Heartbeat":
-        return cls(peer_token=d["peer_token"], ts=d.get("ts", 0.0))
+        return cls(
+            peer_token=d["peer_token"],
+            ts=d.get("ts", 0.0),
+            terminal=(
+                TerminalCapabilities.from_dict(d["terminal"])
+                if isinstance(d.get("terminal"), dict)
+                else None
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)

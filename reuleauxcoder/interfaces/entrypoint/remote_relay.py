@@ -162,26 +162,32 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
     peer_connection_markers: dict[str, str] = {}
     peer_presenters: dict[str, PeerPresentation] = {}
 
-    def _renderer_for(console: Console) -> CLIRenderer:
+    def _terminal_for_peer(peer_id: str) -> TerminalCapabilities:
+        peer = relay_server.registry.get(peer_id)
+        return TerminalCapabilities.from_dict(
+            peer.meta.get("terminal")
+            if peer is not None and isinstance(peer.meta, dict)
+            else None
+        )
+
+    def _renderer_for(console: Console, peer_id: str) -> CLIRenderer:
         policy = (
             PresentationPolicy.from_ui_config(config.ui)
             if config is not None
             else PresentationPolicy()
         )
-        return CLIRenderer(console_override=console, policy=policy)
+        return CLIRenderer(
+            console_override=console,
+            policy=policy,
+            terminal_width_provider=lambda: _terminal_for_peer(peer_id).width,
+        )
 
     def _console_for_peer(peer_id: str) -> Console:
-        peer = relay_server.registry.get(peer_id)
-        terminal = TerminalCapabilities.from_dict(
-            peer.meta.get("terminal")
-            if peer is not None and isinstance(peer.meta, dict)
-            else None
-        )
-        return create_remote_console(terminal)
+        return create_remote_console(_terminal_for_peer(peer_id))
 
     def _presentation_for_peer(peer_id: str) -> PeerPresentation:
         console = _console_for_peer(peer_id)
-        renderer = _renderer_for(console)
+        renderer = _renderer_for(console, peer_id)
         command_bus = UIEventBus()
         command_bus.subscribe(renderer.on_ui_event, replay_history=False)
         return PeerPresentation(

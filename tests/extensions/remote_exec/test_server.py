@@ -19,6 +19,7 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RegisterRequest,
     RegisterResponse,
     RelayEnvelope,
+    TerminalCapabilities,
     WorkspaceRequest,
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
@@ -203,7 +204,10 @@ class TestHeartbeat:
 
             before = srv.registry.get(resp.peer_id).last_seen_at
             time.sleep(0.02)
-            hb = Heartbeat(peer_token=resp.peer_token)
+            hb = Heartbeat(
+                peer_token=resp.peer_token,
+                terminal=TerminalCapabilities(width=123),
+            )
             env = RelayEnvelope(
                 type="heartbeat",
                 peer_id=resp.peer_id,
@@ -213,6 +217,7 @@ class TestHeartbeat:
             time.sleep(0.05)
             after = srv.registry.get(resp.peer_id).last_seen_at
             assert after > before
+            assert srv.registry.get(resp.peer_id).meta["terminal"]["width"] == 123
         finally:
             srv.stop()
 

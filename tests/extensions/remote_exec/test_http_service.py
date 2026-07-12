@@ -294,10 +294,17 @@ class TestRemoteRelayHTTPService:
             status, heartbeat_body = _json_request(
                 "POST",
                 f"{service.base_url}/remote/heartbeat",
-                {"peer_token": peer_token, "ts": time.time()},
+                {
+                    "peer_token": peer_token,
+                    "ts": time.time(),
+                    "terminal": {"width": 111, "color_level": "none"},
+                },
             )
             assert status == 200
             assert heartbeat_body["peer_id"] == peer_id
+            assert service.relay_server.registry.get(peer_id).meta["terminal"][
+                "width"
+            ] == 111
 
             status, poll_body = _json_request(
                 "POST",
@@ -506,7 +513,7 @@ class TestRemoteRelayHTTPService:
             assert body["payload"]["operation"] == "fs.read_text"
             reply_workspace(body, {"content": "read-ok\n"})
             thread.join(timeout=2)
-            assert holder["result"] == "1\tread-ok"
+            assert holder["result"].model_text == "1\tread-ok"
 
             holder = {}
             thread = threading.Thread(
@@ -1317,7 +1324,7 @@ class TestRemoteRelayHTTPService:
             read_result = ReadFileTool(backend=backend).execute(
                 file_path=str(target_file)
             )
-            assert "1\thello world" in read_result
+            assert "1\thello world" in read_result.model_text
 
             local_backend = LocalToolBackend(
                 ExecutionContext(
@@ -1444,7 +1451,7 @@ class TestRemoteRelayHTTPService:
             backend.context.peer_id = peer_id
             result = ReadFileTool(backend=backend).execute(file_path=str(target))
 
-            assert "lease survived" in result
+            assert "lease survived" in result.model_text
             assert proc.poll() is None
         finally:
             if proc.poll() is None:

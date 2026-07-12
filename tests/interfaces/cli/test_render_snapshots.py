@@ -202,3 +202,20 @@ def test_compact_tool_error_is_a_single_line_snapshot() -> None:
     )
 
     assert console.export_text() == "  × shell: permission denied\n"
+
+
+def test_long_notification_is_head_tail_folded() -> None:
+    console = Console(record=True, width=80, color_system=None, force_terminal=False)
+    renderer = CLIRenderer(
+        view_registry=ViewRendererRegistry([]),
+        console_override=console,
+        policy=PresentationPolicy(tool_preview_lines=4, tool_preview_chars=80),
+    )
+    message = "\n".join(f"detail-{index}" for index in range(30))
+
+    renderer.on_ui_event(UIEvent.warning(message))
+    output = console.export_text()
+
+    assert "detail-0" in output
+    assert "detail-29" in output
+    assert "output folded" in output

@@ -179,6 +179,8 @@ class RelayServer:
             peer = self._token_manager.verify_peer_token(hb.peer_token)
             if peer:
                 self._registry.update_heartbeat(peer)
+                if hb.terminal is not None:
+                    self._registry.update_terminal(peer, hb.terminal.to_dict())
 
         elif msg_type == "tool_stream":
             if req_id:

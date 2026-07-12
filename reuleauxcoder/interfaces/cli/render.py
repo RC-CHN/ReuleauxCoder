@@ -1,6 +1,7 @@
 """CLI rendering - event-driven UI renderer."""
 
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
@@ -45,6 +46,7 @@ from reuleauxcoder.presentation import (
     ReasoningDisplay,
     Verbosity,
 )
+from reuleauxcoder.presentation.policy import fold_text
 from reuleauxcoder.interfaces.cli.interaction_presenter import (
     render_interaction_request,
 )
@@ -140,12 +142,14 @@ class CLIRenderer:
         console_override: Console | None = None,
         reducer: PresentationReducer | None = None,
         policy: PresentationPolicy | None = None,
+        terminal_width_provider: Callable[[], int | None] | None = None,
     ):
         self.console = console_override or console
         self._active_content_block: _ContentBlock | None = None
         self.reducer = reducer or PresentationReducer(policy=policy)
         self.policy = self.reducer.policy
         self.view_registry = view_registry or create_cli_view_registry()
+        self._terminal_width_provider = terminal_width_provider
         # Reasoning streaming state
         self._reasoning_label_printed: bool = False
 
@@ -159,6 +163,7 @@ class CLIRenderer:
 
     def on_runtime_event(self, event: RuntimeEvent) -> None:
         """Render one typed runtime event after reducing shared state."""
+        self._refresh_terminal_width()
         was_seen = event.event_id in self.reducer.state.seen_event_ids
         changes = self.reducer.apply(event)
         if was_seen:
@@ -218,6 +223,7 @@ class CLIRenderer:
 
     def on_ui_event(self, event: UIEvent) -> None:
         """Handle a UI bus event."""
+        self._refresh_terminal_width()
         if event.kind == UIEventKind.AGENT:
             if isinstance(event.payload, RuntimeEventPayload):
                 self.on_runtime_event(event.payload.event)
@@ -242,6 +248,13 @@ class CLIRenderer:
             return
 
         self._render_notification(event)
+
+    def _refresh_terminal_width(self) -> None:
+        if self._terminal_width_provider is None:
+            return
+        width = self._terminal_width_provider()
+        if isinstance(width, int) and 20 <= width <= 500 and width != self.console.width:
+            self.console.width = width
 
     def _render_token(self, token: str) -> None:
         """Append streamed content and flush complete markdown paragraphs."""
@@ -362,9 +375,14 @@ class CLIRenderer:
         """Render a concise sub-agent completion notification."""
         body = f"id={payload.job_id} mode={payload.mode}"
         if payload.error:
+            error = fold_text(
+                payload.error,
+                max_lines=self.policy.tool_preview_lines,
+                max_chars=self.policy.tool_preview_chars,
+            )
             self.console.print(
                 f"[red]× subagent[/red] {body} {payload.status}: "
-                f"{_escape_markup(payload.error)}",
+                f"{_escape_markup(error)}",
                 soft_wrap=True,
             )
         else:
@@ -393,13 +411,18 @@ class CLIRenderer:
 
     def _render_notification(self, event: UIEvent) -> None:
         """Render a generic UI notification event."""
+        message = fold_text(
+            event.message,
+            max_lines=self.policy.tool_preview_lines,
+            max_chars=self.policy.tool_preview_chars,
+        )
         # Reasoning content display (/thinking command)
         if isinstance(event.payload, ReasoningNoticePayload):
             self._close_active_content_block()
             self.console.print(
                 f"[bold bright_black]{_escape_markup(event.payload.title)}[/bold bright_black]"
             )
-            self.console.print(event.message, soft_wrap=True)
+            self.console.print(message, soft_wrap=True)
             return
 
         border_style = {
@@ -420,17 +443,19 @@ class CLIRenderer:
         if not self.policy.should_render_notification(event.level.value):
             return
         if event.level is UIEventLevel.INFO:
-            self.console.print(f"[dim]{_escape_markup(event.message)}[/dim]")
+            self.console.print(f"[dim]{_escape_markup(message)}[/dim]", soft_wrap=True)
             return
         if event.level is UIEventLevel.SUCCESS:
-            self.console.print(f"[green]✓[/green] {_escape_markup(event.message)}")
+            self.console.print(
+                f"[green]✓[/green] {_escape_markup(message)}", soft_wrap=True
+            )
             return
         marker = "⚠" if event.level is UIEventLevel.WARNING else "×"
         category = (
             f"{event.kind.value}: " if event.kind is not UIEventKind.SYSTEM else ""
         )
         self.console.print(
-            f"[{border_style}]{marker} {category}{_escape_markup(event.message)}"
+            f"[{border_style}]{marker} {category}{_escape_markup(message)}"
             f"[/{border_style}]",
             soft_wrap=True,
         )

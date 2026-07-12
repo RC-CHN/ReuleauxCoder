@@ -41,8 +41,9 @@ type RegisterRejected struct {
 }
 
 type Heartbeat struct {
-	PeerToken string  `json:"peer_token"`
-	TS        float64 `json:"ts"`
+	PeerToken string                `json:"peer_token"`
+	TS        float64               `json:"ts"`
+	Terminal  *TerminalCapabilities `json:"terminal,omitempty"`
 }
 
 type TokenRefreshRequest struct {

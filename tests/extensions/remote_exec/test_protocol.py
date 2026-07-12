@@ -141,11 +141,16 @@ class TestRegisterRejected:
 
 class TestHeartbeat:
     def test_roundtrip(self) -> None:
-        hb = Heartbeat(peer_token="pt_tok", ts=1234.5)
+        hb = Heartbeat(
+            peer_token="pt_tok",
+            ts=1234.5,
+            terminal=TerminalCapabilities(width=101, color_level="256"),
+        )
         d = hb.to_dict()
         restored = Heartbeat.from_dict(d)
         assert restored.peer_token == "pt_tok"
         assert restored.ts == 1234.5
+        assert restored.terminal == hb.terminal
 
 
 def test_token_refresh_models_roundtrip() -> None:

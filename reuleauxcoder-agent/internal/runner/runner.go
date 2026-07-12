@@ -19,6 +19,7 @@ import (
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/client"
 	processops "github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/process"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
+	terminalops "github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/terminal"
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/tools"
 	workspaceops "github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/workspace"
 )
@@ -154,9 +155,15 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func detectTerminalCapabilities(interactive bool) protocol.TerminalCapabilities {
-	width := 80
-	if parsed, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && parsed >= 20 {
+	width := 0
+	if interactive {
+		width = terminalops.Width(os.Stdout)
+	}
+	if parsed, err := strconv.Atoi(os.Getenv("COLUMNS")); width == 0 && err == nil && parsed >= 20 {
 		width = min(parsed, 500)
+	}
+	if width == 0 {
+		width = 80
 	}
 	colorLevel := "none"
 	term := strings.ToLower(os.Getenv("TERM"))
@@ -664,9 +671,11 @@ func (r *Runner) heartbeatLoop(ctx context.Context, peerToken string, interval t
 			return
 		case <-ticker.C:
 			hbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			terminal := detectTerminalCapabilities(r.cfg.Interactive)
 			err := r.client.Heartbeat(hbCtx, protocol.Heartbeat{
 				PeerToken: peerToken,
 				TS:        float64(time.Now().UnixNano()) / 1e9,
+				Terminal:  &terminal,
 			})
 			cancel()
 			if err != nil {

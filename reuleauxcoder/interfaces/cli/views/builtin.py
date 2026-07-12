@@ -22,6 +22,7 @@ from reuleauxcoder.app.commands.view_models import (
 )
 from reuleauxcoder.extensions.mcp.models import MCPServersView
 from reuleauxcoder.interfaces.events import ViewEventPayload
+from reuleauxcoder.presentation.policy import fold_text
 
 
 def _view_model(event):
@@ -306,9 +307,19 @@ def render_subagent_jobs_view(renderer, event) -> bool:
     if len(model.jobs) == 1:
         job = model.jobs[0]
         if job.error:
-            renderer.console.print(f"[red]{job.error}[/red]")
+            error = fold_text(
+                job.error,
+                max_lines=renderer.policy.tool_preview_lines,
+                max_chars=renderer.policy.tool_preview_chars,
+            )
+            renderer.console.print(f"[red]{error}[/red]", soft_wrap=True)
         if job.result:
-            renderer.console.print(job.result)
+            result = fold_text(
+                job.result,
+                max_lines=renderer.policy.tool_preview_lines,
+                max_chars=renderer.policy.tool_preview_chars,
+            )
+            renderer.console.print(result, markup=False, soft_wrap=True)
     return True
 
 

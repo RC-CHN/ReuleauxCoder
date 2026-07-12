@@ -62,6 +62,14 @@ class PeerRegistry:
             info.status = "online"
         return True
 
+    def update_terminal(self, peer_id: str, terminal: dict[str, Any]) -> bool:
+        """Replace negotiated terminal facts after a peer-side resize."""
+        info = self._peers.get(peer_id)
+        if info is None:
+            return False
+        info.meta["terminal"] = dict(terminal)
+        return True
+
     def mark_disconnected(
         self, peer_id: str, reason: str = "unknown"
     ) -> PeerInfo | None:
