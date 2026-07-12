@@ -92,6 +92,9 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "worker_generation": job.worker_generation,
                 "model_calls": job.model_calls,
                 "cancellation_epoch": job.cancellation_epoch,
+                "progress": list(job.progress),
+                "current_tool": job.current_tool,
+                "last_activity_at": job.last_activity_at,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -257,6 +260,8 @@ class SubagentJob:
     worker_generation: int = 0
     model_calls: int = 0
     cancellation_epoch: int = 0
+    current_tool: str | None = None
+    last_activity_at: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -813,6 +818,9 @@ class SubagentManager:
                 worker_generation=int(payload.get("worker_generation") or 0),
                 model_calls=int(payload.get("model_calls") or 0),
                 cancellation_epoch=int(payload.get("cancellation_epoch") or 0),
+                progress=tuple(str(item) for item in payload.get("progress") or ()),
+                current_tool=payload.get("current_tool"),
+                last_activity_at=_optional_float(payload.get("last_activity_at")),
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -1002,6 +1010,41 @@ class SubagentManager:
         if self._root_agent is not None:
             _publish_job_event(self._root_agent, job)
         return item
+
+    def record_progress(
+        self,
+        sender_agent_id: str,
+        *,
+        phase: str,
+        summary: str,
+        next_step: str | None = None,
+    ) -> bool:
+        """Project child-owned progress into its authoritative job snapshot."""
+        with self._lock:
+            job = self._jobs.get(self._agent_jobs.get(sender_agent_id, ""))
+            if job is None or job.status not in {"running", "parking"}:
+                return False
+            job.progress = tuple(
+                part for part in (phase.strip(), summary.strip(), next_step) if part
+            )
+            job.last_activity_at = time.time()
+        if self._root_agent is not None:
+            _publish_job_event(self._root_agent, job)
+        return True
+
+    def record_tool_activity(
+        self, sender_agent_id: str, tool_name: str | None
+    ) -> bool:
+        """Record the currently brokered tool without exposing its output."""
+        with self._lock:
+            job = self._jobs.get(self._agent_jobs.get(sender_agent_id, ""))
+            if job is None or job.status not in {"running", "parking"}:
+                return False
+            job.current_tool = tool_name
+            job.last_activity_at = time.time()
+        if self._root_agent is not None:
+            _publish_job_event(self._root_agent, job)
+        return True
 
     def drain_parent_messages(self, parent_agent_id: str) -> list[SubagentCommunication]:
         with self._lock:

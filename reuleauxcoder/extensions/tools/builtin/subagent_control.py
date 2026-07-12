@@ -297,6 +297,7 @@ def _agent_snapshot(job, *, now: float) -> dict:
     tool_calls = int(getattr(job, "tool_calls", 0) or 0)
     max_tool_calls = getattr(job, "max_tool_calls", None)
     progress = tuple(getattr(job, "progress", ()) or ())
+    current_tool = getattr(job, "current_tool", None)
     blocker = (
         getattr(job, "error", None)
         or getattr(job, "guidance_request_id", None)
@@ -308,7 +309,13 @@ def _agent_snapshot(job, *, now: float) -> dict:
         "status": job.status,
         "mode": job.mode,
         "task": _clip(job.task, 100),
-        "activity": _clip(progress[-1], 80) if progress else None,
+        "activity": (
+            f"running {current_tool}"
+            if current_tool
+            else _clip(progress[1] if len(progress) > 1 else progress[-1], 80)
+            if progress
+            else None
+        ),
         "elapsed_seconds": round(elapsed, 1),
         "tool_calls": tool_calls,
         "max_tool_calls": max_tool_calls,

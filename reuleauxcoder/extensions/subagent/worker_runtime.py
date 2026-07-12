@@ -203,9 +203,16 @@ class ParentToolBroker:
                 )
         if self.cancellation_event.is_set():
             return _cancelled_outcome(name)
-        result = self.agent._executor.execute(
-            ToolCall(id=call_id, name=name, arguments=arguments)
-        )
+        manager = getattr(self.agent, "_subagent_manager", None)
+        if manager is not None:
+            manager.record_tool_activity(self.agent.agent_id, name)
+        try:
+            result = self.agent._executor.execute(
+                ToolCall(id=call_id, name=name, arguments=arguments)
+            )
+        finally:
+            if manager is not None:
+                manager.record_tool_activity(self.agent.agent_id, None)
         outcome = self._captured_outcomes.pop(
             call_id,
             ToolOutcome.from_legacy(result, success=not result.startswith("Error:")),

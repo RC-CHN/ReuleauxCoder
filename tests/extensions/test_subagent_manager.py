@@ -548,6 +548,44 @@ def test_cancel_advances_epoch_before_worker_terminalizes(monkeypatch) -> None:
     manager.shutdown()
 
 
+def test_child_progress_and_tool_activity_update_job_snapshot(monkeypatch) -> None:
+    release = threading.Event()
+
+    def run(**_kwargs):
+        release.wait(timeout=2)
+        return "done"
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent, task="inspect", mode="explore", auto_verify=False
+    )
+    for _ in range(100):
+        if manager.get_job(job_id).status == "running":
+            break
+        time.sleep(0.01)
+    manager.register_child_agent(
+        "sa-test", 1, parent_agent_id=parent.agent_id, job_id=job_id
+    )
+
+    assert manager.record_progress(
+        "sa-test",
+        phase="investigating",
+        summary="reading parser",
+        next_step="run tests",
+    )
+    assert manager.record_tool_activity("sa-test", "grep")
+    job = manager.get_job(job_id)
+    assert job.progress == ("investigating", "reading parser", "run tests")
+    assert job.current_tool == "grep"
+    assert job.last_activity_at is not None
+
+    release.set()
+    manager.wait_job(job_id, timeout=2)
+    manager.shutdown()
+
+
 def test_cancelling_queued_future_does_not_deadlock_callback(monkeypatch) -> None:
     release = threading.Event()
 

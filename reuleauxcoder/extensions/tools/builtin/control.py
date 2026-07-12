@@ -141,6 +141,15 @@ class ReportProgressTool(_AgentControlTool):
                 tool_call_id=tool_call_id,
                 session_generation=generation,
             )
+            if getattr(self._agent, "subagent_depth", 0) > 0:
+                manager = getattr(self._agent, "_subagent_manager", None)
+                if manager is not None:
+                    manager.record_progress(
+                        self._agent.agent_id,
+                        phase=phase,
+                        summary=summary,
+                        next_step=next,
+                    )
             verb = "updated" if changed else "unchanged"
             return ToolOutcome(
                 summary=f"Progress {verb}",
