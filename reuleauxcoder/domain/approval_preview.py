@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+from dataclasses import dataclass
 
 from reuleauxcoder.domain.approval import (
     ApprovalPreview,
@@ -11,6 +12,46 @@ from reuleauxcoder.domain.approval import (
     ApprovalSectionKind,
 )
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode, WorkspacePort
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDocumentSnapshot:
+    path: str
+    content: str | None
+
+
+def capture_approval_document(
+    request: ApprovalRequest, *, workspace: WorkspacePort | None
+) -> ApprovalDocumentSnapshot | None:
+    """Capture the complete target document used to detect approval staleness."""
+    if workspace is None or request.tool_name not in {"edit_file", "write_file"}:
+        return None
+    file_path = request.tool_args.get("file_path")
+    if not isinstance(file_path, str):
+        return None
+    resolved = str(workspace.resolve(file_path))
+    try:
+        content = workspace.read_text(file_path)
+    except WorkspaceError as error:
+        if error.code is not WorkspaceErrorCode.NOT_FOUND:
+            raise
+        content = None
+    return ApprovalDocumentSnapshot(path=resolved, content=content)
+
+
+def diff_approval_documents(
+    before: ApprovalDocumentSnapshot, after: ApprovalDocumentSnapshot
+) -> str:
+    """Describe user/editor changes made while an approval was pending."""
+    return "".join(
+        difflib.unified_diff(
+            (before.content or "").splitlines(keepends=True),
+            (after.content or "").splitlines(keepends=True),
+            fromfile=f"before-approval/{before.path}",
+            tofile=f"after-approval/{after.path}",
+            n=3,
+        )
+    )
 
 
 def build_approval_preview(

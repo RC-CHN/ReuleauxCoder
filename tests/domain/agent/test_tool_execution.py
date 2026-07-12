@@ -13,6 +13,7 @@ from reuleauxcoder.domain.hooks.types import GuardDecision
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
+from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 
 
 class _ShellToolStub:
@@ -172,10 +173,13 @@ class _ReviewingProvider:
     def __init__(self, *, mutate=None, reviewed: bool = True) -> None:
         self.mutate = mutate
         self.reviewed = reviewed
+        self.requests = []
 
     def request_approval(self, request):  # noqa: ARG002
+        self.requests.append(request)
         if self.mutate is not None:
-            self.mutate()
+            mutate, self.mutate = self.mutate, None
+            mutate()
         return ApprovalDecision.allow_once("approved", reviewed=self.reviewed)
 
 
@@ -208,7 +212,7 @@ def test_tool_outcome_marks_identical_human_reviewed_diff(tmp_path) -> None:
     assert agent.events[-1].tool_outcome.metadata["diff_reviewed"] is True
 
 
-def test_changed_diff_is_not_hidden_after_human_review(tmp_path) -> None:
+def test_stale_approval_is_refreshed_and_external_change_reaches_model(tmp_path) -> None:
     target = tmp_path / "demo.txt"
     target.write_text("old\n")
     tool = EditFileTool(
@@ -220,9 +224,10 @@ def test_changed_diff_is_not_hidden_after_human_review(tmp_path) -> None:
     agent.hook_registry.run_guards = lambda point, ctx: [
         GuardDecision.require_approval()
     ]
-    agent.approval_provider = _ReviewingProvider(
+    provider = _ReviewingProvider(
         mutate=lambda: target.write_text("old\nexternal change\n")
     )
+    agent.approval_provider = provider
 
     ToolExecutor(agent).execute(
         ToolCall(
@@ -236,4 +241,34 @@ def test_changed_diff_is_not_hidden_after_human_review(tmp_path) -> None:
         )
     )
 
-    assert "diff_reviewed" not in agent.events[-1].tool_outcome.metadata
+    outcome = agent.events[-1].tool_outcome
+    assert len(provider.requests) == 2
+    assert provider.requests[1].metadata["workspace_changed_during_approval"] is True
+    assert outcome.metadata["diff_reviewed"] is True
+    assert outcome.metadata["workspace_changed_during_approval"] is True
+    assert "+external change" in outcome.model_text
+
+
+def test_write_outcome_suppresses_identical_human_reviewed_diff(tmp_path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("old\n")
+    tool = WriteFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+        )
+    )
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.require_approval()
+    ]
+    agent.approval_provider = _ReviewingProvider()
+
+    ToolExecutor(agent).execute(
+        ToolCall(
+            id="reviewed-write",
+            name="write_file",
+            arguments={"file_path": str(target), "content": "new\n"},
+        )
+    )
+
+    assert agent.events[-1].tool_outcome.metadata["diff_reviewed"] is True

@@ -39,6 +39,11 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
                 f"'{request.tool_source}' requires approval."
             )
         approval_summary += subagent_summary
+        if request.metadata.get("workspace_changed_during_approval"):
+            approval_summary = (
+                "Workspace changed while approval was pending. "
+                "Review the refreshed diff.\n" + approval_summary
+            )
 
         response = ui_interactor.review(
             ReviewRequest(

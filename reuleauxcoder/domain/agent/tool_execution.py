@@ -11,7 +11,11 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind, ToolOutcome
 from reuleauxcoder.domain.approval import ApprovalRequest, ApprovalSectionKind
-from reuleauxcoder.domain.approval_preview import build_approval_preview
+from reuleauxcoder.domain.approval_preview import (
+    build_approval_preview,
+    capture_approval_document,
+    diff_approval_documents,
+)
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeToolExecuteContext,
@@ -29,6 +33,7 @@ class ToolExecutor:
     def execute(self, tc: "ToolCall") -> str:
         """Execute a single tool call."""
         reviewed_diff: str | None = None
+        approval_workspace_changes: list[str] = []
         tool = self.agent.get_tool(tc.name)
         if tool is None:
             tool = get_tool(tc.name)
@@ -138,21 +143,54 @@ class ToolExecutor:
                     )
                 )
                 return message
+            backend = getattr(tool, "backend", None)
+            workspace = getattr(backend, "workspace", None)
             try:
-                approval_request = ApprovalRequest(
-                    tool_name=tc.name,
-                    tool_args=dict(tc.arguments),
-                    tool_source=getattr(tool, "tool_source", "builtin_tool")
-                    if tool is not None
-                    else "unknown",
-                    reason=approval_required.reason,
-                )
-                backend = getattr(tool, "backend", None)
-                approval_request.preview = build_approval_preview(
-                    approval_request,
-                    workspace=getattr(backend, "workspace", None),
-                )
-                decision = provider.request_approval(approval_request)
+                for approval_attempt in range(3):
+                    approval_request = ApprovalRequest(
+                        tool_name=tc.name,
+                        tool_args=dict(tc.arguments),
+                        tool_source=(
+                            getattr(tool, "tool_source", "builtin_tool")
+                            if tool is not None
+                            else "unknown"
+                        ),
+                        reason=approval_required.reason,
+                        metadata={
+                            "workspace_changed_during_approval": bool(
+                                approval_workspace_changes
+                            )
+                        },
+                    )
+                    before_approval = capture_approval_document(
+                        approval_request, workspace=workspace
+                    )
+                    approval_request.preview = build_approval_preview(
+                        approval_request, workspace=workspace
+                    )
+                    decision = provider.request_approval(approval_request)
+                    if not decision.approved:
+                        break
+                    after_approval = capture_approval_document(
+                        approval_request, workspace=workspace
+                    )
+                    if before_approval == after_approval:
+                        break
+                    if before_approval is not None and after_approval is not None:
+                        approval_workspace_changes.append(
+                            diff_approval_documents(before_approval, after_approval)
+                        )
+                else:
+                    message = (
+                        f"Tool '{tc.name}' target kept changing during approval; "
+                        "retry after editor changes settle"
+                    )
+                    self.agent._emit_event(
+                        AgentEvent.tool_call_end(
+                            tc.name, message, success=False, tool_call_id=tc.id
+                        )
+                    )
+                    return message
             except (KeyboardInterrupt, EOFError):
                 message = f"Tool '{tc.name}' approval interrupted by user"
                 self.agent._emit_event(
@@ -229,6 +267,18 @@ class ToolExecutor:
                 if isinstance(raw_result, ToolOutcome)
                 else ToolOutcome.from_legacy(raw_result)
             )
+            if approval_workspace_changes:
+                change_report = "\n\n".join(
+                    item for item in approval_workspace_changes if item
+                )
+                notice = (
+                    "[workspace changed while approval was pending; preview was refreshed]"
+                )
+                if change_report:
+                    notice += f"\n{change_report}"
+                outcome = outcome.with_model_projection(
+                    f"{outcome.model_text}\n\n{notice}"
+                ).with_metadata(workspace_changed_during_approval=True)
             if (shell_cwd := getattr(tool, "_cwd", None)) is not None:
                 self.agent.runtime_working_directory = str(shell_cwd)
             after_context = AfterToolExecuteContext(
