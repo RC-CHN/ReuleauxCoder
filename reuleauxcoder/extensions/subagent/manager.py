@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 import threading
 import time
@@ -337,8 +338,11 @@ class SubagentManager:
 
         try:
             future.result(timeout=timeout)
-        except Exception:
+        except FutureTimeoutError:
             return self.get_job(job_id)
+        except Exception:
+            # The done callback owns the public failed/stale terminal state.
+            pass
 
         terminal = {
             "completed",
