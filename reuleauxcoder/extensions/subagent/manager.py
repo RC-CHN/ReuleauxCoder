@@ -98,6 +98,7 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "max_rounds": job.max_rounds,
                 "model_profile_name": job.model_profile_name,
                 "auto_verify": job.auto_verify,
+                "agent_id": job.agent_id,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -281,6 +282,7 @@ class SubagentJob:
     max_rounds: int = _DEFAULT_MAX_ROUNDS
     model_profile_name: str | None = None
     auto_verify: bool = True
+    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -491,6 +493,7 @@ class SubagentManager:
             max_rounds=effective_max_rounds,
             model_profile_name=model_profile_name,
             auto_verify=auto_verify,
+            agent_id=f"sa_{job_id}",
         )
         cancel_event = threading.Event()
 
@@ -507,6 +510,7 @@ class SubagentManager:
                 if tracked is not None:
                     tracked.status = "running"
                     tracked.started_at = time.time()
+                    tracked.last_activity_at = tracked.started_at
                     tracked.finished_at = None
                     tracked.worker_generation += 1
                     active_resume_reference = tracked.resume_reference
@@ -579,6 +583,7 @@ class SubagentManager:
                 if tracked is None:
                     return
                 tracked.finished_at = time.time()
+                tracked.last_activity_at = tracked.finished_at
                 if done.cancelled():
                     tracked.status = "cancelled"
                     tracked.error = "Sub-agent cancelled before it started."
@@ -862,6 +867,7 @@ class SubagentManager:
                 max_rounds=int(payload.get("max_rounds") or _DEFAULT_MAX_ROUNDS),
                 model_profile_name=payload.get("model_profile_name"),
                 auto_verify=bool(payload.get("auto_verify", True)),
+                agent_id=payload.get("agent_id") or f"sa_{job_id}",
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -989,6 +995,7 @@ class SubagentManager:
                 self._active_explore += 1
                 job.status = "running"
                 job.started_at = time.time()
+                job.last_activity_at = job.started_at
                 job.finished_at = None
                 job.worker_generation += 1
             _publish_job_event(parent_agent, job)
@@ -1036,6 +1043,7 @@ class SubagentManager:
                     job.status = "failed"
                     job.error = str(error)
                     job.finished_at = time.time()
+                    job.last_activity_at = job.finished_at
                 else:
                     if job.cancel_requested:
                         job.status = "cancelled"

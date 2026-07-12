@@ -300,6 +300,10 @@ def _agent_snapshot(job, *, now: float) -> dict:
     max_tool_calls = getattr(job, "max_tool_calls", None)
     progress = tuple(getattr(job, "progress", ()) or ())
     current_tool = getattr(job, "current_tool", None)
+    last_activity_at = getattr(job, "last_activity_at", None)
+    activity_age = (
+        max(0.0, now - last_activity_at) if last_activity_at is not None else None
+    )
     blocker = (
         getattr(job, "error", None)
         or getattr(job, "guidance_request_id", None)
@@ -308,6 +312,7 @@ def _agent_snapshot(job, *, now: float) -> dict:
     )
     return {
         "job_id": job.id,
+        "agent_id": getattr(job, "agent_id", None) or f"sa_{job.id}",
         "status": job.status,
         "mode": job.mode,
         "task": _clip(job.task, 100),
@@ -319,6 +324,9 @@ def _agent_snapshot(job, *, now: float) -> dict:
             else None
         ),
         "elapsed_seconds": round(elapsed, 1),
+        "last_activity_seconds_ago": (
+            round(activity_age, 1) if activity_age is not None else None
+        ),
         "tool_calls": tool_calls,
         "max_tool_calls": max_tool_calls,
         "tokens": prompt_tokens + completion_tokens,
@@ -335,7 +343,10 @@ def _agent_snapshot_line(row: dict) -> str:
     if row["max_tokens"] is not None:
         budget += f"/{row['max_tokens']}"
     detail = row["blocker"] or row["activity"] or row["task"]
+    activity_age = row["last_activity_seconds_ago"]
+    activity = f" · active {activity_age:.1f}s ago" if activity_age is not None else ""
     return (
-        f"{row['job_id']} · {row['status']} · {row['mode']} · "
-        f"{row['elapsed_seconds']:.1f}s · {budget} · {_clip(str(detail), 100)}"
+        f"{row['job_id']}/{row['agent_id']} · {row['status']} · {row['mode']} · "
+        f"{row['elapsed_seconds']:.1f}s{activity} · {budget} · "
+        f"{_clip(str(detail), 100)}"
     )

@@ -98,6 +98,8 @@ def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> 
                 tool_calls=3,
                 max_tool_calls=20,
                 progress=("reading parser",),
+                agent_id="sa_sj_1",
+                last_activity_at=time.time() - 1,
             )
         ],
     )
@@ -114,6 +116,8 @@ def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> 
     assert len(listed.content.splitlines()) == 1
     assert len(listed.content) < 240
     assert "tools 3/20" in listed.content
+    assert "sj_1/sa_sj_1" in listed.content
+    assert "last_activity_seconds_ago" in listed.metadata["agents"][0]
     assert listed.metadata["agents"][0]["tokens"] == 120
 
 
