@@ -18,6 +18,13 @@ class AssistantCell:
     revision: int = 0
 
 
+@dataclass(frozen=True)
+class UserCell:
+    id: str
+    text: str
+    revision: int = 0
+
+
 class ToolCellStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
@@ -89,7 +96,8 @@ class ApprovalCell:
 
 
 TranscriptCell: TypeAlias = (
-    AssistantCell
+    UserCell
+    | AssistantCell
     | ToolCell
     | DiffCell
     | DiagnosticCell
@@ -154,7 +162,7 @@ class TranscriptModel:
     def _text_chars(self) -> int:
         total = 0
         for cell in self._cells:
-            if isinstance(cell, AssistantCell):
+            if isinstance(cell, (UserCell, AssistantCell)):
                 total += len(cell.text)
             elif isinstance(cell, ToolCell) and cell.outcome is not None:
                 total += len(cell.outcome.display_text)

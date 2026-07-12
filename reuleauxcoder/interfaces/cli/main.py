@@ -73,13 +73,114 @@ def main():
     ui_registry = UIRegistry([create_cli_registration(ctx.ui_bus)])
     cli_ui = ui_registry.require("cli")
 
+    remote_exec = getattr(ctx.config, "remote_exec", None)
+    is_host_mode = remote_exec and remote_exec.enabled and remote_exec.host_mode
+    use_mini_tui = (
+        not args.prompt
+        and not args.server
+        and not is_host_mode
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    )
+
+    if use_mini_tui:
+        from reuleauxcoder.app.runtime.approval import (
+            build_runtime_approval_provider,
+        )
+        from reuleauxcoder.app.runtime.interactions import InteractionCoordinator
+        from reuleauxcoder.interfaces.cli.mini_tui import (
+            MiniTUIApplication,
+            MiniTUIEventAdapter,
+            MiniTUIInteractor,
+        )
+
+        event_adapter = MiniTUIEventAdapter(root_agent_id=ctx.agent.agent_id)
+        mini_interactor = MiniTUIInteractor(ctx.ui_bus)
+        interaction_coordinator = InteractionCoordinator(mini_interactor)
+        ctx.ui_interactor = interaction_coordinator
+        ctx.agent.ui_interactor = interaction_coordinator
+        ctx.agent.approval_provider = build_runtime_approval_provider(
+            ctx.agent, make_approval_handler(interaction_coordinator)
+        )
+        bridge = AgentEventBridge(ctx.ui_bus)
+        ctx.agent.add_event_handler(bridge.on_agent_event)
+        startup_events = ctx.ui_bus.history_snapshot()
+        ctx.ui_bus.subscribe(event_adapter.on_ui_event, replay_history=False)
+        from reuleauxcoder.domain.runtime.events import (
+            PlanUpdated,
+            ProgressReported,
+            RuntimeEvent,
+        )
+
+        plan = ctx.agent.plan_controller.state
+        if plan.revision:
+            ctx.ui_bus.emit_runtime(
+                RuntimeEvent(
+                    payload=PlanUpdated(
+                        revision=plan.revision,
+                        items=tuple(
+                            {
+                                "step": item.step,
+                                "active_form": item.active_form,
+                                "status": item.status,
+                            }
+                            for item in plan.items
+                        ),
+                        explanation=plan.explanation,
+                    ),
+                    agent_id=ctx.agent.agent_id,
+                    session_generation=ctx.agent.session_generation,
+                    session_id=ctx.current_session_id,
+                )
+            )
+        progress = ctx.agent.plan_controller.progress
+        if progress.revision:
+            ctx.ui_bus.emit_runtime(
+                RuntimeEvent(
+                    payload=ProgressReported(
+                        revision=progress.revision,
+                        phase=progress.phase,
+                        summary=progress.summary,
+                        next=progress.next,
+                    ),
+                    agent_id=ctx.agent.agent_id,
+                    session_generation=ctx.agent.session_generation,
+                    session_id=ctx.current_session_id,
+                )
+            )
+
+        if not ctx.config.api_key:
+            ctx.ui_bus.error("No API key found in config.yaml.")
+            interaction_coordinator.shutdown()
+            runner.cleanup()
+            sys.exit(1)
+
+        application = MiniTUIApplication(
+            agent=ctx.agent,
+            config=ctx.config,
+            ui_bus=ctx.ui_bus,
+            ui_profile=cli_ui.profile,
+            action_registry=ctx.action_registry,
+            interactor=mini_interactor,
+            event_adapter=event_adapter,
+            current_session_id=ctx.current_session_id,
+            sessions_dir=ctx.sessions_dir,
+            session_exit_time=ctx.session_exit_time,
+            skills_service=ctx.skills_service,
+            startup_events=startup_events,
+        )
+        try:
+            application.run()
+        finally:
+            interaction_coordinator.shutdown()
+            runner.cleanup()
+        return
+
     renderer = CLIRenderer(
         view_registry=cli_ui.view_registry,
         policy=PresentationPolicy.from_ui_config(ctx.config.ui),
     )
     output = CLIOutputCoordinator(renderer)
-    remote_exec = getattr(ctx.config, "remote_exec", None)
-    is_host_mode = remote_exec and remote_exec.enabled and remote_exec.host_mode
     group_startup = not args.prompt and not args.server and not is_host_mode
     startup_events = (
         tuple(

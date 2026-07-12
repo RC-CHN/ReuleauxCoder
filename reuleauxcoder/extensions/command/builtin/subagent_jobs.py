@@ -47,13 +47,14 @@ class ControlSubagentJobCommand:
 
 
 def _parse_list_jobs(user_input: str, parse_ctx):
-    if match_template(user_input, "/jobs") is not None:
-        return ListSubagentJobsCommand()
+    for root in ("/agents", "/jobs"):
+        if match_template(user_input, root) is not None:
+            return ListSubagentJobsCommand()
     return None
 
 
 def _parse_get_job(user_input: str, parse_ctx):
-    captures = match_template(user_input, "/jobs get {job_id+}")
+    captures = _match_agent_command(user_input, "get {job_id+}")
     if captures is None:
         return None
 
@@ -65,7 +66,7 @@ def _parse_get_job(user_input: str, parse_ctx):
 
 
 def _parse_wait_job(user_input: str, parse_ctx):
-    captures = match_template(user_input, "/jobs wait {job_id+}")
+    captures = _match_agent_command(user_input, "wait {job_id+}")
     if captures is None:
         return None
 
@@ -78,14 +79,14 @@ def _parse_wait_job(user_input: str, parse_ctx):
 
 def _parse_control_job(user_input: str, parse_ctx):
     for action in ("cancel", "cleanup"):
-        captures = match_template(user_input, f"/jobs {action} {{job_id+}}")
+        captures = _match_agent_command(user_input, f"{action} {{job_id+}}")
         if captures is not None:
             return ControlSubagentJobCommand(
                 action=action, job_id=captures["job_id"].strip()
             )
     for action in ("message", "resume"):
-        captures = match_template(
-            user_input, f"/jobs {action} {{job_id}} {{message+}}"
+        captures = _match_agent_command(
+            user_input, f"{action} {{job_id}} {{message+}}"
         )
         if captures is not None:
             return ControlSubagentJobCommand(
@@ -93,6 +94,14 @@ def _parse_control_job(user_input: str, parse_ctx):
                 job_id=captures["job_id"].strip(),
                 message=captures["message"].strip(),
             )
+    return None
+
+
+def _match_agent_command(user_input: str, suffix: str):
+    for root in ("/agents", "/jobs"):
+        captures = match_template(user_input, f"{root} {suffix}")
+        if captures is not None:
+            return captures
     return None
 
 
@@ -245,7 +254,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 description="[session] List sub-agent background jobs spawned from this session runtime",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/jobs"),),
+                triggers=(slash_trigger("/agents"), slash_trigger("/jobs")),
                 parser=_parse_list_jobs,
                 handler=_handle_list_jobs,
             ),
@@ -255,7 +264,10 @@ def register_actions(registry: ActionRegistry) -> None:
                 description="[session] Show sub-agent job details for this session runtime",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/jobs get <id>"),),
+                triggers=(
+                    slash_trigger("/agents get <id>"),
+                    slash_trigger("/jobs get <id>"),
+                ),
                 parser=_parse_get_job,
                 handler=_handle_get_job,
             ),
@@ -265,7 +277,10 @@ def register_actions(registry: ActionRegistry) -> None:
                 description="[session] Wait for a sub-agent job started from this session runtime",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/jobs wait <id>"),),
+                triggers=(
+                    slash_trigger("/agents wait <id>"),
+                    slash_trigger("/jobs wait <id>"),
+                ),
                 parser=_parse_wait_job,
                 handler=_handle_wait_job,
             ),
@@ -276,6 +291,10 @@ def register_actions(registry: ActionRegistry) -> None:
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(
+                    slash_trigger("/agents cancel <id>"),
+                    slash_trigger("/agents message <id> <text>"),
+                    slash_trigger("/agents resume <id> <text>"),
+                    slash_trigger("/agents cleanup <id>"),
                     slash_trigger("/jobs cancel <id>"),
                     slash_trigger("/jobs message <id> <text>"),
                     slash_trigger("/jobs resume <id> <text>"),

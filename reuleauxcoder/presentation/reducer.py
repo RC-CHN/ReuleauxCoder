@@ -42,6 +42,7 @@ from reuleauxcoder.presentation.models import (
     ToolCellStatus,
     TranscriptCell,
     TranscriptModel,
+    UserCell,
     next_revision,
 )
 from reuleauxcoder.presentation.policy import PresentationPolicy
@@ -96,7 +97,17 @@ class PresentationReducer:
         payload = event.payload
         if isinstance(payload, (TurnStarted, ChatStarted)):
             self._complete_active_assistant(event)
-            return ()
+            identity = event.turn_id or event.event_id
+            return self._append(
+                UserCell(
+                    id=(
+                        f"user:{event.agent_id}:{identity}"
+                        if event.agent_id
+                        else f"user:{identity}"
+                    ),
+                    text=_visible_user_input(payload.user_input),
+                )
+            )
         if isinstance(payload, AssistantContentDelta):
             return self._append_stream(event, payload.text)
         if isinstance(payload, ReasoningDelta):
@@ -456,3 +467,11 @@ def _tool_output_tail(text: str, *, max_chars: int, max_lines: int = 5) -> str:
     """Bound presentation state without touching the canonical ProcessResult."""
     tail = "".join(text.splitlines(keepends=True)[-max_lines:])
     return tail[-max_chars:]
+
+
+def _visible_user_input(text: str) -> str:
+    """Hide lifecycle metadata while preserving the exact model-side message."""
+    if text.startswith("[SESSION_RESUME]") or text.startswith("[SESSION_EXIT]"):
+        _, separator, remainder = text.partition("\n\n")
+        return remainder if separator else ""
+    return text

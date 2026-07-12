@@ -12,6 +12,7 @@ import time
 import uuid
 from typing import Literal
 
+from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
 from reuleauxcoder.extensions.subagent.context import project_parent_context
 from reuleauxcoder.extensions.subagent.models import (
@@ -29,6 +30,23 @@ SubagentDelivery = Literal["awaited", "detached"]
 SubagentMessageKind = Literal[
     "milestone", "blocked", "approval_needed", "partial", "amendment"
 ]
+
+
+def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
+    """Best-effort lifecycle projection; execution never depends on a UI."""
+    emit = getattr(parent_agent, "_emit_event", None)
+    if not callable(emit):
+        return
+    emit(
+        AgentEvent.subagent_completed(
+            job_id=job.id,
+            mode=job.mode,
+            task=job.task,
+            status=job.status,
+            result=job.result if job.status == "completed" else None,
+            error=job.error,
+        )
+    )
 
 
 def _clamp_subagent_rounds(
@@ -274,6 +292,8 @@ class SubagentManager:
                 if tracked is not None:
                     tracked.status = "running"
                     tracked.started_at = time.time()
+            if tracked is not None:
+                _publish_job_event(parent_agent, tracked)
             try:
                 return run_subagent_task(
                     parent_agent=parent_agent,
@@ -301,6 +321,8 @@ class SubagentManager:
             self._jobs[job_id] = job
             self._message_queues[job_id] = deque()
             self._cancel_events[job_id] = cancel_event
+        _publish_job_event(parent_agent, job)
+        with self._lock:
             future = self._explore_pool.submit(_runner)
             self._futures[job_id] = future
 
@@ -367,6 +389,7 @@ class SubagentManager:
                 ):
                     self._enqueue_completion_locked(tracked)
                 self._slot_cv.notify_all()
+            _publish_job_event(parent_agent, tracked)
 
             # The parent drains this mailbox at an API-safe boundary. Worker
             # callbacks never mutate parent history directly.
@@ -1021,6 +1044,11 @@ def run_subagent_task(
     sub.session_generation = getattr(parent_agent, "session_generation", 0)
     sub.subagent_depth = depth
     sub._subagent_manager = manager
+    # Child activity remains attributed to the child, but uses the root event
+    # transport so every UI can observe chunks/tools without polling workers.
+    parent_event_sink = getattr(parent_agent, "_emit_event", None)
+    if callable(parent_event_sink):
+        sub.add_event_handler(parent_event_sink)
     if job_id:
         sub._external_message_source = lambda: manager.drain_messages(job_id)
     manager.register_child_agent(

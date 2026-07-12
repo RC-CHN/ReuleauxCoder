@@ -10,6 +10,7 @@ from reuleauxcoder.presentation.models import (
     ToolCell,
     ToolCellStatus,
     TranscriptModel,
+    UserCell,
 )
 from reuleauxcoder.presentation.policy import (
     NotificationThreshold,
@@ -64,6 +65,7 @@ __all__ = [
     "ToolCellStatus",
     "ToolInvocationDisplay",
     "TranscriptModel",
+    "UserCell",
     "Verbosity",
     "describe_tool_invocation",
 ]

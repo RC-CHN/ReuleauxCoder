@@ -94,9 +94,11 @@ class ExecutionViewReducer:
         state: ExecutionViewState | None = None,
         *,
         animation_lease_seconds: float = 0.8,
+        root_agent_id: str | None = None,
     ) -> None:
         self.state = state or ExecutionViewState()
         self.animation_lease_seconds = animation_lease_seconds
+        self.root_agent_id = root_agent_id
 
     def apply(self, event: RuntimeEvent) -> bool:
         if event.event_id in self.state.seen_event_ids:
@@ -201,7 +203,11 @@ class ExecutionViewReducer:
         if agent is None:
             agent = ExecutionAgentState(
                 agent_id=agent_id,
-                label="MAIN" if agent_id == "main" else _short_agent_label(agent_id),
+                label=(
+                    "MAIN"
+                    if agent_id in {"main", self.root_agent_id}
+                    else _short_agent_label(agent_id)
+                ),
             )
             self.state.agents[agent_id] = agent
         agent.activity = activity

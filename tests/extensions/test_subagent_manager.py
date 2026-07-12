@@ -184,9 +184,13 @@ class _Parent:
         self.session_generation = 0
         self.current_session_id = "session-1"
         self.injected = []
+        self.events = []
 
     def inject_subagent_job_result(self, job) -> None:
         self.injected.append(job.id)
+
+    def _emit_event(self, event) -> None:
+        self.events.append(event)
 
 
 def test_fast_background_completion_never_loses_job_registration(monkeypatch) -> None:
@@ -208,6 +212,11 @@ def test_fast_background_completion_never_loses_job_registration(monkeypatch) ->
     assert job.parent_session_id == "session-1"
     assert job.generation == parent.session_generation
     assert parent.injected == []
+    assert [event.data["status"] for event in parent.events] == [
+        "queued",
+        "running",
+        "completed",
+    ]
     drained = manager.drain_completed_for_parent()
     assert [item.id for item in drained] == [job_id]
     manager.shutdown()

@@ -22,6 +22,7 @@ from reuleauxcoder.presentation.models import (
     DiffCell,
     ToolCell,
     ToolCellStatus,
+    UserCell,
 )
 from reuleauxcoder.presentation.reducer import PresentationReducer, RuntimeViewState
 from reuleauxcoder.presentation.models import TranscriptModel
@@ -42,6 +43,20 @@ def test_stream_deltas_merge_into_one_assistant_cell() -> None:
         AssistantCell(
             id="assistant:turn-1", text="hello world", complete=True, revision=2
         ),
+    )
+
+
+def test_user_cell_hides_resume_lifecycle_prefix() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(
+        _runtime(
+            AgentEvent.chat_start(
+                "[SESSION_RESUME] User returned at now.\n\ncontinue the work"
+            )
+        )
+    )
+    assert reducer.state.transcript.cells == (
+        UserCell(id="user:turn-1", text="continue the work"),
     )
 
 
