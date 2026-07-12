@@ -208,11 +208,20 @@ class _ToolCallingHandler(BaseHTTPRequestHandler):
                                 "tool_calls": [
                                     {
                                         "index": 0,
-                                        "id": "call_read",
+                                        "id": "call_read_demo",
                                         "type": "function",
                                         "function": {
                                             "name": "read_file",
                                             "arguments": '{"file_path":"demo.txt"}',
+                                        },
+                                    },
+                                    {
+                                        "index": 1,
+                                        "id": "call_read_other",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"file_path":"other.txt"}',
                                         },
                                     }
                                 ]
@@ -481,6 +490,7 @@ def test_worker_tool_call_round_trips_through_parent_broker(
     ):
         monkeypatch.delenv(name, raising=False)
     (tmp_path / "demo.txt").write_text("broker evidence\n", encoding="utf-8")
+    (tmp_path / "other.txt").write_text("second broker result\n", encoding="utf-8")
     profile = ModelProfileConfig(
         name="sub",
         model="test",
@@ -528,8 +538,10 @@ def test_worker_tool_call_round_trips_through_parent_broker(
         for message in _ToolCallingHandler.requests[1]["messages"]
         if message.get("role") == "tool"
     ]
-    assert len(tool_messages) == 1
+    assert len(tool_messages) == 2
     assert "broker evidence" in tool_messages[0]["content"]
+    assert "second broker result" in tool_messages[1]["content"]
+    assert job.tool_calls == 2
 
 
 def test_manager_cancel_hard_kills_worker_stuck_in_provider_request(

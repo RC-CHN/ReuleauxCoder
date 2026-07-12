@@ -1337,12 +1337,14 @@ class SubagentManager:
     def record_tool_activity(
         self, sender_agent_id: str, tool_name: str | None
     ) -> bool:
-        """Record the currently brokered tool without exposing its output."""
+        """Record a newly started broker call or clear its active indicator."""
         with self._lock:
             job = self._jobs.get(self._agent_jobs.get(sender_agent_id, ""))
             if job is None or job.status not in {"running", "parking"}:
                 return False
             job.current_tool = tool_name
+            if tool_name is not None:
+                job.tool_calls += 1
             job.last_activity_at = time.time()
         if self._root_agent is not None:
             _publish_job_event(self._root_agent, job)

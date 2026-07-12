@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from collections import deque
 import hashlib
 import json
 import multiprocessing
@@ -510,6 +511,7 @@ def run_isolated_worker(
     terminal: WorkerExecutionResult | None = None
     checkpoint: WorkerExecutionResult | None = None
     tool_results: Queue[tuple[str, ToolOutcome]] = Queue()
+    pending_tool_requests: deque[tuple[str, str, dict[str, Any]]] = deque()
     active_tool = False
     active_tool_name: str | None = None
     worker_crash_indeterminate = False
@@ -580,6 +582,21 @@ def run_isolated_worker(
                             },
                         )
 
+            if (
+                not active_tool
+                and pending_tool_requests
+                and cancel_started is None
+            ):
+                call_id, tool_name, arguments = pending_tool_requests.popleft()
+                active_tool = True
+                active_tool_name = tool_name
+                thread = threading.Thread(
+                    target=execute_tool,
+                    args=(call_id, tool_name, arguments),
+                    daemon=True,
+                )
+                thread.start()
+
             if not parent_connection.poll(0.025):
                 continue
             envelope = WorkerEnvelope.from_dict(parent_connection.recv())
@@ -604,21 +621,16 @@ def run_isolated_worker(
                 if isinstance(directive_ids, list):
                     for directive_id in directive_ids:
                         inflight_directives.pop(str(directive_id), None)
-            elif envelope.type == "tool_request" and not active_tool:
-                active_tool = True
-                active_tool_name = str(envelope.payload.get("name") or "")
-                thread = threading.Thread(
-                    target=execute_tool,
-                    args=(
+            elif envelope.type == "tool_request":
+                pending_tool_requests.append(
+                    (
                         str(envelope.payload.get("call_id") or ""),
                         str(envelope.payload.get("name") or ""),
                         _required_object(
                             envelope.payload.get("arguments"), "tool arguments"
                         ),
-                    ),
-                    daemon=True,
+                    )
                 )
-                thread.start()
             elif envelope.type == "checkpoint":
                 checkpoint_id = str(
                     envelope.payload.get("checkpoint_id") or ""

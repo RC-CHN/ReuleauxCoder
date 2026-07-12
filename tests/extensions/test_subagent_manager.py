@@ -856,6 +856,7 @@ def test_child_progress_and_tool_activity_update_job_snapshot(monkeypatch) -> No
     job = manager.get_job(job_id)
     assert job.progress == ("investigating", "reading parser", "run tests")
     assert job.current_tool == "grep"
+    assert job.tool_calls == 1
     assert job.last_activity_at is not None
 
     release.set()
