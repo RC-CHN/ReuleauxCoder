@@ -14,6 +14,8 @@ from reuleauxcoder.domain.runtime.events import (
     agent_event_to_runtime_event,
 )
 from reuleauxcoder.interfaces.cli.mini_tui import (
+    ALTERNATE_SCROLL_DISABLE,
+    ALTERNATE_SCROLL_ENABLE,
     MINI_TUI_MOUSE_SUPPORT,
     MiniTUIEventAdapter,
     MiniTUIInteractor,
@@ -66,6 +68,39 @@ def test_event_adapter_projects_user_and_execution_state() -> None:
 
 def test_mini_tui_leaves_mouse_to_terminal_native_selection() -> None:
     assert MINI_TUI_MOUSE_SUPPORT is False
+
+
+def test_alternate_scroll_protocol_keeps_native_selection_and_wheel_keys() -> None:
+    writes = []
+    output = SimpleNamespace(
+        write_raw=writes.append,
+        flush=lambda: writes.append("flush"),
+    )
+    app = object.__new__(MiniTUIApplication)
+    app.application = SimpleNamespace(output=output)
+
+    app._set_alternate_scroll(enabled=True)
+    app._set_alternate_scroll(enabled=False)
+
+    assert writes == [
+        ALTERNATE_SCROLL_ENABLE,
+        "flush",
+        ALTERNATE_SCROLL_DISABLE,
+        "flush",
+    ]
+
+
+def test_alternate_scroll_arrows_only_own_empty_unblocked_input() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app.input_buffer = SimpleNamespace(text="")
+    app.interactor = SimpleNamespace(active_request=None)
+
+    assert app._should_route_arrows_to_transcript() is True
+    app.input_buffer.text = "editing"
+    assert app._should_route_arrows_to_transcript() is False
+    app.input_buffer.text = ""
+    app.interactor.active_request = object()
+    assert app._should_route_arrows_to_transcript() is False
 
 
 def test_static_transcript_cells_reuse_width_revision_fragment_cache(

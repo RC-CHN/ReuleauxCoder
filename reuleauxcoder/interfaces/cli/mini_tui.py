@@ -17,6 +17,7 @@ from typing import Any
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
@@ -122,6 +123,8 @@ MINI_TUI_STYLE = Style.from_dict(
 # Keyboard transcript navigation remains available through PageUp/PageDown and
 # Home/End while users retain native selection, copy, and paste behavior.
 MINI_TUI_MOUSE_SUPPORT = False
+ALTERNATE_SCROLL_ENABLE = "\x1b[?1007h"
+ALTERNATE_SCROLL_DISABLE = "\x1b[?1007l"
 
 
 class MiniTUIEventAdapter:
@@ -621,8 +624,11 @@ class MiniTUIApplication:
         )
         self._animation_thread.start()
         try:
-            self.application.run()
+            self.application.run(
+                pre_run=lambda: self._set_alternate_scroll(enabled=True)
+            )
         finally:
+            self._set_alternate_scroll(enabled=False)
             self._animation_stop.set()
             if self._animation_thread is not None:
                 self._animation_thread.join(timeout=0.5)
@@ -724,6 +730,9 @@ class MiniTUIApplication:
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
+        transcript_arrow_scroll = Condition(
+            self._should_route_arrows_to_transcript
+        )
 
         @bindings.add("c-c")
         def _ctrl_c(event) -> None:
@@ -765,6 +774,14 @@ class MiniTUIApplication:
         @bindings.add("pagedown")
         def _page_down(event) -> None:  # noqa: ARG001
             self._scroll_transcript(self._transcript_page_size())
+
+        @bindings.add("up", filter=transcript_arrow_scroll)
+        def _alternate_scroll_up(event) -> None:  # noqa: ARG001
+            self._scroll_transcript(-3)
+
+        @bindings.add("down", filter=transcript_arrow_scroll)
+        def _alternate_scroll_down(event) -> None:  # noqa: ARG001
+            self._scroll_transcript(3)
 
         @bindings.add("home")
         def _history_start(event) -> None:  # noqa: ARG001
@@ -862,13 +879,30 @@ class MiniTUIApplication:
             [
                 (
                     "class:muted",
-                    "/help · PageUp/PageDown scroll · drag to select/copy\n",
+                    "/help · wheel/PageUp scroll · drag to select/copy\n",
                 )
             ]
         )
 
     def _input_title(self) -> str:
         return " REVIEW " if self.interactor.active_request else " YOU "
+
+    def _should_route_arrows_to_transcript(self) -> bool:
+        return (
+            self.interactor.active_request is None
+            and not self.input_buffer.text
+        )
+
+    def _set_alternate_scroll(self, *, enabled: bool) -> None:
+        """Let the terminal translate wheel motion to Up/Down without mouse capture."""
+        try:
+            self.application.output.write_raw(
+                ALTERNATE_SCROLL_ENABLE if enabled else ALTERNATE_SCROLL_DISABLE
+            )
+            self.application.output.flush()
+        except (AttributeError, OSError, RuntimeError):
+            # Minimal/dumb outputs can omit raw terminal control support.
+            return
 
     def _before_render(self, _app) -> None:
         """Clamp scrolling and follow new output only while tail-follow is on."""
