@@ -695,6 +695,42 @@ class Agent:
             parent_agent_id=self.agent_id,
         )
         communications = manager.drain_parent_messages(self.agent_id)
+        file_owners: dict[str, list[str]] = {}
+        for job in jobs:
+            structured = getattr(job, "structured_result", None)
+            if job.mode != "execute" or structured is None:
+                continue
+            for path in sorted(set(structured.files)):
+                file_owners.setdefault(path, []).append(job.id)
+        conflicts = {
+            path: tuple(sorted(owners))
+            for path, owners in file_owners.items()
+            if len(owners) > 1
+        }
+        if conflicts:
+            conflict_lines = [
+                f"- {path}: {', '.join(owners)}"
+                for path, owners in sorted(conflicts.items())
+            ]
+            self._append_message(
+                {
+                    "role": "system",
+                    "content": (
+                        "[Sub-agent conflict]\n"
+                        "Multiple execute jobs report overlapping files; inspect and "
+                        "reconcile before accepting their changes.\n"
+                        + "\n".join(conflict_lines)
+                        + "\n[/Sub-agent conflict]"
+                    ),
+                },
+                source="subagent_conflict",
+            )
+            self._emit_runtime_diagnostic(
+                "Sub-agent file overlap requires reconciliation.",
+                "subagent.conflict",
+                "warning",
+                {"files": conflicts},
+            )
         ordered = [
             (getattr(job, "completion_seq", None) or 2**63, "job", job)
             for job in jobs

@@ -3,8 +3,9 @@ from unittest.mock import MagicMock
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEventType
-from reuleauxcoder.extensions.subagent.manager import SubagentManager
+from reuleauxcoder.extensions.subagent.manager import SubagentJob, SubagentManager
 from reuleauxcoder.extensions.subagent.manager import SubagentCommunication
+from reuleauxcoder.extensions.subagent.models import SubagentResult
 
 
 class _LLMStub:
@@ -177,6 +178,39 @@ def test_child_communication_is_committed_as_system_control_item() -> None:
     assert agent.state.messages[-1]["role"] == "system"
     assert "item_id=sc_1" in agent.state.messages[-1]["content"]
     assert "kind=blocked" in agent.state.messages[-1]["content"]
+
+
+def test_overlapping_execute_results_create_explicit_conflict_item() -> None:
+    agent = _make_agent()
+    manager = SubagentManager()
+    agent._subagent_manager = manager
+    manager._parent_agent_id = agent.agent_id
+    manager._generation = agent.session_generation
+    for index in (1, 2):
+        job = SubagentJob(
+            id=f"sj_{index}",
+            mode="execute",
+            task=f"edit {index}",
+            status="completed",
+            created_at=float(index),
+            parent_agent_id=agent.agent_id,
+            generation=agent.session_generation,
+            result="done",
+            structured_result=SubagentResult(
+                status="ok", summary="done", files=["shared.py"]
+            ),
+        )
+        manager._jobs[job.id] = job
+        manager._enqueue_completion_locked(job)
+
+    assert agent._inject_completed_subagent_jobs() == 2
+    conflict = next(
+        message
+        for message in agent.messages
+        if "[Sub-agent conflict]" in str(message.get("content"))
+    )
+    assert "shared.py: sj_1, sj_2" in conflict["content"]
+    manager.shutdown()
 
 
 def test_reconcile_moves_recovered_tool_outputs_before_session_markers() -> None:

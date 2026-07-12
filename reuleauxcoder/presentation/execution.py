@@ -15,6 +15,7 @@ from reuleauxcoder.domain.runtime.events import (
     ErrorOccurred,
     PlanUpdated,
     ProgressReported,
+    NotificationRaised,
     ReasoningDelta,
     RuntimeEvent,
     RuntimeStateChanged,
@@ -193,6 +194,14 @@ class ExecutionViewReducer:
         if isinstance(payload, ErrorOccurred):
             self.state.runtime_state = "failed"
             self._touch(event, payload.message, status="failed")
+            return True
+        if isinstance(payload, NotificationRaised) and payload.code == "subagent.conflict":
+            attention_id = f"notice:{event.event_id}"
+            self.state.attention[attention_id] = AttentionItem(
+                request_id=attention_id,
+                title=payload.message,
+                source_agent_id=event.agent_id,
+            )
             return True
         if isinstance(payload, RuntimeStateChanged):
             self.state.runtime_state = payload.state
