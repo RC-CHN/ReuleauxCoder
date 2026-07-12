@@ -1948,6 +1948,12 @@ def _subagent_llm_kwargs(parent_agent, route: str | None) -> dict:
 
 
 def _filter_subagent_tools(parent_agent, mode: str):
+    from reuleauxcoder.extensions.tools.builtin.control import (
+        ReportProgressTool,
+        ReportToParentTool,
+        RequestGuidanceTool,
+    )
+
     mode_allowlist = {
         "explore": {"read_file", "list_file", "glob", "grep", "lsp"},
         "execute": {
@@ -1966,11 +1972,12 @@ def _filter_subagent_tools(parent_agent, mode: str):
     allowed.update(
         {"report_progress", "report_to_parent", "request_guidance"}
     )
-    return [
-        materialize_subagent_tool(tool)
-        for tool in parent_agent.tools
-        if tool.name in allowed
-    ]
+    selected = [tool for tool in parent_agent.tools if tool.name in allowed]
+    present = {tool.name for tool in selected}
+    for control_type in (ReportProgressTool, ReportToParentTool, RequestGuidanceTool):
+        if control_type.name not in present:
+            selected.append(control_type())
+    return [materialize_subagent_tool(tool) for tool in selected]
 
 
 def run_subagent_task(

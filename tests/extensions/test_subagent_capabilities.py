@@ -15,6 +15,7 @@ from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.extensions.tools.builtin.control import (
     ReportProgressTool,
     ReportToParentTool,
+    RequestGuidanceTool,
     UpdatePlanTool,
 )
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
@@ -75,17 +76,34 @@ def test_child_capability_matrix_has_read_baseline_without_recursion_or_plan() -
     verify = {tool.name for tool in _filter_subagent_tools(parent, "verify")}
 
     baseline = {"read_file", "list_file", "glob", "grep", "lsp"}
-    assert explore == baseline | {"report_progress", "report_to_parent"}
+    controls = {"report_progress", "report_to_parent", "request_guidance"}
+    assert explore == baseline | controls
     assert execute == baseline | {
         "write_file",
         "edit_file",
         "shell",
-        "report_progress",
-        "report_to_parent",
+        *controls,
     }
-    assert verify == baseline | {"shell", "report_progress", "report_to_parent"}
+    assert verify == baseline | {"shell", *controls}
     assert "agent" not in execute
     assert "update_plan" not in execute
+
+
+def test_child_control_trio_does_not_depend_on_root_mode_tool_list() -> None:
+    parent = SimpleNamespace(
+        tools=[ReadFileTool(), ReportProgressTool(), UpdatePlanTool()]
+    )
+
+    child_tools = {tool.name: tool for tool in _filter_subagent_tools(parent, "explore")}
+
+    assert set(child_tools) == {
+        "read_file",
+        "report_progress",
+        "report_to_parent",
+        "request_guidance",
+    }
+    assert isinstance(child_tools["report_to_parent"]._inner, ReportToParentTool)
+    assert isinstance(child_tools["request_guidance"]._inner, RequestGuidanceTool)
 
 
 def test_effectful_child_schema_requires_reason_and_strips_it_before_primitive() -> None:
