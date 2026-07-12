@@ -226,6 +226,7 @@ class LLM:
         trace_id: str | None = None,
         metadata: dict[str, Any] | None = None,
         cancellation_event: threading.Event | None = None,
+        max_output_tokens: int | None = None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
         self.last_dispatched_request = None
@@ -266,7 +267,11 @@ class LLM:
             "messages": messages,
             "stream": True,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": (
+                max(1, int(max_output_tokens))
+                if max_output_tokens is not None
+                else self.max_tokens
+            ),
         }
         if self.reasoning_effort:
             # Resolve CLI label → API value via the reasoning_effort_values mapping.

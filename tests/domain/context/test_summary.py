@@ -19,15 +19,17 @@ class DummyLLM:
     def __init__(self, content):
         self.contents = list(content) if isinstance(content, list) else [content]
         self.calls = []
+        self.call_kwargs = []
 
-    def chat(self, messages):
+    def chat(self, messages, **kwargs):
         self.calls.append(messages)
+        self.call_kwargs.append(kwargs)
         index = min(len(self.calls) - 1, len(self.contents) - 1)
         return DummyResponse(self.contents[index])
 
 
 class FailingLLM:
-    def chat(self, messages):
+    def chat(self, messages, **kwargs):
         raise RuntimeError("boom")
 
 
@@ -74,6 +76,7 @@ def test_generate_summary_uses_llm_when_available() -> None:
         "Validated the checkpoint schema"
     ]
     assert len(llm.calls) == 1
+    assert llm.call_kwargs[0]["max_output_tokens"] == 4096
 
 
 def test_generate_summary_repairs_invalid_model_output_once() -> None:
@@ -85,6 +88,7 @@ def test_generate_summary_repairs_invalid_model_output_once() -> None:
 
     assert document["progress"]["completed"] == ["repaired valid JSON"]
     assert len(llm.calls) == 2
+    assert llm.call_kwargs[1]["max_output_tokens"] == 2048
 
 
 def test_generate_summary_falls_back_when_llm_fails() -> None:
@@ -132,3 +136,33 @@ def test_summary_validation_rejects_wrong_nested_types() -> None:
     document = build_summary_document([])
     document["scope"]["summarized_rounds"] = "3"
     assert validate_summary_document(document) is False
+
+
+def test_summary_projection_compacts_one_oversized_round_without_splitting_it() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "image_url", "id": "diagram"},
+                {"type": "text", "text": "inspect image"},
+            ],
+            "tool_calls": [
+                {
+                    "id": "call",
+                    "function": {
+                        "name": "shell",
+                        "arguments": "x" * 10_000,
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call", "content": "y" * 10_000},
+    ]
+
+    projected = project_summary_input(messages, max_chars=1_500)
+
+    assert len(projected) == 2
+    assert projected[0]["tool_calls"][0]["id"] == "call"
+    assert projected[1]["tool_call_id"] == "call"
+    assert "image_url source=diagram" in projected[0]["content"]
+    assert "payload omitted" in projected[1]["content"]

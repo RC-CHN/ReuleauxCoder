@@ -54,14 +54,15 @@ def generate_summary(
             "Deterministic facts must not be removed or contradicted:\n"
             f"{json.dumps(deterministic, ensure_ascii=False)}\n\n"
             "Bounded conversation projection:\n"
-            f"{json.dumps(projected, ensure_ascii=False)[:30_000]}"
+            f"{json.dumps(projected, ensure_ascii=False)}"
         )
         try:
             response = llm.chat(
                 messages=[
                     {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
-                ]
+                ],
+                max_output_tokens=4_096,
             )
             enriched = _parse_summary(response.content or "")
             if enriched is None:
@@ -81,7 +82,8 @@ def generate_summary(
                                 f"Candidate:\n{str(response.content or '')[:15_000]}"
                             ),
                         },
-                    ]
+                    ],
+                    max_output_tokens=2_048,
                 )
                 enriched = _parse_summary(repair.content or "")
         except Exception:
@@ -126,10 +128,14 @@ def build_summary_document(
             )
         for match in re.finditer(r"(?:[\w.-]+/)+[\w.-]+|[\w.-]+\.\w{1,8}", content):
             files.add(match.group())
-        for match in re.finditer(r"(?:artifact|transcript)[_ ]ref[=:]\s*([^\s,}\]]+)", content, re.I):
+        for match in re.finditer(
+            r"(?:artifact|transcript)[_ ]ref[=:]\s*([^\s,}\]]+)", content, re.I
+        ):
             artifacts.add(match.group(1))
         if role == "tool":
-            first = next((line.strip() for line in content.splitlines() if line.strip()), "")
+            first = next(
+                (line.strip() for line in content.splitlines() if line.strip()), ""
+            )
             if first:
                 tool_facts.append(
                     f"{message.get('tool_call_id') or 'tool'}: {first[:240]}"
@@ -222,6 +228,8 @@ def build_summary_document(
 def validate_summary_document(value: object) -> bool:
     if not isinstance(value, dict) or set(value) != _TOP_LEVEL:
         return False
+    if len(json.dumps(value, ensure_ascii=False, default=str)) > 20_000:
+        return False
     expected_objects = {
         "scope",
         "user_intent",
@@ -269,18 +277,18 @@ def validate_summary_document(value: object) -> bool:
     if not all(set(value[key]) == fields for key, fields in required_nested.items()):
         return False
     scope = value["scope"]
-    if (
-        not all(
-            isinstance(scope[key], int) and not isinstance(scope[key], bool)
-            for key in (
-                "summarized_history_version",
-                "summarized_rounds",
-                "recent_rounds_preserved",
-            )
+    if not all(
+        isinstance(scope[key], int) and not isinstance(scope[key], bool)
+        for key in (
+            "summarized_history_version",
+            "summarized_rounds",
+            "recent_rounds_preserved",
         )
-        or scope["checkpoint_kind"]
-        not in {"partial_prefix", "phase_checkpoint", "full_recovery"}
-    ):
+    ) or scope["checkpoint_kind"] not in {
+        "partial_prefix",
+        "phase_checkpoint",
+        "full_recovery",
+    }:
         return False
     list_fields = (
         ("user_intent", "explicit_requests"),
@@ -321,7 +329,9 @@ def merge_summary_documents(base: dict, enrichment: dict | None) -> dict:
             return {key: merge(left[key], right.get(key)) for key in left}
         if isinstance(left, list) and isinstance(right, list):
             result = list(left)
-            seen = {json.dumps(item, ensure_ascii=False, sort_keys=True) for item in result}
+            seen = {
+                json.dumps(item, ensure_ascii=False, sort_keys=True) for item in result
+            }
             for item in right:
                 marker = json.dumps(item, ensure_ascii=False, sort_keys=True)
                 if marker not in seen:
@@ -335,45 +345,104 @@ def merge_summary_documents(base: dict, enrichment: dict | None) -> dict:
     return merge(base, enrichment)
 
 
-def project_summary_input(messages: list[dict], *, max_rounds: int = 24) -> list[dict]:
+def project_summary_input(
+    messages: list[dict], *, max_rounds: int = 24, max_chars: int = 30_000
+) -> list[dict]:
     """Bound input on complete API-round boundaries with an explicit loss marker."""
     from reuleauxcoder.domain.context.rounds import group_api_rounds
 
     rounds = group_api_rounds(messages)
     omitted_rounds = max(0, len(rounds) - max_rounds)
     selected = rounds[omitted_rounds:]
-    projected: list[dict] = []
-    if omitted_rounds:
-        projected.append(
-            {
-                "role": "system",
-                "content": (
-                    "[summary input loss marker: "
-                    f"{omitted_rounds} older complete API rounds omitted]"
-                ),
-            }
-        )
-    for round_ in selected:
-        for message in round_.messages:
-            role = message.get("role", "unknown")
-            content = str(message.get("content") or "")
-            if role == "tool" and len(content) > 1_200:
-                lines = content.splitlines()
-                content = "\n".join(
-                    lines[:4]
-                    + ["… [artifact-backed output omitted] …"]
-                    + lines[-4:]
+
+    def render() -> list[dict]:
+        projected: list[dict] = []
+        if omitted_rounds:
+            projected.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "[summary input loss marker: "
+                        f"{omitted_rounds} older complete API rounds omitted]"
+                    ),
+                }
+            )
+        for round_ in selected:
+            for message in round_.messages:
+                projected.append(_project_summary_message(message))
+        return projected
+
+    projected = render()
+    while (
+        len(json.dumps(projected, ensure_ascii=False, separators=(",", ":")))
+        > max_chars
+        and len(selected) > 1
+    ):
+        selected = selected[1:]
+        omitted_rounds += 1
+        projected = render()
+    if len(json.dumps(projected, ensure_ascii=False, separators=(",", ":"))) > max_chars:
+        # One complete API round may itself exceed the summarizer budget. Keep
+        # every protocol item/call ID but compact payloads inside that round.
+        for item in projected:
+            content = str(item.get("content") or "")
+            if len(content) > 500:
+                item["content"] = (
+                    content[:220]
+                    + "\n… [summary projection payload omitted] …\n"
+                    + content[-220:]
                 )
-            item = {
-                "role": role,
-                "content": content[:2_400],
-            }
-            if message.get("tool_call_id"):
-                item["tool_call_id"] = message["tool_call_id"]
-            if message.get("tool_calls"):
-                item["tool_calls"] = message["tool_calls"]
-            projected.append(item)
+            for call in item.get("tool_calls") or []:
+                function = call.get("function") or {}
+                if function.get("arguments"):
+                    function["arguments"] = "[arguments omitted; call ID preserved]"
     return projected
+
+
+def _project_summary_message(message: dict) -> dict:
+    role = message.get("role", "unknown")
+    raw_content = message.get("content")
+    if isinstance(raw_content, list):
+        parts: list[str] = []
+        for part in raw_content:
+            if isinstance(part, dict) and part.get("type") in {
+                "image",
+                "image_url",
+                "document",
+                "input_image",
+            }:
+                source = part.get("name") or part.get("id") or "embedded"
+                parts.append(f"[{part.get('type')} source={source}]")
+            elif isinstance(part, dict):
+                parts.append(str(part.get("text") or part.get("content") or ""))
+            else:
+                parts.append(str(part))
+        content = "\n".join(item for item in parts if item)
+    else:
+        content = str(raw_content or "")
+    if role == "tool" and len(content) > 1_200:
+        lines = content.splitlines()
+        content = "\n".join(
+            lines[:4] + ["… [artifact-backed output omitted] …"] + lines[-4:]
+        )
+    item = {
+        "role": role,
+        "content": content[:2_400],
+    }
+    if message.get("tool_call_id"):
+        item["tool_call_id"] = message["tool_call_id"]
+    if message.get("tool_calls"):
+        calls = []
+        for call in message["tool_calls"]:
+            projected_call = dict(call)
+            function = dict(projected_call.get("function") or {})
+            arguments = function.get("arguments")
+            if arguments is not None:
+                function["arguments"] = str(arguments)[:1_200]
+            projected_call["function"] = function
+            calls.append(projected_call)
+        item["tool_calls"] = calls
+    return item
 
 
 def flatten_messages(messages: list[dict], truncate: int = 1200) -> str:
@@ -409,7 +478,9 @@ def extract_key_info(messages: list[dict]) -> str:
 
 def build_summary_skeleton(messages: list[dict]) -> str:
     """Compatibility name for the deterministic canonical document."""
-    return json.dumps(build_summary_document(messages), ensure_ascii=False, sort_keys=True)
+    return json.dumps(
+        build_summary_document(messages), ensure_ascii=False, sort_keys=True
+    )
 
 
 def _parse_summary(text: str) -> dict | None:
