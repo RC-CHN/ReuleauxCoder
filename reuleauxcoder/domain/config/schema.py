@@ -91,6 +91,10 @@ CONFIG_SCHEMA = {
         "snip_threshold_chars": "int (default: 1500, min content length to trigger snip)",
         "snip_min_lines": "int (default: 6, min line count to trigger snip)",
         "summarize_keep_recent_turns": "int (default: 5, number of recent user turns to protect during summarize)",
+        "reserved_output_tokens": "int (default: 8192, output tokens withheld from context input)",
+        "fixed_prompt_tokens": "int (default: 0, estimated system/project prompt overhead)",
+        "tool_schema_tokens": "int (default: 0, estimated tool schema overhead)",
+        "safety_margin_tokens": "int (default: 2048)",
     },
     "mcp": {
         "servers": {
@@ -184,4 +188,8 @@ DEFAULTS = {
     "snip_min_lines": 6,
     "summarize_keep_recent_turns": 5,
     "token_fudge_factor": 1.1,
+    "reserved_output_tokens": 8192,
+    "fixed_prompt_tokens": 0,
+    "tool_schema_tokens": 0,
+    "safety_margin_tokens": 2048,
 }

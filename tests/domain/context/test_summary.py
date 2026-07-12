@@ -34,7 +34,7 @@ def test_flatten_messages_truncates_and_formats_roles() -> None:
         ],
         truncate=5,
     )
-    assert text == "[user] hello\n[assistant] xxxxx"
+    assert text == "[user] hello\n[assistant] xx\n…\nxx"
 
 
 def test_extract_key_info_collects_files_errors_and_decisions() -> None:

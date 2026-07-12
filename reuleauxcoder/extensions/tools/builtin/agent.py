@@ -41,7 +41,7 @@ class AgentTool(Tool):
             },
             "run_in_background": {
                 "type": "boolean",
-                "description": "Run in background; only supported for explore mode",
+                "description": "Run in background and receive a completion notification.",
             },
             "max_rounds": {
                 "type": "integer",
@@ -51,6 +51,16 @@ class AgentTool(Tool):
             "timeout_seconds": {
                 "type": "integer",
                 "description": "Sub-agent timeout in seconds (default: 300)",
+                "minimum": 1,
+            },
+            "max_tool_calls": {
+                "type": "integer",
+                "description": "Maximum tool calls across the sub-agent invocation (default: 80).",
+                "minimum": 1,
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "Optional total prompt plus completion token budget.",
                 "minimum": 1,
             },
             "parallel_explore": {
@@ -69,8 +79,31 @@ class AgentTool(Tool):
                     "If omitted, defaults to 'sub'."
                 ),
             },
+            "context": {
+                "type": "string",
+                "enum": ["minimal", "recent", "full"],
+                "description": "Parent context projection (default: recent).",
+            },
+            "resume_job_id": {
+                "type": "string",
+                "description": "Resume a completed background agent with the single task as follow-up.",
+            },
+            "isolation": {
+                "type": "string",
+                "enum": ["worktree"],
+                "description": "Run an execute agent in a detached git worktree.",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["spawn", "message", "cancel", "status"],
+                "description": "Control-plane action (default: spawn).",
+            },
+            "target_job_id": {
+                "type": "string",
+                "description": "Target job for message, cancel, or status actions.",
+            },
         },
-        "required": ["tasks"],
+        "required": [],
     }
 
     _parent_agent = None
@@ -82,6 +115,7 @@ class AgentTool(Tool):
         tasks = kwargs.get("tasks")
         mode = kwargs.get("mode", "explore")
         run_in_background = kwargs.get("run_in_background", False)
+        action = kwargs.get("action", "spawn")
 
         task_list = [
             item.strip()
@@ -89,6 +123,16 @@ class AgentTool(Tool):
             if isinstance(item, str) and item.strip()
         ]
 
+        if action in {"status", "cancel"}:
+            if not kwargs.get("target_job_id"):
+                return f"Error: action='{action}' requires target_job_id."
+            return None
+        if action == "message":
+            if not kwargs.get("target_job_id") or len(task_list) != 1:
+                return "Error: action='message' requires target_job_id and one tasks entry."
+            return None
+        if action != "spawn":
+            return f"Error: unsupported sub-agent action '{action}'."
         if not task_list:
             return "Error: 'tasks' must be a non-empty list of task strings."
 
@@ -96,6 +140,12 @@ class AgentTool(Tool):
             return (
                 "Error: batch tasks (multiple items) require "
                 "mode='explore' and run_in_background=true."
+            )
+        isolation = kwargs.get("isolation")
+        if isolation == "worktree" and (mode != "execute" or not run_in_background):
+            return (
+                "Error: isolation='worktree' requires mode='execute' and "
+                "run_in_background=true."
             )
 
         if (
@@ -116,6 +166,13 @@ class AgentTool(Tool):
         timeout_seconds: int = 300,
         parallel_explore: int | None = None,
         model: str | None = None,
+        context: str = "recent",
+        resume_job_id: str | None = None,
+        isolation: str | None = None,
+        max_tool_calls: int = 80,
+        max_tokens: int | None = None,
+        action: str = "spawn",
+        target_job_id: str | None = None,
     ) -> str:
         if self._parent_agent is None:
             return "Error: agent tool not initialized (no parent agent)"
@@ -128,6 +185,13 @@ class AgentTool(Tool):
             timeout_seconds=timeout_seconds,
             parallel_explore=parallel_explore,
             model=model,
+            context=context,
+            resume_job_id=resume_job_id,
+            isolation=isolation,
+            max_tool_calls=max_tool_calls,
+            max_tokens=max_tokens,
+            action=action,
+            target_job_id=target_job_id,
         )
 
     @backend_handler("local")
@@ -140,6 +204,13 @@ class AgentTool(Tool):
         timeout_seconds: int = 300,
         parallel_explore: int | None = None,
         model: str | None = None,
+        context: str = "recent",
+        resume_job_id: str | None = None,
+        isolation: str | None = None,
+        max_tool_calls: int = 80,
+        max_tokens: int | None = None,
+        action: str = "spawn",
+        target_job_id: str | None = None,
     ) -> str:
         parent = self._parent_agent
         if parent is None:
@@ -157,8 +228,50 @@ class AgentTool(Tool):
             for item in (tasks or [])
             if isinstance(item, str) and item.strip()
         ]
+        if action == "status":
+            job = manager.get_job(target_job_id or "")
+            if job is None:
+                return "Error: unknown sub-agent job."
+            return (
+                f"Sub-agent {job.id}: status={job.status}, mode={job.mode}, "
+                f"depth={job.depth}, task={job.task}"
+            )
+        if action == "cancel":
+            return (
+                f"Sub-agent cancellation requested: {target_job_id}"
+                if manager.cancel_job(target_job_id or "")
+                else "Error: sub-agent job is not cancellable."
+            )
+        if action == "message":
+            if len(task_list) != 1:
+                return "Error: message action requires one tasks entry as the message."
+            return (
+                f"Message queued for sub-agent: {target_job_id}"
+                if manager.send_message(target_job_id or "", task_list[0])
+                else "Error: target sub-agent is not running."
+            )
+        if action != "spawn":
+            return f"Error: unsupported sub-agent action '{action}'."
         if not task_list:
             return "Error: 'tasks' must be a non-empty list of task strings."
+        if context not in {"minimal", "recent", "full"}:
+            return f"Error: unsupported context projection '{context}'."
+        if resume_job_id:
+            if len(task_list) != 1:
+                return "Error: resume_job_id requires exactly one follow-up task."
+            try:
+                resumed = manager.follow_up(
+                    parent_agent=parent,
+                    job_id=resume_job_id,
+                    message=task_list[0],
+                    timeout_seconds=effective_timeout,
+                )
+            except ValueError as error:
+                return f"Error: {error}"
+            return f"Sub-agent follow-up started in background: {resumed}"
+
+        child_depth = int(getattr(parent, "subagent_depth", 0)) + 1
+        use_worktree = isolation == "worktree"
 
         # Single task: run in the requested mode (sync or background)
         if len(task_list) == 1:
@@ -172,17 +285,28 @@ class AgentTool(Tool):
                     timeout_seconds=effective_timeout,
                     parallel_explore=parallel_explore,
                     model_profile_name=model_route,
+                    context_mode=context,
+                    depth=child_depth,
+                    worktree=use_worktree,
+                    max_tool_calls=max_tool_calls,
+                    max_tokens=max_tokens,
                 )
                 return f"Sub-agent job started in background: {job_id}"
 
-            return manager.run_sync(
+            result = manager.run_sync(
                 parent_agent=parent,
                 task=single_task,
                 mode=mode,
                 max_rounds=effective_max_rounds,
                 timeout_seconds=effective_timeout,
                 model_profile_name=model_route,
+                context_mode=context,
+                depth=child_depth,
+                worktree=use_worktree,
+                max_tool_calls=max_tool_calls,
+                max_tokens=max_tokens,
             )
+            return result.model_text() if hasattr(result, "model_text") else str(result)
 
         # Multiple tasks: always run as explore-mode background jobs
         job_ids: list[str] = []
@@ -195,6 +319,10 @@ class AgentTool(Tool):
                 timeout_seconds=effective_timeout,
                 parallel_explore=parallel_explore,
                 model_profile_name=model_route,
+                context_mode=context,
+                depth=child_depth,
+                max_tool_calls=max_tool_calls,
+                max_tokens=max_tokens,
             )
             job_ids.append(job_id)
         return f"Started {len(job_ids)} background sub-agent jobs: {', '.join(job_ids)}"

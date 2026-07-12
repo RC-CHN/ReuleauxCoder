@@ -208,7 +208,9 @@ def test_fast_background_completion_never_loses_job_registration(monkeypatch) ->
     assert job.parent_agent_id == "parent-agent"
     assert job.parent_session_id == "session-1"
     assert job.generation == parent.session_generation
-    assert parent.injected == [job_id]
+    assert parent.injected == []
+    drained = manager.drain_completed_for_parent()
+    assert [item.id for item in drained] == [job_id]
     manager.shutdown()
 
 

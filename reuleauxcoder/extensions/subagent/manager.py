@@ -5,11 +5,19 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from collections import deque
+from pathlib import Path
 import threading
 import time
 import uuid
 
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
+from reuleauxcoder.extensions.subagent.context import project_parent_context
+from reuleauxcoder.extensions.subagent.models import (
+    SubagentResult,
+    SubagentTranscriptStore,
+)
+from reuleauxcoder.extensions.subagent.isolation import create_worktree, remove_worktree
 
 
 _VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
@@ -63,6 +71,14 @@ class SubagentJob:
     injected_to_parent: bool = False
     generation: int = 0
     cancel_requested: bool = False
+    parent_job_id: str | None = None
+    depth: int = 0
+    context_mode: str = "recent"
+    structured_result: SubagentResult | None = None
+    progress: tuple[str, ...] = ()
+    worktree_path: str | None = None
+    max_tool_calls: int | None = None
+    max_tokens: int | None = None
 
 
 class SubagentManager:
@@ -81,6 +97,7 @@ class SubagentManager:
         max_timeout_seconds: int = _MAX_TIMEOUT_SECONDS,
         parent_agent_id: str | None = None,
         initial_generation: int = 0,
+        max_depth: int = 2,
     ):
         self._max_parallel_explore = max(1, int(max_parallel_explore))
         self._default_max_rounds = _clamp_subagent_rounds(default_max_rounds)
@@ -100,6 +117,12 @@ class SubagentManager:
         self._parent_agent_id = parent_agent_id
         self._generation = max(0, int(initial_generation))
         self._shutdown = False
+        self._max_depth = max(0, int(max_depth))
+        self._completion_mailbox: deque[str] = deque()
+        self._registered_agents: dict[str, int] = {}
+        self._message_queues: dict[str, deque[str]] = {}
+        if parent_agent_id:
+            self._registered_agents[parent_agent_id] = 0
 
     @property
     def max_parallel_explore(self) -> int:
@@ -112,6 +135,10 @@ class SubagentManager:
     @property
     def default_max_rounds(self) -> int:
         return self._default_max_rounds
+
+    @property
+    def max_depth(self) -> int:
+        return self._max_depth
 
     @property
     def generation(self) -> int:
@@ -140,11 +167,16 @@ class SubagentManager:
         timeout_seconds: int | None = None,
         parallel_explore: int | None = None,
         model_profile_name: str | None = None,
+        context_mode: str = "recent",
+        parent_job_id: str | None = None,
+        depth: int = 0,
+        worktree: bool = False,
+        resume_reference: str | None = None,
+        max_tool_calls: int | None = 80,
+        max_tokens: int | None = None,
     ) -> str:
-        if mode != "explore":
-            raise ValueError(
-                "Only 'explore' mode supports background parallel execution"
-            )
+        if depth > self._max_depth:
+            raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
 
         parent_agent_id = getattr(parent_agent, "agent_id", None)
         if not parent_agent_id:
@@ -159,7 +191,10 @@ class SubagentManager:
             if self._parent_agent_id is None:
                 self._parent_agent_id = parent_agent_id
                 self._generation = parent_generation
-            if self._parent_agent_id != parent_agent_id:
+            if (
+                self._parent_agent_id != parent_agent_id
+                and parent_agent_id not in self._registered_agents
+            ):
                 raise ValueError(
                     "SubagentManager cannot be shared across parent agents"
                 )
@@ -191,6 +226,11 @@ class SubagentManager:
             parent_session_id=getattr(parent_agent, "current_session_id", None),
             timeout_seconds=effective_timeout_seconds,
             generation=parent_generation,
+            parent_job_id=parent_job_id,
+            depth=depth,
+            context_mode=context_mode,
+            max_tool_calls=max_tool_calls,
+            max_tokens=max_tokens,
         )
         cancel_event = threading.Event()
 
@@ -216,6 +256,12 @@ class SubagentManager:
                     timeout_seconds=effective_timeout_seconds,
                     model_profile_name=model_profile_name,
                     cancel_event=cancel_event,
+                    job_id=job_id,
+                    context_mode=context_mode,
+                    worktree=worktree,
+                    resume_reference=resume_reference,
+                    max_tool_calls=max_tool_calls,
+                    max_tokens=max_tokens,
                 )
             finally:
                 with self._slot_cv:
@@ -226,6 +272,7 @@ class SubagentManager:
         # callback immediately; it must always find the tracked job.
         with self._lock:
             self._jobs[job_id] = job
+            self._message_queues[job_id] = deque()
             self._cancel_events[job_id] = cancel_event
             future = self._explore_pool.submit(_runner)
             self._futures[job_id] = future
@@ -250,15 +297,20 @@ class SubagentManager:
                         tracked.status = "failed"
                         tracked_for_injection = tracked
                     else:
-                        if "[Sub-agent finished status=cancelled]" in result:
-                            tracked.detached_due_to_timeout = "detached" in result
+                        result_text = (
+                            result.model_text()
+                            if isinstance(result, SubagentResult)
+                            else str(result)
+                        )
+                        if "[Sub-agent finished status=cancelled]" in result_text:
+                            tracked.detached_due_to_timeout = "detached" in result_text
                             tracked.status = (
                                 "cancelled_detached"
                                 if tracked.detached_due_to_timeout
                                 else "cancelled"
                             )
                             tracked.error = "Sub-agent cancelled."
-                        elif "[Sub-agent finished status=timeout]" in result:
+                        elif "[Sub-agent finished status=timeout]" in result_text:
                             tracked.detached_due_to_timeout = True
                             tracked.status = "timed_out_detached"
                             tracked.error = "Sub-agent timed out and detached; background thread may still be running."
@@ -266,18 +318,17 @@ class SubagentManager:
                             tracked.status = "stale"
                             tracked.error = "Sub-agent completed for an inactive session generation."
                         else:
-                            tracked.result = result
+                            structured = _coerce_subagent_result(result)
+                            tracked.structured_result = structured
+                            tracked.result = structured.summary
+                            tracked.worktree_path = structured.worktree_path
                             tracked.status = "completed"
                             tracked_for_injection = tracked
+                            self._completion_mailbox.append(job_id)
                 self._slot_cv.notify_all()
 
-            if tracked_for_injection is not None:
-                inject = getattr(parent_agent, "inject_subagent_job_result", None)
-                if callable(inject):
-                    try:
-                        inject(tracked_for_injection)
-                    except Exception:
-                        pass
+            # The parent drains this mailbox at an API-safe boundary. Worker
+            # callbacks never mutate parent history directly.
 
         future.add_done_callback(_on_done)
         return job_id
@@ -291,6 +342,11 @@ class SubagentManager:
         max_rounds: int | None = None,
         timeout_seconds: int | None = None,
         model_profile_name: str | None = None,
+        context_mode: str = "recent",
+        depth: int = 0,
+        worktree: bool = False,
+        max_tool_calls: int | None = 80,
+        max_tokens: int | None = None,
     ) -> str:
         effective_max_rounds = _clamp_subagent_rounds(
             max_rounds, default=self._default_max_rounds
@@ -309,6 +365,11 @@ class SubagentManager:
                 max_rounds=effective_max_rounds,
                 timeout_seconds=effective_timeout_seconds,
                 model_profile_name=model_profile_name,
+                context_mode=context_mode,
+                depth=depth,
+                worktree=worktree,
+                max_tool_calls=max_tool_calls,
+                max_tokens=max_tokens,
             )
             return future.result()
         return run_subagent_task(
@@ -318,6 +379,11 @@ class SubagentManager:
             max_rounds=effective_max_rounds,
             timeout_seconds=effective_timeout_seconds,
             model_profile_name=model_profile_name,
+            context_mode=context_mode,
+            depth=depth,
+            worktree=worktree,
+            max_tool_calls=max_tool_calls,
+            max_tokens=max_tokens,
         )
 
     def list_jobs(self) -> list[SubagentJob]:
@@ -328,6 +394,72 @@ class SubagentManager:
     def get_job(self, job_id: str) -> SubagentJob | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def register_child_agent(self, agent_id: str, depth: int) -> None:
+        with self._lock:
+            if depth > self._max_depth:
+                raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
+            self._registered_agents[agent_id] = depth
+
+    def send_message(self, job_id: str, message: str) -> bool:
+        """Queue a message for a running worker; it is consumed next model round."""
+
+        text = message.strip()
+        if not text:
+            return False
+        with self._lock:
+            job = self._jobs.get(job_id)
+            queue = self._message_queues.get(job_id)
+            if job is None or queue is None or job.status not in {"queued", "running"}:
+                return False
+            queue.append(text)
+            return True
+
+    def drain_messages(self, job_id: str) -> list[str]:
+        with self._lock:
+            queue = self._message_queues.get(job_id)
+            if queue is None:
+                return []
+            messages = list(queue)
+            queue.clear()
+            return messages
+
+    def follow_up(
+        self,
+        *,
+        parent_agent,
+        job_id: str,
+        message: str,
+        timeout_seconds: int | None = None,
+    ) -> str:
+        """Resume a completed explore agent transcript as a new invocation."""
+
+        previous = self.get_job(job_id)
+        if previous is None or previous.status != "completed":
+            raise ValueError("follow-up requires a completed sub-agent job")
+        reference = (
+            previous.structured_result.transcript_ref
+            if previous.structured_result is not None
+            else None
+        )
+        return self.submit_background(
+            parent_agent=parent_agent,
+            task=message,
+            mode="explore",
+            timeout_seconds=timeout_seconds,
+            context_mode="minimal",
+            parent_job_id=job_id,
+            depth=previous.depth,
+            resume_reference=reference,
+        )
+
+    def cleanup_worktree(self, job_id: str) -> bool:
+        job = self.get_job(job_id)
+        if job is None or not job.worktree_path:
+            return False
+        remove_worktree(job.worktree_path)
+        job.worktree_path = None
+        return True
 
     def wait_job(self, job_id: str, timeout: float | None = None) -> SubagentJob | None:
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -445,6 +577,7 @@ class SubagentManager:
                 self._jobs.pop(job_id, None)
                 self._futures.pop(job_id, None)
                 self._cancel_events.pop(job_id, None)
+                self._message_queues.pop(job_id, None)
             return len(remove_ids)
 
     def shutdown(self, *, wait: bool = True) -> None:
@@ -473,7 +606,20 @@ class SubagentManager:
         """
         drained: list[SubagentJob] = []
         with self._lock:
-            for job in self._jobs.values():
+            mailbox_ids = list(self._completion_mailbox)
+            self._completion_mailbox.clear()
+            # Compatibility for restored/older jobs that predate the mailbox.
+            mailbox_ids.extend(
+                job.id
+                for job in self._jobs.values()
+                if job.status in {"completed", "failed"}
+                and not job.injected_to_parent
+                and job.id not in mailbox_ids
+            )
+            for job_id in mailbox_ids:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    continue
                 if job.injected_to_parent:
                     continue
                 if job.status not in {"completed", "failed"}:
@@ -504,6 +650,14 @@ class SubagentManager:
                             injected_to_parent=False,
                             generation=job.generation,
                             cancel_requested=job.cancel_requested,
+                            parent_job_id=job.parent_job_id,
+                            depth=job.depth,
+                            context_mode=job.context_mode,
+                            structured_result=job.structured_result,
+                            progress=job.progress,
+                            worktree_path=job.worktree_path,
+                            max_tool_calls=job.max_tool_calls,
+                            max_tokens=job.max_tokens,
                         )
                     )
                 finally:
@@ -523,6 +677,7 @@ def get_subagent_manager(agent) -> SubagentManager:
         default_max_rounds=default_rounds,
         parent_agent_id=getattr(agent, "agent_id", None),
         initial_generation=getattr(agent, "session_generation", 0),
+        max_depth=2,
     )
     agent._subagent_manager = manager
     return manager
@@ -562,17 +717,19 @@ def _create_subagent_llm(parent_agent, model_profile_name: str | None):
     return parent_agent.llm, None
 
 
-def _filter_subagent_tools(parent_agent, mode: str):
+def _filter_subagent_tools(parent_agent, mode: str, *, include_agent: bool = False):
     mode_allowlist = {
         "explore": {"read_file", "glob", "grep"},
         "execute": {"read_file", "glob", "grep", "edit_file", "write_file", "shell"},
         "verify": {"read_file", "glob", "grep", "shell"},
     }
     allowed = mode_allowlist[mode]
+    if include_agent:
+        allowed.add("agent")
     return [
         _clone_tool_for_subagent(tool)
         for tool in parent_agent.tools
-        if tool.name in allowed and tool.name != "agent"
+        if tool.name in allowed
     ]
 
 
@@ -593,7 +750,14 @@ def run_subagent_task(
     timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     model_profile_name: str | None = None,
     cancel_event: threading.Event | None = None,
-) -> str:
+    job_id: str | None = None,
+    context_mode: str = "recent",
+    depth: int = 0,
+    worktree: bool = False,
+    resume_reference: str | None = None,
+    max_tool_calls: int | None = 80,
+    max_tokens: int | None = None,
+) -> str | SubagentResult:
     """Run one sub-agent task with isolated message history."""
     if mode not in _VALID_SUBAGENT_MODES:
         raise ValueError(f"Unknown sub-agent mode: {mode}")
@@ -610,20 +774,65 @@ def run_subagent_task(
         parent_agent, model_profile_name
     )
 
+    lease = None
+    manager = get_subagent_manager(parent_agent)
+    sub_tools = _filter_subagent_tools(
+        parent_agent, mode, include_agent=depth < manager.max_depth
+    )
+    if worktree:
+        if mode != "execute":
+            raise ValueError("worktree isolation is only supported for execute mode")
+        if not job_id:
+            raise ValueError("worktree isolation requires a tracked job id")
+        root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
+        lease = create_worktree(root, job_id)
+        _retarget_tools(sub_tools, lease.path)
     sub = Agent(
         llm=sub_llm,
-        tools=_filter_subagent_tools(parent_agent, mode),
+        tools=sub_tools,
         max_context_tokens=parent_agent.context.max_tokens,
         max_rounds=effective_max_rounds,
+        max_tool_calls=max_tool_calls,
+        max_total_tokens=max_tokens,
         hook_registry=parent_agent.hook_registry.clone(scope="subagent"),
         approval_provider=build_subagent_approval_provider(parent_agent, mode, task),
+    )
+    sub.runtime_config = getattr(parent_agent, "runtime_config", None)
+    sub.current_session_id = getattr(parent_agent, "current_session_id", None)
+    sub.session_generation = getattr(parent_agent, "session_generation", 0)
+    sub.subagent_depth = depth
+    sub._subagent_manager = manager
+    if job_id:
+        sub._external_message_source = lambda: manager.drain_messages(job_id)
+    manager.register_child_agent(sub.agent_id, depth)
+    for tool in sub.tools:
+        if getattr(tool, "name", None) == "agent":
+            tool._parent_agent = sub
+    if resume_reference:
+        root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
+        sub.state.messages[:] = SubagentTranscriptStore(root).read(resume_reference)
+
+    parent_context = project_parent_context(parent_agent, context_mode)
+    delegated_prompt = (
+        "You are a delegated worker. Stay within the assigned scope. "
+        "Return the conclusion first, then evidence, relevant files, changes, "
+        "and unresolved issues. Do not delegate unless the task explicitly "
+        "requires independent parallel work.\n\n"
+        f"[Parent context mode={context_mode}]\n{parent_context}\n"
+        "[/Parent context]\n\n"
+        + (
+            f"[Isolated worktree]\n{lease.path}\nRe-read files because inherited paths may be stale.\n[/Isolated worktree]\n"
+            if lease is not None
+            else ""
+        )
+        + f"[Assigned task]\n{task}\n[/Assigned task]"
     )
 
     holder: dict[str, object] = {}
 
     def _run() -> None:
         try:
-            holder["result"] = sub.chat(task)
+            holder["result"] = sub.chat(delegated_prompt)
         except BaseException as error:  # propagate worker failures to the manager
             holder["error"] = error
 
@@ -641,21 +850,34 @@ def run_subagent_task(
 
     if cancelled:
         suffix = " detached" if thread.is_alive() else ""
-        return f"[Sub-agent cancelled{suffix}]\n[Sub-agent finished status=cancelled]"
+        partial = _result_from_agent(
+            sub,
+            status="cancelled",
+            summary=str(holder.get("result", "Sub-agent cancelled.")),
+            started_at=deadline - effective_timeout_seconds,
+            job_id=job_id,
+            parent_agent=parent_agent,
+            partial=True,
+        )
+        partial.worktree_path = str(lease.path) if lease is not None else None
+        return partial if not suffix else f"{partial.model_text()}\n[Sub-agent finished status=cancelled detached]"
     if thread.is_alive():
         sub.request_stop()
-        return (
-            f"[Sub-agent timeout][mode={mode}]\n"
-            f"Sub-agent exceeded timeout after {effective_timeout_seconds}s. "
-            "A cooperative stop request was sent.\n"
-            "[Sub-agent finished status=timeout]"
-        )
+        timeout_result = _result_from_agent(
+                sub,
+                status="timeout",
+                summary=f"Sub-agent exceeded timeout after {effective_timeout_seconds}s.",
+                started_at=deadline - effective_timeout_seconds,
+                job_id=job_id,
+                parent_agent=parent_agent,
+                partial=True,
+            )
+        timeout_result.worktree_path = str(lease.path) if lease is not None else None
+        return timeout_result.model_text() + "\n[Sub-agent finished status=timeout]"
 
     if "error" in holder:
         raise holder["error"]  # type: ignore[misc]
     result = str(holder.get("result", ""))
-    if len(result) > 5000:
-        result = result[:4500] + "\n... (sub-agent output truncated)"
 
     status = "ok"
     if result.strip() == "(reached maximum tool-call rounds)" or any(
@@ -668,7 +890,78 @@ def run_subagent_task(
     ):
         status = "max_rounds"
 
-    return (
-        f"[Sub-agent completed][mode={mode}][model={effective_model_profile or getattr(sub_llm, 'model', 'inherited')}]\n{result}\n"
-        f"[Sub-agent finished status={status} max_rounds={effective_max_rounds} timeout_s={effective_timeout_seconds}]"
+    final_result = _result_from_agent(
+        sub,
+        status=status,
+        summary=result,
+        started_at=deadline - effective_timeout_seconds,
+        job_id=job_id,
+        parent_agent=parent_agent,
     )
+    final_result.worktree_path = str(lease.path) if lease is not None else None
+    return final_result
+
+
+def _coerce_subagent_result(value: object) -> SubagentResult:
+    if isinstance(value, SubagentResult):
+        return value
+    return SubagentResult(status="ok", summary=str(value))
+
+
+def _result_from_agent(
+    sub,
+    *,
+    status: str,
+    summary: str,
+    started_at: float,
+    job_id: str | None,
+    parent_agent,
+    partial: bool = False,
+) -> SubagentResult:
+    import re
+
+    messages = list(getattr(sub, "messages", []))
+    files = sorted(
+        {
+            match.group(0)
+            for match in re.finditer(r"(?:[\w.-]+/)+[\w.-]+", summary)
+        }
+    )
+    result = SubagentResult(
+        status=status,
+        summary=summary,
+        files=files[:100],
+        duration_seconds=max(0.0, time.monotonic() - started_at),
+        partial=partial,
+    )
+    if job_id:
+        root = (
+            getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
+        )
+        try:
+            result.transcript_ref = SubagentTranscriptStore(root).write(
+                job_id,
+                messages,
+                {"status": status, "partial": partial},
+            )
+        except OSError:
+            pass
+    return result
+
+
+def _retarget_tools(tools: list, cwd: Path) -> None:
+    """Point cloned local tool adapters at an isolated worktree."""
+
+    from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
+
+    for tool in tools:
+        backend = getattr(tool, "backend", None)
+        context = getattr(backend, "context", None)
+        if context is None:
+            continue
+        context.cwd = str(cwd)
+        context.workspace_root = str(cwd)
+        if getattr(backend, "backend_id", None) == "local":
+            backend.workspace = LocalWorkspacePort(cwd, cwd=cwd)
+        if hasattr(tool, "_cwd"):
+            tool._cwd = str(cwd)

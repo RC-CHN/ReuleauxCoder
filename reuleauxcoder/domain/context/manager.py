@@ -10,6 +10,7 @@ from reuleauxcoder.domain.context.rounds import (
     normalize_history,
     recent_round_start,
 )
+from reuleauxcoder.domain.context.summary import generate_summary
 
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
@@ -573,26 +574,13 @@ class ContextManager:
         llm: Optional["LLM"],
     ) -> str:
         """Generate summary via LLM or fallback to extraction."""
-        flat = self._flatten(messages)
-
-        if llm:
-            try:
-                resp = llm.chat(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": SUMMARY_SYSTEM_PROMPT,
-                        },
-                        {"role": "user", "content": flat[:20000]},
-                    ],
-                )
-                self._consecutive_summary_failures = 0
-                return resp.content
-            except Exception:
-                self._consecutive_summary_failures += 1
-
-        # Fallback: extract key lines
-        return self._extract_key_info(messages)
+        try:
+            summary = generate_summary(messages, llm)
+        except Exception:
+            self._consecutive_summary_failures += 1
+            return self._extract_key_info(messages)
+        self._consecutive_summary_failures = 0
+        return summary
 
     def _emit_compression_events(
         self,

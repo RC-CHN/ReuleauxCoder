@@ -35,6 +35,7 @@ class AgentState:
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     current_round: int = 0
+    total_tool_calls: int = 0
 
 
 class Agent:
@@ -47,6 +48,8 @@ class Agent:
         config: "Config" | None = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
+        max_tool_calls: int | None = None,
+        max_total_tokens: int | None = None,
         hook_registry: HookRegistry | None = None,
         approval_provider: "ApprovalProvider" | None = None,
         available_modes: dict[str, ModeConfig] | None = None,
@@ -62,6 +65,8 @@ class Agent:
         self.runtime_config = config
         self.max_context_tokens = max_context_tokens
         self.max_rounds = max_rounds
+        self.max_tool_calls = max_tool_calls
+        self.max_total_tokens = max_total_tokens
 
         # Explicit runtime bindings. Adapters may replace these values, but
         # must not inject new attributes dynamically.
@@ -87,8 +92,10 @@ class Agent:
         self.lsp_manager = None
         self.relay_server = None
         self._subagent_manager = None
+        self.subagent_depth = 0
         self.ui_interactor = None
         self._subagent_approval_lock = None
+        self._external_message_source = None
 
         # Mode state
         self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
@@ -119,6 +126,10 @@ class Agent:
                 snip_min_lines=context_cfg.snip_min_lines,
                 summarize_keep_recent_turns=context_cfg.summarize_keep_recent_turns,
                 token_fudge_factor=getattr(context_cfg, "token_fudge_factor", 1.1),
+                reserved_output_tokens=getattr(context_cfg, "reserved_output_tokens", 8192),
+                fixed_prompt_tokens=getattr(context_cfg, "fixed_prompt_tokens", 0),
+                tool_schema_tokens=getattr(context_cfg, "tool_schema_tokens", 0),
+                safety_margin_tokens=getattr(context_cfg, "safety_margin_tokens", 2048),
             )
         else:
             self.context = ContextManager(max_tokens=max_context_tokens)
@@ -328,13 +339,17 @@ class Agent:
     @staticmethod
     def _format_subagent_job_message(job) -> tuple[str, bool]:
         if job.status == "completed":
+            result = getattr(job, "structured_result", None)
+            result_text = (
+                result.model_text() if result is not None else job.result or "(empty)"
+            )
             content = (
-                "[Background sub-agent completed]\n"
+                "[Sub-agent result notification]\n"
                 f"id={job.id}\n"
                 f"mode={job.mode}\n"
                 f"task={job.task}\n\n"
-                f"{job.result or '(empty)'}\n"
-                "[/Background sub-agent completed]"
+                f"{result_text}\n"
+                "[/Sub-agent result notification]"
             )
             return content, True
 

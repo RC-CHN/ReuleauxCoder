@@ -86,8 +86,14 @@ approval:
 #   snip_threshold_chars: 1500
 #   # Min line count to trigger tool output snip.
 #   snip_min_lines: 6
-#   # Number of recent user turns to protect during LLM summarize.
+#   # Number of recent complete API rounds to protect during LLM summarize.
 #   summarize_keep_recent_turns: 5
+#   # Reserve output and safety headroom before calculating input thresholds.
+#   reserved_output_tokens: 8192
+#   safety_margin_tokens: 2048
+#   # Optional estimates for stable prompt/tool-schema overhead.
+#   fixed_prompt_tokens: 0
+#   tool_schema_tokens: 0
 
 # Optional output/session/history settings. Omit to use defaults.
 # tool_output:

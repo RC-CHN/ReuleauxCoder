@@ -145,6 +145,23 @@ class AgentLoop:
         for round_num in range(self.agent.max_rounds):
             if self.agent.stop_requested():
                 return "(stopped by cancellation request)"
+            if (
+                self.agent.max_total_tokens is not None
+                and self.agent.state.total_prompt_tokens
+                + self.agent.state.total_completion_tokens
+                >= self.agent.max_total_tokens
+            ):
+                return "(sub-agent token budget exhausted)"
+
+            message_source = getattr(self.agent, "_external_message_source", None)
+            if callable(message_source):
+                for external_message in message_source():
+                    self.agent.state.messages.append(
+                        {
+                            "role": "user",
+                            "content": f"[Inter-agent message]\n{external_message}\n[/Inter-agent message]",
+                        }
+                    )
 
             self.agent.state.current_round = round_num
 
@@ -200,6 +217,22 @@ class AgentLoop:
 
             # Tool calls -> execute
             self.agent.state.messages.append(resp.message)
+
+            if (
+                self.agent.max_tool_calls is not None
+                and self.agent.state.total_tool_calls + len(resp.tool_calls)
+                > self.agent.max_tool_calls
+            ):
+                for tc in resp.tool_calls:
+                    self.agent.state.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": "Sub-agent tool-call budget exhausted; summarize current findings.",
+                        }
+                    )
+                continue
+            self.agent.state.total_tool_calls += len(resp.tool_calls)
 
             if self.agent.stop_requested():
                 return "(stopped by cancellation request)"

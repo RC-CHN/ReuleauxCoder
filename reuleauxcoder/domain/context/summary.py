@@ -7,6 +7,14 @@ if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
 
 
+SUMMARY_SYSTEM_PROMPT = """Create a compact handoff checkpoint for a coding agent.
+Return plain text with exactly these sections when applicable:
+Goal, Constraints, Decisions, Completed, Files, Errors, Pending, Next.
+Preserve concrete paths, commands, error messages, user boundaries, and current
+repository state. Remove verbose tool output, repeated discussion, drafts, and
+reasoning. Never invent completion or authorization."""
+
+
 def generate_summary(messages: list[dict], llm: Optional["LLM"] = None) -> str:
     """Generate a summary of messages."""
     if llm:
@@ -17,10 +25,7 @@ def generate_summary(messages: list[dict], llm: Optional["LLM"] = None) -> str:
                     {
                         "role": "system",
                         "content": (
-                            "Compress this conversation into a brief summary. "
-                            "Preserve: file paths edited, key decisions made, "
-                            "errors encountered, current task state. "
-                            "Drop: verbose command output, code listings."
+                            SUMMARY_SYSTEM_PROMPT
                         ),
                     },
                     {"role": "user", "content": flat[:15000]},
@@ -33,15 +38,22 @@ def generate_summary(messages: list[dict], llm: Optional["LLM"] = None) -> str:
     return extract_key_info(messages)
 
 
-def flatten_messages(messages: list[dict], truncate: int = 400) -> str:
+def flatten_messages(messages: list[dict], truncate: int = 1200) -> str:
     """Flatten messages to a string."""
     parts = []
     for m in messages:
         role = m.get("role", "?")
         text = m.get("content", "") or ""
         if text:
-            parts.append(f"[{role}] {text[:truncate]}")
-    return "\n".join(parts)
+            if len(text) > truncate:
+                half = truncate // 2
+                text = text[:half] + "\n…\n" + text[-half:]
+            parts.append(f"[{role}] {text}")
+    flattened = "\n".join(parts)
+    if len(flattened) <= 40_000:
+        return flattened
+    # Preserve both the earliest constraints and the latest working state.
+    return flattened[:12_000] + "\n… [middle omitted] …\n" + flattened[-28_000:]
 
 
 def extract_key_info(messages: list[dict]) -> str:

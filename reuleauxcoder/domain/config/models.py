@@ -194,6 +194,10 @@ class ContextConfig:
     snip_min_lines: int = 6
     summarize_keep_recent_turns: int = 5
     token_fudge_factor: float = 1.1
+    reserved_output_tokens: int = 8192
+    fixed_prompt_tokens: int = 0
+    tool_schema_tokens: int = 0
+    safety_margin_tokens: int = 2048
 
 
 @dataclass
