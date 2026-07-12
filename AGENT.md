@@ -57,6 +57,8 @@ Layer rules:
 
 The agent receives complete tool output unless the model-context truncation hook applies. CLI live output and final history are separate bounded views of that output.
 
+Tool start/finish runtime facts are ledgered independently of model/UI text, including status, exit code, timeout/error kind, truncation and archive checksum. Subagent verification derives objective evidence and failure state from these events rather than trusting the child's prose.
+
 ## Workspace and process primitives
 
 - `domain/workspace.py`: `WorkspacePort` and filesystem result types.
@@ -129,7 +131,7 @@ Other command families include `/help`, `/model`, `/mode`, `/approval`, `/skills
 
 `domain/session/models.py`, `infrastructure/persistence/session_store.py`, and `app/runtime/session_state.py` own session persistence and restoration.
 
-New sessions use a directory containing append-only `events.jsonl`, canonical `replay.json`, immutable `requests/`, `checkpoints/`, tool artifacts and a manifest; a lightweight JSON compatibility snapshot remains. Replay schema v2 includes wire-affecting request settings and the exact hook-transformed provider payload hash. Resume preserves old base instructions and appends runtime/environment changes at the tail. Saved control state includes Plan/Progress revisions, actual usage observations and cache/checkpoint metadata.
+New sessions use a directory containing append-only `events.jsonl`, canonical `replay.json`, immutable `requests/`, `checkpoints/`, tool artifacts and a manifest; a lightweight JSON compatibility snapshot remains. Replay schema v3 includes wire-affecting request settings, exact hook-transformed provider payload hashes, and an aligned per-item ledger/checkpoint provenance vector that stays outside the provider payload. Resume preserves old base instructions and appends runtime/environment changes at the tail. Saved control state includes Plan/Progress revisions, actual usage observations and cache/checkpoint metadata.
 
 Session invariants:
 
