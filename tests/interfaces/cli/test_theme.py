@@ -36,9 +36,15 @@ def test_forge_diff_roles_remain_visually_distinct() -> None:
 def test_forge_user_prompt_uses_native_formatted_fragments() -> None:
     fragments = to_formatted_text(forge_user_prompt())
 
-    assert fragment_list_to_text(fragments) == " YOU   › "
+    assert fragment_list_to_text(fragments) == " YOU  // input  "
     assert fragments[0][0] == "class:prompt.label"
     assert FORGE_USER_PROMPT_STYLE.style_rules[0] == (
         "",
-        "bg:#14272d #f4f7fb",
+        "bg:#191827 #f7f5ff",
     )
+
+
+def test_forge_user_prompt_switches_to_command_label() -> None:
+    fragments = to_formatted_text(forge_user_prompt("  /sessions"))
+
+    assert fragment_list_to_text(fragments) == " CMD  // input  "
