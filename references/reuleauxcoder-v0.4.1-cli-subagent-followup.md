@@ -3,9 +3,9 @@
 > 日期：2026-07-12；实现复核：2026-07-13
 > 状态：设计已确认，主体实现与本轮验收完成。本文第 1 节保留的是实现前问题快照；第 2–5 节是当前实现必须持续满足的契约。
 
-实现进度（2026-07-13）：Phase A–D 已落地。Phase B 包括非递归 capability、所有 mode 固定 materialize 的三类 child 通信工具、typed mailbox、Codex 异步生命周期工具、独立 worker/Tool Broker、强停、guidance park/resume、session restore、累计预算、epoch/late-result quarantine、结构化 final result 和 content-addressed 大结果 IPC。park 使用持久化 checkpoint→ParkAck；directive 使用 consumption ack，parking/provider 并发到达的未消费指令会进入 checkpoint 尾部并恰好恢复一次。blocked job 使用可持久化的独立 guidance deadline。取消结果保留已知实际 usage、标记未决尾部，并返回 cancellation ID。delegated result/mailbox 在父上下文中显式标为 untrusted data。
+实现进度（2026-07-13）：Phase A–D 已落地。Phase B 包括非递归 capability、所有 mode 固定 materialize 的三类 child 通信工具、typed mailbox、Codex 异步生命周期工具、独立 worker/Tool Broker、强停、guidance park/resume、session restore、累计预算、epoch/late-result quarantine、结构化 final result 和 content-addressed 大结果 IPC。park 使用持久化 checkpoint→ParkAck；directive 使用 consumption ack，parking/provider 并发到达的未消费指令会进入 checkpoint 尾部并恰好恢复一次。blocked job 使用可持久化的独立 guidance deadline；blocked 时间不计入 active timeout，已执行时间会累计且 resume 只能使用剩余预算。取消结果保留已知实际 usage、标记未决尾部，并返回 cancellation ID。delegated result/mailbox 在父上下文中显式标为 untrusted data。
 
-最终验证：Ruff 通过；清除宿主机无效 SOCKS 代理变量后，Python `927 passed, 24 skipped`；Go peer `go test ./...` 通过；v0.4.1 sdist/wheel build 通过。真实 PTY 在 110×36 启动后切换至 72×28，并执行 F2、PageUp/PageDown 和双 Ctrl+C，进出 alt-screen 各一次、进程正常退出。混合 CJK、emoji、Markdown table、diff 的重复 resize/sticky-scroll 由布局测试覆盖。虚拟 transcript 的 1,000-cell 基线为 6,500 visual lines、scroll frame 约 0.10 ms、resize rebuild 约 337 ms、chunk-to-layout 约 3.35 ms；benchmark 命令为 `uv run python scripts/benchmark_cli_transcript.py`。
+最终验证：Ruff 通过；清除宿主机无效 SOCKS 代理变量后，Python `930 passed, 24 skipped`；Go peer `go test ./...` 通过；v0.4.1 sdist/wheel build 通过。真实 PTY 在 110×36 启动后切换至 72×28，并执行 F2、PageUp/PageDown 和双 Ctrl+C，进出 alt-screen 各一次、进程正常退出。混合 CJK、emoji、Markdown table、diff 的重复 resize/sticky-scroll 由布局测试覆盖。虚拟 transcript 的 1,000-cell 基线为 6,500 visual lines、scroll frame 约 0.10 ms、resize rebuild 约 337 ms、chunk-to-layout 约 3.35 ms；benchmark 命令为 `uv run python scripts/benchmark_cli_transcript.py`。
 
 ## 1. 本轮已经确认的问题
 
