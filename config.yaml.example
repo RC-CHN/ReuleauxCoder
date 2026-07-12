@@ -96,6 +96,17 @@ approval:
 #   store_full_output: true
 #   # store_dir: ".rcoder/tool-outputs"
 #
+# UI output is independently bounded. The default summary mode uses a tool's
+# structured summary, or a head+tail folded preview for legacy/tool text.
+# ui:
+#   verbosity: "compact"          # compact | standard | debug
+#   tool_output: "summary"        # errors | summary | preview | full
+#   max_preview_lines: 20
+#   max_preview_chars: 1200
+#   show_tool_args: true
+#   reasoning_display: "indicator" # hidden | indicator | inline
+#   notification_threshold: "info" # debug | info | warning | error
+#
 # session:
 #   auto_save: true
 #   # dir: ".rcoder/sessions"

@@ -100,7 +100,8 @@ def test_compact_notification_snapshot() -> None:
             True,
             80,
             "› shell(command='python -m pytest tests/unit --maxfail=1', …)\n"
-            "  line one\nline two\n… (1 lines, 11 chars hidden)\n",
+            "  line one\n… (output folded; 3 lines, 28 chars total; set "
+            "ui.tool_output=full to show all)\nline three\n",
         ),
         (
             Verbosity.STANDARD,
@@ -108,7 +109,8 @@ def test_compact_notification_snapshot() -> None:
             True,
             120,
             "› shell(command='python -m pytest tests/unit --maxfail=1', timeout=120, …)\n"
-            "  line one\nline two\n… (1 lines, 11 chars hidden)\n",
+            "  line one\n… (output folded; 3 lines, 28 chars total; set "
+            "ui.tool_output=full to show all)\nline three\n",
         ),
         (
             Verbosity.DEBUG,

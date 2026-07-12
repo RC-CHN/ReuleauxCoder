@@ -65,28 +65,57 @@ class PresentationPolicy:
         if self.tool_output_mode is ToolOutputMode.FULL:
             return outcome.ui_text(include_details=True)
 
-        text = outcome.ui_text(
-            include_details=self.tool_output_mode is ToolOutputMode.PREVIEW
-        )
-        if self.tool_output_mode is ToolOutputMode.SUMMARY:
-            return text
-        lines = text.splitlines()
-        visible_lines = lines[: self.tool_preview_lines]
-        preview = "\n".join(visible_lines)
-        if len(preview) > self.tool_preview_chars:
-            preview = preview[: self.tool_preview_chars]
+        if self.tool_output_mode is ToolOutputMode.SUMMARY and outcome.summary:
+            return outcome.summary
 
-        hidden_lines = max(0, len(lines) - len(visible_lines))
-        hidden_chars = max(0, len(text) - len(preview))
-        if hidden_lines or hidden_chars:
-            suffix = []
-            if hidden_lines:
-                suffix.append(f"{hidden_lines} lines")
-            if hidden_chars:
-                suffix.append(f"{hidden_chars} chars")
-            preview = f"{preview}\n… ({', '.join(suffix)} hidden)"
-        return preview
+        # Legacy tools do not always provide a summary. They must still obey the
+        # UI budget: model-side truncation is deliberately independent and the
+        # structured outcome may retain the complete source text.
+        text = outcome.ui_text(include_details=True)
+        return fold_text(
+            text,
+            max_lines=self.tool_preview_lines,
+            max_chars=self.tool_preview_chars,
+        )
 
     def should_render_notification(self, level: str) -> bool:
         rank = {"debug": 0, "info": 1, "success": 1, "warning": 2, "error": 3}
         return rank.get(level, 1) >= rank[self.notification_threshold.value]
+
+
+def fold_text(text: str, *, max_lines: int, max_chars: int) -> str:
+    """Return a bounded head+tail projection suitable for terminal scrollback.
+
+    The source string is never mutated. ``full`` presentation remains the
+    explicit escape hatch for users who intentionally want unbounded output.
+    """
+    lines = text.splitlines()
+    if len(lines) <= max_lines and len(text) <= max_chars:
+        return text
+
+    line_budget = max(1, max_lines)
+    head_lines = max(1, (line_budget + 1) // 2)
+    tail_lines = max(0, line_budget - head_lines)
+    selected = lines[:head_lines]
+    if tail_lines:
+        selected.extend(lines[-tail_lines:])
+    selected_text = "\n".join(selected)
+    marker = (
+        f"… (output folded; {len(lines)} lines, {len(text)} chars total; "
+        "set ui.tool_output=full to show all)"
+    )
+    char_budget = max(1, max_chars)
+    if len(selected_text) <= char_budget:
+        if tail_lines:
+            return (
+                "\n".join(lines[:head_lines])
+                + f"\n{marker}\n"
+                + "\n".join(lines[-tail_lines:])
+            )
+        return f"{selected_text}\n{marker}"
+
+    head_chars = max(1, (char_budget + 1) // 2)
+    tail_chars = max(0, char_budget - head_chars)
+    head = selected_text[:head_chars].rstrip()
+    tail = selected_text[-tail_chars:].lstrip() if tail_chars else ""
+    return f"{head}\n{marker}\n{tail}" if tail else f"{head}\n{marker}"
