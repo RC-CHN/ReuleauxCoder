@@ -68,6 +68,9 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "context_mode": job.context_mode,
                 "delivery": job.delivery,
                 "worktree_path": job.worktree_path,
+                "verification_job_id": job.verification_job_id,
+                "verification_for": job.verification_for,
+                "working_directory": job.working_directory,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -90,6 +93,37 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
             error=job.error,
         )
     )
+
+
+def _publish_communication_event(
+    parent_agent, item: "SubagentCommunication", *, status: str
+) -> None:
+    """Persist mailbox enqueue/ack so crash recovery is exactly-once."""
+    ledger = getattr(parent_agent, "history_ledger", None)
+    if ledger is None:
+        return
+    ledger.append(
+        f"subagent_communication_{status}",
+        {
+            "item_id": item.item_id,
+            "seq": item.seq,
+            "sender_agent_id": item.sender_agent_id,
+            "sender_job_id": item.sender_job_id,
+            "recipient_agent_id": item.recipient_agent_id,
+            "content": item.content,
+            "created_at": item.created_at,
+            "generation": item.generation,
+            "kind": item.kind,
+            "content_hash": item.content_hash,
+        },
+        agent_id=item.sender_agent_id,
+        parent_agent_id=item.recipient_agent_id,
+        job_id=item.sender_job_id,
+        turn_id=getattr(parent_agent, "_current_turn_id", None),
+    )
+    persist = getattr(parent_agent, "persist_runtime_snapshot", None)
+    if callable(persist):
+        persist()
 
 
 def _clamp_subagent_rounds(
@@ -155,6 +189,9 @@ class SubagentJob:
     max_tokens: int | None = None
     delivery: SubagentDelivery = "awaited"
     completion_seq: int | None = None
+    verification_job_id: str | None = None
+    verification_for: str | None = None
+    working_directory: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +252,9 @@ class SubagentManager:
         self._agent_parents: dict[str, str] = {}
         self._agent_generations: dict[str, int] = {}
         self._parent_messages: deque[SubagentCommunication] = deque()
+        self._claimed_parent_messages: set[str] = set()
         self._next_sequence = 1
+        self._root_agent = None
         if parent_agent_id:
             self._registered_agents[parent_agent_id] = 0
 
@@ -248,6 +287,11 @@ class SubagentManager:
             self._slot_cv.notify_all()
             return self._runtime_parallel_explore
 
+    def bind_root_agent(self, agent) -> None:
+        """Bind only the root owner used for ledger persistence and recovery."""
+        if getattr(agent, "agent_id", None) == self._parent_agent_id:
+            self._root_agent = agent
+
     @staticmethod
     def is_valid_mode(mode: str) -> bool:
         return mode in _VALID_SUBAGENT_MODES
@@ -270,7 +314,9 @@ class SubagentManager:
         max_tool_calls: int | None = 80,
         max_tokens: int | None = None,
         detached: bool = False,
-    ) -> str:
+        auto_verify: bool = True,
+        working_directory: str | None = None,
+    ) -> str | SubagentResult:
         if depth > self._max_depth:
             raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
 
@@ -328,6 +374,8 @@ class SubagentManager:
             max_tool_calls=max_tool_calls,
             max_tokens=max_tokens,
             delivery="detached" if detached else "awaited",
+            verification_for=parent_job_id if mode == "verify" else None,
+            working_directory=working_directory,
         )
         cancel_event = threading.Event()
 
@@ -361,6 +409,7 @@ class SubagentManager:
                     resume_reference=resume_reference,
                     max_tool_calls=max_tool_calls,
                     max_tokens=max_tokens,
+                    working_directory=working_directory,
                 )
             finally:
                 with self._slot_cv:
@@ -379,6 +428,7 @@ class SubagentManager:
             self._futures[job_id] = future
 
         def _on_done(done: Future) -> None:
+            schedule_verify = False
             with self._slot_cv:
                 tracked = self._jobs.get(job_id)
                 if tracked is None:
@@ -435,13 +485,66 @@ class SubagentManager:
                             tracked.result = structured.summary
                             tracked.worktree_path = structured.worktree_path
                             tracked.status = "completed"
+                            schedule_verify = tracked.mode == "execute" and auto_verify
                 if (
                     tracked.generation == self._generation
                     and self._is_actionable_terminal(tracked)
+                    and not schedule_verify
                 ):
+                    dependency = (
+                        self._jobs.get(tracked.parent_job_id or "")
+                        if tracked.mode == "verify"
+                        else None
+                    )
+                    if dependency is not None and self._is_actionable_terminal(
+                        dependency
+                    ):
+                        self._enqueue_completion_locked(dependency)
                     self._enqueue_completion_locked(tracked)
                 self._slot_cv.notify_all()
             _publish_job_event(parent_agent, tracked)
+
+            if schedule_verify:
+                verification_root = tracked.worktree_path or (
+                    getattr(parent_agent, "runtime_working_directory", None)
+                    or str(Path.cwd())
+                )
+                verification_task = (
+                    f"Verify execute job {tracked.id}. Inspect its reported changes, "
+                    "run the narrowest relevant tests or diagnostics, and report "
+                    "objective evidence. Do not modify implementation files. "
+                    f"Execution root: {verification_root}"
+                )
+                try:
+                    verification_id = self.submit_background(
+                        parent_agent=parent_agent,
+                        task=verification_task,
+                        mode="verify",
+                        max_rounds=min(effective_max_rounds, 20),
+                        timeout_seconds=effective_timeout_seconds,
+                        model_profile_name=model_profile_name,
+                        context_mode="minimal",
+                        parent_job_id=tracked.id,
+                        depth=tracked.depth,
+                        max_tool_calls=max_tool_calls,
+                        max_tokens=max_tokens,
+                        detached=tracked.delivery == "detached",
+                        auto_verify=False,
+                        working_directory=verification_root,
+                    )
+                except Exception as error:  # fail visible, never strand dependency
+                    with self._slot_cv:
+                        tracked.error = (
+                            "Automatic verification could not start: " + str(error)
+                        )
+                        if self._is_actionable_terminal(tracked):
+                            self._enqueue_completion_locked(tracked)
+                        self._slot_cv.notify_all()
+                    _publish_job_event(parent_agent, tracked)
+                else:
+                    with self._lock:
+                        tracked.verification_job_id = verification_id
+                    _publish_job_event(parent_agent, tracked)
 
             # The parent drains this mailbox at an API-safe boundary. Worker
             # callbacks never mutate parent history directly.
@@ -490,7 +593,8 @@ class SubagentManager:
                 max_tokens=max_tokens,
             )
             return future.result()
-        return run_subagent_task(
+        sync_job_id = f"sj_sync_{uuid.uuid4().hex[:8]}" if worktree else None
+        primary = run_subagent_task(
             parent_agent=parent_agent,
             task=task,
             mode=mode,
@@ -500,9 +604,55 @@ class SubagentManager:
             context_mode=context_mode,
             depth=depth,
             worktree=worktree,
+            job_id=sync_job_id,
             max_tool_calls=max_tool_calls,
             max_tokens=max_tokens,
         )
+        if mode != "execute":
+            return primary
+        execute_result = _coerce_subagent_result(primary)
+        if execute_result.status != "ok":
+            return execute_result
+        verification_root = execute_result.worktree_path or (
+            getattr(parent_agent, "runtime_working_directory", None)
+            or str(Path.cwd())
+        )
+        verification = _coerce_subagent_result(
+            run_subagent_task(
+                parent_agent=parent_agent,
+                task=(
+                    "Verify the immediately preceding delegated implementation. "
+                    "Run the narrowest relevant tests or diagnostics and report "
+                    "objective evidence without modifying implementation files."
+                ),
+                mode="verify",
+                max_rounds=min(effective_max_rounds, 20),
+                timeout_seconds=effective_timeout_seconds,
+                model_profile_name=model_profile_name,
+                context_mode="minimal",
+                depth=depth,
+                max_tool_calls=max_tool_calls,
+                max_tokens=max_tokens,
+                working_directory=str(verification_root),
+            )
+        )
+        execute_result.summary = (
+            execute_result.summary
+            + "\n\nAutomatic verification: "
+            + verification.summary
+        ).strip()
+        execute_result.evidence.extend(verification.evidence)
+        if verification.transcript_ref:
+            execute_result.evidence.append(
+                f"verification transcript: {verification.transcript_ref}"
+            )
+        if verification.status != "ok":
+            execute_result.unresolved.append(
+                f"Automatic verification status: {verification.status}"
+            )
+            execute_result.confidence = "low"
+        execute_result.tool_uses += verification.tool_uses
+        return execute_result
 
     def list_jobs(self) -> list[SubagentJob]:
         with self._lock:
@@ -511,25 +661,36 @@ class SubagentManager:
 
     def restore_from_history(self, parent_agent, events) -> int:
         """Rebuild inspectable jobs; live workers never survive process resume."""
+        events = list(events)
+        self.bind_root_agent(parent_agent)
         with self._lock:
             self._jobs.clear()
             self._futures.clear()
             self._message_queues.clear()
             self._cancel_events.clear()
             self._parent_messages.clear()
+            self._claimed_parent_messages.clear()
             self._completion_mailbox.clear()
             self._parent_agent_id = getattr(parent_agent, "agent_id", None)
             self._generation = getattr(parent_agent, "session_generation", 0)
         latest: dict[str, dict] = {}
+        queued_messages: dict[str, dict] = {}
+        delivered_messages: set[str] = set()
         for event in events:
-            if getattr(event, "kind", None) != "subagent_job_changed":
-                continue
+            kind = getattr(event, "kind", None)
             payload = getattr(event, "payload", {})
-            job_id = str(payload.get("job_id") or "")
-            if job_id:
-                latest[job_id] = dict(payload)
-        if not latest:
-            return 0
+            if kind == "subagent_job_changed":
+                job_id = str(payload.get("job_id") or "")
+                if job_id:
+                    latest[job_id] = dict(payload)
+            elif kind == "subagent_communication_queued":
+                item_id = str(payload.get("item_id") or "")
+                if item_id:
+                    queued_messages[item_id] = dict(payload)
+            elif kind == "subagent_communication_delivered":
+                item_id = str(payload.get("item_id") or "")
+                if item_id:
+                    delivered_messages.add(item_id)
 
         terminal = {
             "completed",
@@ -545,6 +706,7 @@ class SubagentManager:
             for message in getattr(parent_agent, "messages", ())
         )
         restored: list[SubagentJob] = []
+        stale_jobs: list[SubagentJob] = []
         for job_id, payload in latest.items():
             status = str(payload.get("status") or "stale")
             error = payload.get("error")
@@ -578,8 +740,56 @@ class SubagentManager:
                     else "awaited"
                 ),
                 injected_to_parent=f"id={job_id}" in visible_context,
+                verification_job_id=payload.get("verification_job_id"),
+                verification_for=payload.get("verification_for"),
+                working_directory=payload.get("working_directory"),
             )
             restored.append(job)
+            if status == "stale" and str(payload.get("status")) != "stale":
+                stale_jobs.append(job)
+
+        pending_messages: list[SubagentCommunication] = []
+        for item_id, payload in queued_messages.items():
+            if item_id in delivered_messages or f"item_id={item_id}" in visible_context:
+                continue
+            sender = str(payload.get("sender_agent_id") or "restored-child")
+            recipient = str(
+                payload.get("recipient_agent_id")
+                or getattr(parent_agent, "agent_id", "root")
+            )
+            content = str(payload.get("content") or "").strip()
+            if not content:
+                continue
+            kind = str(payload.get("kind") or "milestone")
+            if kind not in {
+                "milestone",
+                "blocked",
+                "approval_needed",
+                "partial",
+                "amendment",
+            }:
+                kind = "milestone"
+            pending_messages.append(
+                SubagentCommunication(
+                    item_id=item_id,
+                    seq=max(1, int(payload.get("seq") or 1)),
+                    sender_agent_id=sender,
+                    sender_job_id=payload.get("sender_job_id"),
+                    recipient_agent_id=recipient,
+                    content=content,
+                    created_at=float(payload.get("created_at") or time.time()),
+                    generation=getattr(parent_agent, "session_generation", 0),
+                    kind=kind,  # type: ignore[arg-type]
+                    content_hash=_subagent_item_hash(
+                        sender_agent_id=sender,
+                        sender_job_id=payload.get("sender_job_id"),
+                        recipient_agent_id=recipient,
+                        generation=getattr(parent_agent, "session_generation", 0),
+                        kind=kind,
+                        content=content,
+                    ),
+                )
+            )
 
         with self._lock:
             self._parent_agent_id = getattr(parent_agent, "agent_id", None)
@@ -588,6 +798,16 @@ class SubagentManager:
                 self._jobs[job.id] = job
                 self._message_queues.setdefault(job.id, deque())
                 self._cancel_events.setdefault(job.id, threading.Event())
+            self._parent_messages.extend(
+                sorted(pending_messages, key=lambda item: item.seq)
+            )
+            if pending_messages:
+                self._next_sequence = max(
+                    self._next_sequence,
+                    max(item.seq for item in pending_messages) + 1,
+                )
+        for job in stale_jobs:
+            _publish_job_event(parent_agent, job)
         return len(restored)
 
     def get_job(self, job_id: str) -> SubagentJob | None:
@@ -621,6 +841,7 @@ class SubagentManager:
         """Queue one child report for its immediate parent agent."""
 
         text = message.strip()
+        queued: SubagentCommunication | None = None
         with self._lock:
             recipient = self._agent_parents.get(sender_agent_id)
             if (
@@ -630,8 +851,7 @@ class SubagentManager:
             ):
                 return False
             seq = self._allocate_sequence_locked()
-            self._parent_messages.append(
-                SubagentCommunication(
+            queued = SubagentCommunication(
                     item_id=f"sc_{uuid.uuid4().hex[:12]}",
                     seq=seq,
                     sender_agent_id=sender_agent_id,
@@ -650,25 +870,52 @@ class SubagentManager:
                         content=text,
                     ),
                 )
-            )
+            self._parent_messages.append(queued)
             self._slot_cv.notify_all()
-            return True
+        if self._root_agent is not None:
+            _publish_communication_event(self._root_agent, queued, status="queued")
+        return True
 
     def drain_parent_messages(self, parent_agent_id: str) -> list[SubagentCommunication]:
         with self._lock:
-            selected: list[SubagentCommunication] = []
-            retained: deque[SubagentCommunication] = deque()
-            while self._parent_messages:
-                message = self._parent_messages.popleft()
+            selected = [
+                message
+                for message in self._parent_messages
                 if (
                     message.recipient_agent_id == parent_agent_id
                     and message.generation == self._generation
-                ):
-                    selected.append(message)
-                elif message.generation == self._generation:
-                    retained.append(message)
-            self._parent_messages = retained
+                    and message.item_id not in self._claimed_parent_messages
+                )
+            ]
+            self._claimed_parent_messages.update(item.item_id for item in selected)
             return sorted(selected, key=lambda item: item.seq)
+
+    def acknowledge_parent_message(self, item_id: str) -> bool:
+        """Remove a safely injected mailbox item and persist its watermark."""
+        acknowledged = None
+        with self._lock:
+            retained: deque[SubagentCommunication] = deque()
+            while self._parent_messages:
+                item = self._parent_messages.popleft()
+                if acknowledged is None and item.item_id == item_id:
+                    acknowledged = item
+                else:
+                    retained.append(item)
+            self._parent_messages = retained
+            self._claimed_parent_messages.discard(item_id)
+        if acknowledged is None:
+            return False
+        if self._root_agent is not None:
+            _publish_communication_event(
+                self._root_agent, acknowledged, status="delivered"
+            )
+        return True
+
+    def release_parent_message(self, item_id: str) -> None:
+        """Return an uncommitted claim to the mailbox for a later safe boundary."""
+        with self._lock:
+            self._claimed_parent_messages.discard(item_id)
+            self._slot_cv.notify_all()
 
     def has_awaited_jobs(self, parent_agent_id: str) -> bool:
         """Return whether this parent still depends on a non-terminal child."""
@@ -709,6 +956,7 @@ class SubagentManager:
         ) or any(
             item.recipient_agent_id == parent_agent_id
             and item.generation == self._generation
+            and item.item_id not in self._claimed_parent_messages
             for item in self._parent_messages
         )
 
@@ -890,6 +1138,7 @@ class SubagentManager:
                 raise ValueError("session generation must increase monotonically")
             self._generation = next_generation
             self._parent_messages.clear()
+            self._claimed_parent_messages.clear()
             self._completion_mailbox.clear()
             old_ids = [
                 job.id
@@ -1033,6 +1282,9 @@ class SubagentManager:
                             max_tokens=job.max_tokens,
                             delivery=job.delivery,
                             completion_seq=job.completion_seq,
+                            verification_job_id=job.verification_job_id,
+                            verification_for=job.verification_for,
+                            working_directory=job.working_directory,
                         )
                     )
                 finally:
@@ -1051,6 +1303,7 @@ class SubagentManager:
 def get_subagent_manager(agent) -> SubagentManager:
     manager = getattr(agent, "_subagent_manager", None)
     if isinstance(manager, SubagentManager):
+        manager.bind_root_agent(agent)
         return manager
 
     default_rounds = getattr(agent, "max_rounds", 50)
@@ -1061,6 +1314,7 @@ def get_subagent_manager(agent) -> SubagentManager:
         initial_generation=getattr(agent, "session_generation", 0),
         max_depth=1,
     )
+    manager.bind_root_agent(agent)
     agent._subagent_manager = manager
     return manager
 
@@ -1140,6 +1394,7 @@ def run_subagent_task(
     resume_reference: str | None = None,
     max_tool_calls: int | None = 80,
     max_tokens: int | None = None,
+    working_directory: str | None = None,
 ) -> str | SubagentResult:
     """Run one sub-agent task with isolated message history."""
     if mode not in _VALID_SUBAGENT_MODES:
@@ -1170,6 +1425,8 @@ def run_subagent_task(
         root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
         lease = create_worktree(root, job_id)
         _retarget_tools(sub_tools, lease.path)
+    elif working_directory:
+        _retarget_tools(sub_tools, Path(working_directory))
     sub = Agent(
         llm=sub_llm,
         tools=sub_tools,
@@ -1181,6 +1438,12 @@ def run_subagent_task(
         approval_provider=build_subagent_approval_provider(parent_agent, mode, task),
     )
     sub.runtime_config = getattr(parent_agent, "runtime_config", None)
+    sub.runtime_working_directory = (
+        str(lease.path)
+        if lease is not None
+        else working_directory
+        or getattr(parent_agent, "runtime_working_directory", None)
+    )
     sub.current_session_id = getattr(parent_agent, "current_session_id", None)
     sub.history_ledger.bind_context(
         session_id=sub.current_session_id,
@@ -1231,6 +1494,11 @@ def run_subagent_task(
         + (
             f"[Isolated worktree]\n{lease.path}\nRe-read files because inherited paths may be stale.\n[/Isolated worktree]\n"
             if lease is not None
+            else ""
+        )
+        + (
+            f"[Execution root]\n{working_directory}\n[/Execution root]\n"
+            if working_directory and lease is None
             else ""
         )
         + f"[Assigned task]\n{task}\n[/Assigned task]"

@@ -6,6 +6,7 @@ import pytest
 
 from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
 from reuleauxcoder.domain.history import HistoryLedger
+from reuleauxcoder.extensions.subagent.models import SubagentResult
 from reuleauxcoder.extensions.subagent.manager import (
     SubagentJob,
     SubagentManager,
@@ -319,6 +320,133 @@ def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
     assert [item.seq for item in messages] == sorted(item.seq for item in messages)
     assert all(len(item.content_hash) == 64 for item in messages)
     assert manager.drain_parent_messages("child-a") == []
+    manager.shutdown()
+
+
+def test_parent_mailbox_recovers_unacknowledged_item_exactly_once() -> None:
+    parent = _Parent()
+    manager = SubagentManager(parent_agent_id=parent.agent_id)
+    manager.bind_root_agent(parent)
+    manager.register_child_agent(
+        "child-a", 1, parent_agent_id=parent.agent_id, job_id="sj_a"
+    )
+    assert manager.send_to_parent("child-a", "durable milestone") is True
+    queued = manager.drain_parent_messages(parent.agent_id)
+    assert len(queued) == 1
+    assert manager.drain_parent_messages(parent.agent_id) == []
+    assert any(
+        event.kind == "subagent_communication_queued"
+        for event in parent.history_ledger.events
+    )
+    item_id = queued[0].item_id
+    manager.shutdown()
+
+    recovered = SubagentManager(parent_agent_id=parent.agent_id)
+    recovered.restore_from_history(parent, parent.history_ledger.events)
+    redelivered = recovered.drain_parent_messages(parent.agent_id)
+    assert [item.item_id for item in redelivered] == [item_id]
+    assert recovered.acknowledge_parent_message(item_id) is True
+    assert any(
+        event.kind == "subagent_communication_delivered"
+        and event.payload["item_id"] == item_id
+        for event in parent.history_ledger.events
+    )
+    recovered.shutdown()
+
+    final = SubagentManager(parent_agent_id=parent.agent_id)
+    final.restore_from_history(parent, parent.history_ledger.events)
+    assert final.drain_parent_messages(parent.agent_id) == []
+    final.shutdown()
+
+
+def test_restore_persists_unrecoverable_worker_as_stale() -> None:
+    parent = _Parent()
+    parent.history_ledger.append(
+        "subagent_job_changed",
+        {
+            "job_id": "sj_lost",
+            "mode": "execute",
+            "task": "lost work",
+            "status": "running",
+            "created_at": time.time(),
+            "generation": 0,
+            "delivery": "awaited",
+        },
+    )
+    manager = SubagentManager(parent_agent_id=parent.agent_id)
+
+    assert manager.restore_from_history(parent, parent.history_ledger.events) == 1
+
+    assert manager.get_job("sj_lost").status == "stale"
+    assert parent.history_ledger.events[-1].kind == "subagent_job_changed"
+    assert parent.history_ledger.events[-1].payload["status"] == "stale"
+    manager.shutdown()
+
+
+def test_background_execute_waits_for_runtime_managed_verify(monkeypatch) -> None:
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs["mode"])
+        return SubagentResult(
+            status="ok",
+            summary=f"{kwargs['mode']} complete",
+            evidence=[f"{kwargs['mode']} evidence"],
+        )
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    parent = _Parent()
+    manager = SubagentManager(max_parallel_explore=2)
+    execute_id = manager.submit_background(
+        parent_agent=parent, task="implement", mode="execute"
+    )
+    manager.wait_job(execute_id, timeout=2)
+    deadline = time.monotonic() + 2
+    verify_job = None
+    while time.monotonic() < deadline:
+        execute = manager.get_job(execute_id)
+        verify_job = (
+            manager.get_job(execute.verification_job_id)
+            if execute and execute.verification_job_id
+            else None
+        )
+        if verify_job and verify_job.status == "completed":
+            break
+        time.sleep(0.01)
+
+    assert calls == ["execute", "verify"]
+    assert verify_job is not None and verify_job.verification_for == execute_id
+    drained = manager.drain_completed_for_parent(parent_agent_id=parent.agent_id)
+    assert [job.id for job in drained] == [execute_id, verify_job.id]
+    manager.shutdown()
+
+
+def test_sync_execute_returns_combined_automatic_verification(monkeypatch) -> None:
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs["mode"])
+        return SubagentResult(
+            status="ok",
+            summary=f"{kwargs['mode']} complete",
+            evidence=[f"{kwargs['mode']} evidence"],
+        )
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    manager = SubagentManager()
+
+    result = manager.run_sync(
+        parent_agent=_Parent(), task="implement", mode="execute"
+    )
+
+    assert calls == ["execute", "verify"]
+    assert isinstance(result, SubagentResult)
+    assert "Automatic verification: verify complete" in result.summary
+    assert result.evidence == ["execute evidence", "verify evidence"]
     manager.shutdown()
 
 

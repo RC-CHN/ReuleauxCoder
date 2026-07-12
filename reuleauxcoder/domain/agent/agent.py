@@ -697,8 +697,7 @@ class Agent:
         )
         with self._state_lock:
             if self._collect_pending_tool_calls():
-                self._pending_subagent_injections.append((None, content, True))
-                return True
+                return False
             self._append_message(
                 {"role": "system", "content": content},
                 source="subagent_communication",
@@ -766,7 +765,11 @@ class Agent:
                 else self.inject_subagent_communication(item)
             )
             if accepted:
+                if kind == "communication":
+                    manager.acknowledge_parent_message(item.item_id)
                 injected += 1
+            elif kind == "communication":
+                manager.release_parent_message(item.item_id)
         return injected
 
     def _has_awaited_subagent_jobs(self) -> bool:
