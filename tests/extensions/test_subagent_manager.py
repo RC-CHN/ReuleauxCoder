@@ -423,6 +423,40 @@ def test_background_execute_waits_for_runtime_managed_verify(monkeypatch) -> Non
     manager.shutdown()
 
 
+def test_failed_automatic_verify_releases_execute_barrier_as_attention(monkeypatch) -> None:
+    def run(**kwargs):
+        if kwargs["mode"] == "verify":
+            return SubagentResult(status="failed", summary="tests failed")
+        return SubagentResult(status="ok", summary="implementation complete")
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
+    parent = _Parent()
+    manager = SubagentManager(max_parallel_explore=2)
+    execute_id = manager.submit_background(
+        parent_agent=parent, task="implement", mode="execute"
+    )
+    deadline = time.monotonic() + 2
+    verify_job = None
+    while time.monotonic() < deadline:
+        execute = manager.get_job(execute_id)
+        verify_job = (
+            manager.get_job(execute.verification_job_id)
+            if execute and execute.verification_job_id
+            else None
+        )
+        if verify_job and verify_job.status == "failed":
+            break
+        time.sleep(0.01)
+
+    assert verify_job is not None and verify_job.status == "failed"
+    drained = manager.drain_completed_for_parent(parent_agent_id=parent.agent_id)
+    assert [job.id for job in drained] == [execute_id, verify_job.id]
+    assert manager.has_awaited_jobs(parent.agent_id) is False
+    manager.shutdown()
+
+
 def test_sync_execute_returns_combined_automatic_verification(monkeypatch) -> None:
     calls = []
 

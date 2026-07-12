@@ -498,6 +498,16 @@ class SubagentManager:
                             )
                             tracked.status = result.status
                             tracked.error = result.summary
+                        elif isinstance(result, SubagentResult) and result.status in {
+                            "failed",
+                            "error",
+                            "unverified",
+                        }:
+                            tracked.structured_result = result
+                            tracked.result = result.summary
+                            tracked.worktree_path = result.worktree_path
+                            tracked.status = "failed"
+                            tracked.error = result.summary
                         elif "[Sub-agent finished status=cancelled]" in result_text:
                             tracked.detached_due_to_timeout = "detached" in result_text
                             tracked.status = (
@@ -681,6 +691,7 @@ class SubagentManager:
                 f"verification transcript: {verification.transcript_ref}"
             )
         if verification.status != "ok":
+            execute_result.status = "unverified"
             execute_result.unresolved.append(
                 f"Automatic verification status: {verification.status}"
             )
@@ -1666,9 +1677,33 @@ def _result_from_agent(
             for match in re.finditer(r"(?:[\w.-]+/)+[\w.-]+", summary)
         }
     )
+    tool_facts = [
+        event
+        for event in getattr(getattr(sub, "history_ledger", None), "events", ())
+        if event.kind == "tool_call_finished"
+    ]
+    failures = [event for event in tool_facts if not event.payload.get("success")]
+    evidence = [
+        (
+            f"tool {event.payload.get('tool_name') or 'unknown'}: "
+            f"{event.payload.get('status') or 'unknown'}"
+            + (
+                f" (exit {event.payload['exit_code']})"
+                if event.payload.get("exit_code") is not None
+                else ""
+            )
+        )
+        for event in tool_facts[-20:]
+    ]
+    if getattr(sub, "subagent_mode", None) == "verify" and failures:
+        status = "failed"
+        summary = (
+            "Verification observed one or more failed tool outcomes.\n" + summary
+        ).strip()
     result = SubagentResult(
         status=status,
         summary=summary,
+        evidence=evidence,
         files=files[:100],
         duration_seconds=max(0.0, time.monotonic() - started_at),
         partial=partial,
@@ -1681,7 +1716,11 @@ def _result_from_agent(
             result.transcript_ref = SubagentTranscriptStore(root).write(
                 job_id,
                 messages,
-                {"status": status, "partial": partial},
+                {
+                    "status": status,
+                    "partial": partial,
+                    "failed_tool_outcomes": len(failures),
+                },
             )
         except OSError:
             pass

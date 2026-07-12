@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
     from reuleauxcoder.domain.extensions import ToolExtensionRuntime
 
-from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
@@ -542,11 +542,83 @@ class Agent:
             event.session_id = getattr(self, "current_session_id", None)
         if event.turn_id is None:
             event.turn_id = self._current_turn_id
+        self._record_runtime_fact(event)
         for handler in self._event_handlers:
             try:
                 handler(event)
             except Exception:
                 pass  # Don't let handler errors break execution
+
+    def _record_runtime_fact(self, event: AgentEvent) -> None:
+        """Persist correctness-relevant runtime facts; omit high-rate chunks."""
+        if event.event_type is AgentEventType.TOOL_CALL_START:
+            self.history_ledger.append(
+                "tool_call_started",
+                {
+                    "tool_call_id": event.correlation_id,
+                    "tool_name": event.tool_name,
+                    "arguments": dict(event.tool_args or {}),
+                },
+                agent_id=event.agent_id,
+                turn_id=event.turn_id,
+                api_round_id=(
+                    f"{event.turn_id}:{self.state.current_round}"
+                    if event.turn_id
+                    else None
+                ),
+            )
+            return
+        if event.event_type is not AgentEventType.TOOL_CALL_END:
+            return
+        outcome = event.tool_outcome
+        if outcome is None:
+            return
+        archive = outcome.archive_reference
+        truncation = outcome.truncation
+        self.history_ledger.append(
+            "tool_call_finished",
+            {
+                "tool_call_id": event.correlation_id,
+                "tool_name": event.tool_name,
+                "status": outcome.status.value,
+                "success": outcome.success,
+                "summary": outcome.summary,
+                "exit_code": outcome.exit_code,
+                "duration_seconds": outcome.duration_seconds,
+                "error_kind": (
+                    outcome.error_kind.value if outcome.error_kind else None
+                ),
+                "truncation": (
+                    {
+                        "original_chars": truncation.original_chars,
+                        "original_lines": truncation.original_lines,
+                        "retained_chars": truncation.retained_chars,
+                        "retained_lines": truncation.retained_lines,
+                        "strategy": truncation.strategy,
+                    }
+                    if truncation
+                    else None
+                ),
+                "archive": (
+                    {
+                        "path": archive.path,
+                        "media_type": archive.media_type,
+                        "checksum_sha256": archive.checksum_sha256,
+                        "size_bytes": archive.size_bytes,
+                    }
+                    if archive
+                    else None
+                ),
+            },
+            agent_id=event.agent_id,
+            turn_id=event.turn_id,
+            api_round_id=(
+                f"{event.turn_id}:{self.state.current_round}"
+                if event.turn_id
+                else None
+            ),
+            artifact_refs=((archive.path,) if archive else ()),
+        )
 
     def _emit_hook_diagnostic(self, diagnostic: HookDiagnostic) -> None:
         self._emit_runtime_diagnostic(

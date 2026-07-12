@@ -1,4 +1,6 @@
 from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome, ToolOutcomeStatus
 from reuleauxcoder.domain.context.replay import ReplayEnvelope, content_hash
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.session.models import Session
@@ -47,6 +49,33 @@ def test_message_ledger_event_has_top_level_runtime_attribution(tmp_path) -> Non
     assert event.api_round_id == "turn-7:2"
     assert event.role == "user"
     assert encoded["timestamp"] == event.created_at
+
+
+def test_structured_tool_lifecycle_is_persisted_as_runtime_truth() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent._current_turn_id = "turn"
+    agent._emit_event(
+        AgentEvent.tool_call_start("shell", {"command": "false"}, tool_call_id="tc")
+    )
+    agent._emit_event(
+        AgentEvent.tool_call_end(
+            "shell",
+            "failed",
+            tool_call_id="tc",
+            outcome=ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                summary="command failed",
+                exit_code=1,
+            ),
+        )
+    )
+
+    started, finished = agent.history_ledger.events
+    assert started.kind == "tool_call_started"
+    assert started.payload["arguments"] == {"command": "false"}
+    assert finished.kind == "tool_call_finished"
+    assert finished.payload["status"] == "failed"
+    assert finished.payload["exit_code"] == 1
 
 
 def test_request_audit_keeps_overlay_out_of_replay_items() -> None:
