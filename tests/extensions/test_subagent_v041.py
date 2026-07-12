@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+import time
 
 import pytest
 
@@ -191,6 +192,48 @@ def test_directive_arriving_before_park_completion_resumes_without_loss(
     assert calls[1]["resume_directives"]
     assert "continue with option A" in calls[1]["resume_directives"][0]
     assert "Re-read every relevant file or symbol" in calls[1]["resume_directives"][-1]
+    manager.shutdown()
+
+
+def test_park_pauses_but_does_not_reset_active_timeout(monkeypatch, tmp_path) -> None:
+    calls = []
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text('{"messages": []}', encoding="utf-8")
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SubagentResult(
+                status="blocked",
+                summary="waiting",
+                transcript_ref=str(checkpoint),
+                duration_seconds=4.2,
+            )
+        return SubagentResult(status="ok", summary="continued", duration_seconds=1.0)
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent,
+        task="bounded park",
+        mode="explore",
+        timeout_seconds=10,
+        auto_verify=False,
+    )
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if manager.get_job(job_id).status == "blocked":
+            break
+        time.sleep(0.01)
+
+    assert manager.send_message(job_id, "continue")
+    terminal = manager.wait_job(job_id, timeout=2)
+
+    assert terminal is not None and terminal.status == "completed"
+    assert calls[0]["timeout_seconds"] == 10
+    assert calls[1]["timeout_seconds"] == 5
+    assert terminal.active_seconds == 5.2
     manager.shutdown()
 
 

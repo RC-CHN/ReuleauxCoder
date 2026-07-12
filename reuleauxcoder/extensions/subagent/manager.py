@@ -105,6 +105,7 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "cancellation_id": job.cancellation_id,
                 "usage_uncertain": job.usage_uncertain,
                 "resume_ready": job.resume_ready,
+                "active_seconds": job.active_seconds,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -244,6 +245,16 @@ def _optional_float(value) -> float | None:
     return None if value is None else float(value)
 
 
+def _remaining_active_timeout(job: "SubagentJob") -> int:
+    configured = job.timeout_seconds or _DEFAULT_TIMEOUT_SECONDS
+    remaining = float(configured) - max(0.0, job.active_seconds)
+    if remaining <= 0:
+        return 0
+    # Rounding down keeps the cumulative hard boundary conservative. The
+    # execution primitive has a one-second minimum for a non-empty invocation.
+    return max(1, int(remaining))
+
+
 @dataclass(slots=True)
 class SubagentJob:
     """Tracked background sub-agent job."""
@@ -293,6 +304,7 @@ class SubagentJob:
     cancellation_id: str | None = None
     usage_uncertain: bool = False
     resume_ready: bool = False
+    active_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -533,6 +545,7 @@ class SubagentManager:
                     initial_model_calls = tracked.model_calls
                     worker_generation = tracked.worker_generation
                     cancellation_epoch = tracked.cancellation_epoch
+                    remaining_timeout = _remaining_active_timeout(tracked)
                 else:
                     active_resume_reference = None
                     initial_prompt_tokens = 0
@@ -541,6 +554,7 @@ class SubagentManager:
                     initial_model_calls = 0
                     worker_generation = 1
                     cancellation_epoch = 0
+                    remaining_timeout = effective_timeout_seconds
             if tracked is not None:
                 _publish_job_event(parent_agent, tracked)
             resume_directives = (
@@ -554,12 +568,18 @@ class SubagentManager:
             if active_resume_reference:
                 resume_directives = (*resume_directives, _resume_workspace_notice())
             try:
+                if remaining_timeout <= 0:
+                    return SubagentResult(
+                        status="timed_out",
+                        summary="Sub-agent active execution timeout exhausted.",
+                        partial=True,
+                    )
                 return run_subagent_task(
                     parent_agent=parent_agent,
                     task=task,
                     mode=mode,
                     max_rounds=effective_max_rounds,
-                    timeout_seconds=effective_timeout_seconds,
+                    timeout_seconds=remaining_timeout,
                     model_profile_name=model_profile_name,
                     cancel_event=cancel_event,
                     job_id=job_id,
@@ -617,6 +637,7 @@ class SubagentManager:
                             tracked.model_calls = result.model_calls
                             tracked.usage_uncertain = result.usage_uncertain
                             tracked.resume_ready = result.resume_ready
+                            tracked.active_seconds += result.duration_seconds
                         if tracked.cancel_requested:
                             if tracked.status != "timed_out":
                                 tracked.status = (
@@ -911,6 +932,7 @@ class SubagentManager:
                 cancellation_id=payload.get("cancellation_id"),
                 usage_uncertain=bool(payload.get("usage_uncertain", False)),
                 resume_ready=bool(payload.get("resume_ready", False)),
+                active_seconds=float(payload.get("active_seconds") or 0.0),
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -1043,18 +1065,25 @@ class SubagentManager:
                 job.last_activity_at = job.started_at
                 job.finished_at = None
                 job.worker_generation += 1
+                remaining_timeout = _remaining_active_timeout(job)
             _publish_job_event(parent_agent, job)
             directives = tuple(
                 directive.model_text() for directive in self.drain_messages(job_id)
             )
             directives = (*directives, _resume_workspace_notice())
             try:
+                if remaining_timeout <= 0:
+                    return SubagentResult(
+                        status="timed_out",
+                        summary="Sub-agent active execution timeout exhausted.",
+                        partial=True,
+                    )
                 return run_subagent_task(
                     parent_agent=parent_agent,
                     task=job.task,
                     mode=job.mode,
                     max_rounds=job.max_rounds,
-                    timeout_seconds=job.timeout_seconds or self._default_timeout_seconds,
+                    timeout_seconds=remaining_timeout,
                     model_profile_name=job.model_profile_name,
                     cancel_event=cancel_event,
                     job_id=job.id,
@@ -1099,6 +1128,7 @@ class SubagentManager:
                         job.model_calls = result.model_calls
                         job.usage_uncertain = result.usage_uncertain
                         job.resume_ready = result.resume_ready
+                        job.active_seconds += result.duration_seconds
                     if job.cancel_requested:
                         if job.status != "timed_out":
                             job.status = "cancelled"
