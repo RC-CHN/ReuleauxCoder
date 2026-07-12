@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.context.replay import (
+    align_item_provenance,
     ReplayEnvelope,
     RequestEnvelope,
     content_hash,
@@ -208,7 +209,11 @@ class AgentLoop:
                 "model_profile": restored.model_profile,
                 "instructions": list(restored.instructions),
                 "tools": list(restored.tools),
-                "request_settings": dict(restored.request_settings),
+                "request_settings": dict(
+                    restored.request_settings.get(
+                        "configured", restored.request_settings
+                    )
+                ),
             }
             previous_descriptor_hash = (
                 self.agent._resume_runtime_descriptor_hash
@@ -268,6 +273,29 @@ class AgentLoop:
     ) -> None:
         instructions = [dict(request_messages[0])]
         overlay = dict(request_messages[-1])
+        replay_items = [dict(item) for item in request_messages[1:-1]]
+        observed = self.agent.history_ledger.append(
+            "request_payload_observed",
+            {
+                "canonical_request_hash": content_hash(
+                    canonical_request_payload
+                    if canonical_request_payload is not None
+                    else {
+                        "messages": request_messages,
+                        "tools": request_tools,
+                        "request_settings": request_settings or self._wire_settings(),
+                    }
+                ),
+                "item_count": len(replay_items),
+            },
+            agent_id=self.agent.agent_id,
+            turn_id=self.agent._current_turn_id,
+        )
+        provenance = align_item_provenance(
+            replay_items,
+            self.agent.history_ledger.events,
+            fallback_event_id=observed.event_id,
+        )
 
         replay = ReplayEnvelope.create(
             session_id=getattr(self.agent, "current_session_id", None),
@@ -277,10 +305,14 @@ class AgentLoop:
             or str(getattr(self.agent.llm, "model", "unknown")),
             provider_family="openai-compatible",
             request_mode="chat-completions",
-            request_settings=request_settings or self._wire_settings(),
+            request_settings={
+                "configured": self._wire_settings(),
+                "dispatched": request_settings or self._wire_settings(),
+            },
             instructions=instructions,
             tools=request_tools,
-            items=[dict(item) for item in request_messages[1:-1]],
+            items=replay_items,
+            item_provenance=provenance,
         )
         request = RequestEnvelope.create(
             replay=replay,

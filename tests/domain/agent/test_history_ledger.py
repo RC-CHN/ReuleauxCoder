@@ -61,6 +61,8 @@ def test_request_audit_keeps_overlay_out_of_replay_items() -> None:
     replay = agent.replay_envelope
     assert replay is not None and replay.validate()
     assert list(replay.items) == [{"role": "user", "content": "do work"}]
+    assert len(replay.item_provenance) == len(replay.items)
+    assert replay.item_provenance[0]["source_event_ids"]
     request_event = agent.history_ledger.events[-1]
     assert request_event.kind == "request_committed"
     assert "<execution_state" in request_event.payload["overlay"]["content"]
@@ -93,7 +95,8 @@ def test_request_audit_hashes_exact_dispatched_payload() -> None:
         canonical_request_payload=payload,
     )
 
-    assert agent.replay_envelope.request_settings["temperature"] == 0.25
+    assert agent.replay_envelope.request_settings["dispatched"]["temperature"] == 0.25
+    assert "configured" in agent.replay_envelope.request_settings
     assert agent.request_envelopes[-1].canonical_request_hash == content_hash(payload)
 
 
@@ -164,6 +167,45 @@ def test_resume_appends_runtime_changes_without_rewriting_old_prefix() -> None:
     assert len(updates) == 1
     assert second[0] == first[0]
     assert agent._restored_replay_envelope is replay
+
+
+def test_resume_does_not_emit_false_update_for_matching_configured_settings() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    current_system = agent._loop._full_messages()[0]
+    replay = ReplayEnvelope.create(
+        session_id="session",
+        cache_epoch=0,
+        history_version=0,
+        model_profile="test-model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        request_settings={
+            "configured": agent._loop._wire_settings(),
+            "dispatched": {"stream": True},
+        },
+        instructions=[current_system],
+        tools=[],
+        items=[{"role": "user", "content": "restored"}],
+        item_provenance=[{}],
+    )
+    agent.restore_history_runtime(
+        Session(
+            id="session",
+            model="test-model",
+            saved_at="now",
+            messages=list(replay.items),
+            replay_envelope=replay,
+            history_completeness="complete",
+        )
+    )
+
+    messages = agent._loop._full_messages()
+
+    assert messages[0] == current_system
+    assert not any(
+        str(item.get("content") or "").startswith("[Runtime context update]")
+        for item in agent.messages
+    )
 
 
 def test_resume_restores_actual_usage_calibration_from_ledger() -> None:

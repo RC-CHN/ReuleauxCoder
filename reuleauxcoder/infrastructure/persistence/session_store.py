@@ -13,7 +13,11 @@ from typing import Optional
 
 from reuleauxcoder.domain.context.manager import ensure_message_token_counts
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
-from reuleauxcoder.domain.context.replay import ReplayEnvelope, RequestEnvelope
+from reuleauxcoder.domain.context.replay import (
+    ReplayEnvelope,
+    RequestEnvelope,
+    align_item_provenance,
+)
 from reuleauxcoder.domain.history import HistoryEvent, HistoryLedger
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 from reuleauxcoder.domain.session.models import (
@@ -117,6 +121,9 @@ class SessionStore:
                 instructions=list(base_replay.instructions) if base_replay else [],
                 tools=list(base_replay.tools) if base_replay else [],
                 items=saved_messages,
+                item_provenance=align_item_provenance(
+                    saved_messages, ledger.events
+                ),
             )
             session = Session(
                 id=session_id,

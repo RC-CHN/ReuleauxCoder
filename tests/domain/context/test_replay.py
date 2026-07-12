@@ -52,6 +52,49 @@ def test_replay_hash_includes_wire_affecting_settings() -> None:
     assert changed.validate() is False
 
 
+def test_item_provenance_is_audited_but_does_not_change_provider_prefix_hash() -> None:
+    first = ReplayEnvelope.create(
+        session_id="session",
+        cache_epoch=0,
+        history_version=0,
+        model_profile="model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        instructions=[],
+        tools=[],
+        items=[{"role": "user", "content": "hello"}],
+        item_provenance=[
+            {
+                "source_event_ids": ["event-1"],
+                "artifact_refs": [],
+                "checkpoint_id": None,
+            }
+        ],
+    )
+    second = ReplayEnvelope.create(
+        session_id="session",
+        cache_epoch=0,
+        history_version=0,
+        model_profile="model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        instructions=[],
+        tools=[],
+        items=[{"role": "user", "content": "hello"}],
+        item_provenance=[
+            {
+                "source_event_ids": ["event-2"],
+                "artifact_refs": [],
+                "checkpoint_id": None,
+            }
+        ],
+    )
+
+    assert first.validate() and second.validate()
+    assert first.stable_prefix_hash == second.stable_prefix_hash
+    assert first.canonical_payload_hash != second.canonical_payload_hash
+
+
 def test_replay_protocol_rejects_missing_tool_result() -> None:
     replay = _replay(
         [
