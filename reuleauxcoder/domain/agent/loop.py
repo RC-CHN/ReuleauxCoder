@@ -113,7 +113,6 @@ class AgentLoop:
                     "status": job.status,
                     "mode": job.mode,
                     "task": job.task[:180],
-                    "delivery": job.delivery,
                 }
                 for job in manager.list_jobs()
                 if job.parent_agent_id == self.agent.agent_id

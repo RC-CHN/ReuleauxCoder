@@ -29,7 +29,6 @@ _VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
 _DEFAULT_MAX_ROUNDS = 50
 _DEFAULT_TIMEOUT_SECONDS = 300
 _MAX_TIMEOUT_SECONDS = 3_600
-SubagentDelivery = Literal["awaited", "detached"]
 SubagentMessageKind = Literal[
     "reply",
     "milestone",
@@ -73,7 +72,6 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "parent_job_id": job.parent_job_id,
                 "depth": job.depth,
                 "context_mode": job.context_mode,
-                "delivery": job.delivery,
                 "worktree_path": job.worktree_path,
                 "verification_job_id": job.verification_job_id,
                 "verification_for": job.verification_for,
@@ -232,7 +230,6 @@ class SubagentJob:
     worktree_path: str | None = None
     max_tool_calls: int | None = None
     max_tokens: int | None = None
-    delivery: SubagentDelivery = "awaited"
     completion_seq: int | None = None
     verification_job_id: str | None = None
     verification_for: str | None = None
@@ -378,7 +375,6 @@ class SubagentManager:
         resume_reference: str | None = None,
         max_tool_calls: int | None = 80,
         max_tokens: int | None = None,
-        detached: bool = False,
         auto_verify: bool = True,
         working_directory: str | None = None,
     ) -> str | SubagentResult:
@@ -439,7 +435,6 @@ class SubagentManager:
             context_mode=context_mode,
             max_tool_calls=max_tool_calls,
             max_tokens=max_tokens,
-            delivery="detached" if detached else "awaited",
             verification_for=parent_job_id if mode == "verify" else None,
             working_directory=working_directory,
         )
@@ -604,7 +599,6 @@ class SubagentManager:
                         depth=tracked.depth,
                         max_tool_calls=max_tool_calls,
                         max_tokens=max_tokens,
-                        detached=tracked.delivery == "detached",
                         auto_verify=False,
                         working_directory=verification_root,
                     )
@@ -627,109 +621,6 @@ class SubagentManager:
 
         future.add_done_callback(_on_done)
         return job_id
-
-    def run_sync(
-        self,
-        *,
-        parent_agent,
-        task: str,
-        mode: str,
-        max_rounds: int | None = None,
-        timeout_seconds: int | None = None,
-        model_profile_name: str | None = None,
-        context_mode: str = "recent",
-        depth: int = 0,
-        worktree: bool = False,
-        max_tool_calls: int | None = 80,
-        max_tokens: int | None = None,
-    ) -> str:
-        if depth > self._max_depth:
-            raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
-        effective_max_rounds = _clamp_subagent_rounds(
-            max_rounds, default=self._default_max_rounds
-        )
-        effective_timeout_seconds = _clamp_timeout_seconds(
-            timeout_seconds,
-            default=self._default_timeout_seconds,
-            maximum=self._max_timeout_seconds,
-        )
-        if mode == "explore":
-            future = self._explore_pool.submit(
-                run_subagent_task,
-                parent_agent=parent_agent,
-                task=task,
-                mode=mode,
-                max_rounds=effective_max_rounds,
-                timeout_seconds=effective_timeout_seconds,
-                model_profile_name=model_profile_name,
-                context_mode=context_mode,
-                depth=depth,
-                worktree=worktree,
-                max_tool_calls=max_tool_calls,
-                max_tokens=max_tokens,
-            )
-            return future.result()
-        sync_job_id = f"sj_sync_{uuid.uuid4().hex[:8]}" if worktree else None
-        primary = run_subagent_task(
-            parent_agent=parent_agent,
-            task=task,
-            mode=mode,
-            max_rounds=effective_max_rounds,
-            timeout_seconds=effective_timeout_seconds,
-            model_profile_name=model_profile_name,
-            context_mode=context_mode,
-            depth=depth,
-            worktree=worktree,
-            job_id=sync_job_id,
-            max_tool_calls=max_tool_calls,
-            max_tokens=max_tokens,
-        )
-        if mode != "execute":
-            return primary
-        execute_result = _coerce_subagent_result(primary)
-        if execute_result.status != "ok":
-            return execute_result
-        verification_root = execute_result.worktree_path or (
-            getattr(parent_agent, "runtime_working_directory", None)
-            or str(Path.cwd())
-        )
-        verification = _coerce_subagent_result(
-            run_subagent_task(
-                parent_agent=parent_agent,
-                task=(
-                    "Verify the immediately preceding delegated implementation. "
-                    "Run the narrowest relevant tests or diagnostics and report "
-                    "objective evidence without modifying implementation files."
-                ),
-                mode="verify",
-                max_rounds=min(effective_max_rounds, 20),
-                timeout_seconds=effective_timeout_seconds,
-                model_profile_name=model_profile_name,
-                context_mode="minimal",
-                depth=depth,
-                max_tool_calls=max_tool_calls,
-                max_tokens=max_tokens,
-                working_directory=str(verification_root),
-            )
-        )
-        execute_result.summary = (
-            execute_result.summary
-            + "\n\nAutomatic verification: "
-            + verification.summary
-        ).strip()
-        execute_result.evidence.extend(verification.evidence)
-        if verification.transcript_ref:
-            execute_result.evidence.append(
-                f"verification transcript: {verification.transcript_ref}"
-            )
-        if verification.status != "ok":
-            execute_result.status = "unverified"
-            execute_result.unresolved.append(
-                f"Automatic verification status: {verification.status}"
-            )
-            execute_result.confidence = "low"
-        execute_result.tool_uses += verification.tool_uses
-        return execute_result
 
     def list_jobs(self) -> list[SubagentJob]:
         with self._lock:
@@ -815,11 +706,6 @@ class SubagentManager:
                 depth=int(payload.get("depth") or 0),
                 context_mode=str(payload.get("context_mode") or "recent"),
                 worktree_path=payload.get("worktree_path"),
-                delivery=(
-                    "detached"
-                    if payload.get("delivery") == "detached"
-                    else "awaited"
-                ),
                 injected_to_parent=f"id={job_id}" in visible_context,
                 verification_job_id=payload.get("verification_job_id"),
                 verification_for=payload.get("verification_for"),
@@ -1022,26 +908,6 @@ class SubagentManager:
             self._claimed_parent_messages.discard(item_id)
             self._slot_cv.notify_all()
 
-    def has_awaited_jobs(self, parent_agent_id: str) -> bool:
-        """Return whether this parent still depends on a non-terminal child."""
-        with self._lock:
-            return any(
-                job.parent_agent_id == parent_agent_id
-                and job.generation == self._generation
-                and job.delivery == "awaited"
-                and job.status
-                not in {
-                    "completed",
-                    "failed",
-                    "cancelled",
-                    "cancelled_detached",
-                    "timeout",
-                    "timed_out_detached",
-                    "stale",
-                }
-                for job in self._jobs.values()
-            )
-
     def wait_for_parent_activity(
         self, parent_agent_id: str, *, timeout: float = 0.1
     ) -> bool:
@@ -1072,19 +938,10 @@ class SubagentManager:
 
     @staticmethod
     def _is_actionable_terminal(job: SubagentJob) -> bool:
-        if job.status == "stale":
-            return False
-        if job.delivery == "awaited":
-            return job.status in {
-                "completed",
-                "failed",
-                "cancelled",
-                "cancelled_detached",
-                "timeout",
-                "timed_out_detached",
-            }
         return job.status in {
+            "completed",
             "failed",
+            "cancelled",
             "cancelled_detached",
             "timeout",
             "timed_out_detached",
@@ -1443,7 +1300,6 @@ class SubagentManager:
                             worktree_path=job.worktree_path,
                             max_tool_calls=job.max_tool_calls,
                             max_tokens=job.max_tokens,
-                            delivery=job.delivery,
                             completion_seq=job.completion_seq,
                             verification_job_id=job.verification_job_id,
                             verification_for=job.verification_for,

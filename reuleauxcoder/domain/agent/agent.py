@@ -879,10 +879,6 @@ class Agent:
                 manager.release_parent_message(item.item_id)
         return injected
 
-    def _has_awaited_subagent_jobs(self) -> bool:
-        manager = getattr(self, "_subagent_manager", None)
-        return bool(manager and manager.has_awaited_jobs(self.agent_id))
-
     def _wait_for_subagent_activity(self, timeout: float = 0.1) -> bool:
         manager = getattr(self, "_subagent_manager", None)
         if manager is None:

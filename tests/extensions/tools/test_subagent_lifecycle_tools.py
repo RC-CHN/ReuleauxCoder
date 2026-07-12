@@ -152,11 +152,8 @@ class _OneResponseLLM:
         return LLMResponse(content="done")
 
 
-def test_parent_loop_does_not_implicitly_wait_for_awaited_children() -> None:
+def test_parent_loop_does_not_implicitly_wait_for_children() -> None:
     agent = Agent(llm=_OneResponseLLM(), tools=[])
-    agent._has_awaited_subagent_jobs = lambda: pytest.fail(
-        "legacy automatic wait must not be consulted"
-    )
     agent._has_subagent_activity = lambda: False
 
     assert agent._loop.run() == "done"

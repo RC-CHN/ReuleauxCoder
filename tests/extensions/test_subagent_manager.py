@@ -282,27 +282,6 @@ def test_background_exception_becomes_failed_job(monkeypatch) -> None:
     manager.shutdown()
 
 
-def test_detached_success_does_not_enter_parent_context(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "reuleauxcoder.extensions.subagent.manager.run_subagent_task",
-        lambda **kwargs: "done",
-    )
-    manager = SubagentManager(max_parallel_explore=1)
-    parent = _Parent()
-    job_id = manager.submit_background(
-        parent_agent=parent,
-        task="optional",
-        mode="explore",
-        detached=True,
-    )
-    job = manager.wait_job(job_id, timeout=2)
-
-    assert job is not None and job.status == "completed"
-    assert job.delivery == "detached"
-    assert manager.drain_completed_for_parent(parent_agent_id=parent.agent_id) == []
-    manager.shutdown()
-
-
 def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
     manager = SubagentManager(parent_agent_id="root")
     manager.register_child_agent(
@@ -456,34 +435,6 @@ def test_failed_automatic_verify_releases_execute_barrier_as_attention(monkeypat
     assert verify_job is not None and verify_job.status == "failed"
     drained = manager.drain_completed_for_parent(parent_agent_id=parent.agent_id)
     assert [job.id for job in drained] == [execute_id, verify_job.id]
-    assert manager.has_awaited_jobs(parent.agent_id) is False
-    manager.shutdown()
-
-
-def test_sync_execute_returns_combined_automatic_verification(monkeypatch) -> None:
-    calls = []
-
-    def run(**kwargs):
-        calls.append(kwargs["mode"])
-        return SubagentResult(
-            status="ok",
-            summary=f"{kwargs['mode']} complete",
-            evidence=[f"{kwargs['mode']} evidence"],
-        )
-
-    monkeypatch.setattr(
-        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
-    )
-    manager = SubagentManager()
-
-    result = manager.run_sync(
-        parent_agent=_Parent(), task="implement", mode="execute"
-    )
-
-    assert calls == ["execute", "verify"]
-    assert isinstance(result, SubagentResult)
-    assert "Automatic verification: verify complete" in result.summary
-    assert result.evidence == ["execute evidence", "verify evidence"]
     manager.shutdown()
 
 
@@ -699,12 +650,14 @@ def test_manager_honors_custom_max_timeout(monkeypatch) -> None:
     )
     manager = SubagentManager(max_timeout_seconds=7)
 
-    manager.run_sync(
+    job_id = manager.submit_background(
         parent_agent=_Parent(),
         task="bounded",
         mode="execute",
         timeout_seconds=999,
+        auto_verify=False,
     )
+    manager.wait_job(job_id, timeout=2)
 
     assert captured["timeout"] == 7
     manager.shutdown()
