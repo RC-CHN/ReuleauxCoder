@@ -302,7 +302,21 @@ class SubagentManager:
                             if isinstance(result, SubagentResult)
                             else str(result)
                         )
-                        if "[Sub-agent finished status=cancelled]" in result_text:
+                        if isinstance(result, SubagentResult) and result.status in {
+                            "cancelled",
+                            "cancelled_detached",
+                            "timeout",
+                            "timed_out_detached",
+                        }:
+                            tracked.structured_result = result
+                            tracked.result = result.summary
+                            tracked.detached_due_to_timeout = result.status.endswith(
+                                "_detached"
+                            )
+                            tracked.status = result.status
+                            tracked.error = result.summary
+                            self._completion_mailbox.append(job_id)
+                        elif "[Sub-agent finished status=cancelled]" in result_text:
                             tracked.detached_due_to_timeout = "detached" in result_text
                             tracked.status = (
                                 "cancelled_detached"
@@ -348,6 +362,8 @@ class SubagentManager:
         max_tool_calls: int | None = 80,
         max_tokens: int | None = None,
     ) -> str:
+        if depth > self._max_depth:
+            raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
         effective_max_rounds = _clamp_subagent_rounds(
             max_rounds, default=self._default_max_rounds
         )
@@ -622,7 +638,13 @@ class SubagentManager:
                     continue
                 if job.injected_to_parent:
                     continue
-                if job.status not in {"completed", "failed"}:
+                if job.status not in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "cancelled_detached",
+                    "timed_out_detached",
+                }:
                     continue
                 if parent_state_lock is not None:
                     parent_state_lock.acquire()
@@ -852,7 +874,7 @@ def run_subagent_task(
         suffix = " detached" if thread.is_alive() else ""
         partial = _result_from_agent(
             sub,
-            status="cancelled",
+            status="cancelled_detached" if suffix else "cancelled",
             summary=str(holder.get("result", "Sub-agent cancelled.")),
             started_at=deadline - effective_timeout_seconds,
             job_id=job_id,
@@ -860,12 +882,12 @@ def run_subagent_task(
             partial=True,
         )
         partial.worktree_path = str(lease.path) if lease is not None else None
-        return partial if not suffix else f"{partial.model_text()}\n[Sub-agent finished status=cancelled detached]"
+        return partial
     if thread.is_alive():
         sub.request_stop()
         timeout_result = _result_from_agent(
                 sub,
-                status="timeout",
+                status="timed_out_detached",
                 summary=f"Sub-agent exceeded timeout after {effective_timeout_seconds}s.",
                 started_at=deadline - effective_timeout_seconds,
                 job_id=job_id,
@@ -873,7 +895,7 @@ def run_subagent_task(
                 partial=True,
             )
         timeout_result.worktree_path = str(lease.path) if lease is not None else None
-        return timeout_result.model_text() + "\n[Sub-agent finished status=timeout]"
+        return timeout_result
 
     if "error" in holder:
         raise holder["error"]  # type: ignore[misc]

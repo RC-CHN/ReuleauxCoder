@@ -193,6 +193,11 @@ class SubagentJobViewModel:
     generation: int
     result: str | None
     error: str | None
+    depth: int = 0
+    parent_job_id: str | None = None
+    context_mode: str = "recent"
+    transcript_ref: str | None = None
+    worktree_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +226,11 @@ class SubagentJobsViewModel:
                     "generation": job.generation,
                     "result": job.result,
                     "error": job.error,
+                    "depth": job.depth,
+                    "parent_job_id": job.parent_job_id,
+                    "context_mode": job.context_mode,
+                    "transcript_ref": job.transcript_ref,
+                    "worktree_path": job.worktree_path,
                 }
                 for job in self.jobs
             ],

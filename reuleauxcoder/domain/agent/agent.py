@@ -353,12 +353,18 @@ class Agent:
             )
             return content, True
 
+        structured = getattr(job, "structured_result", None)
+        detail = (
+            structured.model_text()
+            if structured is not None
+            else job.error or "unknown error"
+        )
         error_text = (
             "[Background sub-agent failed]\n"
             f"id={job.id}\n"
             f"mode={job.mode}\n"
             f"task={job.task}\n\n"
-            f"{job.error or 'unknown error'}\n"
+            f"{detail}\n"
             "[/Background sub-agent failed]"
         )
         return error_text, False

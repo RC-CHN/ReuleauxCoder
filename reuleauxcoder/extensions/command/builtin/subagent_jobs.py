@@ -39,6 +39,13 @@ class WaitSubagentJobCommand:
     job_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class ControlSubagentJobCommand:
+    action: str
+    job_id: str
+    message: str = ""
+
+
 def _parse_list_jobs(user_input: str, parse_ctx):
     if match_template(user_input, "/jobs") is not None:
         return ListSubagentJobsCommand()
@@ -69,6 +76,26 @@ def _parse_wait_job(user_input: str, parse_ctx):
     return WaitSubagentJobCommand(job_id=job_id)
 
 
+def _parse_control_job(user_input: str, parse_ctx):
+    for action in ("cancel", "cleanup"):
+        captures = match_template(user_input, f"/jobs {action} {{job_id+}}")
+        if captures is not None:
+            return ControlSubagentJobCommand(
+                action=action, job_id=captures["job_id"].strip()
+            )
+    for action in ("message", "resume"):
+        captures = match_template(
+            user_input, f"/jobs {action} {{job_id}} {{message+}}"
+        )
+        if captures is not None:
+            return ControlSubagentJobCommand(
+                action=action,
+                job_id=captures["job_id"].strip(),
+                message=captures["message"].strip(),
+            )
+    return None
+
+
 def _build_jobs_view(manager, jobs) -> SubagentJobsViewModel:
     return SubagentJobsViewModel(
         jobs=tuple(
@@ -86,6 +113,15 @@ def _build_jobs_view(manager, jobs) -> SubagentJobsViewModel:
                 generation=job.generation,
                 result=job.result,
                 error=job.error,
+                depth=job.depth,
+                parent_job_id=job.parent_job_id,
+                context_mode=job.context_mode,
+                transcript_ref=(
+                    job.structured_result.transcript_ref
+                    if job.structured_result is not None
+                    else None
+                ),
+                worktree_path=job.worktree_path,
             )
             for job in jobs
         ),
@@ -164,6 +200,41 @@ def _handle_wait_job(command, ctx) -> CommandEffect:
     return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
+def _handle_control_job(command, ctx) -> CommandEffect:
+    manager = get_subagent_manager(ctx.agent)
+    try:
+        if command.action == "cancel":
+            ok = manager.cancel_job(command.job_id)
+            message = "Cancellation requested"
+        elif command.action == "cleanup":
+            ok = manager.cleanup_worktree(command.job_id)
+            message = "Worktree removed"
+        elif command.action == "message":
+            ok = manager.send_message(command.job_id, command.message)
+            message = "Message queued"
+        else:
+            resumed_id = manager.follow_up(
+                parent_agent=ctx.agent,
+                job_id=command.job_id,
+                message=command.message,
+            )
+            ok = True
+            message = f"Follow-up started as {resumed_id}"
+    except (OSError, RuntimeError, ValueError) as error:
+        ok = False
+        message = str(error)
+
+    if ok:
+        ctx.effect.success(
+            f"{message}: {command.job_id}", kind=UIEventKind.COMMAND
+        )
+    else:
+        ctx.effect.error(
+            f"Sub-agent {command.action} failed: {message}", kind=UIEventKind.COMMAND
+        )
+    return ctx.effect.finish(control="continue")
+
+
 @register_command_module
 def register_actions(registry: ActionRegistry) -> None:
     registry.register_many(
@@ -197,6 +268,21 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/jobs wait <id>"),),
                 parser=_parse_wait_job,
                 handler=_handle_wait_job,
+            ),
+            ActionSpec(
+                action_id="subagent.jobs.control",
+                feature_id="subagent",
+                description="[session] Cancel, message, resume, or clean up a sub-agent job",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(
+                    slash_trigger("/jobs cancel <id>"),
+                    slash_trigger("/jobs message <id> <text>"),
+                    slash_trigger("/jobs resume <id> <text>"),
+                    slash_trigger("/jobs cleanup <id>"),
+                ),
+                parser=_parse_control_job,
+                handler=_handle_control_job,
             ),
         ]
     )

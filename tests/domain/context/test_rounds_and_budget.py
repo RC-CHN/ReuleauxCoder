@@ -1,6 +1,7 @@
 from reuleauxcoder.domain.context.budget import ContextBudget
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.context.rounds import group_api_rounds, recent_round_start
+from reuleauxcoder.domain.context.provider import ProviderCompactionResult
 
 
 def test_round_group_keeps_parallel_tool_outputs_with_call() -> None:
@@ -59,3 +60,23 @@ def test_compression_records_versioned_checkpoint() -> None:
     assert manager.history_version == 1
     assert manager.checkpoints[-1].source_history_version == 0
     assert manager.checkpoints[-1].replacement_history
+
+
+def test_provider_compaction_uses_provider_neutral_boundary() -> None:
+    class Adapter:
+        def compact_tool_results(self, messages, *, keep_recent_rounds):
+            assert keep_recent_rounds == 2
+            return ProviderCompactionResult(
+                messages=[{"role": "user", "content": "provider compacted"}]
+            )
+
+    manager = ContextManager(
+        max_tokens=2_000,
+        reserved_output_tokens=0,
+        safety_margin_tokens=0,
+        provider_compactor=Adapter(),
+    )
+    messages = [{"role": "user", "content": "alpha beta gamma " * 1_000}]
+    assert manager.maybe_compress(messages) is True
+    assert messages[0]["content"] == "provider compacted"
+    assert manager.checkpoints[-1].strategy == ("provider_tool_cache_compaction",)

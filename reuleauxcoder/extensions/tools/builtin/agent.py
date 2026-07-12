@@ -133,6 +133,12 @@ class AgentTool(Tool):
             return None
         if action != "spawn":
             return f"Error: unsupported sub-agent action '{action}'."
+        if (
+            self._parent_agent is not None
+            and int(getattr(self._parent_agent, "subagent_depth", 0)) > 0
+            and not run_in_background
+        ):
+            return "Error: nested sub-agents must run in background to avoid execution-pool deadlock."
         if not task_list:
             return "Error: 'tasks' must be a non-empty list of task strings."
 

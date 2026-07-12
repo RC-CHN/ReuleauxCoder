@@ -11,6 +11,7 @@ from reuleauxcoder.domain.context.rounds import (
     recent_round_start,
 )
 from reuleauxcoder.domain.context.summary import generate_summary
+from reuleauxcoder.domain.context.provider import ProviderContextCompactor
 
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
@@ -194,6 +195,7 @@ class ContextManager:
         fixed_prompt_tokens: int = 0,
         tool_schema_tokens: int = 0,
         safety_margin_tokens: int = 2_048,
+        provider_compactor: ProviderContextCompactor | None = None,
     ):
         self.max_tokens = max_tokens
         self._ui_bus = ui_bus
@@ -216,6 +218,7 @@ class ContextManager:
         self._history_version = 0
         self._checkpoints: list[CompactionCheckpoint] = []
         self._consecutive_summary_failures = 0
+        self._provider_compactor = provider_compactor
         # State tracking
         self._last_compact_tokens = 0
         self._last_compact_strategy: str | None = None
@@ -283,6 +286,16 @@ class ContextManager:
         applied_layers: list[str] = []
 
         current = before_tokens
+
+        if current > self._snip_at and self._provider_compactor is not None:
+            provider_result = self._provider_compactor.compact_tool_results(
+                list(messages), keep_recent_rounds=self._snip_keep_recent_tools
+            )
+            if provider_result is not None:
+                messages[:] = provider_result.messages
+                current = self.get_context_tokens(messages)
+                compressed = True
+                applied_layers.append("provider_tool_cache_compaction")
 
         # Cheap-first even above the emergency wall. A single large observation
         # must not cause an avoidable destructive collapse.

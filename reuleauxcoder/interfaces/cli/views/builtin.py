@@ -361,6 +361,7 @@ def render_subagent_jobs_view(renderer, event) -> bool:
     table.add_column("Status")
     table.add_column("Mode")
     table.add_column("Generation")
+    table.add_column("Depth")
     table.add_column("Task")
     for job in model.jobs[:20]:
         table.add_row(
@@ -368,6 +369,7 @@ def render_subagent_jobs_view(renderer, event) -> bool:
             job.status,
             job.mode,
             str(job.generation),
+            str(job.depth),
             job.task,
         )
     renderer.console.print(table)
@@ -387,6 +389,10 @@ def render_subagent_jobs_view(renderer, event) -> bool:
                 max_chars=renderer.policy.tool_preview_chars,
             )
             renderer.console.print(result, markup=False, soft_wrap=True)
+        if job.transcript_ref:
+            renderer.console.print(f"Transcript: {job.transcript_ref}", markup=False)
+        if job.worktree_path:
+            renderer.console.print(f"Worktree: {job.worktree_path}", markup=False)
     return True
 
 
