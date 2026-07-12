@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -6,7 +8,10 @@ from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.extensions.subagent.context import project_parent_context
 from reuleauxcoder.extensions.subagent.isolation import create_worktree, remove_worktree
 from reuleauxcoder.extensions.subagent.manager import SubagentManager
-from reuleauxcoder.extensions.subagent.models import SubagentResult
+from reuleauxcoder.extensions.subagent.models import (
+    SubagentResult,
+    SubagentTranscriptStore,
+)
 
 
 class _Parent:
@@ -46,6 +51,23 @@ def test_result_projection_hash_ignores_wall_clock_duration() -> None:
     assert first.content_hash() == second.content_hash()
     assert first.model_text() == second.model_text()
     assert "duration_seconds" not in first.model_text()
+
+
+def test_transcript_checkpoint_is_atomic_and_hash_validated(tmp_path) -> None:
+    store = SubagentTranscriptStore(tmp_path)
+    reference = store.write(
+        "sj_hash",
+        [{"role": "assistant", "content": "stable"}],
+        {"status": "blocked"},
+    )
+    assert store.read(reference) == [
+        {"role": "assistant", "content": "stable"}
+    ]
+    payload = json.loads(Path(reference).read_text(encoding="utf-8"))
+    payload["messages"][0]["content"] = "tampered"
+    Path(reference).write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="hash mismatch"):
+        store.read(reference)
 
 
 def test_background_completion_is_drained_from_mailbox(monkeypatch) -> None:

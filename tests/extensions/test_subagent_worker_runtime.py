@@ -636,6 +636,13 @@ def test_guidance_parks_and_resumes_same_job_with_stable_replay_prefix(
         assert parked is not None and parked.status == "blocked"
         assert parked.guidance_request_id
         assert parked.resume_reference
+        checkpoint_payload = json.loads(
+            Path(parked.resume_reference).read_text(encoding="utf-8")
+        )
+        assert checkpoint_payload["content_hash"]
+        assert checkpoint_payload["metadata"]["checkpoint_id"].startswith("cp_")
+        assert checkpoint_payload["metadata"]["tool_adjacency_complete"] is True
+        assert checkpoint_payload["metadata"]["worker_generation"] == 1
         assert manager.wait_for_parent_activity(root.agent_id, timeout=0) is True
 
         assert manager.send_message(

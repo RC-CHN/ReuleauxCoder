@@ -16,6 +16,7 @@ WorkerMessageType = Literal[
     "tool_request",
     "tool_result",
     "directive",
+    "park_ack",
     "checkpoint",
     "terminal",
 ]
@@ -166,6 +167,7 @@ class WorkerEnvelope:
             "tool_request",
             "tool_result",
             "directive",
+            "park_ack",
             "checkpoint",
             "terminal",
         }:

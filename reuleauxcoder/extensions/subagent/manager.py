@@ -1201,6 +1201,39 @@ class SubagentManager:
             _publish_job_event(self._root_agent, job)
         return True
 
+    def commit_worker_checkpoint(
+        self,
+        job_id: str,
+        reference: str,
+        checkpoint,
+    ) -> bool:
+        """Durably project a provider-safe checkpoint before ParkAck."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if (
+                job is None
+                or job.generation != self._generation
+                or job.status not in {"parking", "running"}
+                or job.cancel_requested
+            ):
+                return False
+            if (
+                job.guidance_request_id
+                and checkpoint.guidance_request_id != job.guidance_request_id
+            ):
+                return False
+            job.status = "blocked"
+            job.resume_reference = reference
+            job.prompt_tokens = checkpoint.prompt_tokens
+            job.completion_tokens = checkpoint.completion_tokens
+            job.tool_calls = checkpoint.tool_calls
+            job.model_calls = checkpoint.model_calls
+            job.current_tool = None
+            job.last_activity_at = time.time()
+        if self._root_agent is not None:
+            _publish_job_event(self._root_agent, job)
+        return True
+
     def drain_parent_messages(self, parent_agent_id: str) -> list[SubagentCommunication]:
         with self._lock:
             selected = [
@@ -1920,6 +1953,17 @@ def run_subagent_task(
             (lambda: manager.drain_messages(job_id)) if job_id else None
         ),
         event_sink=parent_event_sink if callable(parent_event_sink) else None,
+        checkpoint_sink=(
+            (
+                lambda reference, checkpoint, _payload: (
+                    manager.commit_worker_checkpoint(
+                        job_id, reference, checkpoint
+                    )
+                )
+            )
+            if job_id
+            else None
+        ),
     )
     sub.state.messages = list(execution.messages)
     sub.state.total_prompt_tokens = execution.prompt_tokens

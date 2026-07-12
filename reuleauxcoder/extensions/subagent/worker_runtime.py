@@ -35,6 +35,7 @@ from reuleauxcoder.extensions.subagent.worker_protocol import (
     WorkerToolSpec,
     ToolResultRef,
 )
+from reuleauxcoder.extensions.subagent.models import SubagentTranscriptStore
 from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.services.llm.client import LLM
 
@@ -92,6 +93,7 @@ class WorkerIPCClient:
         self._sequence = 0
         self._tool_results: dict[str, ToolOutcome] = {}
         self._directives: list[str] = []
+        self._park_acks: set[str] = set()
         self._closed = False
         self._receiver = threading.Thread(target=self._receive_loop, daemon=True)
         self._receiver.start()
@@ -134,6 +136,19 @@ class WorkerIPCClient:
             self._directives = []
             return directives
 
+    def wait_for_park_ack(self, checkpoint_id: str, *, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        with self._state_lock:
+            while checkpoint_id not in self._park_acks:
+                if self.cancellation_event.is_set() or self._closed:
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._state_lock.wait(timeout=min(0.05, remaining))
+            self._park_acks.remove(checkpoint_id)
+            return True
+
     def _receive_loop(self) -> None:
         try:
             while True:
@@ -162,6 +177,13 @@ class WorkerIPCClient:
                             f"directive_id={directive_id}\n"
                             f"sender_agent_id={sender}\n\n{content}"
                         )
+                        self._state_lock.notify_all()
+                elif envelope.type == "park_ack":
+                    checkpoint_id = str(
+                        envelope.payload.get("checkpoint_id") or ""
+                    )
+                    with self._state_lock:
+                        self._park_acks.add(checkpoint_id)
                         self._state_lock.notify_all()
         except (EOFError, OSError, TypeError, ValueError):
             with self._state_lock:
@@ -387,19 +409,28 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
             else "ok"
         )
         if status == "blocked":
+            checkpoint_state = {
+                "messages": child.messages,
+                "prompt_tokens": child.state.total_prompt_tokens,
+                "completion_tokens": child.state.total_completion_tokens,
+                "tool_calls": child.state.total_tool_calls,
+                "guidance_request_id": child._park_request.get(
+                    "guidance_request_id"
+                ),
+                "model_calls": child.state.total_model_calls,
+            }
+            checkpoint_id = "cp_" + _stable_hash(checkpoint_state)[:16]
             client.send(
                 "checkpoint",
                 {
-                    "messages": child.messages,
-                    "prompt_tokens": child.state.total_prompt_tokens,
-                    "completion_tokens": child.state.total_completion_tokens,
-                    "tool_calls": child.state.total_tool_calls,
-                    "guidance_request_id": child._park_request.get(
-                        "guidance_request_id"
-                    ),
-                    "model_calls": child.state.total_model_calls,
+                    "checkpoint_id": checkpoint_id,
+                    **checkpoint_state,
                 },
             )
+            if not client.wait_for_park_ack(checkpoint_id):
+                raise RuntimeError(
+                    f"checkpoint {checkpoint_id} was not durably acknowledged"
+                )
         client.send(
             "terminal",
             {
@@ -443,6 +474,9 @@ def run_isolated_worker(
     timeout_seconds: int,
     directive_source: Callable[[], list] | None = None,
     event_sink: Callable[[AgentEvent], None] | None = None,
+    checkpoint_sink: (
+        Callable[[str, WorkerExecutionResult, dict[str, Any]], bool] | None
+    ) = None,
     grace_seconds: float = 0.75,
 ) -> WorkerExecutionResult:
     """Supervise one spawn worker, broker tools, and enforce hard cancellation."""
@@ -566,6 +600,17 @@ def run_isolated_worker(
                 )
                 thread.start()
             elif envelope.type == "checkpoint":
+                checkpoint_id = str(
+                    envelope.payload.get("checkpoint_id") or ""
+                )
+                if not checkpoint_id:
+                    terminal = WorkerExecutionResult(
+                        status="failed",
+                        summary="Worker checkpoint omitted checkpoint_id.",
+                        messages=[],
+                    )
+                    process_cancel.set()
+                    break
                 checkpoint = WorkerExecutionResult(
                     status="blocked",
                     summary="Subagent parked awaiting guidance.",
@@ -582,6 +627,28 @@ def run_isolated_worker(
                     ),
                     model_calls=int(envelope.payload.get("model_calls") or 0),
                 )
+                try:
+                    reference = _persist_worker_checkpoint(
+                        spec,
+                        checkpoint_id=checkpoint_id,
+                        checkpoint=checkpoint,
+                    )
+                    accepted = (
+                        checkpoint_sink(reference, checkpoint, envelope.payload)
+                        if checkpoint_sink is not None
+                        else True
+                    )
+                    if not accepted:
+                        raise RuntimeError("checkpoint sink rejected transition")
+                except (OSError, TypeError, ValueError, RuntimeError) as error:
+                    terminal = WorkerExecutionResult(
+                        status="failed",
+                        summary=f"Checkpoint persistence failed: {error}",
+                        messages=checkpoint.messages,
+                    )
+                    process_cancel.set()
+                    break
+                send("park_ack", {"checkpoint_id": checkpoint_id})
             elif envelope.type == "terminal":
                 terminal = WorkerExecutionResult(
                     status=str(envelope.payload.get("status") or "failed"),
@@ -675,3 +742,54 @@ def _validate_tool_result_ref(
         != reference.model_view_hash
     ):
         raise ValueError("tool result model view checksum mismatch")
+
+
+def _persist_worker_checkpoint(
+    spec: WorkerSpec,
+    *,
+    checkpoint_id: str,
+    checkpoint: WorkerExecutionResult,
+) -> str:
+    root = Path(spec.working_directory or Path.cwd())
+    metadata = {
+        "status": "blocked",
+        "checkpoint_id": checkpoint_id,
+        "session_generation": spec.session_generation,
+        "worker_generation": spec.worker_generation,
+        "cancellation_epoch": spec.cancellation_epoch,
+        "tool_schema_hash": _stable_hash(
+            [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+                for tool in spec.tools
+            ]
+        ),
+        "model_settings_hash": _stable_hash(spec.llm_kwargs),
+        "working_directory": spec.working_directory,
+        "usage": {
+            "prompt_tokens": checkpoint.prompt_tokens,
+            "completion_tokens": checkpoint.completion_tokens,
+            "tool_calls": checkpoint.tool_calls,
+            "model_calls": checkpoint.model_calls,
+        },
+        "guidance_request_id": checkpoint.guidance_request_id,
+        "tool_adjacency_complete": True,
+    }
+    return SubagentTranscriptStore(root).write(
+        spec.job_id,
+        checkpoint.messages,
+        metadata,
+    )
+
+
+def _stable_hash(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

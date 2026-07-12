@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
+import os
 from pathlib import Path
 import time
+import uuid
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,16 +93,40 @@ class SubagentTranscriptStore:
     def write(self, job_id: str, messages: list[dict], metadata: dict) -> str:
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.root / f"{job_id}.json"
-        payload = {
+        stable = {
             "job_id": job_id,
             "saved_at": time.time(),
             "metadata": metadata,
             "messages": messages,
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = {
+            **stable,
+            "content_hash": _checkpoint_hash(stable),
+        }
+        temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
         return str(path)
 
     def read(self, reference: str | Path) -> list[dict]:
         payload = json.loads(Path(reference).read_text(encoding="utf-8"))
+        expected = payload.get("content_hash")
+        if expected:
+            stable = {key: value for key, value in payload.items() if key != "content_hash"}
+            if _checkpoint_hash(stable) != expected:
+                raise ValueError("subagent transcript checkpoint hash mismatch")
         messages = payload.get("messages", [])
         return [dict(item) for item in messages if isinstance(item, dict)]
+
+
+def _checkpoint_hash(payload: dict) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
