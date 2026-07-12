@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 
+from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.extensions.subagent.context import project_parent_context
 from reuleauxcoder.extensions.subagent.isolation import create_worktree, remove_worktree
 from reuleauxcoder.extensions.subagent.manager import SubagentManager
@@ -15,11 +16,15 @@ class _Parent:
     subagent_depth = 0
 
     def __init__(self) -> None:
+        self.history_ledger = HistoryLedger(session_id="session", agent_id="root")
         self.messages = [
             {"role": "user", "content": "old request"},
             {"role": "assistant", "content": "old answer"},
             {"role": "user", "content": "current request"},
         ]
+
+    def persist_runtime_snapshot(self) -> None:
+        pass
 
 
 def test_context_projection_modes_are_bounded() -> None:
@@ -92,7 +97,8 @@ def test_running_agent_message_queue_is_lossless(monkeypatch) -> None:
 
     monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
     manager = SubagentManager(max_parallel_explore=1)
-    job_id = manager.submit_background(parent_agent=_Parent(), task="wait", mode="explore")
+    parent = _Parent()
+    job_id = manager.submit_background(parent_agent=parent, task="wait", mode="explore")
     for _ in range(100):
         if manager.get_job(job_id).status == "running":
             break
@@ -100,6 +106,16 @@ def test_running_agent_message_queue_is_lossless(monkeypatch) -> None:
     assert manager.send_message(job_id, "new constraint") is True
     assert manager.drain_messages(job_id) == ["new constraint"]
     assert manager.drain_messages(job_id) == []
+    communication_events = [
+        event
+        for event in parent.history_ledger.events
+        if event.kind.startswith("subagent_communication_")
+        and event.payload.get("direction") == "parent_to_child"
+    ]
+    assert [event.kind for event in communication_events] == [
+        "subagent_communication_queued",
+        "subagent_communication_delivered",
+    ]
     release.set()
     manager.wait_job(job_id, timeout=2)
     manager.shutdown()

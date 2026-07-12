@@ -115,10 +115,43 @@ def _publish_communication_event(
             "generation": item.generation,
             "kind": item.kind,
             "content_hash": item.content_hash,
+            "direction": "child_to_parent",
         },
         agent_id=item.sender_agent_id,
         parent_agent_id=item.recipient_agent_id,
         job_id=item.sender_job_id,
+        turn_id=getattr(parent_agent, "_current_turn_id", None),
+    )
+    persist = getattr(parent_agent, "persist_runtime_snapshot", None)
+    if callable(persist):
+        persist()
+
+
+def _publish_directive_event(
+    parent_agent,
+    *,
+    directive_id: str,
+    target_job_id: str,
+    sender_agent_id: str,
+    content: str,
+    generation: int,
+    status: str,
+) -> None:
+    ledger = getattr(parent_agent, "history_ledger", None)
+    if ledger is None:
+        return
+    ledger.append(
+        f"subagent_communication_{status}",
+        {
+            "item_id": directive_id,
+            "direction": "parent_to_child",
+            "target_job_id": target_job_id,
+            "sender_agent_id": sender_agent_id,
+            "content": content,
+            "generation": generation,
+        },
+        agent_id=sender_agent_id,
+        job_id=target_job_id,
         turn_id=getattr(parent_agent, "_current_turn_id", None),
     )
     persist = getattr(parent_agent, "persist_runtime_snapshot", None)
@@ -344,6 +377,7 @@ class SubagentManager:
                 raise ValueError(
                     "SubagentManager generation does not match the parent session"
                 )
+        self.bind_root_agent(parent_agent)
 
         if parallel_explore is not None:
             self.set_runtime_parallel_explore(parallel_explore)
@@ -684,10 +718,14 @@ class SubagentManager:
                 if job_id:
                     latest[job_id] = dict(payload)
             elif kind == "subagent_communication_queued":
+                if payload.get("direction") == "parent_to_child":
+                    continue
                 item_id = str(payload.get("item_id") or "")
                 if item_id:
                     queued_messages[item_id] = dict(payload)
             elif kind == "subagent_communication_delivered":
+                if payload.get("direction") == "parent_to_child":
+                    continue
                 item_id = str(payload.get("item_id") or "")
                 if item_id:
                     delivered_messages.add(item_id)
@@ -991,19 +1029,33 @@ class SubagentManager:
         job.completion_seq = self._allocate_sequence_locked()
         self._completion_mailbox.append(job.id)
 
-    def send_message(self, job_id: str, message: str) -> bool:
+    def send_message(
+        self, job_id: str, message: str, *, sender_agent_id: str | None = None
+    ) -> bool:
         """Queue a message for a running worker; it is consumed next model round."""
 
         text = message.strip()
         if not text:
             return False
+        directive_id = f"sd_{uuid.uuid4().hex[:12]}"
+        sender = sender_agent_id or self._parent_agent_id or "root"
         with self._lock:
             job = self._jobs.get(job_id)
             queue = self._message_queues.get(job_id)
             if job is None or queue is None or job.status not in {"queued", "running"}:
                 return False
-            queue.append(text)
-            return True
+            queue.append((directive_id, text, sender))
+        if self._root_agent is not None:
+            _publish_directive_event(
+                self._root_agent,
+                directive_id=directive_id,
+                target_job_id=job_id,
+                sender_agent_id=sender,
+                content=text,
+                generation=self._generation,
+                status="queued",
+            )
+        return True
 
     def drain_messages(self, job_id: str) -> list[str]:
         with self._lock:
@@ -1012,7 +1064,18 @@ class SubagentManager:
                 return []
             messages = list(queue)
             queue.clear()
-            return messages
+        for directive_id, content, sender in messages:
+            if self._root_agent is not None:
+                _publish_directive_event(
+                    self._root_agent,
+                    directive_id=directive_id,
+                    target_job_id=job_id,
+                    sender_agent_id=sender,
+                    content=content,
+                    generation=self._generation,
+                    status="delivered",
+                )
+        return [content for _directive_id, content, _sender in messages]
 
     def follow_up(
         self,

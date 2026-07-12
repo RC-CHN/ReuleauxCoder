@@ -273,7 +273,11 @@ class AgentTool(Tool):
                 return "Error: message action requires one tasks entry as the message."
             return (
                 f"Message queued for sub-agent: {target_job_id}"
-                if manager.send_message(target_job_id or "", task_list[0])
+                if manager.send_message(
+                    target_job_id or "",
+                    task_list[0],
+                    sender_agent_id=parent.agent_id,
+                )
                 else "Error: target sub-agent is not running."
             )
         if action == "report":
