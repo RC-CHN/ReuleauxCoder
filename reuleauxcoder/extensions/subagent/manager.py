@@ -392,7 +392,7 @@ class SubagentManager:
         model_profile_name: str | None = None,
         context_mode: str = "recent",
         parent_job_id: str | None = None,
-        depth: int = 0,
+        depth: int = 1,
         worktree: bool = False,
         resume_reference: str | None = None,
         max_tool_calls: int | None = 80,
@@ -1548,7 +1548,7 @@ def run_subagent_task(
     cancel_event: threading.Event | None = None,
     job_id: str | None = None,
     context_mode: str = "recent",
-    depth: int = 0,
+    depth: int = 1,
     worktree: bool = False,
     resume_reference: str | None = None,
     resume_directives: tuple[str, ...] = (),
@@ -1615,8 +1615,7 @@ def run_subagent_task(
         agent_id=sub.agent_id,
     )
     sub.session_generation = getattr(parent_agent, "session_generation", 0)
-    child_depth = depth + 1
-    sub.subagent_depth = child_depth
+    sub.subagent_depth = depth
     sub.parent_agent_id = parent_agent.agent_id
     sub.subagent_job_id = job_id
     sub.subagent_mode = mode
@@ -1626,7 +1625,7 @@ def run_subagent_task(
     parent_event_sink = getattr(parent_agent, "_emit_event", None)
     manager.register_child_agent(
         sub.agent_id,
-        child_depth,
+        depth,
         parent_agent_id=parent_agent.agent_id,
         job_id=job_id,
     )
