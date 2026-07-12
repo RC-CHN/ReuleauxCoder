@@ -1524,6 +1524,7 @@ class SubagentManager:
                 job.error = "Sub-agent cancelled while awaiting guidance."
                 self._enqueue_completion_locked(job)
             self._slot_cv.notify_all()
+        self._cancel_job_approvals(job_id)
         if was_blocked:
             if self._root_agent is not None:
                 _publish_job_event(self._root_agent, job)
@@ -1536,6 +1537,27 @@ class SubagentManager:
                 job.status = "cancelled"
                 job.finished_at = job.finished_at or time.time()
         return True
+
+    def _cancel_job_approvals(self, job_id: str) -> int:
+        root = self._root_agent
+        provider = getattr(root, "approval_provider", None)
+        coordinator = getattr(provider, "coordinator", None)
+        cancel_matching = getattr(coordinator, "cancel_matching", None)
+        if not callable(cancel_matching):
+            return 0
+        request_ids = cancel_matching(
+            lambda request: request.metadata.get("subagent_job_id") == job_id,
+            reason=f"sub-agent {job_id} cancelled",
+        )
+        interactor = getattr(root, "ui_interactor", None)
+        cancel_interaction = getattr(interactor, "cancel", None)
+        if callable(cancel_interaction):
+            for request_id in request_ids:
+                cancel_interaction(
+                    request_id,
+                    reason=f"sub-agent {job_id} cancelled",
+                )
+        return len(request_ids)
 
     def advance_generation(
         self,

@@ -72,3 +72,51 @@ def test_handler_failure_denies_and_promotes_next_request() -> None:
     assert "failed closed" in (denied.reason or "")
     assert allowed.approved is True
     assert calls == ["broken", "next"]
+
+
+def test_cancel_matching_denies_focused_and_queued_requests() -> None:
+    presented = []
+    focused = threading.Event()
+    release_handler = threading.Event()
+    decisions = []
+
+    def handler(pending) -> None:
+        presented.append(pending.request.tool_name)
+        focused.set()
+        release_handler.wait(timeout=2)
+
+    coordinator = ApprovalCoordinator(handler, timeout=2)
+
+    def request(name: str, job_id: str) -> None:
+        decisions.append(
+            coordinator.request_approval(
+                ApprovalRequest(
+                    tool_name=name,
+                    metadata={"subagent_job_id": job_id},
+                )
+            )
+        )
+
+    first = threading.Thread(target=request, args=("write_file", "sj_cancel"))
+    second = threading.Thread(target=request, args=("shell", "sj_cancel"))
+    first.start()
+    assert focused.wait(timeout=1)
+    second.start()
+    for _ in range(100):
+        if coordinator.pending_count == 2:
+            break
+        threading.Event().wait(0.005)
+
+    request_ids = coordinator.cancel_matching(
+        lambda item: item.metadata.get("subagent_job_id") == "sj_cancel",
+        reason="child cancelled",
+    )
+    release_handler.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert len(request_ids) == 2
+    assert presented == ["write_file"]
+    assert all(not decision.approved for decision in decisions)
+    assert all(decision.reason == "child cancelled" for decision in decisions)
+    assert coordinator.pending_count == 0

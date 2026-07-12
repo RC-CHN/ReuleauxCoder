@@ -225,6 +225,10 @@ class ApprovalCoordinator(ApprovalProvider):
             self._condition.notify_all()
             while self._queue and self._queue[0] is not pending:
                 self._condition.wait()
+            if pending.event.is_set():
+                return pending.decision or ApprovalDecision.deny_once(
+                    "approval cancelled"
+                )
 
         try:
             try:
@@ -251,3 +255,24 @@ class ApprovalCoordinator(ApprovalProvider):
                     except ValueError:
                         pass
                 self._condition.notify_all()
+
+    def cancel_matching(
+        self,
+        predicate: Callable[[ApprovalRequest], bool],
+        *,
+        reason: str,
+    ) -> tuple[str, ...]:
+        """Fail closed queued/focused approvals matching one runtime owner."""
+        with self._condition:
+            matches = [
+                pending for pending in self._queue if predicate(pending.request)
+            ]
+            for pending in matches:
+                try:
+                    self._queue.remove(pending)
+                except ValueError:  # pragma: no cover - lock makes this defensive
+                    continue
+                pending.resolve(ApprovalDecision.deny_once(reason))
+            if matches:
+                self._condition.notify_all()
+            return tuple(pending.request.request_id for pending in matches)
