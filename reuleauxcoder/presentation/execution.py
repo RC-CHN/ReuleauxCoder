@@ -176,7 +176,14 @@ class ExecutionViewReducer:
             agent.last_activity_at = event.timestamp
             agent.animation_lease_until = event.timestamp + self.animation_lease_seconds
             attention_id = f"job:{payload.job_id}"
-            if payload.status in {"failed", "stale", "blocked", "killed", "timed_out"}:
+            if payload.status in {
+                "failed",
+                "stale",
+                "blocked",
+                "killed",
+                "timed_out",
+                "indeterminate",
+            }:
                 self.state.attention[attention_id] = AttentionItem(
                     request_id=attention_id,
                     title=f"{agent.label}: {payload.error or payload.status}",
@@ -298,7 +305,11 @@ def execution_panel_lines(
         marker = (
             ("◐", "◓", "◑", "◒")[int(now * 8) % 4]
             if agent.is_animating(now)
-            else ("!" if agent.status in {"failed", "blocked", "stale"} else "○")
+            else (
+                "!"
+                if agent.status in {"failed", "blocked", "stale", "indeterminate"}
+                else "○"
+            )
         )
         branch = "├─" if index < len(active_agents[:4]) - 1 else "└─"
         task = agent.task or "working"

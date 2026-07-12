@@ -21,6 +21,7 @@ _TERMINAL = {
     "cancelled",
     "killed",
     "timed_out",
+    "indeterminate",
     "stale",
 }
 

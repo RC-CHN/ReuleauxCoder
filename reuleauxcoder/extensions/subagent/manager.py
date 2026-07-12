@@ -635,11 +635,16 @@ class SubagentManager:
                             "failed",
                             "error",
                             "unverified",
+                            "indeterminate",
                         }:
                             tracked.structured_result = result
                             tracked.result = result.summary
                             tracked.worktree_path = result.worktree_path
-                            tracked.status = "failed"
+                            tracked.status = (
+                                "indeterminate"
+                                if result.status == "indeterminate"
+                                else "failed"
+                            )
                             tracked.error = result.summary
                         elif "[Sub-agent finished status=cancelled]" in result_text:
                             tracked.status = "cancelled"
@@ -791,6 +796,7 @@ class SubagentManager:
             "cancelled",
             "killed",
             "timed_out",
+            "indeterminate",
             "stale",
         }
         visible_context = "\n".join(
@@ -1272,6 +1278,7 @@ class SubagentManager:
             "cancelled",
             "killed",
             "timed_out",
+            "indeterminate",
         }
 
     def _enqueue_completion_locked(self, job: SubagentJob) -> None:
@@ -1439,6 +1446,7 @@ class SubagentManager:
             "cancelled",
             "killed",
             "timed_out",
+            "indeterminate",
             "stale",
         }
         with self._slot_cv:
@@ -1467,6 +1475,7 @@ class SubagentManager:
                     "cancelled",
                     "killed",
                     "timed_out",
+                    "indeterminate",
                     "stale",
                 }
             ):
@@ -1535,6 +1544,7 @@ class SubagentManager:
             "cancelled",
             "killed",
             "timed_out",
+            "indeterminate",
             "stale",
         }
         with self._lock:
@@ -1619,6 +1629,7 @@ class SubagentManager:
                     "cancelled",
                     "killed",
                     "timed_out",
+                    "indeterminate",
                 }:
                     continue
                 if parent_state_lock is not None:
@@ -1935,7 +1946,15 @@ def run_subagent_task(
         started_at=started_at,
         job_id=job_id,
         parent_agent=parent_agent,
-        partial=status in {"blocked", "cancelled", "killed", "timed_out", "failed"},
+        partial=status
+        in {
+            "blocked",
+            "cancelled",
+            "killed",
+            "timed_out",
+            "failed",
+            "indeterminate",
+        },
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result

@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import time
+from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
@@ -124,6 +125,22 @@ def test_parent_tool_broker_archives_large_ipc_outcome_by_content_hash(
     projected = tool_outcome_from_dict(payload["outcome"])
     assert projected.content is None
     assert projected.model_text == "bounded model view"
+
+
+def test_parent_tool_broker_classifies_effectful_scoped_tools() -> None:
+    cancel = threading.Event()
+    readonly = SimpleNamespace(name="read_file", effect_class="read_only_internal")
+    effectful = SimpleNamespace(name="shell", effect_class="process_execution")
+    broker_agent = Agent(llm=_UnusedLLM(), tools=[], agent_id="broker-effects")
+    broker_agent.tools = [readonly, effectful]
+    broker = ParentToolBroker(
+        broker_agent,
+        cancellation_event=cancel,
+        event_sink=None,
+    )
+
+    assert broker.is_effectful("read_file") is False
+    assert broker.is_effectful("shell") is True
 
 
 class _StreamingHandler(BaseHTTPRequestHandler):

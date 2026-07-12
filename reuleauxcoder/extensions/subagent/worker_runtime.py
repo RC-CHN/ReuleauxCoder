@@ -300,6 +300,14 @@ class ParentToolBroker:
             "outcome_ref": reference.to_dict(),
         }
 
+    def is_effectful(self, tool_name: str) -> bool:
+        tool = next(
+            (candidate for candidate in self.agent.tools if candidate.name == tool_name),
+            None,
+        )
+        effect_class = getattr(tool, "effect_class", None)
+        return effect_class in {"workspace_write", "process_execution", "remote_effect"}
+
 
 def worker_process_main(spec_data: dict[str, Any], connection: Connection, cancel) -> None:
     """Spawn target: run one child model loop and no workspace primitives."""
@@ -457,6 +465,8 @@ def run_isolated_worker(
     checkpoint: WorkerExecutionResult | None = None
     tool_results: Queue[tuple[str, ToolOutcome]] = Queue()
     active_tool = False
+    active_tool_name: str | None = None
+    worker_crash_indeterminate = False
 
     def send(message_type: str, payload: dict[str, Any]) -> None:
         nonlocal parent_sequence
@@ -511,6 +521,7 @@ def run_isolated_worker(
                     pass
                 else:
                     active_tool = False
+                    active_tool_name = None
                     if cancel_started is None:
                         send(
                             "tool_result",
@@ -541,6 +552,7 @@ def run_isolated_worker(
                     event_sink(runtime_event_to_agent_event(runtime))
             elif envelope.type == "tool_request" and not active_tool:
                 active_tool = True
+                active_tool_name = str(envelope.payload.get("name") or "")
                 thread = threading.Thread(
                     target=execute_tool,
                     args=(
@@ -589,6 +601,14 @@ def run_isolated_worker(
                 )
                 break
     finally:
+        if (
+            terminal is None
+            and active_tool
+            and active_tool_name is not None
+            and broker.is_effectful(active_tool_name)
+        ):
+            worker_crash_indeterminate = True
+            cancel_event.set()
         if process.is_alive():
             process_cancel.set()
             process.terminate()
@@ -597,6 +617,15 @@ def run_isolated_worker(
 
     if terminal is not None and cancel_started is None:
         return terminal
+    if worker_crash_indeterminate:
+        return WorkerExecutionResult(
+            status="indeterminate",
+            summary=(
+                "Worker exited while effectful tool "
+                f"'{active_tool_name}' had no committed outcome; manual inspection required."
+            ),
+            messages=checkpoint.messages if checkpoint else [],
+        )
     if cancel_event.is_set():
         return WorkerExecutionResult(
             status="killed" if process.exitcode not in {0, None} else "cancelled",

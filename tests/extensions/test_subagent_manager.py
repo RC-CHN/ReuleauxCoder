@@ -630,6 +630,28 @@ def test_child_progress_and_tool_activity_update_job_snapshot(monkeypatch) -> No
     manager.shutdown()
 
 
+def test_indeterminate_worker_result_is_attention_terminal(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task",
+        lambda **_kwargs: SubagentResult(
+            status="indeterminate",
+            summary="write outcome unknown",
+            partial=True,
+        ),
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent, task="write", mode="execute", auto_verify=False
+    )
+    job = manager.wait_job(job_id, timeout=2)
+
+    assert job is not None and job.status == "indeterminate"
+    assert job.error == "write outcome unknown"
+    assert [item.id for item in manager.drain_completed_for_parent()] == [job_id]
+    manager.shutdown()
+
+
 def test_cancelling_queued_future_does_not_deadlock_callback(monkeypatch) -> None:
     release = threading.Event()
 
