@@ -266,4 +266,6 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
     plan_controller = getattr(agent, "plan_controller", None)
     if plan_controller is not None:
         plan_controller.restore(runtime.plan_state, runtime.progress_state)
-    agent.context.restore_checkpoints(list(getattr(session, "checkpoints", ())))
+    restore_checkpoints = getattr(agent.context, "restore_checkpoints", None)
+    if callable(restore_checkpoints):
+        restore_checkpoints(list(getattr(session, "checkpoints", ())))

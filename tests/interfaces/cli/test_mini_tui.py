@@ -105,3 +105,18 @@ def test_session_switch_replaces_execution_projection() -> None:
     assert adapter.execution.state.plan_revision == 1
     assert adapter.execution.state.progress_summary == "restored"
     assert adapter.execution.state.active_plan_item.step == "new session"
+
+
+def test_restored_conversation_replays_human_rows_only() -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.append_restored_conversation(
+        [
+            {"role": "user", "content": "continue work"},
+            {"role": "assistant", "content": "working"},
+            {"role": "tool", "content": "internal"},
+        ]
+    )
+    rendered = "".join(text for _style, text in adapter.transcript_fragments())
+    assert "continue work" in rendered
+    assert "working" in rendered
+    assert "internal" not in rendered

@@ -110,7 +110,23 @@ class MiniTUIEventAdapter:
             else:
                 message = event.message
                 if isinstance(event.payload, ViewEventPayload):
-                    message = _view_text(event.payload)
+                    if (
+                        event.payload.view_type == "session_resume"
+                        and hasattr(event.payload.view_model, "entries")
+                    ):
+                        model = event.payload.view_model
+                        self.append_restored_conversation(
+                            [
+                                {"role": entry.role, "content": entry.content}
+                                for entry in model.entries
+                            ]
+                        )
+                        message = (
+                            f"RESTORED {model.session_id} · {model.model} · "
+                            f"{model.saved_at[:19]}"
+                        )
+                    else:
+                        message = _view_text(event.payload)
                 if message:
                     self._notice_seq += 1
                     self.transcript.append_notice(
@@ -171,6 +187,24 @@ class MiniTUIEventAdapter:
                         **envelope,
                     )
                 )
+        self._invalidate()
+
+    def append_restored_conversation(self, entries) -> None:
+        """Replay a bounded human transcript without adding model history."""
+        with self._lock:
+            for index, entry in enumerate(entries):
+                role = entry.get("role")
+                content = str(entry.get("content") or "")
+                cell_id = f"restored:{index}:{self._notice_seq}"
+                if role == "user":
+                    self.transcript.state.transcript.append(
+                        UserCell(id=cell_id, text=content)
+                    )
+                elif role == "assistant":
+                    self.transcript.state.transcript.append(
+                        AssistantCell(id=cell_id, text=content, complete=True)
+                    )
+            self._notice_seq += 1
         self._invalidate()
 
     def panel_lines(self, width: int) -> tuple[str, ...]:
@@ -707,6 +741,20 @@ def _cancelled_response(request, reason: str):
 
 def _view_text(payload: ViewEventPayload) -> str:
     model = payload.view_model
+    if payload.view_type == "session_resume" and hasattr(model, "entries"):
+        lines = [
+            f"RESTORED {model.session_id} · {model.model} · {model.saved_at[:19]}"
+        ]
+        lines.extend(
+            f"{'YOU' if entry.role == 'user' else 'AGENT'}  {entry.content}"
+            for entry in model.entries
+        )
+        return "\n".join(lines)
+    if hasattr(model, "to_payload"):
+        try:
+            return json.dumps(model.to_payload(), ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     if hasattr(model, "to_dict"):
         try:
             return json.dumps(model.to_dict(), ensure_ascii=False, indent=2)

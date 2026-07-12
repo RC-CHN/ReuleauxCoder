@@ -95,6 +95,18 @@ def main():
         )
 
         event_adapter = MiniTUIEventAdapter(root_agent_id=ctx.agent.agent_id)
+        if ctx.current_session_id and ctx.agent.messages:
+            from reuleauxcoder.domain.session.models import Session
+
+            replay_session = Session(
+                id=ctx.current_session_id,
+                model=ctx.config.model,
+                saved_at="",
+                messages=list(ctx.agent.messages),
+            )
+            event_adapter.append_restored_conversation(
+                replay_session.get_recent_conversation(max_user_turns=3)
+            )
         mini_interactor = MiniTUIInteractor(ctx.ui_bus)
         interaction_coordinator = InteractionCoordinator(mini_interactor)
         ctx.ui_interactor = interaction_coordinator
