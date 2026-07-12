@@ -195,23 +195,18 @@ def _handle_tokens(command, ctx) -> CommandEffect:
     completion_tokens = ctx.agent.state.total_completion_tokens
     lifetime_total = prompt_tokens + completion_tokens
 
-    # Current context is always estimated locally from persisted/runtime prompt pieces.
-    current_context_tokens = ctx.agent.context.get_context_tokens(ctx.agent.messages)
-    max_context_tokens = getattr(ctx.agent.context, "max_tokens", None) or getattr(
-        ctx.config, "max_context_tokens", 0
+    current_context_tokens = ctx.agent.context.predict_request_tokens(
+        ctx.agent.messages
     )
+    max_context_tokens = ctx.agent.context.request_input_limit
     if max_context_tokens:
         context_ratio = current_context_tokens / max_context_tokens
         context_percent = round(context_ratio * 100, 1)
     else:
         context_percent = None
 
-    # Compression wall-hit state
-    snip_hit_count = getattr(ctx.agent.context, "_snip_hit_count", 0)
-    summarize_hit_count = getattr(ctx.agent.context, "_summarize_hit_count", 0)
-    snip_exhausted = getattr(ctx.agent.context, "_snip_exhausted", False)
-    summarize_exhausted = getattr(ctx.agent.context, "_summarize_exhausted", False)
-    max_hits = getattr(ctx.agent.context, "_max_hits", 3)
+    observation = ctx.agent.context.latest_usage
+    thresholds = ctx.agent.context.rewrite_thresholds
 
     view = TokenUsageViewModel(
         prompt_tokens=prompt_tokens,
@@ -221,14 +216,13 @@ def _handle_tokens(command, ctx) -> CommandEffect:
         max_context_tokens=max_context_tokens,
         context_percent=context_percent,
         message_count=len(ctx.agent.messages),
-        snip_at=getattr(ctx.agent.context, "_snip_at", None),
-        summarize_at=getattr(ctx.agent.context, "_summarize_at", None),
-        collapse_at=getattr(ctx.agent.context, "_collapse_at", None),
-        snip_hit_count=snip_hit_count,
-        summarize_hit_count=summarize_hit_count,
-        snip_exhausted=snip_exhausted,
-        summarize_exhausted=summarize_exhausted,
-        max_hits=max_hits,
+        actual_prompt_tokens=(observation.actual_prompt_tokens if observation else None),
+        cached_input_tokens=(observation.cached_input_tokens if observation else None),
+        planning_at=thresholds["planning_at"],
+        quality_wall=thresholds["quality_wall"],
+        rewrite_target=thresholds["rewrite_target"],
+        emergency_at=thresholds["emergency_at"],
+        cache_epoch=ctx.agent.context.cache_epoch,
     )
 
     ctx.effect.open_view(

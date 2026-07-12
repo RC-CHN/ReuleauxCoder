@@ -58,7 +58,8 @@ def test_extract_key_info_returns_fallback_when_nothing_found() -> None:
 def test_generate_summary_uses_llm_when_available() -> None:
     llm = DummyLLM("compressed summary")
     result = generate_summary([{"role": "user", "content": "hello"}], llm=llm)
-    assert result == "compressed summary"
+    assert "message:0: hello" in result
+    assert "LLM synthesis:\ncompressed summary" in result
     assert len(llm.calls) == 1
 
 

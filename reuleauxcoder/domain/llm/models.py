@@ -25,6 +25,7 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_input_tokens: int | None = None
     tokens: list[str] = field(
         default_factory=list
     )  # Streamed tokens for event emission

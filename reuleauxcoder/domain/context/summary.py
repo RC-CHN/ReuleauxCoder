@@ -16,7 +16,8 @@ reasoning. Never invent completion or authorization."""
 
 
 def generate_summary(messages: list[dict], llm: Optional["LLM"] = None) -> str:
-    """Generate a summary of messages."""
+    """Merge a deterministic fact skeleton with optional LLM enrichment."""
+    skeleton = build_summary_skeleton(messages)
     if llm:
         try:
             flat = flatten_messages(messages)
@@ -28,14 +29,53 @@ def generate_summary(messages: list[dict], llm: Optional["LLM"] = None) -> str:
                             SUMMARY_SYSTEM_PROMPT
                         ),
                     },
-                    {"role": "user", "content": flat[:15000]},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Deterministic facts (must be preserved):\n"
+                            f"{skeleton}\n\nConversation:\n{flat[:15000]}"
+                        ),
+                    },
                 ],
             )
-            return resp.content
+            enrichment = (resp.content or "").strip()
+            if enrichment:
+                return f"{skeleton}\n\nLLM synthesis:\n{enrichment}"
         except Exception:
             pass
 
-    return extract_key_info(messages)
+    return skeleton
+
+
+def build_summary_skeleton(messages: list[dict]) -> str:
+    """Extract non-negotiable user constraints and runtime facts without an LLM."""
+    user_constraints: list[str] = []
+    tool_facts: list[str] = []
+    for index, message in enumerate(messages):
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        if message.get("role") == "user" and not content.startswith("[SESSION_"):
+            excerpt = " ".join(content.split())[:500]
+            user_constraints.append(f"- message:{index}: {excerpt}")
+        if message.get("role") == "tool":
+            first_line = next((line.strip() for line in content.splitlines() if line.strip()), "")
+            if first_line:
+                tool_facts.append(
+                    f"- {message.get('tool_call_id') or 'tool'}: {first_line[:240]}"
+                )
+
+    extracted = extract_key_info(messages)
+    parts = ["Deterministic checkpoint facts:"]
+    if user_constraints:
+        parts.append("User constraints / requests (verbatim excerpts):")
+        parts.extend(user_constraints[-12:])
+    if tool_facts:
+        parts.append("Tool evidence:")
+        parts.extend(tool_facts[-12:])
+    parts.append("Extracted repository state:")
+    parts.append(extracted)
+    return "\n".join(parts)
 
 
 def flatten_messages(messages: list[dict], truncate: int = 1200) -> str:

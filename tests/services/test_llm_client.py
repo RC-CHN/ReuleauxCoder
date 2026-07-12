@@ -411,9 +411,17 @@ def test_sanitize_messages_repairs_tool_responses_appended_after_session_exit() 
 
 
 class _FakeUsage:
-    def __init__(self, prompt_tokens: int, completion_tokens: int):
+    def __init__(
+        self,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int | None = None,
+    ):
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
+        self.prompt_tokens_details = (
+            {"cached_tokens": cached_tokens} if cached_tokens is not None else None
+        )
 
 
 class _FakeDelta:
@@ -566,7 +574,11 @@ def test_llm_debug_trace_persists_trace_and_emits_ui_event(
         return iter(
             [
                 _FakeChunk(content="Hello"),
-                _FakeChunk(usage=_FakeUsage(prompt_tokens=12, completion_tokens=3)),
+                _FakeChunk(
+                    usage=_FakeUsage(
+                        prompt_tokens=12, completion_tokens=3, cached_tokens=8
+                    )
+                ),
             ]
         )
 
@@ -578,6 +590,7 @@ def test_llm_debug_trace_persists_trace_and_emits_ui_event(
     )
 
     assert response.content == "Hello"
+    assert response.cached_input_tokens == 8
     debug_events = [event for event in seen if event.level == UIEventLevel.DEBUG]
     assert debug_events
     trace_path = debug_events[-1].data.get("trace_path")

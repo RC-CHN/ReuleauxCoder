@@ -188,9 +188,17 @@ class AgentLoop:
                     )
                 )
 
+            request_messages = self._full_messages()
+            request_tools = self._tool_schemas()
+            local_request_estimate = self.agent.context.estimate_request_tokens(
+                request_messages, request_tools
+            )
+            local_history_estimate = self.agent.context.get_context_tokens(
+                self.agent.state.messages
+            )
             resp = self.agent.llm.chat(
-                messages=self._full_messages(),
-                tools=self._tool_schemas(),
+                messages=request_messages,
+                tools=request_tools,
                 on_token=_on_token,
                 on_reasoning_token=_on_reasoning,
                 hook_registry=self.agent.hook_registry,
@@ -213,6 +221,14 @@ class AgentLoop:
             # Update token counts
             self.agent.state.total_prompt_tokens += resp.prompt_tokens
             self.agent.state.total_completion_tokens += resp.completion_tokens
+            self.agent.context.observe_usage(
+                actual_prompt_tokens=resp.prompt_tokens,
+                cached_input_tokens=getattr(resp, "cached_input_tokens", None),
+                local_request_estimate=local_request_estimate,
+                local_history_estimate=local_history_estimate,
+                request_boundary=f"{self.agent._current_turn_id}:{round_num}",
+                model_profile=str(getattr(self.agent.llm, "model", "unknown")),
+            )
 
             # No tool calls -> done
             if not resp.tool_calls:
@@ -333,8 +349,15 @@ class AgentLoop:
             summary_streamed = True
             self.agent._emit_event(AgentEvent.stream_token(token))
 
+        summary_messages = self._full_messages()
+        summary_local_request = self.agent.context.estimate_request_tokens(
+            summary_messages, None
+        )
+        summary_local_history = self.agent.context.get_context_tokens(
+            self.agent.state.messages
+        )
         summary_resp = self.agent.llm.chat(
-            messages=self._full_messages(),
+            messages=summary_messages,
             tools=None,
             cancellation_event=self.agent._stop_event,
             on_token=_on_summary_token,
@@ -353,5 +376,13 @@ class AgentLoop:
         self.last_response_streamed = summary_streamed
         self.agent.state.total_prompt_tokens += summary_resp.prompt_tokens
         self.agent.state.total_completion_tokens += summary_resp.completion_tokens
+        self.agent.context.observe_usage(
+            actual_prompt_tokens=summary_resp.prompt_tokens,
+            cached_input_tokens=getattr(summary_resp, "cached_input_tokens", None),
+            local_request_estimate=summary_local_request,
+            local_history_estimate=summary_local_history,
+            request_boundary=f"{self.agent._current_turn_id}:summary",
+            model_profile=str(getattr(self.agent.llm, "model", "unknown")),
+        )
         self.agent.state.messages.append(summary_resp.message)
         return summary_resp.content or "(reached maximum tool-call rounds)"

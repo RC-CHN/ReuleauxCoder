@@ -23,5 +23,13 @@ class ContextBudget:
         )
         return max(1_024, self.model_window - reserved)
 
+    @property
+    def request_input_limit(self) -> int:
+        """Provider prompt capacity; actual usage already includes fixed prompt/tools."""
+        return max(
+            1_024,
+            self.model_window - self.reserved_output - self.safety_margin,
+        )
+
     def threshold(self, fraction: float) -> int:
         return max(1, int(self.available_input * fraction))

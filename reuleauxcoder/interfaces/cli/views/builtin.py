@@ -278,10 +278,15 @@ def render_token_usage_view(renderer, event) -> bool:
         context += f" ({model.context_percent:.1f}%)"
     table.add_row("Current context", context)
     table.add_row("Messages", str(model.message_count))
+    if model.actual_prompt_tokens is not None:
+        table.add_row("Last actual prompt", str(model.actual_prompt_tokens))
+    if model.cached_input_tokens is not None:
+        table.add_row("Last cached input", str(model.cached_input_tokens))
     table.add_row(
-        "Compression hits",
-        f"snip={model.snip_hit_count}, summarize={model.summarize_hit_count}",
+        "Planner",
+        f"plan {model.planning_at} · wall {model.quality_wall} · target {model.rewrite_target}",
     )
+    table.add_row("Cache epoch", str(model.cache_epoch))
     renderer.console.print(table)
     return True
 

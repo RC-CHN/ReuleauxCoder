@@ -328,6 +328,7 @@ class LLM:
             tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
             prompt_tok = 0
             completion_tok = 0
+            cached_input_tok: int | None = None
 
             for chunk in stream:
                 if cancellation_event is not None and cancellation_event.is_set():
@@ -349,6 +350,17 @@ class LLM:
                 if chunk.usage:
                     prompt_tok = chunk.usage.prompt_tokens
                     completion_tok = chunk.usage.completion_tokens
+                    details = getattr(chunk.usage, "prompt_tokens_details", None)
+                    if isinstance(details, dict):
+                        cached_value = details.get("cached_tokens")
+                    else:
+                        cached_value = getattr(details, "cached_tokens", None)
+                    if cached_value is None:
+                        cached_value = getattr(chunk.usage, "cache_read_input_tokens", None)
+                    if cached_value is None:
+                        cached_value = getattr(chunk.usage, "cached_tokens", None)
+                    if cached_value is not None:
+                        cached_input_tok = max(0, int(cached_value))
 
                 if not chunk.choices:
                     continue
@@ -405,6 +417,7 @@ class LLM:
                 tool_calls=parsed,
                 prompt_tokens=prompt_tok,
                 completion_tokens=completion_tok,
+                cached_input_tokens=cached_input_tok,
                 tokens=tokens,
             )
 
@@ -478,6 +491,7 @@ class LLM:
                         "usage": {
                             "prompt_tokens": response.prompt_tokens,
                             "completion_tokens": response.completion_tokens,
+                            "cached_input_tokens": response.cached_input_tokens,
                         },
                     },
                     "metadata": dict(before_context.metadata),

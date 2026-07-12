@@ -12,6 +12,7 @@ from reuleauxcoder.domain.context.rounds import (
 )
 from reuleauxcoder.domain.context.summary import generate_summary
 from reuleauxcoder.domain.context.provider import ProviderContextCompactor
+from reuleauxcoder.domain.context.usage import UsageObservation
 
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
@@ -175,10 +176,6 @@ Here's an example of how your output should be structured:
 Please provide your summary based on the conversation so far, following this structure and ensuring precision and thoroughness in your response.
 """
 
-SNIP_DEBOUNCE_TOKENS = 2_000
-SUMMARIZE_DEBOUNCE_TOKENS = 4_000
-
-
 class ContextManager:
     """Manages conversation context with multi-layer compression."""
 
@@ -219,26 +216,22 @@ class ContextManager:
         self._checkpoints: list[CompactionCheckpoint] = []
         self._consecutive_summary_failures = 0
         self._provider_compactor = provider_compactor
-        # State tracking
+        # Rewrite/cache state
         self._last_compact_tokens = 0
         self._last_compact_strategy: str | None = None
-        # Wall-hit counters for progressive compression
-        self._snip_exhausted = False
-        self._summarize_exhausted = False
-        self._snip_hit_count = 0
-        self._summarize_hit_count = 0
-        self._max_hits = 3
+        self._cache_epoch = 0
+        self._usage_observations: list[UsageObservation] = []
+        self._latest_usage: UsageObservation | None = None
+        self._estimate_scale_by_profile: dict[str, float] = {}
+        self._last_rewrite_plan: dict[str, Any] | None = None
 
     def get_context_tokens(self, messages: list[dict]) -> int:
         """Get current locally-estimated context token count."""
         return estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
 
     def _reset_compression_state(self) -> None:
-        """Reset all compression wall-hit counters and exhausted flags."""
-        self._snip_exhausted = False
-        self._summarize_exhausted = False
-        self._snip_hit_count = 0
-        self._summarize_hit_count = 0
+        """Discard a stale candidate; committed checkpoint state is retained."""
+        self._last_rewrite_plan = None
 
     def reconfigure(self, max_tokens: int) -> None:
         """Update context budget and recompute layer thresholds."""
@@ -254,13 +247,30 @@ class ContextManager:
         self._reset_compression_state()
 
     def _recompute_thresholds(self) -> None:
-        self._snip_at = self._budget.threshold(0.50)
-        self._summarize_at = self._budget.threshold(0.70)
-        self._collapse_at = self._budget.threshold(0.90)
+        limit = self._budget.request_input_limit
+        self._planning_at = max(1, int(limit * 0.52))
+        self._quality_wall = max(1, int(limit * 0.60))
+        self._rewrite_target_low = max(1, int(limit * 0.35))
+        self._rewrite_target = max(1, int(limit * 0.42))
+        self._rewrite_target_high = max(1, int(limit * 0.45))
+        self._emergency_at = max(1, int(limit * 0.90))
 
     @property
     def effective_input_tokens(self) -> int:
         return self._budget.available_input
+
+    @property
+    def request_input_limit(self) -> int:
+        return self._budget.request_input_limit
+
+    @property
+    def rewrite_thresholds(self) -> dict[str, int]:
+        return {
+            "planning_at": self._planning_at,
+            "quality_wall": self._quality_wall,
+            "rewrite_target": self._rewrite_target,
+            "emergency_at": self._emergency_at,
+        }
 
     @property
     def history_version(self) -> int:
@@ -270,172 +280,193 @@ class ContextManager:
     def checkpoints(self) -> tuple[CompactionCheckpoint, ...]:
         return tuple(self._checkpoints)
 
+    @property
+    def latest_usage(self) -> UsageObservation | None:
+        return self._latest_usage
+
+    @property
+    def cache_epoch(self) -> int:
+        return self._cache_epoch
+
+    def estimate_request_tokens(
+        self, messages: list[dict], tools: list[dict] | None = None
+    ) -> int:
+        """Estimate a complete request only when provider usage is unavailable."""
+        message_tokens = self.get_context_tokens(messages)
+        tool_tokens = len(str(tools or [])) // 3
+        return max(1, message_tokens + tool_tokens)
+
+    def observe_usage(
+        self,
+        *,
+        actual_prompt_tokens: int,
+        cached_input_tokens: int | None,
+        local_request_estimate: int,
+        local_history_estimate: int,
+        request_boundary: str,
+        model_profile: str,
+    ) -> UsageObservation | None:
+        """Record upstream truth and calibrate estimates per model/profile."""
+        if actual_prompt_tokens <= 0:
+            return None
+        observation = UsageObservation.create(
+            actual_prompt_tokens=actual_prompt_tokens,
+            cached_input_tokens=cached_input_tokens,
+            local_request_estimate=local_request_estimate,
+            local_history_estimate=local_history_estimate,
+            history_version=self._history_version,
+            request_boundary=request_boundary,
+            model_profile=model_profile,
+        )
+        raw_ratio = observation.actual_prompt_tokens / max(
+            1, observation.local_request_estimate
+        )
+        ratio = min(3.0, max(0.5, raw_ratio))
+        previous = self._estimate_scale_by_profile.get(model_profile)
+        self._estimate_scale_by_profile[model_profile] = (
+            ratio if previous is None else (previous * 0.75 + ratio * 0.25)
+        )
+        self._latest_usage = observation
+        self._usage_observations.append(observation)
+        if len(self._usage_observations) > 100:
+            del self._usage_observations[:-100]
+        return observation
+
+    def predict_request_tokens(self, messages: list[dict]) -> int:
+        """Predict current request size from actual usage plus calibrated growth."""
+        local_history = self.get_context_tokens(messages)
+        observation = self._latest_usage
+        if observation is not None and observation.history_version == self._history_version:
+            scale = self._estimate_scale_by_profile.get(observation.model_profile, 1.0)
+            delta = local_history - observation.local_history_estimate
+            return max(1, int(observation.actual_prompt_tokens + delta * scale))
+        profile = observation.model_profile if observation is not None else "default"
+        scale = self._estimate_scale_by_profile.get(profile, 1.0)
+        fallback = (
+            local_history
+            + self._budget.fixed_prompt_tokens
+            + self._budget.tool_schema_tokens
+        )
+        return max(1, int(fallback * scale))
+
     def maybe_compress(
         self,
         messages: list[dict],
         llm: Optional["LLM"] = None,
     ) -> bool:
-        """Apply compression layers as needed.
-
-        Returns True if any compression happened.
-        """
-        before_tokens = self.get_context_tokens(messages)
+        """Plan and commit at most one low-frequency checkpoint rewrite epoch."""
+        before_local_tokens = self.get_context_tokens(messages)
+        before_tokens = self.predict_request_tokens(messages)
         before_message_count = len(messages)
         before_snapshot = self._snapshot_messages(messages)
-        compressed = False
         applied_layers: list[str] = []
+        if before_tokens < self._planning_at:
+            self._last_rewrite_plan = None
+            return False
 
-        current = before_tokens
+        self._last_rewrite_plan = {
+            "predicted_request_tokens": before_tokens,
+            "planning_at": self._planning_at,
+            "quality_wall": self._quality_wall,
+            "target": self._rewrite_target,
+            "actual_usage": self._latest_usage is not None,
+        }
+        if before_tokens < self._quality_wall:
+            return False
 
-        if current > self._snip_at and self._provider_compactor is not None:
+        candidate = [dict(message) for message in messages]
+        if self._provider_compactor is not None:
             provider_result = self._provider_compactor.compact_tool_results(
-                list(messages), keep_recent_rounds=self._snip_keep_recent_tools
+                candidate, keep_recent_rounds=self._snip_keep_recent_tools
             )
             if provider_result is not None:
-                messages[:] = provider_result.messages
-                current = self.get_context_tokens(messages)
-                compressed = True
+                candidate = provider_result.messages
                 applied_layers.append("provider_tool_cache_compaction")
+        snipped = self._snip_tool_outputs(candidate)
+        if snipped:
+            applied_layers.append("snip_tool_outputs")
 
-        # Cheap-first even above the emergency wall. A single large observation
-        # must not cause an avoidable destructive collapse.
-        if current > self._snip_at and not self._snip_exhausted:
-            if self._snip_tool_outputs(messages):
-                compressed = True
-                applied_layers.append("snip_tool_outputs")
-                current = self.get_context_tokens(messages)
+        candidate_local = self.get_context_tokens(candidate)
+        scale = before_tokens / max(1, before_local_tokens)
+        candidate_prediction = max(
+            1, int(before_tokens - (before_local_tokens - candidate_local) * scale)
+        )
+        semantic_due = len(group_api_rounds(messages)) >= max(
+            12, self._summarize_keep_recent_turns * 3
+        )
 
-        # Layer 3: Hard collapse - unconditional last resort
-        if current > self._collapse_at and len(messages) > 4:
-            self._hard_collapse(messages, llm)
-            compressed = True
+        if candidate_prediction > self._rewrite_target_high or semantic_due:
+            summarized = self._summarize_old(
+                candidate,
+                llm,
+                keep_recent_user_turns=self._summarize_keep_recent_turns,
+            )
+            if summarized:
+                applied_layers.append("summarize_old")
+                self._last_compact_strategy = "summarize"
+        elif snipped or applied_layers:
+            self._last_compact_strategy = "snip"
+
+        if not applied_layers:
+            return False
+
+        after_local_tokens = self.get_context_tokens(candidate)
+        after_tokens = max(
+            1, int(before_tokens - (before_local_tokens - after_local_tokens) * scale)
+        )
+        if after_tokens > self._emergency_at and len(candidate) > 4:
+            self._hard_collapse(candidate, llm)
             applied_layers.append("hard_collapse")
             self._last_compact_strategy = "collapse"
-            self._reset_compression_state()
-            current = self.get_context_tokens(messages)
-
-        # Layer 2: Summarize old conversation
-        elif current > self._summarize_at:
-            # If snip is exhausted or summarize is near exhausted, go straight to summarize
-            if self._snip_exhausted or self._summarize_hit_count >= self._max_hits - 1:
-                changed = self._summarize_old(
-                    messages,
-                    llm,
-                    keep_recent_user_turns=self._summarize_keep_recent_turns,
-                )
-                if changed:
-                    compressed = True
-                    applied_layers.append("summarize_old")
-                    self._last_compact_strategy = "summarize"
-                    current = self.get_context_tokens(messages)
-
-                    if current <= self._summarize_at:
-                        # Successfully reduced below threshold
-                        self._reset_compression_state()
-                    else:
-                        # Summarize didn't help enough
-                        self._summarize_hit_count += 1
-                        if self._summarize_hit_count >= self._max_hits:
-                            self._summarize_exhausted = True
-                else:
-                    # Summarize couldn't run (no LLM or not enough messages) - mark exhausted
-                    self._summarize_exhausted = True
-            else:
-                # Try snip first (layer 1)
-                if current > self._snip_at and not self._snip_exhausted:
-                    snip_changed = self._snip_tool_outputs(messages)
-                    if snip_changed:
-                        compressed = True
-                        applied_layers.append("snip_tool_outputs")
-                        self._last_compact_strategy = "snip"
-                        current = self.get_context_tokens(messages)
-
-                        if current <= self._snip_at:
-                            # Successfully reduced below threshold
-                            self._reset_compression_state()
-                        else:
-                            # Snip didn't help enough
-                            self._snip_hit_count += 1
-                            if self._snip_hit_count >= self._max_hits:
-                                self._snip_exhausted = True
-                    else:
-                        # Snip had nothing to compress
-                        self._snip_exhausted = True
-
-                # After snip attempt, check if we still need summarize
-                if current > self._summarize_at and not self._summarize_exhausted:
-                    summarize_changed = self._summarize_old(
-                        messages,
-                        llm,
-                        keep_recent_user_turns=self._summarize_keep_recent_turns,
-                    )
-                    if summarize_changed:
-                        compressed = True
-                        applied_layers.append("summarize_old")
-                        self._last_compact_strategy = "summarize"
-                        current = self.get_context_tokens(messages)
-
-                        if current <= self._summarize_at:
-                            self._reset_compression_state()
-                        else:
-                            self._summarize_hit_count += 1
-                            if self._summarize_hit_count >= self._max_hits:
-                                self._summarize_exhausted = True
-                    else:
-                        # Summarize couldn't run
-                        self._summarize_exhausted = True
-
-        # Layer 1: Snip tool outputs (when below summarize threshold)
-        elif current > self._snip_at and not self._snip_exhausted:
-            changed = self._snip_tool_outputs(messages)
-            if changed:
-                compressed = True
-                applied_layers.append("snip_tool_outputs")
-                self._last_compact_strategy = "snip"
-                current = self.get_context_tokens(messages)
-
-                if current <= self._snip_at:
-                    self._reset_compression_state()
-                else:
-                    # Snip ran but didn't reduce enough
-                    self._snip_hit_count += 1
-                    if self._snip_hit_count >= self._max_hits:
-                        self._snip_exhausted = True
-            else:
-                # Snip had nothing to compress - mark as exhausted immediately
-                self._snip_exhausted = True
-
-        # Context is healthy - reset state
-        if current <= self._snip_at:
-            self._reset_compression_state()
-
-        if compressed:
-            self._last_compact_tokens = current
-            source_version = self._history_version
-            self._history_version += 1
-            self._checkpoints.append(
-                CompactionCheckpoint.create(
-                    trigger="auto",
-                    strategy=applied_layers,
-                    source_history_version=source_version,
-                    replacement_history=messages,
-                    tokens_before=before_tokens,
-                    tokens_after=current,
-                    preserved_rounds=min(
-                        self._summarize_keep_recent_turns,
-                        len(group_api_rounds(messages)),
-                    ),
-                )
-            )
-            self._emit_compression_events(
-                before_tokens=before_tokens,
-                before_message_count=before_message_count,
-                before_snapshot=before_snapshot,
-                after_messages=messages,
-                applied_layers=applied_layers,
+            after_local_tokens = self.get_context_tokens(candidate)
+            after_tokens = max(
+                1,
+                int(before_tokens - (before_local_tokens - after_local_tokens) * scale),
             )
 
-        return compressed
+        messages[:] = candidate
+        self._last_compact_tokens = after_tokens
+        source_version = self._history_version
+        self._history_version += 1
+        self._cache_epoch += 1
+        observation = self._latest_usage
+        self._checkpoints.append(
+            CompactionCheckpoint.create(
+                trigger="quality_wall",
+                strategy=applied_layers,
+                source_history_version=source_version,
+                replacement_history=messages,
+                tokens_before=before_tokens,
+                tokens_after=after_tokens,
+                preserved_rounds=min(
+                    self._summarize_keep_recent_turns,
+                    len(group_api_rounds(messages)),
+                ),
+                cache_epoch=self._cache_epoch,
+                actual_prompt_tokens=(
+                    observation.actual_prompt_tokens if observation else None
+                ),
+                cached_input_tokens=(
+                    observation.cached_input_tokens if observation else None
+                ),
+                invalidated_suffix_tokens=(
+                    max(0, before_tokens - (observation.cached_input_tokens or 0))
+                    if observation and observation.cached_input_tokens is not None
+                    else None
+                ),
+                reclaimed_tokens=max(0, before_tokens - after_tokens),
+            )
+        )
+        self._latest_usage = None
+        self._last_rewrite_plan = None
+        self._emit_compression_events(
+            before_tokens=before_tokens,
+            before_message_count=before_message_count,
+            before_snapshot=before_snapshot,
+            after_messages=messages,
+            applied_layers=applied_layers,
+        )
+        return True
 
     def force_compress(
         self,
@@ -444,34 +475,67 @@ class ContextManager:
         llm: Optional["LLM"] = None,
     ) -> bool:
         """Force one specific compression strategy regardless of thresholds."""
+        before_tokens = self.predict_request_tokens(messages)
+        before_local = self.get_context_tokens(messages)
+        before_count = len(messages)
+        before_snapshot = self._snapshot_messages(messages)
+        changed = False
         if strategy == "snip":
             changed = self._snip_tool_outputs(messages)
-            if changed:
-                self._last_compact_tokens = estimate_tokens(
-                    messages, token_fudge_factor=self._token_fudge_factor
-                )
-                self._last_compact_strategy = "snip"
-            return changed
-        if strategy == "summarize":
+        elif strategy == "summarize":
             changed = self._summarize_old(
                 messages, llm, keep_recent_user_turns=self._summarize_keep_recent_turns
             )
-            if changed:
-                self._last_compact_tokens = estimate_tokens(
-                    messages, token_fudge_factor=self._token_fudge_factor
-                )
-                self._last_compact_strategy = "summarize"
-            return changed
-        if strategy == "collapse":
+        elif strategy == "collapse":
             if len(messages) <= 4:
                 return False
             self._hard_collapse(messages, llm)
-            self._last_compact_tokens = estimate_tokens(
-                messages, token_fudge_factor=self._token_fudge_factor
+            changed = True
+        if not changed:
+            return False
+
+        after_local = self.get_context_tokens(messages)
+        scale = before_tokens / max(1, before_local)
+        after_tokens = max(
+            1, int(before_tokens - (before_local - after_local) * scale)
+        )
+        self._last_compact_tokens = after_tokens
+        self._last_compact_strategy = strategy
+        source_version = self._history_version
+        self._history_version += 1
+        self._cache_epoch += 1
+        observation = self._latest_usage
+        self._checkpoints.append(
+            CompactionCheckpoint.create(
+                trigger="manual",
+                strategy=[strategy],
+                source_history_version=source_version,
+                replacement_history=messages,
+                tokens_before=before_tokens,
+                tokens_after=after_tokens,
+                preserved_rounds=min(
+                    self._summarize_keep_recent_turns,
+                    len(group_api_rounds(messages)),
+                ),
+                cache_epoch=self._cache_epoch,
+                actual_prompt_tokens=(
+                    observation.actual_prompt_tokens if observation else None
+                ),
+                cached_input_tokens=(
+                    observation.cached_input_tokens if observation else None
+                ),
+                reclaimed_tokens=max(0, before_tokens - after_tokens),
             )
-            self._last_compact_strategy = "collapse"
-            return True
-        return False
+        )
+        self._latest_usage = None
+        self._emit_compression_events(
+            before_tokens=before_tokens,
+            before_message_count=before_count,
+            before_snapshot=before_snapshot,
+            after_messages=messages,
+            applied_layers=[strategy],
+        )
+        return True
 
     def _snip_tool_outputs(self, messages: list[dict]) -> bool:
         """Layer 1: Truncate old tool results over threshold.
@@ -536,7 +600,7 @@ class ContextManager:
         summary = self._get_summary(old, llm)
 
         replacement = [
-            {"role": "user", "content": f"[Context checkpoint summary]\n{summary}"},
+            {"role": "system", "content": f"[Context checkpoint summary]\n{summary}"},
             *tail,
         ]
         messages[:] = normalize_history(replacement, reason="context compaction")
@@ -572,7 +636,7 @@ class ContextManager:
             normalize_history(
                 [
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": f"[Hard context checkpoint]\n{summary}",
                     },
                     *tail,
@@ -623,9 +687,10 @@ class ContextManager:
             trigger_message_count=before_message_count,
             max_tokens=self.max_tokens,
             thresholds={
-                "snip_at": self._snip_at,
-                "summarize_at": self._summarize_at,
-                "collapse_at": self._collapse_at,
+                "planning_at": self._planning_at,
+                "quality_wall": self._quality_wall,
+                "target": self._rewrite_target,
+                "emergency_at": self._emergency_at,
             },
             strategy=strategy,
             applied_layers=applied_layers,
@@ -699,19 +764,19 @@ class ContextManager:
         return {
             "policy": [
                 {
-                    "layer": "snip_tool_outputs",
-                    "threshold": self._snip_at,
-                    "description": "When context usage exceeds 50% of the budget, truncate older verbose tool outputs.",
+                    "layer": "planning",
+                    "threshold": self._planning_at,
+                    "description": "At about 52% of request capacity, compute a rewrite candidate without mutating committed history.",
                 },
                 {
-                    "layer": "summarize_old",
-                    "threshold": self._summarize_at,
-                    "description": f"When context usage exceeds 70% of the effective input budget, summarize older conversation and keep the most recent {self._summarize_keep_recent_turns} API rounds.",
+                    "layer": "checkpoint_rewrite",
+                    "threshold": self._quality_wall,
+                    "description": f"Near the 60% quality wall, batch snip and semantic summary in one cache epoch, preserving {self._summarize_keep_recent_turns} recent API rounds and targeting 35–45%.",
                 },
                 {
                     "layer": "hard_collapse",
-                    "threshold": self._collapse_at,
-                    "description": "When context usage exceeds 90% of the budget, perform a hard collapse and keep only the summary plus the most recent tail messages.",
+                    "threshold": self._emergency_at,
+                    "description": "At 90% of request capacity, perform last-resort recovery while preserving complete recent API rounds.",
                 },
             ],
             "applied_layers": applied_layers,

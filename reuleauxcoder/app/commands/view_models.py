@@ -145,14 +145,13 @@ class TokenUsageViewModel:
     max_context_tokens: int
     context_percent: float | None
     message_count: int
-    snip_at: float | None
-    summarize_at: float | None
-    collapse_at: float | None
-    snip_hit_count: int
-    summarize_hit_count: int
-    snip_exhausted: bool
-    summarize_exhausted: bool
-    max_hits: int
+    actual_prompt_tokens: int | None
+    cached_input_tokens: int | None
+    planning_at: int
+    quality_wall: int
+    rewrite_target: int
+    emergency_at: int
+    cache_epoch: int
     view_type: str = "token_usage"
 
     def to_payload(self) -> dict[str, Any]:
@@ -166,14 +165,13 @@ class TokenUsageViewModel:
                 "max_context_tokens",
                 "context_percent",
                 "message_count",
-                "snip_at",
-                "summarize_at",
-                "collapse_at",
-                "snip_hit_count",
-                "summarize_hit_count",
-                "snip_exhausted",
-                "summarize_exhausted",
-                "max_hits",
+                "actual_prompt_tokens",
+                "cached_input_tokens",
+                "planning_at",
+                "quality_wall",
+                "rewrite_target",
+                "emergency_at",
+                "cache_epoch",
             )
         }
 

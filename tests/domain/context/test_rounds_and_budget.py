@@ -56,10 +56,21 @@ def test_compression_records_versioned_checkpoint() -> None:
         {"role": "tool", "tool_call_id": "z", "content": "latest"},
     ]
 
+    local = manager.get_context_tokens(messages)
+    manager.observe_usage(
+        actual_prompt_tokens=1_300,
+        cached_input_tokens=900,
+        local_request_estimate=local,
+        local_history_estimate=local,
+        request_boundary="turn:0",
+        model_profile="test",
+    )
+
     assert manager.maybe_compress(messages) is True
     assert manager.history_version == 1
     assert manager.checkpoints[-1].source_history_version == 0
     assert manager.checkpoints[-1].replacement_history
+    assert manager.checkpoints[-1].cache_epoch == 1
 
 
 def test_provider_compaction_uses_provider_neutral_boundary() -> None:
