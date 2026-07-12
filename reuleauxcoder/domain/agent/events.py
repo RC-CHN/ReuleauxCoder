@@ -135,6 +135,13 @@ class AgentEvent:
         status: str,
         result: str | None = None,
         error: str | None = None,
+        activity: str | None = None,
+        current_tool: str | None = None,
+        tool_calls: int = 0,
+        max_tool_calls: int | None = None,
+        tokens: int = 0,
+        max_tokens: int | None = None,
+        blocker: str | None = None,
     ) -> "AgentEvent":
         """Create a sub-agent completion event."""
         return cls(
@@ -146,6 +153,13 @@ class AgentEvent:
                 "status": status,
                 "result": result,
                 "error": error,
+                "activity": activity,
+                "current_tool": current_tool,
+                "tool_calls": tool_calls,
+                "max_tool_calls": max_tool_calls,
+                "tokens": tokens,
+                "max_tokens": max_tokens,
+                "blocker": blocker,
             },
         )
 

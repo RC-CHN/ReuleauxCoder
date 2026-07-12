@@ -46,6 +46,8 @@ class ExecutionAgentState:
     last_activity_at: float | None = None
     animation_lease_until: float = 0.0
     output_tail: deque[str] = field(default_factory=lambda: deque(maxlen=5))
+    budget: str = ""
+    blocker: str | None = None
 
     def is_animating(self, now: float | None = None) -> bool:
         return (now if now is not None else time.time()) < self.animation_lease_until
@@ -163,7 +165,14 @@ class ExecutionViewReducer:
                 self.state.agents[payload.job_id] = agent
             agent.task = payload.task
             agent.status = payload.status
-            agent.activity = payload.error or _subagent_activity(payload.status)
+            agent.activity = (
+                (f"running {payload.current_tool}" if payload.current_tool else None)
+                or payload.activity
+                or payload.error
+                or _subagent_activity(payload.status)
+            )
+            agent.budget = _budget_text(payload)
+            agent.blocker = payload.blocker
             agent.last_activity_at = event.timestamp
             agent.animation_lease_until = event.timestamp + self.animation_lease_seconds
             attention_id = f"job:{payload.job_id}"
@@ -292,8 +301,15 @@ def execution_panel_lines(
             else ("!" if agent.status in {"failed", "blocked", "stale"} else "○")
         )
         branch = "├─" if index < len(active_agents[:4]) - 1 else "└─"
-        task = agent.task or agent.activity or "working"
-        lines.append(_fit(f"{branch} {marker} {agent.label}  {task}", width))
+        task = agent.task or "working"
+        activity = f" · {agent.activity}" if agent.activity else ""
+        budget = f" · {agent.budget}" if agent.budget else ""
+        lines.append(
+            _fit(
+                f"{branch} {marker} {agent.label}  {task}{activity}{budget}",
+                width,
+            )
+        )
         if agent.output_tail:
             lines.append(_fit(f"   └ {agent.output_tail[-1]}", width))
     if state.attention:
@@ -319,6 +335,16 @@ def _subagent_activity(status: str) -> str:
         "running": "working",
         "queued": "queued",
     }.get(status, status)
+
+
+def _budget_text(payload: SubagentJobChanged) -> str:
+    tools = f"tools {payload.tool_calls}"
+    if payload.max_tool_calls is not None:
+        tools += f"/{payload.max_tool_calls}"
+    tokens = f"tok {payload.tokens}"
+    if payload.max_tokens is not None:
+        tokens += f"/{payload.max_tokens}"
+    return f"{tools} · {tokens}"
 
 
 def _tool_activity(name: str, arguments: dict) -> str:

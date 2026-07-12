@@ -5,6 +5,7 @@ from reuleauxcoder.domain.runtime.events import (
     PlanUpdated,
     ProgressReported,
     RuntimeEvent,
+    SubagentJobChanged,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutputDelta,
@@ -164,3 +165,31 @@ def test_recent_plan_update_expands_then_collapses_to_active_item() -> None:
     assert any("working actively" in line for line in expanded)
     assert not any("done step" in line for line in collapsed)
     assert any("working actively" in line for line in collapsed)
+
+
+def test_subagent_panel_shows_live_activity_budget_and_blocker() -> None:
+    reducer = ExecutionViewReducer()
+    reducer.apply(
+        _event(
+            SubagentJobChanged(
+                job_id="sj-live",
+                mode="explore",
+                task="inspect parser",
+                status="running",
+                activity="reading symbols",
+                current_tool="lsp",
+                tool_calls=4,
+                max_tool_calls=20,
+                tokens=1200,
+                max_tokens=8000,
+            ),
+            event_id="child-live",
+            agent_id="main",
+        )
+    )
+    lines = execution_panel_lines(reducer.state, width=140, now=100.1)
+    rendered = "\n".join(lines)
+
+    assert "inspect parser" in rendered
+    assert "running lsp" in rendered
+    assert "tools 4/20 · tok 1200/8000" in rendered

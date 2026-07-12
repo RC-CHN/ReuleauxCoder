@@ -115,6 +115,17 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
             status=job.status,
             result=job.result if job.status == "completed" else None,
             error=job.error,
+            activity=(job.progress[1] if len(job.progress) > 1 else None),
+            current_tool=job.current_tool,
+            tool_calls=job.tool_calls,
+            max_tool_calls=job.max_tool_calls,
+            tokens=job.prompt_tokens + job.completion_tokens,
+            max_tokens=job.max_tokens,
+            blocker=(
+                job.error or job.guidance_request_id
+                if job.status == "blocked"
+                else None
+            ),
         )
     )
 

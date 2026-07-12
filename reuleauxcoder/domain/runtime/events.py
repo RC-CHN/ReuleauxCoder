@@ -187,6 +187,13 @@ class SubagentJobChanged:
     status: str
     result: str | None = None
     error: str | None = None
+    activity: str | None = None
+    current_tool: str | None = None
+    tool_calls: int = 0
+    max_tool_calls: int | None = None
+    tokens: int = 0
+    max_tokens: int | None = None
+    blocker: str | None = None
     kind: RuntimeEventKind = field(
         default=RuntimeEventKind.SUBAGENT_JOB_CHANGED, init=False
     )
@@ -395,6 +402,13 @@ def agent_event_to_runtime_event(
             status=str(event.data.get("status", "")),
             result=event.data.get("result"),
             error=event.data.get("error"),
+            activity=event.data.get("activity"),
+            current_tool=event.data.get("current_tool"),
+            tool_calls=int(event.data.get("tool_calls") or 0),
+            max_tool_calls=event.data.get("max_tool_calls"),
+            tokens=int(event.data.get("tokens") or 0),
+            max_tokens=event.data.get("max_tokens"),
+            blocker=event.data.get("blocker"),
         )
     elif event.event_type is AgentEventType.ERROR:
         payload = ErrorOccurred(event.error_message or "Unknown agent error")
@@ -499,6 +513,13 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
             status=payload.status,
             result=payload.result,
             error=payload.error,
+            activity=payload.activity,
+            current_tool=payload.current_tool,
+            tool_calls=payload.tool_calls,
+            max_tool_calls=payload.max_tool_calls,
+            tokens=payload.tokens,
+            max_tokens=payload.max_tokens,
+            blocker=payload.blocker,
         )
     elif isinstance(payload, ErrorOccurred):
         legacy = AgentEvent.error(payload.message)
