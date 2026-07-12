@@ -82,3 +82,29 @@ def test_tool_activity_uses_low_frequency_timed_refresh() -> None:
     assert lives[0].kwargs["auto_refresh"] is True
     assert lives[0].kwargs["refresh_per_second"] == 4
     assert lives[0].kwargs["transient"] is True
+
+
+def test_tool_activity_only_renders_latest_five_output_lines() -> None:
+    stream = StringIO()
+    console = Console(
+        file=stream, record=True, force_terminal=True, color_system=None
+    )
+    lives = []
+
+    def factory(renderable, **kwargs):
+        live = _FakeLive(renderable, **kwargs)
+        lives.append(live)
+        return live
+
+    activity = CLIActivityPresenter(console, live_factory=factory)
+    activity.start("TOOL", "shell", timed=True)
+
+    activity.push_output(
+        "".join(f"line-{index}\n" for index in range(8)), stream="stdout"
+    )
+    console.print(lives[0].renderable)
+    output = console.export_text()
+
+    assert "line-2" not in output
+    for index in range(3, 8):
+        assert f"line-{index}" in output

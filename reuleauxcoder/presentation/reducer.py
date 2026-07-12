@@ -323,7 +323,13 @@ class PresentationReducer:
         existing = self.state.transcript.get(cell_id)
         if isinstance(existing, ToolCell):
             return self._replace(
-                next_revision(existing, output=existing.output + payload.text)
+                next_revision(
+                    existing,
+                    output=_tool_output_tail(
+                        existing.output + payload.text,
+                        max_chars=self.policy.tool_preview_chars,
+                    ),
+                )
             )
         return self._append(
             ToolCell(
@@ -331,11 +337,12 @@ class PresentationReducer:
                 tool_call_id=payload.tool_call_id,
                 name="unknown_tool",
                 arguments=None,
-                output=payload.text,
+                output=_tool_output_tail(
+                    payload.text, max_chars=self.policy.tool_preview_chars
+                ),
                 orphaned=True,
             )
         )
-
     @staticmethod
     def _diagnostic_cell_id(event: RuntimeEvent, file_path: str) -> str:
         owner = event.agent_id or "unknown"
@@ -438,3 +445,9 @@ class PresentationReducer:
                 PresentationChangeKind.UPDATE, cell=cell, previous=previous
             ),
         )
+
+
+def _tool_output_tail(text: str, *, max_chars: int, max_lines: int = 5) -> str:
+    """Bound presentation state without touching the canonical ProcessResult."""
+    tail = "".join(text.splitlines(keepends=True)[-max_lines:])
+    return tail[-max_chars:]

@@ -121,8 +121,13 @@ class CLIRenderer:
         elif isinstance(payload, ToolCallFinished) and changes:
             self._render_tool_end(payload.tool_name, payload.outcome)
         elif isinstance(payload, ToolOutputDelta) and changes:
-            self.activity.stop()
-            self.console.print(payload.text, end="", markup=False, highlight=False)
+            if not self.activity.is_active:
+                cell = self.reducer.state.transcript.get(
+                    f"tool:{payload.tool_call_id}"
+                )
+                tool_name = getattr(cell, "name", "tool")
+                self.activity.start("TOOL", tool_name, timed=True)
+            self.activity.push_output(payload.text, stream=payload.stream)
         elif isinstance(payload, SubagentFinished) and changes:
             self._render_subagent_completed(payload)
         elif isinstance(payload, (TurnFinished, ChatCompleted)):

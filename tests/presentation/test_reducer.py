@@ -191,6 +191,24 @@ def test_tool_output_delta_correlates_with_running_tool() -> None:
     assert cell.output == "hello"
 
 
+def test_tool_output_delta_retains_only_five_ui_lines() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(_runtime(AgentEvent.tool_call_start("shell", {}, tool_call_id="x")))
+
+    reducer.apply(
+        RuntimeEvent(
+            payload=ToolOutputDelta(
+                tool_call_id="x",
+                text="\n".join(f"line-{index}" for index in range(10)),
+            )
+        )
+    )
+
+    cell = reducer.state.transcript.get("tool:x")
+    assert isinstance(cell, ToolCell)
+    assert cell.output == "\n".join(f"line-{index}" for index in range(5, 10))
+
+
 def test_diagnostic_publish_and_clear_update_same_typed_cell() -> None:
     reducer = PresentationReducer()
     published = RuntimeEvent(
