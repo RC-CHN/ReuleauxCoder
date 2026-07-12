@@ -45,6 +45,7 @@ from reuleauxcoder.domain.runtime.events import (
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
+from reuleauxcoder.interfaces.cli.markdown_fragments import RetainedMarkdownRenderer
 from reuleauxcoder.interfaces.events import (
     InteractionPromptPayload,
     RuntimeEventPayload,
@@ -122,6 +123,7 @@ class MiniTUIEventAdapter:
         self._notice_seq = 0
         self._pending_events: queue.SimpleQueue[UIEvent] = queue.SimpleQueue()
         self._viewport_width = 100
+        self._markdown = RetainedMarkdownRenderer()
 
     def bind_invalidator(self, callback) -> None:
         self._invalidate = callback
@@ -309,7 +311,13 @@ class MiniTUIEventAdapter:
         with self._lock:
             cells = self.transcript.state.transcript.cells
         for cell in cells:
-            fragments.extend(_cell_fragments(cell, width=self._viewport_width))
+            fragments.extend(
+                _cell_fragments(
+                    cell,
+                    width=self._viewport_width,
+                    markdown_renderer=self._markdown,
+                )
+            )
         return FormattedText(fragments or [("class:muted", "No activity yet.\n")])
 
 
@@ -863,12 +871,23 @@ class MiniTUIApplication:
             reconcile(reason)
 
 
-def _cell_fragments(cell, *, width: int = 100) -> list[tuple[str, str]]:
+def _cell_fragments(
+    cell,
+    *,
+    width: int = 100,
+    markdown_renderer: RetainedMarkdownRenderer | None = None,
+) -> list[tuple[str, str]]:
     if isinstance(cell, UserCell):
         return [("class:user", f" YOU  {cell.text}\n"), ("", "\n")]
     if isinstance(cell, AssistantCell):
-        suffix = "\n\n" if cell.complete else "\n"
-        return [("class:assistant", cell.text + (suffix if cell.text else ""))]
+        renderer = markdown_renderer or RetainedMarkdownRenderer()
+        return renderer.render(
+            cell_id=cell.id,
+            revision=cell.revision,
+            text=cell.text,
+            complete=cell.complete,
+            width=width,
+        )
     if isinstance(cell, ToolCell):
         status = cell.status.value.upper()
         style = "class:error" if cell.status.value == "failed" else "class:tool"
