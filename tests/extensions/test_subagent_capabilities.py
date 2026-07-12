@@ -12,7 +12,6 @@ from reuleauxcoder.extensions.subagent.manager import _filter_subagent_tools
 from reuleauxcoder.extensions.subagent.scoped_tools import materialize_subagent_tool
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend
 from reuleauxcoder.extensions.tools.base import Tool
-from reuleauxcoder.extensions.tools.builtin.agent import AgentTool
 from reuleauxcoder.extensions.tools.builtin.control import (
     ReportProgressTool,
     ReportToParentTool,
@@ -64,7 +63,6 @@ def _parent_with_all_tools():
             UpdatePlanTool(),
             ReportProgressTool(),
             ReportToParentTool(),
-            AgentTool(),
         ]
     )
 

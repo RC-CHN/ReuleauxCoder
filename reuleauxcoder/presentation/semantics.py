@@ -38,7 +38,11 @@ _TOOL_ACTIONS = {
     "grep": "SEARCH",
     "glob": "GLOB",
     "lsp": "LSP",
-    "agent": "AGENT",
+    "spawn_agent": "SPAWN",
+    "send_message": "MESSAGE",
+    "list_agents": "AGENTS",
+    "wait_agent": "WAIT",
+    "interrupt_agent": "STOP",
 }
 
 _TOOL_SUBJECT_KEYS = {
@@ -50,7 +54,9 @@ _TOOL_SUBJECT_KEYS = {
     "grep": ("pattern", "query"),
     "glob": ("pattern",),
     "lsp": ("operation", "file_path", "path"),
-    "agent": ("task", "mode"),
+    "spawn_agent": ("message", "mode"),
+    "send_message": ("job_id", "message"),
+    "interrupt_agent": ("job_id",),
 }
 
 

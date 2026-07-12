@@ -125,7 +125,7 @@ BUILTIN_MODES = {
     },
     "planner": {
         "description": "Planning-first mode; focus on analysis and implementation plans.",
-        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress"],
+        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress", "spawn_agent", "send_message", "list_agents", "wait_agent", "interrupt_agent"],
         "prompt_append": (
             "Focus on analysis, architecture, and step-by-step plans. Avoid file mutations "
             "unless explicitly requested."
@@ -134,7 +134,7 @@ BUILTIN_MODES = {
     },
     "debugger": {
         "description": "Debugging mode focused on diagnosis and verification.",
-        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress", "shell"],
+        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress", "shell", "spawn_agent", "send_message", "list_agents", "wait_agent", "interrupt_agent"],
         "prompt_append": (
             "Focus on root-cause analysis, minimal repro steps, and targeted fixes with "
             "clear verification."
@@ -167,7 +167,7 @@ DEFAULTS = {
         {"tool_name": "write_file", "action": "require_approval"},
         {"tool_name": "edit_file", "action": "require_approval"},
         {"tool_name": "shell", "action": "require_approval"},
-        {"tool_name": "agent", "action": "require_approval"},
+        {"tool_name": "spawn_agent", "action": "require_approval"},
         {"tool_source": "mcp", "mcp_server": "filesystem", "action": "warn"},
         {"tool_source": "mcp", "action": "require_approval"},
     ],

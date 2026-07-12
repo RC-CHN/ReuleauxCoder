@@ -175,7 +175,7 @@ class AppRunner:
 
         self._register_hooks(agent, config)
         self._init_lsp(config, agent, ui_bus)
-        self._wire_agent_tool_parent(agent)
+        self._wire_agent_tools(agent)
         self._hint_rtk_install(config, ui_bus)
         return config, ui_bus, llm, agent
 
@@ -279,15 +279,13 @@ class AppRunner:
                 bind(manager)
 
     @staticmethod
-    def _wire_agent_tool_parent(agent: Agent) -> None:
-        """Inject parent agent and config into tools that need them."""
+    def _wire_agent_tools(agent: Agent) -> None:
+        """Bind root agent/config services into tools that declare adapters."""
         for tool in agent.tools:
             tool._agent_config = agent.config
             bind_agent = getattr(tool, "bind_agent", None)
             if callable(bind_agent):
                 bind_agent(agent)
-            if tool.name == "agent":
-                tool._parent_agent = agent
 
     def _attach_mcp_if_configured(
         self,

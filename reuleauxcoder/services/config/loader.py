@@ -549,7 +549,7 @@ class ConfigLoader:
                     {"tool_name": "write_file", "action": "require_approval"},
                     {"tool_name": "edit_file", "action": "require_approval"},
                     {"tool_name": "shell", "action": "require_approval"},
-                    {"tool_name": "agent", "action": "require_approval"},
+                    {"tool_name": "spawn_agent", "action": "require_approval"},
                     {"tool_source": "mcp", "action": "require_approval"},
                 ],
             },

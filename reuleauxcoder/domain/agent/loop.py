@@ -526,20 +526,7 @@ class AgentLoop:
                 self.agent._append_message(resp.message, source="assistant_response")
                 if self.agent._has_user_steering():
                     continue
-                if (
-                    self.agent._has_awaited_subagent_jobs()
-                    or self.agent._has_subagent_activity()
-                ):
-                    while (
-                        self.agent._has_awaited_subagent_jobs()
-                        and not self.agent.stop_requested()
-                    ):
-                        if self.agent._has_user_steering():
-                            break
-                        if self.agent._wait_for_subagent_activity(timeout=0.1):
-                            break
-                    if self.agent.stop_requested():
-                        return "(stopped while waiting for sub-agent results)"
+                if self.agent._has_subagent_activity():
                     self.agent._drain_user_steering()
                     self.agent._inject_completed_subagent_jobs()
                     continue

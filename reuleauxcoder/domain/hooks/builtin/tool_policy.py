@@ -131,7 +131,11 @@ BUILTIN_TOOL_NAMES = {
     "edit_file",
     "glob",
     "grep",
-    "agent",
+    "spawn_agent",
+    "send_message",
+    "list_agents",
+    "wait_agent",
+    "interrupt_agent",
 }
 
 

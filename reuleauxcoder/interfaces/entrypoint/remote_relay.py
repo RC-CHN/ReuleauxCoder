@@ -261,7 +261,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         peer_agent.skills_service = skills_service
         peer_agent.skills_catalog = agent.skills_catalog
         runner._register_hooks(peer_agent, config)
-        runner._wire_agent_tool_parent(peer_agent)
+        runner._wire_agent_tools(peer_agent)
 
         peer = relay_server.registry.get(peer_id)
         workspace_root = peer.workspace_root if peer is not None else None
