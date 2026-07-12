@@ -205,23 +205,13 @@ class ShellTool(Tool):
                 retention_hint=retention_hint,
             )
         failed = result.exit_code not in {None, 0}
-        first_line = next(
-            (
-                line.strip()
-                for line in (result.stdout or result.stderr).splitlines()
-                if line.strip()
-            ),
-            "(no output)",
-        )
-        if len(first_line) > 120:
-            first_line = first_line[:117] + "..."
         elapsed = _format_duration(duration)
         return ToolOutcome(
             status=(ToolOutcomeStatus.FAILED if failed else ToolOutcomeStatus.SUCCEEDED),
             summary=(
-                f"Command failed (exit {result.exit_code}) · {elapsed} · {first_line}"
+                f"Command failed (exit {result.exit_code}) · {elapsed}"
                 if failed
-                else f"Command completed · {elapsed} · {first_line}"
+                else f"Command completed · {elapsed}"
             ),
             content=(
                 "(no output)" if not result.stdout and not result.stderr else None

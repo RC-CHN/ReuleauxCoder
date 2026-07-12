@@ -47,7 +47,6 @@ def test_explicit_cwd_overrides_and_can_be_persisted(tmp_path: Path) -> None:
     assert result.model_text == "ok"
     assert result.summary is not None
     assert result.summary.startswith("Command completed · ")
-    assert result.summary.endswith(" · ok")
     assert result.duration_seconds is not None
     assert result.duration_seconds >= 0
     assert result.status is ToolOutcomeStatus.SUCCEEDED

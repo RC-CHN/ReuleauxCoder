@@ -122,3 +122,24 @@ def test_timeout_preview_shows_latest_five_lines_and_system_footer() -> None:
     assert "line-9" in preview
     assert preview.endswith("[system] timed out here")
     assert "line-0" in outcome.model_text
+
+
+def test_successful_tail_tool_commits_latest_five_lines_and_status() -> None:
+    from reuleauxcoder.domain.agent.tool_outcome import (
+        ToolRetentionHint,
+        ToolRetentionStrategy,
+    )
+
+    outcome = ToolOutcome(
+        summary="Command completed · 5.39s",
+        stdout="\n".join(f"line-{index}" for index in range(1, 51)),
+        retention_hint=ToolRetentionHint(strategy=ToolRetentionStrategy.TAIL),
+    )
+
+    preview = PresentationPolicy().tool_preview(outcome)
+
+    assert "line-45" not in preview
+    for index in range(46, 51):
+        assert f"line-{index}" in preview
+    assert preview.endswith("└ Command completed · 5.39s")
+    assert "line-1" in outcome.model_text

@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome, ToolOutcomeStatus
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcome,
+    ToolOutcomeStatus,
+    ToolRetentionStrategy,
+)
 
 
 class Verbosity(str, Enum):
@@ -73,6 +77,14 @@ class PresentationPolicy:
             if not lines:
                 return ""
             return "\n".join([*lines[:-1][-5:], lines[-1]])
+
+        if (
+            outcome.retention_hint.strategy is ToolRetentionStrategy.TAIL
+            and outcome.summary
+        ):
+            lines = outcome.ui_text(include_details=True).splitlines()
+            tail = lines[-5:]
+            return "\n".join([*tail, f"└ {outcome.summary}"])
 
         if self.tool_output_mode is ToolOutputMode.SUMMARY and outcome.summary:
             return outcome.summary
