@@ -91,7 +91,12 @@ class EditFileTool(Tool):
                 summary=summary,
                 content=summary,
                 diff=diff,
-                metadata={"file_path": file_path, "resolved_path": str(resolved)},
+                metadata={
+                    "operation": "edit",
+                    "file_path": file_path,
+                    "resolved_path": str(resolved),
+                    "show_diff_by_default": True,
+                },
             )
         except WorkspaceError as e:
             return _workspace_failure(e)

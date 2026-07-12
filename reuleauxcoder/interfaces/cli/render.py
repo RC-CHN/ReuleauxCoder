@@ -344,6 +344,9 @@ class CLIRenderer:
             return
         if outcome.success:
             self.console.print(f"  [dim]{_escape_markup(display)}[/dim]")
+            diff = self.policy.tool_diff_preview(outcome)
+            if diff:
+                render_diff_panel(diff, self.console)
         elif self.policy.verbosity is Verbosity.COMPACT:
             self.console.print(
                 f"  [red]× {name}: {_escape_markup(display)}[/red]"

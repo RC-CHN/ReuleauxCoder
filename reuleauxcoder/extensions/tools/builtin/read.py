@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from reuleauxcoder.domain.workspace import WorkspaceError
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
+from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -48,7 +53,7 @@ class ReadFileTool(Tool):
         offset: int = 1,
         limit: int = 2000,
         override: bool = False,
-    ) -> str:
+    ) -> ToolOutcome:
         return self.run_backend(
             file_path=file_path,
             offset=offset,
@@ -63,15 +68,15 @@ class ReadFileTool(Tool):
         offset: int = 1,
         limit: int = 2000,
         override: bool = False,
-    ) -> str:
+    ) -> ToolOutcome:
         if not isinstance(file_path, str) or not file_path:
-            return "Error: file_path must be a non-empty string"
+            return _invalid("Error: file_path must be a non-empty string")
         if not isinstance(offset, int) or offset < 1:
-            return "Error: offset must be a positive integer"
+            return _invalid("Error: offset must be a positive integer")
         if not isinstance(limit, int) or limit < 1:
-            return "Error: limit must be a positive integer"
+            return _invalid("Error: limit must be a positive integer")
         if not isinstance(override, bool):
-            return "Error: override must be a boolean"
+            return _invalid("Error: override must be a boolean")
         return self._execute_local(file_path, offset, limit, override)
 
     @backend_handler("local")
@@ -81,28 +86,70 @@ class ReadFileTool(Tool):
         offset: int = 1,
         limit: int = 2000,
         override: bool = False,
-    ) -> str:
+    ) -> ToolOutcome:
         try:
             text = self.backend.workspace.read_text(file_path)
             lines = text.splitlines()
             total = len(lines)
 
             if override:
-                numbered = [f"{i + 1}\t{ln}" for i, ln in enumerate(lines)]
-                return "\n".join(numbered) or "(empty file)"
-
-            start = max(0, offset - 1)
-            chunk = lines[start : start + limit]
+                start = 0
+                chunk = lines
+            else:
+                start = max(0, offset - 1)
+                chunk = lines[start : start + limit]
             numbered = [f"{start + i + 1}\t{ln}" for i, ln in enumerate(chunk)]
             result = "\n".join(numbered)
 
-            if total > start + limit:
+            if not override and total > start + limit:
                 result += (
                     f"\n... ({total} lines total, showing {start + 1}-{start + len(chunk)}; "
                     "use override=true to read full file)"
                 )
-            return result or "(empty file)"
+            model_content = result or "(empty file)"
+            source_chars = len("\n".join(chunk))
+            if chunk:
+                line_range = f"lines {start + 1}-{start + len(chunk)} of {total}"
+            else:
+                line_range = f"0 of {total} lines"
+            return ToolOutcome(
+                summary=(
+                    f"Read {line_range} ({source_chars} chars) from {file_path}"
+                ),
+                content=model_content,
+                metadata={
+                    "operation": "read",
+                    "file_path": file_path,
+                    "offset": start + 1,
+                    "line_count": len(chunk),
+                    "total_lines": total,
+                    "character_count": source_chars,
+                    "override": override,
+                },
+            )
         except WorkspaceError as e:
-            return f"Error [{e.code.value}]: {e.message}"
+            kind = (
+                ToolErrorKind.NOT_FOUND
+                if e.code is WorkspaceErrorCode.NOT_FOUND
+                else ToolErrorKind.EXECUTION
+            )
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=f"Error [{e.code.value}]: {e.message}",
+                error_kind=kind,
+                metadata={"workspace_error_code": e.code.value},
+            )
         except Exception as e:
-            return f"Error: {e}"
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                content=f"Error: {e}",
+                error_kind=ToolErrorKind.EXECUTION,
+            )
+
+
+def _invalid(message: str) -> ToolOutcome:
+    return ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        content=message,
+        error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+    )

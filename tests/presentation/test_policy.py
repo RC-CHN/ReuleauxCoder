@@ -46,6 +46,32 @@ def test_summary_mode_prefers_structured_summary() -> None:
     assert policy.tool_preview(outcome) == "Wrote 500 lines"
 
 
+def test_summary_mode_renders_review_diff_for_write_and_edit() -> None:
+    from reuleauxcoder.domain.agent.tool_outcome import ToolDiff
+
+    policy = PresentationPolicy(tool_output_mode=ToolOutputMode.SUMMARY)
+    diff = ToolDiff(path="demo.txt", unified="--- a/demo\n+++ b/demo\n-x\n+y")
+    for operation in ("write", "edit"):
+        outcome = ToolOutcome(
+            summary=f"{operation.title()} demo.txt",
+            diff=diff,
+            metadata={"operation": operation, "show_diff_by_default": True},
+        )
+        assert policy.tool_diff_preview(outcome) == diff.unified
+
+
+def test_summary_mode_does_not_render_unrequested_diff() -> None:
+    from reuleauxcoder.domain.agent.tool_outcome import ToolDiff
+
+    policy = PresentationPolicy(tool_output_mode=ToolOutputMode.SUMMARY)
+    outcome = ToolOutcome(
+        summary="Generated artifact",
+        diff=ToolDiff(path="demo.txt", unified="+generated"),
+    )
+
+    assert policy.tool_diff_preview(outcome) == ""
+
+
 def test_debug_preview_is_unbounded() -> None:
     text = "x" * 5_000
     policy = PresentationPolicy(

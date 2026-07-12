@@ -40,16 +40,16 @@ class TestRemoteBackendDispatch:
             backend = RemoteRelayToolBackend(relay_server=srv)
             tool = ReadFileTool(backend=backend)
             result = tool.execute(file_path="/tmp/foo")
-            assert "no remote peer" in result.lower()
+            assert "no remote peer" in result.model_text.lower()
 
             result = tool.execute(file_path="/tmp/foo", offset=0)
-            assert "positive integer" in result.lower()
+            assert "positive integer" in result.model_text.lower()
 
             result = tool.execute(file_path="/tmp/foo", limit=0)
-            assert "positive integer" in result.lower()
+            assert "positive integer" in result.model_text.lower()
 
             result = tool.execute(file_path="/tmp/foo", override="yes")
-            assert "boolean" in result.lower()
+            assert "boolean" in result.model_text.lower()
         finally:
             srv.stop()
 
@@ -205,7 +205,7 @@ class TestRemoteBackendDispatch:
             import threading
             import time
 
-            holder: dict[str, str] = {}
+            holder: dict[str, object] = {}
             thread = threading.Thread(
                 target=lambda: holder.setdefault(
                     "result", ReadFileTool(backend=backend).execute("README.md")
@@ -238,7 +238,9 @@ class TestRemoteBackendDispatch:
             )
             thread.join(timeout=2)
 
-            assert holder["result"] == "1\thello"
+            result = holder["result"]
+            assert result.model_text == "1\thello"
+            assert result.summary == "Read lines 1-1 of 1 (5 chars) from README.md"
         finally:
             srv.stop()
 

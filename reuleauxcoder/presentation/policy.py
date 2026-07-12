@@ -82,6 +82,20 @@ class PresentationPolicy:
         rank = {"debug": 0, "info": 1, "success": 1, "warning": 2, "error": 3}
         return rank.get(level, 1) >= rank[self.notification_threshold.value]
 
+    def tool_diff_preview(self, outcome: ToolOutcome) -> str:
+        """Return a bounded, separately renderable default review diff."""
+        if (
+            self.tool_output_mode is not ToolOutputMode.SUMMARY
+            or outcome.diff is None
+            or not outcome.metadata.get("show_diff_by_default")
+        ):
+            return ""
+        return fold_text(
+            outcome.diff.unified,
+            max_lines=self.tool_preview_lines,
+            max_chars=self.tool_preview_chars,
+        )
+
 
 def fold_text(text: str, *, max_lines: int, max_chars: int) -> str:
     """Return a bounded head+tail projection suitable for terminal scrollback.

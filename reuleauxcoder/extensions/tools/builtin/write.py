@@ -65,9 +65,11 @@ class WriteFileTool(Tool):
                 content=summary,
                 diff=diff,
                 metadata={
+                    "operation": "write",
                     "file_path": file_path,
                     "resolved_path": str(resolved),
                     "line_count": n_lines,
+                    "show_diff_by_default": True,
                 },
             )
         except WorkspaceError as e:
