@@ -313,12 +313,15 @@ def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
     )
 
     assert manager.send_to_parent("child-b", "second") is True
-    assert manager.send_to_parent("child-a", "first") is True
+    assert manager.send_to_parent(
+        "child-a", "first", kind="reply", reply_to="sd_request"
+    ) is True
     messages = manager.drain_parent_messages("root")
 
     assert [item.content for item in messages] == ["second", "first"]
     assert [item.seq for item in messages] == sorted(item.seq for item in messages)
     assert all(len(item.content_hash) == 64 for item in messages)
+    assert messages[1].reply_to == "sd_request"
     assert manager.drain_parent_messages("child-a") == []
     manager.shutdown()
 

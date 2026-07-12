@@ -115,7 +115,6 @@ class ReportProgressTool(_AgentControlTool):
                     "implementing",
                     "verifying",
                     "ready",
-                    "blocked",
                 ],
             },
             "summary": {"type": "string"},
@@ -142,17 +141,81 @@ class ReportProgressTool(_AgentControlTool):
                 tool_call_id=tool_call_id,
                 session_generation=generation,
             )
-            if phase == "blocked" and getattr(self._agent, "subagent_depth", 0) > 0:
-                manager = getattr(self._agent, "_subagent_manager", None)
-                if manager is not None:
-                    manager.send_to_parent(
-                        self._agent.agent_id, summary, kind="blocked"
-                    )
             verb = "updated" if changed else "unchanged"
             return ToolOutcome(
                 summary=f"Progress {verb}",
                 content=f"Progress {verb} · {state.phase} · revision {state.revision}",
                 metadata={"progress_revision": state.revision, "changed": changed},
+            )
+        except (TypeError, ValueError, RuntimeError) as error:
+            return _invalid(str(error))
+
+
+@register_tool
+class ReportToParentTool(_AgentControlTool):
+    name = "report_to_parent"
+    description = (
+        "Send a non-blocking milestone, reply, amendment, or warning to the "
+        "immediate parent agent. This does not finish or pause the child."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "minLength": 1},
+            "kind": {
+                "type": "string",
+                "enum": ["reply", "milestone", "amendment", "warning"],
+            },
+            "reply_to": {
+                "type": "string",
+                "description": "Directive ID when kind=reply.",
+            },
+        },
+        "required": ["message", "kind"],
+    }
+
+    def execute(
+        self,
+        message: str,
+        kind: str = "milestone",
+        reply_to: str | None = None,
+    ) -> ToolOutcome:
+        return self.run_backend(message=message, kind=kind, reply_to=reply_to)
+
+    @backend_handler("local")
+    def _execute_local(
+        self,
+        message: str,
+        kind: str = "milestone",
+        reply_to: str | None = None,
+    ) -> ToolOutcome:
+        try:
+            self._identity()
+            if self._agent is None or getattr(self._agent, "subagent_depth", 0) <= 0:
+                raise RuntimeError("report_to_parent is available only to child agents")
+            if kind not in {"reply", "milestone", "amendment", "warning"}:
+                raise ValueError(f"unsupported report kind: {kind}")
+            if kind == "reply" and not (reply_to or "").strip():
+                raise ValueError("reply reports require reply_to")
+            manager = getattr(self._agent, "_subagent_manager", None)
+            if manager is None:
+                raise RuntimeError("child has no parent mailbox")
+            item = manager.queue_to_parent(
+                self._agent.agent_id,
+                message,
+                kind=kind,
+                reply_to=reply_to,
+            )
+            if item is None:
+                raise RuntimeError("parent mailbox rejected the report")
+            return ToolOutcome(
+                summary="Report queued for parent",
+                content=f"Report queued · item_id={item.item_id}",
+                metadata={
+                    "item_id": item.item_id,
+                    "kind": item.kind,
+                    "reply_to": item.reply_to,
+                },
             )
         except (TypeError, ValueError, RuntimeError) as error:
             return _invalid(str(error))

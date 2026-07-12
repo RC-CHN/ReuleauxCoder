@@ -795,6 +795,7 @@ class Agent:
             f"item_id={item.item_id}\n"
             f"seq={item.seq}\n"
             f"kind={item.kind}\n"
+            f"reply_to={item.reply_to or '-'}\n"
             f"sender_agent_id={item.sender_agent_id}\n"
             f"sender_job_id={item.sender_job_id or '-'}\n\n"
             f"content_hash={item.content_hash or '-'}\n\n"

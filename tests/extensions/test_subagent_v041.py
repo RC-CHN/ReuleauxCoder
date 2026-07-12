@@ -104,7 +104,10 @@ def test_running_agent_message_queue_is_lossless(monkeypatch) -> None:
             break
         __import__("time").sleep(0.01)
     assert manager.send_message(job_id, "new constraint") is True
-    assert manager.drain_messages(job_id) == ["new constraint"]
+    directives = manager.drain_messages(job_id)
+    assert [item.content for item in directives] == ["new constraint"]
+    assert directives[0].directive_id.startswith("sd_")
+    assert len(directives[0].content_hash) == 64
     assert manager.drain_messages(job_id) == []
     communication_events = [
         event

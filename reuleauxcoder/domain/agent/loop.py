@@ -368,10 +368,15 @@ class AgentLoop:
             message_source = getattr(self.agent, "_external_message_source", None)
             if callable(message_source):
                 for external_message in message_source():
+                    content = (
+                        external_message.model_text()
+                        if hasattr(external_message, "model_text")
+                        else str(external_message)
+                    )
                     self.agent._append_message(
                         {
                             "role": "system",
-                            "content": f"[Inter-agent message]\n{external_message}\n[/Inter-agent message]",
+                            "content": f"[Inter-agent message]\n{content}\n[/Inter-agent message]",
                         },
                         source="parent_to_child",
                     )

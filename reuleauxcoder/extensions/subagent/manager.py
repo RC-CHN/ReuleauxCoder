@@ -31,7 +31,13 @@ _DEFAULT_TIMEOUT_SECONDS = 300
 _MAX_TIMEOUT_SECONDS = 3_600
 SubagentDelivery = Literal["awaited", "detached"]
 SubagentMessageKind = Literal[
-    "milestone", "blocked", "approval_needed", "partial", "amendment"
+    "reply",
+    "milestone",
+    "amendment",
+    "warning",
+    "approval_needed",
+    "partial",
+    "guidance",
 ]
 
 
@@ -115,6 +121,7 @@ def _publish_communication_event(
             "created_at": item.created_at,
             "generation": item.generation,
             "kind": item.kind,
+            "reply_to": item.reply_to,
             "content_hash": item.content_hash,
             "direction": "child_to_parent",
         },
@@ -137,6 +144,8 @@ def _publish_directive_event(
     content: str,
     generation: int,
     status: str,
+    seq: int | None = None,
+    content_hash: str | None = None,
 ) -> None:
     ledger = getattr(parent_agent, "history_ledger", None)
     if ledger is None:
@@ -150,6 +159,8 @@ def _publish_directive_event(
             "sender_agent_id": sender_agent_id,
             "content": content,
             "generation": generation,
+            "seq": seq,
+            "content_hash": content_hash,
         },
         agent_id=sender_agent_id,
         job_id=target_job_id,
@@ -239,7 +250,27 @@ class SubagentCommunication:
     created_at: float
     generation: int
     kind: SubagentMessageKind = "milestone"
+    reply_to: str | None = None
     content_hash: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentDirective:
+    directive_id: str
+    seq: int
+    target_job_id: str
+    sender_agent_id: str
+    content: str
+    created_at: float
+    generation: int
+    content_hash: str
+
+    def model_text(self) -> str:
+        return (
+            f"directive_id={self.directive_id}\n"
+            f"sender_agent_id={self.sender_agent_id}\n\n"
+            f"{self.content}"
+        )
 
 
 class SubagentManager:
@@ -281,7 +312,7 @@ class SubagentManager:
         self._max_depth = max(0, int(max_depth))
         self._completion_mailbox: deque[str] = deque()
         self._registered_agents: dict[str, int] = {}
-        self._message_queues: dict[str, deque[str]] = {}
+        self._message_queues: dict[str, deque[SubagentDirective]] = {}
         self._agent_jobs: dict[str, str] = {}
         self._agent_parents: dict[str, str] = {}
         self._agent_generations: dict[str, int] = {}
@@ -812,11 +843,13 @@ class SubagentManager:
                 continue
             kind = str(payload.get("kind") or "milestone")
             if kind not in {
+                "reply",
                 "milestone",
-                "blocked",
+                "amendment",
+                "warning",
                 "approval_needed",
                 "partial",
-                "amendment",
+                "guidance",
             }:
                 kind = "milestone"
             pending_messages.append(
@@ -830,12 +863,14 @@ class SubagentManager:
                     created_at=float(payload.get("created_at") or time.time()),
                     generation=getattr(parent_agent, "session_generation", 0),
                     kind=kind,  # type: ignore[arg-type]
+                    reply_to=payload.get("reply_to"),
                     content_hash=_subagent_item_hash(
                         sender_agent_id=sender,
                         sender_job_id=payload.get("sender_job_id"),
                         recipient_agent_id=recipient,
                         generation=getattr(parent_agent, "session_generation", 0),
                         kind=kind,
+                        reply_to=payload.get("reply_to"),
                         content=content,
                     ),
                 )
@@ -887,8 +922,26 @@ class SubagentManager:
         message: str,
         *,
         kind: SubagentMessageKind = "milestone",
+        reply_to: str | None = None,
     ) -> bool:
         """Queue one child report for its immediate parent agent."""
+
+        return self.queue_to_parent(
+            sender_agent_id,
+            message,
+            kind=kind,
+            reply_to=reply_to,
+        ) is not None
+
+    def queue_to_parent(
+        self,
+        sender_agent_id: str,
+        message: str,
+        *,
+        kind: SubagentMessageKind = "milestone",
+        reply_to: str | None = None,
+    ) -> SubagentCommunication | None:
+        """Queue and return one typed child report for its immediate parent."""
 
         text = message.strip()
         queued: SubagentCommunication | None = None
@@ -899,32 +952,34 @@ class SubagentManager:
                 or recipient is None
                 or self._agent_generations.get(sender_agent_id) != self._generation
             ):
-                return False
+                return None
             seq = self._allocate_sequence_locked()
             queued = SubagentCommunication(
-                    item_id=f"sc_{uuid.uuid4().hex[:12]}",
-                    seq=seq,
+                item_id=f"sc_{uuid.uuid4().hex[:12]}",
+                seq=seq,
+                sender_agent_id=sender_agent_id,
+                sender_job_id=self._agent_jobs.get(sender_agent_id),
+                recipient_agent_id=recipient,
+                content=text,
+                created_at=time.time(),
+                generation=self._generation,
+                kind=kind,
+                reply_to=reply_to,
+                content_hash=_subagent_item_hash(
                     sender_agent_id=sender_agent_id,
                     sender_job_id=self._agent_jobs.get(sender_agent_id),
                     recipient_agent_id=recipient,
-                    content=text,
-                    created_at=time.time(),
                     generation=self._generation,
                     kind=kind,
-                    content_hash=_subagent_item_hash(
-                        sender_agent_id=sender_agent_id,
-                        sender_job_id=self._agent_jobs.get(sender_agent_id),
-                        recipient_agent_id=recipient,
-                        generation=self._generation,
-                        kind=kind,
-                        content=text,
-                    ),
-                )
+                    reply_to=reply_to,
+                    content=text,
+                ),
+            )
             self._parent_messages.append(queued)
             self._slot_cv.notify_all()
         if self._root_agent is not None:
             _publish_communication_event(self._root_agent, queued, status="queued")
-        return True
+        return queued
 
     def drain_parent_messages(self, parent_agent_id: str) -> list[SubagentCommunication]:
         with self._lock:
@@ -1046,17 +1101,46 @@ class SubagentManager:
     ) -> bool:
         """Queue a message for a running worker; it is consumed next model round."""
 
+        return self.queue_message(
+            job_id,
+            message,
+            sender_agent_id=sender_agent_id,
+        ) is not None
+
+    def queue_message(
+        self, job_id: str, message: str, *, sender_agent_id: str | None = None
+    ) -> SubagentDirective | None:
+        """Queue and return one typed directive for a running child."""
+
         text = message.strip()
         if not text:
-            return False
+            return None
         directive_id = f"sd_{uuid.uuid4().hex[:12]}"
         sender = sender_agent_id or self._parent_agent_id or "root"
         with self._lock:
             job = self._jobs.get(job_id)
             queue = self._message_queues.get(job_id)
             if job is None or queue is None or job.status not in {"queued", "running"}:
-                return False
-            queue.append((directive_id, text, sender))
+                return None
+            seq = self._allocate_sequence_locked()
+            directive = SubagentDirective(
+                directive_id=directive_id,
+                seq=seq,
+                target_job_id=job_id,
+                sender_agent_id=sender,
+                content=text,
+                created_at=time.time(),
+                generation=self._generation,
+                content_hash=_subagent_item_hash(
+                    directive_id=directive_id,
+                    seq=seq,
+                    target_job_id=job_id,
+                    sender_agent_id=sender,
+                    content=text,
+                    generation=self._generation,
+                ),
+            )
+            queue.append(directive)
         if self._root_agent is not None:
             _publish_directive_event(
                 self._root_agent,
@@ -1066,28 +1150,32 @@ class SubagentManager:
                 content=text,
                 generation=self._generation,
                 status="queued",
+                seq=directive.seq,
+                content_hash=directive.content_hash,
             )
-        return True
+        return directive
 
-    def drain_messages(self, job_id: str) -> list[str]:
+    def drain_messages(self, job_id: str) -> list[SubagentDirective]:
         with self._lock:
             queue = self._message_queues.get(job_id)
             if queue is None:
                 return []
             messages = list(queue)
             queue.clear()
-        for directive_id, content, sender in messages:
+        for directive in messages:
             if self._root_agent is not None:
                 _publish_directive_event(
                     self._root_agent,
-                    directive_id=directive_id,
+                    directive_id=directive.directive_id,
                     target_job_id=job_id,
-                    sender_agent_id=sender,
-                    content=content,
+                    sender_agent_id=directive.sender_agent_id,
+                    content=directive.content,
                     generation=self._generation,
                     status="delivered",
+                    seq=directive.seq,
+                    content_hash=directive.content_hash,
                 )
-        return [content for _directive_id, content, _sender in messages]
+        return messages
 
     def follow_up(
         self,
@@ -1444,7 +1532,7 @@ def _filter_subagent_tools(parent_agent, mode: str):
         "verify": {"read_file", "list_file", "glob", "grep", "lsp", "shell"},
     }
     allowed = mode_allowlist[mode]
-    allowed.add("report_progress")
+    allowed.update({"report_progress", "report_to_parent"})
     return [
         materialize_subagent_tool(tool)
         for tool in parent_agent.tools

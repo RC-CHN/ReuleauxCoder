@@ -15,6 +15,7 @@ from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.extensions.tools.builtin.agent import AgentTool
 from reuleauxcoder.extensions.tools.builtin.control import (
     ReportProgressTool,
+    ReportToParentTool,
     UpdatePlanTool,
 )
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
@@ -62,6 +63,7 @@ def _parent_with_all_tools():
             ShellTool(),
             UpdatePlanTool(),
             ReportProgressTool(),
+            ReportToParentTool(),
             AgentTool(),
         ]
     )
@@ -75,14 +77,15 @@ def test_child_capability_matrix_has_read_baseline_without_recursion_or_plan() -
     verify = {tool.name for tool in _filter_subagent_tools(parent, "verify")}
 
     baseline = {"read_file", "list_file", "glob", "grep", "lsp"}
-    assert explore == baseline | {"report_progress"}
+    assert explore == baseline | {"report_progress", "report_to_parent"}
     assert execute == baseline | {
         "write_file",
         "edit_file",
         "shell",
         "report_progress",
+        "report_to_parent",
     }
-    assert verify == baseline | {"shell", "report_progress"}
+    assert verify == baseline | {"shell", "report_progress", "report_to_parent"}
     assert "agent" not in execute
     assert "update_plan" not in execute
 
