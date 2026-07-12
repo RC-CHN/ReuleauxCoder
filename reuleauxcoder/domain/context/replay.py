@@ -161,6 +161,7 @@ class RequestEnvelope:
     execution_overlay_hash: str
     execution_overlay_tokens: int
     canonical_request_hash: str
+    plan_revision: int = 0
 
     @classmethod
     def create(
@@ -170,6 +171,7 @@ class RequestEnvelope:
         overlay: dict,
         overlay_revision: int,
         overlay_tokens: int,
+        plan_revision: int = 0,
     ) -> "RequestEnvelope":
         overlay_hash = content_hash(overlay)
         return cls(
@@ -182,6 +184,7 @@ class RequestEnvelope:
             canonical_request_hash=content_hash(
                 {"replay": replay.to_dict(), "overlay": overlay}
             ),
+            plan_revision=max(0, int(plan_revision)),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -282,10 +282,12 @@ class AppRunner:
     def _wire_agent_tool_parent(agent: Agent) -> None:
         """Inject parent agent and config into tools that need them."""
         for tool in agent.tools:
+            tool._agent_config = agent.config
+            bind_agent = getattr(tool, "bind_agent", None)
+            if callable(bind_agent):
+                bind_agent(agent)
             if tool.name == "agent":
                 tool._parent_agent = agent
-            if hasattr(tool, "_maybe_rtk"):
-                tool._agent_config = agent.config
 
     def _attach_mcp_if_configured(
         self,

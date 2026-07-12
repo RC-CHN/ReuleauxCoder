@@ -46,7 +46,7 @@ modes:
   profiles:
     planner:
       description: "Planning-first mode; keep implementation changes minimal unless asked."
-      tools: ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read"]
+      tools: ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress"]
       prompt_append: "Focus on architecture, trade-offs, and actionable implementation plans."
       allowed_subagent_modes: ["explore"]
 

@@ -163,10 +163,15 @@ def _handle_compact(command, ctx) -> CommandEffect:
         return ctx.effect.finish(control="continue")
 
     if command.force_strategy:
-        compressed = ctx.agent.context.force_compress(
-            ctx.agent.messages,
-            command.force_strategy,
-            ctx.agent.llm,
+        force = getattr(ctx.agent, "force_compress_context", None)
+        compressed = (
+            force(command.force_strategy, ctx.agent.llm)
+            if callable(force)
+            else ctx.agent.context.force_compress(
+                ctx.agent.messages,
+                command.force_strategy,
+                ctx.agent.llm,
+            )
         )
         after = estimate_tokens(ctx.agent.messages)
         if compressed:
@@ -179,12 +184,14 @@ def _handle_compact(command, ctx) -> CommandEffect:
             )
         return ctx.effect.finish(control="continue")
 
-    compressed = ctx.agent.context.maybe_compress(ctx.agent.messages, ctx.agent.llm)
+    maybe_compress = getattr(ctx.agent, "maybe_compress_context", None)
+    compressed = (
+        maybe_compress(ctx.agent.llm, reason="manual compact command")
+        if callable(maybe_compress)
+        else ctx.agent.context.maybe_compress(ctx.agent.messages, ctx.agent.llm)
+    )
     after = estimate_tokens(ctx.agent.messages)
     if compressed:
-        record_checkpoint = getattr(ctx.agent, "record_context_checkpoint", None)
-        if callable(record_checkpoint):
-            record_checkpoint(reason="manual compact command")
         ctx.effect.success(
             f"Compressed: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
         )

@@ -942,6 +942,7 @@ def _filter_subagent_tools(parent_agent, mode: str, *, include_agent: bool = Fal
         "verify": {"read_file", "glob", "grep", "shell"},
     }
     allowed = mode_allowlist[mode]
+    allowed.update({"update_plan", "report_progress"})
     if include_agent:
         allowed.add("agent")
     return [
@@ -1029,6 +1030,9 @@ def run_subagent_task(
         job_id=job_id,
     )
     for tool in sub.tools:
+        bind_agent = getattr(tool, "bind_agent", None)
+        if callable(bind_agent):
+            bind_agent(sub)
         if getattr(tool, "name", None) == "agent":
             tool._parent_agent = sub
     if resume_reference:

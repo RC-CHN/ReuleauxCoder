@@ -43,6 +43,37 @@ def build_session_persistence_kwargs(agent: Agent) -> dict:
     }
 
 
+def bind_session_persistence(
+    config: Config,
+    agent: Agent,
+    store,
+    session_id: str,
+    *,
+    fingerprint: str,
+) -> None:
+    """Bind live ledger fsync and replay snapshots to the active session."""
+    bind = getattr(agent, "bind_session_persistence", None)
+    if not callable(bind):
+        return
+    agent.current_session_id = session_id
+
+    def persist() -> None:
+        store.save(
+            agent.messages,
+            getattr(agent.llm, "model", config.model),
+            session_id,
+            total_prompt_tokens=agent.state.total_prompt_tokens,
+            total_completion_tokens=agent.state.total_completion_tokens,
+            active_mode=getattr(agent, "active_mode", None),
+            runtime_state=build_session_runtime_state(config, agent),
+            fingerprint=fingerprint,
+            **build_session_persistence_kwargs(agent),
+        )
+
+    events_path = store.sessions_dir / session_id / "events.jsonl"
+    bind(events_path=events_path, callback=persist)
+
+
 def _clone_approval_rules(rules: list[ApprovalRuleConfig]) -> list[ApprovalRuleConfig]:
     return [
         ApprovalRuleConfig(
@@ -116,6 +147,16 @@ def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeS
             }
             for rule in session_rules
         ],
+        plan_state=(
+            agent.plan_controller.state.to_dict()
+            if hasattr(agent, "plan_controller")
+            else {}
+        ),
+        progress_state=(
+            agent.plan_controller.progress.to_dict()
+            if hasattr(agent, "plan_controller")
+            else {}
+        ),
     )
 
 
@@ -151,6 +192,9 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
 
 def apply_session_runtime_state(session: Session, config: Config, agent: Agent) -> None:
     """Apply persisted session runtime state onto the live host runtime."""
+    unbind = getattr(agent, "unbind_session_persistence", None)
+    if callable(unbind):
+        unbind()
     reset = getattr(agent, "reset", None)
     if callable(reset):
         reset()
@@ -218,3 +262,6 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
         agent.active_main_model_profile = None
 
     agent.active_sub_model_profile = runtime.active_sub_model_profile
+    plan_controller = getattr(agent, "plan_controller", None)
+    if plan_controller is not None:
+        plan_controller.restore(runtime.plan_state, runtime.progress_state)

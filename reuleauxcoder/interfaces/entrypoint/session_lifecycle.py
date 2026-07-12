@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from reuleauxcoder.app.runtime.session_state import (
+    bind_session_persistence,
     apply_session_runtime_state,
     get_session_fingerprint,
     restore_config_runtime_defaults,
@@ -72,5 +73,17 @@ def restore_session(
                     )
     else:
         restore_config_runtime_defaults(config, agent)
+
+    if current_session_id is None:
+        current_session_id = session_store.generate_session_id()
+        agent.current_session_id = current_session_id
+    bind_session_persistence(
+        config,
+        agent,
+        session_store,
+        current_session_id,
+        fingerprint=getattr(agent, "session_fingerprint", None)
+        or current_fingerprint,
+    )
 
     return current_session_id, session_exit_time, sessions_dir

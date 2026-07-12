@@ -23,6 +23,7 @@ from reuleauxcoder.app.commands.view_models import (
     SessionSummaryViewModel,
 )
 from reuleauxcoder.app.runtime.session_state import (
+    bind_session_persistence,
     build_session_persistence_kwargs,
     apply_session_runtime_state,
     build_session_runtime_state,
@@ -198,6 +199,13 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
     apply_session_runtime_state(loaded, ctx.config, ctx.agent)
     ctx.agent.session_fingerprint = loaded.fingerprint
     ctx.agent.lifecycle.session_started(session_id, reason="restore")
+    bind_session_persistence(
+        ctx.config,
+        ctx.agent,
+        store,
+        session_id,
+        fingerprint=loaded.fingerprint,
+    )
 
     runtime = loaded.runtime_state
     exit_time = store.get_exit_time(loaded.messages)
@@ -286,6 +294,9 @@ def _handle_new_session(command, ctx) -> CommandEffect:
         )
 
     new_session_id = store.generate_session_id()
+    unbind = getattr(ctx.agent, "unbind_session_persistence", None)
+    if callable(unbind):
+        unbind()
     ctx.agent.reset()
     start_new_history = getattr(ctx.agent, "start_new_history", None)
     if callable(start_new_history):
@@ -293,6 +304,13 @@ def _handle_new_session(command, ctx) -> CommandEffect:
     restore_config_runtime_defaults(ctx.config, ctx.agent)
     ctx.agent.session_fingerprint = fingerprint
     ctx.agent.lifecycle.session_started(new_session_id, reason="new")
+    bind_session_persistence(
+        ctx.config,
+        ctx.agent,
+        store,
+        new_session_id,
+        fingerprint=fingerprint,
+    )
     ctx.effect.success(
         f"Started a new conversation: {new_session_id}",
         kind=UIEventKind.SESSION,

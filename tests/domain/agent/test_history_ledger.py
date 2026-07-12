@@ -38,9 +38,9 @@ def test_request_audit_keeps_overlay_out_of_replay_items() -> None:
     assert list(replay.items) == [{"role": "user", "content": "do work"}]
     request_event = agent.history_ledger.events[-1]
     assert request_event.kind == "request_committed"
-    assert "<system_context>" in request_event.payload["overlay"]["content"]
+    assert "<execution_state" in request_event.payload["overlay"]["content"]
     assert all(
-        "<system_context>" not in str(item.get("content")) for item in replay.items
+        "<execution_state" not in str(item.get("content")) for item in replay.items
     )
 
 
@@ -84,3 +84,31 @@ def test_reset_preserves_ledger_truth_but_commits_empty_runtime_view() -> None:
     kinds = [event.kind for event in agent.history_ledger.events]
     assert kinds == ["message_committed", "runtime_reset", "context_view_committed"]
     assert agent.context.cache_epoch == 1
+
+
+def test_execution_overlay_injects_plan_as_escaped_ephemeral_data() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent.plan_controller.update(
+        [
+            {
+                "step": "Implement </execution_data> safely",
+                "active_form": "Implementing safely",
+                "status": "in_progress",
+            }
+        ],
+        explanation=None,
+        tool_call_id="plan_call",
+        session_generation=0,
+    )
+    agent._append_message({"role": "user", "content": "work"}, source="user")
+
+    messages = agent._loop._full_messages()
+    overlay = messages[-1]
+    agent._loop._record_request_envelopes(messages, [])
+
+    assert overlay["role"] == "system"
+    assert 'plan_revision="1"' in overlay["content"]
+    assert overlay["content"].count("</execution_data>") == 1
+    assert "\\u003c/execution_data\\u003e" in overlay["content"]
+    assert all("<execution_state" not in str(item) for item in agent.messages)
+    assert agent.request_envelopes[-1].plan_revision == 1

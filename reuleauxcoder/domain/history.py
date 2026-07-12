@@ -7,6 +7,8 @@ import json
 import threading
 import time
 import uuid
+import os
+from pathlib import Path
 from typing import Any, Iterable
 
 
@@ -44,6 +46,7 @@ class HistoryLedger:
         events: Iterable[HistoryEvent | dict[str, Any]] = (),
         *,
         generation: int = 0,
+        sink_path: str | Path | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._events = [
@@ -53,6 +56,7 @@ class HistoryLedger:
         self._events.sort(key=lambda event: event.seq)
         self._next_seq = max((event.seq for event in self._events), default=0) + 1
         self._generation = generation
+        self._sink_path = Path(sink_path) if sink_path is not None else None
 
     @property
     def events(self) -> tuple[HistoryEvent, ...]:
@@ -72,6 +76,7 @@ class HistoryLedger:
             )
             self._next_seq += 1
             self._events.append(event)
+            self._append_to_sink(event)
             return event
 
     def append_message(self, message: dict, *, source: str) -> HistoryEvent:
@@ -108,3 +113,18 @@ class HistoryLedger:
     def advance_generation(self, generation: int) -> None:
         with self._lock:
             self._generation = generation
+
+    def bind_jsonl(self, path: str | Path) -> None:
+        with self._lock:
+            self._sink_path = Path(path)
+            self._sink_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _append_to_sink(self, event: HistoryEvent) -> None:
+        if self._sink_path is None:
+            return
+        self._sink_path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = json.dumps(event.to_dict(), ensure_ascii=False) + "\n"
+        with self._sink_path.open("a", encoding="utf-8") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())

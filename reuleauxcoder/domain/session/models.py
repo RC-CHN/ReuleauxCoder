@@ -57,6 +57,8 @@ class SessionRuntimeState:
     approval_rules: list[dict[str, Any]] = field(default_factory=list)
     execution_target: str | None = None
     remote_binding: dict[str, Any] = field(default_factory=dict)
+    plan_state: dict[str, Any] = field(default_factory=dict)
+    progress_state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "SessionRuntimeState":
@@ -68,6 +70,12 @@ class SessionRuntimeState:
         approval_rules = payload.get("approval_rules")
         if not isinstance(approval_rules, list):
             approval_rules = []
+        plan_state = payload.get("plan_state")
+        if not isinstance(plan_state, dict):
+            plan_state = {}
+        progress_state = payload.get("progress_state")
+        if not isinstance(progress_state, dict):
+            progress_state = {}
         return cls(
             model=payload.get("model"),
             active_mode=payload.get("active_mode"),
@@ -79,6 +87,8 @@ class SessionRuntimeState:
             ],
             execution_target=payload.get("execution_target"),
             remote_binding=dict(remote_binding),
+            plan_state=dict(plan_state),
+            progress_state=dict(progress_state),
         )
 
     def to_dict(self) -> dict[str, Any]:

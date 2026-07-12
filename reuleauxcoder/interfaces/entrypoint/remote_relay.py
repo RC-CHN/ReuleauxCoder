@@ -10,6 +10,7 @@ from typing import Any
 from rich.console import Console
 
 from reuleauxcoder.app.runtime.session_state import (
+    bind_session_persistence,
     build_session_persistence_kwargs,
     apply_session_runtime_state,
     build_session_runtime_state,
@@ -282,6 +283,13 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         peer_agent.session_fingerprint = fingerprint
 
         def _cache_created_agent(reason: str) -> Agent:
+            bind_session_persistence(
+                config,
+                peer_agent,
+                session_store,
+                peer_agent.current_session_id,
+                fingerprint=fingerprint,
+            )
             peer_agents[peer_id] = peer_agent
             peer_connection_markers[peer_id] = marker
             peer_presenters[peer_id] = _presentation_for_peer(peer_id)

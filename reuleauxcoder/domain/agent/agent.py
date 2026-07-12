@@ -21,6 +21,7 @@ from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.hooks import HookBase, HookDiagnostic, HookPoint, HookRegistry
 from reuleauxcoder.domain.history import HistoryLedger
+from reuleauxcoder.domain.plan import PlanController
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
@@ -116,6 +117,8 @@ class Agent:
         self.replay_envelope = None
         self.request_envelopes: list = []
         self._restored_replay_envelope = None
+        self.plan_controller = PlanController(self)
+        self._session_persist_callback = None
         for tool in self.tools:
             backend = getattr(tool, "backend", None)
             backend_context = getattr(backend, "context", None)
@@ -211,17 +214,28 @@ class Agent:
             ),
         )
         if repaired != self.state.messages:
-            self.state.messages[:] = repaired
-            self.history_ledger.append_context_view(
-                self.state.messages,
+            self._replace_context_messages(
+                repaired,
                 reason=reason or "tool adjacency reconciliation",
-                history_version=self.context.history_version,
             )
         return synthesized
 
     def _append_message(self, message: dict, *, source: str) -> None:
-        self.state.messages.append(message)
         self.history_ledger.append_message(message, source=source)
+        self.state.messages.append(message)
+        self.persist_runtime_snapshot()
+
+    def bind_session_persistence(self, *, events_path, callback) -> None:
+        self.history_ledger.bind_jsonl(events_path)
+        self._session_persist_callback = callback
+
+    def unbind_session_persistence(self) -> None:
+        self._session_persist_callback = None
+
+    def persist_runtime_snapshot(self) -> None:
+        callback = self._session_persist_callback
+        if callable(callback):
+            callback()
 
     def _replace_context_messages(
         self,
@@ -231,29 +245,48 @@ class Agent:
         checkpoint_id: str | None = None,
         record: bool = True,
     ) -> None:
-        self.state.messages[:] = [dict(message) for message in messages]
+        replacement = [dict(message) for message in messages]
         if record:
             self.history_ledger.append_context_view(
-                self.state.messages,
+                replacement,
                 reason=reason,
                 history_version=self.context.history_version,
                 checkpoint_id=checkpoint_id,
             )
+        self.state.messages[:] = replacement
+        if record:
+            self.persist_runtime_snapshot()
 
-    def record_context_checkpoint(self, *, reason: str) -> None:
-        checkpoint = self.context.checkpoints[-1] if self.context.checkpoints else None
-        self.history_ledger.append_context_view(
-            self.state.messages,
+    def maybe_compress_context(self, llm, *, reason: str) -> bool:
+        candidate = [dict(message) for message in self.state.messages]
+        if not self.context.maybe_compress(candidate, llm):
+            return False
+        checkpoint = self.context.checkpoints[-1]
+        self._replace_context_messages(
+            candidate,
             reason=reason,
-            history_version=self.context.history_version,
-            checkpoint_id=checkpoint.id if checkpoint else None,
+            checkpoint_id=checkpoint.id,
         )
+        return True
+
+    def force_compress_context(self, strategy: str, llm) -> bool:
+        candidate = [dict(message) for message in self.state.messages]
+        if not self.context.force_compress(candidate, strategy, llm):
+            return False
+        checkpoint = self.context.checkpoints[-1]
+        self._replace_context_messages(
+            candidate,
+            reason="manual compact command",
+            checkpoint_id=checkpoint.id,
+        )
+        return True
 
     def restore_history_runtime(self, session) -> None:
         self.history_ledger = HistoryLedger(
             getattr(session, "history_events", ()),
             generation=self.session_generation,
         )
+        self._session_persist_callback = None
         self.replay_envelope = getattr(session, "replay_envelope", None)
         self._restored_replay_envelope = self.replay_envelope
         self.request_envelopes = list(getattr(session, "request_envelopes", ()))
@@ -275,7 +308,9 @@ class Agent:
         self._restored_replay_envelope = None
         self.request_envelopes = []
         self.history_completeness = "complete"
+        self._session_persist_callback = None
         self.context.restore_replay_state(history_version=0, cache_epoch=0)
+        self.plan_controller.reset()
 
     def request_stop(self) -> None:
         """Request cooperative stop for the current/next agent loop iteration."""
@@ -657,18 +692,20 @@ class Agent:
             manager.advance_generation(
                 generation=self.session_generation, cancel_pending=True
             )
-        self.state.messages.clear()
         self.context.invalidate_replay_prefix()
         self.history_ledger.append_context_view(
             [],
             reason="runtime reset",
             history_version=self.context.history_version,
         )
+        self.state.messages.clear()
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0
         self.state.current_round = 0
         self._current_turn_id = None
         self._pending_subagent_injections.clear()
+        self.plan_controller.reset()
+        self.persist_runtime_snapshot()
 
     @property
     def messages(self) -> list[dict]:

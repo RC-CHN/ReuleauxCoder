@@ -290,6 +290,12 @@ class ToolExecutor:
 
             if execution_context is not None:
                 execution_context.remote_stream_handler = stream_handler
+            bind_execution = getattr(tool, "bind_execution", None)
+            if callable(bind_execution):
+                bind_execution(
+                    tool_call_id=tc.id,
+                    session_generation=self.agent.session_generation,
+                )
             try:
                 raw_result = tool.execute(**tool_call.arguments)
             finally:
