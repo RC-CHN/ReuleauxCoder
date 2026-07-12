@@ -546,6 +546,77 @@ def test_restored_blocked_job_resumes_same_identity_after_guidance(
     manager.shutdown()
 
 
+def test_blocked_job_uses_independent_guidance_deadline(monkeypatch, tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text('{"messages": []}', encoding="utf-8")
+
+    def parked(**_kwargs):
+        return SubagentResult(
+            status="blocked",
+            summary="waiting for a decision",
+            transcript_ref=str(checkpoint),
+        )
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", parked)
+    parent = _Parent()
+    manager = SubagentManager(guidance_timeout_seconds=0.05)
+    job_id = manager.submit_background(
+        parent_agent=parent,
+        task="wait for guidance",
+        mode="explore",
+        auto_verify=False,
+    )
+
+    terminal = manager.wait_job(job_id, timeout=1)
+
+    assert terminal is not None
+    assert terminal.status == "timed_out"
+    assert terminal.error == "Sub-agent guidance deadline expired."
+    assert terminal.guidance_deadline_at is None
+    assert terminal.cancellation_id == f"guidance_timeout_{job_id}_1"
+    manager.shutdown()
+
+
+def test_guidance_resume_cancels_old_deadline(monkeypatch, tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text('{"messages": []}', encoding="utf-8")
+    calls = 0
+
+    def run(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SubagentResult(
+                status="blocked",
+                summary="waiting",
+                transcript_ref=str(checkpoint),
+            )
+        return SubagentResult(status="ok", summary="resumed")
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    parent = _Parent()
+    manager = SubagentManager(guidance_timeout_seconds=0.2)
+    job_id = manager.submit_background(
+        parent_agent=parent,
+        task="wait then resume",
+        mode="explore",
+        auto_verify=False,
+    )
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        if manager.get_job(job_id).status == "blocked":
+            break
+        time.sleep(0.005)
+
+    assert manager.send_message(job_id, "continue")
+    terminal = manager.wait_job(job_id, timeout=1)
+    time.sleep(0.25)
+
+    assert terminal is not None and terminal.status == "completed"
+    assert manager.get_job(job_id).status == "completed"
+    manager.shutdown()
+
+
 def test_background_execute_waits_for_runtime_managed_verify(monkeypatch) -> None:
     calls = []
 

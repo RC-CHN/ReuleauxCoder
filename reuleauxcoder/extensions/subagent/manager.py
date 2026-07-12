@@ -38,6 +38,7 @@ _VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
 _DEFAULT_MAX_ROUNDS = 50
 _DEFAULT_TIMEOUT_SECONDS = 300
 _MAX_TIMEOUT_SECONDS = 3_600
+_DEFAULT_GUIDANCE_TIMEOUT_SECONDS = 3_600
 SubagentMessageKind = Literal[
     "reply",
     "milestone",
@@ -86,6 +87,7 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "verification_for": job.verification_for,
                 "working_directory": job.working_directory,
                 "guidance_request_id": job.guidance_request_id,
+                "guidance_deadline_at": job.guidance_deadline_at,
                 "resume_reference": job.resume_reference,
                 "prompt_tokens": job.prompt_tokens,
                 "completion_tokens": job.completion_tokens,
@@ -273,6 +275,7 @@ class SubagentJob:
     verification_for: str | None = None
     working_directory: str | None = None
     guidance_request_id: str | None = None
+    guidance_deadline_at: float | None = None
     resume_reference: str | None = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -343,6 +346,7 @@ class SubagentManager:
         parent_agent_id: str | None = None,
         initial_generation: int = 0,
         max_depth: int = 1,
+        guidance_timeout_seconds: float = _DEFAULT_GUIDANCE_TIMEOUT_SECONDS,
     ):
         self._max_parallel_explore = max(1, int(max_parallel_explore))
         self._default_max_rounds = _clamp_subagent_rounds(default_max_rounds)
@@ -364,6 +368,8 @@ class SubagentManager:
         self._generation = max(0, int(initial_generation))
         self._shutdown = False
         self._max_depth = max(0, int(max_depth))
+        self._guidance_timeout_seconds = max(0.01, float(guidance_timeout_seconds))
+        self._guidance_timers: dict[str, threading.Timer] = {}
         self._completion_mailbox: deque[str] = deque()
         self._registered_agents: dict[str, int] = {}
         self._message_queues: dict[str, deque[SubagentDirective]] = {}
@@ -609,14 +615,18 @@ class SubagentManager:
                             tracked.model_calls = result.model_calls
                             tracked.usage_uncertain = result.usage_uncertain
                         if tracked.cancel_requested:
-                            tracked.status = (
-                                result.status
-                                if isinstance(result, SubagentResult)
-                                and result.status in {"cancelled", "killed"}
-                                else "cancelled"
-                            )
+                            if tracked.status != "timed_out":
+                                tracked.status = (
+                                    result.status
+                                    if isinstance(result, SubagentResult)
+                                    and result.status in {"cancelled", "killed"}
+                                    else "cancelled"
+                                )
                             tracked.result = None
-                            tracked.error = "Sub-agent cancelled; late result quarantined."
+                            if tracked.status != "timed_out":
+                                tracked.error = (
+                                    "Sub-agent cancelled; late result quarantined."
+                                )
                             result = None
                         result_text = (
                             result.model_text()
@@ -648,6 +658,9 @@ class SubagentManager:
                             tracked.status = "blocked"
                             tracked.finished_at = None
                             tracked.error = None
+                            self._arm_guidance_deadline_locked(
+                                tracked, preserve=True
+                            )
                             resume_immediately = bool(
                                 self._message_queues.get(job_id)
                             )
@@ -868,6 +881,9 @@ class SubagentManager:
                 verification_for=payload.get("verification_for"),
                 working_directory=payload.get("working_directory"),
                 guidance_request_id=payload.get("guidance_request_id"),
+                guidance_deadline_at=_optional_float(
+                    payload.get("guidance_deadline_at")
+                ),
                 resume_reference=payload.get("resume_reference"),
                 prompt_tokens=int(payload.get("prompt_tokens") or 0),
                 completion_tokens=int(payload.get("completion_tokens") or 0),
@@ -991,6 +1007,8 @@ class SubagentManager:
         for job in restored:
             if job.status == "blocked" and job.resume_reference:
                 self._install_restored_blocked_scheduler(parent_agent, job.id)
+                with self._lock:
+                    self._arm_guidance_deadline_locked(job, preserve=True)
         for job in stale_jobs:
             _publish_job_event(parent_agent, job)
         return len(restored)
@@ -1070,9 +1088,11 @@ class SubagentManager:
                         job.model_calls = result.model_calls
                         job.usage_uncertain = result.usage_uncertain
                     if job.cancel_requested:
-                        job.status = "cancelled"
+                        if job.status != "timed_out":
+                            job.status = "cancelled"
                         job.result = None
-                        job.error = "Sub-agent cancelled; late result quarantined."
+                        if job.status != "timed_out":
+                            job.error = "Sub-agent cancelled; late result quarantined."
                         job.finished_at = time.time()
                     elif isinstance(result, SubagentResult) and result.status == "blocked":
                         job.status = "blocked"
@@ -1084,6 +1104,7 @@ class SubagentManager:
                         job.tool_calls = result.tool_uses
                         job.model_calls = result.model_calls
                         job.finished_at = None
+                        self._arm_guidance_deadline_locked(job, preserve=True)
                         resume_immediately = bool(self._message_queues.get(job_id))
                         if resume_immediately:
                             job.status = "resuming"
@@ -1311,6 +1332,7 @@ class SubagentManager:
             job.model_calls = checkpoint.model_calls
             job.current_tool = None
             job.last_activity_at = time.time()
+            self._arm_guidance_deadline_locked(job)
         if self._root_agent is not None:
             _publish_job_event(self._root_agent, job)
         return True
@@ -1478,6 +1500,8 @@ class SubagentManager:
             else:
                 queue.append(directive)
             if job.status == "blocked":
+                self._cancel_guidance_timer_locked(job.id)
+                job.guidance_deadline_at = None
                 job.status = "resuming"
                 job.guidance_request_id = None
                 resume = True
@@ -1621,6 +1645,8 @@ class SubagentManager:
             job.cancellation_epoch += 1
             job.cancellation_id = f"cancel_{job.id}_{job.cancellation_epoch}"
             job.usage_uncertain = job.status not in {"queued", "blocked"}
+            self._cancel_guidance_timer_locked(job.id)
+            job.guidance_deadline_at = None
             event.set()
             was_blocked = job.status == "blocked"
             job.status = "cancelled" if was_blocked else "cancelling"
@@ -1690,7 +1716,8 @@ class SubagentManager:
                 job.id
                 for job in self._jobs.values()
                 if job.generation < self._generation
-                and job.status in {"queued", "running", "cancelling"}
+                and job.status
+                in {"queued", "running", "parking", "blocked", "resuming", "cancelling"}
             ]
         if cancel_pending:
             for job_id in old_ids:
@@ -1730,10 +1757,60 @@ class SubagentManager:
                 return
             self._shutdown = True
             active_ids = list(self._cancel_events)
+            timers = list(self._guidance_timers.values())
+            self._guidance_timers.clear()
             self._slot_cv.notify_all()
+        for timer in timers:
+            timer.cancel()
         for job_id in active_ids:
             self.cancel_job(job_id)
         self._explore_pool.shutdown(wait=wait, cancel_futures=True)
+
+    def _cancel_guidance_timer_locked(self, job_id: str) -> None:
+        timer = self._guidance_timers.pop(job_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_guidance_deadline_locked(
+        self, job: SubagentJob, *, preserve: bool = False
+    ) -> None:
+        self._cancel_guidance_timer_locked(job.id)
+        if not preserve or job.guidance_deadline_at is None:
+            job.guidance_deadline_at = time.time() + self._guidance_timeout_seconds
+        expected_deadline = job.guidance_deadline_at
+        delay = max(0.0, expected_deadline - time.time())
+        timer = threading.Timer(
+            delay,
+            self._expire_guidance,
+            args=(job.id, expected_deadline),
+        )
+        timer.daemon = True
+        self._guidance_timers[job.id] = timer
+        timer.start()
+
+    def _expire_guidance(self, job_id: str, expected_deadline: float) -> None:
+        with self._slot_cv:
+            job = self._jobs.get(job_id)
+            if (
+                job is None
+                or job.status != "blocked"
+                or job.guidance_deadline_at != expected_deadline
+            ):
+                return
+            self._guidance_timers.pop(job_id, None)
+            job.cancel_requested = True
+            job.cancellation_epoch += 1
+            job.cancellation_id = f"guidance_timeout_{job.id}_{job.cancellation_epoch}"
+            job.status = "timed_out"
+            job.finished_at = time.time()
+            job.last_activity_at = job.finished_at
+            job.guidance_request_id = None
+            job.guidance_deadline_at = None
+            job.error = "Sub-agent guidance deadline expired."
+            self._enqueue_completion_locked(job)
+            self._slot_cv.notify_all()
+        if self._root_agent is not None:
+            _publish_job_event(self._root_agent, job)
 
     def drain_completed_for_parent(
         self,
