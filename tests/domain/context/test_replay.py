@@ -95,6 +95,51 @@ def test_item_provenance_is_audited_but_does_not_change_provider_prefix_hash() -
     assert first.canonical_payload_hash != second.canonical_payload_hash
 
 
+def test_schema_two_replay_keeps_its_original_hash_contract() -> None:
+    core = {
+        "schema_version": 2,
+        "session_id": "legacy",
+        "cache_epoch": 1,
+        "history_version": 2,
+        "model_profile": "model",
+        "provider_family": "openai-compatible",
+        "request_mode": "chat-completions",
+        "request_settings": {"temperature": 0.0},
+        "instructions": [],
+        "tools": [],
+        "items": [{"role": "user", "content": "legacy"}],
+    }
+    stable = {
+        key: core[key]
+        for key in (
+            "model_profile",
+            "provider_family",
+            "request_mode",
+            "request_settings",
+            "instructions",
+            "tools",
+            "items",
+        )
+    }
+    replay = ReplayEnvelope.from_dict(
+        {
+            **core,
+            "view_id": "legacy-view",
+            "stable_prefix_hash": content_hash(stable),
+            "canonical_payload_hash": content_hash(core),
+        }
+    )
+
+    assert replay.item_provenance == ()
+    assert replay.validate() is True
+
+
+def test_schema_three_rejects_missing_aligned_provenance() -> None:
+    replay = _replay([{"role": "user", "content": "hello"}])
+    damaged = replace(replay, item_provenance=())
+    assert damaged.validate() is False
+
+
 def test_replay_protocol_rejects_missing_tool_result() -> None:
     replay = _replay(
         [
