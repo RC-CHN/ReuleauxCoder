@@ -42,6 +42,8 @@ class RuntimeEventKind(str, Enum):
     RUNTIME_STATE_CHANGED = "runtime_state_changed"
     VIEW_REQUESTED = "view_requested"
     VIEW_REFRESHED = "view_refreshed"
+    PLAN_UPDATED = "plan_updated"
+    PROGRESS_REPORTED = "progress_reported"
 
 
 @dataclass(frozen=True)
@@ -252,6 +254,27 @@ class RuntimeStateChanged:
 
 
 @dataclass(frozen=True)
+class PlanUpdated:
+    revision: int
+    items: tuple[dict, ...]
+    explanation: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.PLAN_UPDATED, init=False
+    )
+
+
+@dataclass(frozen=True)
+class ProgressReported:
+    revision: int
+    phase: str
+    summary: str
+    next: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.PROGRESS_REPORTED, init=False
+    )
+
+
+@dataclass(frozen=True)
 class ViewRequested:
     request_id: str
     view_type: str
@@ -290,6 +313,8 @@ RuntimePayload: TypeAlias = (
     | NotificationRaised
     | SessionChanged
     | RuntimeStateChanged
+    | PlanUpdated
+    | ProgressReported
     | ViewRequested
     | ViewRefreshed
 )
@@ -379,6 +404,19 @@ def agent_event_to_runtime_event(
             code=str(event.data.get("code", "runtime.diagnostic")),
             severity=str(event.data.get("severity", "warning")),
             details=dict(event.data.get("details") or {}),
+        )
+    elif event.event_type is AgentEventType.PLAN_UPDATED:
+        payload = PlanUpdated(
+            revision=int(event.data.get("revision", 0)),
+            items=tuple(dict(item) for item in event.data.get("items", ())),
+            explanation=event.data.get("explanation"),
+        )
+    elif event.event_type is AgentEventType.PROGRESS_REPORTED:
+        payload = ProgressReported(
+            revision=int(event.data.get("revision", 0)),
+            phase=str(event.data.get("phase", "investigating")),
+            summary=str(event.data.get("summary", "")),
+            next=event.data.get("next"),
         )
     else:
         raise ValueError(f"Unsupported legacy agent event: {event.event_type.value}")

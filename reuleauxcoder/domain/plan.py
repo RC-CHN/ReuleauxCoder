@@ -7,6 +7,8 @@ import json
 import threading
 from typing import Literal
 
+from reuleauxcoder.domain.agent.events import AgentEvent
+
 PlanStatus = Literal["pending", "in_progress", "completed"]
 ProgressPhase = Literal[
     "investigating", "implementing", "verifying", "ready", "blocked"
@@ -127,6 +129,13 @@ class PlanController:
             )
             self._committed_calls[tool_call_id] = (fingerprint, revision)
             self._agent.persist_runtime_snapshot()
+            self._agent._emit_event(
+                AgentEvent.plan_updated(
+                    revision=revision,
+                    items=[asdict(item) for item in items],
+                    explanation=explanation,
+                )
+            )
             return self._state, True
 
     def report(
@@ -183,6 +192,14 @@ class PlanController:
             )
             self._committed_calls[tool_call_id] = (fingerprint, revision)
             self._agent.persist_runtime_snapshot()
+            self._agent._emit_event(
+                AgentEvent.progress_reported(
+                    revision=revision,
+                    phase=phase,
+                    summary=summary,
+                    next_step=next_step,
+                )
+            )
             return self._progress, True
 
     def restore(self, plan: dict | None, progress: dict | None) -> None:

@@ -17,6 +17,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.runtime.events import (
     AssistantContentDelta,
     NotificationRaised,
+    PlanUpdated,
+    ProgressReported,
     ReasoningDelta,
     RuntimeEventKind,
     RuntimeEvent,
@@ -195,3 +197,30 @@ def test_runtime_event_codec_rejects_unknown_version_and_payload() -> None:
     encoded["payload"]["type"] = "OpaquePayload"
     with pytest.raises(ValueError, match="Unknown runtime payload type"):
         runtime_event_from_dict(encoded)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        PlanUpdated(
+            revision=4,
+            items=(
+                {
+                    "step": "verify",
+                    "active_form": "verifying",
+                    "status": "in_progress",
+                },
+            ),
+            explanation="final pass",
+        ),
+        ProgressReported(
+            revision=2,
+            phase="verifying",
+            summary="running tests",
+            next="document results",
+        ),
+    ],
+)
+def test_control_plane_runtime_events_round_trip(payload) -> None:
+    event = RuntimeEvent(payload=payload, event_id="control-1", timestamp=12.0)
+    assert runtime_event_from_dict(runtime_event_to_dict(event)) == event

@@ -46,6 +46,8 @@ _PAYLOAD_TYPES = {
         events.NotificationRaised,
         events.SessionChanged,
         events.RuntimeStateChanged,
+        events.PlanUpdated,
+        events.ProgressReported,
         events.ViewRequested,
         events.ViewRefreshed,
     )
@@ -136,6 +138,13 @@ def _decode_payload(
         values["diagnostics"] = tuple(
             events.RuntimeDiagnostic(**_require_string_dict(item, "diagnostic"))
             for item in raw_diagnostics
+        )
+    elif type_name == "PlanUpdated":
+        raw_items = values.get("items")
+        if not isinstance(raw_items, list):
+            raise TypeError("plan items must be an array")
+        values["items"] = tuple(
+            _require_string_dict(item, "plan item") for item in raw_items
         )
     try:
         return payload_type(**values)

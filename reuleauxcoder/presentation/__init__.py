@@ -29,8 +29,22 @@ from reuleauxcoder.presentation.semantics import (
     ToolInvocationDisplay,
     describe_tool_invocation,
 )
+from reuleauxcoder.presentation.execution import (
+    AttentionItem,
+    ExecutionAgentState,
+    ExecutionPlanItem,
+    ExecutionViewReducer,
+    ExecutionViewState,
+    execution_panel_lines,
+)
 
 __all__ = [
+    "AttentionItem",
+    "ExecutionAgentState",
+    "ExecutionPlanItem",
+    "ExecutionViewReducer",
+    "ExecutionViewState",
+    "execution_panel_lines",
     "ApprovalCell",
     "AssistantCell",
     "DiagnosticCell",

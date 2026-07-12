@@ -15,6 +15,8 @@ from reuleauxcoder.domain.runtime.events import (
     DiagnosticsPublished,
     ErrorOccurred,
     NotificationRaised,
+    PlanUpdated,
+    ProgressReported,
     ReasoningDelta,
     RuntimeStateChanged,
     RuntimeEvent,
@@ -170,6 +172,9 @@ class PresentationReducer:
             return ()
         if isinstance(payload, RuntimeStateChanged):
             self.state.runtime_state = payload.state
+            return ()
+        if isinstance(payload, (PlanUpdated, ProgressReported)):
+            # Execution status is reduced independently from transcript cells.
             return ()
         if isinstance(payload, ViewRequested):
             self.state.view_revisions[(payload.request_id, payload.view_type)] = 0

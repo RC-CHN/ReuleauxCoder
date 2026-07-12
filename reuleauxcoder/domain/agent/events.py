@@ -24,6 +24,8 @@ class AgentEventType(Enum):
     COMPRESSION_END = "compression_end"
     ERROR = "error"
     DIAGNOSTIC = "diagnostic"
+    PLAN_UPDATED = "plan_updated"
+    PROGRESS_REPORTED = "progress_reported"
 
 
 @dataclass
@@ -186,5 +188,43 @@ class AgentEvent:
                 "code": code,
                 "severity": severity,
                 "details": dict(details or {}),
+            },
+        )
+
+    @classmethod
+    def plan_updated(
+        cls,
+        *,
+        revision: int,
+        items: list[dict],
+        explanation: str | None,
+    ) -> "AgentEvent":
+        """Publish the committed authoritative checklist snapshot."""
+        return cls(
+            event_type=AgentEventType.PLAN_UPDATED,
+            data={
+                "revision": revision,
+                "items": items,
+                "explanation": explanation,
+            },
+        )
+
+    @classmethod
+    def progress_reported(
+        cls,
+        *,
+        revision: int,
+        phase: str,
+        summary: str,
+        next_step: str | None,
+    ) -> "AgentEvent":
+        """Publish a low-frequency semantic progress update."""
+        return cls(
+            event_type=AgentEventType.PROGRESS_REPORTED,
+            data={
+                "revision": revision,
+                "phase": phase,
+                "summary": summary,
+                "next": next_step,
             },
         )
