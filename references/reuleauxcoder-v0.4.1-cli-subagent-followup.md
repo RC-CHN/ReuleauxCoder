@@ -67,7 +67,7 @@ _filter_subagent_tools(parent_agent, mode, include_agent=True)
 最终决策：
 
 - 只有 root Agent 可以持有 `update_plan`；
-- child 只保留 `report_progress`，更新自己的 activity/progress；
+- child 保留窄职责的 `report_progress`、`report_to_parent`、`request_guidance`，但不持有全局 Plan 写能力；
 - child 发现全局计划需要改变时，通过 mailbox 或最终结果建议父 Agent；
 - 父 Agent自行判断并更新全局 Plan。
 
@@ -82,6 +82,8 @@ _filter_subagent_tools(parent_agent, mode, include_agent=True)
 | `read_file`、`list_file`、`glob`、`grep` | 不要求 | 所有 child mode 默认持有；幂等只读、免人工审批 |
 | 查询型 `lsp` | 不要求 | 所有 child mode 默认持有；当前三个 operation 均免人工审批 |
 | `report_progress` | 不要求 | 参数本身已经表达目的 |
+| `report_to_parent` | 不要求 | message/kind/reply_to 本身表达通信目的 |
+| `request_guidance` | 不要求 | question/context 本身表达阻塞原因 |
 | `write_file`、`edit_file` | 必填 | 修改工作区，需要可审计意图 |
 | `shell` | 必填 | 无法仅靠 command string 稳定判断副作用/成本 |
 | `agent` | 不提供 | child 禁止递归委派 |
@@ -116,14 +118,17 @@ root Agent
   agent, update_plan, report_progress, normal mode tools
 
 child explore
-  read_file, list_file, glob, grep, lsp(query), report_progress
+  read_file, list_file, glob, grep, lsp(query)
+  report_progress, report_to_parent, request_guidance
 
 child execute
   read_file, list_file, glob, grep, lsp(query), write_file(reason),
-  edit_file(reason), shell(reason), report_progress
+  edit_file(reason), shell(reason)
+  report_progress, report_to_parent, request_guidance
 
 child verify
-  read_file, list_file, glob, grep, lsp(query), shell(reason), report_progress
+  read_file, list_file, glob, grep, lsp(query), shell(reason)
+  report_progress, report_to_parent, request_guidance
 ```
 
 五个查询能力 `read_file`、`list_file`、`glob`、`grep`、`lsp(query)` 是所有 child mode 的共同基线。其他能力仍必须由 mode allowlist 明确授予；本决策不扩大 write/shell/control 权限。
@@ -139,6 +144,22 @@ child verify
 5. workspace/process 原语及 root tool schema 不增加该字段。
 
 这样不会逐个修改 read/edit/shell 的平台实现，也不会把 UI/编排元数据误传给远端 primitive。
+
+### 2.4 Child 三个控制工具
+
+三个工具必须保持不同的信息流与阻塞语义：
+
+| 工具 | 主要接收者 | 父上下文 | 阻塞 child | 用途 |
+|---|---|---:|---:|---|
+| `report_progress` | 人类 Execution Panel | 否 | 否 | 低频状态与下一步 |
+| `report_to_parent` | 直接父 Agent | 是 | 否 | reply、milestone、amendment、warning |
+| `request_guidance` | 父 Agent + Human Attention | 是 | 是 | 无法安全继续时请求决策 |
+
+`report_progress` 不再提供含义模糊的 `phase=blocked`。普通状态不应进入父上下文，否则 child 的每次进度更新都会破坏父 Agent 的最长缓存前缀。
+
+`report_to_parent` 使用 typed mailbox，至少携带 `message_id`、`reply_to`、`kind`、sender/recipient、job、generation、sequence、content hash。主 Agent 通过 root-only `agent(action=message)` 询问 child；人类通过 `/agents message` 走同一个 directive channel。child 收到 directive 后可用 `report_to_parent(kind=reply, reply_to=directive_id)` 精确回复。
+
+`request_guidance` 不在 worker thread 内长期 wait，而是 checkpoint-and-park：完成当前 tool call/result 邻接、持久化 transcript/checkpoint、把 job 标为 `blocked`、释放并发槽；收到父 Agent 或人类的定向 guidance 后，再从同一 job/transcript 恢复。
 
 ## 3. 拟实施方案
 
@@ -158,7 +179,10 @@ child verify
 4. 在 child scoped authorization 层显式放行上述五类查询，不创建人工 approval request。
 5. 在 scoped-tool wrapper/schema view 中仅给副作用工具注入必填 `reason`。
 6. reason 进入 event activity、approval summary 与 ledger；执行前剥离。
-7. 恢复旧 session 时遇到 child 发起 `agent`/`update_plan`，按 unavailable tool fail closed，不补发能力。
+7. 为 child materialize `report_progress`、`report_to_parent`、`request_guidance` 三个窄控制工具，不恢复多功能 `agent`。
+8. 将 parent→child mailbox 从 `list[str]` 升级为保留 directive ID 的 typed directive；reply 必须可关联。
+9. 实现 blocked job 的 checkpoint/park/resume 状态机与预算、取消、恢复规则。
+10. 恢复旧 session 时遇到 child 发起 `agent`/`update_plan`，按 unavailable tool fail closed，不补发能力。
 
 ### Phase C：补齐 mini-TUI Markdown
 
@@ -197,7 +221,7 @@ assistant post-tool text
 
 工具开始是 assistant block 的硬边界。工具后的 provider chunk 必须创建新 AssistantCell，不能回写 pre-tool cell。
 
-child 时序则是：
+child 普通运行时序：
 
 ```text
 child event -> ledger + execution panel
@@ -205,6 +229,56 @@ child event -> ledger + execution panel
 child result -> immediate parent mailbox/context
 parent response -> root transcript
 ```
+
+主 Agent 或人类询问 child：
+
+```text
+root agent(action=message) / human /agents message
+  -> typed directive(directive_id, delivery, generation, sequence)
+  -> child 在下一模型安全边界消费
+  -> report_to_parent(reply_to=directive_id)
+  -> parent mailbox claim
+  -> 父 Agent 在无 pending tool calls 的安全边界注入并 ack
+```
+
+主 Agent 发起的语义询问默认可标记为 `awaited`，父 loop 等到对应 reply、child blocker/terminal、用户 steering 或超时；普通通知使用 `detached`，不强制父 Agent等待。
+
+### 4.1 Guidance park 状态机
+
+```text
+queued -> running -> parking -> blocked -> resuming -> running
+                                                `-> terminal
+```
+
+`request_guidance` 的原子顺序：
+
+1. 分配 guidance request ID 并 ledger-first 记录请求；
+2. 写入完整 tool result，保证 provider adjacency；
+3. 原子检查 mailbox：若已有可用 directive，直接消费并继续；
+4. 否则提交 replay checkpoint、剩余预算和 workspace/LSP generation；
+5. 标记 `blocked`、发布 Attention、释放 worker slot；
+6. 收到有效 resolution 后追加结构化 guidance tail，重新调度同一 job。
+
+blocked 期间暂停 active execution timeout，使用独立 guidance deadline；token/tool/round budget 不重置。session shutdown 后恢复为可见的 blocked job，不自动启动 worker。
+
+### 4.2 必须收住的竞态和阻塞边界
+
+- **parking vs directive**：消息在 parking 前后到达都不能丢；已有消息时不进入 blocked。
+- **人类 vs 父 Agent回复**：未被 child 消费前，人类定向回复优先；消费后的后续消息作为普通 steering。
+- **exactly-once**：parent mailbox 使用 queued→claimed→injected→acked；注入失败 release，crash 后未 ack 项重新可见。
+- **protocol adjacency**：父或 child 有 pending tool calls 时都延迟外部消息注入。
+- **compression race**：mailbox ledger-first；context rewrite 提交不能覆盖并发到达的 child/human 内容。
+- **generation**：旧 session/generation 的 directive、reply 和 guidance resolution 拒绝注入。
+- **cancel**：queued/running/approval/parking/blocked/resuming 均可取消；取消会关闭 guidance request 并阻止晚回复复活 job。
+- **approval 隔离**：guidance 不是工具授权，父消息或 `/agents message` 不能自动批准 write/shell。
+- **多 child**：Attention 可同时列出多个 blocked job，但回复必须携带 job/request ID，不能依赖当前 UI focus。
+- **工作区变化**：blocked execute job 恢复时提示重新读取相关文件；保留独立 worktree，重新绑定 LSP generation。
+- **父 turn 已结束**：消息持久化并提示 activity，不默认自主启动无限推理；下一个有效边界再注入。
+- **registry fallback**：从 child schema 移除 `agent`/`update_plan` 后，ToolExecutor 也不能通过全局 registry fallback 绕过 scoped allowlist。
+
+### 4.3 通信信任边界
+
+child report 是证据和建议，不是授权或更高优先级指令。注入父上下文时必须保留 sender/job/kind/content hash，标注 delegated-worker data；child 无权借 report 修改 approval、mode 或全局 Plan。仓库中读取到的潜在 prompt injection 与 child 自己的结论应在结构上可区分。
 
 ## 5. 性能预算与验收
 
@@ -215,9 +289,13 @@ parent response -> root transcript
 - child 的 assistant/tool/output/result 不进入主 transcript。
 - child approval 仍可见、可取消、可 stale-refresh。
 - child schema 中没有 `agent`、`update_plan`。
+- child schema 中存在职责分离的 progress/report/guidance 三工具。
 - effectful child tools 缺少 reason 时 fail closed；五类 child 查询工具不要求 reason 且不触发人工审批。
 - 查询型 LSP 的 operation allowlist 被锁定；未来 effectful LSP 不会误继承免审批。
 - Plan 只有 root writer，child progress 仍出现在 Agent panel。
+- parent directive 与 child reply 可按 ID 关联；并发 child 不串线。
+- guidance park 不占 worker，恢复保持 tool adjacency、transcript 和剩余预算。
+- blocked/cancel/session restore 的晚消息不会复活旧 generation job。
 
 ### 滚动与 stale 验收
 
@@ -240,9 +318,11 @@ parent response -> root transcript
 2. `fix(tools): provide structured lsp completion summaries`
 3. `fix(subagent): enforce non-recursive scoped capabilities`
 4. `feat(subagent): require reasons for effectful child tools`
-5. `feat(cli): render retained assistant markdown`
-6. `perf(cli): virtualize transcript layout and scrolling`
-7. `test(cli): cover resize scroll stale and long transcript performance`
+5. `feat(subagent): add typed report and guidance channels`
+6. `feat(subagent): park and resume blocked child jobs`
+7. `feat(cli): render retained assistant markdown`
+8. `perf(cli): virtualize transcript layout and scrolling`
+9. `test(cli): cover resize scroll stale and long transcript performance`
 
 每批完成定向测试；最后运行 Ruff、Python 全量测试、Go peer 测试、build，并用真实 PTY 做 resize/scroll/stream/approval 验收。
 
