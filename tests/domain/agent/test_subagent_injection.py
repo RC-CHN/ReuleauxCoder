@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEventType
 from reuleauxcoder.extensions.subagent.manager import SubagentManager
+from reuleauxcoder.extensions.subagent.manager import SubagentCommunication
 
 
 class _LLMStub:
@@ -33,7 +34,7 @@ def test_inject_subagent_job_result_appends_message_and_emits_events() -> None:
 
     assert injected is True
     assert job.injected_to_parent is True
-    assert agent.state.messages[-1]["role"] == "assistant"
+    assert agent.state.messages[-1]["role"] == "system"
     assert "[Sub-agent result notification]" in agent.state.messages[-1]["content"]
     assert "done" in agent.state.messages[-1]["content"]
     assert [event.event_type for event in events] == [
@@ -122,7 +123,7 @@ def test_inject_defers_when_pending_tool_calls_exist() -> None:
     assert flushed == 1
 
     # Now the sub-agent result must be in messages.
-    assert agent.state.messages[-1]["role"] == "assistant"
+    assert agent.state.messages[-1]["role"] == "system"
     assert "[Sub-agent result notification]" in agent.state.messages[-1]["content"]
     assert "done" in agent.state.messages[-1]["content"]
 
@@ -152,10 +153,30 @@ def test_inject_direct_when_no_pending_tool_calls() -> None:
 
     injected = agent.inject_subagent_job_result(job)
     assert injected is True
-    assert agent.state.messages[-1]["role"] == "assistant"
+    assert agent.state.messages[-1]["role"] == "system"
     assert "done" in agent.state.messages[-1]["content"]
     # Buffer should remain empty.
     assert agent._pending_subagent_injections == []
+
+
+def test_child_communication_is_committed_as_system_control_item() -> None:
+    agent = _make_agent()
+    item = SubagentCommunication(
+        item_id="sc_1",
+        seq=7,
+        sender_agent_id="child",
+        sender_job_id="sj_1",
+        recipient_agent_id=agent.agent_id,
+        content="Need a decision about scope.",
+        created_at=1.0,
+        generation=agent.session_generation,
+        kind="blocked",
+    )
+
+    assert agent.inject_subagent_communication(item) is True
+    assert agent.state.messages[-1]["role"] == "system"
+    assert "item_id=sc_1" in agent.state.messages[-1]["content"]
+    assert "kind=blocked" in agent.state.messages[-1]["content"]
 
 
 def test_reconcile_moves_recovered_tool_outputs_before_session_markers() -> None:

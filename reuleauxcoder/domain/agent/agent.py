@@ -425,7 +425,7 @@ class Agent:
                 self._pending_subagent_injections.append((job, content, success))
                 return True
 
-            self.state.messages.append({"role": "assistant", "content": content})
+            self.state.messages.append({"role": "system", "content": content})
 
         self._emit_subagent_completion_events(job, content, success)
         return True
@@ -443,26 +443,76 @@ class Agent:
             pending = self._pending_subagent_injections[:]
             self._pending_subagent_injections.clear()
             for job, content, _success in pending:
-                self.state.messages.append({"role": "assistant", "content": content})
+                self.state.messages.append({"role": "system", "content": content})
 
         for job, content, success in pending:
-            self._emit_subagent_completion_events(job, content, success)
+            if job is not None:
+                self._emit_subagent_completion_events(job, content, success)
         return len(pending)
 
+    def inject_subagent_communication(self, item) -> bool:
+        """Commit one typed child-to-parent message at a protocol-safe boundary."""
+        if getattr(item, "recipient_agent_id", None) != self.agent_id:
+            return False
+        if getattr(item, "generation", None) != self.session_generation:
+            return False
+        content = (
+            "[Sub-agent context item]\n"
+            f"item_id={item.item_id}\n"
+            f"seq={item.seq}\n"
+            f"kind={item.kind}\n"
+            f"sender_agent_id={item.sender_agent_id}\n"
+            f"sender_job_id={item.sender_job_id or '-'}\n\n"
+            f"{item.content}\n"
+            "[/Sub-agent context item]"
+        )
+        with self._state_lock:
+            if self._collect_pending_tool_calls():
+                self._pending_subagent_injections.append((None, content, True))
+                return True
+            self.state.messages.append({"role": "system", "content": content})
+        return True
+
     def _inject_completed_subagent_jobs(self) -> int:
-        """Inject completed background sub-agent summaries into parent history."""
+        """Drain typed child messages/results into parent history in sequence order."""
         try:
             manager = get_subagent_manager(self)
         except Exception:
             return 0
 
-        injected = 0
-        for job in manager.drain_completed_for_parent(
+        jobs = manager.drain_completed_for_parent(
             parent_state_lock=self._state_lock,
-        ):
-            if self.inject_subagent_job_result(job):
+            parent_agent_id=self.agent_id,
+        )
+        communications = manager.drain_parent_messages(self.agent_id)
+        ordered = [
+            (getattr(job, "completion_seq", None) or 2**63, "job", job)
+            for job in jobs
+        ] + [(item.seq, "communication", item) for item in communications]
+
+        injected = 0
+        for _seq, kind, item in sorted(ordered, key=lambda entry: entry[0]):
+            accepted = (
+                self.inject_subagent_job_result(item)
+                if kind == "job"
+                else self.inject_subagent_communication(item)
+            )
+            if accepted:
                 injected += 1
         return injected
+
+    def _has_awaited_subagent_jobs(self) -> bool:
+        manager = getattr(self, "_subagent_manager", None)
+        return bool(manager and manager.has_awaited_jobs(self.agent_id))
+
+    def _wait_for_subagent_activity(self, timeout: float = 0.1) -> bool:
+        manager = getattr(self, "_subagent_manager", None)
+        if manager is None:
+            return False
+        return manager.wait_for_parent_activity(self.agent_id, timeout=timeout)
+
+    def _has_subagent_activity(self) -> bool:
+        return self._wait_for_subagent_activity(timeout=0.0)
 
     def chat(self, user_input: str) -> str:
         """Process one user message."""

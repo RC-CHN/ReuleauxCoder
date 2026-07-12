@@ -10,6 +10,7 @@ from pathlib import Path
 import threading
 import time
 import uuid
+from typing import Literal
 
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
 from reuleauxcoder.extensions.subagent.context import project_parent_context
@@ -24,6 +25,10 @@ _VALID_SUBAGENT_MODES = frozenset({"explore", "execute", "verify"})
 _DEFAULT_MAX_ROUNDS = 50
 _DEFAULT_TIMEOUT_SECONDS = 300
 _MAX_TIMEOUT_SECONDS = 3_600
+SubagentDelivery = Literal["awaited", "detached"]
+SubagentMessageKind = Literal[
+    "milestone", "blocked", "approval_needed", "partial", "amendment"
+]
 
 
 def _clamp_subagent_rounds(
@@ -79,6 +84,21 @@ class SubagentJob:
     worktree_path: str | None = None
     max_tool_calls: int | None = None
     max_tokens: int | None = None
+    delivery: SubagentDelivery = "awaited"
+    completion_seq: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentCommunication:
+    item_id: str
+    seq: int
+    sender_agent_id: str
+    sender_job_id: str | None
+    recipient_agent_id: str
+    content: str
+    created_at: float
+    generation: int
+    kind: SubagentMessageKind = "milestone"
 
 
 class SubagentManager:
@@ -97,7 +117,7 @@ class SubagentManager:
         max_timeout_seconds: int = _MAX_TIMEOUT_SECONDS,
         parent_agent_id: str | None = None,
         initial_generation: int = 0,
-        max_depth: int = 2,
+        max_depth: int = 1,
     ):
         self._max_parallel_explore = max(1, int(max_parallel_explore))
         self._default_max_rounds = _clamp_subagent_rounds(default_max_rounds)
@@ -121,6 +141,11 @@ class SubagentManager:
         self._completion_mailbox: deque[str] = deque()
         self._registered_agents: dict[str, int] = {}
         self._message_queues: dict[str, deque[str]] = {}
+        self._agent_jobs: dict[str, str] = {}
+        self._agent_parents: dict[str, str] = {}
+        self._agent_generations: dict[str, int] = {}
+        self._parent_messages: deque[SubagentCommunication] = deque()
+        self._next_sequence = 1
         if parent_agent_id:
             self._registered_agents[parent_agent_id] = 0
 
@@ -174,6 +199,7 @@ class SubagentManager:
         resume_reference: str | None = None,
         max_tool_calls: int | None = 80,
         max_tokens: int | None = None,
+        detached: bool = False,
     ) -> str:
         if depth > self._max_depth:
             raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
@@ -231,6 +257,7 @@ class SubagentManager:
             context_mode=context_mode,
             max_tool_calls=max_tool_calls,
             max_tokens=max_tokens,
+            delivery="detached" if detached else "awaited",
         )
         cancel_event = threading.Event()
 
@@ -278,7 +305,6 @@ class SubagentManager:
             self._futures[job_id] = future
 
         def _on_done(done: Future) -> None:
-            tracked_for_injection = None
             with self._slot_cv:
                 tracked = self._jobs.get(job_id)
                 if tracked is None:
@@ -295,7 +321,6 @@ class SubagentManager:
                     except Exception as e:  # pragma: no cover - defensive
                         tracked.error = str(e)
                         tracked.status = "failed"
-                        tracked_for_injection = tracked
                     else:
                         result_text = (
                             result.model_text()
@@ -315,7 +340,6 @@ class SubagentManager:
                             )
                             tracked.status = result.status
                             tracked.error = result.summary
-                            self._completion_mailbox.append(job_id)
                         elif "[Sub-agent finished status=cancelled]" in result_text:
                             tracked.detached_due_to_timeout = "detached" in result_text
                             tracked.status = (
@@ -337,8 +361,11 @@ class SubagentManager:
                             tracked.result = structured.summary
                             tracked.worktree_path = structured.worktree_path
                             tracked.status = "completed"
-                            tracked_for_injection = tracked
-                            self._completion_mailbox.append(job_id)
+                if (
+                    tracked.generation == self._generation
+                    and self._is_actionable_terminal(tracked)
+                ):
+                    self._enqueue_completion_locked(tracked)
                 self._slot_cv.notify_all()
 
             # The parent drains this mailbox at an API-safe boundary. Worker
@@ -411,11 +438,146 @@ class SubagentManager:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def register_child_agent(self, agent_id: str, depth: int) -> None:
+    def register_child_agent(
+        self,
+        agent_id: str,
+        depth: int,
+        *,
+        parent_agent_id: str,
+        job_id: str | None = None,
+    ) -> None:
         with self._lock:
             if depth > self._max_depth:
                 raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
             self._registered_agents[agent_id] = depth
+            self._agent_parents[agent_id] = parent_agent_id
+            self._agent_generations[agent_id] = self._generation
+            if job_id:
+                self._agent_jobs[agent_id] = job_id
+
+    def send_to_parent(
+        self,
+        sender_agent_id: str,
+        message: str,
+        *,
+        kind: SubagentMessageKind = "milestone",
+    ) -> bool:
+        """Queue one child report for its immediate parent agent."""
+
+        text = message.strip()
+        with self._lock:
+            recipient = self._agent_parents.get(sender_agent_id)
+            if (
+                not text
+                or recipient is None
+                or self._agent_generations.get(sender_agent_id) != self._generation
+            ):
+                return False
+            seq = self._allocate_sequence_locked()
+            self._parent_messages.append(
+                SubagentCommunication(
+                    item_id=f"sc_{uuid.uuid4().hex[:12]}",
+                    seq=seq,
+                    sender_agent_id=sender_agent_id,
+                    sender_job_id=self._agent_jobs.get(sender_agent_id),
+                    recipient_agent_id=recipient,
+                    content=text,
+                    created_at=time.time(),
+                    generation=self._generation,
+                    kind=kind,
+                )
+            )
+            self._slot_cv.notify_all()
+            return True
+
+    def drain_parent_messages(self, parent_agent_id: str) -> list[SubagentCommunication]:
+        with self._lock:
+            selected: list[SubagentCommunication] = []
+            retained: deque[SubagentCommunication] = deque()
+            while self._parent_messages:
+                message = self._parent_messages.popleft()
+                if (
+                    message.recipient_agent_id == parent_agent_id
+                    and message.generation == self._generation
+                ):
+                    selected.append(message)
+                elif message.generation == self._generation:
+                    retained.append(message)
+            self._parent_messages = retained
+            return sorted(selected, key=lambda item: item.seq)
+
+    def has_awaited_jobs(self, parent_agent_id: str) -> bool:
+        """Return whether this parent still depends on a non-terminal child."""
+        with self._lock:
+            return any(
+                job.parent_agent_id == parent_agent_id
+                and job.generation == self._generation
+                and job.delivery == "awaited"
+                and job.status
+                not in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "cancelled_detached",
+                    "timeout",
+                    "timed_out_detached",
+                    "stale",
+                }
+                for job in self._jobs.values()
+            )
+
+    def wait_for_parent_activity(
+        self, parent_agent_id: str, *, timeout: float = 0.1
+    ) -> bool:
+        """Wait briefly for an actionable completion or child-to-parent message."""
+        with self._slot_cv:
+            if self._has_parent_activity_locked(parent_agent_id):
+                return True
+            self._slot_cv.wait(timeout=max(0.0, timeout))
+            return self._has_parent_activity_locked(parent_agent_id)
+
+    def _has_parent_activity_locked(self, parent_agent_id: str) -> bool:
+        return any(
+            self._jobs.get(job_id) is not None
+            and self._jobs[job_id].parent_agent_id == parent_agent_id
+            and self._jobs[job_id].generation == self._generation
+            for job_id in self._completion_mailbox
+        ) or any(
+            item.recipient_agent_id == parent_agent_id
+            and item.generation == self._generation
+            for item in self._parent_messages
+        )
+
+    def _allocate_sequence_locked(self) -> int:
+        seq = self._next_sequence
+        self._next_sequence += 1
+        return seq
+
+    @staticmethod
+    def _is_actionable_terminal(job: SubagentJob) -> bool:
+        if job.status == "stale":
+            return False
+        if job.delivery == "awaited":
+            return job.status in {
+                "completed",
+                "failed",
+                "cancelled",
+                "cancelled_detached",
+                "timeout",
+                "timed_out_detached",
+            }
+        return job.status in {
+            "failed",
+            "cancelled_detached",
+            "timeout",
+            "timed_out_detached",
+        }
+
+    def _enqueue_completion_locked(self, job: SubagentJob) -> None:
+        if job.id in self._completion_mailbox:
+            return
+        job.completion_seq = self._allocate_sequence_locked()
+        self._completion_mailbox.append(job.id)
 
     def send_message(self, job_id: str, message: str) -> bool:
         """Queue a message for a running worker; it is consumed next model round."""
@@ -497,6 +659,7 @@ class SubagentManager:
             "failed",
             "cancelled",
             "cancelled_detached",
+            "timeout",
             "timed_out_detached",
             "stale",
         }
@@ -525,6 +688,7 @@ class SubagentManager:
                     "failed",
                     "cancelled",
                     "cancelled_detached",
+                    "timeout",
                     "timed_out_detached",
                     "stale",
                 }
@@ -561,6 +725,8 @@ class SubagentManager:
             if next_generation <= self._generation:
                 raise ValueError("session generation must increase monotonically")
             self._generation = next_generation
+            self._parent_messages.clear()
+            self._completion_mailbox.clear()
             old_ids = [
                 job.id
                 for job in self._jobs.values()
@@ -579,6 +745,7 @@ class SubagentManager:
             "failed",
             "cancelled",
             "cancelled_detached",
+            "timeout",
             "timed_out_detached",
             "stale",
         }
@@ -609,7 +776,10 @@ class SubagentManager:
         self._explore_pool.shutdown(wait=wait, cancel_futures=True)
 
     def drain_completed_for_parent(
-        self, *, parent_state_lock: threading.Lock | None = None
+        self,
+        *,
+        parent_state_lock: threading.Lock | None = None,
+        parent_agent_id: str | None = None,
     ) -> list[SubagentJob]:
         """Return completed/failed jobs not yet injected into parent context.
 
@@ -622,13 +792,29 @@ class SubagentManager:
         """
         drained: list[SubagentJob] = []
         with self._lock:
-            mailbox_ids = list(self._completion_mailbox)
-            self._completion_mailbox.clear()
+            mailbox_ids: list[str] = []
+            retained_mailbox: deque[str] = deque()
+            while self._completion_mailbox:
+                candidate = self._completion_mailbox.popleft()
+                job = self._jobs.get(candidate)
+                if job is not None and job.generation != self._generation:
+                    continue
+                if (
+                    parent_agent_id is None
+                    or job is None
+                    or job.parent_agent_id == parent_agent_id
+                ):
+                    mailbox_ids.append(candidate)
+                else:
+                    retained_mailbox.append(candidate)
+            self._completion_mailbox = retained_mailbox
             # Compatibility for restored/older jobs that predate the mailbox.
             mailbox_ids.extend(
                 job.id
                 for job in self._jobs.values()
-                if job.status in {"completed", "failed"}
+                if self._is_actionable_terminal(job)
+                and (parent_agent_id is None or job.parent_agent_id == parent_agent_id)
+                and job.generation == self._generation
                 and not job.injected_to_parent
                 and job.id not in mailbox_ids
             )
@@ -643,6 +829,7 @@ class SubagentManager:
                     "failed",
                     "cancelled",
                     "cancelled_detached",
+                    "timeout",
                     "timed_out_detached",
                 }:
                     continue
@@ -680,12 +867,21 @@ class SubagentManager:
                             worktree_path=job.worktree_path,
                             max_tool_calls=job.max_tool_calls,
                             max_tokens=job.max_tokens,
+                            delivery=job.delivery,
+                            completion_seq=job.completion_seq,
                         )
                     )
                 finally:
                     if parent_state_lock is not None:
                         parent_state_lock.release()
-        return sorted(drained, key=lambda item: item.finished_at or item.created_at)
+        return sorted(
+            drained,
+            key=lambda item: (
+                item.completion_seq
+                if item.completion_seq is not None
+                else float("inf")
+            ),
+        )
 
 
 def get_subagent_manager(agent) -> SubagentManager:
@@ -695,11 +891,11 @@ def get_subagent_manager(agent) -> SubagentManager:
 
     default_rounds = getattr(agent, "max_rounds", 50)
     manager = SubagentManager(
-        max_parallel_explore=4,
+        max_parallel_explore=2,
         default_max_rounds=default_rounds,
         parent_agent_id=getattr(agent, "agent_id", None),
         initial_generation=getattr(agent, "session_generation", 0),
-        max_depth=2,
+        max_depth=1,
     )
     agent._subagent_manager = manager
     return manager
@@ -799,7 +995,7 @@ def run_subagent_task(
     lease = None
     manager = get_subagent_manager(parent_agent)
     sub_tools = _filter_subagent_tools(
-        parent_agent, mode, include_agent=depth < manager.max_depth
+        parent_agent, mode, include_agent=True
     )
     if worktree:
         if mode != "execute":
@@ -826,7 +1022,12 @@ def run_subagent_task(
     sub._subagent_manager = manager
     if job_id:
         sub._external_message_source = lambda: manager.drain_messages(job_id)
-    manager.register_child_agent(sub.agent_id, depth)
+    manager.register_child_agent(
+        sub.agent_id,
+        depth,
+        parent_agent_id=parent_agent.agent_id,
+        job_id=job_id,
+    )
     for tool in sub.tools:
         if getattr(tool, "name", None) == "agent":
             tool._parent_agent = sub

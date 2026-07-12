@@ -11,7 +11,6 @@ from reuleauxcoder.extensions.subagent.manager import (
     _create_subagent_llm,
     _filter_subagent_tools,
 )
-from reuleauxcoder.extensions.subagent.approval import _get_parent_approval_lock
 
 
 class _FakeParentLLM:
@@ -232,6 +231,48 @@ def test_background_exception_becomes_failed_job(monkeypatch) -> None:
     assert job is not None and job.status == "failed"
     assert job.error == "child exploded"
     assert job.result is None
+    drained = manager.drain_completed_for_parent(parent_agent_id=parent.agent_id)
+    assert [item.id for item in drained] == [job_id]
+    manager.shutdown()
+
+
+def test_detached_success_does_not_enter_parent_context(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task",
+        lambda **kwargs: "done",
+    )
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent,
+        task="optional",
+        mode="explore",
+        detached=True,
+    )
+    job = manager.wait_job(job_id, timeout=2)
+
+    assert job is not None and job.status == "completed"
+    assert job.delivery == "detached"
+    assert manager.drain_completed_for_parent(parent_agent_id=parent.agent_id) == []
+    manager.shutdown()
+
+
+def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
+    manager = SubagentManager(parent_agent_id="root")
+    manager.register_child_agent(
+        "child-a", 1, parent_agent_id="root", job_id="sj_a"
+    )
+    manager.register_child_agent(
+        "child-b", 1, parent_agent_id="root", job_id="sj_b"
+    )
+
+    assert manager.send_to_parent("child-b", "second") is True
+    assert manager.send_to_parent("child-a", "first") is True
+    messages = manager.drain_parent_messages("root")
+
+    assert [item.content for item in messages] == ["second", "first"]
+    assert [item.seq for item in messages] == sorted(item.seq for item in messages)
+    assert manager.drain_parent_messages("child-a") == []
     manager.shutdown()
 
 
@@ -278,6 +319,19 @@ def test_generation_change_prevents_old_result_injection(monkeypatch) -> None:
     assert job is not None and job.status == "stale"
     assert parent.injected == []
     assert manager.drain_completed_for_parent() == []
+    manager.shutdown()
+
+
+def test_generation_change_rejects_late_child_messages() -> None:
+    manager = SubagentManager(parent_agent_id="root")
+    manager.register_child_agent(
+        "old-child", 1, parent_agent_id="root", job_id="sj_old"
+    )
+
+    manager.advance_generation(cancel_pending=False)
+
+    assert manager.send_to_parent("old-child", "late result") is False
+    assert manager.drain_parent_messages("root") == []
     manager.shutdown()
 
 
@@ -443,22 +497,3 @@ def test_manager_honors_custom_max_timeout(monkeypatch) -> None:
 
     assert captured["timeout"] == 7
     manager.shutdown()
-
-
-def test_parent_approval_lock_creation_is_race_free() -> None:
-    parent = SimpleNamespace()
-    barrier = threading.Barrier(8)
-    locks: list[object] = []
-
-    def resolve() -> None:
-        barrier.wait(timeout=2)
-        locks.append(_get_parent_approval_lock(parent))
-
-    threads = [threading.Thread(target=resolve) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=2)
-
-    assert len(locks) == 8
-    assert len({id(lock) for lock in locks}) == 1

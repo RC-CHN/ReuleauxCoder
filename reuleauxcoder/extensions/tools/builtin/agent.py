@@ -43,6 +43,13 @@ class AgentTool(Tool):
                 "type": "boolean",
                 "description": "Run in background and receive a completion notification.",
             },
+            "detached": {
+                "type": "boolean",
+                "description": (
+                    "Advanced: do not block the parent turn for an ordinary successful "
+                    "background result. Failures and blockers still enter Attention."
+                ),
+            },
             "max_rounds": {
                 "type": "integer",
                 "description": "Maximum sub-agent rounds (default: 50)",
@@ -95,7 +102,7 @@ class AgentTool(Tool):
             },
             "action": {
                 "type": "string",
-                "enum": ["spawn", "message", "cancel", "status"],
+                "enum": ["spawn", "message", "report", "cancel", "status"],
                 "description": "Control-plane action (default: spawn).",
             },
             "target_job_id": {
@@ -131,8 +138,16 @@ class AgentTool(Tool):
             if not kwargs.get("target_job_id") or len(task_list) != 1:
                 return "Error: action='message' requires target_job_id and one tasks entry."
             return None
+        if action == "report":
+            if len(task_list) != 1:
+                return "Error: action='report' requires one tasks entry."
+            return None
         if action != "spawn":
             return f"Error: unsupported sub-agent action '{action}'."
+        if self._parent_agent is not None:
+            manager = get_subagent_manager(self._parent_agent)
+            if int(getattr(self._parent_agent, "subagent_depth", 0)) >= manager.max_depth:
+                return f"Error: sub-agent depth limit reached ({manager.max_depth})."
         if (
             self._parent_agent is not None
             and int(getattr(self._parent_agent, "subagent_depth", 0)) > 0
@@ -141,6 +156,8 @@ class AgentTool(Tool):
             return "Error: nested sub-agents must run in background to avoid execution-pool deadlock."
         if not task_list:
             return "Error: 'tasks' must be a non-empty list of task strings."
+        if kwargs.get("detached", False) and not run_in_background:
+            return "Error: detached=true requires run_in_background=true."
 
         if len(task_list) > 1 and (mode != "explore" or not run_in_background):
             return (
@@ -168,6 +185,7 @@ class AgentTool(Tool):
         tasks: list[str] | None = None,
         mode: str = "explore",
         run_in_background: bool = False,
+        detached: bool = False,
         max_rounds: int = 50,
         timeout_seconds: int = 300,
         parallel_explore: int | None = None,
@@ -187,6 +205,7 @@ class AgentTool(Tool):
             tasks=tasks,
             mode=mode,
             run_in_background=run_in_background,
+            detached=detached,
             max_rounds=max_rounds,
             timeout_seconds=timeout_seconds,
             parallel_explore=parallel_explore,
@@ -206,6 +225,7 @@ class AgentTool(Tool):
         tasks: list[str] | None = None,
         mode: str = "explore",
         run_in_background: bool = False,
+        detached: bool = False,
         max_rounds: int = 50,
         timeout_seconds: int = 300,
         parallel_explore: int | None = None,
@@ -256,6 +276,14 @@ class AgentTool(Tool):
                 if manager.send_message(target_job_id or "", task_list[0])
                 else "Error: target sub-agent is not running."
             )
+        if action == "report":
+            if len(task_list) != 1:
+                return "Error: report action requires one tasks entry as the message."
+            return (
+                "Progress reported to parent."
+                if manager.send_to_parent(parent.agent_id, task_list[0])
+                else "Error: this agent has no active parent route."
+            )
         if action != "spawn":
             return f"Error: unsupported sub-agent action '{action}'."
         if not task_list:
@@ -296,6 +324,7 @@ class AgentTool(Tool):
                     worktree=use_worktree,
                     max_tool_calls=max_tool_calls,
                     max_tokens=max_tokens,
+                    detached=detached,
                 )
                 return f"Sub-agent job started in background: {job_id}"
 
@@ -329,6 +358,7 @@ class AgentTool(Tool):
                 depth=child_depth,
                 max_tool_calls=max_tool_calls,
                 max_tokens=max_tokens,
+                detached=detached,
             )
             job_ids.append(job_id)
         return f"Started {len(job_ids)} background sub-agent jobs: {', '.join(job_ids)}"

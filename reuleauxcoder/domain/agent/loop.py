@@ -158,10 +158,15 @@ class AgentLoop:
                 for external_message in message_source():
                     self.agent.state.messages.append(
                         {
-                            "role": "user",
+                            "role": "system",
                             "content": f"[Inter-agent message]\n{external_message}\n[/Inter-agent message]",
                         }
                     )
+
+            # Worker callbacks only publish mailbox items. Commit them here,
+            # immediately before a new API round, after every prior tool batch
+            # is protocol-complete.
+            self.agent._inject_completed_subagent_jobs()
 
             self.agent.state.current_round = round_num
 
@@ -211,8 +216,22 @@ class AgentLoop:
 
             # No tool calls -> done
             if not resp.tool_calls:
-                self.last_response_streamed = streamed_output
                 self.agent.state.messages.append(resp.message)
+                if (
+                    self.agent._has_awaited_subagent_jobs()
+                    or self.agent._has_subagent_activity()
+                ):
+                    while (
+                        self.agent._has_awaited_subagent_jobs()
+                        and not self.agent.stop_requested()
+                    ):
+                        if self.agent._wait_for_subagent_activity(timeout=0.1):
+                            break
+                    if self.agent.stop_requested():
+                        return "(stopped while waiting for sub-agent results)"
+                    self.agent._inject_completed_subagent_jobs()
+                    continue
+                self.last_response_streamed = streamed_output
                 return resp.content
 
             # Tool calls -> execute
@@ -299,6 +318,7 @@ class AgentLoop:
 
             # Flush any sub-agent injections buffered during tool execution.
             self.agent._flush_pending_subagent_injections()
+            self.agent._inject_completed_subagent_jobs()
 
         summary_prompt = (
             "Maximum tool-call rounds reached. Do not call any tools. "
