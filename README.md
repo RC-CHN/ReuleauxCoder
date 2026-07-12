@@ -192,15 +192,17 @@ known command if within edit distance ≤ 2.
 - `/approval set` currently supports targets like `tool:<name>`, `mcp`, `mcp:<server>`, and `mcp:<server>:<tool>` with actions `allow`, `warn`, `require_approval`, or `deny`.
 - `/mcp enable <server>` and `/mcp disable <server>` update workspace config and try to apply the change at runtime.
 - `/thinking` shows reasoning content retained from the most recent turn. `/thinking inline` toggles inline streaming; the FORGE activity row advances as reasoning chunks arrive and remains in history. `/thinking effort` views or sets the session reasoning budget.
-- Subagents use bounded `minimal`, `recent`, or `full` parent-context projections, typed immediate-parent mailboxes, awaited/detached continuation, persisted transcripts and job lifecycle, shared budgets, resumable follow-ups, stale-on-resume recovery, conflict notices, and optional detached worktree isolation. Worker callbacks never mutate model history mid-tool-batch. While a root turn is running, new bottom-pane input is ledgered and applied at the next safe boundary.
+- Subagents use bounded `minimal`, `recent`, or `full` parent-context projections, crash-recoverable typed immediate-parent mailboxes, audited parent directives, awaited/detached continuation, automatic execute→verify barriers, persisted transcripts and job lifecycle, shared budgets, resumable follow-ups, stale-on-resume recovery, conflict notices, and optional detached worktree isolation. Worker callbacks never mutate model history mid-tool-batch. While a root turn is running, new bottom-pane input is ledgered and applied at the next safe boundary.
 
 Interactive TTYs use the mini-TUI; one-shot, redirected, server, and remote-peer
 paths stay append-only. The CLI keeps model output and human presentation limits
 separate: shell output uses a rolling five-line human tail while the agent retains
 the full result subject to context policy. Timeout/cancel preserves partial output.
 Write/edit approval uses a framed diff and refreshes if the saved file changes.
-Sessions persist an append-only JSONL ledger, canonical replay state, exact request
-audits, usage observations, Plan/Progress state, checkpoints, and tool artifacts.
+Sessions persist an append-only JSONL ledger, canonical replay state with
+wire-affecting settings, exact hook-transformed request audits, usage observations,
+Plan/Progress state, validated semantic checkpoints, and tool artifacts. Resume
+preserves the committed prefix and appends environment/config changes at its tail.
 
 ## CLI Options
 

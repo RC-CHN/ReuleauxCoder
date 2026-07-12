@@ -190,14 +190,15 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 - `/approval set` 当前支持的目标格式包括 `tool:<name>`、`mcp`、`mcp:<server>`、`mcp:<server>:<tool>`；动作支持 `allow`、`warn`、`require_approval`、`deny`。
 - `/mcp enable <server>` 与 `/mcp disable <server>` 会更新工作区配置，并尝试在运行时立即生效。
 - `/thinking` 展示上一轮保留的推理内容；`/thinking inline` 切换内联流式输出。FORGE 活动行会随 reasoning chunk 推进，并保留在历史中。`/thinking effort` 查看或设置当前会话的思考预算。
-- Subagent 使用有界父上下文投影、typed immediate-parent mailbox、awaited/detached 自动续跑、持久化 transcript/job lifecycle、共享预算、stale 恢复、冲突提示和可选 detached worktree。worker 不会在 tool batch 中途修改父历史；root 运行时的新输入会先写 ledger，再在下一安全边界生效。
+- Subagent 使用有界父上下文投影、可崩溃恢复的 typed immediate-parent mailbox、父→子指令审计、awaited/detached 自动续跑、runtime-managed execute→verify 屏障、持久化 transcript/job lifecycle、共享预算、stale 恢复、冲突提示和可选 detached worktree。worker 不会在 tool batch 中途修改父历史；root 运行时的新输入会先写 ledger，再在下一安全边界生效。
 
 交互式 TTY 使用 mini-TUI；one-shot、重定向、server 和远端 peer 保持 append-only。
 CLI 将模型上下文截断与人类界面折叠分开处理。Shell 运行时显示最近五行滑动窗口，
 完成后历史保留最后五行；超时或取消仍会把部分输出交给模型。write/edit 审批统一使用
 带框 diff；等待审批期间磁盘文件发生变化时会刷新预览并重新请求确认。
-会话会持久化 append-only JSONL 账本、canonical replay、精确请求审计、实际 usage、
-Plan/Progress、压缩 checkpoint 与工具 artifact；恢复不会重新生成旧 summary。
+会话会持久化 append-only JSONL 账本、含 wire settings 的 canonical replay、hook transform
+后的精确请求审计、实际 usage、Plan/Progress、validated semantic checkpoint 与工具 artifact；
+恢复不会重新生成旧 summary，环境或配置变化只会追加在已提交前缀尾部。
 
 ## CLI 参数
 
