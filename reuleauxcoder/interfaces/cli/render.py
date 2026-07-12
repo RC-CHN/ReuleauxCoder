@@ -27,6 +27,7 @@ from reuleauxcoder.domain.runtime.events import (
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
 from reuleauxcoder.interfaces.cli.history import CLIHistoryPresenter
+from reuleauxcoder.interfaces.cli.activity import CLIActivityPresenter
 from reuleauxcoder.interfaces.cli.theme import CLITheme, DEFAULT_CLI_THEME
 from reuleauxcoder.interfaces.cli.startup import show_banner as show_banner
 from reuleauxcoder.interfaces.cli.streaming import (
@@ -77,6 +78,7 @@ class CLIRenderer:
         self.policy = self.reducer.policy
         self.theme = theme
         self.history = CLIHistoryPresenter(self.console, self.policy, theme)
+        self.activity = CLIActivityPresenter(self.console, theme=theme)
         self.stream = CLIStreamPresenter(
             lambda text: self.render_content_markdown(text),
             lambda text: self.render_plain_text(text),
@@ -89,6 +91,7 @@ class CLIRenderer:
     def close(self) -> None:
         """Release terminal handlers/resources held by the renderer."""
         self.stream.reset()
+        self.activity.stop()
         self.reducer.state.transcript.clear()
         self.reducer.state.seen_event_ids.clear()
         self.reducer.state.session_generations.clear()
@@ -118,6 +121,7 @@ class CLIRenderer:
         elif isinstance(payload, ToolCallFinished) and changes:
             self._render_tool_end(payload.tool_name, payload.outcome)
         elif isinstance(payload, ToolOutputDelta) and changes:
+            self.activity.stop()
             self.console.print(payload.text, end="", markup=False, highlight=False)
         elif isinstance(payload, SubagentFinished) and changes:
             self._render_subagent_completed(payload)
@@ -177,6 +181,7 @@ class CLIRenderer:
                 return
 
         if isinstance(event.payload, InteractionPromptPayload):
+            self.activity.stop()
             self._close_active_content_block()
             render_interaction_request(
                 self.console,
@@ -201,6 +206,7 @@ class CLIRenderer:
         # Reset reasoning label state when content begins
         if self._reasoning_label_printed:
             self._reasoning_label_printed = False
+        self.activity.stop()
         self.stream.append(token)
 
     def _render_reasoning(
@@ -223,12 +229,15 @@ class CLIRenderer:
 
         if mode == "quiet":
             if not self._reasoning_label_printed:
-                self.history.reasoning_indicator()
+                if not self.activity.start("THINK", "processing", timed=False):
+                    self.history.reasoning_indicator()
                 self._reasoning_label_printed = True
+            self.activity.bump()
             return
 
         # inline mode
         if not self._reasoning_label_printed:
+            self.activity.stop()
             self._close_active_content_block()
             self.history.reasoning_prefix()
             self._reasoning_label_printed = True
@@ -244,11 +253,14 @@ class CLIRenderer:
 
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
+        self.activity.stop()
         self._close_active_content_block()
         self.history.tool_started(name, args)
+        self.activity.start("TOOL", name, timed=True)
 
     def _render_tool_end(self, name: str, outcome: ToolOutcome) -> None:
         """Render tool call result."""
+        self.activity.stop()
         self.history.tool_finished(name, outcome)
 
     def _render_subagent_completed(self, payload: SubagentFinished) -> None:
@@ -268,12 +280,14 @@ class CLIRenderer:
     def _render_error(self, message: str | None) -> None:
         """Render an error message."""
         if message:
+            self.activity.stop()
             self.history.notice(message, level="error")
 
     def _render_remote_stream(self, payload: RemoteStreamPayload) -> None:
         """Render raw remote stream chunk directly to terminal."""
         if not payload.chunk:
             return
+        self.activity.stop()
         self._close_active_content_block()
         self.render_plain_text(payload.chunk)
 
@@ -332,6 +346,7 @@ class CLIRenderer:
 
     def finalize_response(self, response: str, *, render_response: bool = True) -> None:
         """Finalize response rendering for agent output."""
+        self.activity.stop()
         self.stream.finalize(response, render_response=render_response)
 
     @property
