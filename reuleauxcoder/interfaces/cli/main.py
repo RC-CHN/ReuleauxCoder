@@ -206,6 +206,7 @@ def main():
     renderer = CLIRenderer(
         view_registry=cli_ui.view_registry,
         policy=PresentationPolicy.from_ui_config(ctx.config.ui),
+        root_agent_id=ctx.agent.agent_id,
     )
     output = CLIOutputCoordinator(renderer)
     group_startup = not args.prompt and not args.server and not is_host_mode

@@ -4,7 +4,13 @@ from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.approval import ApprovalSection, ApprovalSectionKind
-from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
+from reuleauxcoder.domain.runtime.events import (
+    ApprovalRequested,
+    AssistantContentDelta,
+    RuntimeEvent,
+    SubagentJobChanged,
+    agent_event_to_runtime_event,
+)
 from reuleauxcoder.interfaces.cli.mini_tui import (
     MiniTUIEventAdapter,
     MiniTUIInteractor,
@@ -46,6 +52,48 @@ def test_event_adapter_projects_user_and_execution_state() -> None:
     assert "fix the renderer" in rendered
     assert adapter.execution.state.runtime_state == "running"
     assert "MAIN" in "\n".join(adapter.panel_lines(100))
+
+
+def test_child_internals_stay_out_of_transcript_but_approval_remains_visible() -> None:
+    adapter = MiniTUIEventAdapter(root_agent_id="root")
+
+    child_delta = RuntimeEvent(
+        payload=AssistantContentDelta("private child reasoning"),
+        agent_id="child-1",
+    )
+    child_job = RuntimeEvent(
+        payload=SubagentJobChanged(
+            job_id="sj-1",
+            mode="explore",
+            task="inspect routing",
+            status="running",
+        ),
+        agent_id="child-1",
+    )
+    child_approval = RuntimeEvent(
+        payload=ApprovalRequested(
+            request_id="approval-child",
+            title="Approve child edit",
+        ),
+        agent_id="child-1",
+    )
+
+    for runtime in (child_delta, child_job, child_approval):
+        adapter.on_ui_event(
+            UIEvent.info(
+                runtime.kind.value,
+                kind=UIEventKind.AGENT,
+                payload=RuntimeEventPayload(runtime),
+            )
+        )
+
+    rendered = "".join(text for _style, text in adapter.transcript_fragments())
+    panel = "\n".join(adapter.panel_lines(100))
+
+    assert "private child reasoning" not in rendered
+    assert "inspect routing" not in rendered
+    assert "APPROVE CHILD EDIT" in rendered
+    assert "inspect routing" in panel
 
 
 def test_event_projection_failure_is_isolated_to_ui_diagnostic() -> None:

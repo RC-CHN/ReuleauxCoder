@@ -68,7 +68,7 @@ class TestLspToolIntegration:
                 filePath=str(main),
                 line=3,
                 character=14,  # cursor on "greet"
-            )
+            ).model_text
             assert "lib.py" in out, out
             assert "Defined in" in out or "definitions" in out, out
         finally:
@@ -91,7 +91,7 @@ class TestLspToolIntegration:
                 filePath=str(lib),
                 line=1,
                 character=5,  # cursor on "greet" definition
-            )
+            ).model_text
             # Should find at least the call in main.py
             assert "reference" in out.lower(), out
         finally:
@@ -115,7 +115,7 @@ class TestLspToolIntegration:
                 filePath=str(f),
                 line=1,
                 character=1,
-            )
+            ).model_text
             assert "symbol" in out.lower(), out
             assert "[function] add" in out, out
             assert "[function] main" in out, out
@@ -140,7 +140,7 @@ class TestLspToolIntegration:
                 filePath=str(f),
                 line=5,
                 character=13,  # cursor on "add" in the call
-            )
+            ).model_text
             assert "Defined in" in out, out
         finally:
             _teardown_manager(mgr)
@@ -169,7 +169,7 @@ class TestLspToolIntegration:
                 filePath=str(f),
                 line=1,
                 character=1,
-            )
+            ).model_text
             assert "symbol" in out.lower(), out
             assert "[function] greet" in out, out
             assert "[function] main" in out, out
@@ -198,7 +198,7 @@ class TestLspToolIntegration:
                 filePath=str(f),
                 line=1,
                 character=1,
-            )
+            ).model_text
             assert "symbol" in out.lower(), out
             assert "[function] add" in out, out
             assert "[function] main" in out, out
@@ -218,7 +218,7 @@ class TestLspToolIntegration:
                 filePath=str(f),
                 line=1,
                 character=1,
-            )
+            ).model_text
             assert "Unknown operation" in out, out
             assert "goToDefinition" in out, out
         finally:
@@ -232,5 +232,5 @@ class TestLspToolIntegration:
             filePath="/nonexistent/file.py",
             line=1,
             character=1,
-        )
+        ).model_text
         assert "not found" in out, out

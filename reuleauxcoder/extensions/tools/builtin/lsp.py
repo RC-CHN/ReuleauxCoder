@@ -22,6 +22,11 @@ from reuleauxcoder.extensions.lsp.tool_helpers import (
 )
 from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.extensions.tools.registry import register_tool
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -96,10 +101,10 @@ class LspTool(Tool):
         filePath: str,
         line: int,
         character: int,
-    ) -> str:
+    ) -> ToolOutcome:
         # 1. Validate operation
         if operation not in _OPERATIONS:
-            return (
+            return _lsp_failure(
                 f"Unknown operation: {operation}. "
                 f"Supported: {', '.join(sorted(_OPERATIONS))}."
             )
@@ -108,9 +113,9 @@ class LspTool(Tool):
         try:
             lang, path = resolve_file_path(filePath)
         except FileNotFoundError as e:
-            return str(e)
+            return _lsp_failure(str(e))
         except ValueError as e:
-            return str(e)
+            return _lsp_failure(str(e))
 
         # 3. Position validation (skip for documentSymbol — line/char are
         #    ignored by the server anyway, they only exist to keep the schema
@@ -119,12 +124,12 @@ class LspTool(Tool):
             try:
                 validate_position(path, line, character)
             except ValueError as e:
-                return str(e)
+                return _lsp_failure(str(e))
 
         # 4. Get LSP manager
         manager = self.lsp_manager
         if manager is None:
-            return "LSP infrastructure is not available"
+            return _lsp_failure("LSP infrastructure is not available")
 
         # 5. Build LSP method + params
         if operation == "goToDefinition":
@@ -140,28 +145,56 @@ class LspTool(Tool):
             method = "textDocument/documentSymbol"
             params = {"textDocument": {"uri": path.resolve().as_uri()}}
         else:
-            return f"Unknown operation: {operation}"
+            return _lsp_failure(f"Unknown operation: {operation}")
 
         # 6. Send request through worker thread
         try:
             raw = manager.send_request_sync(path, method, params)
         except LspClientError as e:
-            return f"LSP server for this file type is not responding: {e}"
+            return _lsp_failure(f"LSP server for this file type is not responding: {e}")
         except Exception as e:
-            return f"LSP request failed: {e}"
+            return _lsp_failure(f"LSP request failed: {e}")
 
         # 7. Format result
         try:
             if operation == "goToDefinition":
-                return format_locations(raw, file_path=str(path))
+                return _lsp_success(
+                    operation, format_locations(raw, file_path=str(path))
+                )
             if operation == "findReferences":
-                return format_references(raw, file_path=str(path))
+                return _lsp_success(
+                    operation, format_references(raw, file_path=str(path))
+                )
             if operation == "documentSymbol":
-                return format_document_symbols(raw, file_path=str(path))
+                return _lsp_success(
+                    operation, format_document_symbols(raw, file_path=str(path))
+                )
         except Exception as e:
-            return f"Failed to format LSP result: {e}"
+            return _lsp_failure(f"Failed to format LSP result: {e}")
 
-        return f"Unknown operation: {operation}"
+        return _lsp_failure(f"Unknown operation: {operation}")
+
+
+def _lsp_success(operation: str, content: str) -> ToolOutcome:
+    first_line = next(
+        (line.strip().rstrip(":") for line in content.splitlines() if line.strip()),
+        f"{operation} completed",
+    )
+    return ToolOutcome(
+        summary=first_line[:160],
+        content=content,
+        metadata={"operation": operation, "effect_class": "read"},
+    )
+
+
+def _lsp_failure(message: str) -> ToolOutcome:
+    return ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        summary=message.splitlines()[0][:160],
+        content=message,
+        error_kind=ToolErrorKind.EXECUTION,
+        metadata={"effect_class": "read"},
+    )
 
 
 # ── internal helpers ───────────────────────────────────────────────────────

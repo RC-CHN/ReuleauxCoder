@@ -11,6 +11,7 @@ from reuleauxcoder.domain.runtime.events import (
     ApprovalResolved,
     AssistantContentDelta,
     ChatCompleted,
+    ChatStarted,
     DiagnosticsCleared,
     DiagnosticsPublished,
     ErrorOccurred,
@@ -23,6 +24,7 @@ from reuleauxcoder.domain.runtime.events import (
     ToolCallStarted,
     ToolOutputDelta,
     TurnFinished,
+    TurnStarted,
 )
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
@@ -72,6 +74,7 @@ class CLIRenderer:
         policy: PresentationPolicy | None = None,
         theme: CLITheme = DEFAULT_CLI_THEME,
         terminal_width_provider: Callable[[], int | None] | None = None,
+        root_agent_id: str | None = None,
     ):
         self.console = console_override or console
         self.reducer = reducer or PresentationReducer(policy=policy)
@@ -85,6 +88,7 @@ class CLIRenderer:
         )
         self.view_registry = view_registry or create_cli_view_registry()
         self._terminal_width_provider = terminal_width_provider
+        self._root_agent_id = root_agent_id
         # Reasoning streaming state
         self._reasoning_label_printed: bool = False
 
@@ -100,6 +104,17 @@ class CLIRenderer:
     def on_runtime_event(self, event: RuntimeEvent) -> None:
         """Render one typed runtime event after reducing shared state."""
         self._refresh_terminal_width()
+        if self._root_agent_id is None and isinstance(
+            event.payload, (ChatStarted, TurnStarted)
+        ):
+            self._root_agent_id = event.agent_id
+        if isinstance(event.payload, SubagentFinished) or (
+            self._root_agent_id is not None
+            and event.agent_id is not None
+            and event.agent_id != self._root_agent_id
+            and not isinstance(event.payload, (ApprovalRequested, ApprovalResolved))
+        ):
+            return
         was_seen = event.event_id in self.reducer.state.seen_event_ids
         changes = self.reducer.apply(event)
         if was_seen:
@@ -122,9 +137,7 @@ class CLIRenderer:
             self._render_tool_end(payload.tool_name, payload.outcome)
         elif isinstance(payload, ToolOutputDelta) and changes:
             if not self.activity.is_active:
-                cell = self.reducer.state.transcript.get(
-                    f"tool:{payload.tool_call_id}"
-                )
+                cell = self.reducer.state.transcript.get(f"tool:{payload.tool_call_id}")
                 tool_name = getattr(cell, "name", "tool")
                 self.activity.start("TOOL", tool_name, timed=True)
             self.activity.push_output(payload.text, stream=payload.stream)
@@ -153,9 +166,7 @@ class CLIRenderer:
                     f"clean {payload.file_path}", level="success", category="lsp"
                 )
         elif isinstance(payload, ApprovalRequested) and changes:
-            self.history.notice(
-                payload.title, level="warning", category="approval"
-            )
+            self.history.notice(payload.title, level="warning", category="approval")
         elif isinstance(payload, ApprovalResolved) and changes:
             status = "approved" if payload.approved else "denied"
             self.history.notice(
@@ -166,7 +177,10 @@ class CLIRenderer:
 
     def _render_runtime_notification(self, payload: NotificationRaised) -> None:
         level = payload.severity.lower()
-        if level in {"error", "warning"} or self.policy.verbosity is not Verbosity.COMPACT:
+        if (
+            level in {"error", "warning"}
+            or self.policy.verbosity is not Verbosity.COMPACT
+        ):
             self.history.notice(payload.message, level=level)
 
     def on_ui_event(self, event: UIEvent) -> None:
@@ -203,7 +217,11 @@ class CLIRenderer:
         if self._terminal_width_provider is None:
             return
         width = self._terminal_width_provider()
-        if isinstance(width, int) and 20 <= width <= 500 and width != self.console.width:
+        if (
+            isinstance(width, int)
+            and 20 <= width <= 500
+            and width != self.console.width
+        ):
             self.console.width = width
 
     def _render_token(self, token: str) -> None:
@@ -214,9 +232,7 @@ class CLIRenderer:
         self.activity.stop()
         self.stream.append(token)
 
-    def _render_reasoning(
-        self, token: str, display_mode: str | None = None
-    ) -> None:
+    def _render_reasoning(self, token: str, display_mode: str | None = None) -> None:
         """Render a streamed reasoning token.
 
         In *quiet* mode (default): prints ``🤔 Thinking...`` once, then
@@ -330,9 +346,7 @@ class CLIRenderer:
             category=event.kind.value,
         )
 
-    def _render_view_event(
-        self, payload: ViewEventPayload, event: UIEvent
-    ) -> bool:
+    def _render_view_event(self, payload: ViewEventPayload, event: UIEvent) -> bool:
         """Render known structured view events in the CLI."""
         view_type = payload.view_type
         if not view_type:

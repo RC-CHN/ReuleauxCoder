@@ -35,9 +35,12 @@ from prompt_toolkit.widgets import Frame
 from reuleauxcoder import __version__
 from reuleauxcoder.app.runtime.session_state import build_session_persistence_kwargs
 from reuleauxcoder.domain.runtime.events import (
+    ApprovalRequested,
+    ApprovalResolved,
     PlanUpdated,
     ProgressReported,
     RuntimeEvent,
+    SubagentJobChanged,
 )
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
@@ -152,8 +155,9 @@ class MiniTUIEventAdapter:
     def _apply_pending_event_locked(self, event: UIEvent) -> None:
         if isinstance(event.payload, RuntimeEventPayload):
             runtime = event.payload.event
-            self.transcript.apply(runtime)
             self.execution.apply(runtime)
+            if self._is_root_transcript_event(runtime):
+                self.transcript.apply(runtime)
             return
         if isinstance(event.payload, InteractionPromptPayload):
             request = event.payload.request
@@ -200,6 +204,18 @@ class MiniTUIEventAdapter:
                 level=event.level.value,
                 category=event.kind.value,
             )
+
+    def _is_root_transcript_event(self, event: RuntimeEvent) -> bool:
+        """Keep child internals observable without publishing them as chat."""
+        if isinstance(event.payload, SubagentJobChanged):
+            return False
+        if isinstance(event.payload, (ApprovalRequested, ApprovalResolved)):
+            return True
+        return (
+            self.root_agent_id is None
+            or event.agent_id is None
+            or event.agent_id == self.root_agent_id
+        )
 
     def append_user_command(self, text: str) -> None:
         with self._lock:
@@ -858,7 +874,11 @@ def _cell_fragments(cell, *, width: int = 100) -> list[tuple[str, str]]:
         style = "class:error" if cell.status.value == "failed" else "class:tool"
         text = f" {status}  {cell.name}"
         if cell.outcome is not None:
-            text += f" · {cell.outcome.summary}"
+            summary = cell.outcome.summary or _first_meaningful_line(
+                cell.outcome.ui_text(include_details=True)
+            )
+            if summary:
+                text += f" · {_clip(summary, 160)}"
         fragments = [(style, text + "\n")]
         for line in cell.output.splitlines()[-5:]:
             fragments.append(("class:muted", f" └ {line}\n"))
@@ -981,6 +1001,10 @@ def _fit_display(text: str, width: int) -> str:
         result.append(char)
         used += char_width
     return "".join(result) + "…"
+
+
+def _first_meaningful_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
 
 
 def _interaction_lines(request) -> list[str]:

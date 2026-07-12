@@ -5,6 +5,12 @@ from rich.console import Console
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
+from reuleauxcoder.domain.runtime.events import (
+    ApprovalRequested,
+    AssistantContentDelta,
+    RuntimeEvent,
+    SubagentJobChanged,
+)
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
@@ -79,6 +85,47 @@ def test_compact_notification_snapshot() -> None:
     assert console.export_text() == (
         " INFO  Loaded session\n OK  Saved session\n WARN  APPROVAL // Interrupted.\n"
     )
+
+
+def test_append_only_renderer_hides_child_internals_but_keeps_approval() -> None:
+    console = Console(record=True, width=80, color_system=None, force_terminal=False)
+    renderer = CLIRenderer(
+        view_registry=ViewRendererRegistry([]),
+        console_override=console,
+        root_agent_id="root",
+    )
+
+    renderer.on_runtime_event(
+        RuntimeEvent(
+            payload=AssistantContentDelta("private child output"),
+            agent_id="child-1",
+        )
+    )
+    renderer.on_runtime_event(
+        RuntimeEvent(
+            payload=SubagentJobChanged(
+                job_id="sj-1",
+                mode="explore",
+                task="private child task",
+                status="completed",
+            ),
+            agent_id="child-1",
+        )
+    )
+    renderer.on_runtime_event(
+        RuntimeEvent(
+            payload=ApprovalRequested(
+                request_id="approval-child",
+                title="Approve child shell",
+            ),
+            agent_id="child-1",
+        )
+    )
+
+    rendered = console.export_text()
+    assert "private child output" not in rendered
+    assert "private child task" not in rendered
+    assert "Approve child shell" in rendered
 
 
 @pytest.mark.parametrize(
