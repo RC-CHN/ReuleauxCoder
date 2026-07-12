@@ -54,6 +54,7 @@ class WorkerExecutionResult:
     guidance_request_id: str | None = None
     model_calls: int = 0
     killed: bool = False
+    usage_uncertain: bool = False
 
 
 class BrokeredWorkerTool(Tool):
@@ -694,18 +695,34 @@ def run_isolated_worker(
             messages=checkpoint.messages if checkpoint else [],
         )
     if cancel_event.is_set():
+        known = terminal or checkpoint
         return WorkerExecutionResult(
             status="killed" if process.exitcode not in {0, None} else "cancelled",
             summary="Subagent interrupted.",
-            messages=(terminal or checkpoint).messages if (terminal or checkpoint) else [],
+            messages=known.messages if known else [],
+            prompt_tokens=known.prompt_tokens if known else spec.initial_prompt_tokens,
+            completion_tokens=(
+                known.completion_tokens if known else spec.initial_completion_tokens
+            ),
+            tool_calls=known.tool_calls if known else spec.initial_tool_calls,
+            model_calls=known.model_calls if known else spec.initial_model_calls,
             killed=process.exitcode not in {0, None},
+            usage_uncertain=True,
         )
     if time.monotonic() >= deadline:
+        known = terminal or checkpoint
         return WorkerExecutionResult(
             status="timed_out",
             summary=f"Subagent exceeded timeout after {timeout_seconds}s.",
-            messages=(terminal or checkpoint).messages if (terminal or checkpoint) else [],
+            messages=known.messages if known else [],
+            prompt_tokens=known.prompt_tokens if known else spec.initial_prompt_tokens,
+            completion_tokens=(
+                known.completion_tokens if known else spec.initial_completion_tokens
+            ),
+            tool_calls=known.tool_calls if known else spec.initial_tool_calls,
+            model_calls=known.model_calls if known else spec.initial_model_calls,
             killed=True,
+            usage_uncertain=True,
         )
     return terminal or checkpoint or WorkerExecutionResult(
         status="failed",

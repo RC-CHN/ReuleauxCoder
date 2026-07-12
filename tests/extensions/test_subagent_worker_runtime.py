@@ -586,6 +586,8 @@ def test_manager_cancel_hard_kills_worker_stuck_in_provider_request(
 
     assert job is not None
     assert job.status in {"cancelled", "killed"}
+    assert job.cancellation_id == f"cancel_{job_id}_1"
+    assert job.usage_uncertain is True
     assert elapsed < 2.5
 
 

@@ -181,7 +181,11 @@ def test_wait_agent_timeout_does_not_touch_child_lifecycle(monkeypatch) -> None:
 
 
 def test_interrupt_agent_reports_only_observed_terminal_state(monkeypatch) -> None:
-    job = SimpleNamespace(status="cancelled")
+    job = SimpleNamespace(
+        status="cancelled",
+        cancellation_id="cancel_sj_1_1",
+        usage_uncertain=True,
+    )
     manager = SimpleNamespace(
         cancel_job=lambda _job_id: True,
         wait_job=lambda _job_id, timeout: job,
@@ -194,7 +198,13 @@ def test_interrupt_agent_reports_only_observed_terminal_state(monkeypatch) -> No
     outcome = _bind(InterruptAgentTool()).execute("sj_1")
 
     assert outcome.success
-    assert outcome.metadata == {"job_id": "sj_1", "status": "cancelled"}
+    assert outcome.metadata == {
+        "job_id": "sj_1",
+        "status": "cancelled",
+        "cancellation_id": "cancel_sj_1_1",
+        "usage_uncertain": True,
+    }
+    assert "cancellation_id=cancel_sj_1_1" in outcome.content
 
 
 class _OneResponseLLM:

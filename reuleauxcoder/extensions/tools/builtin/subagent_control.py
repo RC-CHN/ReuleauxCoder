@@ -259,18 +259,28 @@ class InterruptAgentTool(_RootSubagentTool):
                 raise ValueError("job does not exist or is already terminal")
             job = manager.wait_job(job_id, timeout=2.0)
             status = getattr(job, "status", "cancelling")
+            cancellation_id = getattr(job, "cancellation_id", None)
+            metadata = {
+                "job_id": job_id,
+                "status": status,
+                "cancellation_id": cancellation_id,
+                "usage_uncertain": bool(getattr(job, "usage_uncertain", False)),
+            }
             if status not in _TERMINAL:
                 return ToolOutcome(
                     status=ToolOutcomeStatus.FAILED,
                     summary=f"Cancellation still pending for {job_id}",
                     content=f"interrupt_agent · job_id={job_id} · status={status}",
                     error_kind=ToolErrorKind.EXECUTION,
-                    metadata={"job_id": job_id, "status": status},
+                    metadata=metadata,
                 )
             return ToolOutcome(
                 summary=f"Interrupted {job_id}",
-                content=f"interrupt_agent · job_id={job_id} · status={status}",
-                metadata={"job_id": job_id, "status": status},
+                content=(
+                    f"interrupt_agent · job_id={job_id} · status={status} · "
+                    f"cancellation_id={cancellation_id}"
+                ),
+                metadata=metadata,
             )
         except (TypeError, ValueError, RuntimeError) as error:
             return _invalid(str(error))

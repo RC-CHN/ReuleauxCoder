@@ -100,6 +100,8 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "model_profile_name": job.model_profile_name,
                 "auto_verify": job.auto_verify,
                 "agent_id": job.agent_id,
+                "cancellation_id": job.cancellation_id,
+                "usage_uncertain": job.usage_uncertain,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -284,6 +286,8 @@ class SubagentJob:
     model_profile_name: str | None = None
     auto_verify: bool = True
     agent_id: str | None = None
+    cancellation_id: str | None = None
+    usage_uncertain: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,6 +601,13 @@ class SubagentManager:
                         tracked.error = str(e)
                         tracked.status = "failed"
                     else:
+                        if isinstance(result, SubagentResult):
+                            tracked.structured_result = result
+                            tracked.prompt_tokens = result.prompt_tokens
+                            tracked.completion_tokens = result.completion_tokens
+                            tracked.tool_calls = result.tool_uses
+                            tracked.model_calls = result.model_calls
+                            tracked.usage_uncertain = result.usage_uncertain
                         if tracked.cancel_requested:
                             tracked.status = (
                                 result.status
@@ -871,6 +882,8 @@ class SubagentManager:
                 model_profile_name=payload.get("model_profile_name"),
                 auto_verify=bool(payload.get("auto_verify", True)),
                 agent_id=payload.get("agent_id") or f"sa_{job_id}",
+                cancellation_id=payload.get("cancellation_id"),
+                usage_uncertain=bool(payload.get("usage_uncertain", False)),
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -1049,6 +1062,13 @@ class SubagentManager:
                     job.finished_at = time.time()
                     job.last_activity_at = job.finished_at
                 else:
+                    if isinstance(result, SubagentResult):
+                        job.structured_result = result
+                        job.prompt_tokens = result.prompt_tokens
+                        job.completion_tokens = result.completion_tokens
+                        job.tool_calls = result.tool_uses
+                        job.model_calls = result.model_calls
+                        job.usage_uncertain = result.usage_uncertain
                     if job.cancel_requested:
                         job.status = "cancelled"
                         job.result = None
@@ -1599,6 +1619,8 @@ class SubagentManager:
                 return False
             job.cancel_requested = True
             job.cancellation_epoch += 1
+            job.cancellation_id = f"cancel_{job.id}_{job.cancellation_epoch}"
+            job.usage_uncertain = job.status not in {"queued", "blocked"}
             event.set()
             was_blocked = job.status == "blocked"
             job.status = "cancelled" if was_blocked else "cancelling"
@@ -2077,6 +2099,7 @@ def run_subagent_task(
             "failed",
             "indeterminate",
         },
+        usage_uncertain=execution.usage_uncertain,
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result
@@ -2154,6 +2177,7 @@ def _result_from_agent(
     job_id: str | None,
     parent_agent,
     partial: bool = False,
+    usage_uncertain: bool = False,
 ) -> SubagentResult:
     messages = list(getattr(sub, "messages", []))
     reported = _parse_delegated_final_response(summary)
@@ -2210,6 +2234,7 @@ def _result_from_agent(
         prompt_tokens=int(getattr(sub.state, "total_prompt_tokens", 0)),
         completion_tokens=int(getattr(sub.state, "total_completion_tokens", 0)),
         model_calls=int(getattr(sub.state, "total_model_calls", 0)),
+        usage_uncertain=usage_uncertain,
     )
     if job_id:
         root = (

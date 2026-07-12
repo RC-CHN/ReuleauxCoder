@@ -37,6 +37,7 @@ class SubagentResult:
     transcript_ref: str | None = None
     partial: bool = False
     worktree_path: str | None = None
+    usage_uncertain: bool = False
 
     def canonical_payload(self) -> dict:
         """Return the stable model-visible result without wall-clock noise."""
@@ -57,6 +58,7 @@ class SubagentResult:
             "transcript_ref": self.transcript_ref,
             "partial": self.partial,
             "worktree_path": self.worktree_path,
+            "usage_uncertain": self.usage_uncertain,
         }
 
     def content_hash(self) -> str:
