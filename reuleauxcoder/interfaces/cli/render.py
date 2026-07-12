@@ -1,8 +1,6 @@
 """CLI rendering - event-driven UI renderer."""
 
-from dataclasses import dataclass, field
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -31,6 +29,10 @@ from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
 from reuleauxcoder.interfaces.cli.history import CLIHistoryPresenter
 from reuleauxcoder.interfaces.cli.theme import CLITheme, DEFAULT_CLI_THEME
 from reuleauxcoder.interfaces.cli.startup import show_banner as show_banner
+from reuleauxcoder.interfaces.cli.streaming import (
+    CLIStreamPresenter,
+    find_committed_boundary,
+)
 from reuleauxcoder.interfaces.events import (
     ReasoningNoticePayload,
     InteractionPromptPayload,
@@ -53,85 +55,8 @@ from reuleauxcoder.interfaces.cli.interaction_presenter import (
     render_interaction_request,
 )
 
-if TYPE_CHECKING:
-    from markdown_it import MarkdownIt
-
 console = Console()
-
-# ------------------------------------------------------------------ markdown-it block-level token types that are self-closing
-# (no separate open/close tokens).  Code fences ("fence") are the key
-# one — treating them as atomic blocks prevents streaming code-block
-# content from being split across render calls when a double-newline
-# appears inside the fence.
-_SELF_CLOSING_BLOCKS: frozenset[str] = frozenset(
-    ("fence", "code_block", "hr", "html_block")
-)
-
-_parser: "MarkdownIt | None" = None
-
-
-def _find_committed_boundary(text: str) -> int | None:
-    """Return the character offset up to which *text* can be safely committed.
-
-    Parses *text* into block-level tokens via ``markdown-it-py`` and
-    confirms every block except the last one (which may be incomplete
-    due to streaming truncation).  Returns ``None`` when there are
-    fewer than 2 blocks (nothing confirmed yet).
-    """
-    global _parser
-    if _parser is None:
-        from markdown_it import MarkdownIt
-
-        _parser = MarkdownIt().enable("strikethrough").enable("table")
-
-    tokens = _parser.parse(text)
-
-    # Collect only top-level block boundaries by tracking nesting depth.
-    # Nested tokens (e.g. list_item_open inside bullet_list_open) are not
-    # independent blocks — otherwise lists and blockquotes get split.
-    block_maps: list[list[int]] = []
-    depth = 0
-    for t in tokens:
-        if t.nesting == 1:
-            if depth == 0 and t.map is not None:
-                block_maps.append(t.map)
-            depth += 1
-        elif t.nesting == -1:
-            depth -= 1
-        elif depth == 0 and t.type in _SELF_CLOSING_BLOCKS and t.map is not None:
-            block_maps.append(t.map)
-
-    if len(block_maps) < 2:
-        return None
-
-    # Convert end-line number of the *second-to-last* block to a char offset.
-    target_line = block_maps[-2][1]
-    offset = 0
-    for _ in range(target_line):
-        offset = text.index("\n", offset) + 1
-    return offset
-
-
-@dataclass
-class _ContentBlock:
-    kind: Literal["text"] = "text"
-    text_parts: list[str] = field(default_factory=list)
-    rendered_length: int = 0
-
-    def append(self, text: str) -> None:
-        self.text_parts.append(text)
-
-    @property
-    def text(self) -> str:
-        return "".join(self.text_parts)
-
-    @property
-    def pending_text(self) -> str:
-        return self.text[self.rendered_length :]
-
-    @property
-    def is_empty(self) -> bool:
-        return not self.text_parts
+_find_committed_boundary = find_committed_boundary
 
 
 class CLIRenderer:
@@ -148,11 +73,14 @@ class CLIRenderer:
         terminal_width_provider: Callable[[], int | None] | None = None,
     ):
         self.console = console_override or console
-        self._active_content_block: _ContentBlock | None = None
         self.reducer = reducer or PresentationReducer(policy=policy)
         self.policy = self.reducer.policy
         self.theme = theme
         self.history = CLIHistoryPresenter(self.console, self.policy, theme)
+        self.stream = CLIStreamPresenter(
+            lambda text: self.render_content_markdown(text),
+            lambda text: self.render_plain_text(text),
+        )
         self.view_registry = view_registry or create_cli_view_registry()
         self._terminal_width_provider = terminal_width_provider
         # Reasoning streaming state
@@ -160,7 +88,7 @@ class CLIRenderer:
 
     def close(self) -> None:
         """Release terminal handlers/resources held by the renderer."""
-        self._active_content_block = None
+        self.stream.reset()
         self.reducer.state.transcript.clear()
         self.reducer.state.seen_event_ids.clear()
         self.reducer.state.session_generations.clear()
@@ -273,10 +201,7 @@ class CLIRenderer:
         # Reset reasoning label state when content begins
         if self._reasoning_label_printed:
             self._reasoning_label_printed = False
-        if self._active_content_block is None:
-            self._active_content_block = _ContentBlock()
-        self._active_content_block.append(token)
-        self._flush_completed_paragraphs()
+        self.stream.append(token)
 
     def _render_reasoning(
         self, token: str, display_mode: str | None = None
@@ -309,52 +234,13 @@ class CLIRenderer:
             self._reasoning_label_printed = True
         self.console.print(token, style=self.theme.style(DisplayTone.MUTED), end="")
 
-    def _flush_completed_paragraphs(self) -> None:
-        """Render completed blocks from the active content block.
-
-        Uses markdown-it block-token parsing to find a safe commit
-        boundary — all blocks except the last (potentially incomplete)
-        one are rendered.  This prevents orphaned code fences (empty
-        dark blocks) when a double-newline inside a fenced code block
-        would otherwise split it across two render calls.
-        """
-        block = self._active_content_block
-        if block is None:
-            return
-
-        pending = block.pending_text
-        if not pending:
-            return
-
-        boundary = _find_committed_boundary(pending)
-        if boundary is None:
-            return
-
-        flush_text = pending[:boundary]
-        if flush_text:
-            self.render_content_markdown(flush_text)
-            block.rendered_length += len(flush_text)
-
-    def _flush_remaining_content(self) -> None:
-        """Render any remaining buffered content from the active block."""
-        block = self._active_content_block
-        if block is None:
-            return
-
-        pending = block.pending_text
-        if pending:
-            self.render_content_markdown(pending)
-            block.rendered_length = len(block.text)
-
     def _close_active_content_block(self) -> None:
         """Finalize the active content block before structured output."""
-        block = self._active_content_block
-        if block is None:
-            return
-        self._flush_remaining_content()
-        if not block.is_empty and not block.text.endswith("\n"):
-            self.render_plain_text("\n")
-        self._active_content_block = None
+        self.stream.close()
+
+    def _flush_remaining_content(self) -> None:
+        """Compatibility hook for adapters finalizing a partial stream."""
+        self.stream.flush_remaining()
 
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
@@ -446,13 +332,12 @@ class CLIRenderer:
 
     def finalize_response(self, response: str, *, render_response: bool = True) -> None:
         """Finalize response rendering for agent output."""
-        if self._active_content_block is not None:
-            self._close_active_content_block()
-        elif response and render_response:
-            block = _ContentBlock()
-            block.append(response)
-            block.rendered_length = len(response)
-            self.render_content_markdown(response)
+        self.stream.finalize(response, render_response=render_response)
+
+    @property
+    def _active_content_block(self):
+        """Compatibility view for registered views and downstream adapters."""
+        return self.stream.active_block
 
     def render_content_markdown(self, text: str) -> None:
         """Render assistant content as markdown, falling back to plain text."""
@@ -468,27 +353,6 @@ class CLIRenderer:
     def render_markdown(self, text: str) -> None:
         """Backward-compatible plain text output hook used by tests."""
         self.render_plain_text(text)
-
-
-def brief(kwargs: dict, maxlen: int = 80) -> str:
-    """Brief representation of kwargs for display."""
-    if not kwargs:
-        return ""
-    parts: list[str] = []
-    for key, value in kwargs.items():
-        if isinstance(value, str) and len(repr(value)) > 42:
-            value_text = repr(value[:36] + "…")
-        else:
-            value_text = repr(value)
-            if len(value_text) > 42:
-                value_text = value_text[:41] + "…"
-        part = f"{key}={value_text}"
-        candidate = ", ".join([*parts, part])
-        if len(candidate) > maxlen:
-            parts.append("…")
-            break
-        parts.append(part)
-    return ", ".join(parts)
 
 
 def show_error(text: str) -> None:
