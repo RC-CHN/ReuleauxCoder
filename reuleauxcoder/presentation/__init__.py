@@ -24,11 +24,17 @@ from reuleauxcoder.presentation.reducer import (
     PresentationReducer,
     RuntimeViewState,
 )
+from reuleauxcoder.presentation.semantics import (
+    DisplayTone,
+    ToolInvocationDisplay,
+    describe_tool_invocation,
+)
 
 __all__ = [
     "ApprovalCell",
     "AssistantCell",
     "DiagnosticCell",
+    "DisplayTone",
     "DiffCell",
     "NoticeCell",
     "PresentationChange",
@@ -42,6 +48,8 @@ __all__ = [
     "SubagentCell",
     "ToolCell",
     "ToolCellStatus",
+    "ToolInvocationDisplay",
     "TranscriptModel",
     "Verbosity",
+    "describe_tool_invocation",
 ]
