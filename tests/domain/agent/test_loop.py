@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.loop import AgentLoop
+from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
 from reuleauxcoder.domain.plan import PlanState, ProgressState
 from reuleauxcoder.services.prompt.builder import system_prompt
 
@@ -83,3 +85,44 @@ def test_agent_loop_runtime_working_directory_override() -> None:
     messages = loop._full_messages()
 
     assert '"working_directory":"/tmp/remote-workspace"' in messages[-1]["content"]
+
+
+class _BudgetLLM:
+    model = "budget-model"
+    max_tokens = 4096
+    last_dispatched_request = None
+
+    def __init__(self, response: LLMResponse | None = None) -> None:
+        self.response = response or LLMResponse(content="done")
+        self.calls = []
+
+    def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+def test_subagent_request_caps_output_by_remaining_total_budget() -> None:
+    llm = _BudgetLLM()
+    agent = Agent(llm=llm, tools=[], max_total_tokens=1_000)
+    agent.subagent_depth = 1
+    agent.state.total_prompt_tokens = 600
+    agent.state.total_completion_tokens = 100
+    agent.context.estimate_request_tokens = lambda *_args: 120
+
+    assert agent._loop.run() == "done"
+    assert llm.calls[0]["max_output_tokens"] == 180
+
+
+def test_subagent_round_limit_never_dispatches_unbudgeted_summary_request() -> None:
+    llm = _BudgetLLM(
+        LLMResponse(
+            tool_calls=[ToolCall(id="missing", name="unknown", arguments={})]
+        )
+    )
+    agent = Agent(llm=llm, tools=[], max_rounds=1)
+    agent.subagent_depth = 1
+
+    result = agent._loop.run()
+
+    assert result == "(reached maximum tool-call rounds)"
+    assert len(llm.calls) == 1

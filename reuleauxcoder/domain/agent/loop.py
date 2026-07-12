@@ -428,6 +428,20 @@ class AgentLoop:
             local_history_estimate = self.agent.context.get_context_tokens(
                 self.agent.state.messages
             )
+            max_output_tokens = None
+            if self.agent.max_total_tokens is not None:
+                remaining = (
+                    self.agent.max_total_tokens
+                    - self.agent.state.total_prompt_tokens
+                    - self.agent.state.total_completion_tokens
+                    - local_request_estimate
+                )
+                if remaining <= 0:
+                    return "(sub-agent token budget exhausted before request)"
+                max_output_tokens = min(
+                    int(getattr(self.agent.llm, "max_tokens", remaining)),
+                    remaining,
+                )
             resp = self.agent.llm.chat(
                 messages=request_messages,
                 tools=request_tools,
@@ -444,6 +458,7 @@ class AgentLoop:
                     "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
                 },
                 cancellation_event=self.agent._stop_event,
+                max_output_tokens=max_output_tokens,
             )
             self.agent.state.total_model_calls += 1
             dispatched = getattr(
@@ -625,6 +640,9 @@ class AgentLoop:
             # Flush any sub-agent injections buffered during tool execution.
             self.agent._flush_pending_subagent_injections()
             self.agent._inject_completed_subagent_jobs()
+
+        if getattr(self.agent, "subagent_depth", 0) > 0:
+            return "(reached maximum tool-call rounds)"
 
         summary_prompt = (
             "Maximum tool-call rounds reached. Do not call any tools. "
