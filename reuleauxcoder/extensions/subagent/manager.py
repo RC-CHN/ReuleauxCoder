@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections import deque
 from pathlib import Path
 import hashlib
@@ -539,6 +539,8 @@ class SubagentManager:
                 if active_resume_reference
                 else ()
             )
+            if active_resume_reference:
+                resume_directives = (*resume_directives, _resume_workspace_notice())
             try:
                 return run_subagent_task(
                     parent_agent=parent_agent,
@@ -1003,6 +1005,7 @@ class SubagentManager:
             directives = tuple(
                 directive.model_text() for directive in self.drain_messages(job_id)
             )
+            directives = (*directives, _resume_workspace_notice())
             try:
                 return run_subagent_task(
                     parent_agent=parent_agent,
@@ -1776,37 +1779,9 @@ class SubagentManager:
                     if job.injected_to_parent:
                         continue
                     job.injected_to_parent = True
-                    drained.append(
-                        SubagentJob(
-                            id=job.id,
-                            mode=job.mode,
-                            task=job.task,
-                            status=job.status,
-                            created_at=job.created_at,
-                            parent_agent_id=job.parent_agent_id,
-                            parent_session_id=job.parent_session_id,
-                            started_at=job.started_at,
-                            finished_at=job.finished_at,
-                            timeout_seconds=job.timeout_seconds,
-                            result=job.result,
-                            error=job.error,
-                            injected_to_parent=False,
-                            generation=job.generation,
-                            cancel_requested=job.cancel_requested,
-                            parent_job_id=job.parent_job_id,
-                            depth=job.depth,
-                            context_mode=job.context_mode,
-                            structured_result=job.structured_result,
-                            progress=job.progress,
-                            worktree_path=job.worktree_path,
-                            max_tool_calls=job.max_tool_calls,
-                            max_tokens=job.max_tokens,
-                            completion_seq=job.completion_seq,
-                            verification_job_id=job.verification_job_id,
-                            verification_for=job.verification_for,
-                            working_directory=job.working_directory,
-                        )
-                    )
+                    # Keep the drained projection lossless as the job schema grows.
+                    # Only the copy's injection marker differs from the registry.
+                    drained.append(replace(job, injected_to_parent=False))
                 finally:
                     if parent_state_lock is not None:
                         parent_state_lock.release()
@@ -2152,6 +2127,16 @@ def build_delegated_prompt(
         ]
     )
     return "\n\n".join(sections)
+
+
+def _resume_workspace_notice() -> str:
+    return (
+        "[Resume workspace notice]\n"
+        "The workspace and parent-owned LSP document generations may have changed "
+        "while this worker was parked. Re-read every relevant file or symbol before "
+        "relying on observations from the checkpoint. Guidance is not tool approval.\n"
+        "[/Resume workspace notice]"
+    )
 
 
 def _coerce_subagent_result(value: object) -> SubagentResult:

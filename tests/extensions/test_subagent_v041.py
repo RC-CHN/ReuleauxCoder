@@ -190,6 +190,7 @@ def test_directive_arriving_before_park_completion_resumes_without_loss(
     assert len(calls) == 2
     assert calls[1]["resume_directives"]
     assert "continue with option A" in calls[1]["resume_directives"][0]
+    assert "Re-read every relevant file or symbol" in calls[1]["resume_directives"][-1]
     manager.shutdown()
 
 

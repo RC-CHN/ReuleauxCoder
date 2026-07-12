@@ -685,6 +685,12 @@ def test_guidance_parks_and_resumes_same_job_with_stable_replay_prefix(
         and "Preserve the public v1 API" in str(message.get("content") or "")
         for message in resumed_messages
     )
+    assert any(
+        message.get("role") == "system"
+        and "Re-read every relevant file or symbol"
+        in str(message.get("content") or "")
+        for message in resumed_messages
+    )
 
 
 def test_blocked_job_can_be_cancelled_without_reviving(monkeypatch) -> None:

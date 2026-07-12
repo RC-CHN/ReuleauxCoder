@@ -542,6 +542,7 @@ def test_restored_blocked_job_resumes_same_identity_after_guidance(
     assert len(calls) == 1
     assert calls[0]["resume_reference"] == str(checkpoint)
     assert "Choose the compatible API" in calls[0]["resume_directives"][0]
+    assert "parent-owned LSP document generations" in calls[0]["resume_directives"][-1]
     manager.shutdown()
 
 
