@@ -3,9 +3,11 @@ from __future__ import annotations
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import time
 
 from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
@@ -16,6 +18,7 @@ from reuleauxcoder.extensions.subagent.worker_runtime import (
     ParentToolBroker,
     run_isolated_worker,
 )
+from reuleauxcoder.domain.runtime import tool_outcome_from_dict
 
 
 class _UnusedLLM:
@@ -89,6 +92,38 @@ def test_parent_tool_broker_replays_committed_call_without_reexecution() -> None
     assert len(calls) == 1
     assert conflict.success is False
     assert "reused with a different request" in conflict.content
+
+
+def test_parent_tool_broker_archives_large_ipc_outcome_by_content_hash(
+    tmp_path,
+) -> None:
+    cancel = threading.Event()
+    broker_agent = Agent(llm=_UnusedLLM(), tools=[], agent_id="broker-archive")
+    broker_agent.runtime_working_directory = str(tmp_path)
+    broker = ParentToolBroker(
+        broker_agent,
+        cancellation_event=cancel,
+        event_sink=None,
+    )
+    source = "line of full output\n" * 4_000
+    payload = broker.ipc_tool_result(
+        ToolOutcome(
+            summary="large output",
+            content=source,
+            model_content="bounded model view",
+        )
+    )
+
+    assert "outcome_ref" in payload
+    reference = payload["outcome_ref"]
+    archive = Path(reference["path"])
+    assert archive.exists()
+    assert archive.stat().st_size == reference["size_bytes"]
+    archived_outcome = json.loads(archive.read_text(encoding="utf-8"))
+    assert archived_outcome["content"] == source
+    projected = tool_outcome_from_dict(payload["outcome"])
+    assert projected.content is None
+    assert projected.model_text == "bounded model view"
 
 
 class _StreamingHandler(BaseHTTPRequestHandler):

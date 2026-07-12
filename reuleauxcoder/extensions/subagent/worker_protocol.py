@@ -29,6 +29,27 @@ class WorkerToolSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolResultRef:
+    path: str
+    checksum_sha256: str
+    size_bytes: int
+    model_view_hash: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return _json_round_trip(asdict(self))
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolResultRef":
+        values = _require_object(data, "tool result ref")
+        return cls(
+            path=_required_str(values, "path"),
+            checksum_sha256=_required_str(values, "checksum_sha256"),
+            size_bytes=_required_int(values, "size_bytes"),
+            model_view_hash=_required_str(values, "model_view_hash"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkerSpec:
     job_id: str
     agent_id: str

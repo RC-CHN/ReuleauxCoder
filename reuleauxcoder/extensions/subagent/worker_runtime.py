@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
 import json
 import multiprocessing
 from multiprocessing.connection import Connection
+from pathlib import Path
 from queue import Empty, Queue
 import threading
 import time
@@ -14,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
+    ToolArchiveReference,
     ToolOutcome,
     ToolOutcomeStatus,
 )
@@ -30,6 +33,7 @@ from reuleauxcoder.extensions.subagent.worker_protocol import (
     WorkerEnvelope,
     WorkerSpec,
     WorkerToolSpec,
+    ToolResultRef,
 )
 from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.services.llm.client import LLM
@@ -139,6 +143,13 @@ class WorkerIPCClient:
                     outcome = tool_outcome_from_dict(
                         _required_object(envelope.payload.get("outcome"), "outcome")
                     )
+                    if envelope.payload.get("outcome_ref") is not None:
+                        reference = ToolResultRef.from_dict(
+                            _required_object(
+                                envelope.payload.get("outcome_ref"), "outcome_ref"
+                            )
+                        )
+                        _validate_tool_result_ref(reference, outcome)
                     with self._state_lock:
                         self._tool_results[call_id] = outcome
                         self._state_lock.notify_all()
@@ -236,6 +247,58 @@ class ParentToolBroker:
             AgentEventType.APPROVAL_RESOLVED,
         } and self.event_sink is not None:
             self.event_sink(event)
+
+    def ipc_tool_result(self, outcome: ToolOutcome) -> dict[str, Any]:
+        """Inline small outcomes; archive large source facts by content hash."""
+        serialized = tool_outcome_to_dict(outcome)
+        encoded = json.dumps(
+            serialized,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded) <= 32_768:
+            return {"outcome": serialized}
+
+        checksum = hashlib.sha256(encoded).hexdigest()
+        root = Path(
+            getattr(self.agent, "runtime_working_directory", None) or Path.cwd()
+        )
+        directory = root / ".rcoder" / "subagents" / "tool-results"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{checksum}.json"
+        if not path.exists():
+            temporary = path.with_suffix(f".{time.time_ns()}.tmp")
+            temporary.write_bytes(encoded)
+            temporary.replace(path)
+        archive = ToolArchiveReference(
+            path=str(path),
+            media_type="application/json",
+            checksum_sha256=checksum,
+            size_bytes=len(encoded),
+        )
+        projection = replace(
+            outcome,
+            content=None,
+            stdout="",
+            stderr="",
+            diff=None,
+            diagnostics=(),
+            archive_reference=archive,
+            model_content=outcome.model_text,
+        )
+        reference = ToolResultRef(
+            path=str(path),
+            checksum_sha256=checksum,
+            size_bytes=len(encoded),
+            model_view_hash=hashlib.sha256(
+                projection.model_text.encode("utf-8")
+            ).hexdigest(),
+        )
+        return {
+            "outcome": tool_outcome_to_dict(projection),
+            "outcome_ref": reference.to_dict(),
+        }
 
 
 def worker_process_main(spec_data: dict[str, Any], connection: Connection, cancel) -> None:
@@ -453,7 +516,7 @@ def run_isolated_worker(
                             "tool_result",
                             {
                                 "call_id": call_id,
-                                "outcome": tool_outcome_to_dict(outcome),
+                                **broker.ipc_tool_result(outcome),
                             },
                         )
 
@@ -567,3 +630,19 @@ def _required_object(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise TypeError(f"{label} must be an object")
     return dict(value)
+
+
+def _validate_tool_result_ref(
+    reference: ToolResultRef, outcome: ToolOutcome
+) -> None:
+    path = Path(reference.path)
+    payload = path.read_bytes()
+    if len(payload) != reference.size_bytes:
+        raise ValueError("tool result archive size mismatch")
+    if hashlib.sha256(payload).hexdigest() != reference.checksum_sha256:
+        raise ValueError("tool result archive checksum mismatch")
+    if (
+        hashlib.sha256(outcome.model_text.encode("utf-8")).hexdigest()
+        != reference.model_view_hash
+    ):
+        raise ValueError("tool result model view checksum mismatch")
