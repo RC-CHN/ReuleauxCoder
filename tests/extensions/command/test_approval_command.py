@@ -15,6 +15,8 @@ from reuleauxcoder.extensions.command.builtin.approval import (
     _handle_set_approval_rule,
     _handle_set_global_approval_rule,
 )
+from reuleauxcoder.infrastructure.yaml.loader import load_yaml_config
+from reuleauxcoder.services.config.loader import ConfigLoader
 
 
 def _build_ctx() -> SimpleNamespace:
@@ -82,7 +84,15 @@ def test_set_global_approval_rule_updates_config_and_runtime(monkeypatch) -> Non
     )
 
 
-def test_set_global_approval_rule_replaces_same_target() -> None:
+def test_set_global_approval_rule_replaces_same_target(
+    tmp_path, monkeypatch
+) -> None:
+    workspace_config = tmp_path / ".rcoder" / "config.yaml"
+    monkeypatch.setattr(
+        ConfigLoader,
+        "WORKSPACE_CONFIG_PATH",
+        workspace_config,
+    )
     ctx = _build_ctx()
     ctx.config.approval.rules = [ApprovalRuleConfig(tool_name="shell", action="deny")]
 
@@ -93,4 +103,7 @@ def test_set_global_approval_rule_replaces_same_target() -> None:
 
     assert [(rule.tool_name, rule.action) for rule in ctx.config.approval.rules] == [
         ("shell", "allow")
+    ]
+    assert load_yaml_config(workspace_config)["approval"]["rules"] == [
+        {"tool_name": "shell", "action": "allow"}
     ]
