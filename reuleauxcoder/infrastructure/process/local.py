@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -40,35 +41,77 @@ class LocalProcessPort:
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
             "text": True,
+            "errors": "replace",
+            "bufsize": 1,
         }
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
         process = subprocess.Popen(args, **kwargs)
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        chunk_queue: queue.Queue[ProcessChunk] = queue.Queue()
+
+        def read_stream(pipe, stream: str, parts: list[str]) -> None:
+            try:
+                for chunk in iter(pipe.readline, ""):
+                    parts.append(chunk)
+                    chunk_queue.put(ProcessChunk(stream, chunk))
+            finally:
+                pipe.close()
+
+        readers = [
+            threading.Thread(
+                target=read_stream,
+                args=(process.stdout, "stdout", stdout_parts),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=read_stream,
+                args=(process.stderr, "stderr", stderr_parts),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+
+        def drain_chunks() -> None:
+            while True:
+                try:
+                    chunk = chunk_queue.get_nowait()
+                except queue.Empty:
+                    return
+                if stream_handler is not None:
+                    stream_handler(chunk)
+
+        def finish_result(**state) -> ProcessResult:
+            for reader in readers:
+                reader.join(timeout=1.0)
+            drain_chunks()
+            return ProcessResult(
+                stdout="".join(stdout_parts),
+                stderr="".join(stderr_parts),
+                exit_code=process.returncode,
+                **state,
+            )
+
         deadline = time.monotonic() + timeout
         while True:
+            drain_chunks()
             if cancellation_event is not None and cancellation_event.is_set():
                 self._terminate_process_tree(process)
-                return ProcessResult(cancelled=True)
+                return finish_result(cancelled=True)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._terminate_process_tree(process)
-                return ProcessResult(timed_out=True)
-            try:
-                stdout, stderr = process.communicate(timeout=min(0.1, remaining))
-                if stream_handler is not None:
-                    if stdout:
-                        stream_handler(ProcessChunk("stdout", stdout))
-                    if stderr:
-                        stream_handler(ProcessChunk("stderr", stderr))
-                return ProcessResult(
-                    stdout=stdout,
-                    stderr=stderr,
-                    exit_code=process.returncode,
-                )
-            except subprocess.TimeoutExpired:
-                continue
+                return finish_result(timed_out=True)
+            if process.poll() is not None:
+                return finish_result()
+            if cancellation_event is not None:
+                cancellation_event.wait(timeout=min(0.05, remaining))
+            else:
+                time.sleep(min(0.05, remaining))
 
     @staticmethod
     def _terminate_process_tree(process: subprocess.Popen) -> None:

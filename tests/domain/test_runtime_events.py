@@ -10,6 +10,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
     ToolTruncation,
 )
 from reuleauxcoder.domain.runtime.events import (
@@ -20,6 +22,7 @@ from reuleauxcoder.domain.runtime.events import (
     RuntimeEvent,
     ToolCallFinished,
     ToolCallStarted,
+    ToolOutputDelta,
     TurnFinished,
     TurnStarted,
     agent_event_to_runtime_event,
@@ -90,6 +93,19 @@ def test_tool_end_adapter_preserves_full_structured_outcome() -> None:
     assert runtime.payload.outcome.success is False
 
 
+def test_tool_output_adapter_preserves_stream_and_correlation() -> None:
+    runtime = agent_event_to_runtime_event(
+        AgentEvent.tool_output_delta(
+            "shell", "latest\n", stream="stderr", tool_call_id="call-stream"
+        )
+    )
+
+    assert isinstance(runtime.payload, ToolOutputDelta)
+    assert runtime.payload.tool_call_id == "call-stream"
+    assert runtime.payload.stream == "stderr"
+    assert runtime.payload.text == "latest\n"
+
+
 def test_legacy_tool_event_without_call_id_gets_stable_event_fallback() -> None:
     legacy = AgentEvent.tool_call_start("shell", {})
 
@@ -149,6 +165,9 @@ def test_runtime_event_json_round_trip_preserves_structured_tool_outcome() -> No
                 metadata={"attempt": 2, "labels": ["lsp"]},
                 error_kind=ToolErrorKind.EXECUTION,
                 model_content="bounded",
+                retention_hint=ToolRetentionHint(
+                    strategy=ToolRetentionStrategy.TAIL
+                ),
             ),
         ),
         event_id="event-1",

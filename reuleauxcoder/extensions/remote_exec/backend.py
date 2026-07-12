@@ -12,6 +12,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
 )
 from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
@@ -123,7 +125,13 @@ class RemoteRelayToolBackend(ToolBackend):
             timeout_sec=timeout,
         )
 
-        stream_handler = self._build_stream_handler(tool_name)
+        downstream_stream_handler = self._build_stream_handler(tool_name)
+        captured = {"stdout": [], "stderr": []}
+
+        def stream_handler(chunk: ToolStreamChunk) -> None:
+            captured.setdefault(chunk.chunk_type, []).append(chunk.data)
+            if downstream_stream_handler is not None:
+                downstream_stream_handler(chunk)
 
         try:
             result = self.relay_server.send_exec_request(
@@ -135,6 +143,21 @@ class RemoteRelayToolBackend(ToolBackend):
         except PeerNotFoundError:
             return _remote_failure(f"Error: peer '{peer_id}' is not online")
         except RemoteExecError as e:
+            if e.code == "REMOTE_TIMEOUT" and tool_name == "shell":
+                return ToolOutcome(
+                    status=ToolOutcomeStatus.TIMED_OUT,
+                    content=(
+                        f"[system] Remote command timed out after {timeout}s; "
+                        "output captured until transport timeout."
+                    ),
+                    stdout="".join(captured["stdout"]).strip(),
+                    stderr="".join(captured["stderr"]).strip(),
+                    error_kind=ToolErrorKind.INTERRUPTED,
+                    metadata={"remote_error_code": e.code},
+                    retention_hint=ToolRetentionHint(
+                        strategy=ToolRetentionStrategy.TAIL
+                    ),
+                )
             return _remote_failure(
                 f"Error [{e.code}]: {e.message}", metadata={"remote_error_code": e.code}
             )

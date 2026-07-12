@@ -17,6 +17,7 @@ class AgentEventType(Enum):
     STREAM_TOKEN = "stream_token"
     STREAM_REASONING = "stream_reasoning"
     TOOL_CALL_START = "tool_call_start"
+    TOOL_OUTPUT_DELTA = "tool_output_delta"
     TOOL_CALL_END = "tool_call_end"
     SUBAGENT_COMPLETED = "subagent_completed"
     COMPRESSION_START = "compression_start"
@@ -102,6 +103,22 @@ class AgentEvent:
             tool_result=result,
             tool_success=effective_outcome.success,
             tool_outcome=effective_outcome,
+        )
+
+    @classmethod
+    def tool_output_delta(
+        cls,
+        tool_name: str,
+        text: str,
+        *,
+        stream: str = "stdout",
+        tool_call_id: str | None = None,
+    ) -> "AgentEvent":
+        return cls(
+            event_type=AgentEventType.TOOL_OUTPUT_DELTA,
+            correlation_id=tool_call_id,
+            tool_name=tool_name,
+            data={"text": text, "stream": stream},
         )
 
     @classmethod

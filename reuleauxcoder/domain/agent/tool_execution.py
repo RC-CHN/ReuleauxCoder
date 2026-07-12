@@ -261,7 +261,31 @@ class ToolExecutor:
             return message
 
         try:
-            raw_result = tool.execute(**tool_call.arguments)
+            backend = getattr(tool, "backend", None)
+            execution_context = getattr(backend, "context", None)
+            previous_stream_handler = getattr(
+                execution_context, "remote_stream_handler", None
+            )
+
+            def stream_handler(tool_name, chunk) -> None:
+                self.agent._emit_event(
+                    AgentEvent.tool_output_delta(
+                        tool_name,
+                        str(getattr(chunk, "data", "")),
+                        stream=str(getattr(chunk, "chunk_type", "stdout")),
+                        tool_call_id=tc.id,
+                    )
+                )
+                if callable(previous_stream_handler):
+                    previous_stream_handler(tool_name, chunk)
+
+            if execution_context is not None:
+                execution_context.remote_stream_handler = stream_handler
+            try:
+                raw_result = tool.execute(**tool_call.arguments)
+            finally:
+                if execution_context is not None:
+                    execution_context.remote_stream_handler = previous_stream_handler
             outcome = (
                 raw_result
                 if isinstance(raw_result, ToolOutcome)

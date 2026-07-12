@@ -347,6 +347,12 @@ def agent_event_to_runtime_event(
             tool_name=event.tool_name or "unknown_tool",
             arguments=dict(event.tool_args or {}),
         )
+    elif event.event_type is AgentEventType.TOOL_OUTPUT_DELTA:
+        payload = ToolOutputDelta(
+            tool_call_id=_required_correlation_id(event),
+            text=str(event.data.get("text", "")),
+            stream=str(event.data.get("stream", "stdout")),
+        )
     elif event.event_type is AgentEventType.TOOL_CALL_END:
         outcome = event.tool_outcome or ToolOutcome.from_legacy(
             event.tool_result or "", success=event.tool_success is not False

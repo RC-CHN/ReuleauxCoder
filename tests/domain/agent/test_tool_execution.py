@@ -11,8 +11,10 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.approval import ApprovalDecision
 from reuleauxcoder.domain.hooks.types import GuardDecision
 from reuleauxcoder.domain.llm.models import ToolCall
+from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
+from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 
 
@@ -272,3 +274,33 @@ def test_write_outcome_suppresses_identical_human_reviewed_diff(tmp_path) -> Non
     )
 
     assert agent.events[-1].tool_outcome.metadata["diff_reviewed"] is True
+
+
+def test_shell_process_chunks_are_published_without_changing_full_outcome(
+    tmp_path,
+) -> None:
+    class StreamingProcess:
+        def run(self, command, *, stream_handler, **kwargs):  # noqa: ARG002
+            stream_handler(ProcessChunk("stdout", "first\n"))
+            stream_handler(ProcessChunk("stdout", "last\n"))
+            return ProcessResult(stdout="first\nlast\n", exit_code=0)
+
+    tool = ShellTool(
+        LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path)),
+            process=StreamingProcess(),
+        )
+    )
+    agent = _AgentStub(tool)
+
+    ToolExecutor(agent).execute(
+        ToolCall(id="streaming", name="shell", arguments={"command": "demo"})
+    )
+
+    chunks = [
+        event.data["text"]
+        for event in agent.events
+        if event.event_type.value == "tool_output_delta"
+    ]
+    assert chunks == ["first\n", "last\n"]
+    assert agent.events[-1].tool_outcome.model_text == "first\nlast"
