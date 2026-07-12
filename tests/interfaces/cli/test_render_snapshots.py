@@ -208,6 +208,59 @@ def test_compact_tool_error_is_a_single_line_snapshot() -> None:
     assert console.export_text() == " FAIL  shell  permission denied\n"
 
 
+def test_unreviewed_diff_uses_shared_forge_review_frame() -> None:
+    from reuleauxcoder.domain.agent.tool_outcome import ToolDiff
+
+    console = Console(record=True, width=80, color_system=None, force_terminal=False)
+    renderer = CLIRenderer(
+        view_registry=ViewRendererRegistry([]), console_override=console
+    )
+    outcome = ToolOutcome(
+        summary="Edited demo.txt",
+        diff=ToolDiff(path="demo.txt", unified="--- a/demo\n+++ b/demo\n-old\n+new"),
+        metadata={"operation": "edit", "show_diff_by_default": True},
+    )
+
+    render_agent_event(
+        renderer,
+        AgentEvent.tool_call_end(
+            "edit_file", outcome.model_text, tool_call_id="edit", outcome=outcome
+        ),
+    )
+
+    output = console.export_text()
+    assert "EDIT RESULT" in output
+    assert "APPLIED DIFF" in output
+    assert set("┏┓┗┛┃━").intersection(output)
+
+
+def test_reviewed_diff_only_renders_completion_summary() -> None:
+    from reuleauxcoder.domain.agent.tool_outcome import ToolDiff
+
+    console = Console(record=True, width=80, color_system=None, force_terminal=False)
+    renderer = CLIRenderer(
+        view_registry=ViewRendererRegistry([]), console_override=console
+    )
+    outcome = ToolOutcome(
+        summary="Edited demo.txt",
+        diff=ToolDiff(path="demo.txt", unified="--- a/demo\n+++ b/demo\n-old\n+new"),
+        metadata={
+            "operation": "edit",
+            "show_diff_by_default": True,
+            "diff_reviewed": True,
+        },
+    )
+
+    render_agent_event(
+        renderer,
+        AgentEvent.tool_call_end(
+            "edit_file", outcome.model_text, tool_call_id="edit", outcome=outcome
+        ),
+    )
+
+    assert console.export_text() == " └ Edited demo.txt\n"
+
+
 def test_long_notification_is_head_tail_folded() -> None:
     console = Console(record=True, width=80, color_system=None, force_terminal=False)
     renderer = CLIRenderer(

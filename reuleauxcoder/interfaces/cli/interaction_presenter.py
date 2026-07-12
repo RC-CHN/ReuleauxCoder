@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-import json
-
-from rich import box
-from rich.console import Console, Group
-from rich.panel import Panel
+from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.interfaces.interactions import (
     ChooseOneRequest,
     ConfirmRequest,
@@ -19,7 +13,7 @@ from reuleauxcoder.interfaces.interactions import (
     InteractionRequest,
     ReviewRequest,
 )
-from reuleauxcoder.interfaces.cli.terminal import build_diff_text
+from reuleauxcoder.interfaces.cli.review import build_review_frame
 from reuleauxcoder.interfaces.cli.theme import CLITheme, DEFAULT_CLI_THEME
 from reuleauxcoder.presentation.policy import fold_text
 from reuleauxcoder.presentation.semantics import DisplayTone
@@ -60,60 +54,6 @@ def render_interaction_request(
         _body(console, request.prompt, max_preview_lines, max_preview_chars)
         return
     if isinstance(request, ReviewRequest):
-        renderables = [
-            Text(
-                fold_text(
-                    request.summary,
-                    max_lines=max_preview_lines,
-                    max_chars=max_preview_chars,
-                ),
-                style=theme.style(DisplayTone.NEUTRAL),
-            )
-        ]
-        for section in request.sections:
-            renderables.append(Text())
-            renderables.append(theme.label(section.title, DisplayTone.NEUTRAL))
-            if (
-                section.kind is ApprovalSectionKind.DIFF
-                and isinstance(section.content, str)
-            ):
-                renderables.append(build_diff_text(
-                    section.content,
-                    max_lines=max_preview_lines,
-                    max_chars=max_preview_chars,
-                    theme=theme,
-                ))
-            elif (
-                section.kind is ApprovalSectionKind.JSON
-                and isinstance(section.content, Mapping)
-            ):
-                rendered = json.dumps(
-                    dict(section.content),
-                    ensure_ascii=False,
-                    indent=2,
-                    default=str,
-                )
-                renderables.append(
-                    Text(
-                        fold_text(
-                            rendered,
-                            max_lines=max_preview_lines,
-                            max_chars=max_preview_chars,
-                        ),
-                        style=theme.style(DisplayTone.NEUTRAL),
-                    )
-                )
-            else:
-                renderables.append(
-                    Text(
-                        fold_text(
-                            str(section.content),
-                            max_lines=max_preview_lines,
-                            max_chars=max_preview_chars,
-                        ),
-                        style=theme.style(DisplayTone.ACCENT),
-                    )
-                )
         choices = Text("\n")
         choices.append("[1/Y] ", style=theme.style(DisplayTone.SUCCESS))
         choices.append(request.approve_label, style="bold")
@@ -121,17 +61,16 @@ def render_interaction_request(
         choices.append("[2/N] ", style=theme.style(DisplayTone.ERROR))
         choices.append(request.reject_label, style="bold")
         choices.append("\nSELECT 1/2 OR Y/N // CTRL+C CANCELS", style=theme.style(DisplayTone.MUTED))
-        renderables.append(choices)
         console.print(
-            Panel(
-                Group(*renderables),
-                title=theme.label(request.title, DisplayTone.WARNING),
-                title_align="left",
-                border_style=theme.style(DisplayTone.WARNING),
-                box=box.HEAVY,
-                padding=(0, 1),
-                width=min(100, console.width),
-                expand=False,
+            build_review_frame(
+                title=request.title,
+                summary=request.summary,
+                sections=request.sections,
+                console_width=console.width,
+                max_preview_lines=max_preview_lines,
+                max_preview_chars=max_preview_chars,
+                footer=choices,
+                theme=theme,
             )
         )
 

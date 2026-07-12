@@ -6,8 +6,9 @@ from rich.console import Console
 from rich.text import Text
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.approval import ApprovalSection, ApprovalSectionKind
 from reuleauxcoder.domain.runtime.events import SubagentFinished
-from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
+from reuleauxcoder.interfaces.cli.review import build_review_frame
 from reuleauxcoder.interfaces.cli.theme import CLITheme, DEFAULT_CLI_THEME
 from reuleauxcoder.presentation import PresentationPolicy, describe_tool_invocation
 from reuleauxcoder.presentation.policy import fold_text
@@ -56,12 +57,32 @@ class CLIHistoryPresenter:
             self.console.print(row, soft_wrap=True)
             return
 
+        diff = self.policy.tool_diff_preview(outcome)
+        if diff:
+            operation = str(outcome.metadata.get("operation") or name).upper()
+            self.console.print(
+                build_review_frame(
+                    title=f"{operation} RESULT",
+                    summary=display,
+                    sections=(
+                        ApprovalSection(
+                            id="diff",
+                            title="Applied diff",
+                            kind=ApprovalSectionKind.DIFF,
+                            content=diff,
+                        ),
+                    ),
+                    console_width=self.console.width,
+                    max_preview_lines=self.policy.tool_preview_lines,
+                    max_preview_chars=self.policy.tool_preview_chars,
+                    tone=DisplayTone.ACCENT,
+                    theme=self.theme,
+                )
+            )
+            return
         row = Text(" └ ", style=self.theme.style(DisplayTone.MUTED))
         row.append(display, style=self.theme.style(DisplayTone.MUTED))
         self.console.print(row, soft_wrap=True)
-        diff = self.policy.tool_diff_preview(outcome)
-        if diff:
-            render_diff_panel(diff, self.console, theme=self.theme)
 
     def subagent_finished(self, payload: SubagentFinished) -> None:
         tone = DisplayTone.ERROR if payload.error else DisplayTone.ACCENT
