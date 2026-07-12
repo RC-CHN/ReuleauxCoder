@@ -38,6 +38,16 @@ class AutoReviewJudge:
                             {"role": "user", "content": self._review_payload(request)},
                         ],
                         tools=None,
+                        session_id=(
+                            f"{getattr(self.agent, 'current_session_id', None) or 'session'}"
+                            ":approval-review"
+                        ),
+                        metadata={
+                            "role": "approval_reviewer",
+                            "agent_id": getattr(self.agent, "agent_id", None),
+                            "turn_id": getattr(self.agent, "_current_turn_id", None),
+                            "request_id": request.request_id,
+                        },
                     )
                 holder["decision"] = self._parse(response.content or "")
             except Exception as error:

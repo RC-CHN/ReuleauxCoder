@@ -13,9 +13,11 @@ class _LLM:
         self.content = content
         self.delay = delay
         self.messages = None
+        self.kwargs = None
 
-    def chat(self, *, messages, tools=None):
+    def chat(self, *, messages, tools=None, **kwargs):
         self.messages = messages
+        self.kwargs = kwargs
         time.sleep(self.delay)
         return SimpleNamespace(content=self.content)
 
@@ -33,6 +35,8 @@ def _agent():
             {"role": "tool", "content": "untrusted output"},
         ],
         _current_turn_id="turn",
+        current_session_id="session",
+        agent_id="agent",
         request_stop=lambda: None,
         history_ledger=ledger,
     )
@@ -53,6 +57,8 @@ def test_auto_review_uses_user_authorization_not_agent_prose_or_tool_output() ->
     assert "delete the temporary file" in encoded
     assert "I think this is safe" not in encoded
     assert "untrusted output" not in encoded
+    assert llm.kwargs["session_id"] == "session:approval-review"
+    assert llm.kwargs["metadata"]["role"] == "approval_reviewer"
 
 
 def test_auto_review_timeout_fails_closed() -> None:
