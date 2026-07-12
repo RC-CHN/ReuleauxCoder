@@ -282,6 +282,30 @@ def test_background_exception_becomes_failed_job(monkeypatch) -> None:
     manager.shutdown()
 
 
+def test_unknown_non_ok_worker_status_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task",
+        lambda **_kwargs: SubagentResult(
+            status="budget_exhausted",
+            summary="token budget exhausted",
+        ),
+    )
+    parent = _Parent()
+    manager = SubagentManager()
+
+    job_id = manager.submit_background(
+        parent_agent=parent,
+        task="bounded task",
+        mode="explore",
+        auto_verify=False,
+    )
+    terminal = manager.wait_job(job_id, timeout=2)
+
+    assert terminal is not None and terminal.status == "failed"
+    assert terminal.error == "token budget exhausted"
+    manager.shutdown()
+
+
 def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
     manager = SubagentManager(parent_agent_id="root")
     manager.register_child_agent(

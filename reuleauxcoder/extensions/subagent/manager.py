@@ -697,8 +697,14 @@ class SubagentManager:
                             tracked.structured_result = structured
                             tracked.result = structured.summary
                             tracked.worktree_path = structured.worktree_path
-                            tracked.status = "completed"
-                            schedule_verify = tracked.mode == "execute" and auto_verify
+                            if structured.status == "ok":
+                                tracked.status = "completed"
+                                schedule_verify = (
+                                    tracked.mode == "execute" and auto_verify
+                                )
+                            else:
+                                tracked.status = "failed"
+                                tracked.error = structured.summary
                 if (
                     tracked.generation == self._generation
                     and self._is_actionable_terminal(tracked)
@@ -2170,17 +2176,7 @@ def run_subagent_task(
     sub.state.total_tool_calls = execution.tool_calls
     sub.state.total_model_calls = execution.model_calls
     result = execution.summary
-    status = execution.status
-    if status == "ok" and (
-        result.strip() == "(reached maximum tool-call rounds)" or any(
-        marker in result
-        for marker in (
-            "Maximum tool-call rounds reached.",
-            "Max rounds reached.",
-            "Reached maximum tool-call rounds",
-        )
-    )):
-        status = "max_rounds"
+    status = _normalize_subagent_terminal_status(execution.status, result)
 
     final_result = _result_from_agent(
         sub,
@@ -2203,6 +2199,22 @@ def run_subagent_task(
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result
+
+
+def _normalize_subagent_terminal_status(status: str, summary: str) -> str:
+    """Fail closed when a nominal worker terminal is really budget exhaustion."""
+    if status != "ok":
+        return status
+    normalized = summary.lower()
+    budget_markers = (
+        "sub-agent token budget exhausted",
+        "sub-agent round budget exhausted",
+        "reached maximum tool-call rounds",
+        "maximum tool-call rounds reached",
+        "max rounds reached",
+        "sub-agent tool-call budget exhausted",
+    )
+    return "failed" if any(marker in normalized for marker in budget_markers) else status
 
 
 def build_delegated_prompt(

@@ -1,4 +1,5 @@
 from reuleauxcoder.extensions.subagent.manager import (
+    _normalize_subagent_terminal_status,
     _parse_delegated_final_response,
     build_delegated_prompt,
 )
@@ -46,3 +47,14 @@ def test_delegated_final_response_parser_preserves_all_contract_sections() -> No
         "confidence": "medium",
         "missing": [],
     }
+
+
+def test_budget_markers_cannot_be_reported_as_successful_terminal() -> None:
+    for summary in (
+        "(sub-agent token budget exhausted before request)",
+        "(sub-agent round budget exhausted)",
+        "(reached maximum tool-call rounds)",
+    ):
+        assert _normalize_subagent_terminal_status("ok", summary) == "failed"
+
+    assert _normalize_subagent_terminal_status("ok", "finished normally") == "ok"
