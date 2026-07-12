@@ -449,6 +449,106 @@ def agent_event_to_runtime_event(
     )
 
 
+def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
+    """Convert worker/runtime IPC events back to the legacy domain emitter."""
+    payload = event.payload
+    if isinstance(payload, (TurnStarted, ChatStarted)):
+        legacy = AgentEvent.chat_start(payload.user_input)
+    elif isinstance(payload, (TurnFinished, ChatCompleted)):
+        legacy = AgentEvent.chat_end(
+            payload.response,
+            render_response=payload.render_response,
+        )
+    elif isinstance(payload, AssistantContentDelta):
+        legacy = AgentEvent.stream_token(payload.text)
+    elif isinstance(payload, ReasoningDelta):
+        legacy = AgentEvent.stream_reasoning(payload.text)
+        legacy.data["display_mode"] = payload.display_mode
+    elif isinstance(payload, StreamChunk):
+        legacy = (
+            AgentEvent.stream_reasoning(payload.text)
+            if payload.reasoning
+            else AgentEvent.stream_token(payload.text)
+        )
+        legacy.data["display_mode"] = payload.display_mode
+    elif isinstance(payload, ToolCallStarted):
+        legacy = AgentEvent.tool_call_start(
+            payload.tool_name,
+            payload.arguments,
+            tool_call_id=payload.tool_call_id,
+        )
+    elif isinstance(payload, ToolOutputDelta):
+        legacy = AgentEvent.tool_output_delta(
+            "tool",
+            payload.text,
+            stream=payload.stream,
+            tool_call_id=payload.tool_call_id,
+        )
+    elif isinstance(payload, ToolCallFinished):
+        legacy = AgentEvent.tool_call_end(
+            payload.tool_name,
+            payload.outcome.model_text,
+            tool_call_id=payload.tool_call_id,
+            outcome=payload.outcome,
+        )
+    elif isinstance(payload, SubagentJobChanged):
+        legacy = AgentEvent.subagent_completed(
+            job_id=payload.job_id,
+            mode=payload.mode,
+            task=payload.task,
+            status=payload.status,
+            result=payload.result,
+            error=payload.error,
+        )
+    elif isinstance(payload, ErrorOccurred):
+        legacy = AgentEvent.error(payload.message)
+    elif isinstance(payload, NotificationRaised):
+        legacy = AgentEvent.diagnostic(
+            payload.message,
+            code=payload.code,
+            severity=payload.severity,
+            details=payload.details,
+        )
+    elif isinstance(payload, PlanUpdated):
+        legacy = AgentEvent.plan_updated(
+            revision=payload.revision,
+            items=list(payload.items),
+            explanation=payload.explanation,
+        )
+    elif isinstance(payload, ProgressReported):
+        legacy = AgentEvent.progress_reported(
+            revision=payload.revision,
+            phase=payload.phase,
+            summary=payload.summary,
+            next_step=payload.next,
+        )
+    elif isinstance(payload, ApprovalRequested):
+        legacy = AgentEvent.approval_requested(
+            request_id=payload.request_id,
+            title=payload.title,
+            preview=payload.preview,
+        )
+    elif isinstance(payload, ApprovalResolved):
+        legacy = AgentEvent.approval_resolved(
+            request_id=payload.request_id,
+            approved=payload.approved,
+            reason=payload.reason,
+        )
+    else:
+        raise ValueError(
+            f"Runtime event cannot be adapted to AgentEvent: {type(payload).__name__}"
+        )
+
+    legacy.event_id = event.event_id
+    legacy.timestamp = event.timestamp
+    legacy.agent_id = event.agent_id
+    legacy.session_generation = event.session_generation
+    legacy.session_id = event.session_id
+    legacy.turn_id = event.turn_id
+    legacy.correlation_id = event.correlation_id or legacy.correlation_id
+    return legacy
+
+
 def _required_correlation_id(event: AgentEvent) -> str:
     if event.correlation_id:
         return event.correlation_id

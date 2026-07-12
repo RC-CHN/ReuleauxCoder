@@ -19,9 +19,8 @@ _TERMINAL = {
     "completed",
     "failed",
     "cancelled",
-    "cancelled_detached",
-    "timeout",
-    "timed_out_detached",
+    "killed",
+    "timed_out",
     "stale",
 }
 

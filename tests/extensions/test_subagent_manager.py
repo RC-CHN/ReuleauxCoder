@@ -10,8 +10,8 @@ from reuleauxcoder.extensions.subagent.models import SubagentResult
 from reuleauxcoder.extensions.subagent.manager import (
     SubagentJob,
     SubagentManager,
-    _create_subagent_llm,
     _filter_subagent_tools,
+    _subagent_llm_kwargs,
 )
 
 
@@ -21,7 +21,7 @@ class _FakeParentLLM:
         self.debug_trace = True
 
 
-def test_create_subagent_llm_uses_full_profile_runtime_settings() -> None:
+def test_subagent_worker_spec_uses_full_profile_runtime_settings() -> None:
     sub_profile = ModelProfileConfig(
         name="sub-profile",
         model="deepseek-v4-pro",
@@ -48,21 +48,20 @@ def test_create_subagent_llm_uses_full_profile_runtime_settings() -> None:
         llm=_FakeParentLLM(),
     )
 
-    llm, profile_name = _create_subagent_llm(parent_agent, None)
+    settings = _subagent_llm_kwargs(parent_agent, None)
 
-    assert profile_name == "sub-profile"
-    assert llm.model == "deepseek-v4-pro"
-    assert llm.api_key == "sub-key"
-    assert llm.base_url == "https://api.deepseek.com"
-    assert llm.max_tokens == 8192
-    assert llm.temperature == 0.0
-    assert llm.preserve_reasoning_content is True
-    assert llm.backfill_reasoning_content_for_tool_calls is False
-    assert llm.reasoning_effort == "high"
-    assert llm.thinking_enabled is True
-    assert llm.reasoning_replay_mode == "tool_calls"
-    assert llm.reasoning_replay_placeholder == "[PLACE_HOLDER]"
-    assert llm.debug_trace is True
+    assert settings["model"] == "deepseek-v4-pro"
+    assert settings["api_key"] == "sub-key"
+    assert settings["base_url"] == "https://api.deepseek.com"
+    assert settings["max_tokens"] == 8192
+    assert settings["temperature"] == 0.0
+    assert settings["preserve_reasoning_content"] is True
+    assert settings["backfill_reasoning_content_for_tool_calls"] is False
+    assert settings["reasoning_effort"] == "high"
+    assert settings["thinking_enabled"] is True
+    assert settings["reasoning_replay_mode"] == "tool_calls"
+    assert settings["reasoning_replay_placeholder"] == "[PLACE_HOLDER]"
+    assert settings["debug_trace"] is True
 
 
 # ---------------------------------------------------------------------------

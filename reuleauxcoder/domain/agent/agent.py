@@ -813,6 +813,8 @@ class Agent:
 
     def _inject_completed_subagent_jobs(self) -> int:
         """Drain typed child messages/results into parent history in sequence order."""
+        if self.subagent_depth > 0:
+            return 0
         try:
             manager = get_subagent_manager(self)
         except Exception:

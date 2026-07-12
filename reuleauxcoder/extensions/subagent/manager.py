@@ -15,13 +15,21 @@ import uuid
 from typing import Literal
 
 from reuleauxcoder.domain.agent.events import AgentEvent
-from reuleauxcoder.services.llm.factory import build_llm_from_settings
+from reuleauxcoder.services.llm.factory import llm_runtime_kwargs
 from reuleauxcoder.extensions.subagent.context import project_parent_context
 from reuleauxcoder.extensions.subagent.models import (
     SubagentResult,
     SubagentTranscriptStore,
 )
 from reuleauxcoder.extensions.subagent.scoped_tools import materialize_subagent_tool
+from reuleauxcoder.extensions.subagent.worker_protocol import (
+    WorkerSpec,
+    WorkerToolSpec,
+)
+from reuleauxcoder.extensions.subagent.worker_runtime import (
+    ParentToolBroker,
+    run_isolated_worker,
+)
 from reuleauxcoder.extensions.subagent.isolation import create_worktree, remove_worktree
 
 
@@ -218,7 +226,6 @@ class SubagentJob:
     timeout_seconds: int | None = None
     result: str | None = None
     error: str | None = None
-    detached_due_to_timeout: bool = False
     injected_to_parent: bool = False
     generation: int = 0
     cancel_requested: bool = False
@@ -494,8 +501,6 @@ class SubagentManager:
                 tracked = self._jobs.get(job_id)
                 if tracked is None:
                     return
-                if tracked.detached_due_to_timeout:
-                    return
                 tracked.finished_at = time.time()
                 if done.cancelled():
                     tracked.status = "cancelled"
@@ -514,15 +519,11 @@ class SubagentManager:
                         )
                         if isinstance(result, SubagentResult) and result.status in {
                             "cancelled",
-                            "cancelled_detached",
-                            "timeout",
-                            "timed_out_detached",
+                            "killed",
+                            "timed_out",
                         }:
                             tracked.structured_result = result
                             tracked.result = result.summary
-                            tracked.detached_due_to_timeout = result.status.endswith(
-                                "_detached"
-                            )
                             tracked.status = result.status
                             tracked.error = result.summary
                         elif isinstance(result, SubagentResult) and result.status in {
@@ -536,17 +537,8 @@ class SubagentManager:
                             tracked.status = "failed"
                             tracked.error = result.summary
                         elif "[Sub-agent finished status=cancelled]" in result_text:
-                            tracked.detached_due_to_timeout = "detached" in result_text
-                            tracked.status = (
-                                "cancelled_detached"
-                                if tracked.detached_due_to_timeout
-                                else "cancelled"
-                            )
+                            tracked.status = "cancelled"
                             tracked.error = "Sub-agent cancelled."
-                        elif "[Sub-agent finished status=timeout]" in result_text:
-                            tracked.detached_due_to_timeout = True
-                            tracked.status = "timed_out_detached"
-                            tracked.error = "Sub-agent timed out and detached; background thread may still be running."
                         elif tracked.generation != self._generation:
                             tracked.status = "stale"
                             tracked.error = "Sub-agent completed for an inactive session generation."
@@ -668,9 +660,8 @@ class SubagentManager:
             "completed",
             "failed",
             "cancelled",
-            "cancelled_detached",
-            "timeout",
-            "timed_out_detached",
+            "killed",
+            "timed_out",
             "stale",
         }
         visible_context = "\n".join(
@@ -942,9 +933,8 @@ class SubagentManager:
             "completed",
             "failed",
             "cancelled",
-            "cancelled_detached",
-            "timeout",
-            "timed_out_detached",
+            "killed",
+            "timed_out",
         }
 
     def _enqueue_completion_locked(self, job: SubagentJob) -> None:
@@ -1090,9 +1080,8 @@ class SubagentManager:
             "completed",
             "failed",
             "cancelled",
-            "cancelled_detached",
-            "timeout",
-            "timed_out_detached",
+            "killed",
+            "timed_out",
             "stale",
         }
         with self._slot_cv:
@@ -1119,9 +1108,8 @@ class SubagentManager:
                     "completed",
                     "failed",
                     "cancelled",
-                    "cancelled_detached",
-                    "timeout",
-                    "timed_out_detached",
+                    "killed",
+                    "timed_out",
                     "stale",
                 }
             ):
@@ -1177,9 +1165,8 @@ class SubagentManager:
             "completed",
             "failed",
             "cancelled",
-            "cancelled_detached",
-            "timeout",
-            "timed_out_detached",
+            "killed",
+            "timed_out",
             "stale",
         }
         with self._lock:
@@ -1261,9 +1248,8 @@ class SubagentManager:
                     "completed",
                     "failed",
                     "cancelled",
-                    "cancelled_detached",
-                    "timeout",
-                    "timed_out_detached",
+                    "killed",
+                    "timed_out",
                 }:
                     continue
                 if parent_state_lock is not None:
@@ -1288,7 +1274,6 @@ class SubagentManager:
                             timeout_seconds=job.timeout_seconds,
                             result=job.result,
                             error=job.error,
-                            detached_due_to_timeout=job.detached_due_to_timeout,
                             injected_to_parent=False,
                             generation=job.generation,
                             cancel_requested=job.cancel_requested,
@@ -1338,38 +1323,38 @@ def get_subagent_manager(agent) -> SubagentManager:
     return manager
 
 
-def _create_subagent_llm(parent_agent, model_profile_name: str | None):
+def _resolve_subagent_settings(parent_agent, route: str | None):
     config = getattr(parent_agent, "runtime_config", None)
     if config is None:
         return parent_agent.llm, None
-
     profiles = getattr(config, "model_profiles", {}) or {}
-
-    def _resolve_profile_name(route: str | None) -> str | None:
-        normalized = (route or "").strip().lower()
-        if normalized == "main":
-            return (
-                getattr(config, "active_main_model_profile", None)
-                or getattr(config, "active_model_profile", None)
-                or getattr(config, "active_sub_model_profile", None)
-            )
-
-        return (
+    normalized = (route or "").strip().lower()
+    if normalized == "main":
+        profile_name = (
+            getattr(config, "active_main_model_profile", None)
+            or getattr(config, "active_model_profile", None)
+            or getattr(config, "active_sub_model_profile", None)
+        )
+    else:
+        profile_name = (
             getattr(config, "active_sub_model_profile", None)
             or getattr(config, "active_main_model_profile", None)
             or getattr(config, "active_model_profile", None)
         )
+    profile = profiles.get(profile_name) if profile_name else None
+    return (profile, profile_name) if profile is not None else (parent_agent.llm, None)
 
-    profile_name = _resolve_profile_name(model_profile_name)
-    if profile_name:
-        profile = profiles.get(profile_name)
-        if profile is not None:
-            return build_llm_from_settings(
-                profile,
-                debug_trace=getattr(parent_agent.llm, "debug_trace", False),
-            ), profile_name
 
-    return parent_agent.llm, None
+def _subagent_llm_kwargs(parent_agent, route: str | None) -> dict:
+    settings, _profile_name = _resolve_subagent_settings(parent_agent, route)
+    kwargs = llm_runtime_kwargs(
+        settings,
+        debug_trace=getattr(parent_agent.llm, "debug_trace", False),
+    )
+    for field in ("reasoning_effort_values", "reasoning_effort_param"):
+        if hasattr(settings, field):
+            kwargs[field] = getattr(settings, field)
+    return kwargs
 
 
 def _filter_subagent_tools(parent_agent, mode: str):
@@ -1426,10 +1411,6 @@ def run_subagent_task(
         build_subagent_approval_provider,
     )
 
-    sub_llm, effective_model_profile = _create_subagent_llm(
-        parent_agent, model_profile_name
-    )
-
     lease = None
     manager = get_subagent_manager(parent_agent)
     sub_tools = _filter_subagent_tools(parent_agent, mode)
@@ -1443,15 +1424,21 @@ def run_subagent_task(
         _retarget_tools(sub_tools, lease.path)
     elif working_directory:
         _retarget_tools(sub_tools, Path(working_directory))
+    child_agent_id = f"sa_{job_id or uuid.uuid4().hex[:12]}"
+    broker_hooks = parent_agent.hook_registry.clone(scope="subagent")
+    broker_hooks.bind_runtime_service(
+        "lsp_manager", getattr(parent_agent, "lsp_manager", None)
+    )
     sub = Agent(
-        llm=sub_llm,
+        llm=parent_agent.llm,
         tools=sub_tools,
         max_context_tokens=parent_agent.context.max_tokens,
         max_rounds=effective_max_rounds,
         max_tool_calls=max_tool_calls,
         max_total_tokens=max_tokens,
-        hook_registry=parent_agent.hook_registry.clone(scope="subagent"),
+        hook_registry=broker_hooks,
         approval_provider=build_subagent_approval_provider(parent_agent, mode, task),
+        agent_id=child_agent_id,
     )
     sub.runtime_config = getattr(parent_agent, "runtime_config", None)
     sub.runtime_working_directory = (
@@ -1473,13 +1460,7 @@ def run_subagent_task(
     sub.subagent_task = task
     sub.strict_tool_scope = True
     sub._subagent_manager = manager
-    # Child activity remains attributed to the child, but uses the root event
-    # transport so every UI can observe chunks/tools without polling workers.
     parent_event_sink = getattr(parent_agent, "_emit_event", None)
-    if callable(parent_event_sink):
-        sub.add_event_handler(parent_event_sink)
-    if job_id:
-        sub._external_message_source = lambda: manager.drain_messages(job_id)
     manager.register_child_agent(
         sub.agent_id,
         depth,
@@ -1490,13 +1471,10 @@ def run_subagent_task(
         bind_agent = getattr(tool, "bind_agent", None)
         if callable(bind_agent):
             bind_agent(sub)
+    replay_messages: list[dict] = []
     if resume_reference:
         root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
-        sub._replace_context_messages(
-            SubagentTranscriptStore(root).read(resume_reference),
-            reason="subagent transcript resume",
-            record=False,
-        )
+        replay_messages = SubagentTranscriptStore(root).read(resume_reference)
 
     delegated_prompt = build_delegated_prompt(
         task=task,
@@ -1508,75 +1486,71 @@ def run_subagent_task(
         ),
     )
 
-    holder: dict[str, object] = {}
-
-    def _run() -> None:
-        try:
-            holder["result"] = sub.chat(delegated_prompt)
-        except BaseException as error:  # propagate worker failures to the manager
-            holder["error"] = error
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + effective_timeout_seconds
-    cancelled = False
-    while thread.is_alive() and time.monotonic() < deadline:
-        thread.join(timeout=min(0.05, max(0.0, deadline - time.monotonic())))
-        if cancel_event is not None and cancel_event.is_set():
-            cancelled = True
-            sub.request_stop()
-            thread.join(timeout=1.0)
-            break
-
-    if cancelled:
-        suffix = " detached" if thread.is_alive() else ""
-        partial = _result_from_agent(
-            sub,
-            status="cancelled_detached" if suffix else "cancelled",
-            summary=str(holder.get("result", "Sub-agent cancelled.")),
-            started_at=deadline - effective_timeout_seconds,
-            job_id=job_id,
-            parent_agent=parent_agent,
-            partial=True,
-        )
-        partial.worktree_path = str(lease.path) if lease is not None else None
-        return partial
-    if thread.is_alive():
-        sub.request_stop()
-        timeout_result = _result_from_agent(
-                sub,
-                status="timed_out_detached",
-                summary=f"Sub-agent exceeded timeout after {effective_timeout_seconds}s.",
-                started_at=deadline - effective_timeout_seconds,
-                job_id=job_id,
-                parent_agent=parent_agent,
-                partial=True,
+    cancellation = cancel_event or threading.Event()
+    spec = WorkerSpec(
+        job_id=job_id or f"sj_{uuid.uuid4().hex[:10]}",
+        agent_id=child_agent_id,
+        session_id=getattr(parent_agent, "current_session_id", None),
+        session_generation=getattr(parent_agent, "session_generation", 0),
+        worker_generation=1,
+        cancellation_epoch=0,
+        delegated_prompt=delegated_prompt,
+        llm_kwargs=_subagent_llm_kwargs(parent_agent, model_profile_name),
+        tools=tuple(
+            WorkerToolSpec(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters,
             )
-        timeout_result.worktree_path = str(lease.path) if lease is not None else None
-        return timeout_result
-
-    if "error" in holder:
-        raise holder["error"]  # type: ignore[misc]
-    result = str(holder.get("result", ""))
-
-    status = "ok"
-    if result.strip() == "(reached maximum tool-call rounds)" or any(
+            for tool in sub_tools
+        ),
+        max_context_tokens=parent_agent.context.max_tokens,
+        max_rounds=effective_max_rounds,
+        max_tool_calls=max_tool_calls,
+        max_tokens=max_tokens,
+        working_directory=sub.runtime_working_directory,
+        replay_messages=tuple(replay_messages),
+    )
+    broker = ParentToolBroker(
+        sub,
+        cancellation_event=cancellation,
+        event_sink=parent_event_sink if callable(parent_event_sink) else None,
+    )
+    started_at = time.monotonic()
+    execution = run_isolated_worker(
+        spec,
+        broker,
+        cancel_event=cancellation,
+        timeout_seconds=effective_timeout_seconds,
+        directive_source=(
+            (lambda: manager.drain_messages(job_id)) if job_id else None
+        ),
+        event_sink=parent_event_sink if callable(parent_event_sink) else None,
+    )
+    sub.state.messages = list(execution.messages)
+    sub.state.total_prompt_tokens = execution.prompt_tokens
+    sub.state.total_completion_tokens = execution.completion_tokens
+    result = execution.summary
+    status = execution.status
+    if status == "ok" and (
+        result.strip() == "(reached maximum tool-call rounds)" or any(
         marker in result
         for marker in (
             "Maximum tool-call rounds reached.",
             "Max rounds reached.",
             "Reached maximum tool-call rounds",
         )
-    ):
+    )):
         status = "max_rounds"
 
     final_result = _result_from_agent(
         sub,
         status=status,
         summary=result,
-        started_at=deadline - effective_timeout_seconds,
+        started_at=started_at,
         job_id=job_id,
         parent_agent=parent_agent,
+        partial=status in {"cancelled", "killed", "timed_out", "failed"},
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result

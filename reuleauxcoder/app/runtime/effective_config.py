@@ -123,7 +123,7 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
         f"{job.id}:{job.status}:g{job.generation}:{job.parent_agent_id or '-'}"
         for job in jobs
         if job.status
-        in {"queued", "running", "cancelling", "timed_out_detached"}
+        in {"queued", "running", "cancelling"}
     )
     return EffectiveConfigViewModel(
         rows=rows,

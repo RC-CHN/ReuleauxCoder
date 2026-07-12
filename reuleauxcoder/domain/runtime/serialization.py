@@ -99,6 +99,16 @@ def runtime_event_from_dict(data: dict[str, Any]) -> RuntimeEvent:
     )
 
 
+def tool_outcome_to_dict(outcome: ToolOutcome) -> dict[str, Any]:
+    """Encode one structured tool result for JSON-safe IPC/storage."""
+    return _encode_dataclass(outcome)
+
+
+def tool_outcome_from_dict(data: dict[str, Any]) -> ToolOutcome:
+    """Decode one structured tool result from a JSON-safe envelope."""
+    return _decode_tool_outcome(data)
+
+
 def _encode_dataclass(value: object) -> dict[str, Any]:
     if not is_dataclass(value):
         raise TypeError(f"Expected dataclass, got {type(value).__name__}")

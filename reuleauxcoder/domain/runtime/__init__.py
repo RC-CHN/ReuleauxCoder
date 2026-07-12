@@ -31,11 +31,14 @@ from reuleauxcoder.domain.runtime.events import (
     ViewRefreshed,
     ViewRequested,
     agent_event_to_runtime_event,
+    runtime_event_to_agent_event,
 )
 from reuleauxcoder.domain.runtime.serialization import (
     RUNTIME_EVENT_CODEC_VERSION,
     runtime_event_from_dict,
     runtime_event_to_dict,
+    tool_outcome_from_dict,
+    tool_outcome_to_dict,
 )
 
 __all__ = [
@@ -70,6 +73,9 @@ __all__ = [
     "ViewRefreshed",
     "ViewRequested",
     "agent_event_to_runtime_event",
+    "runtime_event_to_agent_event",
     "runtime_event_from_dict",
     "runtime_event_to_dict",
+    "tool_outcome_from_dict",
+    "tool_outcome_to_dict",
 ]

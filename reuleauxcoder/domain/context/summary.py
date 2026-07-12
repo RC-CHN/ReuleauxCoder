@@ -207,9 +207,8 @@ def build_summary_document(
             "completed",
             "failed",
             "cancelled",
-            "cancelled_detached",
-            "timeout",
-            "timed_out_detached",
+            "killed",
+            "timed_out",
             "stale",
         }:
             active_subagents.append(

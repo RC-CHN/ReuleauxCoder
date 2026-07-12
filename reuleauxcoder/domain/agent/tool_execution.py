@@ -9,7 +9,11 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.llm.models import ToolCall
 
 from reuleauxcoder.domain.agent.events import AgentEvent
-from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind, ToolOutcome
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.domain.approval import ApprovalRequest, ApprovalSectionKind
 from reuleauxcoder.domain.approval_preview import (
     build_approval_preview,
@@ -281,6 +285,24 @@ class ToolExecutor:
             self.agent._emit_event(
                 AgentEvent.tool_call_end(
                     tool_call.name, message, success=False, tool_call_id=tc.id
+                )
+            )
+            return message
+
+        stop_requested = getattr(self.agent, "stop_requested", None)
+        if callable(stop_requested) and stop_requested():
+            message = f"Tool '{tc.name}' cancelled before execution."
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(
+                    tc.name,
+                    message,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=ToolOutcome(
+                        status=ToolOutcomeStatus.CANCELLED,
+                        content=message,
+                        error_kind=ToolErrorKind.INTERRUPTED,
+                    ),
                 )
             )
             return message

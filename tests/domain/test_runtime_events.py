@@ -28,6 +28,7 @@ from reuleauxcoder.domain.runtime.events import (
     TurnFinished,
     TurnStarted,
     agent_event_to_runtime_event,
+    runtime_event_to_agent_event,
 )
 from reuleauxcoder.domain.runtime.serialization import (
     runtime_event_from_dict,
@@ -61,6 +62,30 @@ def test_adapter_preserves_agent_and_session_generation() -> None:
 
     assert runtime.agent_id == "agent-1"
     assert runtime.session_generation == 7
+
+
+def test_runtime_worker_event_round_trips_back_to_legacy_emitter() -> None:
+    original = AgentEvent.tool_call_end(
+        "read_file",
+        "file content",
+        tool_call_id="call-worker",
+        outcome=ToolOutcome(summary="Read 1 line", content="file content"),
+    )
+    runtime = agent_event_to_runtime_event(
+        original,
+        agent_id="child-1",
+        session_generation=3,
+        session_id="session-1",
+        turn_id="turn-1",
+    )
+
+    restored = runtime_event_to_agent_event(runtime)
+
+    assert restored.event_id == original.event_id
+    assert restored.agent_id == "child-1"
+    assert restored.session_generation == 3
+    assert restored.correlation_id == "call-worker"
+    assert restored.tool_outcome == original.tool_outcome
 
 
 def test_legacy_turn_and_stream_events_map_to_canonical_payloads() -> None:
