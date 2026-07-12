@@ -35,7 +35,7 @@ class ToolExecutor:
         reviewed_diff: str | None = None
         approval_workspace_changes: list[str] = []
         tool = self.agent.get_tool(tc.name)
-        if tool is None:
+        if tool is None and not getattr(self.agent, "strict_tool_scope", False):
             tool = get_tool(tc.name)
 
         before_context = BeforeToolExecuteContext(
@@ -169,6 +169,8 @@ class ToolExecutor:
                             "workspace_changed_during_approval": bool(
                                 approval_workspace_changes
                             ),
+                            "invocation_reason": tc.arguments.get("reason"),
+                            "policy_reason": approval_required.reason,
                             "is_subagent": bool(
                                 getattr(self.agent, "subagent_job_id", None)
                             ),
@@ -183,6 +185,8 @@ class ToolExecutor:
                             ),
                         },
                     )
+                    if isinstance(tc.arguments.get("reason"), str):
+                        approval_request.reason = tc.arguments["reason"].strip()
                     before_approval = capture_approval_document(
                         approval_request, workspace=workspace
                     )
@@ -269,7 +273,7 @@ class ToolExecutor:
 
         # First check agent's tools, then fall back to global registry
         tool = self.agent.get_tool(tool_call.name)
-        if tool is None:
+        if tool is None and not getattr(self.agent, "strict_tool_scope", False):
             tool = get_tool(tool_call.name)
 
         if tool is None:

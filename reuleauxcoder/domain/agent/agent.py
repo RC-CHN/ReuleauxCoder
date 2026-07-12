@@ -95,6 +95,7 @@ class Agent:
         self.relay_server = None
         self._subagent_manager = None
         self.subagent_depth = 0
+        self.strict_tool_scope = False
         self.ui_interactor = None
         self._subagent_approval_lock = None
         self._external_message_source = None

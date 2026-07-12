@@ -21,6 +21,7 @@ from reuleauxcoder.extensions.subagent.models import (
     SubagentResult,
     SubagentTranscriptStore,
 )
+from reuleauxcoder.extensions.subagent.scoped_tools import materialize_subagent_tool
 from reuleauxcoder.extensions.subagent.isolation import create_worktree, remove_worktree
 
 
@@ -1427,29 +1428,28 @@ def _create_subagent_llm(parent_agent, model_profile_name: str | None):
     return parent_agent.llm, None
 
 
-def _filter_subagent_tools(parent_agent, mode: str, *, include_agent: bool = False):
+def _filter_subagent_tools(parent_agent, mode: str):
     mode_allowlist = {
-        "explore": {"read_file", "glob", "grep"},
-        "execute": {"read_file", "glob", "grep", "edit_file", "write_file", "shell"},
-        "verify": {"read_file", "glob", "grep", "shell"},
+        "explore": {"read_file", "list_file", "glob", "grep", "lsp"},
+        "execute": {
+            "read_file",
+            "list_file",
+            "glob",
+            "grep",
+            "lsp",
+            "edit_file",
+            "write_file",
+            "shell",
+        },
+        "verify": {"read_file", "list_file", "glob", "grep", "lsp", "shell"},
     }
     allowed = mode_allowlist[mode]
-    allowed.update({"update_plan", "report_progress"})
-    if include_agent:
-        allowed.add("agent")
+    allowed.add("report_progress")
     return [
-        _clone_tool_for_subagent(tool)
+        materialize_subagent_tool(tool)
         for tool in parent_agent.tools
         if tool.name in allowed
     ]
-
-
-def _clone_tool_for_subagent(tool):
-    """Materialize one Tool scope without shallow-copying runtime services."""
-    clone = getattr(tool, "clone_for_scope", None)
-    if not callable(clone):
-        raise TypeError(f"Tool '{tool.name}' does not support scoped materialization")
-    return clone("subagent")
 
 
 def run_subagent_task(
@@ -1488,9 +1488,7 @@ def run_subagent_task(
 
     lease = None
     manager = get_subagent_manager(parent_agent)
-    sub_tools = _filter_subagent_tools(
-        parent_agent, mode, include_agent=True
-    )
+    sub_tools = _filter_subagent_tools(parent_agent, mode)
     if worktree:
         if mode != "execute":
             raise ValueError("worktree isolation is only supported for execute mode")
@@ -1529,6 +1527,7 @@ def run_subagent_task(
     sub.subagent_job_id = job_id
     sub.subagent_mode = mode
     sub.subagent_task = task
+    sub.strict_tool_scope = True
     sub._subagent_manager = manager
     # Child activity remains attributed to the child, but uses the root event
     # transport so every UI can observe chunks/tools without polling workers.
@@ -1547,8 +1546,6 @@ def run_subagent_task(
         bind_agent = getattr(tool, "bind_agent", None)
         if callable(bind_agent):
             bind_agent(sub)
-        if getattr(tool, "name", None) == "agent":
-            tool._parent_agent = sub
     if resume_reference:
         root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
         sub._replace_context_messages(

@@ -100,6 +100,8 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
                     "tool_source", _infer_tool_source(tool_call.name)
                 ),
                 mcp_server=metadata.get("mcp_server"),
+                effect_class=metadata.get("effect_class"),
+                profile=metadata.get("profile"),
                 tool_description=metadata.get("tool_description"),
                 tool_schema=metadata.get("tool_schema"),
             )

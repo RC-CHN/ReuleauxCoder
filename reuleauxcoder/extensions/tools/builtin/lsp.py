@@ -94,6 +94,11 @@ class LspTool(Tool):
     def bind_lsp_manager(self, manager: LspManager | None) -> None:
         self.lsp_manager = manager
 
+    def clone_for_scope(self, scope: str) -> "LspTool":
+        clone_backend = getattr(self.backend, "clone_for_scope", None)
+        backend = clone_backend(scope) if callable(clone_backend) else self.backend
+        return LspTool(backend=backend, lsp_manager=self.lsp_manager)
+
     def execute(
         self,
         *,
