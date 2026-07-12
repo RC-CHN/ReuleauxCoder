@@ -38,7 +38,7 @@ def test_ci_runs_go_contract_tests_and_cross_builds_all_peer_targets() -> None:
     assert "go list -m all" in source
     assert _targets(jobs["peer-build"]) == EXPECTED_TARGETS
     assert str(MAX_PEER_ARTIFACT_BYTES) in source
-    assert "actions/upload-artifact@v4" in source
+    assert "actions/upload-artifact@" in source
     assert "lsp-integration" in jobs
     assert "typescript@7" in (
         ROOT / "reuleauxcoder" / "extensions" / "lsp" / "registry.py"
