@@ -40,6 +40,27 @@ def test_event_adapter_projects_user_and_execution_state() -> None:
     assert "MAIN" in "\n".join(adapter.panel_lines(100))
 
 
+def test_event_projection_failure_is_isolated_to_ui_diagnostic() -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.execution.apply = lambda _event: (_ for _ in ()).throw(
+        ValueError("bad projection")
+    )
+    runtime = agent_event_to_runtime_event(
+        AgentEvent.chat_start("keep running"), agent_id="main"
+    )
+    adapter.on_ui_event(
+        UIEvent.info(
+            "turn_started",
+            kind=UIEventKind.AGENT,
+            payload=RuntimeEventPayload(runtime),
+        )
+    )
+
+    rendered = "".join(text for _style, text in adapter.transcript_fragments())
+
+    assert "UI projection skipped: bad projection" in rendered
+
+
 def test_interactor_blocks_worker_until_bottom_pane_response() -> None:
     interactor = MiniTUIInteractor(UIEventBus())
     result = []

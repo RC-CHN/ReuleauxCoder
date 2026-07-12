@@ -113,49 +113,63 @@ class MiniTUIEventAdapter:
                     event = self._pending_events.get_nowait()
                 except queue.Empty:
                     break
-                if isinstance(event.payload, RuntimeEventPayload):
-                    runtime = event.payload.event
-                    self.transcript.apply(runtime)
-                    self.execution.apply(runtime)
-                elif isinstance(event.payload, InteractionPromptPayload):
-                    continue
-                else:
-                    message = event.message
-                    if isinstance(event.payload, ViewEventPayload):
-                        if (
-                            event.payload.view_type == "session_resume"
-                            and hasattr(event.payload.view_model, "entries")
-                        ):
-                            model = event.payload.view_model
-                            for index, entry in enumerate(model.entries):
-                                cell_id = f"restored:{index}:{self._notice_seq}"
-                                if entry.role == "user":
-                                    self.transcript.state.transcript.append(
-                                        UserCell(id=cell_id, text=entry.content)
-                                    )
-                                elif entry.role == "assistant":
-                                    self.transcript.state.transcript.append(
-                                        AssistantCell(
-                                            id=cell_id,
-                                            text=entry.content,
-                                            complete=True,
-                                        )
-                                    )
-                            self._notice_seq += 1
-                            message = (
-                                f"RESTORED {model.session_id} · {model.model} · "
-                                f"{model.saved_at[:19]}"
-                            )
-                        else:
-                            message = _view_text(event.payload)
-                    if message:
-                        self._notice_seq += 1
-                        self.transcript.append_notice(
-                            notice_id=f"ui:{event.timestamp}:{self._notice_seq}",
-                            message=message,
-                            level=event.level.value,
-                            category=event.kind.value,
+                try:
+                    self._apply_pending_event_locked(event)
+                except Exception as error:
+                    # A malformed view projection must not stop the agent or the
+                    # viewport. Keep one bounded diagnostic in the transcript.
+                    self._notice_seq += 1
+                    self.transcript.append_notice(
+                        notice_id=f"ui-projection:{self._notice_seq}",
+                        message=f"UI projection skipped: {error}",
+                        level="warning",
+                        category="ui",
+                    )
+
+    def _apply_pending_event_locked(self, event: UIEvent) -> None:
+        if isinstance(event.payload, RuntimeEventPayload):
+            runtime = event.payload.event
+            self.transcript.apply(runtime)
+            self.execution.apply(runtime)
+            return
+        if isinstance(event.payload, InteractionPromptPayload):
+            return
+        message = event.message
+        if isinstance(event.payload, ViewEventPayload):
+            if (
+                event.payload.view_type == "session_resume"
+                and hasattr(event.payload.view_model, "entries")
+            ):
+                model = event.payload.view_model
+                for index, entry in enumerate(model.entries):
+                    cell_id = f"restored:{index}:{self._notice_seq}"
+                    if entry.role == "user":
+                        self.transcript.state.transcript.append(
+                            UserCell(id=cell_id, text=entry.content)
                         )
+                    elif entry.role == "assistant":
+                        self.transcript.state.transcript.append(
+                            AssistantCell(
+                                id=cell_id,
+                                text=entry.content,
+                                complete=True,
+                            )
+                        )
+                self._notice_seq += 1
+                message = (
+                    f"RESTORED {model.session_id} · {model.model} · "
+                    f"{model.saved_at[:19]}"
+                )
+            else:
+                message = _view_text(event.payload)
+        if message:
+            self._notice_seq += 1
+            self.transcript.append_notice(
+                notice_id=f"ui:{event.timestamp}:{self._notice_seq}",
+                message=message,
+                level=event.level.value,
+                category=event.kind.value,
+            )
 
     def append_user_command(self, text: str) -> None:
         with self._lock:
