@@ -60,8 +60,8 @@ class LocalToolBackend(ToolBackend):
         process: ProcessPort | None = None,
     ):
         effective_context = context or ExecutionContext()
-        root = effective_context.workspace_root or Path("/")
         cwd = effective_context.cwd or Path.cwd()
+        root = effective_context.workspace_root or Path(cwd).anchor or Path("/")
         super().__init__(
             effective_context,
             workspace=workspace or LocalWorkspacePort(root, cwd=cwd),

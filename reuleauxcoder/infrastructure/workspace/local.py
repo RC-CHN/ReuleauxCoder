@@ -50,15 +50,14 @@ class LocalWorkspacePort:
     def read_text(self, path: str | Path) -> str:
         resolved = self.resolve(path)
         if not resolved.exists():
-            raise WorkspaceError(
-                WorkspaceErrorCode.NOT_FOUND, f"{path} not found"
-            )
+            raise WorkspaceError(WorkspaceErrorCode.NOT_FOUND, f"{path} not found")
         if not resolved.is_file():
-            raise WorkspaceError(
-                WorkspaceErrorCode.NOT_A_FILE, f"{path} is not a file"
-            )
+            raise WorkspaceError(WorkspaceErrorCode.NOT_A_FILE, f"{path} is not a file")
         try:
-            return resolved.read_text(errors="replace")
+            with resolved.open(
+                "r", encoding="utf-8", errors="replace", newline=""
+            ) as stream:
+                return stream.read()
         except OSError as error:
             raise WorkspaceError(
                 WorkspaceErrorCode.IO_ERROR, f"failed to read {path}: {error}"
@@ -88,7 +87,7 @@ class LocalWorkspacePort:
                 prefix=f".{resolved.name}.", dir=resolved.parent
             )
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
                     stream.write(content)
                     stream.flush()
                     os.fsync(stream.fileno())
@@ -124,9 +123,7 @@ class LocalWorkspacePort:
         content = self.read_text(path)
         occurrences = content.count(old)
         if occurrences == 0:
-            raise WorkspaceError(
-                WorkspaceErrorCode.NOT_FOUND, "old text was not found"
-            )
+            raise WorkspaceError(WorkspaceErrorCode.NOT_FOUND, "old text was not found")
         if occurrences > 1:
             raise WorkspaceError(
                 WorkspaceErrorCode.NOT_UNIQUE,

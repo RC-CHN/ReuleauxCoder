@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.list_file import (
     ListFileTool,
     _sanitize_name,
@@ -48,8 +49,12 @@ class TestFormatMode:
 
 class TestListFileExecute:
     @pytest.fixture
-    def tool(self):
-        return ListFileTool()
+    def tool(self, tmp_path: Path):
+        return ListFileTool(
+            LocalToolBackend(
+                ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+            )
+        )
 
     def test_default_listing(self, tool, tmp_path: Path):
         (tmp_path / "README.md").write_text("hello")

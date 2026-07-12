@@ -31,6 +31,17 @@ def test_atomic_write_returns_previous_content(tmp_path: Path) -> None:
     assert path.read_text() == "new"
 
 
+def test_text_primitives_preserve_newline_bytes(tmp_path: Path) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_bytes(b"old\r\n")
+
+    previous = workspace.write_text_atomic("file.txt", "new\n")
+
+    assert previous == "old\r\n"
+    assert path.read_bytes() == b"new\n"
+
+
 def test_exact_replace_is_atomic_and_requires_unique_match(tmp_path: Path) -> None:
     workspace = LocalWorkspacePort(tmp_path)
     path = tmp_path / "file.txt"
@@ -49,7 +60,9 @@ def test_exact_replace_is_atomic_and_requires_unique_match(tmp_path: Path) -> No
     assert path.read_text() == "x x"
 
 
-def test_structured_list_is_recursive_bounded_and_hides_dotfiles(tmp_path: Path) -> None:
+def test_structured_list_is_recursive_bounded_and_hides_dotfiles(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "visible.txt").write_text("visible")
     (tmp_path / ".hidden").write_text("hidden")
     nested = tmp_path / "nested"

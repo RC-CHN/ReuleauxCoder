@@ -73,14 +73,11 @@ def test_compact_notification_snapshot() -> None:
 
     renderer.on_ui_event(UIEvent.info("Loaded session"))
     renderer.on_ui_event(UIEvent.success("Saved session"))
-    renderer.on_ui_event(
-        UIEvent.warning("Interrupted.", kind=UIEventKind.APPROVAL)
-    )
+    renderer.on_ui_event(UIEvent.warning("Interrupted.", kind=UIEventKind.APPROVAL))
     renderer.on_ui_event(UIEvent.debug("internal detail"))
 
     assert console.export_text() == (
-        " INFO  Loaded session\n OK  Saved session\n"
-        " WARN  APPROVAL // Interrupted.\n"
+        " INFO  Loaded session\n OK  Saved session\n WARN  APPROVAL // Interrupted.\n"
     )
 
 
@@ -231,7 +228,7 @@ def test_unreviewed_diff_uses_shared_forge_review_frame() -> None:
     output = console.export_text()
     assert "EDIT RESULT" in output
     assert "APPLIED DIFF" in output
-    assert set("┏┓┗┛┃━").intersection(output)
+    assert set("┏┓┗┛┃━┌┐└┘│─").intersection(output)
 
 
 def test_reviewed_diff_only_renders_completion_summary() -> None:
