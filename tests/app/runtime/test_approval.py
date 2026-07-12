@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from reuleauxcoder.app.runtime.approval import (
+    build_runtime_approval_provider,
     find_matching_rule,
     is_disabled_mcp_rule,
     parse_approval_target,
@@ -8,6 +9,9 @@ from reuleauxcoder.app.runtime.approval import (
     resolve_mcp_server_action,
     same_rule_target,
 )
+from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.agent.events import AgentEventType
+from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalRequest
 from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
@@ -15,6 +19,22 @@ from reuleauxcoder.domain.config.models import (
 )
 from reuleauxcoder.domain.hooks import HookPoint, HookRegistry
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
+
+
+class _LLM:
+    model = "model"
+
+
+def _approval_agent() -> Agent:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent.runtime_config = SimpleNamespace(
+        approval=ApprovalConfig(reviewer="user"), model_profiles={}
+    )
+    agent.current_session_id = "session"
+    agent.history_ledger.bind_context(
+        session_id="session", agent_id=agent.agent_id
+    )
+    return agent
 
 
 def test_parse_approval_target_supports_tool_and_mcp_targets() -> None:
@@ -100,3 +120,63 @@ def test_refresh_approval_runtime_uses_public_registry_view() -> None:
 
     assert hook.approval_engine is not None
     assert hook.approval_engine.config.default_mode == "allow"
+
+
+def test_runtime_approval_is_ledgered_and_emitted_before_resolution() -> None:
+    agent = _approval_agent()
+    events = []
+    agent.add_event_handler(events.append)
+
+    def handler(pending) -> None:
+        assert agent.history_ledger.events[-1].kind == "approval_requested"
+        pending.resolve(ApprovalDecision.allow_once("approved", reviewed=True))
+
+    provider = build_runtime_approval_provider(agent, handler)
+    request = ApprovalRequest(
+        tool_name="edit_file",
+        metadata={
+            "agent_id": agent.agent_id,
+            "session_generation": agent.session_generation,
+            "turn_id": "turn",
+            "tool_call_id": "call",
+            "approval_attempt": 0,
+        },
+    )
+    decision = provider.request_approval(request)
+
+    assert decision.approved
+    assert [event.kind for event in agent.history_ledger.events] == [
+        "approval_requested",
+        "approval_resolved",
+    ]
+    assert [event.event_type for event in events] == [
+        AgentEventType.APPROVAL_REQUESTED,
+        AgentEventType.APPROVAL_RESOLVED,
+    ]
+    assert agent.history_ledger.events[-1].payload["reason"] == "approved"
+
+
+def test_bubbled_approval_keeps_child_attribution_in_root_ledger() -> None:
+    agent = _approval_agent()
+    provider = build_runtime_approval_provider(
+        agent,
+        lambda pending: pending.resolve(ApprovalDecision.deny_once("no")),
+    )
+    provider.request_approval(
+        ApprovalRequest(
+            tool_name="shell",
+            metadata={
+                "agent_id": "child",
+                "session_generation": 3,
+                "turn_id": "child-turn",
+                "tool_call_id": "child-call",
+                "is_subagent": True,
+                "subagent_job_id": "sj_1",
+            },
+        )
+    )
+    requested, resolved = agent.history_ledger.events
+    assert requested.agent_id == resolved.agent_id == "child"
+    assert requested.parent_agent_id == agent.agent_id
+    assert requested.job_id == "sj_1"
+    assert resolved.payload["reason"] == "no"

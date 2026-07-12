@@ -404,6 +404,8 @@ class AgentEventBridge:
             AgentEventType.TOOL_OUTPUT_DELTA,
             AgentEventType.TOOL_CALL_END,
             AgentEventType.SUBAGENT_COMPLETED,
+            AgentEventType.APPROVAL_REQUESTED,
+            AgentEventType.APPROVAL_RESOLVED,
         ):
             level = UIEventLevel.DEBUG
 

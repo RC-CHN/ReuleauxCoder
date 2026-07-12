@@ -26,6 +26,8 @@ class AgentEventType(Enum):
     DIAGNOSTIC = "diagnostic"
     PLAN_UPDATED = "plan_updated"
     PROGRESS_REPORTED = "progress_reported"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_RESOLVED = "approval_resolved"
 
 
 @dataclass
@@ -226,5 +228,33 @@ class AgentEvent:
                 "phase": phase,
                 "summary": summary,
                 "next": next_step,
+            },
+        )
+
+    @classmethod
+    def approval_requested(
+        cls, *, request_id: str, title: str, preview: str | None = None
+    ) -> "AgentEvent":
+        return cls(
+            event_type=AgentEventType.APPROVAL_REQUESTED,
+            correlation_id=request_id,
+            data={"request_id": request_id, "title": title, "preview": preview},
+        )
+
+    @classmethod
+    def approval_resolved(
+        cls,
+        *,
+        request_id: str,
+        approved: bool,
+        reason: str | None = None,
+    ) -> "AgentEvent":
+        return cls(
+            event_type=AgentEventType.APPROVAL_RESOLVED,
+            correlation_id=request_id,
+            data={
+                "request_id": request_id,
+                "approved": approved,
+                "reason": reason,
             },
         )

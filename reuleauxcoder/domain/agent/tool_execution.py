@@ -168,7 +168,19 @@ class ToolExecutor:
                             "approval_attempt": approval_attempt,
                             "workspace_changed_during_approval": bool(
                                 approval_workspace_changes
-                            )
+                            ),
+                            "is_subagent": bool(
+                                getattr(self.agent, "subagent_job_id", None)
+                            ),
+                            "subagent_job_id": getattr(
+                                self.agent, "subagent_job_id", None
+                            ),
+                            "subagent_mode": getattr(
+                                self.agent, "subagent_mode", None
+                            ),
+                            "subagent_task": getattr(
+                                self.agent, "subagent_task", None
+                            ),
                         },
                     )
                     before_approval = capture_approval_document(

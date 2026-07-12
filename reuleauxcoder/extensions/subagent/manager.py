@@ -1188,6 +1188,10 @@ def run_subagent_task(
     )
     sub.session_generation = getattr(parent_agent, "session_generation", 0)
     sub.subagent_depth = depth
+    sub.parent_agent_id = parent_agent.agent_id
+    sub.subagent_job_id = job_id
+    sub.subagent_mode = mode
+    sub.subagent_task = task
     sub._subagent_manager = manager
     # Child activity remains attributed to the child, but uses the root event
     # transport so every UI can observe chunks/tools without polling workers.

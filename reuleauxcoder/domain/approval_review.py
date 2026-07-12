@@ -141,19 +141,26 @@ class AutoReviewJudge:
 
     def _authorization_transcript(self) -> list[dict]:
         """Return stable user-authored evidence; no agent/tool prose is authority."""
-        state = getattr(self.agent, "state", None)
-        messages = getattr(state, "messages", None)
-        if messages is None:
-            messages = getattr(self.agent, "messages", [])
-        return [
-            {
-                "event_id": f"message:{index}",
-                "role": "user",
-                "text": str(message["content"])[:2000],
-            }
-            for index, message in list(enumerate(messages))[-40:]
-            if message.get("role") == "user" and message.get("content")
-        ]
+        ledger = getattr(self.agent, "history_ledger", None)
+        if ledger is None:
+            return []
+        evidence: list[dict] = []
+        for event in ledger.events:
+            if event.kind != "message_committed":
+                continue
+            message = event.payload.get("message")
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if content:
+                evidence.append(
+                    {
+                        "event_id": event.event_id,
+                        "role": "user",
+                        "text": str(content)[:2000],
+                    }
+                )
+        return evidence[-40:]
 
     def _record_denial(self) -> None:
         turn_id = str(getattr(self.agent, "_current_turn_id", None) or "unknown")

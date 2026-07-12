@@ -134,6 +134,9 @@ or ``None`` to escalate to the human handler. Judges are policy mechanisms;
 sub-agents do not use a parent model as an authorization source.
 """
 
+ApprovalRequestObserver = Callable[["ApprovalRequest"], None]
+ApprovalDecisionObserver = Callable[["ApprovalRequest", "ApprovalDecision"], None]
+
 
 class SharedApprovalProvider(ApprovalProvider):
     """Unified approval provider — handler determines CLI / TUI behaviour.
@@ -149,9 +152,15 @@ class SharedApprovalProvider(ApprovalProvider):
         *,
         judges: list[ApprovalJudge] | None = None,
         coordinator: "ApprovalCoordinator | None" = None,
+        reviewer: Literal["user", "auto_review"] = "user",
+        on_request: ApprovalRequestObserver | None = None,
+        on_decision: ApprovalDecisionObserver | None = None,
     ):
         self._coordinator = coordinator or ApprovalCoordinator(handler)
         self._judges: list[ApprovalJudge] = judges or []
+        self._reviewer = reviewer
+        self._on_request = on_request
+        self._on_decision = on_decision
 
     @property
     def handler(self) -> ApprovalHandler:
@@ -164,14 +173,24 @@ class SharedApprovalProvider(ApprovalProvider):
         return self._coordinator
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-        # ── Optional policy judges ──
-        for judge in self._judges:
-            decision = judge(request)
-            if decision is not None:
-                return decision
-
-        # ── Human handler ──
-        return self._coordinator.request_approval(request)
+        request.metadata["reviewer"] = self._reviewer
+        if self._on_request is not None:
+            self._on_request(request)
+        try:
+            for judge in self._judges:
+                decision = judge(request)
+                if decision is not None:
+                    break
+            else:
+                decision = self._coordinator.request_approval(request)
+        except BaseException:
+            interrupted = ApprovalDecision.deny_once("approval interrupted")
+            if self._on_decision is not None:
+                self._on_decision(request, interrupted)
+            raise
+        if self._on_decision is not None:
+            self._on_decision(request, decision)
+        return decision
 
 
 class ApprovalCoordinator(ApprovalProvider):

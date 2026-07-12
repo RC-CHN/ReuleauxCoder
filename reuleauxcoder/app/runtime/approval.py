@@ -9,7 +9,12 @@ from reuleauxcoder.domain.approval_engine import (
     ApprovalPolicyEngine,
     ToolApprovalContext,
 )
-from reuleauxcoder.domain.approval import SharedApprovalProvider
+from reuleauxcoder.domain.approval import (
+    ApprovalDecision,
+    ApprovalRequest,
+    SharedApprovalProvider,
+)
+from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.approval_review import AutoReviewJudge
 from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
 from reuleauxcoder.domain.config.schema import DEFAULTS
@@ -222,7 +227,13 @@ def build_runtime_approval_provider(agent, handler) -> SharedApprovalProvider:
 
     approval = getattr(getattr(agent, "runtime_config", None), "approval", None)
     judges = []
-    if approval is not None and getattr(approval, "reviewer", "user") == "auto_review":
+    reviewer = (
+        "auto_review"
+        if approval is not None
+        and getattr(approval, "reviewer", "user") == "auto_review"
+        else "user"
+    )
+    if reviewer == "auto_review":
         from reuleauxcoder.services.llm.factory import build_llm_from_settings
 
         profile_name = getattr(approval, "auto_review_model_profile", None)
@@ -243,7 +254,117 @@ def build_runtime_approval_provider(agent, handler) -> SharedApprovalProvider:
                 timeout_seconds=getattr(approval, "auto_review_timeout_seconds", 15),
             )
         )
-    return SharedApprovalProvider(handler=handler, judges=judges)
+    return SharedApprovalProvider(
+        handler=handler,
+        judges=judges,
+        reviewer=reviewer,
+        on_request=lambda request: _record_approval_request(agent, request),
+        on_decision=lambda request, decision: _record_approval_decision(
+            agent, request, decision
+        ),
+    )
+
+
+def _approval_identity(agent, request: ApprovalRequest) -> dict:
+    metadata = request.metadata
+    return {
+        "agent_id": str(metadata.get("agent_id") or agent.agent_id),
+        "session_generation": int(
+            metadata.get("session_generation", agent.session_generation)
+        ),
+        "turn_id": metadata.get("turn_id"),
+        "tool_call_id": metadata.get("tool_call_id"),
+        "job_id": metadata.get("subagent_job_id"),
+        "parent_agent_id": (
+            agent.agent_id if metadata.get("is_subagent") else None
+        ),
+    }
+
+
+def _record_approval_request(agent, request: ApprovalRequest) -> None:
+    identity = _approval_identity(agent, request)
+    sections = [
+        {
+            "id": section.id,
+            "title": section.title,
+            "kind": section.kind.value,
+            "content": section.content,
+        }
+        for section in (request.preview.sections if request.preview else ())
+    ]
+    agent.history_ledger.append(
+        "approval_requested",
+        {
+            "request_id": request.request_id,
+            "tool_name": request.tool_name,
+            "tool_args": request.tool_args,
+            "tool_source": request.tool_source,
+            "effect_class": request.effect_class,
+            "profile": request.profile,
+            "reason": request.reason,
+            "reviewer": request.metadata.get("reviewer"),
+            "approval_attempt": request.metadata.get("approval_attempt"),
+            "preview": sections,
+            "metadata": dict(request.metadata),
+        },
+        agent_id=identity["agent_id"],
+        parent_agent_id=identity["parent_agent_id"],
+        job_id=identity["job_id"],
+        turn_id=identity["turn_id"],
+        api_round_id=(
+            f"{identity['turn_id']}:{agent.state.current_round}"
+            if identity["turn_id"]
+            else None
+        ),
+    )
+    preview_text = sections[0]["title"] if sections else None
+    event = AgentEvent.approval_requested(
+        request_id=request.request_id,
+        title=f"Approval required: {request.tool_name}",
+        preview=preview_text,
+    )
+    event.agent_id = identity["agent_id"]
+    event.session_generation = identity["session_generation"]
+    event.turn_id = identity["turn_id"]
+    agent._emit_event(event)
+    agent.persist_runtime_snapshot()
+
+
+def _record_approval_decision(
+    agent, request: ApprovalRequest, decision: ApprovalDecision
+) -> None:
+    identity = _approval_identity(agent, request)
+    agent.history_ledger.append(
+        "approval_resolved",
+        {
+            "request_id": request.request_id,
+            "approved": decision.approved,
+            "mode": decision.mode,
+            "reason": decision.reason,
+            "reviewed": decision.reviewed,
+            "reviewer": request.metadata.get("reviewer"),
+            "approval_attempt": request.metadata.get("approval_attempt"),
+        },
+        agent_id=identity["agent_id"],
+        parent_agent_id=identity["parent_agent_id"],
+        job_id=identity["job_id"],
+        turn_id=identity["turn_id"],
+        api_round_id=(
+            f"{identity['turn_id']}:{agent.state.current_round}"
+            if identity["turn_id"]
+            else None
+        ),
+    )
+    event = AgentEvent.approval_resolved(
+        request_id=request.request_id,
+        approved=decision.approved,
+        reason=decision.reason,
+    )
+    event.agent_id = identity["agent_id"]
+    event.session_generation = identity["session_generation"]
+    event.turn_id = identity["turn_id"]
+    agent._emit_event(event)
+    agent.persist_runtime_snapshot()
 
 
 def is_disabled_mcp_rule(config, rule: ApprovalRuleConfig) -> bool:

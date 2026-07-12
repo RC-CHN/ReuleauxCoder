@@ -60,6 +60,7 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
                     subagent_mode=request.metadata.get("subagent_mode"),
                     subagent_task=request.metadata.get("subagent_task"),
                 ),
+                request_id=request.request_id,
             )
         )
 

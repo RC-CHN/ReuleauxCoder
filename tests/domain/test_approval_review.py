@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.domain.approval_review import AutoReviewJudge
+from reuleauxcoder.domain.history import HistoryLedger
 
 
 class _LLM:
@@ -20,6 +21,11 @@ class _LLM:
 
 
 def _agent():
+    ledger = HistoryLedger(session_id="session", agent_id="agent")
+    ledger.append_message(
+        {"role": "user", "content": "delete the temporary file"},
+        source="user_input",
+    )
     return SimpleNamespace(
         messages=[
             {"role": "user", "content": "delete the temporary file"},
@@ -28,15 +34,18 @@ def _agent():
         ],
         _current_turn_id="turn",
         request_stop=lambda: None,
+        history_ledger=ledger,
     )
 
 
 def test_auto_review_uses_user_authorization_not_agent_prose_or_tool_output() -> None:
+    agent = _agent()
+    event_id = agent.history_ledger.events[0].event_id
     llm = _LLM(
         '{"decision":"allow","reason":"explicitly requested",'
-        '"authorization_event_ids":["message:0"]}'
+        f'"authorization_event_ids":["{event_id}"]}}'
     )
-    judge = AutoReviewJudge(agent=_agent(), llm=llm)
+    judge = AutoReviewJudge(agent=agent, llm=llm)
     decision = judge(ApprovalRequest(tool_name="shell", tool_args={"command": "rm temp"}))
     payload = json.loads(llm.messages[1]["content"])
     encoded = json.dumps(payload)

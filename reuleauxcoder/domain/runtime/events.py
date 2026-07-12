@@ -418,6 +418,18 @@ def agent_event_to_runtime_event(
             summary=str(event.data.get("summary", "")),
             next=event.data.get("next"),
         )
+    elif event.event_type is AgentEventType.APPROVAL_REQUESTED:
+        payload = ApprovalRequested(
+            request_id=str(event.data.get("request_id") or event.event_id),
+            title=str(event.data.get("title") or "Approval required"),
+            preview=event.data.get("preview"),
+        )
+    elif event.event_type is AgentEventType.APPROVAL_RESOLVED:
+        payload = ApprovalResolved(
+            request_id=str(event.data.get("request_id") or event.event_id),
+            approved=bool(event.data.get("approved")),
+            reason=event.data.get("reason"),
+        )
     else:
         raise ValueError(f"Unsupported legacy agent event: {event.event_type.value}")
 
