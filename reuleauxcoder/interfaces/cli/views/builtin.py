@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from rich.markdown import Markdown
-from rich.table import Table
-
 from reuleauxcoder.interfaces.cli.views.common import (
+    make_table,
+    render_heading,
+    render_notice,
     stop_stream_and_clear,
 )
 from reuleauxcoder.interfaces.view_registry import ViewRendererSpec
@@ -23,6 +24,7 @@ from reuleauxcoder.app.commands.view_models import (
 from reuleauxcoder.extensions.mcp.models import MCPServersView
 from reuleauxcoder.interfaces.events import ViewEventPayload
 from reuleauxcoder.presentation.policy import fold_text
+from reuleauxcoder.presentation.semantics import DisplayTone
 
 
 def _view_model(event):
@@ -36,7 +38,7 @@ def render_mcp_servers_view(renderer, event) -> bool:
         return False
     servers = model.servers
     stop_stream_and_clear(renderer)
-    renderer.console.print("[bold blue]MCP Servers[/bold blue]")
+    render_heading(renderer, "MCP SERVERS")
     if not servers:
         renderer.console.print("No MCP servers configured.")
         return True
@@ -63,7 +65,7 @@ def render_sessions_view(renderer, event) -> bool:
     show_all = model.show_all
     scope = "all fingerprints" if show_all else f"fingerprint: {fingerprint or 'local'}"
     stop_stream_and_clear(renderer)
-    renderer.console.print("[bold blue]Saved Sessions[/bold blue]")
+    render_heading(renderer, "SAVED SESSIONS")
     if not sessions:
         renderer.console.print(f"No saved sessions for {scope}")
         return True
@@ -85,7 +87,7 @@ def render_effective_config_view(renderer, event) -> bool:
     if not isinstance(model, EffectiveConfigViewModel):
         return False
     stop_stream_and_clear(renderer)
-    table = Table(
+    table = make_table(renderer,
         title="Effective Configuration", show_header=True, box=None, pad_edge=False
     )
     table.add_column("Path")
@@ -95,7 +97,7 @@ def render_effective_config_view(renderer, event) -> bool:
         table.add_row(row.path, row.value, row.source)
     renderer.console.print(table)
     for diagnostic in model.diagnostics:
-        renderer.console.print(f"[yellow]⚠ {diagnostic}[/yellow]")
+        render_notice(renderer, diagnostic, DisplayTone.WARNING)
     sections = (
         ("Extension Graph", model.extension_graph),
         ("Extension Scopes", model.extension_scopes),
@@ -106,7 +108,7 @@ def render_effective_config_view(renderer, event) -> bool:
     for title, values in sections:
         if not values:
             continue
-        renderer.console.print(f"[bold]{title}[/bold]")
+        render_heading(renderer, title, DisplayTone.NEUTRAL)
         for value in values:
             renderer.console.print(f"  {value}")
     return True
@@ -118,9 +120,9 @@ def render_help_view(renderer, event) -> bool:
         return False
     stop_stream_and_clear(renderer)
     if model.diagnostic:
-        renderer.console.print(f"[yellow]{model.diagnostic}[/yellow]")
+        render_notice(renderer, model.diagnostic, DisplayTone.WARNING)
         return True
-    table = Table(title="Commands", show_header=True, box=None, pad_edge=False)
+    table = make_table(renderer, title="COMMANDS", show_header=True)
     table.add_column("Feature")
     table.add_column("Command")
     table.add_column("Description")
@@ -144,7 +146,7 @@ def render_model_profiles_view(renderer, event) -> bool:
         f"Main: {model.active_main or model.current_model}  "
         f"Sub: {model.active_sub or 'inherits main'}"
     )
-    table = Table(
+    table = make_table(renderer,
         title="Model Profiles", show_header=True, box=None, pad_edge=False
     )
     table.add_column("Profile")
@@ -168,7 +170,7 @@ def render_model_profiles_view(renderer, event) -> bool:
         )
     renderer.console.print(table)
     for diagnostic in model.diagnostics:
-        renderer.console.print(f"[yellow]⚠ {diagnostic}[/yellow]")
+        render_notice(renderer, diagnostic, DisplayTone.WARNING)
     return True
 
 
@@ -177,7 +179,7 @@ def render_modes_view(renderer, event) -> bool:
     if not isinstance(model, ModesViewModel):
         return False
     stop_stream_and_clear(renderer)
-    table = Table(
+    table = make_table(renderer,
         title=f"Modes · active={model.active_mode or 'none'}",
         box=None,
         pad_edge=False,
@@ -202,7 +204,7 @@ def render_token_usage_view(renderer, event) -> bool:
     if not isinstance(model, TokenUsageViewModel):
         return False
     stop_stream_and_clear(renderer)
-    table = Table(
+    table = make_table(renderer,
         title="Token Usage", show_header=False, box=None, pad_edge=False
     )
     table.add_column("Metric")
@@ -231,7 +233,7 @@ def render_approval_rules_view(renderer, event) -> bool:
     renderer.console.print(
         f"Default: {model.default_mode} ({model.default_mode_source})"
     )
-    rules = Table(title="Approval Rules", box=None, pad_edge=False)
+    rules = make_table(renderer, title="APPROVAL RULES")
     rules.add_column("Scope")
     rules.add_column("Target")
     rules.add_column("Action")
@@ -241,7 +243,7 @@ def render_approval_rules_view(renderer, event) -> bool:
         rules.add_row(rule.scope, target, rule.action, rule.source)
     renderer.console.print(rules)
 
-    policies = Table(title="Effective Tool Policies", box=None, pad_edge=False)
+    policies = make_table(renderer, title="EFFECTIVE TOOL POLICIES")
     policies.add_column("Tool")
     policies.add_column("Action")
     policies.add_column("Source")
@@ -261,7 +263,7 @@ def render_skills_view(renderer, event) -> bool:
         f"Skills: {summary.active} active / {summary.discovered} discovered / "
         f"{summary.disabled} disabled"
     )
-    table = Table(title="Skills", box=None, pad_edge=False)
+    table = make_table(renderer, title="SKILLS")
     table.add_column("Name")
     table.add_column("State")
     table.add_column("Scope")
@@ -275,8 +277,12 @@ def render_skills_view(renderer, event) -> bool:
         )
     renderer.console.print(table)
     for diagnostic in model.diagnostics:
-        color = "yellow" if diagnostic.level == "warning" else "red"
-        renderer.console.print(f"[{color}]{diagnostic.message}[/{color}]")
+        tone = (
+            DisplayTone.WARNING
+            if diagnostic.level == "warning"
+            else DisplayTone.ERROR
+        )
+        render_notice(renderer, diagnostic.message, tone)
     return True
 
 
@@ -289,7 +295,7 @@ def render_subagent_jobs_view(renderer, event) -> bool:
         f"Explore workers: {model.runtime_parallel_explore}/"
         f"{model.max_parallel_explore}"
     )
-    table = Table(title="Sub-agent Jobs", box=None, pad_edge=False)
+    table = make_table(renderer, title="SUB-AGENT JOBS")
     table.add_column("Job")
     table.add_column("Status")
     table.add_column("Mode")
@@ -312,7 +318,7 @@ def render_subagent_jobs_view(renderer, event) -> bool:
                 max_lines=renderer.policy.tool_preview_lines,
                 max_chars=renderer.policy.tool_preview_chars,
             )
-            renderer.console.print(f"[red]{error}[/red]", soft_wrap=True)
+            render_notice(renderer, error, DisplayTone.ERROR)
         if job.result:
             result = fold_text(
                 job.result,

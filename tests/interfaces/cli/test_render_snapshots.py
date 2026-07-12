@@ -30,13 +30,14 @@ def render_agent_event(renderer: CLIRenderer, event: AgentEvent) -> None:
     [
         (
             80,
-            "› shell(command='python -m pytest tests/unit --maxfail=1', …)\n"
-            "  540 passed in 120.63s\n",
+            " RUN  python -m pytest tests/unit --maxfail=1  timeout=120, …\n"
+            " └ 540 passed in 120.63s\n",
         ),
         (
             120,
-            "› shell(command='python -m pytest tests/unit --maxfail=1', timeout=120, …)\n"
-            "  540 passed in 120.63s\n",
+            " RUN  python -m pytest tests/unit --maxfail=1  timeout=120, "
+            "description='run focused regression tests'\n"
+            " └ 540 passed in 120.63s\n",
         ),
     ],
 )
@@ -78,7 +79,8 @@ def test_compact_notification_snapshot() -> None:
     renderer.on_ui_event(UIEvent.debug("internal detail"))
 
     assert console.export_text() == (
-        "Loaded session\n✓ Saved session\n⚠ approval: Interrupted.\n"
+        " INFO  Loaded session\n OK  Saved session\n"
+        " WARN  APPROVAL // Interrupted.\n"
     )
 
 
@@ -90,22 +92,22 @@ def test_compact_notification_snapshot() -> None:
             ToolOutputMode.SUMMARY,
             False,
             80,
-            "› shell()\n  Command completed · line one\n",
+            " RUN \n └ Command completed · line one\n",
         ),
         (
             Verbosity.COMPACT,
             ToolOutputMode.SUMMARY,
             False,
             120,
-            "› shell()\n  Command completed · line one\n",
+            " RUN \n └ Command completed · line one\n",
         ),
         (
             Verbosity.STANDARD,
             ToolOutputMode.PREVIEW,
             True,
             80,
-            "› shell(command='python -m pytest tests/unit --maxfail=1', …)\n"
-            "  line one\n… (output folded; 3 lines, 28 chars total; set "
+            " RUN  python -m pytest tests/unit --maxfail=1  timeout=120, …\n"
+            " └ line one\n… (output folded; 3 lines, 28 chars total; set "
             "ui.tool_output=full to show all)\nline three\n",
         ),
         (
@@ -113,8 +115,9 @@ def test_compact_notification_snapshot() -> None:
             ToolOutputMode.PREVIEW,
             True,
             120,
-            "› shell(command='python -m pytest tests/unit --maxfail=1', timeout=120, …)\n"
-            "  line one\n… (output folded; 3 lines, 28 chars total; set "
+            " RUN  python -m pytest tests/unit --maxfail=1  timeout=120, "
+            "description='run focused regression tests'\n"
+            " └ line one\n… (output folded; 3 lines, 28 chars total; set "
             "ui.tool_output=full to show all)\nline three\n",
         ),
         (
@@ -122,16 +125,17 @@ def test_compact_notification_snapshot() -> None:
             ToolOutputMode.FULL,
             True,
             80,
-            "› shell(command='python -m pytest tests/unit --maxfail=1', …)\n"
-            "  line one\nline two\nline three\n",
+            " RUN  python -m pytest tests/unit --maxfail=1  timeout=120, …\n"
+            " └ line one\nline two\nline three\n",
         ),
         (
             Verbosity.DEBUG,
             ToolOutputMode.FULL,
             True,
             120,
-            "› shell(command='python -m pytest tests/unit --maxfail=1', timeout=120, …)\n"
-            "  line one\nline two\nline three\n",
+            " RUN  python -m pytest tests/unit --maxfail=1  timeout=120, "
+            "description='run focused regression tests'\n"
+            " └ line one\nline two\nline three\n",
         ),
     ],
 )
@@ -201,7 +205,7 @@ def test_compact_tool_error_is_a_single_line_snapshot() -> None:
         ),
     )
 
-    assert console.export_text() == "  × shell: permission denied\n"
+    assert console.export_text() == " FAIL  shell  permission denied\n"
 
 
 def test_long_notification_is_head_tail_folded() -> None:
@@ -237,9 +241,11 @@ def test_startup_banner_is_compact_and_terminal_bounded(width: int) -> None:
     )
     output = console.export_text()
 
-    assert ">_ ReuleauxCoder (v0.4.1)" in output
+    assert "FORGE   REULEAUXCODER  //  V0.4.1" in output
+    assert "SESSION PLATE" in output
     assert "demo/model" in output
-    assert "LSP: 9/9 language servers ready" in output
+    assert "LSP: 9/9 language servers" in output
+    assert "ready" in output
     assert "Auto-resumed latest session" in output
     assert "/help" in output
     assert max(map(len, output.splitlines())) <= min(width, 88)

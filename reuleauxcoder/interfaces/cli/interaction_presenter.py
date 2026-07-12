@@ -18,7 +18,9 @@ from reuleauxcoder.interfaces.interactions import (
     ReviewRequest,
 )
 from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
+from reuleauxcoder.interfaces.cli.theme import CLITheme, DEFAULT_CLI_THEME
 from reuleauxcoder.presentation.policy import fold_text
+from reuleauxcoder.presentation.semantics import DisplayTone
 
 
 def render_interaction_request(
@@ -27,18 +29,20 @@ def render_interaction_request(
     *,
     max_preview_lines: int = 20,
     max_preview_chars: int = 1_200,
+    theme: CLITheme = DEFAULT_CLI_THEME,
 ) -> None:
     """Render adapter-neutral facts without resize-fragile box borders."""
     if isinstance(request, ConfirmRequest):
-        _heading(console, request.title)
+        _heading(console, request.title, theme=theme, tone=DisplayTone.WARNING)
         _body(console, request.message, max_preview_lines, max_preview_chars)
         return
     if isinstance(request, ChooseOneRequest):
         table = Table(
-            title=request.title,
+            title=theme.label(request.title, DisplayTone.ACCENT),
             show_header=True,
             box=None,
             pad_edge=False,
+            header_style=theme.style(DisplayTone.ACCENT),
         )
         table.add_column("#", justify="right")
         table.add_column("Choice")
@@ -50,14 +54,14 @@ def render_interaction_request(
             console.print(request.message)
         return
     if isinstance(request, InputTextRequest):
-        _heading(console, request.title, color="cyan")
+        _heading(console, request.title, theme=theme)
         _body(console, request.prompt, max_preview_lines, max_preview_chars)
         return
     if isinstance(request, ReviewRequest):
-        _heading(console, request.title)
+        _heading(console, request.title, theme=theme, tone=DisplayTone.WARNING)
         _body(console, request.summary, max_preview_lines, max_preview_chars)
         for section in request.sections:
-            console.print(f"[bold]{escape(section.title)}[/bold]")
+            _heading(console, section.title, theme=theme, tone=DisplayTone.NEUTRAL)
             if (
                 section.kind is ApprovalSectionKind.DIFF
                 and isinstance(section.content, str)
@@ -67,6 +71,7 @@ def render_interaction_request(
                     console,
                     max_lines=max_preview_lines,
                     max_chars=max_preview_chars,
+                    theme=theme,
                 )
             elif (
                 section.kind is ApprovalSectionKind.JSON
@@ -87,14 +92,23 @@ def render_interaction_request(
                     max_preview_chars,
                 )
         console.print()
-        console.print(f"  1. {escape(request.approve_label)} [dim](y)[/dim]")
-        console.print(f"  2. {escape(request.reject_label)} [dim](n)[/dim]")
-        console.print("  Press y/n or 1/2; Ctrl+C cancels", style="dim")
+        console.print(f"  [1/Y] {escape(request.approve_label)}")
+        console.print(f"  [2/N] {escape(request.reject_label)}")
+        console.print(
+            "  SELECT 1/2 OR Y/N // CTRL+C CANCELS",
+            style=theme.style(DisplayTone.MUTED),
+        )
 
 
-def _heading(console: Console, title: str, *, color: str | None = None) -> None:
-    style = f"bold {color}" if color else "bold"
-    console.print(f"  [{style}]{escape(title)}[/{style}]")
+def _heading(
+    console: Console,
+    title: str,
+    *,
+    theme: CLITheme,
+    tone: DisplayTone = DisplayTone.ACCENT,
+) -> None:
+    row = theme.label(title, tone)
+    console.print(row)
 
 
 def _body(console: Console, text: str, max_lines: int, max_chars: int) -> None:

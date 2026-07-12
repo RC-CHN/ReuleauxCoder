@@ -1,16 +1,11 @@
 """CLI rendering - event-driven UI renderer."""
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from collections.abc import Callable
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.markup import escape as _escape_markup
-from rich.panel import Panel
-from rich.text import Text
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.runtime.events import (
@@ -33,6 +28,9 @@ from reuleauxcoder.domain.runtime.events import (
 )
 from reuleauxcoder.interfaces.cli.views.registry import create_cli_view_registry
 from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
+from reuleauxcoder.interfaces.cli.history import CLIHistoryPresenter
+from reuleauxcoder.interfaces.cli.theme import CLITheme, DEFAULT_CLI_THEME
+from reuleauxcoder.interfaces.cli.startup import show_banner as show_banner
 from reuleauxcoder.interfaces.events import (
     ReasoningNoticePayload,
     InteractionPromptPayload,
@@ -40,11 +38,11 @@ from reuleauxcoder.interfaces.events import (
     RuntimeEventPayload,
     UIEvent,
     UIEventKind,
-    UIEventLevel,
     ViewEventPayload,
 )
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
 from reuleauxcoder.presentation import (
+    DisplayTone,
     PresentationPolicy,
     PresentationReducer,
     ReasoningDisplay,
@@ -146,12 +144,15 @@ class CLIRenderer:
         console_override: Console | None = None,
         reducer: PresentationReducer | None = None,
         policy: PresentationPolicy | None = None,
+        theme: CLITheme = DEFAULT_CLI_THEME,
         terminal_width_provider: Callable[[], int | None] | None = None,
     ):
         self.console = console_override or console
         self._active_content_block: _ContentBlock | None = None
         self.reducer = reducer or PresentationReducer(policy=policy)
         self.policy = self.reducer.policy
+        self.theme = theme
+        self.history = CLIHistoryPresenter(self.console, self.policy, theme)
         self.view_registry = view_registry or create_cli_view_registry()
         self._terminal_width_provider = terminal_width_provider
         # Reasoning streaming state
@@ -203,27 +204,33 @@ class CLIRenderer:
             self._render_runtime_notification(payload)
         elif isinstance(payload, DiagnosticsPublished) and changes:
             if payload.diagnostics:
-                self.console.print(
+                self.history.notice(
                     f"LSP: {len(payload.diagnostics)} diagnostic(s) in "
-                    f"{payload.file_path}"
+                    f"{payload.file_path}",
+                    level="warning",
+                    category="lsp",
                 )
         elif isinstance(payload, DiagnosticsCleared) and changes:
             if self.policy.verbosity is not Verbosity.COMPACT:
-                self.console.print(f"LSP: clean {payload.file_path}")
+                self.history.notice(
+                    f"clean {payload.file_path}", level="success", category="lsp"
+                )
         elif isinstance(payload, ApprovalRequested) and changes:
-            self.console.print(f"Approval requested: {payload.title}")
+            self.history.notice(
+                payload.title, level="warning", category="approval"
+            )
         elif isinstance(payload, ApprovalResolved) and changes:
             status = "approved" if payload.approved else "denied"
-            self.console.print(f"Approval {status}: {payload.request_id}")
+            self.history.notice(
+                f"{status}: {payload.request_id}",
+                level="success" if payload.approved else "warning",
+                category="approval",
+            )
 
     def _render_runtime_notification(self, payload: NotificationRaised) -> None:
         level = payload.severity.lower()
-        if level == "error":
-            self.console.print(f"[red]{payload.message}[/red]")
-        elif level == "warning":
-            self.console.print(f"[yellow]{payload.message}[/yellow]")
-        elif self.policy.verbosity is not Verbosity.COMPACT:
-            self.console.print(payload.message)
+        if level in {"error", "warning"} or self.policy.verbosity is not Verbosity.COMPACT:
+            self.history.notice(payload.message, level=level)
 
     def on_ui_event(self, event: UIEvent) -> None:
         """Handle a UI bus event."""
@@ -248,6 +255,7 @@ class CLIRenderer:
                 event.payload.request,
                 max_preview_lines=self.policy.tool_preview_lines,
                 max_preview_chars=self.policy.tool_preview_chars,
+                theme=self.theme,
             )
             return
 
@@ -290,16 +298,16 @@ class CLIRenderer:
 
         if mode == "quiet":
             if not self._reasoning_label_printed:
-                self.console.print("  [dim]Thinking...[/dim]")
+                self.history.reasoning_indicator()
                 self._reasoning_label_printed = True
             return
 
         # inline mode
         if not self._reasoning_label_printed:
             self._close_active_content_block()
-            self.console.print("  [dim]Thinking: [/dim]", end="")
+            self.history.reasoning_prefix()
             self._reasoning_label_printed = True
-        self.console.print(f"[dim]{_escape_markup(token)}[/dim]", end="")
+        self.console.print(token, style=self.theme.style(DisplayTone.MUTED), end="")
 
     def _flush_completed_paragraphs(self) -> None:
         """Render completed blocks from the active content block.
@@ -351,52 +359,22 @@ class CLIRenderer:
     def _render_tool_start(self, name: str, args: dict | None) -> None:
         """Render tool call start."""
         self._close_active_content_block()
-        args_str = brief(args, maxlen=max(24, self.console.width - 20)) if (
-            args and self.policy.show_tool_args
-        ) else ""
-        call_text = f"{name}({args_str})" if args_str else f"{name}()"
-        self.console.print(f"[cyan]›[/cyan] [bold]{call_text}[/bold]")
+        self.history.tool_started(name, args)
 
     def _render_tool_end(self, name: str, outcome: ToolOutcome) -> None:
         """Render tool call result."""
-        display = self.policy.tool_preview(outcome)
-        if not display:
-            return
-        if outcome.success:
-            self.console.print(
-                f"  [dim]{_escape_markup(display)}[/dim]", soft_wrap=True
-            )
-            diff = self.policy.tool_diff_preview(outcome)
-            if diff:
-                render_diff_panel(diff, self.console)
-        else:
-            self.console.print(
-                f"  [red]× {name}: {_escape_markup(display)}[/red]",
-                soft_wrap=True,
-            )
+        self.history.tool_finished(name, outcome)
 
     def _render_subagent_completed(self, payload: SubagentFinished) -> None:
         """Render a concise sub-agent completion notification."""
-        body = f"id={payload.job_id} mode={payload.mode}"
-        if payload.error:
-            error = fold_text(
-                payload.error,
-                max_lines=self.policy.tool_preview_lines,
-                max_chars=self.policy.tool_preview_chars,
-            )
-            self.console.print(
-                f"[red]× subagent[/red] {body} {payload.status}: "
-                f"{_escape_markup(error)}",
-                soft_wrap=True,
-            )
-        else:
-            self.console.print(f"[magenta]↳ subagent[/magenta] {body} {payload.status}")
+        self.history.subagent_finished(payload)
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""
         render_diff_panel(
             result,
             self.console,
+            theme=self.theme,
             max_lines=self.policy.tool_preview_lines,
             max_chars=self.policy.tool_preview_chars,
         )
@@ -404,7 +382,7 @@ class CLIRenderer:
     def _render_error(self, message: str | None) -> None:
         """Render an error message."""
         if message:
-            self.console.print(f"[red]{message}[/red]")
+            self.history.notice(message, level="error")
 
     def _render_remote_stream(self, payload: RemoteStreamPayload) -> None:
         """Render raw remote stream chunk directly to terminal."""
@@ -423,19 +401,12 @@ class CLIRenderer:
         # Reasoning content display (/thinking command)
         if isinstance(event.payload, ReasoningNoticePayload):
             self._close_active_content_block()
-            self.console.print(
-                f"[bold bright_black]{_escape_markup(event.payload.title)}[/bold bright_black]"
+            self.history.notice(
+                message,
+                level="info",
+                category=event.payload.title,
             )
-            self.console.print(message, soft_wrap=True)
             return
-
-        border_style = {
-            UIEventLevel.INFO: "blue",
-            UIEventLevel.SUCCESS: "green",
-            UIEventLevel.WARNING: "yellow",
-            UIEventLevel.ERROR: "red",
-            UIEventLevel.DEBUG: "bright_black",
-        }[event.level]
 
         self._close_active_content_block()
         self.reducer.append_notice(
@@ -446,22 +417,10 @@ class CLIRenderer:
         )
         if not self.policy.should_render_notification(event.level.value):
             return
-        if event.level is UIEventLevel.INFO:
-            self.console.print(f"[dim]{_escape_markup(message)}[/dim]", soft_wrap=True)
-            return
-        if event.level is UIEventLevel.SUCCESS:
-            self.console.print(
-                f"[green]✓[/green] {_escape_markup(message)}", soft_wrap=True
-            )
-            return
-        marker = "⚠" if event.level is UIEventLevel.WARNING else "×"
-        category = (
-            f"{event.kind.value}: " if event.kind is not UIEventKind.SYSTEM else ""
-        )
-        self.console.print(
-            f"[{border_style}]{marker} {category}{_escape_markup(message)}"
-            f"[/{border_style}]",
-            soft_wrap=True,
+        self.history.notice(
+            message,
+            level=event.level.value,
+            category=event.kind.value,
         )
 
     def _render_view_event(
@@ -532,94 +491,13 @@ def brief(kwargs: dict, maxlen: int = 80) -> str:
     return ", ".join(parts)
 
 
-def show_banner(
-    model: str,
-    base_url: str | None,
-    version: str,
-    *,
-    console_override: Console | None = None,
-    startup_events: Sequence[UIEvent] = (),
-) -> None:
-    from reuleauxcoder.infrastructure.platform import get_platform_info
-
-    target = console_override or console
-    platform_info = get_platform_info()
-    shell = platform_info.get_preferred_shell()
-    panel_width = min(88, target.width)
-    value_width = max(8, panel_width - 16)
-    body = Text()
-    body.append(">_ ", style="dim")
-    body.append("ReuleauxCoder", style="bold magenta")
-    body.append(f" (v{version})", style="dim")
-    body.append("\n\n")
-    body.append("model:     ", style="dim")
-    body.append(_truncate_middle(model, value_width))
-    body.append("\n")
-    body.append("directory: ", style="dim")
-    body.append(_truncate_middle(str(Path.cwd()), value_width))
-    body.append("\n")
-    body.append("runtime:   ", style="dim")
-    body.append(f"{platform_info.system.upper()} · {shell.value}")
-    if base_url:
-        body.append("\n")
-        body.append("base:      ", style="dim")
-        body.append(_truncate_middle(base_url, value_width), style="dim")
-
-    visible_startup = [
-        event for event in startup_events if event.level is not UIEventLevel.DEBUG
-    ]
-    if visible_startup:
-        body.append("\n\n")
-    markers = {
-        UIEventLevel.INFO: ("• ", "dim"),
-        UIEventLevel.SUCCESS: ("✓ ", "green"),
-        UIEventLevel.WARNING: ("⚠ ", "yellow"),
-        UIEventLevel.ERROR: ("× ", "red"),
-        UIEventLevel.DEBUG: ("· ", "dim"),
-    }
-    for event_index, event in enumerate(visible_startup):
-        marker, marker_style = markers[event.level]
-        lines = event.message.splitlines() or [""]
-        for line_index, line in enumerate(lines):
-            body.append(marker if line_index == 0 else "  ", style=marker_style)
-            body.append(line)
-            if line_index < len(lines) - 1:
-                body.append("\n")
-        if event_index < len(visible_startup) - 1:
-            body.append("\n")
-
-    target.print(
-        Panel(
-            body,
-            border_style="bright_black",
-            width=panel_width,
-            expand=False,
-            padding=(0, 1),
-        )
-    )
-    target.print(
-        "  [cyan]/help[/cyan] commands  ·  [cyan]Ctrl+C[/cyan] cancel  ·  "
-        "[cyan]/quit[/cyan] exit"
-    )
-
-
-def _truncate_middle(value: str, width: int) -> str:
-    if len(value) <= width:
-        return value
-    if width <= 1:
-        return "…"[:width]
-    left = (width - 1 + 1) // 2
-    right = width - 1 - left
-    return f"{value[:left]}…{value[-right:]}" if right else f"{value[:left]}…"
-
-
 def show_error(text: str) -> None:
-    console.print(f"[red]{text}[/red]")
+    CLIHistoryPresenter(console, PresentationPolicy()).notice(text, level="error")
 
 
 def show_warning(text: str) -> None:
-    console.print(f"[yellow]{text}[/yellow]")
+    CLIHistoryPresenter(console, PresentationPolicy()).notice(text, level="warning")
 
 
 def show_info(text: str) -> None:
-    console.print(text)
+    CLIHistoryPresenter(console, PresentationPolicy()).notice(text, level="info")
