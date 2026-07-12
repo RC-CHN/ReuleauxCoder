@@ -311,6 +311,30 @@ class ContextManager:
     ) -> None:
         """Restore immutable checkpoint metadata without regenerating summaries."""
         self._checkpoints = list(checkpoints)
+        self._snip_epochs_since_summary = 0
+        self._rounds_at_last_semantic_checkpoint = 0
+        semantic_layers = {
+            "partial_prefix",
+            "phase_checkpoint",
+            "full_recovery",
+            "summarize",
+            "summarize_old",
+            "collapse",
+            "hard_collapse",
+        }
+        for checkpoint in reversed(self._checkpoints):
+            strategy = set(checkpoint.strategy)
+            if strategy & semantic_layers:
+                self._rounds_at_last_semantic_checkpoint = len(
+                    group_api_rounds(list(checkpoint.replacement_history))
+                )
+                break
+            if strategy & {
+                "snip",
+                "snip_tool_outputs",
+                "provider_tool_cache_compaction",
+            }:
+                self._snip_epochs_since_summary += 1
 
     def clear_usage_observations(self) -> None:
         """Clear request-local calibration before restoring another session."""

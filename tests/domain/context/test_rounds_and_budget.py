@@ -1,6 +1,7 @@
 import json
 
 from reuleauxcoder.domain.context.budget import ContextBudget
+from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.context.rounds import group_api_rounds, recent_round_start
 from reuleauxcoder.domain.context.provider import ProviderCompactionResult
@@ -114,3 +115,30 @@ def test_phase_boundary_commits_semantic_checkpoint_below_token_wall() -> None:
     summary = json.loads(messages[0]["content"].split("\n", 1)[1])
     assert summary["scope"]["checkpoint_kind"] == "phase_checkpoint"
     assert summary["scope"]["recent_rounds_preserved"] == 2
+
+
+def test_resume_restores_snip_starvation_state_from_checkpoint_epochs() -> None:
+    history = [{"role": "assistant", "content": f"round {index}"} for index in range(3)]
+
+    def checkpoint(strategy):
+        return CompactionCheckpoint.create(
+            trigger="quality_wall",
+            strategy=[strategy],
+            source_history_version=0,
+            replacement_history=history,
+            tokens_before=100,
+            tokens_after=50,
+            preserved_rounds=2,
+        )
+
+    manager = ContextManager()
+    manager.restore_checkpoints(
+        [
+            checkpoint("partial_prefix"),
+            checkpoint("snip_tool_outputs"),
+            checkpoint("provider_tool_cache_compaction"),
+        ]
+    )
+
+    assert manager._snip_epochs_since_summary == 2
+    assert manager._rounds_at_last_semantic_checkpoint == 3
