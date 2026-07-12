@@ -3,6 +3,7 @@ import time
 from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.approval import ApprovalSection, ApprovalSectionKind
 from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 from reuleauxcoder.interfaces.cli.mini_tui import (
     MiniTUIEventAdapter,
@@ -71,6 +72,37 @@ def test_interactor_cancel_resolves_protocol_response() -> None:
     worker.join(timeout=1)
     assert result[0].cancelled
     assert result[0].reason == "interaction cancelled"
+
+
+def test_review_details_toggle_and_scroll_do_not_resolve_request() -> None:
+    interactor = MiniTUIInteractor(UIEventBus())
+    result = []
+    request = ReviewRequest(
+        "Edit",
+        "Review diff",
+        sections=(
+            ApprovalSection(
+                "diff",
+                "DIFF",
+                ApprovalSectionKind.DIFF,
+                "\n".join(f"line {index}" for index in range(30)),
+            ),
+        ),
+    )
+    worker = threading.Thread(target=lambda: result.append(interactor.review(request)))
+    worker.start()
+    deadline = time.monotonic() + 1
+    while interactor.active_request is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert interactor.submit("d") is True
+    assert interactor.details_expanded is True
+    assert worker.is_alive()
+    assert interactor.scroll_details(5) is True
+    assert interactor.detail_scroll == 5
+    assert interactor.submit("n") is True
+    worker.join(timeout=1)
+    assert result[0].approved is False
 
 
 def test_interaction_parser_uses_kiss_defaults() -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import queue
 import threading
 import time
 from typing import Any
@@ -94,48 +95,67 @@ class MiniTUIEventAdapter:
         self._lock = threading.RLock()
         self._invalidate = lambda: None
         self._notice_seq = 0
+        self._pending_events: queue.SimpleQueue[UIEvent] = queue.SimpleQueue()
 
     def bind_invalidator(self, callback) -> None:
         self._invalidate = callback
 
     def on_ui_event(self, event: UIEvent) -> None:
-        with self._lock:
-            if isinstance(event.payload, RuntimeEventPayload):
-                runtime = event.payload.event
-                self.transcript.apply(runtime)
-                self.execution.apply(runtime)
-            elif isinstance(event.payload, InteractionPromptPayload):
-                # The active request is rendered in the bottom interaction pane.
-                pass
-            else:
-                message = event.message
-                if isinstance(event.payload, ViewEventPayload):
-                    if (
-                        event.payload.view_type == "session_resume"
-                        and hasattr(event.payload.view_model, "entries")
-                    ):
-                        model = event.payload.view_model
-                        self.append_restored_conversation(
-                            [
-                                {"role": entry.role, "content": entry.content}
-                                for entry in model.entries
-                            ]
-                        )
-                        message = (
-                            f"RESTORED {model.session_id} · {model.model} · "
-                            f"{model.saved_at[:19]}"
-                        )
-                    else:
-                        message = _view_text(event.payload)
-                if message:
-                    self._notice_seq += 1
-                    self.transcript.append_notice(
-                        notice_id=f"ui:{event.timestamp}:{self._notice_seq}",
-                        message=message,
-                        level=event.level.value,
-                        category=event.kind.value,
-                    )
+        # Worker/model/tool threads only enqueue. Projection and rendering are
+        # drained by prompt_toolkit's UI thread on the next paint.
+        self._pending_events.put(event)
         self._invalidate()
+
+    def _drain_pending_events(self) -> None:
+        with self._lock:
+            while True:
+                try:
+                    event = self._pending_events.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(event.payload, RuntimeEventPayload):
+                    runtime = event.payload.event
+                    self.transcript.apply(runtime)
+                    self.execution.apply(runtime)
+                elif isinstance(event.payload, InteractionPromptPayload):
+                    continue
+                else:
+                    message = event.message
+                    if isinstance(event.payload, ViewEventPayload):
+                        if (
+                            event.payload.view_type == "session_resume"
+                            and hasattr(event.payload.view_model, "entries")
+                        ):
+                            model = event.payload.view_model
+                            for index, entry in enumerate(model.entries):
+                                cell_id = f"restored:{index}:{self._notice_seq}"
+                                if entry.role == "user":
+                                    self.transcript.state.transcript.append(
+                                        UserCell(id=cell_id, text=entry.content)
+                                    )
+                                elif entry.role == "assistant":
+                                    self.transcript.state.transcript.append(
+                                        AssistantCell(
+                                            id=cell_id,
+                                            text=entry.content,
+                                            complete=True,
+                                        )
+                                    )
+                            self._notice_seq += 1
+                            message = (
+                                f"RESTORED {model.session_id} · {model.model} · "
+                                f"{model.saved_at[:19]}"
+                            )
+                        else:
+                            message = _view_text(event.payload)
+                    if message:
+                        self._notice_seq += 1
+                        self.transcript.append_notice(
+                            notice_id=f"ui:{event.timestamp}:{self._notice_seq}",
+                            message=message,
+                            level=event.level.value,
+                            category=event.kind.value,
+                        )
 
     def append_user_command(self, text: str) -> None:
         with self._lock:
@@ -208,10 +228,19 @@ class MiniTUIEventAdapter:
         self._invalidate()
 
     def panel_lines(self, width: int) -> tuple[str, ...]:
+        self._drain_pending_events()
         with self._lock:
             return execution_panel_lines(self.execution.state, width=width)
 
+    def has_animation_lease(self) -> bool:
+        now = time.time()
+        with self._lock:
+            return any(
+                agent.is_animating(now) for agent in self.execution.state.agents.values()
+            )
+
     def transcript_fragments(self) -> FormattedText:
+        self._drain_pending_events()
         fragments: list[tuple[str, str]] = []
         with self._lock:
             cells = self.transcript.state.transcript.cells
@@ -229,6 +258,8 @@ class MiniTUIInteractor:
         self._active: Any | None = None
         self._response: Any | None = None
         self._invalidate = lambda: None
+        self._details_expanded = False
+        self._detail_scroll = 0
 
     @property
     def active_request(self):
@@ -260,11 +291,18 @@ class MiniTUIInteractor:
             request = self._active
             if request is None:
                 return False
+            if isinstance(request, ReviewRequest) and text.strip().lower() == "d":
+                self._details_expanded = not self._details_expanded
+                self._detail_scroll = 0
+                self._invalidate()
+                return True
             response = _interaction_response(request, text)
             if response is None:
                 return True
             self._response = response
             self._active = None
+            self._details_expanded = False
+            self._detail_scroll = 0
             self._condition.notify_all()
         self._invalidate()
         return True
@@ -276,6 +314,8 @@ class MiniTUIInteractor:
                 return
             self._response = _cancelled_response(request, "interaction cancelled")
             self._active = None
+            self._details_expanded = False
+            self._detail_scroll = 0
             self._condition.notify_all()
         self._invalidate()
 
@@ -286,7 +326,27 @@ class MiniTUIInteractor:
                 return False
             self._response = _cancelled_response(request, reason)
             self._active = None
+            self._details_expanded = False
+            self._detail_scroll = 0
             self._condition.notify_all()
+        self._invalidate()
+        return True
+
+    @property
+    def details_expanded(self) -> bool:
+        with self._condition:
+            return self._details_expanded
+
+    @property
+    def detail_scroll(self) -> int:
+        with self._condition:
+            return self._detail_scroll
+
+    def scroll_details(self, delta: int) -> bool:
+        with self._condition:
+            if not isinstance(self._active, ReviewRequest) or not self._details_expanded:
+                return False
+            self._detail_scroll = max(0, self._detail_scroll + delta)
         self._invalidate()
         return True
 
@@ -296,6 +356,8 @@ class MiniTUIInteractor:
                 raise RuntimeError("mini-TUI interaction slot is already occupied")
             self._active = request
             self._response = None
+            self._details_expanded = False
+            self._detail_scroll = 0
         self.ui_bus.emit_interaction_prompt(request)
         self._invalidate()
         with self._condition:
@@ -351,6 +413,8 @@ class MiniTUIApplication:
         self.exit_confirm = False
         self._closed = False
         self._worker: threading.Thread | None = None
+        self._animation_stop = threading.Event()
+        self._animation_thread: threading.Thread | None = None
         self._width = 100
         self.session_header_expanded = True
         self.startup_lines = tuple(
@@ -422,10 +486,26 @@ class MiniTUIApplication:
 
     def run(self) -> None:
         self.agent.current_session_id = self.current_session_id
+        self._animation_stop.clear()
+        self._animation_thread = threading.Thread(
+            target=self._animation_loop,
+            name="rcoder-ui-animation",
+            daemon=True,
+        )
+        self._animation_thread.start()
         try:
             self.application.run()
         finally:
+            self._animation_stop.set()
+            if self._animation_thread is not None:
+                self._animation_thread.join(timeout=0.5)
             self._save_exit_session()
+
+    def _animation_loop(self) -> None:
+        """Redraw leased activity without ever extending the runtime lease."""
+        while not self._animation_stop.wait(0.1):
+            if self.events.has_animation_lease():
+                self.invalidate()
 
     def invalidate(self) -> None:
         if not self._closed:
@@ -529,6 +609,7 @@ class MiniTUIApplication:
                 return
             if self.running:
                 if self.cancelling:
+                    self._prepare_forced_exit("forced CLI exit during active turn")
                     self._closed = True
                     event.app.exit()
                 else:
@@ -550,12 +631,16 @@ class MiniTUIApplication:
 
         @bindings.add("pageup")
         def _page_up(event) -> None:  # noqa: ARG001
+            if self.interactor.scroll_details(-5):
+                return
             self.transcript_window.vertical_scroll = max(
                 0, self.transcript_window.vertical_scroll - 5
             )
 
         @bindings.add("pagedown")
         def _page_down(event) -> None:  # noqa: ARG001
+            if self.interactor.scroll_details(5):
+                return
             self.transcript_window.vertical_scroll += 5
 
         @bindings.add("f2")
@@ -597,13 +682,32 @@ class MiniTUIApplication:
         request = self.interactor.active_request
         if request is None:
             return 1
-        return min(12, max(2, len(_interaction_lines(request))))
+        return min(
+            16,
+            max(
+                2,
+                len(
+                    _interaction_lines(
+                        request,
+                        expanded=self.interactor.details_expanded,
+                        scroll=self.interactor.detail_scroll,
+                    )
+                ),
+            ),
+        )
 
     def _interaction_text(self) -> FormattedText:
         request = self.interactor.active_request
         if request is not None:
             return FormattedText(
-                [("class:interaction", line + "\n") for line in _interaction_lines(request)]
+                [
+                    ("class:interaction", line + "\n")
+                    for line in _interaction_lines(
+                        request,
+                        expanded=self.interactor.details_expanded,
+                        scroll=self.interactor.detail_scroll,
+                    )
+                ]
             )
         if self.exit_confirm:
             return FormattedText(
@@ -620,6 +724,7 @@ class MiniTUIApplication:
 
     def _save_exit_session(self) -> None:
         self._closed = True
+        self._prepare_forced_exit("CLI session closed")
         if not self.agent.messages or not self.config.session_auto_save:
             return
         sid = SessionStore(self.sessions_dir).save(
@@ -633,6 +738,13 @@ class MiniTUIApplication:
             **build_session_persistence_kwargs(self.agent),
         )
         self.agent.lifecycle.session_saved(sid)
+
+    def _prepare_forced_exit(self, reason: str) -> None:
+        self.agent.request_stop()
+        self.interactor.cancel_active(reason)
+        reconcile = getattr(self.agent, "reconcile_pending_tool_calls", None)
+        if callable(reconcile):
+            reconcile(reason)
 
 
 def _cell_fragments(cell) -> list[tuple[str, str]]:
@@ -677,17 +789,33 @@ def _cell_fragments(cell) -> list[tuple[str, str]]:
     return [("class:muted", str(cell) + "\n")]
 
 
-def _interaction_lines(request) -> list[str]:
+def _interaction_lines(
+    request, *, expanded: bool = False, scroll: int = 0
+) -> list[str]:
     lines = [request.title]
     if isinstance(request, ReviewRequest):
         lines.append(request.summary)
+        details: list[str] = []
         for section in request.sections:
-            lines.append(f"[{section.title}]")
+            details.append(f"[{section.title}]")
             content = section.content
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False, indent=2)
-            lines.extend(content.splitlines()[:7])
-        lines.append(f"[Enter/Y] {request.approve_label}   [N] {request.reject_label}")
+            detail_lines = content.splitlines()
+            details.extend(detail_lines if expanded else detail_lines[:4])
+        if expanded:
+            visible = details[scroll : scroll + 11]
+            lines.extend(visible)
+            if scroll > 0:
+                lines.append("↑ PageUp for earlier details")
+            if scroll + 11 < len(details):
+                lines.append("↓ PageDown for more details")
+        else:
+            lines.extend(details[:7])
+        lines.append(
+            f"[Enter/Y] {request.approve_label}   [D] Details   "
+            f"[N] {request.reject_label}"
+        )
     elif isinstance(request, ConfirmRequest):
         lines.extend([request.message, "[Enter/Y] Confirm   [N] Cancel"])
     elif isinstance(request, ChooseOneRequest):

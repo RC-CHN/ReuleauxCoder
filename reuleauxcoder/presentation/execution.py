@@ -65,6 +65,7 @@ class ExecutionViewState:
     plan_revision: int = 0
     plan: tuple[ExecutionPlanItem, ...] = ()
     plan_explanation: str | None = None
+    plan_updated_at: float = 0.0
     progress_summary: str = ""
     progress_next: str | None = None
     progress_revision: int = 0
@@ -122,6 +123,7 @@ class ExecutionViewReducer:
                 for item in payload.items
             )
             self.state.plan_explanation = payload.explanation
+            self.state.plan_updated_at = event.timestamp
             return True
         if isinstance(payload, ProgressReported):
             if payload.revision < self.state.progress_revision:
@@ -271,9 +273,24 @@ def execution_panel_lines(
         activity = active_agents[0].activity if active_agents else state.progress_summary
         return (header, _fit(plan_line, width), _fit(activity or "ready", width))
 
-    lines = [header, _fit(plan_line, width)]
+    lines = [header]
+    if state.plan and now < state.plan_updated_at + 3.0:
+        for item in state.plan[:6]:
+            marker = {
+                "completed": "✓",
+                "in_progress": "●",
+                "pending": "○",
+            }.get(item.status, "○")
+            label = item.active_form if item.status == "in_progress" else item.step
+            lines.append(_fit(f"PLAN  {marker} {label}", width))
+    else:
+        lines.append(_fit(plan_line, width))
     for index, agent in enumerate(active_agents[:4]):
-        marker = "◉" if agent.is_animating(now) else ("!" if agent.status in {"failed", "blocked", "stale"} else "○")
+        marker = (
+            ("◐", "◓", "◑", "◒")[int(now * 8) % 4]
+            if agent.is_animating(now)
+            else ("!" if agent.status in {"failed", "blocked", "stale"} else "○")
+        )
         branch = "├─" if index < len(active_agents[:4]) - 1 else "└─"
         task = agent.task or agent.activity or "working"
         lines.append(_fit(f"{branch} {marker} {agent.label}  {task}", width))

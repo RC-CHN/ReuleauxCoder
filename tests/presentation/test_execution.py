@@ -121,3 +121,46 @@ def test_stale_generation_and_duplicate_events_are_ignored() -> None:
     )
     assert not reducer.apply(stale)
     assert reducer.state.progress_summary == "current"
+
+
+def test_panel_animates_only_inside_real_event_lease() -> None:
+    reducer = ExecutionViewReducer(animation_lease_seconds=1.0)
+    reducer.apply(
+        _event(ToolCallStarted("tc", "shell", {"command": "tests"}), event_id="tool")
+    )
+
+    first = execution_panel_lines(reducer.state, width=100, now=100.1)
+    second = execution_panel_lines(reducer.state, width=100, now=100.4)
+    expired = execution_panel_lines(reducer.state, width=100, now=101.1)
+
+    assert first != second
+    assert any(marker in "\n".join(first) for marker in ("◐", "◓", "◑", "◒"))
+    assert not any(marker in "\n".join(expired) for marker in ("◐", "◓", "◑", "◒"))
+
+
+def test_recent_plan_update_expands_then_collapses_to_active_item() -> None:
+    reducer = ExecutionViewReducer()
+    reducer.apply(
+        _event(
+            PlanUpdated(
+                revision=1,
+                items=(
+                    {"step": "done step", "active_form": "done", "status": "completed"},
+                    {
+                        "step": "active step",
+                        "active_form": "working actively",
+                        "status": "in_progress",
+                    },
+                ),
+            ),
+            event_id="plan-expand",
+        )
+    )
+
+    expanded = execution_panel_lines(reducer.state, width=100, now=100.5)
+    collapsed = execution_panel_lines(reducer.state, width=100, now=104.0)
+
+    assert any("done step" in line for line in expanded)
+    assert any("working actively" in line for line in expanded)
+    assert not any("done step" in line for line in collapsed)
+    assert any("working actively" in line for line in collapsed)
