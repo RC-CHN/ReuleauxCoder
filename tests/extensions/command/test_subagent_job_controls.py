@@ -25,3 +25,6 @@ def test_agents_is_canonical_and_jobs_remains_compatible() -> None:
     assert parsed == ControlSubagentJobCommand(
         action="message", job_id="sj_123", message="focus on tests"
     )
+    assert _parse_control_job("/agents stop sj_123", None) == (
+        ControlSubagentJobCommand(action="stop", job_id="sj_123")
+    )

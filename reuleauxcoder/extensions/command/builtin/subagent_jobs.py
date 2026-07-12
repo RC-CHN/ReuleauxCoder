@@ -78,7 +78,7 @@ def _parse_wait_job(user_input: str, parse_ctx):
 
 
 def _parse_control_job(user_input: str, parse_ctx):
-    for action in ("cancel", "cleanup"):
+    for action in ("cancel", "stop", "cleanup"):
         captures = _match_agent_command(user_input, f"{action} {{job_id+}}")
         if captures is not None:
             return ControlSubagentJobCommand(
@@ -212,7 +212,7 @@ def _handle_wait_job(command, ctx) -> CommandEffect:
 def _handle_control_job(command, ctx) -> CommandEffect:
     manager = get_subagent_manager(ctx.agent)
     try:
-        if command.action == "cancel":
+        if command.action in {"cancel", "stop"}:
             ok = manager.cancel_job(command.job_id)
             message = "Cancellation requested"
         elif command.action == "cleanup":
@@ -292,6 +292,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(
                     slash_trigger("/agents cancel <id>"),
+                    slash_trigger("/agents stop <id>"),
                     slash_trigger("/agents message <id> <text>"),
                     slash_trigger("/agents resume <id> <text>"),
                     slash_trigger("/agents cleanup <id>"),

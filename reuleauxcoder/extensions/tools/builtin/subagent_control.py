@@ -178,18 +178,14 @@ class ListAgentsTool(_RootSubagentTool):
     def execute(self) -> ToolOutcome:
         try:
             jobs = get_subagent_manager(self._root()).list_jobs()
-            lines = [
-                (
-                    f"{job.id} · {job.status} · {job.mode} · "
-                    f"{_clip(job.task, 120)}"
-                )
-                for job in jobs
-            ]
+            now = time.time()
+            rows = [_agent_snapshot(job, now=now) for job in jobs]
+            lines = [_agent_snapshot_line(row) for row in rows]
             content = "\n".join(lines) if lines else "No subagents."
             return ToolOutcome(
                 summary=f"{len(jobs)} subagent{'s' if len(jobs) != 1 else ''}",
                 content=content,
-                metadata={"count": len(jobs)},
+                metadata={"count": len(jobs), "agents": rows},
             )
         except RuntimeError as error:
             return _invalid(str(error))
@@ -289,3 +285,48 @@ def _invalid(message: str) -> ToolOutcome:
 def _clip(text: str, limit: int) -> str:
     compact = " ".join(text.split())
     return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+
+def _agent_snapshot(job, *, now: float) -> dict:
+    started_at = getattr(job, "started_at", None)
+    finished_at = getattr(job, "finished_at", None)
+    elapsed = max(0.0, (finished_at or now) - started_at) if started_at else 0.0
+    prompt_tokens = int(getattr(job, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(job, "completion_tokens", 0) or 0)
+    max_tokens = getattr(job, "max_tokens", None)
+    tool_calls = int(getattr(job, "tool_calls", 0) or 0)
+    max_tool_calls = getattr(job, "max_tool_calls", None)
+    progress = tuple(getattr(job, "progress", ()) or ())
+    blocker = (
+        getattr(job, "error", None)
+        or getattr(job, "guidance_request_id", None)
+        if getattr(job, "status", "") == "blocked"
+        else None
+    )
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "mode": job.mode,
+        "task": _clip(job.task, 100),
+        "activity": _clip(progress[-1], 80) if progress else None,
+        "elapsed_seconds": round(elapsed, 1),
+        "tool_calls": tool_calls,
+        "max_tool_calls": max_tool_calls,
+        "tokens": prompt_tokens + completion_tokens,
+        "max_tokens": max_tokens,
+        "blocker": blocker,
+    }
+
+
+def _agent_snapshot_line(row: dict) -> str:
+    budget = f"tools {row['tool_calls']}"
+    if row["max_tool_calls"] is not None:
+        budget += f"/{row['max_tool_calls']}"
+    budget += f" · tok {row['tokens']}"
+    if row["max_tokens"] is not None:
+        budget += f"/{row['max_tokens']}"
+    detail = row["blocker"] or row["activity"] or row["task"]
+    return (
+        f"{row['job_id']} · {row['status']} · {row['mode']} · "
+        f"{row['elapsed_seconds']:.1f}s · {budget} · {_clip(str(detail), 100)}"
+    )

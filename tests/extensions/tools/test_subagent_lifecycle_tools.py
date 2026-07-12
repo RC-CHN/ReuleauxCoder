@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import time
 
 import pytest
 
@@ -89,6 +90,14 @@ def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> 
                 status="running",
                 mode="explore",
                 task="inspect " + "many " * 80,
+                started_at=time.time() - 2,
+                finished_at=None,
+                prompt_tokens=100,
+                completion_tokens=20,
+                max_tokens=1000,
+                tool_calls=3,
+                max_tool_calls=20,
+                progress=("reading parser",),
             )
         ],
     )
@@ -103,7 +112,9 @@ def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> 
     assert sent.success and sent.metadata["directive_id"] == "sd_1"
     assert listed.success and listed.metadata["count"] == 1
     assert len(listed.content.splitlines()) == 1
-    assert len(listed.content) < 200
+    assert len(listed.content) < 240
+    assert "tools 3/20" in listed.content
+    assert listed.metadata["agents"][0]["tokens"] == 120
 
 
 def test_wait_agent_is_interruptible_by_human_without_cancelling_child(
