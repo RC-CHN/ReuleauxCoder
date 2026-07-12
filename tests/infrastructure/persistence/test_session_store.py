@@ -168,7 +168,7 @@ def test_events_jsonl_only_appends_new_event_ids(tmp_path: Path) -> None:
         session_id=session_id,
         history_events=list(ledger.events),
     )
-    assert len(events_path.read_text(encoding="utf-8").splitlines()) == 2
+    assert len(events_path.read_text(encoding="utf-8").splitlines()) == 4
 
 
 def test_tampered_replay_does_not_claim_canonical_directory_restore(

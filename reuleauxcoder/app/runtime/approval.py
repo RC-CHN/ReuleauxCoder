@@ -317,6 +317,18 @@ def _record_approval_request(agent, request: ApprovalRequest) -> None:
             else None
         ),
     )
+    agent.history_ledger.append(
+        "attention_raised",
+        {
+            "attention_id": f"approval:{request.request_id}",
+            "source_event": "approval_requested",
+            "request_id": request.request_id,
+        },
+        agent_id=identity["agent_id"],
+        parent_agent_id=identity["parent_agent_id"],
+        job_id=identity["job_id"],
+        turn_id=identity["turn_id"],
+    )
     preview_text = sections[0]["title"] if sections else None
     event = AgentEvent.approval_requested(
         request_id=request.request_id,
@@ -354,6 +366,19 @@ def _record_approval_decision(
             if identity["turn_id"]
             else None
         ),
+    )
+    agent.history_ledger.append(
+        "attention_resolved",
+        {
+            "attention_id": f"approval:{request.request_id}",
+            "source_event": "approval_resolved",
+            "request_id": request.request_id,
+            "approved": decision.approved,
+        },
+        agent_id=identity["agent_id"],
+        parent_agent_id=identity["parent_agent_id"],
+        job_id=identity["job_id"],
+        turn_id=identity["turn_id"],
     )
     event = AgentEvent.approval_resolved(
         request_id=request.request_id,

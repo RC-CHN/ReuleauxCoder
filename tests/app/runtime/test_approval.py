@@ -128,7 +128,10 @@ def test_runtime_approval_is_ledgered_and_emitted_before_resolution() -> None:
     agent.add_event_handler(events.append)
 
     def handler(pending) -> None:
-        assert agent.history_ledger.events[-1].kind == "approval_requested"
+        assert any(
+            event.kind == "approval_requested"
+            for event in agent.history_ledger.events
+        )
         pending.resolve(ApprovalDecision.allow_once("approved", reviewed=True))
 
     provider = build_runtime_approval_provider(agent, handler)
@@ -147,13 +150,20 @@ def test_runtime_approval_is_ledgered_and_emitted_before_resolution() -> None:
     assert decision.approved
     assert [event.kind for event in agent.history_ledger.events] == [
         "approval_requested",
+        "attention_raised",
         "approval_resolved",
+        "attention_resolved",
     ]
     assert [event.event_type for event in events] == [
         AgentEventType.APPROVAL_REQUESTED,
         AgentEventType.APPROVAL_RESOLVED,
     ]
-    assert agent.history_ledger.events[-1].payload["reason"] == "approved"
+    resolved = next(
+        event
+        for event in agent.history_ledger.events
+        if event.kind == "approval_resolved"
+    )
+    assert resolved.payload["reason"] == "approved"
 
 
 def test_bubbled_approval_keeps_child_attribution_in_root_ledger() -> None:
@@ -175,7 +185,16 @@ def test_bubbled_approval_keeps_child_attribution_in_root_ledger() -> None:
             },
         )
     )
-    requested, resolved = agent.history_ledger.events
+    requested = next(
+        event
+        for event in agent.history_ledger.events
+        if event.kind == "approval_requested"
+    )
+    resolved = next(
+        event
+        for event in agent.history_ledger.events
+        if event.kind == "approval_resolved"
+    )
     assert requested.agent_id == resolved.agent_id == "child"
     assert requested.parent_agent_id == agent.agent_id
     assert requested.job_id == "sj_1"

@@ -141,14 +141,32 @@ class HistoryLedger:
             for key, value in message.items()
             if key != "_rc_token_count"
         }
-        return self.append(
-            "message_committed",
-            {"source": source, "message": canonical_message},
-            agent_id=agent_id,
-            turn_id=turn_id,
-            api_round_id=api_round_id,
-            role=_optional_str(message.get("role")),
-        )
+        role = _optional_str(message.get("role"))
+        with self._lock:
+            committed = self.append(
+                "message_committed",
+                {"source": source, "message": canonical_message},
+                agent_id=agent_id,
+                turn_id=turn_id,
+                api_round_id=api_round_id,
+                role=role,
+            )
+            semantic_kind = _message_semantic_kind(message, source)
+            if semantic_kind is not None:
+                self.append(
+                    semantic_kind,
+                    {
+                        "message_event_id": committed.event_id,
+                        "source": source,
+                        "tool_call_ids": _message_tool_call_ids(message),
+                        "tool_call_id": message.get("tool_call_id"),
+                    },
+                    agent_id=agent_id,
+                    turn_id=turn_id,
+                    api_round_id=api_round_id,
+                    role=role,
+                )
+            return committed
 
     def append_context_view(
         self,
@@ -158,18 +176,34 @@ class HistoryLedger:
         history_version: int,
         checkpoint_id: str | None = None,
     ) -> HistoryEvent:
-        return self.append(
-            "context_view_committed",
-            {
-                "reason": reason,
-                "history_version": history_version,
-                "checkpoint_id": checkpoint_id,
-                "items": [
-                    {key: value for key, value in item.items() if key != "_rc_token_count"}
-                    for item in messages
-                ],
-            },
-        )
+        with self._lock:
+            committed = self.append(
+                "context_view_committed",
+                {
+                    "reason": reason,
+                    "history_version": history_version,
+                    "checkpoint_id": checkpoint_id,
+                    "items": [
+                        {
+                            key: value
+                            for key, value in item.items()
+                            if key != "_rc_token_count"
+                        }
+                        for item in messages
+                    ],
+                },
+            )
+            if checkpoint_id is not None:
+                self.append(
+                    "context_checkpoint",
+                    {
+                        "checkpoint_id": checkpoint_id,
+                        "context_view_event_id": committed.event_id,
+                        "history_version": history_version,
+                    },
+                    supersedes_event_ids=(committed.event_id,),
+                )
+            return committed
 
     def advance_generation(self, generation: int) -> None:
         with self._lock:
@@ -203,3 +237,34 @@ class HistoryLedger:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _message_semantic_kind(message: dict, source: str) -> str | None:
+    role = message.get("role")
+    if source in {"subagent_result", "subagent_deferred"}:
+        return "subagent_result"
+    if source == "subagent_communication":
+        return "subagent_communication"
+    if source == "subagent_conflict":
+        return "attention_raised"
+    if source in {"session_exit", "session_resume"} or str(
+        message.get("content") or ""
+    ).startswith("[SESSION_"):
+        return "session_lifecycle"
+    if role == "user":
+        return "user_message"
+    if role == "assistant" and message.get("tool_calls"):
+        return "tool_call"
+    if role == "assistant":
+        return "assistant_response"
+    if role == "tool":
+        return "tool_result"
+    return None
+
+
+def _message_tool_call_ids(message: dict) -> list[str]:
+    result: list[str] = []
+    for call in message.get("tool_calls") or ():
+        if isinstance(call, dict) and call.get("id"):
+            result.append(str(call["id"]))
+    return result

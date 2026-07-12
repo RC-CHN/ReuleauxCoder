@@ -28,14 +28,21 @@ def test_steering_is_ledger_first_then_projected_at_safe_boundary() -> None:
 
     assert agent.submit_user_steering("change direction")
     assert agent.messages == []
-    event = agent.history_ledger.events[-1]
+    event = next(
+        event
+        for event in agent.history_ledger.events
+        if event.kind == "message_committed"
+    )
     assert event.kind == "message_committed"
     assert event.payload["source"] == "user_steering"
     assert event.turn_id == "turn"
 
     assert agent._drain_user_steering() == 1
     assert agent.messages == [{"role": "user", "content": "change direction"}]
-    assert len(agent.history_ledger.events) == 1
+    assert [event.kind for event in agent.history_ledger.events] == [
+        "message_committed",
+        "user_message",
+    ]
 
 
 def test_chat_continues_same_turn_when_steering_wins_completion_race() -> None:

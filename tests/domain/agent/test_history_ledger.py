@@ -21,7 +21,8 @@ def test_context_replacement_does_not_delete_prior_history_events() -> None:
     events = agent.history_ledger.events
     assert events[0].kind == "message_committed"
     assert events[0].payload["message"]["content"] == "raw output"
-    assert events[1].kind == "context_view_committed"
+    assert events[1].kind == "tool_result"
+    assert events[2].kind == "context_view_committed"
     assert agent.messages == [{"role": "system", "content": "checkpoint"}]
 
 
@@ -136,7 +137,13 @@ def test_reset_preserves_ledger_truth_but_commits_empty_runtime_view() -> None:
 
     assert agent.messages == []
     kinds = [event.kind for event in agent.history_ledger.events]
-    assert kinds == ["message_committed", "runtime_reset", "context_view_committed"]
+    assert kinds == [
+        "message_committed",
+        "user_message",
+        "runtime_reset",
+        "session_lifecycle",
+        "context_view_committed",
+    ]
     assert agent.context.cache_epoch == 1
 
 

@@ -349,6 +349,17 @@ class AgentLoop:
             # Store reasoning content for /thinking command
             if resp.reasoning_content:
                 self.agent.last_reasoning_content = resp.reasoning_content
+                self.agent.history_ledger.append(
+                    "reasoning_metadata",
+                    {
+                        "present": True,
+                        "characters": len(resp.reasoning_content),
+                        "display_mode": self.agent.reasoning_display_mode,
+                    },
+                    agent_id=self.agent.agent_id,
+                    turn_id=self.agent._current_turn_id,
+                    api_round_id=f"{self.agent._current_turn_id}:{round_num}",
+                )
 
             # Update token counts
             self.agent.state.total_prompt_tokens += resp.prompt_tokens

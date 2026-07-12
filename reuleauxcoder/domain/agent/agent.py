@@ -767,6 +767,12 @@ class Agent:
         self._current_turn_id = uuid.uuid4().hex
         with self._steering_lock:
             self._accepting_user_steering = True
+        self.history_ledger.append(
+            "agent_lifecycle",
+            {"state": "turn_started"},
+            agent_id=self.agent_id,
+            turn_id=self._current_turn_id,
+        )
 
         # Inject completed background sub-agent results before each new user turn.
         self._inject_completed_subagent_jobs()
@@ -808,6 +814,12 @@ class Agent:
             self.reconcile_pending_tool_calls(
                 reason=f"Interrupted due to {type(e).__name__}."
             )
+            self.history_ledger.append(
+                "agent_lifecycle",
+                {"state": "turn_failed", "error_type": type(e).__name__},
+                agent_id=self.agent_id,
+                turn_id=self._current_turn_id,
+            )
             raise
 
         self._emit_event(
@@ -817,6 +829,12 @@ class Agent:
                     self._loop, "last_response_streamed", False
                 ),
             )
+        )
+        self.history_ledger.append(
+            "agent_lifecycle",
+            {"state": "turn_completed"},
+            agent_id=self.agent_id,
+            turn_id=self._current_turn_id,
         )
         self._current_turn_id = None
         return result
@@ -829,6 +847,11 @@ class Agent:
         self.session_generation += 1
         self.history_ledger.append(
             "runtime_reset", {"next_generation": self.session_generation}
+        )
+        self.history_ledger.append(
+            "session_lifecycle",
+            {"action": "runtime_reset", "generation": self.session_generation},
+            agent_id=self.agent_id,
         )
         self.history_ledger.advance_generation(self.session_generation)
         lsp_manager = getattr(self, "lsp_manager", None)

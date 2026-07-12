@@ -17,6 +17,29 @@ if TYPE_CHECKING:
     from reuleauxcoder.extensions.skills.service import SkillsService
 
 
+_RUNTIME_CONFIG_ACTIONS = frozenset(
+    {
+        "approval.set",
+        "approval.set_global",
+        "mcp.enable",
+        "mcp.disable",
+        "mode.switch",
+        "model.use_main",
+        "model.use_sub",
+        "model.set_main",
+        "model.set_sub",
+        "model.switch",
+        "skills.reload",
+        "skills.enable",
+        "skills.disable",
+        "system.debug",
+    }
+)
+_SESSION_ACTIONS = frozenset(
+    {"sessions.resume", "sessions.save", "sessions.new"}
+)
+
+
 # ---------------------------------------------------------------------------
 # Fuzzy command matching
 # ---------------------------------------------------------------------------
@@ -132,6 +155,7 @@ def handle_command(
                     skills_service=skills_service,
                 ),
             )
+            _record_command_control_event(agent, parsed_action.action.action_id, result)
         except Exception as exc:
             result = CommandEffect()
             result.error(
@@ -154,6 +178,32 @@ def handle_command(
         return {"action": "continue", "session_id": current_session_id}
 
     return {"action": "chat", "session_id": current_session_id}
+
+
+def _record_command_control_event(agent, action_id: str, result: CommandEffect) -> None:
+    ledger = getattr(agent, "history_ledger", None)
+    if ledger is None:
+        return
+    if action_id in _RUNTIME_CONFIG_ACTIONS:
+        kind = "runtime_config_changed"
+    elif action_id in _SESSION_ACTIONS:
+        kind = "session_lifecycle"
+    else:
+        return
+    ledger.append(
+        kind,
+        {
+            "action_id": action_id,
+            "state_changes": result.state,
+            "control": result.control,
+            "session_id": result.session_id,
+        },
+        agent_id=getattr(agent, "agent_id", None),
+        turn_id=getattr(agent, "_current_turn_id", None),
+    )
+    persist = getattr(agent, "persist_runtime_snapshot", None)
+    if callable(persist):
+        persist()
 
 
 def _apply_command_effect(result: CommandEffect, ui_bus: UIEventBus) -> None:
