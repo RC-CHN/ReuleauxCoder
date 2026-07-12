@@ -315,7 +315,11 @@ class Agent:
         with self._context_revision_lock:
             source_revision = self._context_revision
             candidate = [dict(message) for message in self.state.messages]
-            if not self.context.maybe_compress(candidate, llm):
+            if not self.context.maybe_compress(
+                candidate,
+                llm,
+                history_events=self.history_ledger.events,
+            ):
                 return False
             if source_revision != self._context_revision:
                 self.context._reset_compression_state()
@@ -331,7 +335,12 @@ class Agent:
     def force_compress_context(self, strategy: str, llm) -> bool:
         with self._context_revision_lock:
             candidate = [dict(message) for message in self.state.messages]
-            if not self.context.force_compress(candidate, strategy, llm):
+            if not self.context.force_compress(
+                candidate,
+                strategy,
+                llm,
+                history_events=self.history_ledger.events,
+            ):
                 return False
             checkpoint = self.context.checkpoints[-1]
             self._replace_context_messages(

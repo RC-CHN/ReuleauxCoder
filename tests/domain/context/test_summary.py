@@ -1,5 +1,6 @@
 import json
 
+from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.context.summary import (
     build_summary_document,
     extract_key_info,
@@ -166,3 +167,39 @@ def test_summary_projection_compacts_one_oversized_round_without_splitting_it() 
     assert projected[1]["tool_call_id"] == "call"
     assert "image_url source=diagram" in projected[0]["content"]
     assert "payload omitted" in projected[1]["content"]
+
+
+def test_deterministic_summary_uses_ledger_provenance_and_control_facts() -> None:
+    ledger = HistoryLedger(session_id="session", agent_id="root")
+    user_event = ledger.append_message(
+        {"role": "user", "content": "必须保留真实历史"}, source="user_input"
+    )
+    ledger.append(
+        "approval_requested",
+        {"request_id": "approval-1", "tool_name": "edit_file"},
+    )
+    ledger.append(
+        "subagent_job_changed",
+        {
+            "job_id": "sj_active",
+            "status": "running",
+            "task": "verify history",
+            "worktree_path": "/tmp/worktree",
+        },
+    )
+    ledger.append("context_checkpoint", {"checkpoint_id": "cp_previous"})
+
+    document = json.loads(
+        generate_summary(
+            [{"role": "user", "content": "必须保留真实历史"}],
+            history_events=ledger.events,
+        )
+    )
+
+    assert document["user_intent"]["explicit_requests"][0]["event_ref"] == user_event.event_id
+    assert "approval-1: edit_file" in document["agent_state"]["pending_approvals"]
+    assert any("sj_active: running" in item for item in document["agent_state"]["active_subagents"])
+    assert document["code_state"]["worktrees_and_commits"] == [
+        "sj_active: /tmp/worktree"
+    ]
+    assert document["provenance"]["source_checkpoint_ids"] == ["cp_previous"]

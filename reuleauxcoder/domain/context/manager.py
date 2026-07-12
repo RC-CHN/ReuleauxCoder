@@ -391,6 +391,8 @@ class ContextManager:
         self,
         messages: list[dict],
         llm: Optional["LLM"] = None,
+        *,
+        history_events: tuple | list = (),
     ) -> bool:
         """Plan and commit at most one low-frequency checkpoint rewrite epoch."""
         before_local_tokens = self.get_context_tokens(messages)
@@ -453,6 +455,7 @@ class ContextManager:
                 llm,
                 keep_recent_user_turns=self._summarize_keep_recent_turns,
                 checkpoint_kind=checkpoint_kind,
+                history_events=history_events,
             )
             if summarized:
                 applied_layers.append(checkpoint_kind)
@@ -468,7 +471,7 @@ class ContextManager:
             1, int(before_tokens - (before_local_tokens - after_local_tokens) * scale)
         )
         if after_tokens > self._emergency_at and len(candidate) > 4:
-            self._hard_collapse(candidate, llm)
+            self._hard_collapse(candidate, llm, history_events=history_events)
             applied_layers.append("full_recovery")
             self._last_compact_strategy = "collapse"
             summarized = True
@@ -533,6 +536,8 @@ class ContextManager:
         messages: list[dict],
         strategy: str,
         llm: Optional["LLM"] = None,
+        *,
+        history_events: tuple | list = (),
     ) -> bool:
         """Force one specific compression strategy regardless of thresholds."""
         before_tokens = self.predict_request_tokens(messages)
@@ -548,11 +553,12 @@ class ContextManager:
                 llm,
                 keep_recent_user_turns=self._summarize_keep_recent_turns,
                 checkpoint_kind="partial_prefix",
+                history_events=history_events,
             )
         elif strategy == "collapse":
             if len(messages) <= 4:
                 return False
-            self._hard_collapse(messages, llm)
+            self._hard_collapse(messages, llm, history_events=history_events)
             changed = True
         if not changed:
             return False
@@ -662,6 +668,7 @@ class ContextManager:
         llm: Optional["LLM"],
         keep_recent_user_turns: int = 20,
         checkpoint_kind: CheckpointKind = "partial_prefix",
+        history_events: tuple | list = (),
     ) -> bool:
         """Layer 2: Summarize old conversation while keeping recent user turns intact."""
         split_index = recent_round_start(messages, keep_recent_user_turns)
@@ -676,6 +683,7 @@ class ContextManager:
             llm,
             checkpoint_kind=checkpoint_kind,
             recent_rounds_preserved=len(group_api_rounds(tail)),
+            history_events=history_events,
         )
 
         replacement = [
@@ -704,6 +712,8 @@ class ContextManager:
         self,
         messages: list[dict],
         llm: Optional["LLM"],
+        *,
+        history_events: tuple | list = (),
     ) -> None:
         """Layer 3: Emergency compression."""
         split_index = recent_round_start(messages, 2)
@@ -713,6 +723,7 @@ class ContextManager:
             llm,
             checkpoint_kind="full_recovery",
             recent_rounds_preserved=len(group_api_rounds(tail)),
+            history_events=history_events,
         )
 
         messages.clear()
@@ -736,6 +747,7 @@ class ContextManager:
         *,
         checkpoint_kind: CheckpointKind,
         recent_rounds_preserved: int,
+        history_events: tuple | list = (),
     ) -> str:
         """Generate summary via LLM or fallback to extraction."""
         try:
@@ -745,6 +757,7 @@ class ContextManager:
                 checkpoint_kind=checkpoint_kind,
                 summarized_history_version=self._history_version,
                 recent_rounds_preserved=recent_rounds_preserved,
+                history_events=history_events,
             )
         except Exception:
             self._consecutive_summary_failures += 1

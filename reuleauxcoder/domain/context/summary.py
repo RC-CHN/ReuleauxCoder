@@ -37,6 +37,7 @@ def generate_summary(
     checkpoint_kind: CheckpointKind = "partial_prefix",
     summarized_history_version: int = 0,
     recent_rounds_preserved: int = 0,
+    history_events: tuple | list = (),
 ) -> str:
     """Return canonical JSON from deterministic facts plus validated enrichment."""
     deterministic = build_summary_document(
@@ -44,6 +45,7 @@ def generate_summary(
         checkpoint_kind=checkpoint_kind,
         summarized_history_version=summarized_history_version,
         recent_rounds_preserved=recent_rounds_preserved,
+        history_events=history_events,
     )
     enriched = None
     if llm is not None:
@@ -103,6 +105,7 @@ def build_summary_document(
     checkpoint_kind: CheckpointKind = "partial_prefix",
     summarized_history_version: int = 0,
     recent_rounds_preserved: int = 0,
+    history_events: tuple | list = (),
 ) -> dict[str, Any]:
     """Build non-negotiable facts without trusting a summarizer model."""
     users: list[dict[str, str]] = []
@@ -113,6 +116,7 @@ def build_summary_document(
     artifacts: set[str] = set()
     active_subagents: list[str] = []
     pending_approvals: list[str] = []
+    source_checkpoint_ids: list[str] = []
 
     for index, message in enumerate(messages):
         content = str(message.get("content") or "").strip()
@@ -164,6 +168,61 @@ def build_summary_document(
         if "approval" in content.lower() and "pending" in content.lower():
             pending_approvals.append(content.splitlines()[0][:160])
 
+    user_event_refs: dict[str, list[str]] = {}
+    latest_jobs: dict[str, dict] = {}
+    pending_review_ids: dict[str, str] = {}
+    worktree_facts: set[str] = set()
+    for event in history_events:
+        kind = str(getattr(event, "kind", ""))
+        payload = getattr(event, "payload", {}) or {}
+        event_id = str(getattr(event, "event_id", ""))
+        if kind == "message_committed":
+            message = payload.get("message")
+            if isinstance(message, dict) and message.get("role") == "user":
+                text = " ".join(str(message.get("content") or "").split())[:500]
+                if text:
+                    user_event_refs.setdefault(text, []).append(event_id)
+        elif kind == "subagent_job_changed":
+            job_id = str(payload.get("job_id") or "")
+            if job_id:
+                latest_jobs[job_id] = dict(payload)
+        elif kind == "approval_requested":
+            request_id = str(payload.get("request_id") or "")
+            if request_id:
+                pending_review_ids[request_id] = str(payload.get("tool_name") or "tool")
+        elif kind == "approval_resolved":
+            pending_review_ids.pop(str(payload.get("request_id") or ""), None)
+        elif kind == "context_checkpoint":
+            checkpoint_id = str(payload.get("checkpoint_id") or "")
+            if checkpoint_id:
+                source_checkpoint_ids.append(checkpoint_id)
+
+    for item in users:
+        refs = user_event_refs.get(item["text"])
+        if refs:
+            item["event_ref"] = refs.pop(0)
+    for job_id, payload in latest_jobs.items():
+        status = str(payload.get("status") or "unknown")
+        if status not in {
+            "completed",
+            "failed",
+            "cancelled",
+            "cancelled_detached",
+            "timeout",
+            "timed_out_detached",
+            "stale",
+        }:
+            active_subagents.append(
+                f"{job_id}: {status} · {str(payload.get('task') or '')[:120]}"
+            )
+        worktree = payload.get("worktree_path")
+        if worktree:
+            worktree_facts.add(f"{job_id}: {worktree}")
+    pending_approvals.extend(
+        f"{request_id}: {tool_name}"
+        for request_id, tool_name in pending_review_ids.items()
+    )
+
     current_goal = users[-1]["text"] if users else "unknown"
     constraints = [
         item["text"]
@@ -204,7 +263,7 @@ def build_summary_document(
             "files_read": sorted(files)[:100],
             "files_changed": [],
             "important_symbols": [],
-            "worktrees_and_commits": [],
+            "worktrees_and_commits": sorted(worktree_facts)[:50],
         },
         "errors_and_learning": errors[-12:],
         "agent_state": {
@@ -220,7 +279,7 @@ def build_summary_document(
         },
         "provenance": {
             "transcript_ref": "HistoryLedger",
-            "source_checkpoint_ids": [],
+            "source_checkpoint_ids": source_checkpoint_ids[-20:],
         },
     }
 
