@@ -20,13 +20,13 @@ v0.4.1 CLI 使用 prompt_toolkit mini-TUI，提供常驻执行面板、可滚动
 先安装 [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/)，再用 release 中的 wheel 进行全局安装：
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.4.0/reuleauxcoder-0.4.0-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.4.1/reuleauxcoder-0.4.1-py3-none-any.whl
 ```
 
-或者使用 [`uv`](https://docs.astral.sh/uv/)（v0.4.0+）：
+或者使用 [`uv`](https://docs.astral.sh/uv/)（v0.4.1+）：
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.4.0/reuleauxcoder-0.4.0-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.4.1/reuleauxcoder-0.4.1-py3-none-any.whl
 ```
 
 安装完成后，`rcoder` 命令在任意目录下都可以直接使用：
