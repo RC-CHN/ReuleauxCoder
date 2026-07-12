@@ -1642,25 +1642,14 @@ def run_subagent_task(
             record=False,
         )
 
-    parent_context = project_parent_context(parent_agent, context_mode)
-    delegated_prompt = (
-        "You are a delegated worker. Stay within the assigned scope. "
-        "Return the conclusion first, then evidence, relevant files, changes, "
-        "and unresolved issues. Do not delegate unless the task explicitly "
-        "requires independent parallel work.\n\n"
-        f"[Parent context mode={context_mode}]\n{parent_context}\n"
-        "[/Parent context]\n\n"
-        + (
-            f"[Isolated worktree]\n{lease.path}\nRe-read files because inherited paths may be stale.\n[/Isolated worktree]\n"
-            if lease is not None
-            else ""
-        )
-        + (
-            f"[Execution root]\n{working_directory}\n[/Execution root]\n"
-            if working_directory and lease is None
-            else ""
-        )
-        + f"[Assigned task]\n{task}\n[/Assigned task]"
+    delegated_prompt = build_delegated_prompt(
+        task=task,
+        parent_context=project_parent_context(parent_agent, context_mode),
+        context_mode=context_mode,
+        worktree_path=str(lease.path) if lease is not None else None,
+        working_directory=(
+            working_directory if working_directory and lease is None else None
+        ),
     )
 
     holder: dict[str, object] = {}
@@ -1735,6 +1724,53 @@ def run_subagent_task(
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result
+
+
+def build_delegated_prompt(
+    *,
+    task: str,
+    parent_context: str,
+    context_mode: str,
+    worktree_path: str | None = None,
+    working_directory: str | None = None,
+) -> str:
+    """Build the stable child contract used by fresh and resumed workers."""
+    sections = [
+        (
+            "You are a delegated worker with a narrow assigned scope. Do not "
+            "create or delegate to other agents and do not modify the root plan. "
+            "Use report_progress only for low-frequency human-visible status, "
+            "report_to_parent for non-blocking findings/replies, and "
+            "request_guidance only when you cannot safely continue without a decision."
+        ),
+        f"[Parent context mode={context_mode}]\n{parent_context}\n[/Parent context]",
+    ]
+    if worktree_path:
+        sections.append(
+            "[Isolated worktree]\n"
+            f"{worktree_path}\n"
+            "Re-read relevant files because inherited paths or contents may be stale.\n"
+            "[/Isolated worktree]"
+        )
+    elif working_directory:
+        sections.append(
+            f"[Execution root]\n{working_directory}\n[/Execution root]"
+        )
+    sections.extend(
+        [
+            f"[Assigned task]\n{task}\n[/Assigned task]",
+            (
+                "When the task is complete, return one final assistant response with "
+                "no tool calls. Use exactly these sections in this order:\n"
+                "1. Conclusion — answer the assigned task directly.\n"
+                "2. Evidence — cite actual reads, commands, tests, or diagnostics.\n"
+                "3. Changes and artifacts — list files/artifacts/worktree state, or None.\n"
+                "4. Unresolved issues — list blockers/risks/parent decisions, or None.\n"
+                "5. Confidence — high, medium, or low, including why confidence is reduced."
+            ),
+        ]
+    )
+    return "\n\n".join(sections)
 
 
 def _coerce_subagent_result(value: object) -> SubagentResult:
