@@ -17,7 +17,9 @@ from reuleauxcoder.interfaces.cli.mini_tui import (
     MiniTUIApplication,
     _interaction_lines,
     _interaction_response,
+    _wrap_fragments,
 )
+import reuleauxcoder.interfaces.cli.mini_tui as mini_tui_module
 from reuleauxcoder.interfaces.events import (
     InteractionPromptPayload,
     RuntimeEventPayload,
@@ -52,6 +54,62 @@ def test_event_adapter_projects_user_and_execution_state() -> None:
     assert "fix the renderer" in rendered
     assert adapter.execution.state.runtime_state == "running"
     assert "MAIN" in "\n".join(adapter.panel_lines(100))
+
+
+def test_static_transcript_cells_reuse_width_revision_fragment_cache(
+    monkeypatch,
+) -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.append_restored_conversation(
+        [{"role": "assistant", "content": "**stable**"}]
+    )
+    original = mini_tui_module._cell_fragments
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mini_tui_module, "_cell_fragments", counted)
+    adapter.transcript_fragments()
+    adapter.transcript_fragments()
+    assert calls == 1
+
+    adapter.set_viewport_width(70)
+    adapter.transcript_fragments()
+    assert calls == 2
+
+
+def test_large_static_transcript_reuses_aggregate_layout() -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.append_restored_conversation(
+        [
+            {
+                "role": "assistant" if index % 2 else "user",
+                "content": f"row {index} · 中文 🚀 **markdown**",
+            }
+            for index in range(500)
+        ]
+    )
+
+    first = adapter.transcript_fragments()
+    second = adapter.transcript_fragments()
+    assert second is first
+
+    adapter.set_viewport_width(64)
+    resized = adapter.transcript_fragments()
+    assert resized is not first
+
+
+def test_visual_prewrap_counts_cjk_and_emoji_width() -> None:
+    wrapped = _wrap_fragments(
+        [("class:assistant", "ab中文🚀cd")],
+        width=6,
+    )
+    text = "".join(fragment for _style, fragment in wrapped)
+
+    assert text == "ab中文\n🚀cd"
 
 
 def test_child_internals_stay_out_of_transcript_but_approval_remains_visible() -> None:

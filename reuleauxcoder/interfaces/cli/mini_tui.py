@@ -24,10 +24,11 @@ from prompt_toolkit.layout import (
     FormattedTextControl,
     HSplit,
     Layout,
-    ScrollablePane,
     Window,
 )
+from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame
@@ -124,6 +125,11 @@ class MiniTUIEventAdapter:
         self._pending_events: queue.SimpleQueue[UIEvent] = queue.SimpleQueue()
         self._viewport_width = 100
         self._markdown = RetainedMarkdownRenderer()
+        self._cell_fragment_cache: dict[
+            tuple[str, int, int], tuple[tuple[str, str], ...]
+        ] = {}
+        self._transcript_render_key: tuple[tuple[str, int, int], ...] = ()
+        self._transcript_rendered = FormattedText()
 
     def bind_invalidator(self, callback) -> None:
         self._invalidate = callback
@@ -310,15 +316,41 @@ class MiniTUIEventAdapter:
         fragments: list[tuple[str, str]] = []
         with self._lock:
             cells = self.transcript.state.transcript.cells
+        render_key = tuple(
+            (cell.id, cell.revision, self._viewport_width) for cell in cells
+        )
+        if render_key == self._transcript_render_key:
+            return self._transcript_rendered
+        live_keys: set[tuple[str, int, int]] = set()
         for cell in cells:
-            fragments.extend(
-                _cell_fragments(
-                    cell,
-                    width=self._viewport_width,
-                    markdown_renderer=self._markdown,
+            key = (cell.id, cell.revision, self._viewport_width)
+            live_keys.add(key)
+            rendered = self._cell_fragment_cache.get(key)
+            if rendered is None:
+                rendered = tuple(
+                    _cell_fragments(
+                        cell,
+                        width=self._viewport_width,
+                        markdown_renderer=self._markdown,
+                    )
                 )
+                self._cell_fragment_cache[key] = rendered
+            fragments.extend(rendered)
+        if len(self._cell_fragment_cache) > max(50, len(live_keys) * 2):
+            self._cell_fragment_cache = {
+                key: value
+                for key, value in self._cell_fragment_cache.items()
+                if key in live_keys
+            }
+        rendered = FormattedText(
+            _wrap_fragments(
+                fragments or [("class:muted", "No activity yet.\n")],
+                width=max(1, self._viewport_width - 1),
             )
-        return FormattedText(fragments or [("class:muted", "No activity yet.\n")])
+        )
+        self._transcript_render_key = render_key
+        self._transcript_rendered = rendered
+        return rendered
 
 
 class MiniTUIInteractor:
@@ -477,26 +509,29 @@ class MiniTUIApplication:
         self.panel_control = FormattedTextControl(self._panel_text)
         self.transcript_control = FormattedTextControl(
             self.events.transcript_fragments,
-            focusable=True,
+            focusable=False,
             show_cursor=False,
+            get_cursor_position=self._transcript_cursor_position,
         )
         self.transcript_control.mouse_handler = (  # type: ignore[method-assign]
             self._transcript_mouse_handler
         )
         self.transcript_window = Window(
             self.transcript_control,
-            wrap_lines=True,
+            wrap_lines=False,
             always_hide_cursor=True,
+            right_margins=[
+                ScrollbarMargin(
+                    display_arrows=True,
+                    up_arrow_symbol="▲",
+                    down_arrow_symbol="▼",
+                )
+            ],
         )
-        self.transcript_pane = ScrollablePane(
-            self.transcript_window,
-            keep_cursor_visible=False,
-            keep_focused_window_visible=False,
-            show_scrollbar=True,
-            display_arrows=True,
-            up_arrow_symbol="▲",
-            down_arrow_symbol="▼",
-        )
+        # Compatibility alias for the scroll state machine. Unlike
+        # ScrollablePane, Window paints only its visible viewport and does not
+        # allocate a transcript-height off-screen Screen on every frame.
+        self.transcript_pane = self.transcript_window
         self.interaction_control = FormattedTextControl(self._interaction_text)
         self.input_window = Window(
             BufferControl(buffer=self.input_buffer),
@@ -510,7 +545,7 @@ class MiniTUIApplication:
                     title=lambda: f" FORGE · v{__version__} · F2 DETAILS ",
                     style="class:frame.border",
                 ),
-                self.transcript_pane,
+                self.transcript_window,
                 Frame(
                     HSplit(
                         [
@@ -825,6 +860,10 @@ class MiniTUIApplication:
             rows = 24
         return max(3, rows // 2)
 
+    def _transcript_cursor_position(self) -> Point:
+        pane = getattr(self, "transcript_pane", None)
+        return Point(x=0, y=max(0, getattr(pane, "vertical_scroll", 0)))
+
     def _scroll_transcript(self, delta: int) -> None:
         target = max(
             0,
@@ -938,6 +977,37 @@ def _cell_fragments(
             )
         ]
     return [("class:muted", str(cell) + "\n")]
+
+
+def _wrap_fragments(
+    fragments: list[tuple[str, str]], *, width: int
+) -> list[tuple[str, str]]:
+    """Pre-wrap styled fragments so Window scroll units equal visual rows."""
+    width = max(1, width)
+    output: list[tuple[str, str]] = []
+    column = 0
+    for style, text in fragments:
+        chunk = ""
+        for character in text:
+            if character == "\n":
+                if chunk:
+                    output.append((style, chunk))
+                    chunk = ""
+                output.append(("", "\n"))
+                column = 0
+                continue
+            character_width = max(0, get_cwidth(character))
+            if column and column + character_width > width:
+                if chunk:
+                    output.append((style, chunk))
+                    chunk = ""
+                output.append(("", "\n"))
+                column = 0
+            chunk += character
+            column += character_width
+        if chunk:
+            output.append((style, chunk))
+    return output
 
 
 def _approval_fragments(cell: ApprovalCell, *, width: int) -> list[tuple[str, str]]:
