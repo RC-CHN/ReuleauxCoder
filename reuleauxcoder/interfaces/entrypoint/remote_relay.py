@@ -16,7 +16,6 @@ from reuleauxcoder.app.runtime.session_state import (
 )
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
-from reuleauxcoder.domain.approval import SharedApprovalProvider
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.protocol import ChatResponse
@@ -486,8 +485,10 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         interaction_coordinator = InteractionCoordinator(_RemoteUIInteractor())
         peer_agent.add_event_handler(_on_agent_event)
         peer_agent.ui_interactor = interaction_coordinator
-        peer_agent.approval_provider = SharedApprovalProvider(
-            handler=make_approval_handler(interaction_coordinator)
+        from reuleauxcoder.app.runtime.approval import build_runtime_approval_provider
+
+        peer_agent.approval_provider = build_runtime_approval_provider(
+            peer_agent, make_approval_handler(interaction_coordinator)
         )
         try:
             result = peer_agent.chat(prompt)

@@ -161,6 +161,28 @@ def test_config_is_valid_for_minimal_valid_configuration() -> None:
     assert config.is_valid() is True
 
 
+def test_auto_review_config_rejects_missing_or_unknown_profile() -> None:
+    missing = Config(
+        api_key="key",
+        approval=ApprovalConfig(reviewer="auto_review"),
+    )
+    unknown = Config(
+        api_key="key",
+        approval=ApprovalConfig(
+            reviewer="auto_review", auto_review_model_profile="guardian"
+        ),
+    )
+
+    assert (
+        "approval.auto_review_model_profile is required for auto_review"
+        in missing.validate()
+    )
+    assert (
+        "approval.auto_review_model_profile must exist in model_profiles"
+        in unknown.validate()
+    )
+
+
 def test_config_supports_llm_debug_trace_flag() -> None:
     config = Config(api_key="key", llm_debug_trace=True)
     assert config.llm_debug_trace is True

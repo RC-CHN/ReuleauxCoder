@@ -156,7 +156,14 @@ class ToolExecutor:
                             else "unknown"
                         ),
                         reason=approval_required.reason,
+                        effect_class=before_context.metadata.get("effect_class"),
+                        profile=before_context.metadata.get("profile"),
                         metadata={
+                            "agent_id": self.agent.agent_id,
+                            "session_generation": self.agent.session_generation,
+                            "turn_id": self.agent._current_turn_id,
+                            "tool_call_id": tc.id,
+                            "approval_attempt": approval_attempt,
                             "workspace_changed_during_approval": bool(
                                 approval_workspace_changes
                             )

@@ -64,7 +64,14 @@ def merge_approval_config(
                 action=rule.action,
             )
         )
-    return ApprovalConfig(default_mode=baseline.default_mode, rules=merged_rules)
+    return ApprovalConfig(
+        default_mode=baseline.default_mode,
+        rules=merged_rules,
+        reviewer=baseline.reviewer,
+        auto_review_model_profile=baseline.auto_review_model_profile,
+        auto_review_policy=baseline.auto_review_policy,
+        auto_review_timeout_seconds=baseline.auto_review_timeout_seconds,
+    )
 
 
 def get_runtime_approval_config(config: Config, agent: Agent) -> ApprovalConfig:

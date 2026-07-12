@@ -9,6 +9,8 @@ from reuleauxcoder.domain.approval_engine import (
     ApprovalPolicyEngine,
     ToolApprovalContext,
 )
+from reuleauxcoder.domain.approval import SharedApprovalProvider
+from reuleauxcoder.domain.approval_review import AutoReviewJudge
 from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
 from reuleauxcoder.domain.config.schema import DEFAULTS
 from reuleauxcoder.domain.hooks import HookPoint
@@ -213,6 +215,35 @@ def refresh_approval_runtime(agent, approval_config: ApprovalConfig) -> None:
     for hook in agent.hook_registry.hooks_at(HookPoint.BEFORE_TOOL_EXECUTE):
         if isinstance(hook, ToolPolicyGuardHook):
             hook.update_approval_config(approval_config)
+
+
+def build_runtime_approval_provider(agent, handler) -> SharedApprovalProvider:
+    """Build user or fail-closed auto-review routing from effective config."""
+
+    approval = getattr(getattr(agent, "runtime_config", None), "approval", None)
+    judges = []
+    if approval is not None and getattr(approval, "reviewer", "user") == "auto_review":
+        from reuleauxcoder.services.llm.factory import build_llm_from_settings
+
+        profile_name = getattr(approval, "auto_review_model_profile", None)
+        profiles = getattr(getattr(agent, "runtime_config", None), "model_profiles", {})
+        profile = profiles.get(profile_name) if profile_name else None
+        reviewer_llm = (
+            build_llm_from_settings(
+                profile, debug_trace=getattr(agent.llm, "debug_trace", False)
+            )
+            if profile is not None
+            else None
+        )
+        judges.append(
+            AutoReviewJudge(
+                agent=agent,
+                llm=reviewer_llm,
+                policy=getattr(approval, "auto_review_policy", ""),
+                timeout_seconds=getattr(approval, "auto_review_timeout_seconds", 15),
+            )
+        )
+    return SharedApprovalProvider(handler=handler, judges=judges)
 
 
 def is_disabled_mcp_rule(config, rule: ApprovalRuleConfig) -> bool:

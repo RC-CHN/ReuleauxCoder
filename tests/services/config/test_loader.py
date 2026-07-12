@@ -130,6 +130,32 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.ui.notification_threshold == "warning"
 
 
+def test_parse_config_requires_explicit_auto_review_profile() -> None:
+    loader = ConfigLoader()
+    config = loader._parse_config(
+        {
+            "models": {
+                "profiles": {
+                    "main": {"model": "main", "api_key": "key"},
+                    "guardian": {"model": "reviewer", "api_key": "review-key"},
+                }
+            },
+            "approval": {
+                "reviewer": "auto_review",
+                "auto_review_model_profile": "guardian",
+                "auto_review_policy": "Never approve network access.",
+                "auto_review_timeout_seconds": 9,
+            },
+        }
+    )
+
+    assert config.approval.reviewer == "auto_review"
+    assert config.approval.auto_review_model_profile == "guardian"
+    assert config.approval.auto_review_policy == "Never approve network access."
+    assert config.approval.auto_review_timeout_seconds == 9
+    assert config.validate() == []
+
+
 def test_parse_config_reads_remote_exec_settings() -> None:
     loader = ConfigLoader()
     config = loader._parse_config(

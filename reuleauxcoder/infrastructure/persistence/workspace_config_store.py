@@ -33,6 +33,10 @@ class WorkspaceConfigStore:
 
         data["approval"] = {
             "default_mode": approval.default_mode,
+            "reviewer": approval.reviewer,
+            "auto_review_model_profile": approval.auto_review_model_profile,
+            "auto_review_policy": approval.auto_review_policy,
+            "auto_review_timeout_seconds": approval.auto_review_timeout_seconds,
             "rules": [self.approval_rule_to_dict(rule) for rule in approval.rules],
         }
         save_yaml_config(self._path, data)

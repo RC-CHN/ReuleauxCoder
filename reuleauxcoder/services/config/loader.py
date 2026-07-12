@@ -389,6 +389,16 @@ class ConfigLoader:
                     "default_mode", DEFAULTS["approval_default_mode"]
                 ),
                 rules=approval_rules,
+                reviewer=str(approval_config.get("reviewer", "user")),
+                auto_review_model_profile=approval_config.get(
+                    "auto_review_model_profile"
+                ),
+                auto_review_policy=str(
+                    approval_config.get("auto_review_policy", "") or ""
+                ),
+                auto_review_timeout_seconds=int(
+                    approval_config.get("auto_review_timeout_seconds", 15)
+                ),
             ),
             skills=SkillsConfig(
                 enabled=skills_config.get("enabled", True),

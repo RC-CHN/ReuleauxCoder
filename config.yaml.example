@@ -52,6 +52,12 @@ modes:
 
 approval:
   default_mode: "require_approval"
+  # Route approval prompts to the user (default) or a fail-closed reviewer.
+  reviewer: "user" # user | auto_review
+  # Required for auto_review; never silently falls back to the work/sub model.
+  auto_review_model_profile: null
+  auto_review_policy: ""
+  auto_review_timeout_seconds: 15
   rules:
     - tool_name: "read_file"
       action: "allow"

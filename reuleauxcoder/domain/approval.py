@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Literal, Mapping, Protocol
@@ -43,6 +45,7 @@ class ApprovalRequest:
     profile: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     preview: ApprovalPreview | None = None
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 @dataclass(slots=True)
@@ -124,11 +127,11 @@ TUI:  pushes the pending onto a queue; a Textual ``ModalScreen``
 """
 
 ApprovalJudge = Callable[["ApprovalRequest"], "ApprovalDecision | None"]
-"""A pre-approval judge that can short-circuit the human handler.
+"""An optional policy judge that can short-circuit the human handler.
 
 Returns ``ApprovalDecision`` to auto-approve/deny without user input,
-or ``None`` to escalate to the human handler.  Used by sub-agents to
-let the parent LLM decide before asking the user.
+or ``None`` to escalate to the human handler. Judges are policy mechanisms;
+sub-agents do not use a parent model as an authorization source.
 """
 
 
@@ -137,7 +140,7 @@ class SharedApprovalProvider(ApprovalProvider):
 
     Optional *judges* run before the human handler.  Each judge may
     return an ``ApprovalDecision`` (auto-resolve) or ``None``
-    (escalate).  Sub-agents inject a ``ParentLLMJudge`` here.
+    (escalate).
     """
 
     def __init__(
@@ -145,28 +148,87 @@ class SharedApprovalProvider(ApprovalProvider):
         handler: ApprovalHandler,
         *,
         judges: list[ApprovalJudge] | None = None,
+        coordinator: "ApprovalCoordinator | None" = None,
     ):
-        self._handler = handler
+        self._coordinator = coordinator or ApprovalCoordinator(handler)
         self._judges: list[ApprovalJudge] = judges or []
 
     @property
     def handler(self) -> ApprovalHandler:
         """The human handler (CLI interactor or TUI queue pusher)."""
-        return self._handler
+        return self._coordinator.handler
+
+    @property
+    def coordinator(self) -> "ApprovalCoordinator":
+        """Root-scoped coordinator shared by parent and child requests."""
+        return self._coordinator
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-        # ── Pre-approval judges (e.g. parent LLM for sub-agents) ──
+        # ── Optional policy judges ──
         for judge in self._judges:
             decision = judge(request)
             if decision is not None:
                 return decision
 
         # ── Human handler ──
-        pending = PendingApproval(request=request)
-        self._handler(pending)
+        return self._coordinator.request_approval(request)
 
-        if pending.wait():
-            return pending.decision or ApprovalDecision.deny_once("no decision")
-        return ApprovalDecision.deny_once(
-            f"approval timed out after {pending.timeout}s"
-        )
+
+class ApprovalCoordinator(ApprovalProvider):
+    """FIFO root interaction coordinator with one human-review focus.
+
+    Calls may register concurrently. Only the queue head is presented to the
+    interface, so background agents cannot stack terminal prompts or dialogs.
+    The lock protects queue state only and is never held while the user is
+    reviewing a request.
+    """
+
+    def __init__(self, handler: ApprovalHandler, *, timeout: float = 60.0):
+        self._handler = handler
+        self._timeout = max(0.01, float(timeout))
+        self._condition = threading.Condition()
+        self._queue: deque[PendingApproval] = deque()
+
+    @property
+    def handler(self) -> ApprovalHandler:
+        return self._handler
+
+    @property
+    def pending_count(self) -> int:
+        """Number of registered requests, including the focused request."""
+        with self._condition:
+            return len(self._queue)
+
+    def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
+        pending = PendingApproval(request=request, timeout=self._timeout)
+        with self._condition:
+            self._queue.append(pending)
+            self._condition.notify_all()
+            while self._queue and self._queue[0] is not pending:
+                self._condition.wait()
+
+        try:
+            try:
+                self._handler(pending)
+            except (KeyboardInterrupt, EOFError):
+                raise
+            except Exception as error:
+                return ApprovalDecision.deny_once(
+                    f"approval interaction failed closed: {error}"
+                )
+
+            if pending.wait():
+                return pending.decision or ApprovalDecision.deny_once("no decision")
+            return ApprovalDecision.deny_once(
+                f"approval timed out after {pending.timeout}s"
+            )
+        finally:
+            with self._condition:
+                if self._queue and self._queue[0] is pending:
+                    self._queue.popleft()
+                else:
+                    try:
+                        self._queue.remove(pending)
+                    except ValueError:
+                        pass
+                self._condition.notify_all()

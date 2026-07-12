@@ -44,6 +44,10 @@ CONFIG_SCHEMA = {
     },
     "approval": {
         "default_mode": "string (default: require_approval, one of allow/warn/require_approval/deny)",
+        "reviewer": "string (default: user, one of user/auto_review)",
+        "auto_review_model_profile": "string (required when reviewer=auto_review)",
+        "auto_review_policy": "string (optional additional risk policy)",
+        "auto_review_timeout_seconds": "int (default: 15)",
         "rules": [
             {
                 "tool_name": "string (optional)",

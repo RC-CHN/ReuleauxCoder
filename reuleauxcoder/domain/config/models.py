@@ -166,6 +166,10 @@ class ApprovalConfig:
 
     default_mode: ApprovalAction = "require_approval"
     rules: list[ApprovalRuleConfig] = field(default_factory=list)
+    reviewer: Literal["user", "auto_review"] = "user"
+    auto_review_model_profile: str | None = None
+    auto_review_policy: str = ""
+    auto_review_timeout_seconds: int = 15
 
 
 @dataclass
@@ -376,6 +380,20 @@ class Config:
             errors.append(
                 "approval.default_mode must be one of allow, warn, require_approval, deny"
             )
+        if self.approval.reviewer not in {"user", "auto_review"}:
+            errors.append("approval.reviewer must be user or auto_review")
+        if self.approval.reviewer == "auto_review":
+            reviewer_profile = self.approval.auto_review_model_profile
+            if not reviewer_profile:
+                errors.append(
+                    "approval.auto_review_model_profile is required for auto_review"
+                )
+            elif reviewer_profile not in self.model_profiles:
+                errors.append(
+                    "approval.auto_review_model_profile must exist in model_profiles"
+                )
+        if self.approval.auto_review_timeout_seconds < 1:
+            errors.append("approval.auto_review_timeout_seconds must be positive")
         for i, rule in enumerate(self.approval.rules):
             if rule.action not in valid_actions:
                 errors.append(
