@@ -1,7 +1,10 @@
 import threading
+import json
 from pathlib import Path
 
 from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
+from reuleauxcoder.domain.context.replay import ReplayEnvelope
+from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.session.models import SessionRuntimeState
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
@@ -58,6 +61,101 @@ def test_session_store_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert loaded.runtime_state.active_mode == "coder"
     assert loaded.runtime_state.llm_debug_trace is True
     assert loaded.fingerprint == "local"
+
+
+def test_new_session_layout_separates_full_ledger_from_runtime_view(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    ledger = HistoryLedger()
+    raw = {"role": "tool", "tool_call_id": "call", "content": "raw-line\n" * 200}
+    ledger.append_message(raw, source="tool_result")
+    view = [
+        {
+            "role": "system",
+            "content": "[Context checkpoint summary]\nTool output archived.",
+        }
+    ]
+    replay = ReplayEnvelope.create(
+        session_id=None,
+        cache_epoch=1,
+        history_version=1,
+        model_profile="model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        instructions=[{"role": "system", "content": "stable"}],
+        tools=[],
+        items=view,
+    )
+
+    session_id = store.save(
+        messages=view,
+        model="model",
+        history_events=list(ledger.events),
+        replay_envelope=replay,
+    )
+
+    directory = tmp_path / session_id
+    assert (directory / "manifest.json").exists()
+    assert (directory / "events.jsonl").exists()
+    assert (directory / "replay.json").exists()
+    assert "raw-line" in (directory / "events.jsonl").read_text(encoding="utf-8")
+    loaded = store.load(session_id)
+    assert loaded is not None
+    assert loaded.messages[0]["content"].startswith("[Context checkpoint summary]")
+    assert loaded.history_completeness == "complete"
+    assert loaded.replay_envelope is not None
+    assert loaded.replay_envelope.validate()
+
+
+def test_events_jsonl_only_appends_new_event_ids(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    ledger = HistoryLedger()
+    ledger.append_message({"role": "user", "content": "one"}, source="user")
+    session_id = store.save(
+        messages=[{"role": "user", "content": "one"}],
+        model="model",
+        history_events=list(ledger.events),
+    )
+    events_path = tmp_path / session_id / "events.jsonl"
+    first_lines = events_path.read_text(encoding="utf-8").splitlines()
+
+    store.save(
+        messages=[{"role": "user", "content": "one"}],
+        model="model",
+        session_id=session_id,
+        history_events=list(ledger.events),
+    )
+    assert events_path.read_text(encoding="utf-8").splitlines() == first_lines
+
+    ledger.append_message({"role": "assistant", "content": "two"}, source="assistant")
+    store.save(
+        messages=[
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+        ],
+        model="model",
+        session_id=session_id,
+        history_events=list(ledger.events),
+    )
+    assert len(events_path.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_tampered_replay_does_not_claim_canonical_directory_restore(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[{"role": "user", "content": "safe fallback"}], model="model"
+    )
+    replay_path = tmp_path / session_id / "replay.json"
+    replay_data = json.loads(replay_path.read_text(encoding="utf-8"))
+    replay_data["items"][0]["content"] = "tampered"
+    replay_path.write_text(json.dumps(replay_data), encoding="utf-8")
+
+    loaded = store.load(session_id)
+    assert loaded is not None
+    assert loaded.messages[0]["content"] == "safe fallback"
 
 
 def test_session_store_save_with_exit_appends_exit_marker(tmp_path: Path) -> None:
@@ -140,6 +238,9 @@ def test_session_store_load_backfills_missing_message_token_counts(
         messages=[{"role": "user", "content": "hello"}], model="gpt-4o"
     )
     path = tmp_path / f"{session_id}.json"
+    import shutil
+
+    shutil.rmtree(tmp_path / session_id)
 
     import json
 
@@ -163,6 +264,9 @@ def test_session_store_load_repairs_legacy_out_of_order_tool_results(
         messages=[{"role": "user", "content": "seed"}], model="gpt-4o"
     )
     path = tmp_path / f"{session_id}.json"
+    import shutil
+
+    shutil.rmtree(tmp_path / session_id)
 
     import json
 

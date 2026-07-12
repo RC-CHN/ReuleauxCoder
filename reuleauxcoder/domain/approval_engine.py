@@ -51,6 +51,8 @@ class ApprovalPolicyEngine:
         for rule in ranked_rules:
             if self._matches(rule, context):
                 return ApprovalPolicyMatch(action=rule.action, rule=rule)
+        if context.effect_class == "read_only_internal":
+            return ApprovalPolicyMatch(action="allow", rule=None)
         return ApprovalPolicyMatch(action=self.config.default_mode, rule=None)
 
     @staticmethod

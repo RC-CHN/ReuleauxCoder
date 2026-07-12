@@ -92,3 +92,19 @@ def test_approval_engine_specificity_scoring_orders_narrower_rules_higher() -> N
     assert ApprovalPolicyEngine._specificity(
         server
     ) < ApprovalPolicyEngine._specificity(tool)
+
+
+def test_internal_read_is_deterministically_allowed_unless_rule_denies() -> None:
+    default_engine = ApprovalPolicyEngine(
+        ApprovalConfig(default_mode="require_approval")
+    )
+    denied_engine = ApprovalPolicyEngine(
+        ApprovalConfig(
+            default_mode="require_approval",
+            rules=[ApprovalRuleConfig(tool_name="history_read", action="deny")],
+        )
+    )
+    context = _ctx(tool_name="history_read", effect_class="read_only_internal")
+
+    assert default_engine.evaluate(context).action == "allow"
+    assert denied_engine.evaluate(context).action == "deny"

@@ -1033,7 +1033,11 @@ def run_subagent_task(
             tool._parent_agent = sub
     if resume_reference:
         root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
-        sub.state.messages[:] = SubagentTranscriptStore(root).read(resume_reference)
+        sub._replace_context_messages(
+            SubagentTranscriptStore(root).read(resume_reference),
+            reason="subagent transcript resume",
+            record=False,
+        )
 
     parent_context = project_parent_context(parent_agent, context_mode)
     delegated_prompt = (

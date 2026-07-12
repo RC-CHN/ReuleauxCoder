@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from reuleauxcoder.domain.context.replay import ReplayEnvelope, RequestEnvelope
+from reuleauxcoder.domain.history import HistoryEvent
+
 
 def _display_message_text(message: dict) -> str:
     """Return user-facing conversation text without persistence markers."""
@@ -96,6 +99,10 @@ class Session:
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     runtime_state: SessionRuntimeState = field(default_factory=SessionRuntimeState)
+    history_events: list[HistoryEvent] = field(default_factory=list)
+    replay_envelope: ReplayEnvelope | None = None
+    request_envelopes: list[RequestEnvelope] = field(default_factory=list)
+    history_completeness: str = "legacy_compacted_or_unknown"
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
@@ -105,6 +112,9 @@ class Session:
             runtime_state.model = d.get("model")
         if runtime_state.active_mode is None:
             runtime_state.active_mode = d.get("active_mode")
+        replay_data = d.get("replay_envelope")
+        request_data = d.get("request_envelopes") or []
+        history_data = d.get("history_events") or []
         return cls(
             id=d.get("id", ""),
             model=d.get("model", runtime_state.model or "?"),
@@ -115,6 +125,24 @@ class Session:
             total_prompt_tokens=d.get("total_prompt_tokens", 0),
             total_completion_tokens=d.get("total_completion_tokens", 0),
             runtime_state=runtime_state,
+            history_events=[
+                HistoryEvent.from_dict(item)
+                for item in history_data
+                if isinstance(item, dict)
+            ],
+            replay_envelope=(
+                ReplayEnvelope.from_dict(replay_data)
+                if isinstance(replay_data, dict)
+                else None
+            ),
+            request_envelopes=[
+                RequestEnvelope(**item)
+                for item in request_data
+                if isinstance(item, dict)
+            ],
+            history_completeness=str(
+                d.get("history_completeness") or "legacy_compacted_or_unknown"
+            ),
         )
 
     def to_dict(self) -> dict:
@@ -129,6 +157,11 @@ class Session:
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
             "runtime_state": self.runtime_state.to_dict(),
+            "history_completeness": self.history_completeness,
+            "replay_envelope": (
+                self.replay_envelope.to_dict() if self.replay_envelope else None
+            ),
+            "request_envelopes": [item.to_dict() for item in self.request_envelopes],
         }
 
     def get_preview(self) -> str:

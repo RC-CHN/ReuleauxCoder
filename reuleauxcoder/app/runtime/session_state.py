@@ -28,6 +28,21 @@ def get_session_fingerprint(config: Config, agent: Agent) -> str:
     )
 
 
+def build_session_persistence_kwargs(agent: Agent) -> dict:
+    """Return canonical history/replay state for SessionStore.save."""
+    ledger = getattr(agent, "history_ledger", None)
+    return {
+        "history_events": list(ledger.events) if ledger is not None else None,
+        "replay_envelope": getattr(agent, "replay_envelope", None),
+        "request_envelopes": list(getattr(agent, "request_envelopes", ())),
+        "history_completeness": getattr(
+            agent,
+            "history_completeness",
+            "complete" if ledger is not None else "legacy_snapshot_only",
+        ),
+    }
+
+
 def _clone_approval_rules(rules: list[ApprovalRuleConfig]) -> list[ApprovalRuleConfig]:
     return [
         ApprovalRuleConfig(
@@ -136,10 +151,17 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
 
 def apply_session_runtime_state(session: Session, config: Config, agent: Agent) -> None:
     """Apply persisted session runtime state onto the live host runtime."""
+    reset = getattr(agent, "reset", None)
+    if callable(reset):
+        reset()
     restore_config_runtime_defaults(config, agent)
     runtime = session.runtime_state
 
-    agent.state.messages = list(session.messages)
+    restore_history = getattr(agent, "restore_history_runtime", None)
+    if callable(restore_history):
+        restore_history(session)
+    else:
+        agent.state.messages = list(session.messages)
     agent.state.total_prompt_tokens = session.total_prompt_tokens
     agent.state.total_completion_tokens = session.total_completion_tokens
     agent.state.current_round = 0

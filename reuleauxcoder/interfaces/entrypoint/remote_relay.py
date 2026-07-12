@@ -10,6 +10,7 @@ from typing import Any
 from rich.console import Console
 
 from reuleauxcoder.app.runtime.session_state import (
+    build_session_persistence_kwargs,
     apply_session_runtime_state,
     build_session_runtime_state,
     restore_config_runtime_defaults,
@@ -322,6 +323,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             active_mode=getattr(peer_agent, "active_mode", None),
             runtime_state=build_session_runtime_state(config, peer_agent),
             fingerprint=_peer_fingerprint(peer_id),
+            **build_session_persistence_kwargs(peer_agent),
         )
         peer_agent.current_session_id = sid
         peer_agent.lifecycle.session_saved(sid)

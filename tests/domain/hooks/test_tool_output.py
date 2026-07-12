@@ -138,3 +138,28 @@ def test_tool_output_head_retention_reports_source_anchor() -> None:
     assert "Showing first 2 retained lines from source line 11" in out.result
     assert "source-10\nsource-11" in out.result
     assert "source-19" not in out.result
+
+
+def test_tool_output_archive_is_session_scoped_and_model_recoverable(
+    tmp_path: Path,
+) -> None:
+    hook = ToolOutputTruncationHook(
+        max_chars=20,
+        max_lines=2,
+        store_full_output=True,
+        sessions_dir=str(tmp_path),
+    )
+    source = "\n".join(f"line-{index}" for index in range(20))
+    ctx = _ctx("/tmp/output.log", source)
+    ctx.session_id = "session_test"
+
+    out = hook.run(ctx)
+
+    assert out.outcome is not None
+    assert out.outcome.archive_reference is not None
+    assert out.outcome.archive_reference.path == "tools/1.txt"
+    assert out.outcome.archive_reference.checksum_sha256 is not None
+    assert out.outcome.archive_reference.size_bytes == len(source.encode("utf-8"))
+    artifact = tmp_path / "session_test" / "artifacts" / "tools" / "1.txt"
+    assert artifact.read_text(encoding="utf-8") == source
+    assert "call artifact_read" in out.result

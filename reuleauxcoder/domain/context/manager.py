@@ -246,6 +246,20 @@ class ContextManager:
         self._recompute_thresholds()
         self._reset_compression_state()
 
+    def restore_replay_state(self, *, history_version: int, cache_epoch: int) -> None:
+        """Restore committed version watermarks without regenerating history."""
+        self._history_version = max(0, int(history_version))
+        self._cache_epoch = max(0, int(cache_epoch))
+        self._latest_usage = None
+        self._last_rewrite_plan = None
+
+    def invalidate_replay_prefix(self) -> None:
+        """Start a new committed epoch after reset or stable-prefix replacement."""
+        self._history_version += 1
+        self._cache_epoch += 1
+        self._latest_usage = None
+        self._last_rewrite_plan = None
+
     def _recompute_thresholds(self) -> None:
         limit = self._budget.request_input_limit
         self._planning_at = max(1, int(limit * 0.52))
@@ -575,7 +589,11 @@ class ContextManager:
             # Keep first 3 + last 3 lines
             snipped = (
                 "\n".join(lines[:3])
-                + f"\n... ({len(lines)} lines, snipped to save context) ...\n"
+                + (
+                    f"\n... ({len(lines)} lines, context-snipped; "
+                    f"tool_call_id={m.get('tool_call_id') or 'unknown'}; "
+                    "full committed output remains searchable in HistoryLedger) ...\n"
+                )
                 + "\n".join(lines[-3:])
             )
             m["content"] = snipped

@@ -20,6 +20,7 @@ from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.hooks import HookBase, HookDiagnostic, HookPoint, HookRegistry
+from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
@@ -110,6 +111,11 @@ class Agent:
         self._state_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._current_turn_id: str | None = None
+        self.history_ledger = HistoryLedger(generation=self.session_generation)
+        self.history_completeness = "complete"
+        self.replay_envelope = None
+        self.request_envelopes: list = []
+        self._restored_replay_envelope = None
         for tool in self.tools:
             backend = getattr(tool, "backend", None)
             backend_context = getattr(backend, "context", None)
@@ -204,8 +210,72 @@ class Agent:
                 f"Tool '{tool_name}' interrupted before returning output.{suffix}"
             ),
         )
-        self.state.messages[:] = repaired
+        if repaired != self.state.messages:
+            self.state.messages[:] = repaired
+            self.history_ledger.append_context_view(
+                self.state.messages,
+                reason=reason or "tool adjacency reconciliation",
+                history_version=self.context.history_version,
+            )
         return synthesized
+
+    def _append_message(self, message: dict, *, source: str) -> None:
+        self.state.messages.append(message)
+        self.history_ledger.append_message(message, source=source)
+
+    def _replace_context_messages(
+        self,
+        messages: list[dict],
+        *,
+        reason: str,
+        checkpoint_id: str | None = None,
+        record: bool = True,
+    ) -> None:
+        self.state.messages[:] = [dict(message) for message in messages]
+        if record:
+            self.history_ledger.append_context_view(
+                self.state.messages,
+                reason=reason,
+                history_version=self.context.history_version,
+                checkpoint_id=checkpoint_id,
+            )
+
+    def record_context_checkpoint(self, *, reason: str) -> None:
+        checkpoint = self.context.checkpoints[-1] if self.context.checkpoints else None
+        self.history_ledger.append_context_view(
+            self.state.messages,
+            reason=reason,
+            history_version=self.context.history_version,
+            checkpoint_id=checkpoint.id if checkpoint else None,
+        )
+
+    def restore_history_runtime(self, session) -> None:
+        self.history_ledger = HistoryLedger(
+            getattr(session, "history_events", ()),
+            generation=self.session_generation,
+        )
+        self.replay_envelope = getattr(session, "replay_envelope", None)
+        self._restored_replay_envelope = self.replay_envelope
+        self.request_envelopes = list(getattr(session, "request_envelopes", ()))
+        self.history_completeness = getattr(
+            session, "history_completeness", "legacy_compacted_or_unknown"
+        )
+        if self.replay_envelope is not None:
+            self.context.restore_replay_state(
+                history_version=self.replay_envelope.history_version,
+                cache_epoch=self.replay_envelope.cache_epoch,
+            )
+        self._replace_context_messages(
+            list(session.messages), reason="session resume", record=False
+        )
+
+    def start_new_history(self) -> None:
+        self.history_ledger = HistoryLedger(generation=self.session_generation)
+        self.replay_envelope = None
+        self._restored_replay_envelope = None
+        self.request_envelopes = []
+        self.history_completeness = "complete"
+        self.context.restore_replay_state(history_version=0, cache_epoch=0)
 
     def request_stop(self) -> None:
         """Request cooperative stop for the current/next agent loop iteration."""
@@ -425,7 +495,9 @@ class Agent:
                 self._pending_subagent_injections.append((job, content, success))
                 return True
 
-            self.state.messages.append({"role": "system", "content": content})
+            self._append_message(
+                {"role": "system", "content": content}, source="subagent_result"
+            )
 
         self._emit_subagent_completion_events(job, content, success)
         return True
@@ -443,7 +515,10 @@ class Agent:
             pending = self._pending_subagent_injections[:]
             self._pending_subagent_injections.clear()
             for job, content, _success in pending:
-                self.state.messages.append({"role": "system", "content": content})
+                self._append_message(
+                    {"role": "system", "content": content},
+                    source="subagent_deferred",
+                )
 
         for job, content, success in pending:
             if job is not None:
@@ -470,7 +545,10 @@ class Agent:
             if self._collect_pending_tool_calls():
                 self._pending_subagent_injections.append((None, content, True))
                 return True
-            self.state.messages.append({"role": "system", "content": content})
+            self._append_message(
+                {"role": "system", "content": content},
+                source="subagent_communication",
+            )
         return True
 
     def _inject_completed_subagent_jobs(self) -> int:
@@ -534,7 +612,9 @@ class Agent:
         self._emit_event(AgentEvent.chat_start(user_input))
 
         # Add user message
-        self.state.messages.append({"role": "user", "content": user_input})
+        self._append_message(
+            {"role": "user", "content": user_input}, source="user_input"
+        )
 
         # Run the loop
         try:
@@ -562,6 +642,10 @@ class Agent:
         if callable(cancel_interactions):
             cancel_interactions(reason="session reset")
         self.session_generation += 1
+        self.history_ledger.append(
+            "runtime_reset", {"next_generation": self.session_generation}
+        )
+        self.history_ledger.advance_generation(self.session_generation)
         lsp_manager = getattr(self, "lsp_manager", None)
         advance_lsp_generation = getattr(
             lsp_manager, "advance_session_generation", None
@@ -574,6 +658,12 @@ class Agent:
                 generation=self.session_generation, cancel_pending=True
             )
         self.state.messages.clear()
+        self.context.invalidate_replay_prefix()
+        self.history_ledger.append_context_view(
+            [],
+            reason="runtime reset",
+            history_version=self.context.history_version,
+        )
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0
         self.state.current_round = 0

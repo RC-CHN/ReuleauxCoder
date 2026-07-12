@@ -125,7 +125,7 @@ BUILTIN_MODES = {
     },
     "planner": {
         "description": "Planning-first mode; focus on analysis and implementation plans.",
-        "tools": ["read_file", "glob", "grep"],
+        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read"],
         "prompt_append": (
             "Focus on analysis, architecture, and step-by-step plans. Avoid file mutations "
             "unless explicitly requested."
@@ -134,7 +134,7 @@ BUILTIN_MODES = {
     },
     "debugger": {
         "description": "Debugging mode focused on diagnosis and verification.",
-        "tools": ["read_file", "glob", "grep", "shell"],
+        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "shell"],
         "prompt_append": (
             "Focus on root-cause analysis, minimal repro steps, and targeted fixes with "
             "clear verification."
@@ -160,6 +160,9 @@ DEFAULTS = {
         {"tool_name": "glob", "action": "allow"},
         {"tool_name": "grep", "action": "allow"},
         {"tool_name": "list_file", "action": "allow"},
+        {"tool_name": "history_search", "action": "allow"},
+        {"tool_name": "history_read", "action": "allow"},
+        {"tool_name": "artifact_read", "action": "allow"},
         {"tool_name": "lsp", "action": "allow"},
         {"tool_name": "write_file", "action": "require_approval"},
         {"tool_name": "edit_file", "action": "require_approval"},

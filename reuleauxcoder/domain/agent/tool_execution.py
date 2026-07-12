@@ -53,6 +53,8 @@ class ToolExecutor:
                 "mcp_server": getattr(tool, "server_name", None),
                 "tool_description": getattr(tool, "description", None),
                 "tool_schema": getattr(tool, "parameters", None),
+                "effect_class": getattr(tool, "effect_class", None),
+                "profile": getattr(tool, "approval_profile", None),
             },
         )
 
@@ -344,6 +346,30 @@ class ToolExecutor:
             self.agent.extension_runtime.observe(
                 HookPoint.AFTER_TOOL_EXECUTE, after_context
             )
+            if outcome.archive_reference is not None:
+                self.agent.history_ledger.append(
+                    "artifact_stored",
+                    {
+                        "tool_call_id": tc.id,
+                        "tool_name": tool_call.name,
+                        "artifact": {
+                            "path": outcome.archive_reference.path,
+                            "media_type": outcome.archive_reference.media_type,
+                            "checksum_sha256": outcome.archive_reference.checksum_sha256,
+                            "size_bytes": outcome.archive_reference.size_bytes,
+                        },
+                        "original_lines": (
+                            outcome.truncation.original_lines
+                            if outcome.truncation
+                            else None
+                        ),
+                        "original_chars": (
+                            outcome.truncation.original_chars
+                            if outcome.truncation
+                            else None
+                        ),
+                    },
+                )
             self.agent._emit_event(
                 AgentEvent.tool_call_end(
                     tool_call.name,

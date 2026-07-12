@@ -87,6 +87,8 @@ class ToolTruncation:
 class ToolArchiveReference:
     path: str
     media_type: str = "text/plain"
+    checksum_sha256: str | None = None
+    size_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

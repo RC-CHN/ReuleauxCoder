@@ -7,6 +7,7 @@ from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
 
 from reuleauxcoder import __version__
+from reuleauxcoder.app.runtime.session_state import build_session_persistence_kwargs
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
@@ -95,6 +96,7 @@ def run_repl(
                     total_prompt_tokens=agent.state.total_prompt_tokens,
                     total_completion_tokens=agent.state.total_completion_tokens,
                     active_mode=getattr(agent, "active_mode", None),
+                    **build_session_persistence_kwargs(agent),
                 )
                 agent.lifecycle.session_saved(sid)
                 ui_bus.info(f"Session auto-saved: {sid}", kind=UIEventKind.SESSION)

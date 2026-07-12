@@ -11,6 +11,11 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.agent.agent import Agent
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.domain.context.replay import (
+    ReplayEnvelope,
+    RequestEnvelope,
+    content_hash,
+)
 
 
 class AgentLoop:
@@ -124,11 +129,81 @@ class AgentLoop:
             available_modes=available_modes,
             skills_catalog=getattr(self.agent, "skills_catalog", ""),
         )
+        system_message = {"role": "system", "content": system}
+        restored = getattr(self.agent, "_restored_replay_envelope", None)
+        if restored is not None and restored.validate() and restored.instructions:
+            model_matches = restored.model_profile == str(
+                getattr(self.agent.llm, "model", "unknown")
+            )
+            instructions_match = content_hash([system_message]) == content_hash(
+                restored.instructions
+            )
+            if model_matches and instructions_match:
+                system_message = dict(restored.instructions[0])
+            else:
+                self.agent.history_ledger.append(
+                    "stable_context_updated",
+                    {
+                        "reason": "model or instructions changed since resume",
+                        "previous_hash": restored.stable_prefix_hash,
+                    },
+                )
+                self.agent._restored_replay_envelope = None
         return [
-            {"role": "system", "content": system},
+            system_message,
             *self.agent.state.messages,
             self._runtime_tail_message(),
         ]
+
+    def _record_request_envelopes(
+        self,
+        request_messages: list[dict],
+        request_tools: list[dict],
+    ) -> None:
+        instructions = [dict(request_messages[0])]
+        overlay = dict(request_messages[-1])
+        restored = getattr(self.agent, "_restored_replay_envelope", None)
+        if restored is not None and content_hash(request_tools) != content_hash(
+            restored.tools
+        ):
+            self.agent.history_ledger.append(
+                "stable_context_updated",
+                {
+                    "reason": "tool schema changed since resume",
+                    "previous_hash": restored.stable_prefix_hash,
+                },
+            )
+            self.agent._restored_replay_envelope = None
+
+        replay = ReplayEnvelope.create(
+            session_id=getattr(self.agent, "current_session_id", None),
+            cache_epoch=self.agent.context.cache_epoch,
+            history_version=self.agent.context.history_version,
+            model_profile=str(getattr(self.agent.llm, "model", "unknown")),
+            provider_family="openai-compatible",
+            request_mode="chat-completions",
+            instructions=instructions,
+            tools=request_tools,
+            items=list(self.agent.state.messages),
+        )
+        request = RequestEnvelope.create(
+            replay=replay,
+            overlay=overlay,
+            overlay_revision=len(self.agent.request_envelopes) + 1,
+            overlay_tokens=self.agent.context.get_context_tokens([overlay]),
+        )
+        self.agent.replay_envelope = replay
+        self.agent.request_envelopes.append(request)
+        if len(self.agent.request_envelopes) > 200:
+            del self.agent.request_envelopes[:-200]
+        self.agent.history_ledger.append(
+            "request_committed",
+            {
+                "request": request.to_dict(),
+                "replay": replay.to_dict(),
+                "overlay": overlay,
+            },
+        )
 
     def _tool_schemas(self) -> list[dict]:
         """Get tool schemas for LLM."""
@@ -137,10 +212,11 @@ class AgentLoop:
     def run(self) -> str:
         """Run the conversation loop."""
         # Compress if needed
-        self.agent.context.maybe_compress(
+        if self.agent.context.maybe_compress(
             self.agent.state.messages,
             self.agent.llm,
-        )
+        ):
+            self.agent.record_context_checkpoint(reason="pre-request checkpoint")
 
         for round_num in range(self.agent.max_rounds):
             if self.agent.stop_requested():
@@ -156,11 +232,12 @@ class AgentLoop:
             message_source = getattr(self.agent, "_external_message_source", None)
             if callable(message_source):
                 for external_message in message_source():
-                    self.agent.state.messages.append(
+                    self.agent._append_message(
                         {
                             "role": "system",
                             "content": f"[Inter-agent message]\n{external_message}\n[/Inter-agent message]",
-                        }
+                        },
+                        source="parent_to_child",
                     )
 
             # Worker callbacks only publish mailbox items. Commit them here,
@@ -190,12 +267,20 @@ class AgentLoop:
 
             request_messages = self._full_messages()
             request_tools = self._tool_schemas()
+            restored = getattr(self.agent, "_restored_replay_envelope", None)
+            if (
+                restored is not None
+                and restored.validate()
+                and content_hash(request_tools) == content_hash(restored.tools)
+            ):
+                request_tools = [dict(tool) for tool in restored.tools]
             local_request_estimate = self.agent.context.estimate_request_tokens(
                 request_messages, request_tools
             )
             local_history_estimate = self.agent.context.get_context_tokens(
                 self.agent.state.messages
             )
+            self._record_request_envelopes(request_messages, request_tools)
             resp = self.agent.llm.chat(
                 messages=request_messages,
                 tools=request_tools,
@@ -232,7 +317,7 @@ class AgentLoop:
 
             # No tool calls -> done
             if not resp.tool_calls:
-                self.agent.state.messages.append(resp.message)
+                self.agent._append_message(resp.message, source="assistant_response")
                 if (
                     self.agent._has_awaited_subagent_jobs()
                     or self.agent._has_subagent_activity()
@@ -251,7 +336,7 @@ class AgentLoop:
                 return resp.content
 
             # Tool calls -> execute
-            self.agent.state.messages.append(resp.message)
+            self.agent._append_message(resp.message, source="assistant_tool_calls")
 
             if (
                 self.agent.max_tool_calls is not None
@@ -259,12 +344,13 @@ class AgentLoop:
                 > self.agent.max_tool_calls
             ):
                 for tc in resp.tool_calls:
-                    self.agent.state.messages.append(
+                    self.agent._append_message(
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
                             "content": "Sub-agent tool-call budget exhausted; summarize current findings.",
-                        }
+                        },
+                        source="tool_budget_result",
                     )
                 continue
             self.agent.state.total_tool_calls += len(resp.tool_calls)
@@ -280,12 +366,13 @@ class AgentLoop:
                     )
                 )
                 result = self.agent._executor.execute(tc)
-                self.agent.state.messages.append(
+                self.agent._append_message(
                     {
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result,
-                    }
+                    },
+                    source="tool_result",
                 )
             else:
                 # If approval is interactive, run sequentially to keep terminal UX stable.
@@ -299,12 +386,13 @@ class AgentLoop:
                             )
                         )
                         result = self.agent._executor.execute(tc)
-                        self.agent.state.messages.append(
+                        self.agent._append_message(
                             {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
                                 "content": result,
-                            }
+                            },
+                            source="tool_result",
                         )
                 else:
                     # No interactive approval needed: keep parallel execution.
@@ -318,19 +406,21 @@ class AgentLoop:
                         )
                     results = self.agent._executor.execute_parallel(resp.tool_calls)
                     for tc, result in zip(resp.tool_calls, results):
-                        self.agent.state.messages.append(
+                        self.agent._append_message(
                             {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
                                 "content": result,
-                            }
+                            },
+                            source="tool_result",
                         )
 
             # Compress if tool outputs are big
-            self.agent.context.maybe_compress(
+            if self.agent.context.maybe_compress(
                 self.agent.state.messages,
                 self.agent.llm,
-            )
+            ):
+                self.agent.record_context_checkpoint(reason="post-tool checkpoint")
 
             # Flush any sub-agent injections buffered during tool execution.
             self.agent._flush_pending_subagent_injections()
@@ -341,7 +431,10 @@ class AgentLoop:
             "Briefly summarize the current findings/status, list any blockers or incomplete work, "
             "and end the task."
         )
-        self.agent.state.messages.append({"role": "user", "content": summary_prompt})
+        self.agent._append_message(
+            {"role": "system", "content": summary_prompt},
+            source="max_round_summary_instruction",
+        )
         summary_streamed = False
 
         def _on_summary_token(token: str) -> None:
@@ -356,6 +449,7 @@ class AgentLoop:
         summary_local_history = self.agent.context.get_context_tokens(
             self.agent.state.messages
         )
+        self._record_request_envelopes(summary_messages, [])
         summary_resp = self.agent.llm.chat(
             messages=summary_messages,
             tools=None,
@@ -384,5 +478,5 @@ class AgentLoop:
             request_boundary=f"{self.agent._current_turn_id}:summary",
             model_profile=str(getattr(self.agent.llm, "model", "unknown")),
         )
-        self.agent.state.messages.append(summary_resp.message)
+        self.agent._append_message(summary_resp.message, source="assistant_summary")
         return summary_resp.content or "(reached maximum tool-call rounds)"

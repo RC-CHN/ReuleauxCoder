@@ -23,6 +23,7 @@ from reuleauxcoder.app.commands.view_models import (
     SessionSummaryViewModel,
 )
 from reuleauxcoder.app.runtime.session_state import (
+    build_session_persistence_kwargs,
     apply_session_runtime_state,
     build_session_runtime_state,
     get_session_fingerprint,
@@ -190,6 +191,7 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
             active_mode=getattr(ctx.agent, "active_mode", None),
             runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
             fingerprint=fingerprint,
+            **build_session_persistence_kwargs(ctx.agent),
         )
         ctx.agent.lifecycle.session_saved(saved_id)
 
@@ -243,6 +245,7 @@ def _handle_save_session(command, ctx) -> CommandEffect:
         active_mode=getattr(ctx.agent, "active_mode", None),
         runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
         fingerprint=fingerprint,
+        **build_session_persistence_kwargs(ctx.agent),
     )
     ctx.agent.lifecycle.session_saved(session_id)
     ctx.effect.success(
@@ -274,6 +277,7 @@ def _handle_new_session(command, ctx) -> CommandEffect:
             active_mode=getattr(ctx.agent, "active_mode", None),
             runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
             fingerprint=fingerprint,
+            **build_session_persistence_kwargs(ctx.agent),
         )
         previous_session_id = sid
         ctx.agent.lifecycle.session_saved(sid)
@@ -283,6 +287,9 @@ def _handle_new_session(command, ctx) -> CommandEffect:
 
     new_session_id = store.generate_session_id()
     ctx.agent.reset()
+    start_new_history = getattr(ctx.agent, "start_new_history", None)
+    if callable(start_new_history):
+        start_new_history()
     restore_config_runtime_defaults(ctx.config, ctx.agent)
     ctx.agent.session_fingerprint = fingerprint
     ctx.agent.lifecycle.session_started(new_session_id, reason="new")

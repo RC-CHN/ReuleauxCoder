@@ -20,6 +20,7 @@ from reuleauxcoder.app.commands.shared import (
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.app.runtime.session_state import (
+    build_session_persistence_kwargs,
     build_session_runtime_state,
     get_session_fingerprint,
     restore_config_runtime_defaults,
@@ -136,6 +137,7 @@ def _handle_exit(command, ctx) -> CommandEffect:
             active_mode=getattr(ctx.agent, "active_mode", None),
             runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
             fingerprint=get_session_fingerprint(ctx.config, ctx.agent),
+            **build_session_persistence_kwargs(ctx.agent),
         )
         ctx.agent.lifecycle.session_saved(sid)
         ctx.effect.info(f"Session auto-saved: {sid}")
@@ -180,6 +182,9 @@ def _handle_compact(command, ctx) -> CommandEffect:
     compressed = ctx.agent.context.maybe_compress(ctx.agent.messages, ctx.agent.llm)
     after = estimate_tokens(ctx.agent.messages)
     if compressed:
+        record_checkpoint = getattr(ctx.agent, "record_context_checkpoint", None)
+        if callable(record_checkpoint):
+            record_checkpoint(reason="manual compact command")
         ctx.effect.success(
             f"Compressed: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
         )
