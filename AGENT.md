@@ -254,6 +254,7 @@ Saved sessions persist:
 - `save()` writes messages + runtime overlay + fingerprint and refreshes `saved_at`
 - `list()` and `get_latest()` are fingerprint-aware by default
 - latest ordering is based on most recently updated save time (`saved_at`), with file mtime fallback
+- list previews use the latest meaningful user request and omit session lifecycle markers
 - `load()` backfills missing token metadata for older sessions
 - `append_system_message()` keeps diagnostics attached to the same saved session
 
@@ -261,8 +262,12 @@ Fingerprint rules in the current implementation:
 - default local fingerprint is `local`
 - `/session` only shows current-fingerprint sessions by default
 - `/session all` shows all fingerprints
+- `/session <number>` resolves against the current newest-first fingerprint list
 - auto-resume latest only searches within current fingerprint
 - manual `/session <id>` may cross fingerprints, but must warn
+- interactive restore auto-saves the session being left when auto-save is enabled
+- restore keeps the full transcript for the agent while the CLI replays only the latest three user turns and their assistant replies
+- `/sessions` remains a compatibility alias but is not the documented command surface
 
 ### Session runtime bridge (`app/runtime/session_state.py`)
 This module centralizes Phase 1 runtime/session semantics.

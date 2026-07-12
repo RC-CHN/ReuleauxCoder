@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 from reuleauxcoder.app.commands.models import CommandEffect
+from reuleauxcoder.app.commands.help import build_help_view
+from reuleauxcoder.app.commands.loader import create_builtin_action_registry
 
 from reuleauxcoder.domain.config.models import ApprovalConfig, Config
 from reuleauxcoder.domain.hooks.registry import HookRegistry
@@ -17,6 +19,7 @@ from reuleauxcoder.extensions.command.builtin.sessions import (
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.events import UIEventKind
+from reuleauxcoder.interfaces.ui_registry import UICapability, UIProfile
 
 
 class FakeLLM:
@@ -101,6 +104,22 @@ def test_session_without_target_is_the_canonical_list_command() -> None:
     command = _parse_list_sessions("/session all", None)
     assert isinstance(command, ListSessionsCommand)
     assert command.show_all is True
+
+
+def test_session_help_uses_only_the_canonical_singular_surface() -> None:
+    profile = UIProfile(
+        ui_id="cli",
+        display_name="CLI",
+        capabilities=frozenset({UICapability.TEXT_INPUT}),
+    )
+
+    view = build_help_view(profile, create_builtin_action_registry())
+
+    section = next(item for item in view.sections if item.feature_id == "sessions")
+    usages = {command.usage for command in section.commands}
+    assert "/session" in usages
+    assert "/session <#|id|latest>" in usages
+    assert all(not usage.startswith("/sessions") for usage in usages)
 
 
 def test_list_sessions_all_shows_all_fingerprints(tmp_path: Path) -> None:

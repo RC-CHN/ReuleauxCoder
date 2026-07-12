@@ -309,7 +309,7 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="sessions.list",
                 feature_id="sessions",
-                description="[session-index] List saved sessions; use `/session all` to include every fingerprint",
+                description="[session-index] Browse saved sessions (add `all` to include every fingerprint)",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
                 triggers=(
@@ -324,10 +324,10 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="sessions.resume",
                 feature_id="sessions",
-                description="[session-index] Resume a saved session by list number, id, or latest visible fingerprint match",
+                description="[session-index] Restore by displayed number, full ID, or newest fingerprint match",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/session <number|id|latest>"),),
+                triggers=(slash_trigger("/session <#|id|latest>"),),
                 parser=_parse_resume_session,
                 handler=_handle_resume_session,
             ),
