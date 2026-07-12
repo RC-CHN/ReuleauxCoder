@@ -370,8 +370,8 @@ def test_python_two_documents_publish_independently(tmp_path: Path) -> None:
             await client.did_open(first_path, first_text)
             await client.did_open(second_path, second_text)
             first, second = await asyncio.gather(
-                _wait_for_fresh_publish(client, first_path, after_generation=0),
-                _wait_for_fresh_publish(client, second_path, after_generation=0),
+                _collect_non_empty_diagnostics(client, first_path),
+                _collect_non_empty_diagnostics(client, second_path),
             )
             assert first
             assert second
