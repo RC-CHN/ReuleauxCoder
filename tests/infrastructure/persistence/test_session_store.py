@@ -6,6 +6,27 @@ from reuleauxcoder.domain.session.models import SessionRuntimeState
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
+def test_session_preview_uses_latest_real_user_request(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[
+            {"role": "user", "content": "initial topic"},
+            {"role": "assistant", "content": "old answer"},
+            {
+                "role": "user",
+                "content": "[SESSION_RESUME] User returned.\n\nlatest request",
+            },
+            {"role": "assistant", "content": "latest answer"},
+            {"role": "user", "content": "[SESSION_EXIT] User left."},
+        ],
+        model="m1",
+    )
+
+    metadata = next(item for item in store.list() if item.id == session_id)
+
+    assert metadata.preview == "latest request"
+
+
 def test_session_store_save_and_load_roundtrip(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     messages = [{"role": "user", "content": "hello world"}]

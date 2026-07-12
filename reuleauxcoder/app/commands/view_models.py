@@ -259,6 +259,8 @@ class SessionSummaryViewModel:
     saved_at: str
     preview: str
     fingerprint: str | None = None
+    position: int | None = None
+    active: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,12 +277,42 @@ class SessionsViewModel:
             "sessions": [
                 {
                     "id": session.session_id,
+                    "position": session.position,
                     "model": session.model,
                     "saved_at": session.saved_at,
                     "preview": session.preview,
                     "fingerprint": session.fingerprint,
+                    "active": session.active,
                 }
                 for session in self.sessions
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SessionTranscriptEntryViewModel:
+    role: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class SessionResumeViewModel:
+    session_id: str
+    model: str
+    saved_at: str
+    active_mode: str | None
+    entries: tuple[SessionTranscriptEntryViewModel, ...]
+    view_type: str = "session_resume"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "model": self.model,
+            "saved_at": self.saved_at,
+            "active_mode": self.active_mode,
+            "entries": [
+                {"role": entry.role, "content": entry.content}
+                for entry in self.entries
             ],
         }
 

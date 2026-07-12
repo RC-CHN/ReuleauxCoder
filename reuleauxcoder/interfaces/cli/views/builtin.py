@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rich.markdown import Markdown
+from rich.text import Text
 from reuleauxcoder.interfaces.cli.views.common import (
     make_table,
     render_heading,
@@ -16,6 +17,7 @@ from reuleauxcoder.app.commands.view_models import (
     HelpViewModel,
     ModelListViewModel,
     ModesViewModel,
+    SessionResumeViewModel,
     SessionsViewModel,
     SubagentJobsViewModel,
     EffectiveConfigViewModel,
@@ -70,15 +72,74 @@ def render_sessions_view(renderer, event) -> bool:
         renderer.console.print(f"No saved sessions for {scope}")
         return True
 
-    lines = [f"Scope: `{scope}`", ""]
+    renderer.console.print(
+        f"Scope: {scope}", style=renderer.theme.style(DisplayTone.MUTED)
+    )
+    table = make_table(renderer, show_header=True, box=None, pad_edge=False)
+    if not show_all:
+        table.add_column("#", width=3, justify="right")
+    table.add_column("STATE", width=8)
+    table.add_column("SAVED", no_wrap=True)
+    table.add_column("MODEL", no_wrap=True)
+    if show_all:
+        table.add_column("SESSION / FINGERPRINT", no_wrap=True)
+    table.add_column("LAST USER REQUEST", ratio=1, overflow="fold")
     for session in sessions:
-        suffix = f" [{session.fingerprint or ''}]" if show_all else ""
-        lines.append(
-            f"- `{session.session_id}` "
-            f"({session.model}, {session.saved_at})"
-            f"{suffix} {session.preview}"
+        state = "ACTIVE" if session.active else "saved"
+        saved_at = session.saved_at.replace("T", " ")[:19]
+        cells = []
+        if not show_all:
+            cells.append(str(session.position or ""))
+        cells.extend((state, saved_at, session.model))
+        if show_all:
+            cells.append(
+                f"{session.session_id}\n{session.fingerprint or 'local'}"
+            )
+        cells.append(session.preview or "(no user message)")
+        table.add_row(*cells)
+    renderer.console.print(table)
+    hint = (
+        "/session <full-id> restores across fingerprints"
+        if show_all
+        else "/session <#> restores · /session latest uses the newest · /session all expands scope"
+    )
+    renderer.console.print(hint, style=renderer.theme.style(DisplayTone.MUTED))
+    return True
+
+
+def render_session_resume_view(renderer, event) -> bool:
+    model = _view_model(event)
+    if not isinstance(model, SessionResumeViewModel):
+        return False
+    stop_stream_and_clear(renderer)
+    render_heading(renderer, "RESTORED CONTEXT", DisplayTone.SUCCESS)
+    metadata = f"{model.session_id}  //  {model.model}  //  {model.saved_at.replace('T', ' ')[:19]}"
+    if model.active_mode:
+        metadata += f"  //  mode {model.active_mode}"
+    renderer.console.print(metadata, style=renderer.theme.style(DisplayTone.MUTED))
+    if not model.entries:
+        renderer.console.print(
+            "No conversational messages to replay.",
+            style=renderer.theme.style(DisplayTone.MUTED),
         )
-    renderer.console.print(Markdown("\n".join(lines)))
+        return True
+
+    table = make_table(renderer, show_header=False, box=None, pad_edge=False)
+    table.add_column(width=8, no_wrap=True)
+    table.add_column(ratio=1, overflow="fold")
+    for entry in model.entries:
+        is_user = entry.role == "user"
+        label = Text(
+            " YOU " if is_user else " AGENT ",
+            style=(renderer.theme.user_label if is_user else renderer.theme.assistant_label),
+        )
+        content = fold_text(
+            entry.content,
+            max_lines=max(5, renderer.policy.tool_preview_lines),
+            max_chars=max(800, renderer.policy.tool_preview_chars),
+        )
+        table.add_row(label, Text(content))
+    renderer.console.print(table)
     return True
 
 
@@ -338,6 +399,9 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
                 view_type="mcp_servers", render=render_mcp_servers_view
             ),
             ViewRendererSpec(view_type="sessions", render=render_sessions_view),
+            ViewRendererSpec(
+                view_type="session_resume", render=render_session_resume_view
+            ),
             ViewRendererSpec(
                 view_type="effective_config", render=render_effective_config_view
             ),

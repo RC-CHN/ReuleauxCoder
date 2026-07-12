@@ -142,7 +142,7 @@ All LSP operations are read-only and do **not** require approval.
 /tokens            Show token usage
 /compact           Compress conversation context
 /save              Save session to disk
-/sessions          List saved sessions
+/session           List saved sessions (`/session <#|id|latest>` restores one)
 /session <id>      Resume a saved session in current process
 /session latest    Resume the latest saved session
 /approval show     Show approval rules

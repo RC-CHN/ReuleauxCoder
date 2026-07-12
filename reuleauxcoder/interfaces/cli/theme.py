@@ -27,6 +27,8 @@ class CLITheme:
     diff_context: str = "#d8dee9"
     diff_fold: str = "bold #ffd75f"
     frame: str = "#8993a4"
+    user_label: str = "bold #ffffff on #7c6cff"
+    assistant_label: str = "bold #071013 on #67e8f9"
 
     def style(self, tone: DisplayTone) -> str:
         return self.styles.get(tone, "")

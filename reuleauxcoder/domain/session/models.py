@@ -6,6 +6,20 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
+def _display_message_text(message: dict) -> str:
+    """Return user-facing conversation text without persistence markers."""
+    content = message.get("content")
+    if not isinstance(content, str):
+        return ""
+    text = content.strip()
+    if message.get("role") == "user" and text.startswith("[SESSION_EXIT]"):
+        return ""
+    if message.get("role") == "user" and text.startswith("[SESSION_RESUME]"):
+        _, separator, remainder = text.partition("\n\n")
+        return remainder.strip() if separator else ""
+    return text
+
+
 @dataclass
 class SessionMetadata:
     """Metadata for a saved session."""
@@ -118,20 +132,29 @@ class Session:
         }
 
     def get_preview(self) -> str:
-        """Build a preview showing the first user message and the last
-        non-system message so both the topic and the end-state are visible.
-        """
-        first_user = ""
-        last_content = ""
-        for m in self.messages:
-            if m.get("role") == "user" and m.get("content") and not first_user:
-                first_user = m["content"].replace("\n", " ").strip()
-            if m.get("content") and m.get("role") in ("user", "assistant"):
-                text = m["content"].replace("\n", " ").strip()
-                if text:
-                    last_content = text
-        if first_user and last_content:
-            return f"{first_user[:60]} ... {last_content[:60]}"
-        if first_user:
-            return first_user[:80]
+        """Build a preview from the latest meaningful user request."""
+        for message in reversed(self.messages):
+            if message.get("role") != "user":
+                continue
+            text = _display_message_text(message).replace("\n", " ")
+            if text:
+                return text[:120]
         return ""
+
+    def get_recent_conversation(self, max_user_turns: int = 3) -> list[dict[str, str]]:
+        """Return a compact human transcript, excluding protocol/tool messages."""
+        entries: list[dict[str, str]] = []
+        for message in self.messages:
+            role = message.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            text = _display_message_text(message)
+            if text:
+                entries.append({"role": role, "content": text})
+
+        user_positions = [
+            index for index, entry in enumerate(entries) if entry["role"] == "user"
+        ]
+        if len(user_positions) > max_user_turns:
+            entries = entries[user_positions[-max_user_turns] :]
+        return entries

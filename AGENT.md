@@ -259,8 +259,8 @@ Saved sessions persist:
 
 Fingerprint rules in the current implementation:
 - default local fingerprint is `local`
-- `/sessions` only shows current-fingerprint sessions by default
-- `/sessions all` shows all fingerprints
+- `/session` only shows current-fingerprint sessions by default
+- `/session all` shows all fingerprints
 - auto-resume latest only searches within current fingerprint
 - manual `/session <id>` may cross fingerprints, but must warn
 
@@ -446,7 +446,7 @@ Canonical Phase 1 expectations:
 - `/debug`, `/reset`, `/compact`, `/tokens`: `[session]`
 - `/skills ...`: `[global]`
 - `/mcp ...`: `[global][local-only]`
-- `/sessions`, `/session latest|<id>`: `[session-index]` and fingerprint-aware
+- `/session [all|latest|<number>|<id>]`: `[session-index]` and fingerprint-aware
 - `/save`, `/new`: `[session]`
 - `/jobs ...`: `[session]`
 

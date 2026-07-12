@@ -17,6 +17,8 @@ from reuleauxcoder.app.commands.shared import (
 )
 from reuleauxcoder.app.commands.specs import ActionSpec
 from reuleauxcoder.app.commands.view_models import (
+    SessionResumeViewModel,
+    SessionTranscriptEntryViewModel,
     SessionsViewModel,
     SessionSummaryViewModel,
 )
@@ -39,6 +41,7 @@ class ListSessionsCommand:
 @dataclass(frozen=True, slots=True)
 class ResumeSessionCommand:
     target: str
+    current_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +55,13 @@ class NewSessionCommand:
 
 
 def _parse_list_sessions(user_input: str, parse_ctx):
-    if match_template(user_input, "/sessions all") is not None:
+    if match_template(user_input, "/session all") is not None or match_template(
+        user_input, "/sessions all"
+    ) is not None:
         return ListSessionsCommand(show_all=True)
-    if match_template(user_input, "/sessions") is not None:
+    if match_template(user_input, "/sessions") is not None or match_template(
+        user_input, "/session"
+    ) is not None:
         return ListSessionsCommand()
     return None
 
@@ -67,9 +74,13 @@ def _parse_resume_session(user_input: str, parse_ctx):
     try:
         target = non_empty_text().parse(captures["target"])
     except ParamParseError:
-        return ResumeSessionCommand(target="")
+        return ResumeSessionCommand(
+            target="", current_session_id=parse_ctx.current_session_id
+        )
 
-    return ResumeSessionCommand(target=target)
+    return ResumeSessionCommand(
+        target=target, current_session_id=parse_ctx.current_session_id
+    )
 
 
 def _parse_save_session(user_input: str, parse_ctx):
@@ -89,18 +100,21 @@ def _handle_list_sessions(command, ctx) -> CommandEffect:
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     filter_fingerprint = None if command.show_all else fingerprint
     sessions = store.list(limit=command.limit, fingerprint=filter_fingerprint)
+    current_session_id = getattr(ctx.agent, "current_session_id", None)
     view = SessionsViewModel(
         fingerprint=fingerprint,
         show_all=command.show_all,
         sessions=tuple(
             SessionSummaryViewModel(
+                position=index if not command.show_all else None,
                 session_id=session.id,
                 model=session.model,
                 saved_at=session.saved_at,
                 preview=session.preview,
                 fingerprint=session.fingerprint,
+                active=session.id == current_session_id,
             )
-            for session in sessions
+            for index, session in enumerate(sessions, start=1)
         ),
     )
     ctx.effect.open_view(
@@ -115,14 +129,25 @@ def _handle_list_sessions(command, ctx) -> CommandEffect:
 def _handle_resume_session(command, ctx) -> CommandEffect:
     if not command.target:
         ctx.effect.error(
-            "Usage: /session <session_id|latest>", kind=UIEventKind.SESSION
+            "Usage: /session <number|session_id|latest>; use /session to list.",
+            kind=UIEventKind.SESSION,
         )
         return ctx.effect.finish(control="continue")
 
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     session_id = command.target
-    if command.target == "latest":
+    if command.target.isdecimal():
+        position = int(command.target)
+        sessions = store.list(limit=20, fingerprint=fingerprint)
+        if position < 1 or position > len(sessions):
+            ctx.effect.error(
+                f"Session number {position} is not available; use /session to list.",
+                kind=UIEventKind.SESSION,
+            )
+            return ctx.effect.finish(control="continue")
+        session_id = sessions[position - 1].id
+    elif command.target == "latest":
         latest = store.get_latest(fingerprint=fingerprint)
         if latest is None:
             ctx.effect.error(
@@ -147,29 +172,55 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
             current_fingerprint=fingerprint,
         )
 
+    current_session_id = command.current_session_id or getattr(
+        ctx.agent, "current_session_id", None
+    )
+    if (
+        current_session_id
+        and current_session_id != session_id
+        and ctx.agent.messages
+        and ctx.config.session_auto_save
+    ):
+        saved_id = store.save(
+            ctx.agent.messages,
+            getattr(ctx.agent.llm, "model", ctx.config.model),
+            current_session_id,
+            total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
+            total_completion_tokens=ctx.agent.state.total_completion_tokens,
+            active_mode=getattr(ctx.agent, "active_mode", None),
+            runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
+            fingerprint=fingerprint,
+        )
+        ctx.agent.lifecycle.session_saved(saved_id)
+
     apply_session_runtime_state(loaded, ctx.config, ctx.agent)
     ctx.agent.session_fingerprint = loaded.fingerprint
     ctx.agent.lifecycle.session_started(session_id, reason="restore")
 
     runtime = loaded.runtime_state
-    if runtime.active_mode:
-        ctx.effect.info(
-            f"Mode restored from session: {runtime.active_mode}",
-            kind=UIEventKind.SESSION,
-            mode_name=runtime.active_mode,
-        )
-    if runtime.model:
-        ctx.effect.info(
-            f"Model restored from session: {runtime.model}",
-            kind=UIEventKind.SESSION,
-            model=runtime.model,
-        )
-
     exit_time = store.get_exit_time(loaded.messages)
     ctx.effect.success(
         f"Resumed session: {session_id}",
         kind=UIEventKind.SESSION,
         session_id=session_id,
+    )
+    transcript = SessionResumeViewModel(
+        session_id=session_id,
+        model=runtime.model or loaded.model,
+        saved_at=loaded.saved_at,
+        active_mode=runtime.active_mode,
+        entries=tuple(
+            SessionTranscriptEntryViewModel(
+                role=entry["role"], content=entry["content"]
+            )
+            for entry in loaded.get_recent_conversation(max_user_turns=3)
+        ),
+    )
+    ctx.effect.open_view(
+        transcript.view_type,
+        title="Recent Session Context",
+        view_model=transcript,
+        reuse_key=transcript.view_type,
     )
 
     return ctx.effect.finish(
@@ -258,20 +309,25 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="sessions.list",
                 feature_id="sessions",
-                description="[session-index] List saved sessions for the current fingerprint by default, or all with `/sessions all`",
+                description="[session-index] List saved sessions; use `/session all` to include every fingerprint",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/sessions"), slash_trigger("/sessions all")),
+                triggers=(
+                    slash_trigger("/session"),
+                    slash_trigger("/session all"),
+                    slash_trigger("/sessions"),
+                    slash_trigger("/sessions all"),
+                ),
                 parser=_parse_list_sessions,
                 handler=_handle_list_sessions,
             ),
             ActionSpec(
                 action_id="sessions.resume",
                 feature_id="sessions",
-                description="[session-index] Resume a saved session by id or latest visible fingerprint match",
+                description="[session-index] Resume a saved session by list number, id, or latest visible fingerprint match",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/session <id|latest>"),),
+                triggers=(slash_trigger("/session <number|id|latest>"),),
                 parser=_parse_resume_session,
                 handler=_handle_resume_session,
             ),

@@ -11,13 +11,15 @@ def test_sessions_payload_round_trip_uses_typed_model() -> None:
         "fingerprint": "local",
         "show_all": False,
         "sessions": [
-            {
-                "id": "s1",
-                "model": "gpt",
+                {
+                    "id": "s1",
+                    "position": None,
+                    "model": "gpt",
                 "saved_at": "today",
                 "preview": "hello",
-                "fingerprint": "local",
-            }
+                    "fingerprint": "local",
+                    "active": False,
+                }
         ],
     }
 

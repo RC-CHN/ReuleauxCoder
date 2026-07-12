@@ -665,7 +665,7 @@ rcoder
 |------|------|------|
 | `model.py` | `/model` | 显示模型配置 |
 | `model.py` | `/model <profile>` | 切换模型配置 |
-| `sessions.py` | `/sessions` | 列出保存的会话 |
+| `sessions.py` | `/session` | 列出或恢复保存的会话 |
 | `sessions.py` | `/session <id>` | 恢复会话 |
 | `sessions.py` | `/save` | 保存当前会话 |
 | `sessions.py` | `/new` | 开始新会话 |

@@ -13,6 +13,7 @@ from reuleauxcoder.extensions.command.builtin.sessions import (
     _handle_list_sessions,
     _handle_new_session,
     _handle_resume_session,
+    _parse_list_sessions,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.events import UIEventKind
@@ -92,6 +93,14 @@ def test_list_sessions_defaults_to_current_fingerprint(tmp_path: Path) -> None:
     assert [item["id"] for item in result.state["sessions"]] == [local_id]
     assert result.state["show_all"] is False
     assert result.state["fingerprint"] == "local"
+    assert result.state["sessions"][0]["position"] == 1
+
+
+def test_session_without_target_is_the_canonical_list_command() -> None:
+    assert isinstance(_parse_list_sessions("/session", None), ListSessionsCommand)
+    command = _parse_list_sessions("/session all", None)
+    assert isinstance(command, ListSessionsCommand)
+    assert command.show_all is True
 
 
 def test_list_sessions_all_shows_all_fingerprints(tmp_path: Path) -> None:
@@ -144,6 +153,55 @@ def test_resume_latest_uses_current_fingerprint_only(tmp_path: Path) -> None:
         and local_id in event.message
         for event in ctx.effect.notifications
     )
+    transcript = next(
+        view for view in ctx.effect.views if view.view_type == "session_resume"
+    )
+    assert transcript.view_model.entries[0].content == "local msg"
+
+
+def test_resume_by_list_number_replays_recent_human_turns(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    messages = []
+    for index in range(1, 5):
+        messages.extend(
+            (
+                {"role": "user", "content": f"question {index}"},
+                {"role": "assistant", "content": f"answer {index}"},
+            )
+        )
+    messages.append(
+        {"role": "user", "content": "[SESSION_EXIT] User left the session."}
+    )
+    session_id = store.save(messages=messages, model="m1", fingerprint="local")
+    ctx = _build_ctx(tmp_path, fingerprint="local")
+
+    result = _handle_resume_session(ResumeSessionCommand(target="1"), ctx)
+
+    assert result.session_id == session_id
+    transcript = next(
+        view.view_model
+        for view in ctx.effect.views
+        if view.view_type == "session_resume"
+    )
+    assert [entry.content for entry in transcript.entries] == [
+        "question 2",
+        "answer 2",
+        "question 3",
+        "answer 3",
+        "question 4",
+        "answer 4",
+    ]
+
+
+def test_resume_by_invalid_list_number_points_back_to_session_list(
+    tmp_path: Path,
+) -> None:
+    ctx = _build_ctx(tmp_path)
+
+    result = _handle_resume_session(ResumeSessionCommand(target="2"), ctx)
+
+    assert result.session_id is None
+    assert "/session to list" in ctx.effect.notifications[0].message
 
 
 def test_resume_cross_fingerprint_by_id_warns_but_allows(tmp_path: Path) -> None:
@@ -166,6 +224,24 @@ def test_resume_cross_fingerprint_by_id_warns_but_allows(tmp_path: Path) -> None
         and "belongs to fingerprint 'remote:abc'" in event.message
         for event in ctx.effect.notifications
     )
+
+
+def test_resume_auto_saves_the_session_being_left(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    target_id = store.save(
+        messages=[{"role": "user", "content": "target"}], model="m1"
+    )
+    ctx = _build_ctx(tmp_path)
+    ctx.agent.messages.append({"role": "user", "content": "unsaved current work"})
+
+    result = _handle_resume_session(
+        ResumeSessionCommand(target=target_id, current_session_id="current"), ctx
+    )
+
+    assert result.session_id == target_id
+    saved_current = store.load("current")
+    assert saved_current is not None
+    assert saved_current.get_preview() == "unsaved current work"
 
 
 def test_new_session_respects_disabled_auto_save(tmp_path: Path) -> None:

@@ -142,7 +142,7 @@ ReuleauxCoder 集成了真实的语言服务器，提供代码智能功能：跳
 /tokens           显示 token 使用量
 /compact          压缩当前对话上下文
 /save             保存会话到磁盘
-/sessions         列出已保存会话
+/session          列出已保存会话（`/session <编号|ID|latest>` 恢复）
 /session <id>     在当前进程中恢复指定会话
 /session latest   恢复最近一次保存的会话
 /approval show    显示审批规则
