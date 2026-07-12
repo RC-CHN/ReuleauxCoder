@@ -51,13 +51,14 @@ def test_reasoning_activity_advances_only_when_bumped() -> None:
 
     activity = CLIActivityPresenter(console, live_factory=factory)
 
-    assert activity.start("THINK", "processing", timed=False) is True
+    assert activity.start("THINK", "processing", timed=False, retain=True) is True
     activity.bump()
     console.print(lives[0].renderable)
     activity.stop()
     output = console.export_text()
 
     assert lives[0].kwargs["auto_refresh"] is False
+    assert lives[0].kwargs["transient"] is False
     assert lives[0].refreshes == 1
     assert lives[0].stopped is True
     assert "THINK" in output

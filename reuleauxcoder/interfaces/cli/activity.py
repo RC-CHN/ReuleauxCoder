@@ -70,7 +70,14 @@ class CLIActivityPresenter:
     def enabled(self) -> bool:
         return bool(self.console.is_terminal and not self.console.is_jupyter)
 
-    def start(self, label: str, detail: str = "", *, timed: bool) -> bool:
+    def start(
+        self,
+        label: str,
+        detail: str = "",
+        *,
+        timed: bool,
+        retain: bool = False,
+    ) -> bool:
         self.stop()
         if not self.enabled:
             return False
@@ -80,7 +87,7 @@ class CLIActivityPresenter:
         self._live = self._live_factory(
             self._pulse,
             console=self.console,
-            transient=True,
+            transient=not retain,
             auto_refresh=timed,
             refresh_per_second=4,
         )

@@ -229,7 +229,9 @@ class CLIRenderer:
 
         if mode == "quiet":
             if not self._reasoning_label_printed:
-                if not self.activity.start("THINK", "processing", timed=False):
+                if not self.activity.start(
+                    "THINK", "processing", timed=False, retain=True
+                ):
                     self.history.reasoning_indicator()
                 self._reasoning_label_printed = True
             self.activity.bump()
