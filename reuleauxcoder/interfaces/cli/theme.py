@@ -21,9 +21,9 @@ class CLITheme:
     name: str
     styles: dict[DisplayTone, str] = field(default_factory=dict)
     label_styles: dict[DisplayTone, str] = field(default_factory=dict)
-    diff_header: str = "bold #67e8f9"
-    diff_addition: str = "bold #a3ff5f"
-    diff_deletion: str = "bold #ff6b81"
+    diff_header: str = "bold #67e8f9 on #102b33"
+    diff_addition: str = "bold #b5ff72 on #17351f"
+    diff_deletion: str = "bold #ff8193 on #3a1720"
     diff_context: str = "#d8dee9"
     diff_fold: str = "bold #ffd75f"
     frame: str = "#8993a4"

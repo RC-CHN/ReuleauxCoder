@@ -12,6 +12,10 @@ from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.render import show_banner
+from reuleauxcoder.interfaces.cli.prompt import (
+    FORGE_USER_PROMPT_STYLE,
+    forge_user_prompt,
+)
 from reuleauxcoder.interfaces.events import UIEvent, UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 
@@ -51,6 +55,7 @@ def run_repl(
     agent.current_session_id = current_session_id
 
     pending_resume_prefix: str | None = None
+    user_prompt = forge_user_prompt()
     if session_exit_time is not None:
         current_time = time.strftime("%Y-%m-%d %H:%M:%S %Z")
         pending_resume_prefix = (
@@ -69,9 +74,17 @@ def run_repl(
                 with foreground() as available:
                     if not available:
                         break
-                    user_input = pt_prompt("You > ", history=history).strip()
+                    user_input = pt_prompt(
+                        user_prompt,
+                        history=history,
+                        style=FORGE_USER_PROMPT_STYLE,
+                    ).strip()
             else:
-                user_input = pt_prompt("You > ", history=history).strip()
+                user_input = pt_prompt(
+                    user_prompt,
+                    history=history,
+                    style=FORGE_USER_PROMPT_STYLE,
+                ).strip()
         except (EOFError, KeyboardInterrupt):
             ui_bus.info("\nBye!")
             if agent.messages and config.session_auto_save:
