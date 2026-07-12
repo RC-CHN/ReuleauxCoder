@@ -148,6 +148,21 @@ def main():
                     session_id=ctx.current_session_id,
                 )
             )
+        manager = getattr(ctx.agent, "_subagent_manager", None)
+        if manager is not None:
+            from reuleauxcoder.domain.agent.events import AgentEvent
+
+            for job in manager.list_jobs():
+                ctx.agent._emit_event(
+                    AgentEvent.subagent_completed(
+                        job_id=job.id,
+                        mode=job.mode,
+                        task=job.task,
+                        status=job.status,
+                        result=job.result,
+                        error=job.error,
+                    )
+                )
 
         if not ctx.config.api_key:
             ctx.ui_bus.error("No API key found in config.yaml.")

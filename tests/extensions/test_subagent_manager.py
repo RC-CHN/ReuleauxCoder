@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
+from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.extensions.subagent.manager import (
     SubagentJob,
     SubagentManager,
@@ -185,6 +186,10 @@ class _Parent:
         self.current_session_id = "session-1"
         self.injected = []
         self.events = []
+        self.messages = []
+        self.history_ledger = HistoryLedger(
+            session_id=self.current_session_id, agent_id=self.agent_id
+        )
 
     def inject_subagent_job_result(self, job) -> None:
         self.injected.append(job.id)
@@ -217,8 +222,39 @@ def test_fast_background_completion_never_loses_job_registration(monkeypatch) ->
         "running",
         "completed",
     ]
+    assert [
+        event.payload["status"]
+        for event in parent.history_ledger.events
+        if event.kind == "subagent_job_changed"
+    ] == ["queued", "running", "completed"]
     drained = manager.drain_completed_for_parent()
     assert [item.id for item in drained] == [job_id]
+    manager.shutdown()
+
+
+def test_resume_marks_unrecoverable_worker_stale_and_actionable() -> None:
+    parent = _Parent()
+    parent.history_ledger.append(
+        "subagent_job_changed",
+        {
+            "job_id": "sj_lost",
+            "mode": "execute",
+            "task": "edit files",
+            "status": "running",
+            "created_at": 10.0,
+            "generation": 0,
+            "delivery": "awaited",
+        },
+        job_id="sj_lost",
+    )
+    manager = SubagentManager()
+
+    assert manager.restore_from_history(parent, parent.history_ledger.events) == 1
+    job = manager.get_job("sj_lost")
+    assert job is not None
+    assert job.status == "stale"
+    assert "not recoverable" in (job.error or "")
+    assert manager.drain_completed_for_parent(parent_agent_id=parent.agent_id) == []
     manager.shutdown()
 
 

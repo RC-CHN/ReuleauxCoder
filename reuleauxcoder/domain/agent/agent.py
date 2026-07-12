@@ -346,6 +346,8 @@ class Agent:
         self._replace_context_messages(
             list(session.messages), reason="session resume", record=False
         )
+        manager = get_subagent_manager(self)
+        manager.restore_from_history(self, self.history_ledger.events)
 
     def start_new_history(self) -> None:
         self.history_ledger = HistoryLedger(

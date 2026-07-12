@@ -34,6 +34,37 @@ SubagentMessageKind = Literal[
 
 def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
     """Best-effort lifecycle projection; execution never depends on a UI."""
+    ledger = getattr(parent_agent, "history_ledger", None)
+    if ledger is not None:
+        ledger.append(
+            "subagent_job_changed",
+            {
+                "job_id": job.id,
+                "mode": job.mode,
+                "task": job.task,
+                "status": job.status,
+                "created_at": job.created_at,
+                "started_at": job.started_at,
+                "finished_at": job.finished_at,
+                "timeout_seconds": job.timeout_seconds,
+                "result": job.result,
+                "error": job.error,
+                "generation": job.generation,
+                "parent_session_id": job.parent_session_id,
+                "parent_job_id": job.parent_job_id,
+                "depth": job.depth,
+                "context_mode": job.context_mode,
+                "delivery": job.delivery,
+                "worktree_path": job.worktree_path,
+            },
+            agent_id=getattr(parent_agent, "agent_id", None),
+            parent_agent_id=job.parent_agent_id,
+            job_id=job.id,
+            turn_id=getattr(parent_agent, "_current_turn_id", None),
+        )
+        persist = getattr(parent_agent, "persist_runtime_snapshot", None)
+        if callable(persist):
+            persist()
     emit = getattr(parent_agent, "_emit_event", None)
     if not callable(emit):
         return
@@ -72,6 +103,14 @@ def _clamp_timeout_seconds(
     if base > maximum:
         return maximum
     return base
+
+
+def _optional_int(value) -> int | None:
+    return None if value is None else int(value)
+
+
+def _optional_float(value) -> float | None:
+    return None if value is None else float(value)
 
 
 @dataclass(slots=True)
@@ -456,6 +495,87 @@ class SubagentManager:
         with self._lock:
             jobs = list(self._jobs.values())
         return sorted(jobs, key=lambda item: item.created_at, reverse=True)
+
+    def restore_from_history(self, parent_agent, events) -> int:
+        """Rebuild inspectable jobs; live workers never survive process resume."""
+        with self._lock:
+            self._jobs.clear()
+            self._futures.clear()
+            self._message_queues.clear()
+            self._cancel_events.clear()
+            self._parent_messages.clear()
+            self._completion_mailbox.clear()
+            self._parent_agent_id = getattr(parent_agent, "agent_id", None)
+            self._generation = getattr(parent_agent, "session_generation", 0)
+        latest: dict[str, dict] = {}
+        for event in events:
+            if getattr(event, "kind", None) != "subagent_job_changed":
+                continue
+            payload = getattr(event, "payload", {})
+            job_id = str(payload.get("job_id") or "")
+            if job_id:
+                latest[job_id] = dict(payload)
+        if not latest:
+            return 0
+
+        terminal = {
+            "completed",
+            "failed",
+            "cancelled",
+            "cancelled_detached",
+            "timeout",
+            "timed_out_detached",
+            "stale",
+        }
+        visible_context = "\n".join(
+            str(message.get("content") or "")
+            for message in getattr(parent_agent, "messages", ())
+        )
+        restored: list[SubagentJob] = []
+        for job_id, payload in latest.items():
+            status = str(payload.get("status") or "stale")
+            error = payload.get("error")
+            if status not in terminal:
+                status = "stale"
+                error = "Worker was not recoverable after process resume."
+            job = SubagentJob(
+                id=job_id,
+                mode=str(payload.get("mode") or "explore"),
+                task=str(payload.get("task") or "restored sub-agent task"),
+                status=status,
+                created_at=float(payload.get("created_at") or time.time()),
+                parent_agent_id=getattr(parent_agent, "agent_id", None),
+                parent_session_id=(
+                    payload.get("parent_session_id")
+                    or getattr(parent_agent, "current_session_id", None)
+                ),
+                started_at=_optional_float(payload.get("started_at")),
+                finished_at=_optional_float(payload.get("finished_at")),
+                timeout_seconds=_optional_int(payload.get("timeout_seconds")),
+                result=payload.get("result"),
+                error=error,
+                generation=getattr(parent_agent, "session_generation", 0),
+                parent_job_id=payload.get("parent_job_id"),
+                depth=int(payload.get("depth") or 0),
+                context_mode=str(payload.get("context_mode") or "recent"),
+                worktree_path=payload.get("worktree_path"),
+                delivery=(
+                    "detached"
+                    if payload.get("delivery") == "detached"
+                    else "awaited"
+                ),
+                injected_to_parent=f"id={job_id}" in visible_context,
+            )
+            restored.append(job)
+
+        with self._lock:
+            self._parent_agent_id = getattr(parent_agent, "agent_id", None)
+            self._generation = getattr(parent_agent, "session_generation", 0)
+            for job in restored:
+                self._jobs[job.id] = job
+                self._message_queues.setdefault(job.id, deque())
+                self._cancel_events.setdefault(job.id, threading.Event())
+        return len(restored)
 
     def get_job(self, job_id: str) -> SubagentJob | None:
         with self._lock:

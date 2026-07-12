@@ -163,6 +163,15 @@ class ExecutionViewReducer:
             agent.activity = payload.error or _subagent_activity(payload.status)
             agent.last_activity_at = event.timestamp
             agent.animation_lease_until = event.timestamp + self.animation_lease_seconds
+            attention_id = f"job:{payload.job_id}"
+            if payload.status in {"failed", "stale", "blocked", "timed_out_detached"}:
+                self.state.attention[attention_id] = AttentionItem(
+                    request_id=attention_id,
+                    title=f"{agent.label}: {payload.error or payload.status}",
+                    source_agent_id=event.agent_id,
+                )
+            elif payload.status in {"completed", "cancelled"}:
+                self.state.attention.pop(attention_id, None)
             return True
         if isinstance(payload, ApprovalRequested):
             self.state.attention[payload.request_id] = AttentionItem(
