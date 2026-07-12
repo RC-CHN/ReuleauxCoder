@@ -81,6 +81,7 @@ Output retention is tool-directed through `ToolRetentionHint`: read uses head/an
 The CLI is split by responsibility:
 
 - `interfaces/cli/mini_tui.py`: prompt_toolkit viewport, bottom interaction focus and the shared-state adapter used for interactive TTYs.
+- `interfaces/cli/markdown_fragments.py`: retained Rich Markdown-to-prompt_toolkit fragments with committed-stream boundaries and width/revision caching.
 - `interfaces/cli/render.py`: event routing and compatibility entry points.
 - `history.py`: immutable history rows.
 - `streaming.py`: assistant content streaming.
@@ -95,7 +96,7 @@ The CLI is split by responsibility:
 
 Current CLI behavior:
 
-- interactive TTYs use a fixed top Execution Panel, scrollable transcript and bottom input/review pane; F2 toggles startup/session details;
+- interactive TTYs use a fixed top Execution Panel, virtualized transcript viewport and bottom input/review pane; F2 toggles startup/session details;
 - prompt_toolkit exclusively owns cursor, focus, SIGWINCH resize and alternate-screen lifecycle; worker threads only update source-backed reducers and invalidate the app;
 - non-TTY, `--prompt`, server and remote-peer paths remain append-only and never start the mini-TUI;
 - the bottom `YOU` lane uses a high-contrast background for user input; the append-only compatibility prompt still distinguishes slash commands as `CMD`.
@@ -104,6 +105,7 @@ Current CLI behavior:
 - if a file changes on disk while approval is pending, the preview is refreshed and approval is requested again.
 - unsaved editor buffers are not visible to the CLI; editor-buffer integration requires a future editor adapter.
 - panels and retained in-app transcript reflow on terminal resize. Ctrl+C clears input, cancels approval, requests a protocol-safe running-turn interrupt, or confirms exit according to focus.
+- completed assistant cells render Markdown; streaming cells only parse committed blocks. Static cell/layout caches are keyed by revision and width, and the viewport no longer paints a transcript-height off-screen canvas on every frame.
 
 ## Commands and interactions
 
@@ -160,11 +162,13 @@ Built-in hooks include tool policy, tool output truncation/archive, project cont
 
 ## Subagents
 
-`extensions/subagent/manager.py` owns the root-scoped control plane: registration-before-submit, shared depth/concurrency limits, awaited/detached delivery, execution budgets, cancellation, typed immediate-parent mailboxes, transcript resume, timeout, pruning and shutdown. Mailboxes persist queued/delivered watermarks; claims are process-local and crash-recoverable. Parent directives are audited, and execute completion is gated by an automatic verify job using the same workspace/worktree. Job lifecycle is ledgered; non-terminal workers restored after a process exit become visible `stale` records and are never injected. Root user steering is ledger-first and enters at the next protocol-safe boundary. Overlapping execute results create an explicit conflict item. Optional execute isolation uses retained detached git worktrees and requires explicit cleanup.
+`extensions/subagent/manager.py` owns the root-scoped asynchronous control plane: registration-before-submit, shared depth/concurrency limits, cumulative execution budgets, typed immediate-parent mailboxes, checkpoint resume, cancellation epochs, timeout, pruning and shutdown. Root tools are split into `spawn_agent`, `send_message`, `list_agents`, `wait_agent`, and `interrupt_agent`; spawn returns a job ID without waiting and the parent loop never implicitly waits. Child reports/progress are non-blocking; `request_guidance` checkpoints and parks the same job without occupying a worker slot. A valid directive resumes that job from an exact transcript prefix, including after process/session restore. Mailboxes persist queued/delivered watermarks and directives carry stable IDs. Execute completion is gated by an automatic verify job during the live runtime. Optional execute isolation uses retained git worktrees and requires explicit cleanup.
+
+Child model loops run in isolated spawn processes. They own no workspace/LSP/remote primitives: scoped tool calls cross typed IPC to the parent Tool Broker, which reuses the normal authorization/approval/backend path. Read/list/glob/grep/query-LSP form the approval-free child baseline; write/edit/shell inherit parent policy and require a child reason. Children never receive agent lifecycle or Plan writer tools, so delegation is non-recursive. Worker envelopes carry session/worker generation, cancellation epoch, sequence and payload hash. Large broker results are archived content-addressably and sent as a verified model projection plus `ToolResultRef`; cancellation quarantines late results, and an effectful call without a committed outcome becomes human-visible `indeterminate` rather than being retried.
 
 `domain/context/rounds.py`, `budget.py`, `checkpoint.py`, `usage.py`, `replay.py`, and `provider.py` define protocol-safe API-round boundaries, actual-first usage calibration, canonical replay, versioned replacement history, and the provider cache-compaction extension boundary. Normal planning begins near 52%, the quality wall is near 60%, rewrites target 35–45%, and 90% is emergency-only. Compression must preserve tool-call/output adjacency. Partial, phase, and full-recovery summaries use a validated deterministic+LLM schema, bounded complete-round projection, independent output limits, and HistoryLedger provenance; checkpoints precede retained recent rounds and are persisted rather than regenerated on resume.
 
-Subagents receive rebuilt scoped tools/hooks instead of sharing mutable instances. Approval delegation uses the shared provider path. LSP-consuming hooks are scope-aware so a child cannot drain or inject the parent's diagnostics.
+Subagents receive rebuilt scoped tools/hooks instead of sharing mutable instances. Approval delegation uses the shared provider path. LSP-consuming hooks are scope-aware so a child cannot drain or inject the parent's diagnostics. Child assistant/tool streams stay out of the root transcript; the Execution Panel still receives compact activity, current tool, budgets and blockers.
 
 ## LSP
 

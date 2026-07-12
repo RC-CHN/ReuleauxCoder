@@ -6,7 +6,7 @@ A terminal-native AI coding agent with a FORGE-styled CLI, scoped subagents,
 approvals, sessions, MCP, skills, LSP, and a thin remote execution peer.
 
 The v0.4.1 CLI uses a prompt_toolkit mini-TUI with a persistent execution panel,
-scrollable transcript, and focused approval/input pane. It shares framework-neutral
+virtualized Markdown transcript, and focused approval/input pane. It shares framework-neutral
 presentation state with the future full TUI; no production Textual app is shipped yet.
 
 Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/he-yufeng/CoreCoder).
@@ -170,6 +170,7 @@ All LSP operations are read-only and do **not** require approval.
 /agents message <id> <text>  Send input at the next safe child round
 /agents resume <id> <text>   Resume a completed child transcript
 /agents cancel <id>          Request cooperative cancellation
+/agents stop <id>            Stop a child, escalating to hard kill if required
 /agents cleanup <id>         Remove a retained isolated worktree
 /config            Show effective config values and sources
 /thinking          Show reasoning content from the last turn
@@ -192,13 +193,16 @@ known command if within edit distance ≤ 2.
 - `/approval set` currently supports targets like `tool:<name>`, `mcp`, `mcp:<server>`, and `mcp:<server>:<tool>` with actions `allow`, `warn`, `require_approval`, or `deny`.
 - `/mcp enable <server>` and `/mcp disable <server>` update workspace config and try to apply the change at runtime.
 - `/thinking` shows reasoning content retained from the most recent turn. `/thinking inline` toggles inline streaming; the FORGE activity row advances as reasoning chunks arrive and remains in history. `/thinking effort` views or sets the session reasoning budget.
-- Subagents use bounded `minimal`, `recent`, or `full` parent-context projections, crash-recoverable typed immediate-parent mailboxes, audited parent directives, awaited/detached continuation, automatic execute→verify barriers, persisted transcripts and job lifecycle, shared budgets, resumable follow-ups, stale-on-resume recovery, conflict notices, and optional detached worktree isolation. Worker callbacks never mutate model history mid-tool-batch. While a root turn is running, new bottom-pane input is ledgered and applied at the next safe boundary.
+- Subagents use bounded `minimal`, `recent`, or `full` parent-context projections and Codex-style asynchronous lifecycle controls: spawn returns immediately; the root can message, inspect, wait for activity, or interrupt a job. Children run in isolated processes, cannot recurse or edit the root Plan, and route scoped tools through the parent Tool Broker and approval path. Typed mailboxes, cumulative budgets, exact transcript checkpoints, cancellation epochs and late-result quarantine survive park/resume; `request_guidance` releases the worker slot and resumes the same job after parent/human guidance, including after session restore. Execute jobs retain automatic verification in the live runtime and may use isolated worktrees.
 
 Interactive TTYs use the mini-TUI; one-shot, redirected, server, and remote-peer
 paths stay append-only. The CLI keeps model output and human presentation limits
 separate: shell output uses a rolling five-line human tail while the agent retains
 the full result subject to context policy. Timeout/cancel preserves partial output.
 Write/edit approval uses a framed diff and refreshes if the saved file changes.
+Completed assistant cells render Rich Markdown semantics inside prompt_toolkit;
+streaming cells only format complete blocks. Static layout is cached by cell revision
+and terminal width, and the viewport paints only visible rows with sticky-bottom scroll.
 Sessions persist an append-only JSONL ledger, canonical replay state with
 wire-affecting settings, exact hook-transformed request audits, usage observations,
 Plan/Progress state, validated semantic checkpoints, and tool artifacts. Resume

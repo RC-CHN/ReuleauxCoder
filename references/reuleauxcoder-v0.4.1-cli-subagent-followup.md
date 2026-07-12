@@ -1,7 +1,9 @@
 # ReuleauxCoder v0.4.1 CLI / Subagent Follow-up
 
 > 日期：2026-07-12  
-> 状态：设计确认中；本文记录本轮截图验收暴露的问题与拟实施方案。除已经提交的 CLI 滚动、review 主区迁移和 transcript 时序修复外，本文后续项尚未编码。
+> 状态：设计已确认，主体实现完成，正在做全量/PTY 验收。本文第 1 节保留的是实现前问题快照；第 2–5 节是当前实现必须持续满足的契约。
+
+实现进度（2026-07-12）：Phase A、C、D 已落地；Phase B 的非递归 capability、typed mailbox、Codex 异步生命周期工具、独立 worker/Tool Broker、强停、guidance park/resume、session restore、累计预算、epoch/late-result quarantine、结构化 final result 和 content-addressed 大结果 IPC 已落地。Python 全量基线在移除一条与新异步契约冲突的旧 awaited 测试后为 `898 passed, 24 skipped`；最终全量、Go peer、wheel build 与真实 PTY 验收仍以最新代码再跑一次为准。
 
 ## 1. 本轮已经确认的问题
 
