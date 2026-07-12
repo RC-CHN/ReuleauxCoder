@@ -14,6 +14,7 @@ from reuleauxcoder.domain.runtime.events import (
     agent_event_to_runtime_event,
 )
 from reuleauxcoder.interfaces.cli.mini_tui import (
+    MINI_TUI_MOUSE_SUPPORT,
     MiniTUIEventAdapter,
     MiniTUIInteractor,
     MiniTUIApplication,
@@ -61,6 +62,10 @@ def test_event_adapter_projects_user_and_execution_state() -> None:
     assert "fix the renderer" in rendered
     assert adapter.execution.state.runtime_state == "running"
     assert "MAIN" in "\n".join(adapter.panel_lines(100))
+
+
+def test_mini_tui_leaves_mouse_to_terminal_native_selection() -> None:
+    assert MINI_TUI_MOUSE_SUPPORT is False
 
 
 def test_static_transcript_cells_reuse_width_revision_fragment_cache(

@@ -27,7 +27,6 @@ from prompt_toolkit.layout import (
     Window,
 )
 from prompt_toolkit.layout.margins import ScrollbarMargin
-from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
@@ -117,6 +116,12 @@ MINI_TUI_STYLE = Style.from_dict(
         "scrollbar.arrow": "bold #071013 bg:#67e8f9",
     }
 )
+
+# Terminal-native mouse ownership is intentional: when prompt_toolkit enables
+# mouse tracking, ordinary drag selection never reaches Konsole/iTerm/etc.
+# Keyboard transcript navigation remains available through PageUp/PageDown and
+# Home/End while users retain native selection, copy, and paste behavior.
+MINI_TUI_MOUSE_SUPPORT = False
 
 
 class MiniTUIEventAdapter:
@@ -548,7 +553,6 @@ class MiniTUIApplication:
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
             self._transcript_cursor_position,
-            self._transcript_mouse_handler,
         )
         self.transcript_window = Window(
             self.transcript_control,
@@ -601,7 +605,7 @@ class MiniTUIApplication:
             key_bindings=self._key_bindings(),
             full_screen=True,
             style=MINI_TUI_STYLE,
-            mouse_support=True,
+            mouse_support=MINI_TUI_MOUSE_SUPPORT,
             before_render=self._before_render,
         )
         self.events.bind_invalidator(self.invalidate)
@@ -855,7 +859,12 @@ class MiniTUIApplication:
                 [("class:muted", "Agent running · Ctrl+C interrupts\n")]
             )
         return FormattedText(
-            [("class:muted", "/help for commands · PageUp/PageDown scroll\n")]
+            [
+                (
+                    "class:muted",
+                    "/help · PageUp/PageDown scroll · drag to select/copy\n",
+                )
+            ]
         )
 
     def _input_title(self) -> str:
@@ -920,13 +929,6 @@ class MiniTUIApplication:
         # opts back in, so subsequent streaming chunks remain visible.
         self._follow_transcript = target >= self._transcript_max_scroll
         self.invalidate()
-
-    def _transcript_mouse_handler(self, event: MouseEvent):
-        if event.event_type == MouseEventType.SCROLL_UP:
-            self._scroll_transcript(-3)
-        elif event.event_type == MouseEventType.SCROLL_DOWN:
-            self._scroll_transcript(3)
-        return None
 
     def _save_exit_session(self) -> None:
         self._closed = True
