@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcomeStatus
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcomeStatus,
+    ToolRetentionStrategy,
+)
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
@@ -50,6 +53,8 @@ def test_read_returns_full_model_content_and_compact_ui_summary(tmp_path: Path) 
     assert outcome.summary == "Read lines 2-3 of 3 (10 chars) from demo.txt"
     assert outcome.metadata["line_count"] == 2
     assert outcome.metadata["character_count"] == 10
+    assert outcome.retention_hint.strategy is ToolRetentionStrategy.HEAD
+    assert outcome.retention_hint.anchor_line == 2
 
 
 def test_invalid_edit_has_explicit_failed_status(tmp_path: Path) -> None:

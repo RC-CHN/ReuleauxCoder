@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcome,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
+)
 from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -114,6 +118,9 @@ class GrepTool(Tool):
                     "file_count": file_count,
                     "truncated": result.truncated,
                 },
+                retention_hint=ToolRetentionHint(
+                    strategy=ToolRetentionStrategy.HEAD_TAIL
+                ),
             )
         except WorkspaceError as e:
             if e.code.value == "invalid_path" and e.message.startswith(

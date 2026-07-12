@@ -6,6 +6,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
 )
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
@@ -126,6 +128,10 @@ class ReadFileTool(Tool):
                     "character_count": source_chars,
                     "override": override,
                 },
+                retention_hint=ToolRetentionHint(
+                    strategy=ToolRetentionStrategy.HEAD,
+                    anchor_line=start + 1,
+                ),
             )
         except WorkspaceError as e:
             kind = (

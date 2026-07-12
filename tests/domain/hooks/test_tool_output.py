@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from reuleauxcoder.domain.hooks.builtin.tool_output import ToolOutputTruncationHook
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcome,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
+)
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.domain.llm.models import ToolCall
 
@@ -99,3 +103,38 @@ def test_tool_output_does_not_bypass_non_markdown_under_skills(
     out = hook.run(ctx)
 
     assert "[truncated]" in out.result
+
+
+def test_tool_output_retains_tail_when_outcome_requests_it() -> None:
+    hook = ToolOutputTruncationHook(max_chars=100, max_lines=3, store_full_output=False)
+    source = "\n".join(f"line-{index}" for index in range(10))
+    ctx = _ctx("/tmp/output.log", source)
+    ctx.outcome = ToolOutcome(
+        content=source,
+        retention_hint=ToolRetentionHint(strategy=ToolRetentionStrategy.TAIL),
+    )
+
+    out = hook.run(ctx)
+
+    assert "Showing last 3 retained lines" in out.result
+    assert "line-7\nline-8\nline-9" in out.result
+    assert "line-0" not in out.result
+    assert out.outcome.truncation.strategy == "tail"
+
+
+def test_tool_output_head_retention_reports_source_anchor() -> None:
+    hook = ToolOutputTruncationHook(max_chars=100, max_lines=2, store_full_output=False)
+    source = "\n".join(f"source-{index}" for index in range(10, 20))
+    ctx = _ctx("/tmp/source.py", source)
+    ctx.outcome = ToolOutcome(
+        content=source,
+        retention_hint=ToolRetentionHint(
+            strategy=ToolRetentionStrategy.HEAD, anchor_line=11
+        ),
+    )
+
+    out = hook.run(ctx)
+
+    assert "Showing first 2 retained lines from source line 11" in out.result
+    assert "source-10\nsource-11" in out.result
+    assert "source-19" not in out.result

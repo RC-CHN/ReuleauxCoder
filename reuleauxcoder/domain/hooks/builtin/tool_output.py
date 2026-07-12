@@ -14,6 +14,7 @@ from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolArchiveReference,
     ToolOutcome,
+    ToolRetentionStrategy,
     ToolTruncation,
 )
 from reuleauxcoder.domain.hooks.discovery import register_hook
@@ -74,14 +75,22 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
                 tool_call.name, result, context.round_index
             )
 
-        truncated_lines = result.splitlines()[: self.max_lines]
-        truncated_text = "\n".join(truncated_lines)
-        if len(truncated_text) > self.max_chars:
-            truncated_text = truncated_text[: self.max_chars].rstrip()
+        strategy = outcome.retention_hint.strategy
+        truncated_text = _retain_text(
+            result,
+            max_lines=self.max_lines,
+            max_chars=self.max_chars,
+            strategy=strategy,
+        )
 
         summary_lines = [
             f"[truncated] Tool output exceeded limits ({line_count} lines, {char_count} chars).",
-            f"Showing first {min(line_count, self.max_lines)} lines and up to {self.max_chars} chars.",
+            _retention_summary(
+                strategy,
+                retained_lines=len(truncated_text.splitlines()),
+                max_chars=self.max_chars,
+                anchor_line=outcome.retention_hint.anchor_line,
+            ),
         ]
         if archive_path is not None:
             summary_lines.append(f"Full output saved to: {archive_path}")
@@ -102,6 +111,7 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
                 original_lines=line_count,
                 retained_chars=len(truncated_text),
                 retained_lines=len(truncated_text.splitlines()),
+                strategy=strategy.value,
             ),
             archive_reference=(
                 ToolArchiveReference(path=str(archive_path))
@@ -166,3 +176,54 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
             if resolved == root or resolved.is_relative_to(root):
                 return True
         return False
+
+
+def _retain_text(
+    text: str,
+    *,
+    max_lines: int,
+    max_chars: int,
+    strategy: ToolRetentionStrategy,
+) -> str:
+    lines = text.splitlines()
+    if strategy is ToolRetentionStrategy.TAIL:
+        selected = "\n".join(lines[-max_lines:])
+        return selected[-max_chars:].lstrip()
+    if strategy is ToolRetentionStrategy.HEAD_TAIL:
+        head_count = max(1, (max_lines + 1) // 2)
+        tail_count = max(0, max_lines - head_count)
+        selected = "\n".join(
+            [*lines[:head_count], *(lines[-tail_count:] if tail_count else [])]
+        )
+        if len(selected) <= max_chars:
+            return selected
+        head_chars = max(1, (max_chars + 1) // 2)
+        tail_chars = max_chars - head_chars
+        if not tail_chars:
+            return selected[:head_chars].rstrip()
+        return (
+            selected[:head_chars].rstrip()
+            + "\n"
+            + selected[-tail_chars:].lstrip()
+        )
+    selected = "\n".join(lines[:max_lines])
+    return selected[:max_chars].rstrip()
+
+
+def _retention_summary(
+    strategy: ToolRetentionStrategy,
+    *,
+    retained_lines: int,
+    max_chars: int,
+    anchor_line: int | None,
+) -> str:
+    direction = {
+        ToolRetentionStrategy.HEAD: "first",
+        ToolRetentionStrategy.TAIL: "last",
+        ToolRetentionStrategy.HEAD_TAIL: "first/last",
+    }[strategy]
+    anchor = f" from source line {anchor_line}" if anchor_line is not None else ""
+    return (
+        f"Showing {direction} {retained_lines} retained lines{anchor} "
+        f"and up to {max_chars} chars."
+    )

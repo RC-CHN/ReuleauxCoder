@@ -10,6 +10,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
 )
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -148,6 +150,7 @@ class ShellTool(Tool):
         if cwd and persist_cwd:
             self._cwd = cwd
         started = time.monotonic()
+        retention_hint = ToolRetentionHint(strategy=ToolRetentionStrategy.TAIL)
         try:
             result = self.backend.process.run(
                 command,
@@ -162,6 +165,7 @@ class ShellTool(Tool):
                 content=f"Error: working directory does not exist ({actual_cwd})",
                 duration_seconds=time.monotonic() - started,
                 error_kind=ToolErrorKind.NOT_FOUND,
+                retention_hint=retention_hint,
             )
         except Exception as error:
             return ToolOutcome(
@@ -169,27 +173,36 @@ class ShellTool(Tool):
                 content=f"Error running command: {error}",
                 duration_seconds=time.monotonic() - started,
                 error_kind=ToolErrorKind.EXECUTION,
+                retention_hint=retention_hint,
             )
         duration = time.monotonic() - started
         if result.timed_out:
             return ToolOutcome(
                 status=ToolOutcomeStatus.TIMED_OUT,
-                content=f"Error: timed out after {timeout}s",
-                stdout=result.stdout,
-                stderr=result.stderr,
+                content=(
+                    f"[system] Command timed out after {timeout}s; "
+                    "output captured until termination."
+                ),
+                stdout=result.stdout.strip(),
+                stderr=result.stderr.strip(),
                 exit_code=result.exit_code,
                 duration_seconds=duration,
                 error_kind=ToolErrorKind.INTERRUPTED,
+                retention_hint=retention_hint,
             )
         if result.cancelled:
             return ToolOutcome(
                 status=ToolOutcomeStatus.CANCELLED,
-                content="Error: shell command cancelled",
-                stdout=result.stdout,
-                stderr=result.stderr,
+                content=(
+                    "[system] Command was cancelled; "
+                    "output captured until termination."
+                ),
+                stdout=result.stdout.strip(),
+                stderr=result.stderr.strip(),
                 exit_code=result.exit_code,
                 duration_seconds=duration,
                 error_kind=ToolErrorKind.INTERRUPTED,
+                retention_hint=retention_hint,
             )
         failed = result.exit_code not in {None, 0}
         first_line = next(
@@ -219,13 +232,21 @@ class ShellTool(Tool):
             duration_seconds=duration,
             error_kind=ToolErrorKind.EXECUTION if failed else None,
             metadata={"cwd": str(actual_cwd)},
+            retention_hint=retention_hint,
         )
 
     def _stream_handler(self):
         build = getattr(self.backend, "_build_stream_handler", None)
-        if not callable(build):
-            return None
-        remote_handler = build("shell")
+        remote_handler = build("shell") if callable(build) else None
+        if remote_handler is None:
+            context_handler = getattr(
+                self.backend.context, "remote_stream_handler", None
+            )
+            if callable(context_handler):
+                def forward_context_chunk(chunk) -> None:
+                    context_handler("shell", chunk)
+
+                remote_handler = forward_context_chunk
         if remote_handler is None:
             return None
 

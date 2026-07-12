@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import PurePath
 
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcome,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
+)
 from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -93,6 +97,9 @@ class GlobTool(Tool):
                     "shown_count": len(shown),
                     "truncated": total > len(shown) or listing.truncated,
                 },
+                retention_hint=ToolRetentionHint(
+                    strategy=ToolRetentionStrategy.HEAD_TAIL
+                ),
             )
         except WorkspaceError as e:
             return f"Error [{e.code.value}]: {e.message}"

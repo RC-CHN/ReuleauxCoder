@@ -31,6 +31,24 @@ class ToolErrorKind(str, Enum):
     INTERNAL = "internal"
 
 
+class ToolRetentionStrategy(str, Enum):
+    HEAD = "head"
+    TAIL = "tail"
+    HEAD_TAIL = "head_tail"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolRetentionHint:
+    """Tool-declared model retention semantics; UI projection is independent."""
+
+    strategy: ToolRetentionStrategy = ToolRetentionStrategy.HEAD
+    anchor_line: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.anchor_line is not None and self.anchor_line < 1:
+            raise ValueError("anchor_line must be positive")
+
+
 @dataclass(frozen=True, slots=True)
 class ToolDiff:
     path: str
@@ -95,6 +113,7 @@ class ToolOutcome:
     metadata: Mapping[str, object] = field(default_factory=dict)
     error_kind: ToolErrorKind | None = None
     model_content: str | None = None
+    retention_hint: ToolRetentionHint = field(default_factory=ToolRetentionHint)
 
     def __post_init__(self) -> None:
         if self.duration_seconds is not None and self.duration_seconds < 0:
@@ -146,7 +165,11 @@ class ToolOutcome:
 
     def _detailed_text(self, *, include_diagnostics: bool) -> str:
         sections: list[str] = []
-        if self.content:
+        defer_status = self.status in {
+            ToolOutcomeStatus.TIMED_OUT,
+            ToolOutcomeStatus.CANCELLED,
+        }
+        if self.content and not defer_status:
             sections.append(self.content)
         elif self.summary and not (self.stdout or self.stderr or self.diff):
             sections.append(self.summary)
@@ -154,6 +177,8 @@ class ToolOutcome:
             sections.append(self.stdout)
         if self.stderr:
             sections.append(f"[stderr]\n{self.stderr}")
+        if self.content and defer_status:
+            sections.append(self.content)
         if self.diff is not None and self.diff.unified:
             sections.append(self.diff.unified)
         if include_diagnostics and self.diagnostics:

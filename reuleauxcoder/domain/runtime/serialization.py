@@ -14,6 +14,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
     ToolTruncation,
 )
 from reuleauxcoder.domain.runtime import events
@@ -160,6 +162,12 @@ def _decode_tool_outcome(data: dict[str, Any]) -> ToolOutcome:
         if values.get("archive_reference") is not None:
             values["archive_reference"] = ToolArchiveReference(
                 **_required_dict(values, "archive_reference")
+            )
+        if values.get("retention_hint") is not None:
+            retention = _required_dict(values, "retention_hint")
+            values["retention_hint"] = ToolRetentionHint(
+                strategy=ToolRetentionStrategy(retention["strategy"]),
+                anchor_line=retention.get("anchor_line"),
             )
         return ToolOutcome(**values)
     except (KeyError, TypeError, ValueError) as error:

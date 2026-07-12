@@ -8,7 +8,11 @@ import re
 import stat
 from pathlib import Path, PurePath
 
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcome,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
+)
 from reuleauxcoder.domain.workspace import WorkspaceEntry, WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -155,6 +159,9 @@ class ListFileTool(Tool):
                     summary=f"Listed 1 entry at {path}",
                     content=self._format_single(base, long=long),
                     metadata={"operation": "list", "path": path, "entry_count": 1},
+                    retention_hint=ToolRetentionHint(
+                        strategy=ToolRetentionStrategy.HEAD_TAIL
+                    ),
                 )
             if not base.is_dir:
                 return f"Error: '{path}' is not a directory"
@@ -179,6 +186,9 @@ class ListFileTool(Tool):
                     summary=f"Listed 0 entries in {path}",
                     content=content,
                     metadata={"operation": "list", "path": path, "entry_count": 0},
+                    retention_hint=ToolRetentionHint(
+                        strategy=ToolRetentionStrategy.HEAD_TAIL
+                    ),
                 )
             entries.sort(
                 key=lambda entry: (
@@ -219,6 +229,9 @@ class ListFileTool(Tool):
                     "pattern": pattern,
                     "truncated": listing.truncated,
                 },
+                retention_hint=ToolRetentionHint(
+                    strategy=ToolRetentionStrategy.HEAD_TAIL
+                ),
             )
         except WorkspaceError as error:
             if error.code.value == "not_found":

@@ -8,7 +8,10 @@ import threading
 import time
 
 from reuleauxcoder.domain.process import ProcessResult
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcomeStatus
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcomeStatus,
+    ToolRetentionStrategy,
+)
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 
@@ -74,13 +77,22 @@ def test_shell_formats_stderr_exit_timeout_and_cancel(tmp_path: Path) -> None:
     assert failed.exit_code == 7
     assert failed.status is ToolOutcomeStatus.FAILED
 
-    process.result = ProcessResult(timed_out=True)
+    process.result = ProcessResult(
+        stdout="first\nlatest\n", timed_out=True
+    )
     timed_out = tool._execute_local("demo", timeout=3)
-    assert timed_out.model_text == "Error: timed out after 3s"
+    assert timed_out.model_text == (
+        "first\nlatest\n"
+        "[system] Command timed out after 3s; output captured until termination."
+    )
     assert timed_out.status is ToolOutcomeStatus.TIMED_OUT
-    process.result = ProcessResult(cancelled=True)
+    assert timed_out.retention_hint.strategy is ToolRetentionStrategy.TAIL
+    process.result = ProcessResult(stdout="partial\n", cancelled=True)
     cancelled = tool._execute_local("demo")
-    assert cancelled.model_text == "Error: shell command cancelled"
+    assert cancelled.model_text == (
+        "partial\n"
+        "[system] Command was cancelled; output captured until termination."
+    )
     assert cancelled.status is ToolOutcomeStatus.CANCELLED
 
 

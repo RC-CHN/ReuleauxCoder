@@ -1,4 +1,7 @@
-from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.presentation.policy import (
     PresentationPolicy,
     ToolOutputMode,
@@ -103,3 +106,19 @@ def test_errors_mode_suppresses_success_but_keeps_failure() -> None:
     assert policy.tool_preview(
         ToolOutcome.from_legacy("bad", success=False)
     ) == "bad"
+
+
+def test_timeout_preview_shows_latest_five_lines_and_system_footer() -> None:
+    outcome = ToolOutcome(
+        status=ToolOutcomeStatus.TIMED_OUT,
+        stdout="\n".join(f"line-{index}" for index in range(10)),
+        content="[system] timed out here",
+    )
+
+    preview = PresentationPolicy().tool_preview(outcome)
+
+    assert "line-4" not in preview
+    assert "line-5" in preview
+    assert "line-9" in preview
+    assert preview.endswith("[system] timed out here")
+    assert "line-0" in outcome.model_text
