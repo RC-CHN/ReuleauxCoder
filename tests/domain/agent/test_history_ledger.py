@@ -1,5 +1,6 @@
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.context.replay import ReplayEnvelope
+from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.session.models import Session
 
 
@@ -22,6 +23,29 @@ def test_context_replacement_does_not_delete_prior_history_events() -> None:
     assert events[0].payload["message"]["content"] == "raw output"
     assert events[1].kind == "context_view_committed"
     assert agent.messages == [{"role": "system", "content": "checkpoint"}]
+
+
+def test_message_ledger_event_has_top_level_runtime_attribution(tmp_path) -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent.current_session_id = "session-1"
+    agent.bind_session_persistence(
+        events_path=tmp_path / "events.jsonl", callback=lambda: None
+    )
+    agent._current_turn_id = "turn-7"
+    agent.state.current_round = 2
+    agent._append_message(
+        {"role": "user", "content": "hello"}, source="user_input"
+    )
+
+    event = agent.history_ledger.events[-1]
+    encoded = event.to_dict()
+    assert event.schema_version == 2
+    assert event.session_id == "session-1"
+    assert event.agent_id == agent.agent_id
+    assert event.turn_id == "turn-7"
+    assert event.api_round_id == "turn-7:2"
+    assert event.role == "user"
+    assert encoded["timestamp"] == event.created_at
 
 
 def test_request_audit_keeps_overlay_out_of_replay_items() -> None:
@@ -72,6 +96,36 @@ def test_resume_restores_committed_history_and_cache_watermarks() -> None:
     assert agent.context.history_version == 7
     assert agent.context.cache_epoch == 3
     assert agent._restored_replay_envelope is replay
+
+
+def test_resume_restores_actual_usage_calibration_from_ledger() -> None:
+    ledger = HistoryLedger(session_id="session", agent_id="root")
+    ledger.append(
+        "usage_observed",
+        {
+            "actual_prompt_tokens": 1_200,
+            "cached_input_tokens": 900,
+            "local_request_estimate": 1_000,
+            "local_history_estimate": 800,
+            "request_boundary": "turn:1",
+            "model_profile": "test-model",
+        },
+        turn_id="turn",
+        api_round_id="turn:1",
+    )
+    session = Session(
+        id="session",
+        model="test-model",
+        saved_at="now",
+        messages=[{"role": "user", "content": "restored"}],
+        history_events=list(ledger.events),
+    )
+    agent = Agent(llm=_LLM(), tools=[])
+    agent.restore_history_runtime(session)
+
+    assert agent.context._latest_usage is not None
+    assert agent.context._latest_usage.actual_prompt_tokens == 1_200
+    assert agent.context._latest_usage.cached_input_tokens == 900
 
 
 def test_reset_preserves_ledger_truth_but_commits_empty_runtime_view() -> None:

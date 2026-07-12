@@ -40,6 +40,7 @@ def build_session_persistence_kwargs(agent: Agent) -> dict:
             "history_completeness",
             "complete" if ledger is not None else "legacy_snapshot_only",
         ),
+        "checkpoints": list(getattr(agent.context, "checkpoints", ())),
     }
 
 
@@ -265,3 +266,4 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
     plan_controller = getattr(agent, "plan_controller", None)
     if plan_controller is not None:
         plan_controller.restore(runtime.plan_state, runtime.progress_state)
+    agent.context.restore_checkpoints(list(getattr(session, "checkpoints", ())))

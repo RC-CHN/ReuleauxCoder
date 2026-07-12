@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
+from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.replay import ReplayEnvelope
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.session.models import SessionRuntimeState
@@ -106,6 +107,35 @@ def test_new_session_layout_separates_full_ledger_from_runtime_view(
     assert loaded.history_completeness == "complete"
     assert loaded.replay_envelope is not None
     assert loaded.replay_envelope.validate()
+
+
+def test_compaction_checkpoints_are_immutable_session_artifacts(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    checkpoint = CompactionCheckpoint.create(
+        trigger="quality_wall",
+        strategy=["summarize"],
+        source_history_version=3,
+        replacement_history=[
+            {"role": "system", "content": "[Context checkpoint summary]\nstate"}
+        ],
+        tokens_before=60_000,
+        tokens_after=40_000,
+        preserved_rounds=3,
+        cache_epoch=2,
+        actual_prompt_tokens=61_000,
+        cached_input_tokens=50_000,
+    )
+    session_id = store.save(
+        messages=list(checkpoint.replacement_history),
+        model="model",
+        checkpoints=[checkpoint],
+    )
+
+    checkpoint_path = tmp_path / session_id / "checkpoints" / f"{checkpoint.id}.json"
+    assert checkpoint_path.exists()
+    loaded = store.load(session_id)
+    assert loaded is not None
+    assert loaded.checkpoints == [checkpoint]
 
 
 def test_events_jsonl_only_appends_new_event_ids(tmp_path: Path) -> None:

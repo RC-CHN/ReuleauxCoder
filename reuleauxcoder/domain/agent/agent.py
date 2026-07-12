@@ -112,7 +112,9 @@ class Agent:
         self._state_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._current_turn_id: str | None = None
-        self.history_ledger = HistoryLedger(generation=self.session_generation)
+        self.history_ledger = HistoryLedger(
+            generation=self.session_generation, agent_id=self.agent_id
+        )
         self.history_completeness = "complete"
         self.replay_envelope = None
         self.request_envelopes: list = []
@@ -221,11 +223,26 @@ class Agent:
         return synthesized
 
     def _append_message(self, message: dict, *, source: str) -> None:
-        self.history_ledger.append_message(message, source=source)
+        api_round_id = (
+            f"{self._current_turn_id}:{self.state.current_round}"
+            if self._current_turn_id is not None
+            else None
+        )
+        self.history_ledger.append_message(
+            message,
+            source=source,
+            agent_id=self.agent_id,
+            turn_id=self._current_turn_id,
+            api_round_id=api_round_id,
+        )
         self.state.messages.append(message)
         self.persist_runtime_snapshot()
 
     def bind_session_persistence(self, *, events_path, callback) -> None:
+        self.history_ledger.bind_context(
+            session_id=getattr(self, "current_session_id", None),
+            agent_id=self.agent_id,
+        )
         self.history_ledger.bind_jsonl(events_path)
         self._session_persist_callback = callback
 
@@ -285,6 +302,8 @@ class Agent:
         self.history_ledger = HistoryLedger(
             getattr(session, "history_events", ()),
             generation=self.session_generation,
+            session_id=getattr(session, "id", None),
+            agent_id=self.agent_id,
         )
         self._session_persist_callback = None
         self.replay_envelope = getattr(session, "replay_envelope", None)
@@ -293,17 +312,44 @@ class Agent:
         self.history_completeness = getattr(
             session, "history_completeness", "legacy_compacted_or_unknown"
         )
+        self.context.clear_usage_observations()
+        for event in self.history_ledger.events[-100:]:
+            if event.kind != "usage_observed":
+                continue
+            payload = event.payload
+            try:
+                self.context.observe_usage(
+                    actual_prompt_tokens=int(payload["actual_prompt_tokens"]),
+                    cached_input_tokens=(
+                        int(payload["cached_input_tokens"])
+                        if payload.get("cached_input_tokens") is not None
+                        else None
+                    ),
+                    local_request_estimate=int(payload["local_request_estimate"]),
+                    local_history_estimate=int(payload["local_history_estimate"]),
+                    request_boundary=str(payload["request_boundary"]),
+                    model_profile=str(payload["model_profile"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
         if self.replay_envelope is not None:
             self.context.restore_replay_state(
                 history_version=self.replay_envelope.history_version,
                 cache_epoch=self.replay_envelope.cache_epoch,
             )
+        self.context.restore_checkpoints(
+            list(getattr(session, "checkpoints", ()))
+        )
         self._replace_context_messages(
             list(session.messages), reason="session resume", record=False
         )
 
     def start_new_history(self) -> None:
-        self.history_ledger = HistoryLedger(generation=self.session_generation)
+        self.history_ledger = HistoryLedger(
+            generation=self.session_generation,
+            session_id=getattr(self, "current_session_id", None),
+            agent_id=self.agent_id,
+        )
         self.replay_envelope = None
         self._restored_replay_envelope = None
         self.request_envelopes = []

@@ -294,6 +294,18 @@ class ContextManager:
     def checkpoints(self) -> tuple[CompactionCheckpoint, ...]:
         return tuple(self._checkpoints)
 
+    def restore_checkpoints(
+        self, checkpoints: tuple[CompactionCheckpoint, ...] | list[CompactionCheckpoint]
+    ) -> None:
+        """Restore immutable checkpoint metadata without regenerating summaries."""
+        self._checkpoints = list(checkpoints)
+
+    def clear_usage_observations(self) -> None:
+        """Clear request-local calibration before restoring another session."""
+        self._usage_observations.clear()
+        self._latest_usage = None
+        self._estimate_scale_by_profile.clear()
+
     @property
     def latest_usage(self) -> UsageObservation | None:
         return self._latest_usage

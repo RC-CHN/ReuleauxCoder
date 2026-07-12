@@ -1041,6 +1041,10 @@ def run_subagent_task(
     )
     sub.runtime_config = getattr(parent_agent, "runtime_config", None)
     sub.current_session_id = getattr(parent_agent, "current_session_id", None)
+    sub.history_ledger.bind_context(
+        session_id=sub.current_session_id,
+        agent_id=sub.agent_id,
+    )
     sub.session_generation = getattr(parent_agent, "session_generation", 0)
     sub.subagent_depth = depth
     sub._subagent_manager = manager

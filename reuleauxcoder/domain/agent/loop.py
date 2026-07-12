@@ -241,6 +241,13 @@ class AgentLoop:
                 "replay": replay.to_dict(),
                 "overlay": overlay,
             },
+            agent_id=self.agent.agent_id,
+            turn_id=self.agent._current_turn_id,
+            api_round_id=(
+                f"{self.agent._current_turn_id}:{self.agent.state.current_round}"
+                if self.agent._current_turn_id is not None
+                else None
+            ),
         )
         self.agent.persist_runtime_snapshot()
 
@@ -350,6 +357,24 @@ class AgentLoop:
                 local_history_estimate=local_history_estimate,
                 request_boundary=f"{self.agent._current_turn_id}:{round_num}",
                 model_profile=str(getattr(self.agent.llm, "model", "unknown")),
+            )
+            self.agent.history_ledger.append(
+                "usage_observed",
+                {
+                    "actual_prompt_tokens": resp.prompt_tokens,
+                    "cached_input_tokens": getattr(
+                        resp, "cached_input_tokens", None
+                    ),
+                    "local_request_estimate": local_request_estimate,
+                    "local_history_estimate": local_history_estimate,
+                    "request_boundary": f"{self.agent._current_turn_id}:{round_num}",
+                    "model_profile": str(
+                        getattr(self.agent.llm, "model", "unknown")
+                    ),
+                },
+                agent_id=self.agent.agent_id,
+                turn_id=self.agent._current_turn_id,
+                api_round_id=f"{self.agent._current_turn_id}:{round_num}",
             )
 
             # No tool calls -> done
@@ -512,6 +537,24 @@ class AgentLoop:
             local_history_estimate=summary_local_history,
             request_boundary=f"{self.agent._current_turn_id}:summary",
             model_profile=str(getattr(self.agent.llm, "model", "unknown")),
+        )
+        self.agent.history_ledger.append(
+            "usage_observed",
+            {
+                "actual_prompt_tokens": summary_resp.prompt_tokens,
+                "cached_input_tokens": getattr(
+                    summary_resp, "cached_input_tokens", None
+                ),
+                "local_request_estimate": summary_local_request,
+                "local_history_estimate": summary_local_history,
+                "request_boundary": f"{self.agent._current_turn_id}:summary",
+                "model_profile": str(
+                    getattr(self.agent.llm, "model", "unknown")
+                ),
+            },
+            agent_id=self.agent.agent_id,
+            turn_id=self.agent._current_turn_id,
+            api_round_id=f"{self.agent._current_turn_id}:summary",
         )
         self.agent._append_message(summary_resp.message, source="assistant_summary")
         return summary_resp.content or "(reached maximum tool-call rounds)"

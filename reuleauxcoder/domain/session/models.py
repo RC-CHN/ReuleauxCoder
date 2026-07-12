@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from reuleauxcoder.domain.context.replay import ReplayEnvelope, RequestEnvelope
+from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.history import HistoryEvent
 
 
@@ -112,6 +113,7 @@ class Session:
     history_events: list[HistoryEvent] = field(default_factory=list)
     replay_envelope: ReplayEnvelope | None = None
     request_envelopes: list[RequestEnvelope] = field(default_factory=list)
+    checkpoints: list[CompactionCheckpoint] = field(default_factory=list)
     history_completeness: str = "legacy_compacted_or_unknown"
 
     @classmethod
@@ -150,6 +152,11 @@ class Session:
                 for item in request_data
                 if isinstance(item, dict)
             ],
+            checkpoints=[
+                CompactionCheckpoint.from_dict(item)
+                for item in d.get("checkpoints", ())
+                if isinstance(item, dict)
+            ],
             history_completeness=str(
                 d.get("history_completeness") or "legacy_compacted_or_unknown"
             ),
@@ -172,6 +179,7 @@ class Session:
                 self.replay_envelope.to_dict() if self.replay_envelope else None
             ),
             "request_envelopes": [item.to_dict() for item in self.request_envelopes],
+            "checkpoints": [item.to_dict() for item in self.checkpoints],
         }
 
     def get_preview(self) -> str:

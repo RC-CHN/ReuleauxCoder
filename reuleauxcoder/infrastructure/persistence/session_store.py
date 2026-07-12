@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from reuleauxcoder.domain.context.manager import ensure_message_token_counts
+from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.replay import ReplayEnvelope, RequestEnvelope
 from reuleauxcoder.domain.history import HistoryEvent, HistoryLedger
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
@@ -52,6 +53,7 @@ class SessionStore:
         replay_envelope: ReplayEnvelope | None = None,
         request_envelopes: list[RequestEnvelope] | tuple[RequestEnvelope, ...] = (),
         history_completeness: str | None = None,
+        checkpoints: list[CompactionCheckpoint] | tuple[CompactionCheckpoint, ...] = (),
     ) -> str:
         """Save conversation to disk and return the session ID."""
         with self._lock:
@@ -126,6 +128,7 @@ class SessionStore:
                 history_events=list(ledger.events),
                 replay_envelope=replay,
                 request_envelopes=list(request_envelopes),
+                checkpoints=list(checkpoints),
                 history_completeness=(
                     history_completeness
                     or (
@@ -181,6 +184,7 @@ class SessionStore:
                 history_events=list(ledger.events),
                 replay_envelope=loaded.replay_envelope,
                 request_envelopes=loaded.request_envelopes,
+                checkpoints=loaded.checkpoints,
                 history_completeness=loaded.history_completeness,
             )
 
@@ -340,6 +344,8 @@ class SessionStore:
         directory.mkdir(parents=True, exist_ok=True)
         requests_dir = directory / "requests"
         requests_dir.mkdir(parents=True, exist_ok=True)
+        checkpoints_dir = directory / "checkpoints"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
         events_path = directory / "events.jsonl"
         existing_ids: set[str] = set()
@@ -366,10 +372,16 @@ class SessionStore:
             self._atomic_write_json(
                 requests_dir / f"{request.request_id}.json", request.to_dict()
             )
+        for checkpoint in session.checkpoints:
+            self._atomic_write_json(
+                checkpoints_dir / f"{checkpoint.id}.json", checkpoint.to_dict()
+            )
         manifest = session.to_dict()
         manifest.pop("messages", None)
         manifest.pop("replay_envelope", None)
         manifest.pop("request_envelopes", None)
+        manifest.pop("checkpoints", None)
+        manifest["checkpoint_ids"] = [item.id for item in session.checkpoints]
         self._atomic_write_json(directory / "manifest.json", manifest)
 
     def _load_session_directory(self, directory: Path) -> Session | None:
@@ -407,8 +419,21 @@ class SessionStore:
                     )
                 except (OSError, json.JSONDecodeError, TypeError, ValueError):
                     continue
+        checkpoints: list[CompactionCheckpoint] = []
+        checkpoints_dir = directory / "checkpoints"
+        if checkpoints_dir.exists():
+            for checkpoint_path in sorted(checkpoints_dir.glob("*.json")):
+                try:
+                    checkpoints.append(
+                        CompactionCheckpoint.from_dict(
+                            json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                        )
+                    )
+                except (OSError, KeyError, json.JSONDecodeError, TypeError, ValueError):
+                    continue
         manifest["messages"] = list(replay.items)
         manifest["replay_envelope"] = replay.to_dict()
         manifest["history_events"] = [event.to_dict() for event in events]
         manifest["request_envelopes"] = [item.to_dict() for item in requests]
+        manifest["checkpoints"] = [item.to_dict() for item in checkpoints]
         return Session.from_dict(manifest)

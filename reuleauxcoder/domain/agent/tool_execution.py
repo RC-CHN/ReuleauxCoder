@@ -375,6 +375,14 @@ class ToolExecutor:
                             else None
                         ),
                     },
+                    agent_id=self.agent.agent_id,
+                    turn_id=self.agent._current_turn_id,
+                    api_round_id=(
+                        f"{self.agent._current_turn_id}:{self.agent.state.current_round}"
+                        if self.agent._current_turn_id is not None
+                        else None
+                    ),
+                    artifact_refs=(outcome.archive_reference.path,),
                 )
             self.agent._emit_event(
                 AgentEvent.tool_call_end(
