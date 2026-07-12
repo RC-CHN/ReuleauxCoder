@@ -9,6 +9,7 @@ from collections import deque
 from pathlib import Path
 import hashlib
 import json
+import re
 import threading
 import time
 import uuid
@@ -2169,9 +2170,8 @@ def _result_from_agent(
     parent_agent,
     partial: bool = False,
 ) -> SubagentResult:
-    import re
-
     messages = list(getattr(sub, "messages", []))
+    reported = _parse_delegated_final_response(summary)
     files = sorted(
         {
             match.group(0)
@@ -2184,7 +2184,7 @@ def _result_from_agent(
         if event.kind == "tool_call_finished"
     ]
     failures = [event for event in tool_facts if not event.payload.get("success")]
-    evidence = [
+    runtime_evidence = [
         (
             f"tool {event.payload.get('tool_name') or 'unknown'}: "
             f"{event.payload.get('status') or 'unknown'}"
@@ -2196,6 +2196,16 @@ def _result_from_agent(
         )
         for event in tool_facts[-20:]
     ]
+    evidence = list(dict.fromkeys([*reported["evidence"], *runtime_evidence]))
+    unresolved = list(reported["unresolved"])
+    missing_sections = reported["missing"]
+    confidence = reported["confidence"]
+    if missing_sections and not partial:
+        unresolved.append(
+            "Delegated final response omitted required sections: "
+            + ", ".join(missing_sections)
+        )
+        confidence = "low"
     if getattr(sub, "subagent_mode", None) == "verify" and failures:
         status = "failed"
         summary = (
@@ -2203,9 +2213,12 @@ def _result_from_agent(
         ).strip()
     result = SubagentResult(
         status=status,
-        summary=summary,
+        summary=reported["conclusion"] or summary,
         evidence=evidence,
         files=files[:100],
+        changes=reported["artifacts"],
+        unresolved=unresolved,
+        confidence=confidence,
         duration_seconds=max(0.0, time.monotonic() - started_at),
         partial=partial,
         tool_uses=int(getattr(sub.state, "total_tool_calls", 0)),
@@ -2230,6 +2243,51 @@ def _result_from_agent(
         except OSError:
             pass
     return result
+
+
+_FINAL_SECTION_PATTERN = re.compile(
+    r"(?im)^\s*(?:#{1,6}\s*)?(?:\d+[.)]\s*)?"
+    r"(Conclusion|Evidence|Changes and artifacts|Unresolved issues|Confidence)"
+    r"\s*(?:—|–|-|:)\s*"
+)
+
+
+def _parse_delegated_final_response(text: str) -> dict[str, object]:
+    """Parse the child contract while keeping runtime facts authoritative."""
+    matches = list(_FINAL_SECTION_PATTERN.finditer(text))
+    sections: dict[str, str] = {}
+    aliases = {
+        "conclusion": "conclusion",
+        "evidence": "evidence",
+        "changes and artifacts": "artifacts",
+        "unresolved issues": "unresolved",
+        "confidence": "confidence",
+    }
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections[aliases[match.group(1).lower()]] = text[match.end() : end].strip()
+
+    def _items(name: str) -> list[str]:
+        value = sections.get(name, "").strip()
+        if not value or value.lower() in {"none", "n/a", "unknown"}:
+            return []
+        lines = [
+            re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip()
+            for line in value.splitlines()
+        ]
+        return [line for line in lines if line]
+
+    confidence_text = sections.get("confidence", "").strip()
+    confidence_match = re.match(r"(?i)^(high|medium|low)\b", confidence_text)
+    required = ("conclusion", "evidence", "artifacts", "unresolved", "confidence")
+    return {
+        "conclusion": sections.get("conclusion", "").strip(),
+        "evidence": _items("evidence"),
+        "artifacts": _items("artifacts"),
+        "unresolved": _items("unresolved"),
+        "confidence": confidence_match.group(1).lower() if confidence_match else None,
+        "missing": [name for name in required if name not in sections],
+    }
 
 
 def _retarget_tools(tools: list, cwd: Path) -> None:

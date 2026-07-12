@@ -454,7 +454,9 @@ def test_manager_runs_background_job_through_isolated_worker(
     assert job is not None
     assert job.status == "completed"
     assert job.structured_result is not None
-    assert job.structured_result.summary == "Conclusion: isolated worker complete"
+    assert job.structured_result.summary == "isolated worker complete"
+    assert job.structured_result.confidence == "low"
+    assert job.structured_result.unresolved
 
 
 def test_worker_tool_call_round_trips_through_parent_broker(
@@ -512,7 +514,9 @@ def test_worker_tool_call_round_trips_through_parent_broker(
 
     assert job is not None and job.status == "completed"
     assert job.structured_result is not None
-    assert job.structured_result.summary == "Conclusion: broker read complete"
+    assert job.structured_result.summary == "broker read complete"
+    assert job.structured_result.confidence == "low"
+    assert any("tool read_file" in item for item in job.structured_result.evidence)
     assert len(_ToolCallingHandler.requests) == 2
     tool_messages = [
         message

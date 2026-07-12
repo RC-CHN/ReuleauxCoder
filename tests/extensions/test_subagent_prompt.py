@@ -1,4 +1,7 @@
-from reuleauxcoder.extensions.subagent.manager import build_delegated_prompt
+from reuleauxcoder.extensions.subagent.manager import (
+    _parse_delegated_final_response,
+    build_delegated_prompt,
+)
 
 
 def test_delegated_prompt_has_non_recursive_control_and_final_contract() -> None:
@@ -21,3 +24,25 @@ def test_delegated_prompt_has_non_recursive_control_and_final_contract() -> None
     )
     assert prompt.index("4. Unresolved issues") < prompt.index("5. Confidence")
     assert "[Isolated worktree]\n/tmp/worktree" in prompt
+
+
+def test_delegated_final_response_parser_preserves_all_contract_sections() -> None:
+    parsed = _parse_delegated_final_response(
+        """1. Conclusion — parser is correct
+2. Evidence —
+- pytest passed
+- read parser.py
+3. Changes and artifacts —
+- parser.py
+4. Unresolved issues — None
+5. Confidence — medium because one platform was not tested"""
+    )
+
+    assert parsed == {
+        "conclusion": "parser is correct",
+        "evidence": ["pytest passed", "read parser.py"],
+        "artifacts": ["parser.py"],
+        "unresolved": [],
+        "confidence": "medium",
+        "missing": [],
+    }
