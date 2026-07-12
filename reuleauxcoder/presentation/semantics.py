@@ -32,6 +32,7 @@ class ToolInvocationDisplay:
 _TOOL_ACTIONS = {
     "shell": "RUN",
     "read_file": "READ",
+    "list_file": "LIST",
     "write_file": "WRITE",
     "edit_file": "EDIT",
     "grep": "SEARCH",
@@ -43,6 +44,7 @@ _TOOL_ACTIONS = {
 _TOOL_SUBJECT_KEYS = {
     "shell": ("command",),
     "read_file": ("path", "file_path"),
+    "list_file": ("path",),
     "write_file": ("path", "file_path"),
     "edit_file": ("path", "file_path"),
     "grep": ("pattern", "query"),

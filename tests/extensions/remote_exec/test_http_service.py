@@ -1366,13 +1366,13 @@ class TestRemoteRelayHTTPService:
             glob_result = GlobTool(backend=backend).execute(
                 pattern="*.txt", path=str(work_dir)
             )
-            assert str(target_file) in glob_result
+            assert str(target_file) in glob_result.model_text
 
             grep_result = GrepTool(backend=backend).execute(
                 pattern="gamma", path=str(work_dir)
             )
-            assert str(target_file) in grep_result
-            assert "gamma" in grep_result
+            assert str(target_file) in grep_result.model_text
+            assert "gamma" in grep_result.model_text
 
             assert glob_result == GlobTool(backend=local_backend).execute(
                 pattern="*.txt", path=str(work_dir)

@@ -36,6 +36,18 @@ def build_approval_preview(
                 ),
             )
         )
+    compact = _read_only_preview(request)
+    if compact is not None:
+        return ApprovalPreview(
+            sections=(
+                ApprovalSection(
+                    id="target",
+                    title="Target",
+                    kind=ApprovalSectionKind.TEXT,
+                    content=compact,
+                ),
+            )
+        )
     if request.tool_args:
         return ApprovalPreview(
             sections=(
@@ -48,6 +60,32 @@ def build_approval_preview(
             )
         )
     return ApprovalPreview()
+
+
+def _read_only_preview(request: ApprovalRequest) -> str | None:
+    args = request.tool_args
+    if request.tool_name == "read_file":
+        path = args.get("file_path") or args.get("path") or "."
+        offset = args.get("offset", 1)
+        limit = args.get("limit")
+        suffix = f" · from line {offset} · limit {limit}" if limit else ""
+        return f"{path}{suffix}"
+    if request.tool_name == "glob":
+        return f"{args.get('pattern', '*')} · under {args.get('path', '.')}"
+    if request.tool_name == "list_file":
+        pattern = f" · pattern {args['pattern']}" if args.get("pattern") else ""
+        recursive = " · recursive" if args.get("recursive") else ""
+        return f"{args.get('path', '.')}{pattern}{recursive}"
+    if request.tool_name == "grep":
+        include = f" · files {args['include']}" if args.get("include") else ""
+        return (
+            f"{args.get('pattern', '')} · under {args.get('path', '.')}{include}"
+        )
+    if request.tool_name == "lsp":
+        operation = args.get("operation", "query")
+        path = args.get("file_path") or args.get("path") or "."
+        return f"{operation} · {path}"
+    return None
 
 
 def _build_diff(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import PurePath
 
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -35,11 +36,11 @@ class GlobTool(Tool):
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
 
-    def execute(self, pattern: str, path: str = ".") -> str:
+    def execute(self, pattern: str, path: str = ".") -> str | ToolOutcome:
         return self.run_backend(pattern=pattern, path=path)
 
     @backend_handler("remote_relay")
-    def _execute_remote(self, pattern: str, path: str = ".") -> str:
+    def _execute_remote(self, pattern: str, path: str = ".") -> str | ToolOutcome:
         if not isinstance(pattern, str) or not pattern:
             return "Error: pattern must be a non-empty string"
         if not isinstance(path, str) or not path:
@@ -47,10 +48,10 @@ class GlobTool(Tool):
         return self._execute_workspace(pattern, path)
 
     @backend_handler("local")
-    def _execute_local(self, pattern: str, path: str = ".") -> str:
+    def _execute_local(self, pattern: str, path: str = ".") -> str | ToolOutcome:
         return self._execute_workspace(pattern, path)
 
-    def _execute_workspace(self, pattern: str, path: str) -> str:
+    def _execute_workspace(self, pattern: str, path: str) -> str | ToolOutcome:
         if not isinstance(pattern, str) or not pattern:
             return "Error: pattern must be a non-empty string"
         if not isinstance(path, str) or not path:
@@ -80,7 +81,19 @@ class GlobTool(Tool):
                 result += f"\n... ({total} matches, showing first 100)"
             elif listing.truncated:
                 result += "\n... (workspace listing limit reached)"
-            return result or "No files matched."
+            content = result or "No files matched."
+            return ToolOutcome(
+                summary=f"Found {total} file{'s' if total != 1 else ''} matching {pattern}",
+                content=content,
+                metadata={
+                    "operation": "glob",
+                    "pattern": pattern,
+                    "path": path,
+                    "match_count": total,
+                    "shown_count": len(shown),
+                    "truncated": total > len(shown) or listing.truncated,
+                },
+            )
         except WorkspaceError as e:
             return f"Error [{e.code.value}]: {e.message}"
         except Exception as e:

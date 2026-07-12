@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -48,13 +49,15 @@ class GrepTool(Tool):
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
 
-    def execute(self, pattern: str, path: str = ".", include: str | None = None) -> str:
+    def execute(
+        self, pattern: str, path: str = ".", include: str | None = None
+    ) -> str | ToolOutcome:
         return self.run_backend(pattern=pattern, path=path, include=include)
 
     @backend_handler("remote_relay")
     def _execute_remote(
         self, pattern: str, path: str = ".", include: str | None = None
-    ) -> str:
+    ) -> str | ToolOutcome:
         if not isinstance(pattern, str) or not pattern:
             return "Error: pattern must be a non-empty string"
         if not isinstance(path, str) or not path:
@@ -66,12 +69,12 @@ class GrepTool(Tool):
     @backend_handler("local")
     def _execute_local(
         self, pattern: str, path: str = ".", include: str | None = None
-    ) -> str:
+    ) -> str | ToolOutcome:
         return self._execute_workspace(pattern, path, include)
 
     def _execute_workspace(
         self, pattern: str, path: str, include: str | None
-    ) -> str:
+    ) -> str | ToolOutcome:
         if not isinstance(pattern, str) or not pattern:
             return "Error: pattern must be a non-empty string"
         if not isinstance(path, str) or not path:
@@ -93,7 +96,25 @@ class GrepTool(Tool):
             ]
             if result.truncated:
                 lines.append("... (200 match limit reached)")
-            return "\n".join(lines) if lines else "No matches found."
+            content = "\n".join(lines) if lines else "No matches found."
+            match_count = len(result.matches)
+            file_count = len({match.path for match in result.matches})
+            return ToolOutcome(
+                summary=(
+                    f"Found {match_count} match{'es' if match_count != 1 else ''} "
+                    f"across {file_count} file{'s' if file_count != 1 else ''}"
+                ),
+                content=content,
+                metadata={
+                    "operation": "grep",
+                    "pattern": pattern,
+                    "path": path,
+                    "include": include,
+                    "match_count": match_count,
+                    "file_count": file_count,
+                    "truncated": result.truncated,
+                },
+            )
         except WorkspaceError as e:
             if e.code.value == "invalid_path" and e.message.startswith(
                 "invalid regex:"

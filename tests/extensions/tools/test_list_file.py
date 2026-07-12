@@ -57,7 +57,7 @@ class TestListFileExecute:
         (tmp_path / ".hidden").write_text("secret")
 
         result = tool.execute(path=str(tmp_path))
-        lines = result.split("\n")
+        lines = result.model_text.split("\n")
         # header line
         assert lines[0] == f"{tmp_path}/:"
         # .hidden before visible (dirs first, then name — .hidden is a file)
@@ -71,35 +71,35 @@ class TestListFileExecute:
         (tmp_path / ".hidden").write_text("")
 
         result = tool.execute(path=str(tmp_path), all=False)
-        assert "README.md" in result
-        assert ".hidden" not in result
+        assert "README.md" in result.model_text
+        assert ".hidden" not in result.model_text
 
     def test_long_false(self, tool, tmp_path: Path):
         (tmp_path / "main.py").write_text("x")
 
         result = tool.execute(path=str(tmp_path), long=False)
         # No header in non-long mode
-        assert str(tmp_path) + ":" not in result.rsplit("\n", 1)[0]
-        assert "main.py" in result
+        assert str(tmp_path) + ":" not in result.model_text.rsplit("\n", 1)[0]
+        assert "main.py" in result.model_text
 
     def test_pattern_filter(self, tool, tmp_path: Path):
         (tmp_path / "main.py").write_text("")
         (tmp_path / "README.md").write_text("")
 
         result = tool.execute(path=str(tmp_path), pattern="*.py")
-        assert "main.py" in result
-        assert "README.md" not in result
+        assert "main.py" in result.model_text
+        assert "README.md" not in result.model_text
 
     def test_single_file(self, tool, tmp_path: Path):
         f = tmp_path / "main.py"
         f.write_text("print('hi')")
 
         result = tool.execute(path=str(f), long=False)
-        assert result == "main.py"
+        assert result.model_text == "main.py"
 
     def test_sanitize_in_output(self, tool, tmp_path: Path):
         (tmp_path / "tricky`name`.py").write_text("")
 
         result = tool.execute(path=str(tmp_path), long=False)
         # Should contain escaped backtick, not raw backtick
-        assert r"\`" in result
+        assert r"\`" in result.model_text

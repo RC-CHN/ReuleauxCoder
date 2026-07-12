@@ -8,6 +8,7 @@ import re
 import stat
 from pathlib import Path, PurePath
 
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.workspace import WorkspaceEntry, WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -104,7 +105,7 @@ class ListFileTool(Tool):
         long: bool = True,
         recursive: bool = False,
         pattern: str | None = None,
-    ) -> str:
+    ) -> str | ToolOutcome:
         return self.run_backend(
             path=path,
             all=all,
@@ -121,7 +122,7 @@ class ListFileTool(Tool):
         long: bool = True,
         recursive: bool = False,
         pattern: str | None = None,
-    ) -> str:
+    ) -> str | ToolOutcome:
         return self._execute_workspace(path, all, long, recursive, pattern)
 
     @backend_handler("local")
@@ -132,7 +133,7 @@ class ListFileTool(Tool):
         long: bool = True,
         recursive: bool = False,
         pattern: str | None = None,
-    ) -> str:
+    ) -> str | ToolOutcome:
         return self._execute_workspace(path, all, long, recursive, pattern)
 
     def _execute_workspace(
@@ -142,7 +143,7 @@ class ListFileTool(Tool):
         long: bool,
         recursive: bool,
         pattern: str | None,
-    ) -> str:
+    ) -> str | ToolOutcome:
         if not isinstance(path, str) or not path:
             return "Error: path must be a non-empty string"
         if pattern is not None and not isinstance(pattern, str):
@@ -150,7 +151,11 @@ class ListFileTool(Tool):
         try:
             base = self.backend.workspace.stat_entry(path)
             if base.is_file:
-                return self._format_single(base, long=long)
+                return ToolOutcome(
+                    summary=f"Listed 1 entry at {path}",
+                    content=self._format_single(base, long=long),
+                    metadata={"operation": "list", "path": path, "entry_count": 1},
+                )
             if not base.is_dir:
                 return f"Error: '{path}' is not a directory"
             listing = self.backend.workspace.list_entries(
@@ -165,10 +170,15 @@ class ListFileTool(Tool):
                 if self._matches(entry, pattern, recursive=recursive)
             ]
             if not entries:
-                return (
+                content = (
                     f"(no entries matching '{pattern}' in '{path}')"
                     if pattern
                     else f"(empty directory: '{path}')"
+                )
+                return ToolOutcome(
+                    summary=f"Listed 0 entries in {path}",
+                    content=content,
+                    metadata={"operation": "list", "path": path, "entry_count": 0},
                 )
             entries.sort(
                 key=lambda entry: (
@@ -195,7 +205,21 @@ class ListFileTool(Tool):
                 )
             if listing.truncated:
                 output += "\n... (workspace listing limit reached)"
-            return output
+            return ToolOutcome(
+                summary=(
+                    f"Listed {len(entries)} entr{'y' if len(entries) == 1 else 'ies'} "
+                    f"in {path}"
+                ),
+                content=output,
+                metadata={
+                    "operation": "list",
+                    "path": path,
+                    "entry_count": len(entries),
+                    "recursive": recursive,
+                    "pattern": pattern,
+                    "truncated": listing.truncated,
+                },
+            )
         except WorkspaceError as error:
             if error.code.value == "not_found":
                 return f"Error: '{path}' does not exist"

@@ -13,6 +13,8 @@ from reuleauxcoder.interfaces.interactions import (
     UIInteractor,
 )
 
+_READ_ONLY_TOOLS = frozenset({"read_file", "list_file", "glob", "grep", "lsp"})
+
 
 def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
     """Resolve domain approvals through one typed review interaction."""
@@ -29,13 +31,19 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
             if subagent_task:
                 subagent_summary += f"\nSub-agent task: {subagent_task}"
 
+        if request.tool_name in _READ_ONLY_TOOLS:
+            approval_summary = "Read-only workspace access."
+        else:
+            approval_summary = (
+                f"Tool '{request.tool_name}' from source "
+                f"'{request.tool_source}' requires approval."
+            )
+        approval_summary += subagent_summary
+
         response = ui_interactor.review(
             ReviewRequest(
                 title=f"Approval required: {request.tool_name}",
-                summary=(
-                    f"Tool '{request.tool_name}' from source '{request.tool_source}'"
-                    f" requires approval.{subagent_summary}"
-                ),
+                summary=approval_summary,
                 sections=(
                     request.preview.sections if request.preview is not None else ()
                 ),

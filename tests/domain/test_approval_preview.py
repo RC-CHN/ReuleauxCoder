@@ -50,3 +50,16 @@ def test_non_file_approval_has_typed_arguments_section() -> None:
 
     assert preview.sections[0].kind is ApprovalSectionKind.JSON
     assert preview.sections[0].content == {"command": "echo hi"}
+
+
+def test_read_only_approval_has_compact_target_instead_of_json() -> None:
+    request = ApprovalRequest(
+        tool_name="read_file",
+        tool_args={"file_path": "CHANGELOG.md", "offset": 1, "limit": 10},
+    )
+
+    preview = build_approval_preview(request, workspace=None)
+
+    assert preview.sections[0].kind is ApprovalSectionKind.TEXT
+    assert preview.sections[0].title == "Target"
+    assert preview.sections[0].content == "CHANGELOG.md · from line 1 · limit 10"
