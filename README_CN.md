@@ -5,8 +5,9 @@
 终端原生 AI 编程助手，提供 FORGE 风格 CLI、隔离的 subagent、审批、会话、
 MCP、skills、LSP 与轻量远端执行 peer。
 
-v0.4.0 的正式界面是 CLI。共享 presentation/interaction 边界已经为后续
-TUI 准备好，但当前尚未发布可用的正式 TUI。
+v0.4.1 CLI 使用 prompt_toolkit mini-TUI，提供常驻执行面板、可滚动 transcript
+和集中审批/输入区域。它与未来完整 TUI 共用框架无关的 presentation state；
+当前仍未发布 Textual 完整 TUI。
 
 灵感来自并作为 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 的完整重写而启动。
 
@@ -162,13 +163,13 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 /mcp show         显示 MCP 服务器状态
 /mcp enable <s>   启用一个 MCP 服务器
 /mcp disable <s>  禁用一个 MCP 服务器
-/jobs             列出后台 subagent 任务
-/jobs get <id>    查看一个 subagent 任务
-/jobs wait <id>   等待一个 subagent 任务
-/jobs message <id> <文本>  在子 agent 下一安全轮次投递消息
-/jobs resume <id> <文本>   恢复已完成的子 agent transcript
-/jobs cancel <id>          请求协作式取消
-/jobs cleanup <id>         删除保留的隔离 worktree
+/agents             列出后台 subagent 任务（`/jobs` 为兼容别名）
+/agents get <id>    查看一个 subagent 任务
+/agents wait <id>   等待一个 subagent 任务
+/agents message <id> <文本>  在子 agent 下一安全轮次投递消息
+/agents resume <id> <文本>   恢复已完成的子 agent transcript
+/agents cancel <id>          请求协作式取消
+/agents cleanup <id>         删除保留的隔离 worktree
 /config           查看 effective config 与来源
 /thinking         查看上轮推理内容
 /thinking inline  切换推理内容的内联流式显示
@@ -189,11 +190,14 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 - `/approval set` 当前支持的目标格式包括 `tool:<name>`、`mcp`、`mcp:<server>`、`mcp:<server>:<tool>`；动作支持 `allow`、`warn`、`require_approval`、`deny`。
 - `/mcp enable <server>` 与 `/mcp disable <server>` 会更新工作区配置，并尝试在运行时立即生效。
 - `/thinking` 展示上一轮保留的推理内容；`/thinking inline` 切换内联流式输出。FORGE 活动行会随 reasoning chunk 推进，并保留在历史中。`/thinking effort` 查看或设置当前会话的思考预算。
-- Subagent 使用有界的 `minimal`、`recent` 或 `full` 父上下文投影、结构化结果通知、持久化 transcript、共享深度/并发限制、可恢复 follow-up，以及可选 detached worktree 隔离。worker 回调只通过父 mailbox 交付，不会在 tool batch 中途修改模型历史。
+- Subagent 使用有界父上下文投影、typed immediate-parent mailbox、awaited/detached 自动续跑、持久化 transcript/job lifecycle、共享预算、stale 恢复、冲突提示和可选 detached worktree。worker 不会在 tool batch 中途修改父历史；root 运行时的新输入会先写 ledger，再在下一安全边界生效。
 
+交互式 TTY 使用 mini-TUI；one-shot、重定向、server 和远端 peer 保持 append-only。
 CLI 将模型上下文截断与人类界面折叠分开处理。Shell 运行时显示最近五行滑动窗口，
 完成后历史保留最后五行；超时或取消仍会把部分输出交给模型。write/edit 审批统一使用
 带框 diff；等待审批期间磁盘文件发生变化时会刷新预览并重新请求确认。
+会话会持久化 append-only JSONL 账本、canonical replay、精确请求审计、实际 usage、
+Plan/Progress、压缩 checkpoint 与工具 artifact；恢复不会重新生成旧 summary。
 
 ## CLI 参数
 

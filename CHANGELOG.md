@@ -2,9 +2,14 @@
 
 ## Unreleased
 
-- Added effective context budgets, complete API-round compaction, provider-neutral cache compaction adapters, versioned replacement checkpoints, and structured handoff summaries.
-- Added structured subagent results, persisted transcripts, minimal/recent/full parent projections, token/tool/time/depth budgets, mailbox-safe asynchronous delivery, follow-up resume, running-agent messages, recursive delegation limits, and detached worktree isolation.
-- Added `/jobs message`, `/jobs resume`, `/jobs cancel`, and `/jobs cleanup` controls.
+## 0.4.1 - 2026-07-12
+
+- Added actual-first context budgeting, cache-aware rewrite planning, deterministic+semantic summaries, canonical replay envelopes, append-only history, request audit artifacts and persisted compaction checkpoints.
+- Added root-scoped approval coordination, explicit fail-closed auto-review profiles and inherited subagent policy without inherited one-shot decisions.
+- Added typed immediate-parent subagent mailboxes, awaited/detached continuation, user steering at safe boundaries, persisted job lifecycle/stale recovery and execute-result conflict detection.
+- Added authoritative Plan/Progress control state and an ephemeral request overlay that stays out of conversation history while remaining auditable.
+- Added the prompt_toolkit FORGE mini-TUI with a persistent execution panel, scrollable transcript, focused approval pane, real-event activity leases, resize reflow and deterministic Ctrl+C behavior.
+- Made `/agents` the canonical subagent control surface; `/jobs` remains compatible.
 
 ## 0.4.0 - 2026-07-12
 

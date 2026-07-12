@@ -4,9 +4,9 @@ This file describes the current repository, not a future design. Detailed design
 
 ## Current snapshot
 
-- Package version: `0.4.0`.
-- Primary shipped interface: Rich + prompt_toolkit CLI.
-- TUI status: architecture boundaries and a mockup exist; there is no production Textual application yet.
+- Package version: `0.4.1`.
+- Primary shipped interface: prompt_toolkit-owned interactive mini-TUI; Rich remains the append-only renderer for one-shot, non-TTY, server and remote-peer paths.
+- TUI status: the production CLI now owns a persistent viewport, but there is still no production Textual application.
 - Remote peer: `reuleauxcoder-agent/`, a CLI-only Go peer.
 - Runtime supports sessions, approvals, hooks/extensions, skills, MCP, subagents, LSP, local/remote tools, streaming output, and context compression.
 
@@ -53,7 +53,7 @@ Layer rules:
 8. run outcome transforms/observers;
 9. emit a structured `ToolOutcome` and runtime events.
 
-`domain/runtime/events.py` defines serializable, correlated runtime events. `presentation/reducer.py` reduces them into bounded presentation state. `presentation/policy.py` controls human-facing folding and verbosity independently of model-context truncation.
+`domain/runtime/events.py` defines serializable, correlated runtime events. `presentation/reducer.py` reduces transcript cells; `presentation/execution.py` independently reduces Plan, progress, agent activity and Attention into `ExecutionViewState`. `presentation/policy.py` controls human-facing folding and verbosity independently of model-context truncation.
 
 The agent receives complete tool output unless the model-context truncation hook applies. CLI live output and final history are separate bounded views of that output.
 
@@ -78,6 +78,7 @@ Output retention is tool-directed through `ToolRetentionHint`: read uses head/an
 
 The CLI is split by responsibility:
 
+- `interfaces/cli/mini_tui.py`: prompt_toolkit viewport, bottom interaction focus and the shared-state adapter used for interactive TTYs.
 - `interfaces/cli/render.py`: event routing and compatibility entry points.
 - `history.py`: immutable history rows.
 - `streaming.py`: assistant content streaming.
@@ -92,12 +93,15 @@ The CLI is split by responsibility:
 
 Current CLI behavior:
 
-- `YOU // input` uses the indigo input lane and switches to `CMD` while editing slash commands.
+- interactive TTYs use a fixed top Execution Panel, scrollable transcript and bottom input/review pane; F2 toggles startup/session details;
+- prompt_toolkit exclusively owns cursor, focus, SIGWINCH resize and alternate-screen lifecycle; worker threads only update source-backed reducers and invalidate the app;
+- non-TTY, `--prompt`, server and remote-peer paths remain append-only and never start the mini-TUI;
+- the bottom `YOU` lane uses a high-contrast background for user input; the append-only compatibility prompt still distinguishes slash commands as `CMD`.
 - write/edit approval previews share one framed diff renderer; additions/deletions use green/red backgrounds.
 - an approved write/edit does not print the identical diff again after execution.
 - if a file changes on disk while approval is pending, the preview is refreshed and approval is requested again.
 - unsaved editor buffers are not visible to the CLI; editor-buffer integration requires a future editor adapter.
-- active Live regions can adapt to terminal resize; already printed terminal scrollback cannot be reflowed. Full retained-history resize is a TUI responsibility.
+- panels and retained in-app transcript reflow on terminal resize. Ctrl+C clears input, cancels approval, requests a protocol-safe running-turn interrupt, or confirms exit according to focus.
 
 ## Commands and interactions
 
@@ -119,13 +123,13 @@ Canonical session command surface:
 - `/save`: save the current session.
 - `/new`: auto-save when configured, then create a clean session.
 
-Other command families include `/help`, `/model`, `/mode`, `/approval`, `/skills`, `/mcp`, `/jobs`, `/thinking`, `/tokens`, `/config`, `/debug`, `/compact`, `/reset`, and `/quit`.
+Other command families include `/help`, `/model`, `/mode`, `/approval`, `/skills`, `/mcp`, `/agents`, `/thinking`, `/tokens`, `/config`, `/debug`, `/compact`, `/reset`, and `/quit`. `/jobs` remains a compatibility alias for `/agents`.
 
 ## Sessions
 
 `domain/session/models.py`, `infrastructure/persistence/session_store.py`, and `app/runtime/session_state.py` own session persistence and restoration.
 
-Saved state includes messages, token counters, timestamps, fingerprint, active mode/model routing, debug state, approval overrides, execution target and remote binding.
+New sessions use a directory containing append-only `events.jsonl`, canonical `replay.json`, immutable `requests/`, `checkpoints/`, tool artifacts and a manifest; a lightweight JSON compatibility snapshot remains. Saved control state includes Plan/Progress revisions, actual usage observations and cache/checkpoint metadata.
 
 Session invariants:
 
@@ -142,7 +146,7 @@ Session invariants:
 
 `domain/approval.py`, `domain/approval_engine.py`, `domain/approval_preview.py`, and `app/runtime/approval.py` define approval requests, ordered rule evaluation, previews and stale-preview refresh.
 
-Rules match tool name/source and resolve to `allow`, `warn`, `require_approval`, or `deny`. CLI, subagent and remote paths use the shared approval provider/interaction path. Mutating file tools carry a document snapshot so approval can detect intervening disk edits.
+Rules match tool name/source and resolve to `allow`, `warn`, `require_approval`, or `deny`. CLI, subagent and remote paths use one root-scoped `ApprovalCoordinator`; it serializes human focus without blocking request registration. Children inherit policy/provider but never inherit one-shot decisions. Optional auto-review requires an explicit reviewer profile, strict authorization evidence and fail-closed parsing. Mutating file tools carry a document snapshot so approval can detect intervening disk edits.
 
 ## Hooks and extensions
 
@@ -154,9 +158,9 @@ Built-in hooks include tool policy, tool output truncation/archive, project cont
 
 ## Subagents
 
-`extensions/subagent/manager.py` owns the root-scoped control plane: registration-before-submit, shared depth/concurrency limits, execution budgets, cancellation, safe message queues, transcript resume, mailbox delivery, timeout, pruning and shutdown. Jobs carry parent agent/session generation and structured results; late results from reset/new/restored generations remain inspectable but are never injected. Optional execute isolation uses retained detached git worktrees and requires explicit cleanup.
+`extensions/subagent/manager.py` owns the root-scoped control plane: registration-before-submit, shared depth/concurrency limits, awaited/detached delivery, execution budgets, cancellation, typed immediate-parent mailboxes, transcript resume, timeout, pruning and shutdown. Job lifecycle is ledgered; non-terminal workers restored after a process exit become visible `stale` records and are never injected. Root user steering is ledger-first and enters at the next protocol-safe boundary. Overlapping execute results create an explicit conflict item. Optional execute isolation uses retained detached git worktrees and requires explicit cleanup.
 
-`domain/context/rounds.py`, `budget.py`, `checkpoint.py`, and `provider.py` define protocol-safe API-round boundaries, effective input headroom, versioned replacement history, and the provider cache-compaction extension boundary. Compression must preserve tool-call/output adjacency and runs cheap transforms before destructive collapse.
+`domain/context/rounds.py`, `budget.py`, `checkpoint.py`, `usage.py`, `replay.py`, and `provider.py` define protocol-safe API-round boundaries, actual-first usage calibration, canonical replay, versioned replacement history, and the provider cache-compaction extension boundary. Normal planning begins near 52%, the quality wall is near 60%, rewrites target 35–45%, and 90% is emergency-only. Compression must preserve tool-call/output adjacency; summary checkpoints precede retained recent rounds and are persisted rather than regenerated on resume.
 
 Subagents receive rebuilt scoped tools/hooks instead of sharing mutable instances. Approval delegation uses the shared provider path. LSP-consuming hooks are scope-aware so a child cannot drain or inject the parent's diagnostics.
 
