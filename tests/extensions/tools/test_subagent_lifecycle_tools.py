@@ -138,6 +138,44 @@ def test_wait_agent_is_interruptible_by_human_without_cancelling_child(
     assert outcome.metadata["outcome"] == "steered"
 
 
+def test_wait_agent_returns_existing_activity_without_cancelling(monkeypatch) -> None:
+    root = _Root()
+    manager = SimpleNamespace(
+        wait_for_parent_activity=lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.tools.builtin.subagent_control.get_subagent_manager",
+        lambda _root: manager,
+    )
+
+    outcome = _bind(WaitAgentTool(), root).execute(timeout_ms=1_000)
+
+    assert outcome.success
+    assert outcome.metadata["outcome"] == "activity"
+    assert root.stopped is False
+
+
+def test_wait_agent_timeout_does_not_touch_child_lifecycle(monkeypatch) -> None:
+    root = _Root()
+    waits = []
+    manager = SimpleNamespace(
+        wait_for_parent_activity=lambda *_args, **kwargs: (
+            waits.append(kwargs["timeout"]) or False
+        ),
+    )
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.tools.builtin.subagent_control.get_subagent_manager",
+        lambda _root: manager,
+    )
+
+    outcome = _bind(WaitAgentTool(), root).execute(timeout_ms=100)
+
+    assert outcome.success
+    assert outcome.metadata["outcome"] == "timed_out"
+    assert waits
+    assert root.stopped is False
+
+
 def test_interrupt_agent_reports_only_observed_terminal_state(monkeypatch) -> None:
     job = SimpleNamespace(status="cancelled")
     manager = SimpleNamespace(

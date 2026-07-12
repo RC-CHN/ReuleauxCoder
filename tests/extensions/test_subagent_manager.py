@@ -342,6 +342,62 @@ def test_human_guidance_precedes_unconsumed_parent_guidance() -> None:
     manager.shutdown()
 
 
+def test_wait_subscription_cannot_lose_new_mailbox_activity() -> None:
+    parent = _Parent()
+    manager = SubagentManager(parent_agent_id=parent.agent_id)
+    manager.bind_root_agent(parent)
+    manager.register_child_agent(
+        "child-wait",
+        1,
+        parent_agent_id=parent.agent_id,
+        job_id="sj_wait",
+    )
+    observed = []
+
+    waiter = threading.Thread(
+        target=lambda: observed.append(
+            manager.wait_for_parent_activity(parent.agent_id, timeout=1)
+        )
+    )
+    waiter.start()
+    time.sleep(0.02)
+    assert manager.send_to_parent("child-wait", "new activity")
+    waiter.join(timeout=1)
+
+    assert observed == [True]
+    manager.shutdown()
+
+
+def test_multiple_completions_drain_in_stable_activity_sequence(monkeypatch) -> None:
+    gates = {"first": threading.Event(), "second": threading.Event()}
+
+    def run(**kwargs):
+        gates[kwargs["task"]].wait(timeout=2)
+        return kwargs["task"]
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    parent = _Parent()
+    manager = SubagentManager(max_parallel_explore=2)
+    first = manager.submit_background(
+        parent_agent=parent, task="first", mode="explore", auto_verify=False
+    )
+    second = manager.submit_background(
+        parent_agent=parent, task="second", mode="explore", auto_verify=False
+    )
+    gates["second"].set()
+    manager.wait_job(second, timeout=1)
+    gates["first"].set()
+    manager.wait_job(first, timeout=1)
+
+    drained = manager.drain_completed_for_parent(parent_agent_id=parent.agent_id)
+
+    assert [job.id for job in drained] == [second, first]
+    assert [job.completion_seq for job in drained] == sorted(
+        job.completion_seq for job in drained
+    )
+    manager.shutdown()
+
+
 def test_parent_mailbox_recovers_unacknowledged_item_exactly_once() -> None:
     parent = _Parent()
     manager = SubagentManager(parent_agent_id=parent.agent_id)
