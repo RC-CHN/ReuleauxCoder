@@ -91,6 +91,7 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "tool_calls": job.tool_calls,
                 "worker_generation": job.worker_generation,
                 "model_calls": job.model_calls,
+                "cancellation_epoch": job.cancellation_epoch,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -255,6 +256,7 @@ class SubagentJob:
     tool_calls: int = 0
     worker_generation: int = 0
     model_calls: int = 0
+    cancellation_epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,6 +486,7 @@ class SubagentManager:
                     initial_tool_calls = tracked.tool_calls
                     initial_model_calls = tracked.model_calls
                     worker_generation = tracked.worker_generation
+                    cancellation_epoch = tracked.cancellation_epoch
                 else:
                     active_resume_reference = None
                     initial_prompt_tokens = 0
@@ -491,6 +494,7 @@ class SubagentManager:
                     initial_tool_calls = 0
                     initial_model_calls = 0
                     worker_generation = 1
+                    cancellation_epoch = 0
             if tracked is not None:
                 _publish_job_event(parent_agent, tracked)
             resume_directives = (
@@ -520,6 +524,7 @@ class SubagentManager:
                     initial_tool_calls=initial_tool_calls,
                     initial_model_calls=initial_model_calls,
                     worker_generation=worker_generation,
+                    cancellation_epoch=cancellation_epoch,
                     max_tool_calls=max_tool_calls,
                     max_tokens=max_tokens,
                     working_directory=working_directory,
@@ -555,12 +560,24 @@ class SubagentManager:
                         tracked.error = str(e)
                         tracked.status = "failed"
                     else:
+                        if tracked.cancel_requested:
+                            tracked.status = (
+                                result.status
+                                if isinstance(result, SubagentResult)
+                                and result.status in {"cancelled", "killed"}
+                                else "cancelled"
+                            )
+                            tracked.result = None
+                            tracked.error = "Sub-agent cancelled; late result quarantined."
+                            result = None
                         result_text = (
                             result.model_text()
                             if isinstance(result, SubagentResult)
                             else str(result)
                         )
-                        if isinstance(result, SubagentResult) and result.status in {
+                        if result is None:
+                            pass
+                        elif isinstance(result, SubagentResult) and result.status in {
                             "cancelled",
                             "killed",
                             "timed_out",
@@ -795,6 +812,7 @@ class SubagentManager:
                 tool_calls=int(payload.get("tool_calls") or 0),
                 worker_generation=int(payload.get("worker_generation") or 0),
                 model_calls=int(payload.get("model_calls") or 0),
+                cancellation_epoch=int(payload.get("cancellation_epoch") or 0),
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -1258,6 +1276,7 @@ class SubagentManager:
             ):
                 return False
             job.cancel_requested = True
+            job.cancellation_epoch += 1
             event.set()
             was_blocked = job.status == "blocked"
             job.status = "cancelled" if was_blocked else "cancelling"
@@ -1557,6 +1576,7 @@ def run_subagent_task(
     initial_tool_calls: int = 0,
     initial_model_calls: int = 0,
     worker_generation: int = 1,
+    cancellation_epoch: int = 0,
     max_tool_calls: int | None = 80,
     max_tokens: int | None = None,
     working_directory: str | None = None,
@@ -1655,7 +1675,7 @@ def run_subagent_task(
         session_id=getattr(parent_agent, "current_session_id", None),
         session_generation=getattr(parent_agent, "session_generation", 0),
         worker_generation=worker_generation,
-        cancellation_epoch=0,
+        cancellation_epoch=cancellation_epoch,
         delegated_prompt=delegated_prompt,
         llm_kwargs=_subagent_llm_kwargs(parent_agent, model_profile_name),
         tools=tuple(

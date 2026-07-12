@@ -64,6 +64,33 @@ def test_isolated_worker_hard_stop_reaches_terminal_without_model_request() -> N
     assert result.status in {"cancelled", "killed"}
 
 
+def test_parent_tool_broker_replays_committed_call_without_reexecution() -> None:
+    cancel = threading.Event()
+    broker_agent = Agent(llm=_UnusedLLM(), tools=[], agent_id="broker-idempotent")
+    calls = []
+
+    class _Executor:
+        def execute(self, call):
+            calls.append(call)
+            return "stable result"
+
+    broker_agent._executor = _Executor()
+    broker = ParentToolBroker(
+        broker_agent,
+        cancellation_event=cancel,
+        event_sink=None,
+    )
+
+    first = broker.execute("call_same", "read_file", {"file_path": "a.py"})
+    replay = broker.execute("call_same", "read_file", {"file_path": "a.py"})
+    conflict = broker.execute("call_same", "read_file", {"file_path": "b.py"})
+
+    assert first.content == replay.content == "stable result"
+    assert len(calls) == 1
+    assert conflict.success is False
+    assert "reused with a different request" in conflict.content
+
+
 class _StreamingHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("content-length", "0"))

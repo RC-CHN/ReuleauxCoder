@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import multiprocessing
 from multiprocessing.connection import Connection
 from queue import Empty, Queue
@@ -171,6 +172,8 @@ class ParentToolBroker:
         self.cancellation_event = cancellation_event
         self.event_sink = event_sink
         self._captured_outcomes: dict[str, ToolOutcome] = {}
+        self._committed_requests: dict[str, tuple[str, str, ToolOutcome]] = {}
+        self._request_lock = threading.Lock()
         agent._stop_event = cancellation_event
         for tool in agent.tools:
             backend_context = getattr(getattr(tool, "backend", None), "context", None)
@@ -179,15 +182,37 @@ class ParentToolBroker:
         agent.add_event_handler(self._capture_event)
 
     def execute(self, call_id: str, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        fingerprint = json.dumps(
+            arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._request_lock:
+            committed = self._committed_requests.get(call_id)
+            if committed is not None:
+                previous_name, previous_fingerprint, outcome = committed
+                if previous_name == name and previous_fingerprint == fingerprint:
+                    return outcome
+                return ToolOutcome(
+                    status=ToolOutcomeStatus.FAILED,
+                    content=(
+                        f"Tool call id '{call_id}' was reused with a different request."
+                    ),
+                    error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+                )
         if self.cancellation_event.is_set():
             return _cancelled_outcome(name)
         result = self.agent._executor.execute(
             ToolCall(id=call_id, name=name, arguments=arguments)
         )
-        return self._captured_outcomes.pop(
+        outcome = self._captured_outcomes.pop(
             call_id,
             ToolOutcome.from_legacy(result, success=not result.startswith("Error:")),
         )
+        with self._request_lock:
+            self._committed_requests[call_id] = (name, fingerprint, outcome)
+        return outcome
 
     def _capture_event(self, event: AgentEvent) -> None:
         if event.event_type is AgentEventType.TOOL_CALL_END and event.correlation_id:

@@ -520,6 +520,34 @@ def test_cancel_job_has_explicit_terminal_state(monkeypatch) -> None:
     manager.shutdown()
 
 
+def test_cancel_advances_epoch_before_worker_terminalizes(monkeypatch) -> None:
+    release = threading.Event()
+
+    def run(**_kwargs):
+        release.wait(timeout=2)
+        return "done"
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent, task="wait", mode="explore", auto_verify=False
+    )
+    for _ in range(100):
+        if manager.get_job(job_id).status == "running":
+            break
+        time.sleep(0.01)
+    before = manager.get_job(job_id).cancellation_epoch
+    assert manager.cancel_job(job_id) is True
+    assert manager.get_job(job_id).cancellation_epoch == before + 1
+    release.set()
+    terminal = manager.wait_job(job_id, timeout=2)
+    assert terminal.status == "cancelled"
+    assert terminal.result is None
+    assert "quarantined" in terminal.error
+    manager.shutdown()
+
+
 def test_cancelling_queued_future_does_not_deadlock_callback(monkeypatch) -> None:
     release = threading.Event()
 
