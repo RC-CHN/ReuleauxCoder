@@ -19,7 +19,15 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import BufferControl, FormattedTextControl, HSplit, Layout, Window
+from prompt_toolkit.layout import (
+    BufferControl,
+    FormattedTextControl,
+    HSplit,
+    Layout,
+    ScrollablePane,
+    Window,
+)
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
 
@@ -30,6 +38,7 @@ from reuleauxcoder.domain.runtime.events import (
     ProgressReported,
     RuntimeEvent,
 )
+from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.events import (
@@ -81,6 +90,9 @@ MINI_TUI_STYLE = Style.from_dict(
         "diff.header": "bold #67e8f9 bg:#102b33",
         "input": "#ffffff bg:#191827",
         "interaction": "#fff7d6 bg:#332a12",
+        "scrollbar.background": "bg:#172126",
+        "scrollbar.button": "bg:#4c7b83",
+        "scrollbar.arrow": "#67e8f9 bg:#172126",
     }
 )
 
@@ -96,6 +108,7 @@ class MiniTUIEventAdapter:
         self._invalidate = lambda: None
         self._notice_seq = 0
         self._pending_events: queue.SimpleQueue[UIEvent] = queue.SimpleQueue()
+        self._viewport_width = 100
 
     def bind_invalidator(self, callback) -> None:
         self._invalidate = callback
@@ -133,12 +146,19 @@ class MiniTUIEventAdapter:
             self.execution.apply(runtime)
             return
         if isinstance(event.payload, InteractionPromptPayload):
+            request = event.payload.request
+            if isinstance(request, ReviewRequest):
+                self.transcript.hydrate_approval(
+                    request_id=request.request_id,
+                    title=request.title,
+                    summary=request.summary,
+                    sections=request.sections,
+                )
             return
         message = event.message
         if isinstance(event.payload, ViewEventPayload):
-            if (
-                event.payload.view_type == "session_resume"
-                and hasattr(event.payload.view_model, "entries")
+            if event.payload.view_type == "session_resume" and hasattr(
+                event.payload.view_model, "entries"
             ):
                 model = event.payload.view_model
                 for index, entry in enumerate(model.entries):
@@ -246,11 +266,15 @@ class MiniTUIEventAdapter:
         with self._lock:
             return execution_panel_lines(self.execution.state, width=width)
 
+    def set_viewport_width(self, width: int) -> None:
+        self._viewport_width = max(20, width)
+
     def has_animation_lease(self) -> bool:
         now = time.time()
         with self._lock:
             return any(
-                agent.is_animating(now) for agent in self.execution.state.agents.values()
+                agent.is_animating(now)
+                for agent in self.execution.state.agents.values()
             )
 
     def transcript_fragments(self) -> FormattedText:
@@ -259,7 +283,7 @@ class MiniTUIEventAdapter:
         with self._lock:
             cells = self.transcript.state.transcript.cells
         for cell in cells:
-            fragments.extend(_cell_fragments(cell))
+            fragments.extend(_cell_fragments(cell, width=self._viewport_width))
         return FormattedText(fragments or [("class:muted", "No activity yet.\n")])
 
 
@@ -272,8 +296,6 @@ class MiniTUIInteractor:
         self._active: Any | None = None
         self._response: Any | None = None
         self._invalidate = lambda: None
-        self._details_expanded = False
-        self._detail_scroll = 0
 
     @property
     def active_request(self):
@@ -305,18 +327,11 @@ class MiniTUIInteractor:
             request = self._active
             if request is None:
                 return False
-            if isinstance(request, ReviewRequest) and text.strip().lower() == "d":
-                self._details_expanded = not self._details_expanded
-                self._detail_scroll = 0
-                self._invalidate()
-                return True
             response = _interaction_response(request, text)
             if response is None:
                 return True
             self._response = response
             self._active = None
-            self._details_expanded = False
-            self._detail_scroll = 0
             self._condition.notify_all()
         self._invalidate()
         return True
@@ -328,8 +343,6 @@ class MiniTUIInteractor:
                 return
             self._response = _cancelled_response(request, "interaction cancelled")
             self._active = None
-            self._details_expanded = False
-            self._detail_scroll = 0
             self._condition.notify_all()
         self._invalidate()
 
@@ -340,27 +353,7 @@ class MiniTUIInteractor:
                 return False
             self._response = _cancelled_response(request, reason)
             self._active = None
-            self._details_expanded = False
-            self._detail_scroll = 0
             self._condition.notify_all()
-        self._invalidate()
-        return True
-
-    @property
-    def details_expanded(self) -> bool:
-        with self._condition:
-            return self._details_expanded
-
-    @property
-    def detail_scroll(self) -> int:
-        with self._condition:
-            return self._detail_scroll
-
-    def scroll_details(self, delta: int) -> bool:
-        with self._condition:
-            if not isinstance(self._active, ReviewRequest) or not self._details_expanded:
-                return False
-            self._detail_scroll = max(0, self._detail_scroll + delta)
         self._invalidate()
         return True
 
@@ -370,8 +363,6 @@ class MiniTUIInteractor:
                 raise RuntimeError("mini-TUI interaction slot is already occupied")
             self._active = request
             self._response = None
-            self._details_expanded = False
-            self._detail_scroll = 0
         self.ui_bus.emit_interaction_prompt(request)
         self._invalidate()
         with self._condition:
@@ -430,6 +421,7 @@ class MiniTUIApplication:
         self._animation_stop = threading.Event()
         self._animation_thread: threading.Thread | None = None
         self._width = 100
+        self._follow_transcript = True
         self.session_header_expanded = True
         self.startup_lines = tuple(
             event.message.splitlines()[0]
@@ -453,10 +445,20 @@ class MiniTUIApplication:
             focusable=True,
             show_cursor=False,
         )
+        self.transcript_control.mouse_handler = (  # type: ignore[method-assign]
+            self._transcript_mouse_handler
+        )
         self.transcript_window = Window(
             self.transcript_control,
             wrap_lines=True,
             always_hide_cursor=True,
+        )
+        self.transcript_pane = ScrollablePane(
+            self.transcript_window,
+            keep_cursor_visible=False,
+            keep_focused_window_visible=False,
+            show_scrollbar=True,
+            display_arrows=True,
         )
         self.interaction_control = FormattedTextControl(self._interaction_text)
         self.input_window = Window(
@@ -471,7 +473,7 @@ class MiniTUIApplication:
                     title=lambda: f" FORGE · v{__version__} · F2 DETAILS ",
                     style="class:frame.border",
                 ),
-                self.transcript_window,
+                self.transcript_pane,
                 Frame(
                     HSplit(
                         [
@@ -493,7 +495,8 @@ class MiniTUIApplication:
             key_bindings=self._key_bindings(),
             full_screen=True,
             style=MINI_TUI_STYLE,
-            mouse_support=False,
+            mouse_support=True,
+            before_render=self._before_render,
         )
         self.events.bind_invalidator(self.invalidate)
         self.interactor.bind_invalidator(self.invalidate)
@@ -629,7 +632,9 @@ class MiniTUIApplication:
                 else:
                     self.cancelling = True
                     self.agent.request_stop()
-                    self.ui_bus.warning("Cancelling at the next protocol-safe boundary…")
+                    self.ui_bus.warning(
+                        "Cancelling at the next protocol-safe boundary…"
+                    )
                 return
             if self.exit_confirm:
                 self._closed = True
@@ -645,17 +650,22 @@ class MiniTUIApplication:
 
         @bindings.add("pageup")
         def _page_up(event) -> None:  # noqa: ARG001
-            if self.interactor.scroll_details(-5):
-                return
-            self.transcript_window.vertical_scroll = max(
-                0, self.transcript_window.vertical_scroll - 5
-            )
+            self._scroll_transcript(-self._transcript_page_size())
 
         @bindings.add("pagedown")
         def _page_down(event) -> None:  # noqa: ARG001
-            if self.interactor.scroll_details(5):
-                return
-            self.transcript_window.vertical_scroll += 5
+            self._scroll_transcript(self._transcript_page_size())
+
+        @bindings.add("home")
+        def _history_start(event) -> None:  # noqa: ARG001
+            self._follow_transcript = False
+            self.transcript_pane.vertical_scroll = 0
+            self.invalidate()
+
+        @bindings.add("end")
+        def _history_end(event) -> None:  # noqa: ARG001
+            self._follow_transcript = True
+            self.invalidate()
 
         @bindings.add("f2")
         def _toggle_header(event) -> None:  # noqa: ARG001
@@ -669,10 +679,14 @@ class MiniTUIApplication:
             self._width = self.application.output.get_size().columns - 4
         except Exception:
             pass
+        self.events.set_viewport_width(max(20, self._width - 1))
         lines = self._panel_lines()
         return FormattedText(
             [
-                ("class:panel.header" if index == 0 else "class:panel.body", line + "\n")
+                (
+                    "class:panel.header" if index == 0 else "class:panel.body",
+                    line + "\n",
+                )
                 for index, line in enumerate(lines)
             ]
         )
@@ -697,14 +711,12 @@ class MiniTUIApplication:
         if request is None:
             return 1
         return min(
-            16,
+            8,
             max(
                 2,
                 len(
                     _interaction_lines(
                         request,
-                        expanded=self.interactor.details_expanded,
-                        scroll=self.interactor.detail_scroll,
                     )
                 ),
             ),
@@ -718,23 +730,74 @@ class MiniTUIApplication:
                     ("class:interaction", line + "\n")
                     for line in _interaction_lines(
                         request,
-                        expanded=self.interactor.details_expanded,
-                        scroll=self.interactor.detail_scroll,
                     )
                 ]
             )
         if self.exit_confirm:
             return FormattedText(
-                [("class:warning", "Press Ctrl+C again to exit; Esc keeps the session.\n")]
+                [
+                    (
+                        "class:warning",
+                        "Press Ctrl+C again to exit; Esc keeps the session.\n",
+                    )
+                ]
             )
         if self.cancelling:
             return FormattedText([("class:warning", "Cancelling safely…\n")])
         if self.running:
-            return FormattedText([("class:muted", "Agent running · Ctrl+C interrupts\n")])
-        return FormattedText([("class:muted", "/help for commands · PageUp/PageDown scroll\n")])
+            return FormattedText(
+                [("class:muted", "Agent running · Ctrl+C interrupts\n")]
+            )
+        return FormattedText(
+            [("class:muted", "/help for commands · PageUp/PageDown scroll\n")]
+        )
 
     def _input_title(self) -> str:
         return " REVIEW " if self.interactor.active_request else " YOU "
+
+    def _before_render(self, _app) -> None:
+        """Clamp scrolling and follow new output only while tail-follow is on."""
+        try:
+            size = self.application.output.get_size()
+            width = max(20, size.columns - 2)
+            content_height = self.transcript_window.preferred_height(
+                width - 1, 10_000
+            ).preferred
+            viewport = max(
+                1,
+                size.rows - self._panel_height() - self._interaction_height() - 6,
+            )
+            maximum = max(0, content_height - viewport)
+            if self._follow_transcript:
+                self.transcript_pane.vertical_scroll = maximum
+            else:
+                self.transcript_pane.vertical_scroll = min(
+                    self.transcript_pane.vertical_scroll, maximum
+                )
+        except Exception:
+            # Rendering must stay available on minimal/dumb terminal outputs.
+            return
+
+    def _transcript_page_size(self) -> int:
+        try:
+            rows = self.application.output.get_size().rows
+        except Exception:
+            rows = 24
+        return max(3, rows // 2)
+
+    def _scroll_transcript(self, delta: int) -> None:
+        self._follow_transcript = False
+        self.transcript_pane.vertical_scroll = max(
+            0, self.transcript_pane.vertical_scroll + delta
+        )
+        self.invalidate()
+
+    def _transcript_mouse_handler(self, event: MouseEvent):
+        if event.event_type == MouseEventType.SCROLL_UP:
+            self._scroll_transcript(-3)
+        elif event.event_type == MouseEventType.SCROLL_DOWN:
+            self._scroll_transcript(3)
+        return None
 
     def _save_exit_session(self) -> None:
         self._closed = True
@@ -761,20 +824,24 @@ class MiniTUIApplication:
             reconcile(reason)
 
 
-def _cell_fragments(cell) -> list[tuple[str, str]]:
+def _cell_fragments(cell, *, width: int = 100) -> list[tuple[str, str]]:
     if isinstance(cell, UserCell):
-        return [("class:user", f" YOU  {cell.text}\n")]
+        return [("class:user", f" YOU  {cell.text}\n"), ("", "\n")]
     if isinstance(cell, AssistantCell):
-        return [("class:assistant", cell.text + ("\n" if cell.text else ""))]
+        suffix = "\n\n" if cell.complete else "\n"
+        return [("class:assistant", cell.text + (suffix if cell.text else ""))]
     if isinstance(cell, ToolCell):
         status = cell.status.value.upper()
         style = "class:error" if cell.status.value == "failed" else "class:tool"
         text = f" {status}  {cell.name}"
         if cell.outcome is not None:
             text += f" · {cell.outcome.summary}"
-        if cell.output:
-            text += "\n" + "\n".join(cell.output.splitlines()[-5:])
-        return [(style, text + "\n")]
+        fragments = [(style, text + "\n")]
+        for line in cell.output.splitlines()[-5:]:
+            fragments.append(("class:muted", f" └ {line}\n"))
+        if cell.status.value != "running":
+            fragments.append(("", "\n"))
+        return fragments
     if isinstance(cell, DiffCell):
         fragments: list[tuple[str, str]] = []
         for line in cell.diff.splitlines():
@@ -784,6 +851,7 @@ def _cell_fragments(cell) -> list[tuple[str, str]]:
             elif line.startswith("-") and not line.startswith("---"):
                 style = "class:diff.del"
             fragments.append((style, line + "\n"))
+        fragments.append(("", "\n"))
         return fragments
     if isinstance(cell, NoticeCell):
         if cell.category == "user" or cell.level == "user":
@@ -795,41 +863,72 @@ def _cell_fragments(cell) -> list[tuple[str, str]]:
         }.get(cell.level, "class:muted")
         return [(style, cell.message + "\n")]
     if isinstance(cell, ApprovalCell):
-        return [("class:warning", f" APPROVAL  {cell.title} · {cell.status}\n")]
+        return _approval_fragments(cell, width=width)
     if isinstance(cell, SubagentCell):
-        return [("class:tool", f" AGENT  {cell.job_id} · {cell.status} · {cell.task}\n")]
+        return [
+            ("class:tool", f" AGENT  {cell.job_id} · {cell.status} · {cell.task}\n")
+        ]
     if isinstance(cell, DiagnosticCell):
-        return [("class:warning", f" LSP  {cell.path} · {len(cell.diagnostics)} diagnostic(s)\n")]
+        return [
+            (
+                "class:warning",
+                f" LSP  {cell.path} · {len(cell.diagnostics)} diagnostic(s)\n",
+            )
+        ]
     return [("class:muted", str(cell) + "\n")]
 
 
-def _interaction_lines(
-    request, *, expanded: bool = False, scroll: int = 0
-) -> list[str]:
+def _approval_fragments(cell: ApprovalCell, *, width: int) -> list[tuple[str, str]]:
+    """Render the v0.4-style review card in the scrollable transcript."""
+    inner = max(16, min(100, width) - 2)
+    status = cell.status.upper()
+    title = f" {cell.title.upper()} · {status} "
+    rule = "─" * max(1, inner - len(title))
+    fragments: list[tuple[str, str]] = [("class:warning", f"┌─{title}{rule}┐\n")]
+
+    def add_line(style: str, text: str = "") -> None:
+        fragments.append(("class:warning", "│ "))
+        fragments.append((style, text + "\n"))
+
+    if cell.summary:
+        for line in cell.summary.splitlines():
+            add_line("class:interaction", line)
+    for section in cell.sections:
+        add_line("class:panel.header", f" {section.title.upper()} ")
+        content = section.content
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False, indent=2)
+        lines = content.splitlines()
+        visible = lines[:20]
+        for line in visible:
+            style = "class:interaction"
+            if section.kind is ApprovalSectionKind.DIFF:
+                if line.startswith("+") and not line.startswith("+++"):
+                    style = "class:diff.add"
+                elif line.startswith("-") and not line.startswith("---"):
+                    style = "class:diff.del"
+                elif line.startswith(("@@", "+++", "---")):
+                    style = "class:diff.header"
+            add_line(style, line)
+        if len(lines) > len(visible):
+            add_line("class:muted", f"… {len(lines) - len(visible)} more lines")
+    if not cell.sections and cell.preview:
+        add_line("class:muted", cell.preview)
+    if cell.reason:
+        add_line("class:error", cell.reason)
+    fragments.extend(
+        [
+            ("class:warning", f"└{'─' * (inner + 1)}┘\n"),
+            ("", "\n"),
+        ]
+    )
+    return fragments
+
+
+def _interaction_lines(request) -> list[str]:
     lines = [request.title]
     if isinstance(request, ReviewRequest):
-        lines.append(request.summary)
-        details: list[str] = []
-        for section in request.sections:
-            details.append(f"[{section.title}]")
-            content = section.content
-            if not isinstance(content, str):
-                content = json.dumps(content, ensure_ascii=False, indent=2)
-            detail_lines = content.splitlines()
-            details.extend(detail_lines if expanded else detail_lines[:4])
-        if expanded:
-            visible = details[scroll : scroll + 11]
-            lines.extend(visible)
-            if scroll > 0:
-                lines.append("↑ PageUp for earlier details")
-            if scroll + 11 < len(details):
-                lines.append("↓ PageDown for more details")
-        else:
-            lines.extend(details[:7])
-        lines.append(
-            f"[Enter/Y] {request.approve_label}   [D] Details   "
-            f"[N] {request.reject_label}"
-        )
+        lines = [f"[Enter/Y] {request.approve_label}   [N] {request.reject_label}"]
     elif isinstance(request, ConfirmRequest):
         lines.extend([request.message, "[Enter/Y] Confirm   [N] Cancel"])
     elif isinstance(request, ChooseOneRequest):
@@ -884,9 +983,7 @@ def _cancelled_response(request, reason: str):
 def _view_text(payload: ViewEventPayload) -> str:
     model = payload.view_model
     if payload.view_type == "session_resume" and hasattr(model, "entries"):
-        lines = [
-            f"RESTORED {model.session_id} · {model.model} · {model.saved_at[:19]}"
-        ]
+        lines = [f"RESTORED {model.session_id} · {model.model} · {model.saved_at[:19]}"]
         lines.extend(
             f"{'YOU' if entry.role == 'user' else 'AGENT'}  {entry.content}"
             for entry in model.entries

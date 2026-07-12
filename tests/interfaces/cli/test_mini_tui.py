@@ -8,9 +8,16 @@ from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 from reuleauxcoder.interfaces.cli.mini_tui import (
     MiniTUIEventAdapter,
     MiniTUIInteractor,
+    _interaction_lines,
     _interaction_response,
 )
-from reuleauxcoder.interfaces.events import RuntimeEventPayload, UIEvent, UIEventBus, UIEventKind
+from reuleauxcoder.interfaces.events import (
+    InteractionPromptPayload,
+    RuntimeEventPayload,
+    UIEvent,
+    UIEventBus,
+    UIEventKind,
+)
 from reuleauxcoder.interfaces.interactions import (
     ChoiceItem,
     ChooseOneRequest,
@@ -95,7 +102,7 @@ def test_interactor_cancel_resolves_protocol_response() -> None:
     assert result[0].reason == "interaction cancelled"
 
 
-def test_review_details_toggle_and_scroll_do_not_resolve_request() -> None:
+def test_unknown_review_input_does_not_resolve_request() -> None:
     interactor = MiniTUIInteractor(UIEventBus())
     result = []
     request = ReviewRequest(
@@ -117,20 +124,47 @@ def test_review_details_toggle_and_scroll_do_not_resolve_request() -> None:
         time.sleep(0.005)
 
     assert interactor.submit("d") is True
-    assert interactor.details_expanded is True
     assert worker.is_alive()
-    assert interactor.scroll_details(5) is True
-    assert interactor.detail_scroll == 5
     assert interactor.submit("n") is True
     worker.join(timeout=1)
     assert result[0].approved is False
 
 
+def test_review_diff_is_projected_into_main_transcript_and_bottom_is_compact() -> None:
+    adapter = MiniTUIEventAdapter()
+    request = ReviewRequest(
+        "Approval required: edit_file",
+        "Review this edit.",
+        sections=(
+            ApprovalSection(
+                "diff",
+                "Proposed edit diff",
+                ApprovalSectionKind.DIFF,
+                "--- a/demo.py\n+++ b/demo.py\n-old\n+new",
+            ),
+        ),
+        request_id="approval-main",
+    )
+    adapter.on_ui_event(
+        UIEvent.info(
+            request.title,
+            kind=UIEventKind.APPROVAL,
+            payload=InteractionPromptPayload(request),
+        )
+    )
+
+    rendered = "".join(text for _style, text in adapter.transcript_fragments())
+    controls = _interaction_lines(request)
+
+    assert "PROPOSED EDIT DIFF" in rendered
+    assert "+new" in rendered
+    assert controls == ["[Enter/Y] Approve   [N] Reject"]
+    assert "+new" not in "\n".join(controls)
+
+
 def test_interaction_parser_uses_kiss_defaults() -> None:
     assert _interaction_response(ConfirmRequest("Confirm", "Proceed?"), "").confirmed
-    choice = ChooseOneRequest(
-        "Choose", [ChoiceItem("a", "A"), ChoiceItem("b", "B")]
-    )
+    choice = ChooseOneRequest("Choose", [ChoiceItem("a", "A"), ChoiceItem("b", "B")])
     assert _interaction_response(choice, "2").selected_id == "b"
     text = InputTextRequest("Name", "Value", initial_value="default")
     assert _interaction_response(text, "").value == "default"

@@ -117,6 +117,28 @@ def test_structured_tool_diff_becomes_a_correlated_diff_cell() -> None:
     assert diff.path == "main.py"
 
 
+def test_reviewed_tool_diff_is_not_duplicated_as_a_result_cell() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(
+        _runtime(AgentEvent.tool_call_start("edit_file", {}, tool_call_id="x"))
+    )
+    event = RuntimeEvent(
+        payload=ToolCallFinished(
+            tool_call_id="x",
+            tool_name="edit_file",
+            outcome=ToolOutcome(
+                summary="Edited main.py",
+                diff=ToolDiff(path="main.py", unified="--- a/main.py\n+++ b/main.py\n"),
+                metadata={"diff_reviewed": True},
+            ),
+        )
+    )
+
+    reducer.apply(event)
+
+    assert reducer.state.transcript.get("diff:x") is None
+
+
 def test_transcript_retention_is_bounded_and_reindexed() -> None:
     state = RuntimeViewState(transcript=TranscriptModel(max_cells=2))
     reducer = PresentationReducer(state=state)

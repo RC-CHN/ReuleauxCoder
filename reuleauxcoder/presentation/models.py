@@ -7,6 +7,7 @@ from enum import Enum
 from typing import TypeAlias
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.approval import ApprovalSection
 from reuleauxcoder.domain.runtime.events import RuntimeDiagnostic
 
 
@@ -91,6 +92,8 @@ class ApprovalCell:
     title: str
     status: str
     preview: str | None = None
+    summary: str = ""
+    sections: tuple[ApprovalSection, ...] = ()
     reason: str | None = None
     revision: int = 0
 
@@ -150,7 +153,10 @@ class TranscriptModel:
 
     def _enforce_retention(self) -> tuple[TranscriptCell, ...]:
         evicted: list[TranscriptCell] = []
-        while len(self._cells) > self.max_cells or self._text_chars() > self.max_text_chars:
+        while (
+            len(self._cells) > self.max_cells
+            or self._text_chars() > self.max_text_chars
+        ):
             evicted.append(self._cells.pop(0))
         if evicted:
             self._reindex()

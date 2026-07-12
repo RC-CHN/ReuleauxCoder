@@ -31,6 +31,7 @@ from reuleauxcoder.domain.runtime.events import (
     ViewRefreshed,
     ViewRequested,
 )
+from reuleauxcoder.domain.approval import ApprovalSection
 from reuleauxcoder.presentation.models import (
     AssistantCell,
     ApprovalCell,
@@ -229,6 +230,42 @@ class PresentationReducer:
             )
         )
 
+    def hydrate_approval(
+        self,
+        *,
+        request_id: str,
+        title: str,
+        summary: str,
+        sections: tuple[ApprovalSection, ...],
+    ) -> tuple[PresentationChange, ...]:
+        """Attach the typed human review to its runtime approval cell.
+
+        Runtime events own approval lifecycle and correlation.  The interaction
+        adapter owns the richer review body, so it fills that body into the
+        same stable transcript cell instead of creating a second UI-only card.
+        """
+        cell_id = f"approval:{request_id}"
+        existing = self.state.transcript.get(cell_id)
+        if isinstance(existing, ApprovalCell):
+            return self._replace(
+                next_revision(
+                    existing,
+                    title=title,
+                    summary=summary,
+                    sections=sections,
+                )
+            )
+        return self._append(
+            ApprovalCell(
+                id=cell_id,
+                request_id=request_id,
+                title=title,
+                status="pending",
+                summary=summary,
+                sections=sections,
+            )
+        )
+
     def _append_stream(
         self, event: RuntimeEvent, text: str
     ) -> tuple[PresentationChange, ...]:
@@ -321,6 +358,11 @@ class PresentationReducer:
         return changes + self._record_diff(payload)
 
     def _record_diff(self, payload: ToolCallFinished) -> tuple[PresentationChange, ...]:
+        # A reviewed write/edit diff already lives in the approval transcript
+        # cell.  Re-emitting the identical applied diff makes the main viewport
+        # noisy and was especially confusing in the fixed mini-TUI.
+        if payload.outcome.metadata.get("diff_reviewed"):
+            return ()
         diff = payload.outcome.diff
         if diff is None or not diff.unified:
             return ()
@@ -359,6 +401,7 @@ class PresentationReducer:
                 orphaned=True,
             )
         )
+
     @staticmethod
     def _diagnostic_cell_id(event: RuntimeEvent, file_path: str) -> str:
         owner = event.agent_id or "unknown"
