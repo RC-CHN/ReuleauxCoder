@@ -38,6 +38,7 @@ class AgentState:
     total_completion_tokens: int = 0
     current_round: int = 0
     total_tool_calls: int = 0
+    total_model_calls: int = 0
 
 
 class Agent:
@@ -102,6 +103,7 @@ class Agent:
         self._steering_lock = threading.Lock()
         self._pending_user_steering: list[tuple[str, int, str]] = []
         self._accepting_user_steering = False
+        self._park_request: dict | None = None
 
         # Mode state
         self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
@@ -1008,6 +1010,7 @@ class Agent:
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0
         self.state.current_round = 0
+        self.state.total_model_calls = 0
         self._current_turn_id = None
         self._pending_subagent_injections.clear()
         with self._steering_lock:

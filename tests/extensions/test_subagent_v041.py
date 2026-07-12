@@ -124,6 +124,53 @@ def test_running_agent_message_queue_is_lossless(monkeypatch) -> None:
     manager.shutdown()
 
 
+def test_directive_arriving_before_park_completion_resumes_without_loss(
+    monkeypatch, tmp_path
+) -> None:
+    import threading
+    import time
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(timeout=2)
+            reference = tmp_path / "checkpoint.json"
+            reference.write_text('{"messages": []}', encoding="utf-8")
+            return SubagentResult(
+                status="blocked",
+                summary="waiting",
+                transcript_ref=str(reference),
+            )
+        return SubagentResult(status="ok", summary="continued")
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    manager = SubagentManager(max_parallel_explore=1)
+    parent = _Parent()
+    job_id = manager.submit_background(
+        parent_agent=parent, task="park", mode="explore", auto_verify=False
+    )
+    assert entered.wait(timeout=2)
+    assert manager.send_message(job_id, "continue with option A") is True
+    release.set()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        job = manager.get_job(job_id)
+        if job is not None and job.status == "completed":
+            break
+        time.sleep(0.01)
+    assert job is not None and job.status == "completed"
+    assert job.id == job_id
+    assert len(calls) == 2
+    assert calls[1]["resume_directives"]
+    assert "continue with option A" in calls[1]["resume_directives"][0]
+    manager.shutdown()
+
+
 def test_worktree_lease_round_trip(tmp_path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)

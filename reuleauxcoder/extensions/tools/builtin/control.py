@@ -221,6 +221,58 @@ class ReportToParentTool(_AgentControlTool):
             return _invalid(str(error))
 
 
+@register_tool
+class RequestGuidanceTool(_AgentControlTool):
+    name = "request_guidance"
+    description = (
+        "Checkpoint and pause this child when it cannot safely continue without "
+        "a parent or human decision. This is the only blocking child report."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string", "minLength": 1},
+            "context": {"type": "string"},
+        },
+        "required": ["question"],
+    }
+
+    def execute(self, question: str, context: str | None = None) -> ToolOutcome:
+        return self.run_backend(question=question, context=context)
+
+    @backend_handler("local")
+    def _execute_local(
+        self, question: str, context: str | None = None
+    ) -> ToolOutcome:
+        try:
+            self._identity()
+            if self._agent is None or getattr(self._agent, "subagent_depth", 0) <= 0:
+                raise RuntimeError("request_guidance is available only to child agents")
+            manager = getattr(self._agent, "_subagent_manager", None)
+            if manager is None:
+                raise RuntimeError("child has no parent guidance route")
+            request = manager.request_guidance(
+                self._agent.agent_id,
+                question,
+                context=context,
+            )
+            if request is None:
+                raise RuntimeError("guidance request was rejected")
+            return ToolOutcome(
+                summary="Guidance requested; child will pause",
+                content=(
+                    "Guidance checkpoint requested · "
+                    f"request_id={request.item_id}"
+                ),
+                metadata={
+                    "park_subagent": True,
+                    "guidance_request_id": request.item_id,
+                },
+            )
+        except (TypeError, ValueError, RuntimeError) as error:
+            return _invalid(str(error))
+
+
 def _invalid(message: str) -> ToolOutcome:
     return ToolOutcome(
         status=ToolOutcomeStatus.FAILED,

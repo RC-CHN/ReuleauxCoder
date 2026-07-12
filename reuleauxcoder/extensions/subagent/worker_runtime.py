@@ -44,6 +44,9 @@ class WorkerExecutionResult:
     messages: list[dict[str, Any]]
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    tool_calls: int = 0
+    guidance_request_id: str | None = None
+    model_calls: int = 0
     killed: bool = False
 
 
@@ -58,7 +61,13 @@ class BrokeredWorkerTool(Tool):
         self._client = client
 
     def execute(self, **kwargs) -> ToolOutcome:
-        return self._client.request_tool(self.name, kwargs)
+        outcome = self._client.request_tool(self.name, kwargs)
+        if outcome.metadata.get("park_subagent") and hasattr(self, "_agent"):
+            self._agent._park_request = dict(outcome.metadata)
+        return outcome
+
+    def bind_agent(self, agent) -> None:
+        self._agent = agent
 
 
 class WorkerIPCClient:
@@ -210,7 +219,7 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
             llm=llm,
             tools=tools,
             max_context_tokens=spec.max_context_tokens,
-            max_rounds=spec.max_rounds,
+            max_rounds=max(0, spec.max_rounds - spec.initial_model_calls),
             max_tool_calls=spec.max_tool_calls,
             max_total_tokens=spec.max_tokens,
             agent_id=spec.agent_id,
@@ -223,6 +232,8 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
         child.strict_tool_scope = True
         child.runtime_working_directory = spec.working_directory
         child._external_message_source = client.drain_directives
+        for tool in tools:
+            tool.bind_agent(child)
         child.add_event_handler(
             lambda event: client.send(
                 "runtime_event",
@@ -239,9 +250,53 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
                 reason="isolated worker replay",
                 record=False,
             )
+            child.state.total_prompt_tokens = spec.initial_prompt_tokens
+            child.state.total_completion_tokens = spec.initial_completion_tokens
+            child.state.total_tool_calls = spec.initial_tool_calls
+            child.state.total_model_calls = spec.initial_model_calls
         client.send("ready", {"tool_schema_count": len(tools)})
-        result = child.chat(spec.delegated_prompt)
-        status = "cancelled" if cancel.is_set() else "ok"
+        if spec.replay_messages:
+            child._current_turn_id = f"resume-{spec.worker_generation}"
+            for directive in spec.resume_directives:
+                child._append_message(
+                    {
+                        "role": "system",
+                        "content": (
+                            "[Guidance resolution]\n"
+                            f"{directive}\n"
+                            "[/Guidance resolution]"
+                        ),
+                    },
+                    source="subagent_guidance",
+                )
+            result = (
+                child._loop.run()
+                if child.max_rounds > 0
+                else "(sub-agent round budget exhausted)"
+            )
+        else:
+            result = child.chat(spec.delegated_prompt)
+        status = (
+            "cancelled"
+            if cancel.is_set()
+            else "blocked"
+            if child._park_request is not None
+            else "ok"
+        )
+        if status == "blocked":
+            client.send(
+                "checkpoint",
+                {
+                    "messages": child.messages,
+                    "prompt_tokens": child.state.total_prompt_tokens,
+                    "completion_tokens": child.state.total_completion_tokens,
+                    "tool_calls": child.state.total_tool_calls,
+                    "guidance_request_id": child._park_request.get(
+                        "guidance_request_id"
+                    ),
+                    "model_calls": child.state.total_model_calls,
+                },
+            )
         client.send(
             "terminal",
             {
@@ -250,6 +305,13 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
                 "messages": child.messages,
                 "prompt_tokens": child.state.total_prompt_tokens,
                 "completion_tokens": child.state.total_completion_tokens,
+                "tool_calls": child.state.total_tool_calls,
+                "guidance_request_id": (
+                    child._park_request.get("guidance_request_id")
+                    if child._park_request is not None
+                    else None
+                ),
+                "model_calls": child.state.total_model_calls,
             },
         )
     except BaseException as error:
@@ -297,6 +359,7 @@ def run_isolated_worker(
     parent_sequence = 0
     last_worker_sequence = 0
     terminal: WorkerExecutionResult | None = None
+    checkpoint: WorkerExecutionResult | None = None
     tool_results: Queue[tuple[str, ToolOutcome]] = Queue()
     active_tool = False
 
@@ -395,6 +458,23 @@ def run_isolated_worker(
                     daemon=True,
                 )
                 thread.start()
+            elif envelope.type == "checkpoint":
+                checkpoint = WorkerExecutionResult(
+                    status="blocked",
+                    summary="Subagent parked awaiting guidance.",
+                    messages=list(envelope.payload.get("messages") or []),
+                    prompt_tokens=int(envelope.payload.get("prompt_tokens") or 0),
+                    completion_tokens=int(
+                        envelope.payload.get("completion_tokens") or 0
+                    ),
+                    tool_calls=int(envelope.payload.get("tool_calls") or 0),
+                    guidance_request_id=(
+                        str(envelope.payload.get("guidance_request_id"))
+                        if envelope.payload.get("guidance_request_id")
+                        else None
+                    ),
+                    model_calls=int(envelope.payload.get("model_calls") or 0),
+                )
             elif envelope.type == "terminal":
                 terminal = WorkerExecutionResult(
                     status=str(envelope.payload.get("status") or "failed"),
@@ -404,6 +484,13 @@ def run_isolated_worker(
                     completion_tokens=int(
                         envelope.payload.get("completion_tokens") or 0
                     ),
+                    tool_calls=int(envelope.payload.get("tool_calls") or 0),
+                    guidance_request_id=(
+                        str(envelope.payload.get("guidance_request_id"))
+                        if envelope.payload.get("guidance_request_id")
+                        else None
+                    ),
+                    model_calls=int(envelope.payload.get("model_calls") or 0),
                 )
                 break
     finally:
@@ -419,17 +506,17 @@ def run_isolated_worker(
         return WorkerExecutionResult(
             status="killed" if process.exitcode not in {0, None} else "cancelled",
             summary="Subagent interrupted.",
-            messages=terminal.messages if terminal else [],
+            messages=(terminal or checkpoint).messages if (terminal or checkpoint) else [],
             killed=process.exitcode not in {0, None},
         )
     if time.monotonic() >= deadline:
         return WorkerExecutionResult(
             status="timed_out",
             summary=f"Subagent exceeded timeout after {timeout_seconds}s.",
-            messages=terminal.messages if terminal else [],
+            messages=(terminal or checkpoint).messages if (terminal or checkpoint) else [],
             killed=True,
         )
-    return terminal or WorkerExecutionResult(
+    return terminal or checkpoint or WorkerExecutionResult(
         status="failed",
         summary=f"Worker exited without terminal frame (exit={process.exitcode}).",
         messages=[],

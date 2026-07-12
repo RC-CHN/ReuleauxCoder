@@ -9,6 +9,7 @@ from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
+from reuleauxcoder.extensions.tools.builtin.control import RequestGuidanceTool
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 from reuleauxcoder.extensions.subagent.worker_protocol import WorkerSpec
 from reuleauxcoder.extensions.subagent.worker_runtime import (
@@ -194,6 +195,69 @@ class _HungRequestHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         self.rfile.read(length)
         time.sleep(5)
+
+    def log_message(self, *_args):
+        pass
+
+
+class _GuidanceHandler(BaseHTTPRequestHandler):
+    requests = []
+    lock = threading.Lock()
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        request = json.loads(self.rfile.read(length))
+        with type(self).lock:
+            type(self).requests.append(request)
+            request_number = len(type(self).requests)
+        if request_number == 1:
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_guidance",
+                        "type": "function",
+                        "function": {
+                            "name": "request_guidance",
+                            "arguments": json.dumps(
+                                {"question": "Which API should I preserve?"}
+                            ),
+                        },
+                    }
+                ]
+            }
+            finish_reason = "tool_calls"
+        else:
+            delta = {"content": "Conclusion: resumed with parent guidance"}
+            finish_reason = "stop"
+        chunks = [
+            {
+                "id": "chatcmpl-guidance",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "test",
+                "choices": [
+                    {"index": 0, "delta": delta, "finish_reason": None}
+                ],
+            },
+            {
+                "id": "chatcmpl-guidance",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "test",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": finish_reason}
+                ],
+            },
+        ]
+        body = "".join(
+            f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
+        ) + "data: [DONE]\n\n"
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("content-length", str(len(body.encode())))
+        self.end_headers()
+        self.wfile.write(body.encode())
 
     def log_message(self, *_args):
         pass
@@ -440,3 +504,124 @@ def test_manager_cancel_hard_kills_worker_stuck_in_provider_request(
     assert job is not None
     assert job.status in {"cancelled", "killed"}
     assert elapsed < 2.5
+
+
+def test_guidance_parks_and_resumes_same_job_with_stable_replay_prefix(
+    monkeypatch, tmp_path
+) -> None:
+    _GuidanceHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _GuidanceHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    for name in (
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    profile = ModelProfileConfig(
+        name="sub",
+        model="test",
+        api_key="test",
+        base_url=f"http://127.0.0.1:{server.server_port}/v1",
+        max_tokens=128,
+        max_context_tokens=4096,
+    )
+    config = Config(
+        model_profiles={"sub": profile},
+        active_model_profile="sub",
+        active_main_model_profile="sub",
+        active_sub_model_profile="sub",
+    )
+    root = Agent(llm=_UnusedLLM(), tools=[RequestGuidanceTool()], config=config)
+    root.current_session_id = "session"
+    root.runtime_working_directory = str(tmp_path)
+    manager = get_subagent_manager(root)
+    try:
+        job_id = manager.submit_background(
+            parent_agent=root,
+            task="Ask before choosing an API",
+            mode="explore",
+            timeout_seconds=8,
+            auto_verify=False,
+        )
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            parked = manager.get_job(job_id)
+            if parked is not None and parked.status == "blocked":
+                break
+            time.sleep(0.02)
+        assert parked is not None and parked.status == "blocked"
+        assert parked.guidance_request_id
+        assert parked.resume_reference
+        assert manager.wait_for_parent_activity(root.agent_id, timeout=0) is True
+
+        assert manager.send_message(
+            job_id,
+            "Preserve the public v1 API and add compatibility internally.",
+            sender_agent_id=root.agent_id,
+        )
+        completed = manager.wait_job(job_id, timeout=8)
+    finally:
+        manager.shutdown()
+        server.shutdown()
+        server.server_close()
+
+    assert completed is not None and completed.id == job_id
+    assert completed.status == "completed"
+    assert completed.worker_generation == 2
+    assert len(_GuidanceHandler.requests) == 2
+    first_messages = _GuidanceHandler.requests[0]["messages"]
+    resumed_messages = _GuidanceHandler.requests[1]["messages"]
+    # execution_state is the intentionally volatile final overlay; persisted
+    # transcript messages before it must remain an exact replay prefix.
+    stable_first = [
+        message
+        for message in first_messages
+        if not str(message.get("content") or "").startswith("<execution_state")
+    ]
+    stable_resumed = [
+        message
+        for message in resumed_messages
+        if not str(message.get("content") or "").startswith("<execution_state")
+    ]
+    assert stable_resumed[: len(stable_first)] == stable_first
+    assert any(message.get("role") == "tool" for message in resumed_messages)
+    assert any(
+        message.get("role") == "system"
+        and "Preserve the public v1 API" in str(message.get("content") or "")
+        for message in resumed_messages
+    )
+
+
+def test_blocked_job_can_be_cancelled_without_reviving(monkeypatch) -> None:
+    def parked(**_kwargs):
+        return __import__(
+            "reuleauxcoder.extensions.subagent.models", fromlist=["SubagentResult"]
+        ).SubagentResult(
+            status="blocked",
+            summary="waiting",
+            transcript_ref="checkpoint.json",
+        )
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", parked
+    )
+    root = Agent(llm=_UnusedLLM(), tools=[])
+    manager = get_subagent_manager(root)
+    job_id = manager.submit_background(
+        parent_agent=root, task="pause", mode="explore", auto_verify=False
+    )
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        job = manager.get_job(job_id)
+        if job is not None and job.status == "blocked":
+            break
+        time.sleep(0.01)
+    assert manager.cancel_job(job_id) is True
+    assert manager.get_job(job_id).status == "cancelled"
+    assert manager.send_message(job_id, "late guidance") is False
+    manager.shutdown()

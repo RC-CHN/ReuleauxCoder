@@ -12,7 +12,7 @@ import json
 import threading
 import time
 import uuid
-from typing import Literal
+from typing import Callable, Literal
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.services.llm.factory import llm_runtime_kwargs
@@ -84,6 +84,13 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "verification_job_id": job.verification_job_id,
                 "verification_for": job.verification_for,
                 "working_directory": job.working_directory,
+                "guidance_request_id": job.guidance_request_id,
+                "resume_reference": job.resume_reference,
+                "prompt_tokens": job.prompt_tokens,
+                "completion_tokens": job.completion_tokens,
+                "tool_calls": job.tool_calls,
+                "worker_generation": job.worker_generation,
+                "model_calls": job.model_calls,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -241,6 +248,13 @@ class SubagentJob:
     verification_job_id: str | None = None
     verification_for: str | None = None
     working_directory: str | None = None
+    guidance_request_id: str | None = None
+    resume_reference: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    tool_calls: int = 0
+    worker_generation: int = 0
+    model_calls: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,6 +323,7 @@ class SubagentManager:
         self._slot_cv = threading.Condition(self._lock)
         self._jobs: dict[str, SubagentJob] = {}
         self._futures: dict[str, Future] = {}
+        self._job_schedulers: dict[str, Callable[[], bool]] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._parent_agent_id = parent_agent_id
         self._generation = max(0, int(initial_generation))
@@ -444,6 +459,7 @@ class SubagentManager:
             max_tokens=max_tokens,
             verification_for=parent_job_id if mode == "verify" else None,
             working_directory=working_directory,
+            resume_reference=resume_reference,
         )
         cancel_event = threading.Event()
 
@@ -460,8 +476,31 @@ class SubagentManager:
                 if tracked is not None:
                     tracked.status = "running"
                     tracked.started_at = time.time()
+                    tracked.finished_at = None
+                    tracked.worker_generation += 1
+                    active_resume_reference = tracked.resume_reference
+                    initial_prompt_tokens = tracked.prompt_tokens
+                    initial_completion_tokens = tracked.completion_tokens
+                    initial_tool_calls = tracked.tool_calls
+                    initial_model_calls = tracked.model_calls
+                    worker_generation = tracked.worker_generation
+                else:
+                    active_resume_reference = None
+                    initial_prompt_tokens = 0
+                    initial_completion_tokens = 0
+                    initial_tool_calls = 0
+                    initial_model_calls = 0
+                    worker_generation = 1
             if tracked is not None:
                 _publish_job_event(parent_agent, tracked)
+            resume_directives = (
+                tuple(
+                    directive.model_text()
+                    for directive in self.drain_messages(job_id)
+                )
+                if active_resume_reference
+                else ()
+            )
             try:
                 return run_subagent_task(
                     parent_agent=parent_agent,
@@ -474,7 +513,13 @@ class SubagentManager:
                     job_id=job_id,
                     context_mode=context_mode,
                     worktree=worktree,
-                    resume_reference=resume_reference,
+                    resume_reference=active_resume_reference,
+                    resume_directives=resume_directives,
+                    initial_prompt_tokens=initial_prompt_tokens,
+                    initial_completion_tokens=initial_completion_tokens,
+                    initial_tool_calls=initial_tool_calls,
+                    initial_model_calls=initial_model_calls,
+                    worker_generation=worker_generation,
                     max_tool_calls=max_tool_calls,
                     max_tokens=max_tokens,
                     working_directory=working_directory,
@@ -491,12 +536,10 @@ class SubagentManager:
             self._message_queues[job_id] = deque()
             self._cancel_events[job_id] = cancel_event
         _publish_job_event(parent_agent, job)
-        with self._lock:
-            future = self._explore_pool.submit(_runner)
-            self._futures[job_id] = future
 
         def _on_done(done: Future) -> None:
             schedule_verify = False
+            resume_immediately = False
             with self._slot_cv:
                 tracked = self._jobs.get(job_id)
                 if tracked is None:
@@ -526,6 +569,26 @@ class SubagentManager:
                             tracked.result = result.summary
                             tracked.status = result.status
                             tracked.error = result.summary
+                        elif (
+                            isinstance(result, SubagentResult)
+                            and result.status == "blocked"
+                        ):
+                            tracked.structured_result = result
+                            tracked.result = result.summary
+                            tracked.resume_reference = result.transcript_ref
+                            tracked.prompt_tokens = result.prompt_tokens
+                            tracked.completion_tokens = result.completion_tokens
+                            tracked.tool_calls = result.tool_uses
+                            tracked.model_calls = result.model_calls
+                            tracked.status = "blocked"
+                            tracked.finished_at = None
+                            tracked.error = None
+                            resume_immediately = bool(
+                                self._message_queues.get(job_id)
+                            )
+                            if resume_immediately:
+                                tracked.status = "resuming"
+                                tracked.guidance_request_id = None
                         elif isinstance(result, SubagentResult) and result.status in {
                             "failed",
                             "error",
@@ -566,6 +629,11 @@ class SubagentManager:
                     self._enqueue_completion_locked(tracked)
                 self._slot_cv.notify_all()
             _publish_job_event(parent_agent, tracked)
+
+            if resume_immediately:
+                scheduler = self._job_schedulers.get(job_id)
+                if callable(scheduler):
+                    scheduler()
 
             if schedule_verify:
                 verification_root = tracked.worktree_path or (
@@ -611,7 +679,25 @@ class SubagentManager:
             # The parent drains this mailbox at an API-safe boundary. Worker
             # callbacks never mutate parent history directly.
 
-        future.add_done_callback(_on_done)
+        def _schedule() -> bool:
+            with self._lock:
+                tracked = self._jobs.get(job_id)
+                current = self._futures.get(job_id)
+                if (
+                    tracked is None
+                    or self._shutdown
+                    or tracked.status not in {"queued", "resuming"}
+                    or (current is not None and not current.done())
+                ):
+                    return False
+                future = self._explore_pool.submit(_runner)
+                self._futures[job_id] = future
+            future.add_done_callback(_on_done)
+            return True
+
+        with self._lock:
+            self._job_schedulers[job_id] = _schedule
+        _schedule()
         return job_id
 
     def list_jobs(self) -> list[SubagentJob]:
@@ -626,6 +712,7 @@ class SubagentManager:
         with self._lock:
             self._jobs.clear()
             self._futures.clear()
+            self._job_schedulers.clear()
             self._message_queues.clear()
             self._cancel_events.clear()
             self._parent_messages.clear()
@@ -673,7 +760,7 @@ class SubagentManager:
         for job_id, payload in latest.items():
             status = str(payload.get("status") or "stale")
             error = payload.get("error")
-            if status not in terminal:
+            if status not in terminal and status != "blocked":
                 status = "stale"
                 error = "Worker was not recoverable after process resume."
             job = SubagentJob(
@@ -701,6 +788,13 @@ class SubagentManager:
                 verification_job_id=payload.get("verification_job_id"),
                 verification_for=payload.get("verification_for"),
                 working_directory=payload.get("working_directory"),
+                guidance_request_id=payload.get("guidance_request_id"),
+                resume_reference=payload.get("resume_reference"),
+                prompt_tokens=int(payload.get("prompt_tokens") or 0),
+                completion_tokens=int(payload.get("completion_tokens") or 0),
+                tool_calls=int(payload.get("tool_calls") or 0),
+                worker_generation=int(payload.get("worker_generation") or 0),
+                model_calls=int(payload.get("model_calls") or 0),
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -858,6 +952,39 @@ class SubagentManager:
             _publish_communication_event(self._root_agent, queued, status="queued")
         return queued
 
+    def request_guidance(
+        self,
+        sender_agent_id: str,
+        question: str,
+        *,
+        context: str | None = None,
+    ) -> SubagentCommunication | None:
+        """Begin a ledgered parking transition and publish one blocker."""
+        text = question.strip()
+        if context and context.strip():
+            text = f"{text}\n\nContext:\n{context.strip()}"
+        with self._lock:
+            job_id = self._agent_jobs.get(sender_agent_id)
+            job = self._jobs.get(job_id or "")
+            if job is None or job.status != "running":
+                return None
+            job.status = "parking"
+        item = self.queue_to_parent(
+            sender_agent_id,
+            text,
+            kind="guidance",
+        )
+        if item is None:
+            with self._lock:
+                if job.status == "parking":
+                    job.status = "running"
+            return None
+        with self._lock:
+            job.guidance_request_id = item.item_id
+        if self._root_agent is not None:
+            _publish_job_event(self._root_agent, job)
+        return item
+
     def drain_parent_messages(self, parent_agent_id: str) -> list[SubagentCommunication]:
         with self._lock:
             selected = [
@@ -964,10 +1091,16 @@ class SubagentManager:
             return None
         directive_id = f"sd_{uuid.uuid4().hex[:12]}"
         sender = sender_agent_id or self._parent_agent_id or "root"
+        resume = False
         with self._lock:
             job = self._jobs.get(job_id)
             queue = self._message_queues.get(job_id)
-            if job is None or queue is None or job.status not in {"queued", "running"}:
+            if job is None or queue is None or job.status not in {
+                "queued",
+                "running",
+                "parking",
+                "blocked",
+            }:
                 return None
             seq = self._allocate_sequence_locked()
             directive = SubagentDirective(
@@ -988,6 +1121,10 @@ class SubagentManager:
                 ),
             )
             queue.append(directive)
+            if job.status == "blocked":
+                job.status = "resuming"
+                job.guidance_request_id = None
+                resume = True
         if self._root_agent is not None:
             _publish_directive_event(
                 self._root_agent,
@@ -1000,6 +1137,12 @@ class SubagentManager:
                 seq=directive.seq,
                 content_hash=directive.content_hash,
             )
+        if resume:
+            if self._root_agent is not None:
+                _publish_job_event(self._root_agent, job)
+            scheduler = self._job_schedulers.get(job_id)
+            if callable(scheduler):
+                scheduler()
         return directive
 
     def drain_messages(self, job_id: str) -> list[SubagentDirective]:
@@ -1116,8 +1259,18 @@ class SubagentManager:
                 return False
             job.cancel_requested = True
             event.set()
-            job.status = "cancelling"
+            was_blocked = job.status == "blocked"
+            job.status = "cancelled" if was_blocked else "cancelling"
+            if was_blocked:
+                job.finished_at = time.time()
+                job.guidance_request_id = None
+                job.error = "Sub-agent cancelled while awaiting guidance."
+                self._enqueue_completion_locked(job)
             self._slot_cv.notify_all()
+        if was_blocked:
+            if self._root_agent is not None:
+                _publish_job_event(self._root_agent, job)
+            return True
         # Future.cancel() may invoke callbacks synchronously. Never call it
         # while holding the manager lock because callbacks acquire that lock.
         cancelled_before_start = future is not None and future.cancel()
@@ -1179,6 +1332,7 @@ class SubagentManager:
             for job_id in remove_ids:
                 self._jobs.pop(job_id, None)
                 self._futures.pop(job_id, None)
+                self._job_schedulers.pop(job_id, None)
                 self._cancel_events.pop(job_id, None)
                 self._message_queues.pop(job_id, None)
             return len(remove_ids)
@@ -1373,7 +1527,9 @@ def _filter_subagent_tools(parent_agent, mode: str):
         "verify": {"read_file", "list_file", "glob", "grep", "lsp", "shell"},
     }
     allowed = mode_allowlist[mode]
-    allowed.update({"report_progress", "report_to_parent"})
+    allowed.update(
+        {"report_progress", "report_to_parent", "request_guidance"}
+    )
     return [
         materialize_subagent_tool(tool)
         for tool in parent_agent.tools
@@ -1395,6 +1551,12 @@ def run_subagent_task(
     depth: int = 0,
     worktree: bool = False,
     resume_reference: str | None = None,
+    resume_directives: tuple[str, ...] = (),
+    initial_prompt_tokens: int = 0,
+    initial_completion_tokens: int = 0,
+    initial_tool_calls: int = 0,
+    initial_model_calls: int = 0,
+    worker_generation: int = 1,
     max_tool_calls: int | None = 80,
     max_tokens: int | None = None,
     working_directory: str | None = None,
@@ -1453,7 +1615,8 @@ def run_subagent_task(
         agent_id=sub.agent_id,
     )
     sub.session_generation = getattr(parent_agent, "session_generation", 0)
-    sub.subagent_depth = depth
+    child_depth = depth + 1
+    sub.subagent_depth = child_depth
     sub.parent_agent_id = parent_agent.agent_id
     sub.subagent_job_id = job_id
     sub.subagent_mode = mode
@@ -1463,7 +1626,7 @@ def run_subagent_task(
     parent_event_sink = getattr(parent_agent, "_emit_event", None)
     manager.register_child_agent(
         sub.agent_id,
-        depth,
+        child_depth,
         parent_agent_id=parent_agent.agent_id,
         job_id=job_id,
     )
@@ -1492,7 +1655,7 @@ def run_subagent_task(
         agent_id=child_agent_id,
         session_id=getattr(parent_agent, "current_session_id", None),
         session_generation=getattr(parent_agent, "session_generation", 0),
-        worker_generation=1,
+        worker_generation=worker_generation,
         cancellation_epoch=0,
         delegated_prompt=delegated_prompt,
         llm_kwargs=_subagent_llm_kwargs(parent_agent, model_profile_name),
@@ -1510,6 +1673,11 @@ def run_subagent_task(
         max_tokens=max_tokens,
         working_directory=sub.runtime_working_directory,
         replay_messages=tuple(replay_messages),
+        resume_directives=resume_directives,
+        initial_prompt_tokens=initial_prompt_tokens,
+        initial_completion_tokens=initial_completion_tokens,
+        initial_tool_calls=initial_tool_calls,
+        initial_model_calls=initial_model_calls,
     )
     broker = ParentToolBroker(
         sub,
@@ -1530,6 +1698,8 @@ def run_subagent_task(
     sub.state.messages = list(execution.messages)
     sub.state.total_prompt_tokens = execution.prompt_tokens
     sub.state.total_completion_tokens = execution.completion_tokens
+    sub.state.total_tool_calls = execution.tool_calls
+    sub.state.total_model_calls = execution.model_calls
     result = execution.summary
     status = execution.status
     if status == "ok" and (
@@ -1550,7 +1720,7 @@ def run_subagent_task(
         started_at=started_at,
         job_id=job_id,
         parent_agent=parent_agent,
-        partial=status in {"cancelled", "killed", "timed_out", "failed"},
+        partial=status in {"blocked", "cancelled", "killed", "timed_out", "failed"},
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result
@@ -1658,6 +1828,10 @@ def _result_from_agent(
         files=files[:100],
         duration_seconds=max(0.0, time.monotonic() - started_at),
         partial=partial,
+        tool_uses=int(getattr(sub.state, "total_tool_calls", 0)),
+        prompt_tokens=int(getattr(sub.state, "total_prompt_tokens", 0)),
+        completion_tokens=int(getattr(sub.state, "total_completion_tokens", 0)),
+        model_calls=int(getattr(sub.state, "total_model_calls", 0)),
     )
     if job_id:
         root = (

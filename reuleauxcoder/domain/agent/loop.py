@@ -445,6 +445,7 @@ class AgentLoop:
                 },
                 cancellation_event=self.agent._stop_event,
             )
+            self.agent.state.total_model_calls += 1
             dispatched = getattr(
                 self.agent.llm, "last_dispatched_request", None
             )
@@ -612,6 +613,10 @@ class AgentLoop:
                             source="tool_result",
                         )
 
+            if self.agent._park_request is not None:
+                request_id = self.agent._park_request.get("guidance_request_id", "-")
+                return f"(sub-agent parked for guidance: {request_id})"
+
             # Compress if tool outputs are big
             self.agent.maybe_compress_context(
                 self.agent.llm, reason="post-tool checkpoint"
@@ -662,6 +667,7 @@ class AgentLoop:
                 "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
             },
         )
+        self.agent.state.total_model_calls += 1
         self.last_response_streamed = summary_streamed
         self.agent.state.total_prompt_tokens += summary_resp.prompt_tokens
         self.agent.state.total_completion_tokens += summary_resp.completion_tokens

@@ -45,6 +45,11 @@ class WorkerSpec:
     max_tokens: int | None
     working_directory: str | None = None
     replay_messages: tuple[dict[str, Any], ...] = ()
+    resume_directives: tuple[str, ...] = ()
+    initial_prompt_tokens: int = 0
+    initial_completion_tokens: int = 0
+    initial_tool_calls: int = 0
+    initial_model_calls: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return _json_round_trip(asdict(self))
@@ -54,8 +59,15 @@ class WorkerSpec:
         values = _require_object(data, "worker spec")
         tools = values.get("tools")
         messages = values.get("replay_messages", [])
-        if not isinstance(tools, list) or not isinstance(messages, list):
-            raise TypeError("worker spec tools/replay_messages must be arrays")
+        directives = values.get("resume_directives", [])
+        if (
+            not isinstance(tools, list)
+            or not isinstance(messages, list)
+            or not isinstance(directives, list)
+        ):
+            raise TypeError(
+                "worker spec tools/replay_messages/resume_directives must be arrays"
+            )
         return cls(
             job_id=_required_str(values, "job_id"),
             agent_id=_required_str(values, "agent_id"),
@@ -83,6 +95,16 @@ class WorkerSpec:
             replay_messages=tuple(
                 _require_object(message, "replay message") for message in messages
             ),
+            resume_directives=tuple(
+                _required_list_str(value, "resume directive")
+                for value in directives
+            ),
+            initial_prompt_tokens=_required_int(values, "initial_prompt_tokens"),
+            initial_completion_tokens=_required_int(
+                values, "initial_completion_tokens"
+            ),
+            initial_tool_calls=_required_int(values, "initial_tool_calls"),
+            initial_model_calls=_required_int(values, "initial_model_calls"),
         )
 
 
@@ -187,4 +209,10 @@ def _optional_int(data: dict[str, Any], key: str) -> int | None:
     value = data.get(key)
     if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
         raise TypeError(f"{key} must be an integer or null")
+    return value
+
+
+def _required_list_str(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
     return value

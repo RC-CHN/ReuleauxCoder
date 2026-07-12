@@ -28,6 +28,9 @@ class SubagentResult:
     unresolved: list[str] = field(default_factory=list)
     confidence: str | None = None
     tool_uses: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    model_calls: int = 0
     duration_seconds: float = 0.0
     transcript_ref: str | None = None
     partial: bool = False
@@ -43,7 +46,12 @@ class SubagentResult:
             "changes": self.changes,
             "unresolved": self.unresolved,
             "confidence": self.confidence,
-            "usage": {"tool_uses": self.tool_uses},
+            "usage": {
+                "tool_uses": self.tool_uses,
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "model_calls": self.model_calls,
+            },
             "transcript_ref": self.transcript_ref,
             "partial": self.partial,
             "worktree_path": self.worktree_path,
