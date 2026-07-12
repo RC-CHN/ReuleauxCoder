@@ -154,7 +154,9 @@ Built-in hooks include tool policy, tool output truncation/archive, project cont
 
 ## Subagents
 
-`extensions/subagent/manager.py` owns job registration, execution, cancellation, timeout, pruning and shutdown. Jobs carry parent agent/session generation. Late results from reset/new/restored generations are rejected.
+`extensions/subagent/manager.py` owns the root-scoped control plane: registration-before-submit, shared depth/concurrency limits, execution budgets, cancellation, safe message queues, transcript resume, mailbox delivery, timeout, pruning and shutdown. Jobs carry parent agent/session generation and structured results; late results from reset/new/restored generations remain inspectable but are never injected. Optional execute isolation uses retained detached git worktrees and requires explicit cleanup.
+
+`domain/context/rounds.py`, `budget.py`, `checkpoint.py`, and `provider.py` define protocol-safe API-round boundaries, effective input headroom, versioned replacement history, and the provider cache-compaction extension boundary. Compression must preserve tool-call/output adjacency and runs cheap transforms before destructive collapse.
 
 Subagents receive rebuilt scoped tools/hooks instead of sharing mutable instances. Approval delegation uses the shared provider path. LSP-consuming hooks are scope-aware so a child cannot drain or inject the parent's diagnostics.
 

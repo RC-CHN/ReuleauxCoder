@@ -165,6 +165,10 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 /jobs             列出后台 subagent 任务
 /jobs get <id>    查看一个 subagent 任务
 /jobs wait <id>   等待一个 subagent 任务
+/jobs message <id> <文本>  在子 agent 下一安全轮次投递消息
+/jobs resume <id> <文本>   恢复已完成的子 agent transcript
+/jobs cancel <id>          请求协作式取消
+/jobs cleanup <id>         删除保留的隔离 worktree
 /config           查看 effective config 与来源
 /thinking         查看上轮推理内容
 /thinking inline  切换推理内容的内联流式显示
@@ -185,6 +189,7 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 - `/approval set` 当前支持的目标格式包括 `tool:<name>`、`mcp`、`mcp:<server>`、`mcp:<server>:<tool>`；动作支持 `allow`、`warn`、`require_approval`、`deny`。
 - `/mcp enable <server>` 与 `/mcp disable <server>` 会更新工作区配置，并尝试在运行时立即生效。
 - `/thinking` 展示上一轮保留的推理内容；`/thinking inline` 切换内联流式输出。FORGE 活动行会随 reasoning chunk 推进，并保留在历史中。`/thinking effort` 查看或设置当前会话的思考预算。
+- Subagent 使用有界的 `minimal`、`recent` 或 `full` 父上下文投影、结构化结果通知、持久化 transcript、共享深度/并发限制、可恢复 follow-up，以及可选 detached worktree 隔离。worker 回调只通过父 mailbox 交付，不会在 tool batch 中途修改模型历史。
 
 CLI 将模型上下文截断与人类界面折叠分开处理。Shell 运行时显示最近五行滑动窗口，
 完成后历史保留最后五行；超时或取消仍会把部分输出交给模型。write/edit 审批统一使用

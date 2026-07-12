@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added effective context budgets, complete API-round compaction, provider-neutral cache compaction adapters, versioned replacement checkpoints, and structured handoff summaries.
+- Added structured subagent results, persisted transcripts, minimal/recent/full parent projections, token/tool/time/depth budgets, mailbox-safe asynchronous delivery, follow-up resume, running-agent messages, recursive delegation limits, and detached worktree isolation.
+- Added `/jobs message`, `/jobs resume`, `/jobs cancel`, and `/jobs cleanup` controls.
+
 ## 0.4.0 - 2026-07-12
 
 - Added typed runtime events, structured tool outcomes, a deterministic presentation reducer, typed command views, and shared interaction coordination.

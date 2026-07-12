@@ -167,6 +167,10 @@ All LSP operations are read-only and do **not** require approval.
 /jobs              List background subagent jobs
 /jobs get <id>     Show one subagent job
 /jobs wait <id>    Wait for one subagent job
+/jobs message <id> <text>  Send input at the next safe child round
+/jobs resume <id> <text>   Resume a completed child transcript
+/jobs cancel <id>          Request cooperative cancellation
+/jobs cleanup <id>         Remove a retained isolated worktree
 /config            Show effective config values and sources
 /thinking          Show reasoning content from the last turn
 /thinking inline   Toggle inline streaming of reasoning content
@@ -188,6 +192,7 @@ known command if within edit distance ≤ 2.
 - `/approval set` currently supports targets like `tool:<name>`, `mcp`, `mcp:<server>`, and `mcp:<server>:<tool>` with actions `allow`, `warn`, `require_approval`, or `deny`.
 - `/mcp enable <server>` and `/mcp disable <server>` update workspace config and try to apply the change at runtime.
 - `/thinking` shows reasoning content retained from the most recent turn. `/thinking inline` toggles inline streaming; the FORGE activity row advances as reasoning chunks arrive and remains in history. `/thinking effort` views or sets the session reasoning budget.
+- Subagents use bounded `minimal`, `recent`, or `full` parent-context projections, structured result notifications, persisted transcripts, shared depth/concurrency limits, resumable follow-ups, and optional detached worktree isolation. Worker callbacks deliver through a parent mailbox and never mutate model history mid-tool-batch.
 
 The CLI keeps model output and human presentation limits separate. Shell output
 streams through a rolling five-line live tail and keeps the latest five lines in
