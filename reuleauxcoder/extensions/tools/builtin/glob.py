@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import PurePath
+from functools import lru_cache
+from fnmatch import fnmatchcase
 
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
@@ -13,6 +14,35 @@ from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
+
+
+def _glob_full_match(relative_path: str, pattern: str) -> bool:
+    """Match path segments with portable ``**`` semantics on Python 3.10+."""
+    path_parts = tuple(
+        part for part in relative_path.replace("\\", "/").split("/") if part
+    )
+    pattern_parts = tuple(
+        part for part in pattern.replace("\\", "/").split("/") if part
+    )
+    if not path_parts or not pattern_parts:
+        return False
+
+    @lru_cache(maxsize=None)
+    def match(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+        segment = pattern_parts[pattern_index]
+        if segment == "**":
+            return match(path_index, pattern_index + 1) or (
+                path_index < len(path_parts) and match(path_index + 1, pattern_index)
+            )
+        return (
+            path_index < len(path_parts)
+            and fnmatchcase(path_parts[path_index], segment)
+            and match(path_index + 1, pattern_index + 1)
+        )
+
+    return match(0, 0)
 
 
 @register_tool
@@ -73,7 +103,7 @@ class GlobTool(Tool):
             hits = [
                 entry
                 for entry in listing.entries
-                if PurePath(entry.relative_path).full_match(pattern)
+                if _glob_full_match(entry.relative_path, pattern)
             ]
             hits.sort(key=lambda entry: entry.mtime, reverse=True)
             total = len(hits)

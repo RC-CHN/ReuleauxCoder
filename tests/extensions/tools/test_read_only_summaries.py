@@ -1,6 +1,6 @@
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
-from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
+from reuleauxcoder.extensions.tools.builtin.glob import GlobTool, _glob_full_match
 from reuleauxcoder.extensions.tools.builtin.grep import GrepTool
 from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
 
@@ -23,6 +23,15 @@ def test_glob_keeps_matches_for_model_but_summarizes_ui(tmp_path) -> None:
     assert outcome.summary == "Found 2 files matching *.py"
     assert "one.py" in outcome.model_text
     assert outcome.metadata["match_count"] == 2
+
+
+def test_glob_full_match_has_portable_recursive_segment_semantics() -> None:
+    assert _glob_full_match("one.py", "*.py") is True
+    assert _glob_full_match("nested/one.py", "*.py") is False
+    assert _glob_full_match("one.py", "**/*.py") is True
+    assert _glob_full_match("nested/one.py", "**/*.py") is True
+    assert _glob_full_match("src/one.ts", "src/**/*.ts") is True
+    assert _glob_full_match("other/src/one.ts", "src/**/*.ts") is False
 
 
 def test_grep_keeps_matching_lines_for_model_but_summarizes_ui(tmp_path) -> None:
