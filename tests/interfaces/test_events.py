@@ -33,6 +33,20 @@ def test_ui_event_bus_replays_history_to_new_subscriber() -> None:
     assert seen == ["first"]
 
 
+def test_ui_event_bus_exposes_immutable_history_snapshot() -> None:
+    bus = UIEventBus()
+    bus.info("first")
+
+    snapshot = bus.history_snapshot()
+    bus.info("second")
+
+    assert tuple(event.message for event in snapshot) == ("first",)
+    assert tuple(event.message for event in bus.history_snapshot()) == (
+        "first",
+        "second",
+    )
+
+
 def test_ui_event_bus_emit_ignores_handler_exceptions() -> None:
     bus = UIEventBus()
     seen = []

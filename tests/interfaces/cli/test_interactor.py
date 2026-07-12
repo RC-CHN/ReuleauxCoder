@@ -23,3 +23,12 @@ def test_ctrl_c_review_cancels_and_breaks_the_partial_prompt_line(capsys) -> Non
     assert events[-1].message == "Interrupted."
     assert events[-1].kind is UIEventKind.APPROVAL
     assert events[-1].level is UIEventLevel.WARNING
+
+
+def test_review_accepts_codex_style_numbered_choices() -> None:
+    answers = iter(("1", "2"))
+    interactor = CLIUIInteractor(UIEventBus(), prompt_fn=lambda _prompt: next(answers))
+    request = ReviewRequest(title="Approval", summary="Review this change")
+
+    assert interactor.review(request).approved is True
+    assert interactor.review(request).approved is False

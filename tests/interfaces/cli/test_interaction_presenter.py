@@ -47,8 +47,11 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
     render_interaction_request(local, request)
     render_interaction_request(remote, request)
 
-    assert local.export_text() == export_remote_console(remote)
-    assert not set("╭╮╰╯─│").intersection(local.export_text())
+    local_frame = local.export_text()
+    assert local_frame == export_remote_console(remote)
+    assert "1. Approve (y)" in local_frame
+    assert "2. Reject (n)" in local_frame
+    assert not set("╭╮╰╯─│").intersection(local_frame)
     assert interaction_constraints(request) == {
         "value_type": "boolean",
         "approve_label": "Approve",

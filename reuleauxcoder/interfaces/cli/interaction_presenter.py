@@ -86,10 +86,15 @@ def render_interaction_request(
                     max_preview_lines,
                     max_preview_chars,
                 )
+        console.print()
+        console.print(f"  1. {escape(request.approve_label)} [dim](y)[/dim]")
+        console.print(f"  2. {escape(request.reject_label)} [dim](n)[/dim]")
+        console.print("  Press y/n or 1/2; Ctrl+C cancels", style="dim")
 
 
-def _heading(console: Console, title: str, *, color: str = "yellow") -> None:
-    console.print(f"[bold {color}]◆ {escape(title)}[/bold {color}]")
+def _heading(console: Console, title: str, *, color: str | None = None) -> None:
+    style = f"bold {color}" if color else "bold"
+    console.print(f"  [{style}]{escape(title)}[/{style}]")
 
 
 def _body(console: Console, text: str, max_lines: int, max_chars: int) -> None:

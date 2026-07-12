@@ -42,6 +42,13 @@ func TestParseGenericInteractionInput(t *testing.T) {
 			input: "yes", expected: true,
 		},
 		{
+			name: "boolean choice two rejects",
+			payload: map[string]any{"input_constraints": map[string]any{
+				"value_type": "boolean",
+			}},
+			input: "2", expected: false,
+		},
+		{
 			name: "choice number",
 			payload: map[string]any{"input_constraints": map[string]any{
 				"value_type": "choice_id", "choices": []any{"alpha", "beta"},

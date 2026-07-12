@@ -125,7 +125,7 @@ class CLIUIInteractor:
                 try:
                     answer = (
                         self._prompt(
-                            f"{request.approve_label}/{request.reject_label}? [y/n]: "
+                            "Select [1/2, y/n]: "
                         )
                         .strip()
                         .lower()
@@ -136,10 +136,10 @@ class CLIUIInteractor:
                         approved=False, cancelled=True, reason="approval interrupted"
                     )
 
-                if answer in {"y", "yes"}:
+                if answer in {"1", "y", "yes"}:
                     return ReviewResponse(approved=True)
-                if answer in {"n", "no"}:
+                if answer in {"2", "n", "no"}:
                     return ReviewResponse(approved=False)
                 self.ui_bus.warning(
-                    "Please enter 'y' or 'n'.", kind=UIEventKind.APPROVAL
+                    "Please enter 1/2 or y/n.", kind=UIEventKind.APPROVAL
                 )

@@ -591,7 +591,7 @@ func interactionPrompt(payload map[string]any) string {
 	case "string":
 		return "Input: "
 	default:
-		return "Respond? [y/N]: "
+		return "Select [1/2, y/n]: "
 	}
 }
 
@@ -628,7 +628,7 @@ func parseInteractionInput(payload map[string]any, line string) (any, bool, erro
 		switch strings.ToLower(trimmed) {
 		case "y", "yes", "true", "1":
 			return true, false, nil
-		case "", "n", "no", "false", "0":
+		case "", "2", "n", "no", "false", "0":
 			return false, false, nil
 		default:
 			return nil, false, fmt.Errorf("enter y or n")

@@ -12,7 +12,7 @@ from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.render import show_banner
-from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.interfaces.events import UIEvent, UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 
 
@@ -28,9 +28,15 @@ def run_repl(
     skills_service=None,
     output_coordinator=None,
     interaction_coordinator=None,
+    startup_events: tuple[UIEvent, ...] = (),
 ) -> None:
     ensure_user_dirs()
-    show_banner(config.model, config.base_url, __version__)
+    show_banner(
+        config.model,
+        config.base_url,
+        __version__,
+        startup_events=startup_events,
+    )
 
     hist_path = (
         str(Path(config.history_file).expanduser())

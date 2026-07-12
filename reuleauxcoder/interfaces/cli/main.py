@@ -79,10 +79,21 @@ def main():
         policy=PresentationPolicy.from_ui_config(ctx.config.ui),
     )
     output = CLIOutputCoordinator(renderer)
-    ctx.ui_bus.subscribe(output.on_ui_event)
-
     remote_exec = getattr(ctx.config, "remote_exec", None)
     is_host_mode = remote_exec and remote_exec.enabled and remote_exec.host_mode
+    group_startup = not args.prompt and not args.server and not is_host_mode
+    startup_events = (
+        tuple(
+            event
+            for event in ctx.ui_bus.history_snapshot()
+            if event.payload is None
+            and renderer.policy.should_render_notification(event.level.value)
+        )
+        if group_startup
+        else ()
+    )
+    ctx.ui_bus.subscribe(output.on_ui_event, replay_history=not group_startup)
+
     if args.server or is_host_mode:
         ctx.ui_bus.info("Remote relay host mode active. Press Ctrl+C to stop.")
         try:
@@ -132,6 +143,7 @@ def main():
             ctx.skills_service,
             output,
             cli_ui.interactor,
+            startup_events,
         )
     finally:
         output.close()

@@ -10,7 +10,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
-from reuleauxcoder.interfaces.cli.render import CLIRenderer
+from reuleauxcoder.interfaces.cli.render import CLIRenderer, show_banner
 from reuleauxcoder.interfaces.events import UIEvent, UIEventKind
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
 from reuleauxcoder.presentation import (
@@ -219,3 +219,27 @@ def test_long_notification_is_head_tail_folded() -> None:
     assert "detail-0" in output
     assert "detail-29" in output
     assert "output folded" in output
+
+
+@pytest.mark.parametrize("width", [40, 80, 120])
+def test_startup_banner_is_compact_and_terminal_bounded(width: int) -> None:
+    console = Console(record=True, width=width, color_system=None, force_terminal=False)
+
+    show_banner(
+        "demo/model",
+        "https://example.invalid/openai-compatible/v1",
+        "0.4.1",
+        console_override=console,
+        startup_events=(
+            UIEvent.info("LSP: 9/9 language servers ready\n  ✓ python\n  ✓ rust"),
+            UIEvent.success("Auto-resumed latest session: session_demo"),
+        ),
+    )
+    output = console.export_text()
+
+    assert ">_ ReuleauxCoder (v0.4.1)" in output
+    assert "demo/model" in output
+    assert "LSP: 9/9 language servers ready" in output
+    assert "Auto-resumed latest session" in output
+    assert "/help" in output
+    assert max(map(len, output.splitlines())) <= min(width, 88)

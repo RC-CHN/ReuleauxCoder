@@ -1,12 +1,16 @@
 """CLI rendering - event-driven UI renderer."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from collections.abc import Callable
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape as _escape_markup
+from rich.panel import Panel
+from rich.text import Text
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.runtime.events import (
@@ -528,23 +532,85 @@ def brief(kwargs: dict, maxlen: int = 80) -> str:
     return ", ".join(parts)
 
 
-def show_banner(model: str, base_url: str | None, version: str) -> None:
+def show_banner(
+    model: str,
+    base_url: str | None,
+    version: str,
+    *,
+    console_override: Console | None = None,
+    startup_events: Sequence[UIEvent] = (),
+) -> None:
     from reuleauxcoder.infrastructure.platform import get_platform_info
 
+    target = console_override or console
     platform_info = get_platform_info()
     shell = platform_info.get_preferred_shell()
-    platform_line = f"Platform: [yellow]{platform_info.system.upper()}[/yellow]  Shell: [yellow]{shell.value}[/yellow]"
+    panel_width = min(88, target.width)
+    value_width = max(8, panel_width - 16)
+    body = Text()
+    body.append(">_ ", style="dim")
+    body.append("ReuleauxCoder", style="bold magenta")
+    body.append(f" (v{version})", style="dim")
+    body.append("\n\n")
+    body.append("model:     ", style="dim")
+    body.append(_truncate_middle(model, value_width))
+    body.append("\n")
+    body.append("directory: ", style="dim")
+    body.append(_truncate_middle(str(Path.cwd()), value_width))
+    body.append("\n")
+    body.append("runtime:   ", style="dim")
+    body.append(f"{platform_info.system.upper()} · {shell.value}")
+    if base_url:
+        body.append("\n")
+        body.append("base:      ", style="dim")
+        body.append(_truncate_middle(base_url, value_width), style="dim")
 
-    console.print(f"[bold]ReuleauxCoder[/bold] v{version}")
-    console.print(
-        f"Model: [cyan]{model}[/cyan]"
-        + (f"  Base: [dim]{base_url}[/dim]" if base_url else "")
+    visible_startup = [
+        event for event in startup_events if event.level is not UIEventLevel.DEBUG
+    ]
+    if visible_startup:
+        body.append("\n\n")
+    markers = {
+        UIEventLevel.INFO: ("• ", "dim"),
+        UIEventLevel.SUCCESS: ("✓ ", "green"),
+        UIEventLevel.WARNING: ("⚠ ", "yellow"),
+        UIEventLevel.ERROR: ("× ", "red"),
+        UIEventLevel.DEBUG: ("· ", "dim"),
+    }
+    for event_index, event in enumerate(visible_startup):
+        marker, marker_style = markers[event.level]
+        lines = event.message.splitlines() or [""]
+        for line_index, line in enumerate(lines):
+            body.append(marker if line_index == 0 else "  ", style=marker_style)
+            body.append(line)
+            if line_index < len(lines) - 1:
+                body.append("\n")
+        if event_index < len(visible_startup) - 1:
+            body.append("\n")
+
+    target.print(
+        Panel(
+            body,
+            border_style="bright_black",
+            width=panel_width,
+            expand=False,
+            padding=(0, 1),
+        )
     )
-    console.print(platform_line)
-    console.print(
-        "Type [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, "
-        "[bold]/quit[/bold] to exit."
+    target.print(
+        "  [cyan]/help[/cyan] commands  ·  [cyan]Ctrl+C[/cyan] cancel  ·  "
+        "[cyan]/quit[/cyan] exit"
     )
+
+
+def _truncate_middle(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 1:
+        return "…"[:width]
+    left = (width - 1 + 1) // 2
+    right = width - 1 - left
+    return f"{value[:left]}…{value[-right:]}" if right else f"{value[:left]}…"
 
 
 def show_error(text: str) -> None:
