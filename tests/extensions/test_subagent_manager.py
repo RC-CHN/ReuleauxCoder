@@ -1,6 +1,7 @@
 import threading
 import time
 from types import SimpleNamespace
+from collections import deque
 
 import pytest
 
@@ -304,6 +305,43 @@ def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
     manager.shutdown()
 
 
+def test_human_guidance_precedes_unconsumed_parent_guidance() -> None:
+    parent = _Parent()
+    manager = SubagentManager(parent_agent_id=parent.agent_id)
+    manager.bind_root_agent(parent)
+    job = SubagentJob(
+        id="sj_guidance_order",
+        mode="explore",
+        task="choose API",
+        status="parking",
+        created_at=time.time(),
+        parent_agent_id=parent.agent_id,
+        generation=manager.generation,
+    )
+    manager._jobs[job.id] = job
+    manager._message_queues[job.id] = deque()
+
+    parent_directive = manager.queue_message(
+        job.id,
+        "parent preference",
+        source="parent",
+    )
+    human_directive = manager.queue_message(
+        job.id,
+        "human decision",
+        source="human",
+    )
+    drained = manager.drain_messages(job.id)
+
+    assert parent_directive is not None and human_directive is not None
+    assert [item.content for item in drained] == [
+        "human decision",
+        "parent preference",
+    ]
+    assert [item.source for item in drained] == ["human", "parent"]
+    manager.shutdown()
+
+
 def test_parent_mailbox_recovers_unacknowledged_item_exactly_once() -> None:
     parent = _Parent()
     manager = SubagentManager(parent_agent_id=parent.agent_id)
@@ -361,6 +399,49 @@ def test_restore_persists_unrecoverable_worker_as_stale() -> None:
     assert manager.get_job("sj_lost").status == "stale"
     assert parent.history_ledger.events[-1].kind == "subagent_job_changed"
     assert parent.history_ledger.events[-1].payload["status"] == "stale"
+    manager.shutdown()
+
+
+def test_restore_replays_queued_but_unconsumed_directive(tmp_path) -> None:
+    parent = _Parent()
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text('{"messages": []}', encoding="utf-8")
+    parent.history_ledger.append(
+        "subagent_job_changed",
+        {
+            "job_id": "sj_directive_restore",
+            "mode": "explore",
+            "task": "wait",
+            "status": "blocked",
+            "created_at": time.time(),
+            "generation": 0,
+            "depth": 1,
+            "resume_reference": str(checkpoint),
+        },
+    )
+    parent.history_ledger.append(
+        "subagent_communication_queued",
+        {
+            "item_id": "sd_durable",
+            "direction": "parent_to_child",
+            "target_job_id": "sj_directive_restore",
+            "sender_agent_id": parent.agent_id,
+            "content": "durable human choice",
+            "generation": 0,
+            "seq": 9,
+            "source": "human",
+            "content_hash": "hash",
+        },
+    )
+    manager = SubagentManager(parent_agent_id=parent.agent_id)
+
+    assert manager.restore_from_history(parent, parent.history_ledger.events) == 1
+    directives = manager.drain_messages("sj_directive_restore")
+
+    assert len(directives) == 1
+    assert directives[0].directive_id == "sd_durable"
+    assert directives[0].source == "human"
+    assert directives[0].content == "durable human choice"
     manager.shutdown()
 
 

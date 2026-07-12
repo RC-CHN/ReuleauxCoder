@@ -155,6 +155,7 @@ class SendMessageTool(_RootSubagentTool):
                 job_id,
                 message,
                 sender_agent_id=root.agent_id,
+                source="parent",
             )
             if directive is None:
                 raise ValueError("target child is not running or does not exist")

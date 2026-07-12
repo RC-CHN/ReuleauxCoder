@@ -219,7 +219,11 @@ def _handle_control_job(command, ctx) -> CommandEffect:
             ok = manager.cleanup_worktree(command.job_id)
             message = "Worktree removed"
         elif command.action == "message":
-            ok = manager.send_message(command.job_id, command.message)
+            ok = manager.send_message(
+                command.job_id,
+                command.message,
+                source="human",
+            )
             message = "Message queued"
         else:
             resumed_id = manager.follow_up(

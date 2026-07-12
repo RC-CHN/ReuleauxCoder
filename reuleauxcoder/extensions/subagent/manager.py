@@ -177,6 +177,7 @@ def _publish_directive_event(
     status: str,
     seq: int | None = None,
     content_hash: str | None = None,
+    source: str = "parent",
 ) -> None:
     ledger = getattr(parent_agent, "history_ledger", None)
     if ledger is None:
@@ -192,6 +193,7 @@ def _publish_directive_event(
             "generation": generation,
             "seq": seq,
             "content_hash": content_hash,
+            "source": source,
         },
         agent_id=sender_agent_id,
         job_id=target_job_id,
@@ -306,11 +308,13 @@ class SubagentDirective:
     created_at: float
     generation: int
     content_hash: str
+    source: Literal["parent", "human"] = "parent"
 
     def model_text(self) -> str:
         return (
             f"directive_id={self.directive_id}\n"
-            f"sender_agent_id={self.sender_agent_id}\n\n"
+            f"sender_agent_id={self.sender_agent_id}\n"
+            f"source={self.source}\n\n"
             f"{self.content}"
         )
 
@@ -770,6 +774,8 @@ class SubagentManager:
         latest: dict[str, dict] = {}
         queued_messages: dict[str, dict] = {}
         delivered_messages: set[str] = set()
+        queued_directives: dict[str, dict] = {}
+        delivered_directives: set[str] = set()
         for event in events:
             kind = getattr(event, "kind", None)
             payload = getattr(event, "payload", {})
@@ -779,12 +785,18 @@ class SubagentManager:
                     latest[job_id] = dict(payload)
             elif kind == "subagent_communication_queued":
                 if payload.get("direction") == "parent_to_child":
+                    item_id = str(payload.get("item_id") or "")
+                    if item_id:
+                        queued_directives[item_id] = dict(payload)
                     continue
                 item_id = str(payload.get("item_id") or "")
                 if item_id:
                     queued_messages[item_id] = dict(payload)
             elif kind == "subagent_communication_delivered":
                 if payload.get("direction") == "parent_to_child":
+                    item_id = str(payload.get("item_id") or "")
+                    if item_id:
+                        delivered_directives.add(item_id)
                     continue
                 item_id = str(payload.get("item_id") or "")
                 if item_id:
@@ -902,6 +914,35 @@ class SubagentManager:
                 )
             )
 
+        pending_directives: list[SubagentDirective] = []
+        for directive_id, payload in queued_directives.items():
+            if directive_id in delivered_directives:
+                continue
+            target_job_id = str(payload.get("target_job_id") or "")
+            content = str(payload.get("content") or "").strip()
+            source = str(payload.get("source") or "parent")
+            if not target_job_id or not content or source not in {"parent", "human"}:
+                continue
+            seq = max(1, int(payload.get("seq") or 1))
+            sender = str(
+                payload.get("sender_agent_id")
+                or self._parent_agent_id
+                or "root"
+            )
+            pending_directives.append(
+                SubagentDirective(
+                    directive_id=directive_id,
+                    seq=seq,
+                    target_job_id=target_job_id,
+                    sender_agent_id=sender,
+                    content=content,
+                    created_at=float(payload.get("created_at") or time.time()),
+                    generation=getattr(parent_agent, "session_generation", 0),
+                    content_hash=str(payload.get("content_hash") or ""),
+                    source=source,  # type: ignore[arg-type]
+                )
+            )
+
         with self._lock:
             self._parent_agent_id = getattr(parent_agent, "agent_id", None)
             self._generation = getattr(parent_agent, "session_generation", 0)
@@ -909,13 +950,21 @@ class SubagentManager:
                 self._jobs[job.id] = job
                 self._message_queues.setdefault(job.id, deque())
                 self._cancel_events.setdefault(job.id, threading.Event())
+            for directive in sorted(pending_directives, key=lambda item: item.seq):
+                queue = self._message_queues.get(directive.target_job_id)
+                if queue is not None:
+                    queue.append(directive)
             self._parent_messages.extend(
                 sorted(pending_messages, key=lambda item: item.seq)
             )
-            if pending_messages:
+            if pending_messages or pending_directives:
                 self._next_sequence = max(
                     self._next_sequence,
-                    max(item.seq for item in pending_messages) + 1,
+                    max(
+                        [item.seq for item in pending_messages]
+                        + [item.seq for item in pending_directives]
+                    )
+                    + 1,
                 )
         for job in restored:
             if job.status == "blocked" and job.resume_reference:
@@ -1321,7 +1370,12 @@ class SubagentManager:
         self._completion_mailbox.append(job.id)
 
     def send_message(
-        self, job_id: str, message: str, *, sender_agent_id: str | None = None
+        self,
+        job_id: str,
+        message: str,
+        *,
+        sender_agent_id: str | None = None,
+        source: Literal["parent", "human"] = "parent",
     ) -> bool:
         """Queue a message for a running worker; it is consumed next model round."""
 
@@ -1329,15 +1383,21 @@ class SubagentManager:
             job_id,
             message,
             sender_agent_id=sender_agent_id,
+            source=source,
         ) is not None
 
     def queue_message(
-        self, job_id: str, message: str, *, sender_agent_id: str | None = None
+        self,
+        job_id: str,
+        message: str,
+        *,
+        sender_agent_id: str | None = None,
+        source: Literal["parent", "human"] = "parent",
     ) -> SubagentDirective | None:
         """Queue and return one typed directive for a running child."""
 
         text = message.strip()
-        if not text:
+        if not text or source not in {"parent", "human"}:
             return None
         directive_id = f"sd_{uuid.uuid4().hex[:12]}"
         sender = sender_agent_id or self._parent_agent_id or "root"
@@ -1350,6 +1410,7 @@ class SubagentManager:
                 "running",
                 "parking",
                 "blocked",
+                "resuming",
             }:
                 return None
             if job.status == "blocked" and (
@@ -1365,6 +1426,7 @@ class SubagentManager:
                 content=text,
                 created_at=time.time(),
                 generation=self._generation,
+                source=source,
                 content_hash=_subagent_item_hash(
                     directive_id=directive_id,
                     seq=seq,
@@ -1372,9 +1434,17 @@ class SubagentManager:
                     sender_agent_id=sender,
                     content=text,
                     generation=self._generation,
+                    source=source,
                 ),
             )
-            queue.append(directive)
+            if source == "human" and job.status in {
+                "parking",
+                "blocked",
+                "resuming",
+            }:
+                queue.appendleft(directive)
+            else:
+                queue.append(directive)
             if job.status == "blocked":
                 job.status = "resuming"
                 job.guidance_request_id = None
@@ -1390,6 +1460,7 @@ class SubagentManager:
                 status="queued",
                 seq=directive.seq,
                 content_hash=directive.content_hash,
+                source=directive.source,
             )
         if resume:
             if self._root_agent is not None:
@@ -1418,6 +1489,7 @@ class SubagentManager:
                     status="delivered",
                     seq=directive.seq,
                     content_hash=directive.content_hash,
+                    source=directive.source,
                 )
         return messages
 
