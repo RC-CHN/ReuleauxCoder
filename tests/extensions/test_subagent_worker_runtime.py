@@ -282,6 +282,8 @@ class _HungRequestHandler(BaseHTTPRequestHandler):
 class _GuidanceHandler(BaseHTTPRequestHandler):
     requests = []
     lock = threading.Lock()
+    request_seen = None
+    release_response = None
 
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("content-length", "0"))
@@ -289,6 +291,9 @@ class _GuidanceHandler(BaseHTTPRequestHandler):
         with type(self).lock:
             type(self).requests.append(request)
             request_number = len(type(self).requests)
+        if request_number == 1 and type(self).request_seen is not None:
+            type(self).request_seen.set()
+            type(self).release_response.wait(timeout=3)
         if request_number == 1:
             delta = {
                 "tool_calls": [
@@ -687,6 +692,78 @@ def test_guidance_parks_and_resumes_same_job_with_stable_replay_prefix(
         and "Preserve the public v1 API" in str(message.get("content") or "")
         for message in resumed_messages
     )
+
+
+def test_directive_arriving_during_provider_round_survives_immediate_park(
+    monkeypatch, tmp_path
+) -> None:
+    class Handler(_GuidanceHandler):
+        requests = []
+        request_seen = threading.Event()
+        release_response = threading.Event()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    for name in (
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    profile = ModelProfileConfig(
+        name="sub",
+        model="test",
+        api_key="test",
+        base_url=f"http://127.0.0.1:{server.server_port}/v1",
+        max_tokens=128,
+        max_context_tokens=4096,
+    )
+    config = Config(
+        model_profiles={"sub": profile},
+        active_model_profile="sub",
+        active_main_model_profile="sub",
+        active_sub_model_profile="sub",
+    )
+    root = Agent(llm=_UnusedLLM(), tools=[RequestGuidanceTool()], config=config)
+    root.current_session_id = "session"
+    root.runtime_working_directory = str(tmp_path)
+    manager = get_subagent_manager(root)
+    try:
+        job_id = manager.submit_background(
+            parent_agent=root,
+            task="Ask before choosing an API",
+            mode="explore",
+            timeout_seconds=8,
+            auto_verify=False,
+        )
+        assert Handler.request_seen.wait(timeout=3)
+        assert manager.send_message(
+            job_id,
+            "Use the compatibility API sent during the active provider round.",
+        )
+        time.sleep(0.1)
+        Handler.release_response.set()
+        completed = manager.wait_job(job_id, timeout=8)
+    finally:
+        Handler.release_response.set()
+        manager.shutdown()
+        server.shutdown()
+        server.server_close()
+
+    assert completed is not None and completed.status == "completed"
+    assert len(Handler.requests) == 2
+    resumed_messages = Handler.requests[1]["messages"]
+    matching = [
+        message
+        for message in resumed_messages
+        if "Use the compatibility API sent during the active provider round."
+        in str(message.get("content") or "")
+    ]
+    assert len(matching) == 1
     assert any(
         message.get("role") == "system"
         and "Re-read every relevant file or symbol"

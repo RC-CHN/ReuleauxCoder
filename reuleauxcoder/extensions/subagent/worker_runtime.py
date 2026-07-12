@@ -55,6 +55,7 @@ class WorkerExecutionResult:
     model_calls: int = 0
     killed: bool = False
     usage_uncertain: bool = False
+    resume_ready: bool = False
 
 
 class BrokeredWorkerTool(Tool):
@@ -93,7 +94,7 @@ class WorkerIPCClient:
         self._state_lock = threading.Condition()
         self._sequence = 0
         self._tool_results: dict[str, ToolOutcome] = {}
-        self._directives: list[str] = []
+        self._directives: list[tuple[str, str]] = []
         self._park_acks: set[str] = set()
         self._closed = False
         self._receiver = threading.Thread(target=self._receive_loop, daemon=True)
@@ -135,7 +136,12 @@ class WorkerIPCClient:
         with self._state_lock:
             directives = self._directives
             self._directives = []
-            return directives
+        if directives:
+            self.send(
+                "directive_ack",
+                {"directive_ids": [directive_id for directive_id, _text in directives]},
+            )
+        return [text for _directive_id, text in directives]
 
     def wait_for_park_ack(self, checkpoint_id: str, *, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -172,11 +178,16 @@ class WorkerIPCClient:
                 elif envelope.type == "directive":
                     directive_id = str(envelope.payload.get("directive_id") or "")
                     sender = str(envelope.payload.get("sender_agent_id") or "root")
+                    source = str(envelope.payload.get("source") or "parent")
                     content = str(envelope.payload.get("content") or "")
                     with self._state_lock:
                         self._directives.append(
-                            f"directive_id={directive_id}\n"
-                            f"sender_agent_id={sender}\n\n{content}"
+                            (
+                                directive_id,
+                                f"directive_id={directive_id}\n"
+                                f"sender_agent_id={sender}\n"
+                                f"source={source}\n\n{content}",
+                            )
                         )
                         self._state_lock.notify_all()
                 elif envelope.type == "park_ack":
@@ -502,6 +513,7 @@ def run_isolated_worker(
     active_tool = False
     active_tool_name: str | None = None
     worker_crash_indeterminate = False
+    inflight_directives: dict[str, Any] = {}
 
     def send(message_type: str, payload: dict[str, Any]) -> None:
         nonlocal parent_sequence
@@ -540,11 +552,13 @@ def run_isolated_worker(
 
             if directive_source is not None and cancel_started is None:
                 for directive in directive_source():
+                    inflight_directives[directive.directive_id] = directive
                     send(
                         "directive",
                         {
                             "directive_id": directive.directive_id,
                             "sender_agent_id": directive.sender_agent_id,
+                            "source": directive.source,
                             "content": directive.content,
                         },
                     )
@@ -585,6 +599,11 @@ def run_isolated_worker(
                 )
                 if event_sink is not None and cancel_started is None:
                     event_sink(runtime_event_to_agent_event(runtime))
+            elif envelope.type == "directive_ack":
+                directive_ids = envelope.payload.get("directive_ids") or []
+                if isinstance(directive_ids, list):
+                    for directive_id in directive_ids:
+                        inflight_directives.pop(str(directive_id), None)
             elif envelope.type == "tool_request" and not active_tool:
                 active_tool = True
                 active_tool_name = str(envelope.payload.get("name") or "")
@@ -628,6 +647,23 @@ def run_isolated_worker(
                     ),
                     model_calls=int(envelope.payload.get("model_calls") or 0),
                 )
+                for directive in inflight_directives.values():
+                    checkpoint.messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "[Guidance resolution]\n"
+                                f"{directive.model_text()}\n"
+                                "[/Guidance resolution]"
+                            ),
+                        }
+                    )
+                checkpoint.resume_ready = bool(inflight_directives)
+                checkpoint_payload = {
+                    **envelope.payload,
+                    "embedded_directive_ids": list(inflight_directives),
+                }
+                inflight_directives.clear()
                 try:
                     reference = _persist_worker_checkpoint(
                         spec,
@@ -635,7 +671,7 @@ def run_isolated_worker(
                         checkpoint=checkpoint,
                     )
                     accepted = (
-                        checkpoint_sink(reference, checkpoint, envelope.payload)
+                        checkpoint_sink(reference, checkpoint, checkpoint_payload)
                         if checkpoint_sink is not None
                         else True
                     )
@@ -667,6 +703,9 @@ def run_isolated_worker(
                     ),
                     model_calls=int(envelope.payload.get("model_calls") or 0),
                 )
+                if terminal.status == "blocked" and checkpoint is not None:
+                    terminal.messages = checkpoint.messages
+                    terminal.resume_ready = checkpoint.resume_ready
                 break
     finally:
         if (

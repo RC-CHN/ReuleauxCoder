@@ -104,6 +104,7 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "agent_id": job.agent_id,
                 "cancellation_id": job.cancellation_id,
                 "usage_uncertain": job.usage_uncertain,
+                "resume_ready": job.resume_ready,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -291,6 +292,7 @@ class SubagentJob:
     agent_id: str | None = None
     cancellation_id: str | None = None
     usage_uncertain: bool = False
+    resume_ready: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -614,6 +616,7 @@ class SubagentManager:
                             tracked.tool_calls = result.tool_uses
                             tracked.model_calls = result.model_calls
                             tracked.usage_uncertain = result.usage_uncertain
+                            tracked.resume_ready = result.resume_ready
                         if tracked.cancel_requested:
                             if tracked.status != "timed_out":
                                 tracked.status = (
@@ -661,10 +664,11 @@ class SubagentManager:
                             self._arm_guidance_deadline_locked(
                                 tracked, preserve=True
                             )
-                            resume_immediately = bool(
+                            resume_immediately = tracked.resume_ready or bool(
                                 self._message_queues.get(job_id)
                             )
                             if resume_immediately:
+                                tracked.resume_ready = False
                                 tracked.status = "resuming"
                                 tracked.guidance_request_id = None
                         elif isinstance(result, SubagentResult) and result.status in {
@@ -900,6 +904,7 @@ class SubagentManager:
                 agent_id=payload.get("agent_id") or f"sa_{job_id}",
                 cancellation_id=payload.get("cancellation_id"),
                 usage_uncertain=bool(payload.get("usage_uncertain", False)),
+                resume_ready=bool(payload.get("resume_ready", False)),
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -1087,6 +1092,7 @@ class SubagentManager:
                         job.tool_calls = result.tool_uses
                         job.model_calls = result.model_calls
                         job.usage_uncertain = result.usage_uncertain
+                        job.resume_ready = result.resume_ready
                     if job.cancel_requested:
                         if job.status != "timed_out":
                             job.status = "cancelled"
@@ -1105,8 +1111,11 @@ class SubagentManager:
                         job.model_calls = result.model_calls
                         job.finished_at = None
                         self._arm_guidance_deadline_locked(job, preserve=True)
-                        resume_immediately = bool(self._message_queues.get(job_id))
+                        resume_immediately = job.resume_ready or bool(
+                            self._message_queues.get(job_id)
+                        )
                         if resume_immediately:
+                            job.resume_ready = False
                             job.status = "resuming"
                             job.guidance_request_id = None
                     else:
@@ -1308,6 +1317,8 @@ class SubagentManager:
         job_id: str,
         reference: str,
         checkpoint,
+        *,
+        resume_ready: bool = False,
     ) -> bool:
         """Durably project a provider-safe checkpoint before ParkAck."""
         with self._lock:
@@ -1332,6 +1343,7 @@ class SubagentManager:
             job.model_calls = checkpoint.model_calls
             job.current_tool = None
             job.last_activity_at = time.time()
+            job.resume_ready = resume_ready
             self._arm_guidance_deadline_locked(job)
         if self._root_agent is not None:
             _publish_job_event(self._root_agent, job)
@@ -2139,9 +2151,12 @@ def run_subagent_task(
         event_sink=parent_event_sink if callable(parent_event_sink) else None,
         checkpoint_sink=(
             (
-                lambda reference, checkpoint, _payload: (
+                lambda reference, checkpoint, payload: (
                     manager.commit_worker_checkpoint(
-                        job_id, reference, checkpoint
+                        job_id,
+                        reference,
+                        checkpoint,
+                        resume_ready=bool(payload.get("embedded_directive_ids")),
                     )
                 )
             )
@@ -2184,6 +2199,7 @@ def run_subagent_task(
             "indeterminate",
         },
         usage_uncertain=execution.usage_uncertain,
+        resume_ready=execution.resume_ready,
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result
@@ -2262,6 +2278,7 @@ def _result_from_agent(
     parent_agent,
     partial: bool = False,
     usage_uncertain: bool = False,
+    resume_ready: bool = False,
 ) -> SubagentResult:
     messages = list(getattr(sub, "messages", []))
     reported = _parse_delegated_final_response(summary)
@@ -2319,6 +2336,7 @@ def _result_from_agent(
         completion_tokens=int(getattr(sub.state, "total_completion_tokens", 0)),
         model_calls=int(getattr(sub.state, "total_model_calls", 0)),
         usage_uncertain=usage_uncertain,
+        resume_ready=resume_ready,
     )
     if job_id:
         root = (

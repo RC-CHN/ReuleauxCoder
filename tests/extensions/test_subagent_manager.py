@@ -930,7 +930,10 @@ def test_subagent_tools_are_distinct_instances() -> None:
     tool = ReadFileTool()
     parent = SimpleNamespace(tools=[tool])
 
-    (child_tool,) = _filter_subagent_tools(parent, "explore")
+    child_tool = next(
+        tool for tool in _filter_subagent_tools(parent, "explore")
+        if tool.name == "read_file"
+    )
 
     assert child_tool is not tool
     assert child_tool.backend is not tool.backend
@@ -948,7 +951,10 @@ def test_subagent_tool_backend_context_is_isolated() -> None:
     tool = ReadFileTool(backend)
     parent = SimpleNamespace(tools=[tool])
 
-    (child_tool,) = _filter_subagent_tools(parent, "explore")
+    child_tool = next(
+        tool for tool in _filter_subagent_tools(parent, "explore")
+        if tool.name == "read_file"
+    )
     child_tool.backend.context.cwd = "/child"
 
     assert child_tool.backend is not backend
@@ -971,7 +977,10 @@ def test_subagent_shell_cwd_state_is_not_shared() -> None:
     parent_tool._cwd = "/tmp/parent"
     parent = SimpleNamespace(tools=[parent_tool])
 
-    (child_tool,) = _filter_subagent_tools(parent, "execute")
+    child_tool = next(
+        tool for tool in _filter_subagent_tools(parent, "execute")
+        if tool.name == "shell"
+    )
     child_tool._cwd = "/tmp/child"
 
     assert parent_tool._cwd == "/tmp/parent"

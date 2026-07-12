@@ -38,6 +38,7 @@ class SubagentResult:
     partial: bool = False
     worktree_path: str | None = None
     usage_uncertain: bool = False
+    resume_ready: bool = False
 
     def canonical_payload(self) -> dict:
         """Return the stable model-visible result without wall-clock noise."""

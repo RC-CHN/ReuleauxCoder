@@ -63,3 +63,18 @@ def test_worker_envelope_rejects_payload_tampering_and_old_versions() -> None:
     encoded["version"] = 999
     with pytest.raises(ValueError, match="unsupported worker protocol"):
         WorkerEnvelope.from_dict(encoded)
+
+
+def test_directive_consumption_ack_is_a_versioned_worker_frame() -> None:
+    envelope = WorkerEnvelope(
+        type="directive_ack",
+        job_id="sj_1",
+        agent_id="child_1",
+        session_generation=1,
+        worker_generation=2,
+        cancellation_epoch=0,
+        sequence=7,
+        payload={"directive_ids": ["sd_1", "sd_2"]},
+    )
+
+    assert WorkerEnvelope.from_dict(envelope.to_dict()) == envelope
