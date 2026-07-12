@@ -13,6 +13,41 @@
 - compact/standard/debug 策略、shell duration/head-tail、结构化 diff stats、单行通知和 tool lifecycle 已完成 CLI 冗长度收敛。
 - TUI 可以从 RuntimeEvent、Reducer、ViewModel、InteractionRequest 与 scheduler 边界直接复用，不需要复制 Agent、Tool、Command 或 approval 语义。
 
+### 0.1 FORGE 视图层收口（2026-07-12）
+
+CLI 后续采用 `FORGE` 设计语言，不复制 Codex CLI 的视觉外观。Codex 参考仅保留“启动信息与运行历史分层、普通历史少用 box、输出有界”的信息架构经验。
+
+当前代码边界：
+
+```text
+presentation/semantics.py
+  ToolInvocationDisplay + RUN/READ/WRITE/EDIT/SEARCH/LSP/AGENT 文案语义
+presentation/policy.py
+  verbosity / output folding / diff visibility
+presentation/reducer.py + models.py
+  transcript identity, correlation, retention
+                         |
+interfaces/cli/theme.py
+  FORGE Rich colour/label/diff/frame tokens
+interfaces/cli/history.py
+  append-only tool/notice/subagent/reasoning rows
+interfaces/cli/streaming.py
+  Markdown block commitment and stream buffering
+interfaces/cli/startup.py
+  bounded session plate (运行历史中唯一默认 box)
+interfaces/cli/interaction_presenter.py
+  approval/choice/input/review frames
+interfaces/cli/views/
+  typed command ViewModel -> Rich table/markdown
+                         |
+interfaces/cli/render.py
+  RuntimeEvent/UIEvent routing only
+```
+
+FORGE 的基础语言：煤黑背景假设、高对比反色短标签、全大写动作、硬边、计量优先。强调色必须有单一语义：cyan=动作/连接，green=成功，yellow=审批/风险，red=失败。暴力感来自轮廓与对比，不来自增加 box、重复状态或冗长文案。
+
+未来 TUI 复用 `presentation` 的 reducer、policy、typed cells、tool display semantics 与 command ViewModel；不得 import Rich `CLITheme`。TUI 可自行实现 FORGE CSS tokens、空间布局、可展开 diff 和 retained widgets。CLI 的线性 history presenter 与 Markdown stream presenter 不属于共享内核。
+
 ## 1. 当前判断
 
 现有 CLI 已经具备 EventBus、UIRegistry、ViewRendererRegistry、UIInteractor 等抽象雏形，但抽象停在“接口名字”层面，真正的展示语义仍散落在：

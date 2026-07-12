@@ -18,6 +18,8 @@ RCODER_RUN_LSP_INTEGRATION=1 uv run pytest -q tests/extensions/lsp/test_integrat
 
 最终复验结果：Ruff 全仓通过；Python `707 passed, 24 skipped`；真实 LSP `15 passed, 1 skipped`；Go 全包通过；成功生成 `reuleauxcoder-0.4.0.tar.gz` 与 `reuleauxcoder-0.4.0-py3-none-any.whl`。真实 LSP 已执行 Python、TS 7 native、TS 6 legacy、JavaScript、YAML、Bash、Go、C、C++、Rust，以及 stale/多文件/多 root/父子隔离矩阵；单个 skip 是当前为空的 startup-only 参数集，不代表 server 缺失。
 
+2026-07-12 的 FORGE 收口继续将 CLI adapter 拆为 theme、history、streaming、startup、interaction 和 typed command views；`CLIRenderer` 仅保留事件路由与兼容入口。Tool 动作文案已进入 Rich 无关的 presentation semantics，因此 TUI 不需要复制 CLI 对 tool name/argument 的解释。更改全局 CLI 风格只需替换 `CLITheme` 与对应 presenter 布局，不再跨 runtime、tool 或 command use case 修改。
+
 ## 1. 基本原则
 
 TUI 不应成为推动底层抽象成形的试验场。开始 TUI 前，应先让现有 CLI 完整运行在共享 presentation 内核上，并让 remote CLI 复用同一展示路径。
