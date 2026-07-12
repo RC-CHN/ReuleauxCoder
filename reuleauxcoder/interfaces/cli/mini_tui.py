@@ -432,6 +432,7 @@ class MiniTUIApplication:
         self._animation_thread: threading.Thread | None = None
         self._width = 100
         self._follow_transcript = True
+        self._transcript_max_scroll = 0
         self.session_header_expanded = True
         self.startup_lines = tuple(
             event.message.splitlines()[0]
@@ -780,12 +781,15 @@ class MiniTUIApplication:
                 size.rows - self._panel_height() - self._interaction_height() - 6,
             )
             maximum = max(0, content_height - viewport)
+            self._transcript_max_scroll = maximum
             if self._follow_transcript:
                 self.transcript_pane.vertical_scroll = maximum
             else:
                 self.transcript_pane.vertical_scroll = min(
                     self.transcript_pane.vertical_scroll, maximum
                 )
+                if self.transcript_pane.vertical_scroll >= maximum:
+                    self._follow_transcript = True
         except Exception:
             # Rendering must stay available on minimal/dumb terminal outputs.
             return
@@ -798,10 +802,17 @@ class MiniTUIApplication:
         return max(3, rows // 2)
 
     def _scroll_transcript(self, delta: int) -> None:
-        self._follow_transcript = False
-        self.transcript_pane.vertical_scroll = max(
-            0, self.transcript_pane.vertical_scroll + delta
+        target = max(
+            0,
+            min(
+                self._transcript_max_scroll,
+                self.transcript_pane.vertical_scroll + delta,
+            ),
         )
+        self.transcript_pane.vertical_scroll = target
+        # Scrolling up opts out of tail-follow. Returning to the current bottom
+        # opts back in, so subsequent streaming chunks remain visible.
+        self._follow_transcript = target >= self._transcript_max_scroll
         self.invalidate()
 
     def _transcript_mouse_handler(self, event: MouseEvent):

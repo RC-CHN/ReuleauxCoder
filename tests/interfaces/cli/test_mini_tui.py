@@ -8,6 +8,7 @@ from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 from reuleauxcoder.interfaces.cli.mini_tui import (
     MiniTUIEventAdapter,
     MiniTUIInteractor,
+    MiniTUIApplication,
     _interaction_lines,
     _interaction_response,
 )
@@ -168,6 +169,22 @@ def test_interaction_parser_uses_kiss_defaults() -> None:
     assert _interaction_response(choice, "2").selected_id == "b"
     text = InputTextRequest("Name", "Value", initial_value="default")
     assert _interaction_response(text, "").value == "default"
+
+
+def test_transcript_scroll_reenables_tail_follow_at_bottom() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._transcript_max_scroll = 30
+    app._follow_transcript = True
+    app.transcript_pane = SimpleNamespace(vertical_scroll=30)
+    app.invalidate = lambda: None
+
+    app._scroll_transcript(-10)
+    assert app.transcript_pane.vertical_scroll == 20
+    assert app._follow_transcript is False
+
+    app._scroll_transcript(10)
+    assert app.transcript_pane.vertical_scroll == 30
+    assert app._follow_transcript is True
 
 
 def test_session_switch_replaces_execution_projection() -> None:
