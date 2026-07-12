@@ -18,6 +18,7 @@ from reuleauxcoder.domain.config.models import (
     RemoteExecConfig,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.extensions.lifecycle import LifecycleCoordinator
 from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
@@ -100,6 +101,13 @@ class FakeAgent:
         self.hook_registry = HookRegistry()
         self.lifecycle = LifecycleCoordinator(self.hook_registry)
         self._event_handlers = []
+        self.agent_id = "fake-agent"
+        self.session_generation = 0
+        self.current_session_id = "fake-session"
+        self._current_turn_id = "fake-turn"
+        self.history_ledger = HistoryLedger(
+            session_id=self.current_session_id, agent_id=self.agent_id
+        )
         self._stop_requested = False
         self.approval_provider = None
         self._chat_behavior = chat_behavior or (lambda _agent, prompt: f"ok:{prompt}")
@@ -109,6 +117,13 @@ class FakeAgent:
 
     def add_event_handler(self, handler) -> None:
         self._event_handlers.append(handler)
+
+    def _emit_event(self, event) -> None:
+        for handler in tuple(self._event_handlers):
+            handler(event)
+
+    def persist_runtime_snapshot(self) -> None:
+        pass
 
     def set_mode(self, mode_name: str) -> None:
         self.active_mode = mode_name
