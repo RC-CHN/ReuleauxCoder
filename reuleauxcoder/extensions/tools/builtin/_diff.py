@@ -7,14 +7,14 @@ import difflib
 from reuleauxcoder.domain.agent.tool_outcome import ToolDiff
 
 
-def build_tool_diff(
-    old: str, new: str, filename: str, *, context: int = 3
-) -> ToolDiff:
+def build_tool_diff(old: str, new: str, filename: str, *, context: int = 3) -> ToolDiff:
     """Build one unbounded unified diff and its stable line statistics."""
+    normalized_old = old.replace("\r\n", "\n").replace("\r", "\n")
+    normalized_new = new.replace("\r\n", "\n").replace("\r", "\n")
     unified = "".join(
         difflib.unified_diff(
-            old.splitlines(keepends=True),
-            new.splitlines(keepends=True),
+            normalized_old.splitlines(keepends=True),
+            normalized_new.splitlines(keepends=True),
             fromfile=f"a/{filename}",
             tofile=f"b/{filename}",
             n=context,
@@ -34,5 +34,5 @@ def build_tool_diff(
         unified=unified,
         additions=additions,
         deletions=deletions,
-        original_chars=len(old),
+        original_chars=len(normalized_old),
     )

@@ -5,15 +5,14 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolRetentionStrategy,
 )
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
+from reuleauxcoder.extensions.tools.builtin._diff import build_tool_diff
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 
 
 def _backend(root: Path) -> LocalToolBackend:
-    return LocalToolBackend(
-        ExecutionContext(cwd=str(root), workspace_root=str(root))
-    )
+    return LocalToolBackend(ExecutionContext(cwd=str(root), workspace_root=str(root)))
 
 
 def test_write_and_edit_return_structured_unbounded_diffs(tmp_path: Path) -> None:
@@ -41,6 +40,14 @@ def test_write_and_edit_return_structured_unbounded_diffs(tmp_path: Path) -> Non
     assert edit.model_text.startswith("Edited demo.txt\n--- a/")
     assert write.metadata["show_diff_by_default"] is True
     assert edit.metadata["show_diff_by_default"] is True
+
+
+def test_diff_is_stable_across_platform_newline_encodings() -> None:
+    lf = build_tool_diff("alpha\nbeta\n", "alpha\ngamma\n", "demo.txt")
+    crlf = build_tool_diff("alpha\r\nbeta\r\n", "alpha\r\ngamma\r\n", "demo.txt")
+
+    assert crlf == lf
+    assert "\r" not in crlf.unified
 
 
 def test_read_returns_full_model_content_and_compact_ui_summary(tmp_path: Path) -> None:
