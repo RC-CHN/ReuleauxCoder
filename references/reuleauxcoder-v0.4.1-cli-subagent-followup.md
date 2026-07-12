@@ -79,15 +79,17 @@ _filter_subagent_tools(parent_agent, mode, include_agent=True)
 
 | Child tool 类别 | `reason` | 说明 |
 |---|---:|---|
-| `read_file`、`list_file`、`glob`、`grep` | 不要求 | 低风险、幂等只读；仍受 mode allowlist 限制 |
-| 纯查询 LSP（若未来显式授予） | 不要求 | 当前 allowlist 不因本文自动扩权 |
+| `read_file`、`list_file`、`glob`、`grep` | 不要求 | 所有 child mode 默认持有；幂等只读、免人工审批 |
+| 查询型 `lsp` | 不要求 | 所有 child mode 默认持有；当前三个 operation 均免人工审批 |
 | `report_progress` | 不要求 | 参数本身已经表达目的 |
 | `write_file`、`edit_file` | 必填 | 修改工作区，需要可审计意图 |
 | `shell` | 必填 | 无法仅靠 command string 稳定判断副作用/成本 |
 | `agent` | 不提供 | child 禁止递归委派 |
 | `update_plan` | 不提供 | 全局 Plan 仅 root 可写 |
 
-这项决策只定义 `reason` schema，不暗中改变 approval policy。child 仍继承父 Agent 的审批策略；若以后要让特定只读能力自动放行，应单独修改授权规则并测试，而不是借 `reason` 实现。
+这里同时形成一条显式的 child-scope 授权规则：`read_file`、`list_file`、`glob`、`grep` 与当前查询型 `lsp` 默认放行，不进入人工审批；其余工具仍继承父 Agent 的审批策略。该豁免必须在 scoped authorization 层按明确 capability/effect class 实现，不能借“缺少 reason”隐式推导。
+
+当前 `lsp` 只允许 `goToDefinition`、`findReferences` 和 `documentSymbol`。如果以后增加 `rename`、`codeAction`、format/apply edit 等可修改工作区的 operation，必须拆成新的 effectful capability/tool，不能继承查询型 `lsp` 的免审批规则。
 
 ## 2. 目标架构
 
@@ -114,17 +116,17 @@ root Agent
   agent, update_plan, report_progress, normal mode tools
 
 child explore
-  read_file, glob, grep, report_progress
+  read_file, list_file, glob, grep, lsp(query), report_progress
 
 child execute
-  read_file, glob, grep, write_file(reason), edit_file(reason),
-  shell(reason), report_progress
+  read_file, list_file, glob, grep, lsp(query), write_file(reason),
+  edit_file(reason), shell(reason), report_progress
 
 child verify
-  read_file, glob, grep, shell(reason), report_progress
+  read_file, list_file, glob, grep, lsp(query), shell(reason), report_progress
 ```
 
-`list_file`、LSP 或其他工具只有在 mode allowlist 明确授予后才出现；本文不因为讨论了其 `reason` 行为而自动扩权。
+五个查询能力 `read_file`、`list_file`、`glob`、`grep`、`lsp(query)` 是所有 child mode 的共同基线。其他能力仍必须由 mode allowlist 明确授予；本决策不扩大 write/shell/control 权限。
 
 ### 2.3 Scoped schema 注入，不污染工具原语
 
@@ -152,9 +154,11 @@ child verify
 
 1. 删除 `_filter_subagent_tools(... include_agent=True)` 的递归入口，并移除无意义参数。
 2. child allowlist 删除 `agent` 与 `update_plan`，保留 `report_progress`。
-3. 在 scoped-tool wrapper/schema view 中仅给副作用工具注入必填 `reason`。
-4. reason 进入 event activity、approval summary 与 ledger；执行前剥离。
-5. 恢复旧 session 时遇到 child 发起 `agent`/`update_plan`，按 unavailable tool fail closed，不补发能力。
+3. 为所有 child mode 加入只读基线：`read_file`、`list_file`、`glob`、`grep`、查询型 `lsp`。
+4. 在 child scoped authorization 层显式放行上述五类查询，不创建人工 approval request。
+5. 在 scoped-tool wrapper/schema view 中仅给副作用工具注入必填 `reason`。
+6. reason 进入 event activity、approval summary 与 ledger；执行前剥离。
+7. 恢复旧 session 时遇到 child 发起 `agent`/`update_plan`，按 unavailable tool fail closed，不补发能力。
 
 ### Phase C：补齐 mini-TUI Markdown
 
@@ -211,7 +215,8 @@ parent response -> root transcript
 - child 的 assistant/tool/output/result 不进入主 transcript。
 - child approval 仍可见、可取消、可 stale-refresh。
 - child schema 中没有 `agent`、`update_plan`。
-- effectful child tools 缺少 reason 时 fail closed；只读工具不要求 reason。
+- effectful child tools 缺少 reason 时 fail closed；五类 child 查询工具不要求 reason 且不触发人工审批。
+- 查询型 LSP 的 operation allowlist 被锁定；未来 effectful LSP 不会误继承免审批。
 - Plan 只有 root writer，child progress 仍出现在 Agent panel。
 
 ### 滚动与 stale 验收
@@ -248,4 +253,4 @@ parent response -> root transcript
 - 不因隐藏 child transcript 而丢弃 child runtime/history 数据。
 - 不允许 child 写全局 Plan 或递归创建 Agent。
 - 不用常态全屏 clear 作为 stale/性能修复。
-- 不在本轮顺便扩展 child mode allowlist。
+- 除所有 child mode 统一增加 `list_file` 与查询型 `lsp` 外，不扩展其他 mode capability。
