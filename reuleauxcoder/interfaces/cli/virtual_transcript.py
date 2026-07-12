@@ -1,0 +1,92 @@
+"""Virtual visual-line index for the prompt_toolkit transcript viewport."""
+
+from __future__ import annotations
+
+from bisect import bisect_right
+from dataclasses import dataclass
+from typing import Callable
+
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.layout.controls import UIContent, UIControl
+from prompt_toolkit.mouse_events import MouseEvent
+
+
+Fragments = tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VisualCell:
+    key: tuple[str, int, int, int]
+    lines: tuple[Fragments, ...]
+
+
+class VirtualTranscriptLayout:
+    """Immutable cell/line index; lines are resolved lazily by viewport row."""
+
+    def __init__(self, cells: tuple[VisualCell, ...]) -> None:
+        self.cells = cells
+        starts: list[int] = []
+        total = 0
+        for cell in cells:
+            starts.append(total)
+            total += len(cell.lines)
+        self._starts = tuple(starts)
+        self.line_count = max(1, total)
+
+    def get_line(self, line_number: int) -> list[tuple[str, str]]:
+        if not self.cells or line_number < 0 or line_number >= self.line_count:
+            return [("class:muted", "No activity yet.")] if not self.cells else []
+        cell_index = bisect_right(self._starts, line_number) - 1
+        cell = self.cells[cell_index]
+        local_line = line_number - self._starts[cell_index]
+        return list(cell.lines[local_line])
+
+    def flatten(self) -> list[tuple[str, str]]:
+        fragments: list[tuple[str, str]] = []
+        for line_number in range(self.line_count):
+            fragments.extend(self.get_line(line_number))
+            if line_number + 1 < self.line_count:
+                fragments.append(("", "\n"))
+        return fragments
+
+
+class VirtualTranscriptControl(UIControl):
+    """Expose only requested viewport rows to prompt_toolkit's Window."""
+
+    def __init__(
+        self,
+        layout_provider: Callable[[int], VirtualTranscriptLayout],
+        cursor_provider: Callable[[], Point],
+        mouse_handler: Callable[[MouseEvent], object] | None = None,
+    ) -> None:
+        self._layout_provider = layout_provider
+        self._cursor_provider = cursor_provider
+        self._mouse_handler = mouse_handler
+        self.last_width = 0
+        self.last_height = 0
+        self.last_line_count = 0
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        layout = self._layout_provider(width)
+        self.last_width = width
+        self.last_height = height
+        self.last_line_count = layout.line_count
+        cursor = self._cursor_provider()
+        cursor = Point(
+            x=0,
+            y=max(0, min(cursor.y, layout.line_count - 1)),
+        )
+        return UIContent(
+            get_line=layout.get_line,
+            line_count=layout.line_count,
+            cursor_position=cursor,
+            show_cursor=False,
+        )
+
+    def is_focusable(self) -> bool:
+        return False
+
+    def mouse_handler(self, mouse_event: MouseEvent):
+        if self._mouse_handler is not None:
+            return self._mouse_handler(mouse_event)
+        return NotImplemented

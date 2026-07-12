@@ -1,6 +1,7 @@
 import threading
 import time
 from types import SimpleNamespace
+from dataclasses import replace
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.approval import ApprovalSection, ApprovalSectionKind
@@ -18,6 +19,11 @@ from reuleauxcoder.interfaces.cli.mini_tui import (
     _interaction_lines,
     _interaction_response,
     _wrap_fragments,
+)
+from reuleauxcoder.interfaces.cli.virtual_transcript import (
+    VirtualTranscriptControl,
+    VirtualTranscriptLayout,
+    VisualCell,
 )
 import reuleauxcoder.interfaces.cli.mini_tui as mini_tui_module
 from reuleauxcoder.interfaces.events import (
@@ -81,7 +87,7 @@ def test_static_transcript_cells_reuse_width_revision_fragment_cache(
     assert calls == 2
 
 
-def test_large_static_transcript_reuses_aggregate_layout() -> None:
+def test_thousand_cell_transcript_reuses_virtual_layout() -> None:
     adapter = MiniTUIEventAdapter()
     adapter.append_restored_conversation(
         [
@@ -89,16 +95,16 @@ def test_large_static_transcript_reuses_aggregate_layout() -> None:
                 "role": "assistant" if index % 2 else "user",
                 "content": f"row {index} · 中文 🚀 **markdown**",
             }
-            for index in range(500)
+            for index in range(1_000)
         ]
     )
 
-    first = adapter.transcript_fragments()
-    second = adapter.transcript_fragments()
+    first = adapter.transcript_layout(100)
+    second = adapter.transcript_layout(100)
+    assert len(adapter.transcript.state.transcript.cells) == 1_000
     assert second is first
 
-    adapter.set_viewport_width(64)
-    resized = adapter.transcript_fragments()
+    resized = adapter.transcript_layout(64)
     assert resized is not first
 
 
@@ -110,6 +116,61 @@ def test_visual_prewrap_counts_cjk_and_emoji_width() -> None:
     text = "".join(fragment for _style, fragment in wrapped)
 
     assert text == "ab中文\n🚀cd"
+
+
+def test_stream_revision_reformats_only_changed_cell(monkeypatch) -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.append_restored_conversation(
+        [
+            {"role": "assistant", "content": f"stable {index}"}
+            for index in range(100)
+        ]
+    )
+    adapter.transcript_layout(80)
+    original = mini_tui_module._cell_fragments
+    calls = []
+
+    def counted(cell, **kwargs):
+        calls.append(cell.id)
+        return original(cell, **kwargs)
+
+    monkeypatch.setattr(mini_tui_module, "_cell_fragments", counted)
+    last = adapter.transcript.state.transcript.cells[-1]
+    adapter.transcript.state.transcript.replace(
+        replace(last, text=last.text + " next chunk", revision=last.revision + 1)
+    )
+
+    adapter.transcript_layout(80)
+    assert calls == [last.id]
+
+
+def test_virtual_control_resolves_only_requested_rows() -> None:
+    calls = []
+
+    class CountingLayout(VirtualTranscriptLayout):
+        def get_line(self, line_number):
+            calls.append(line_number)
+            return super().get_line(line_number)
+
+    layout = CountingLayout(
+        tuple(
+            VisualCell(
+                key=(f"cell-{index}", 0, 80, 0),
+                lines=((('', f"row {index}"),),),
+            )
+            for index in range(1_000)
+        )
+    )
+    control = VirtualTranscriptControl(
+        lambda _width: layout,
+        lambda: mini_tui_module.Point(x=0, y=500),
+    )
+    content = control.create_content(80, 20)
+
+    assert content.line_count == 1_000
+    assert calls == []
+    assert content.get_line(500) == [("", "row 500")]
+    assert calls == [500]
 
 
 def test_child_internals_stay_out_of_transcript_but_approval_remains_visible() -> None:

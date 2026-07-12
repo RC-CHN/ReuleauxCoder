@@ -47,6 +47,11 @@ from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.cli.markdown_fragments import RetainedMarkdownRenderer
+from reuleauxcoder.interfaces.cli.virtual_transcript import (
+    VirtualTranscriptControl,
+    VirtualTranscriptLayout,
+    VisualCell,
+)
 from reuleauxcoder.interfaces.events import (
     InteractionPromptPayload,
     RuntimeEventPayload,
@@ -71,8 +76,10 @@ from reuleauxcoder.presentation import (
     ExecutionViewReducer,
     NoticeCell,
     PresentationReducer,
+    RuntimeViewState,
     SubagentCell,
     ToolCell,
+    TranscriptModel,
     UserCell,
     execution_panel_lines,
 )
@@ -117,7 +124,14 @@ class MiniTUIEventAdapter:
 
     def __init__(self, *, root_agent_id: str | None = None) -> None:
         self.root_agent_id = root_agent_id
-        self.transcript = PresentationReducer()
+        self.transcript = PresentationReducer(
+            state=RuntimeViewState(
+                transcript=TranscriptModel(
+                    max_cells=2_000,
+                    max_text_chars=2_000_000,
+                )
+            )
+        )
         self.execution = ExecutionViewReducer(root_agent_id=root_agent_id)
         self._lock = threading.RLock()
         self._invalidate = lambda: None
@@ -125,10 +139,13 @@ class MiniTUIEventAdapter:
         self._pending_events: queue.SimpleQueue[UIEvent] = queue.SimpleQueue()
         self._viewport_width = 100
         self._markdown = RetainedMarkdownRenderer()
-        self._cell_fragment_cache: dict[
-            tuple[str, int, int], tuple[tuple[str, str], ...]
+        self._theme_revision = 0
+        self._cell_visual_cache: dict[
+            tuple[str, int, int, int], tuple[tuple[tuple[str, str], ...], ...]
         ] = {}
-        self._transcript_render_key: tuple[tuple[str, int, int], ...] = ()
+        self._transcript_layout_key: tuple[tuple[str, int, int, int], ...] = ()
+        self._transcript_layout = VirtualTranscriptLayout(())
+        self._flattened_layout: VirtualTranscriptLayout | None = None
         self._transcript_rendered = FormattedText()
 
     def bind_invalidator(self, callback) -> None:
@@ -311,46 +328,66 @@ class MiniTUIEventAdapter:
                 for agent in self.execution.state.agents.values()
             )
 
-    def transcript_fragments(self) -> FormattedText:
+    def transcript_layout(self, width: int | None = None) -> VirtualTranscriptLayout:
         self._drain_pending_events()
-        fragments: list[tuple[str, str]] = []
+        if width is not None:
+            self.set_viewport_width(width)
         with self._lock:
             cells = self.transcript.state.transcript.cells
         render_key = tuple(
-            (cell.id, cell.revision, self._viewport_width) for cell in cells
+            (
+                cell.id,
+                cell.revision,
+                self._viewport_width,
+                self._theme_revision,
+            )
+            for cell in cells
         )
-        if render_key == self._transcript_render_key:
-            return self._transcript_rendered
-        live_keys: set[tuple[str, int, int]] = set()
+        if render_key == self._transcript_layout_key:
+            return self._transcript_layout
+        live_keys: set[tuple[str, int, int, int]] = set()
+        visual_cells: list[VisualCell] = []
         for cell in cells:
-            key = (cell.id, cell.revision, self._viewport_width)
+            key = (
+                cell.id,
+                cell.revision,
+                self._viewport_width,
+                self._theme_revision,
+            )
             live_keys.add(key)
-            rendered = self._cell_fragment_cache.get(key)
-            if rendered is None:
-                rendered = tuple(
-                    _cell_fragments(
-                        cell,
-                        width=self._viewport_width,
-                        markdown_renderer=self._markdown,
+            lines = self._cell_visual_cache.get(key)
+            if lines is None:
+                lines = _fragments_to_visual_lines(
+                    _wrap_fragments(
+                        _cell_fragments(
+                            cell,
+                            width=self._viewport_width,
+                            markdown_renderer=self._markdown,
+                        ),
+                        width=max(1, self._viewport_width),
                     )
                 )
-                self._cell_fragment_cache[key] = rendered
-            fragments.extend(rendered)
-        if len(self._cell_fragment_cache) > max(50, len(live_keys) * 2):
-            self._cell_fragment_cache = {
+                self._cell_visual_cache[key] = lines
+            visual_cells.append(VisualCell(key=key, lines=lines))
+        if len(self._cell_visual_cache) > max(50, len(live_keys) * 2):
+            self._cell_visual_cache = {
                 key: value
-                for key, value in self._cell_fragment_cache.items()
+                for key, value in self._cell_visual_cache.items()
                 if key in live_keys
             }
-        rendered = FormattedText(
-            _wrap_fragments(
-                fragments or [("class:muted", "No activity yet.\n")],
-                width=max(1, self._viewport_width - 1),
-            )
-        )
-        self._transcript_render_key = render_key
-        self._transcript_rendered = rendered
-        return rendered
+        self._transcript_layout_key = render_key
+        self._transcript_layout = VirtualTranscriptLayout(tuple(visual_cells))
+        self._flattened_layout = None
+        return self._transcript_layout
+
+    def transcript_fragments(self) -> FormattedText:
+        """Compatibility projection; the live Window resolves visual rows lazily."""
+        layout = self.transcript_layout()
+        if self._flattened_layout is layout:
+            return self._transcript_rendered
+        self._transcript_rendered = FormattedText(layout.flatten())
+        self._flattened_layout = layout
+        return self._transcript_rendered
 
 
 class MiniTUIInteractor:
@@ -489,6 +526,7 @@ class MiniTUIApplication:
         self._width = 100
         self._follow_transcript = True
         self._transcript_max_scroll = 0
+        self._last_terminal_rows = 0
         self.session_header_expanded = True
         self.startup_lines = tuple(
             event.message.splitlines()[0]
@@ -507,14 +545,10 @@ class MiniTUIApplication:
             accept_handler=self._accept_buffer,
         )
         self.panel_control = FormattedTextControl(self._panel_text)
-        self.transcript_control = FormattedTextControl(
-            self.events.transcript_fragments,
-            focusable=False,
-            show_cursor=False,
-            get_cursor_position=self._transcript_cursor_position,
-        )
-        self.transcript_control.mouse_handler = (  # type: ignore[method-assign]
-            self._transcript_mouse_handler
+        self.transcript_control = VirtualTranscriptControl(
+            self.events.transcript_layout,
+            self._transcript_cursor_position,
+            self._transcript_mouse_handler,
         )
         self.transcript_window = Window(
             self.transcript_control,
@@ -831,14 +865,23 @@ class MiniTUIApplication:
         """Clamp scrolling and follow new output only while tail-follow is on."""
         try:
             size = self.application.output.get_size()
-            width = max(20, size.columns - 2)
-            content_height = self.transcript_window.preferred_height(
-                width - 1, 10_000
-            ).preferred
+            content_width = max(20, size.columns - 1)
+            content_height = self.events.transcript_layout(
+                content_width
+            ).line_count
+            resized = size.rows != self._last_terminal_rows
             viewport = max(
                 1,
-                size.rows - self._panel_height() - self._interaction_height() - 6,
+                (
+                    size.rows
+                    - self._panel_height()
+                    - self._interaction_height()
+                    - 6
+                    if resized or not self.transcript_control.last_height
+                    else self.transcript_control.last_height
+                ),
             )
+            self._last_terminal_rows = size.rows
             maximum = max(0, content_height - viewport)
             self._transcript_max_scroll = maximum
             if self._follow_transcript:
@@ -1008,6 +1051,24 @@ def _wrap_fragments(
         if chunk:
             output.append((style, chunk))
     return output
+
+
+def _fragments_to_visual_lines(
+    fragments: list[tuple[str, str]],
+) -> tuple[tuple[tuple[str, str], ...], ...]:
+    lines: list[list[tuple[str, str]]] = [[]]
+    for style, text in fragments:
+        parts = text.split("\n")
+        for index, part in enumerate(parts):
+            if part:
+                if lines[-1] and lines[-1][-1][0] == style:
+                    previous_style, previous_text = lines[-1][-1]
+                    lines[-1][-1] = (previous_style, previous_text + part)
+                else:
+                    lines[-1].append((style, part))
+            if index + 1 < len(parts):
+                lines.append([])
+    return tuple(tuple(line) for line in lines)
 
 
 def _approval_fragments(cell: ApprovalCell, *, width: int) -> list[tuple[str, str]]:
