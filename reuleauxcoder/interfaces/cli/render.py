@@ -3,11 +3,9 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from rich import box
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape as _escape_markup
-from rich.panel import Panel
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.runtime.events import (
@@ -235,7 +233,12 @@ class CLIRenderer:
 
         if isinstance(event.payload, InteractionPromptPayload):
             self._close_active_content_block()
-            render_interaction_request(self.console, event.payload.request)
+            render_interaction_request(
+                self.console,
+                event.payload.request,
+                max_preview_lines=self.policy.tool_preview_lines,
+                max_preview_chars=self.policy.tool_preview_chars,
+            )
             return
 
         self._render_notification(event)
@@ -343,49 +346,38 @@ class CLIRenderer:
         if not display:
             return
         if outcome.success:
-            self.console.print(f"  [dim]{_escape_markup(display)}[/dim]")
+            self.console.print(
+                f"  [dim]{_escape_markup(display)}[/dim]", soft_wrap=True
+            )
             diff = self.policy.tool_diff_preview(outcome)
             if diff:
                 render_diff_panel(diff, self.console)
-        elif self.policy.verbosity is Verbosity.COMPACT:
-            self.console.print(
-                f"  [red]× {name}: {_escape_markup(display)}[/red]"
-            )
         else:
             self.console.print(
-                Panel(
-                    f"[red]{_escape_markup(display)}[/red]",
-                    title=f"TOOL ERROR · {name}",
-                    border_style="red",
-                    box=box.ROUNDED,
-                    padding=(0, 1),
-                )
+                f"  [red]× {name}: {_escape_markup(display)}[/red]",
+                soft_wrap=True,
             )
 
     def _render_subagent_completed(self, payload: SubagentFinished) -> None:
         """Render a concise sub-agent completion notification."""
         body = f"id={payload.job_id} mode={payload.mode}"
-        if payload.error and self.policy.verbosity is not Verbosity.COMPACT:
-            self.console.print(
-                Panel(
-                    f"{body}\n{payload.error}",
-                    title=f"SUBAGENT · {payload.status.upper()}",
-                    border_style="red",
-                    box=box.ROUNDED,
-                    padding=(0, 1),
-                )
-            )
-        elif payload.error:
+        if payload.error:
             self.console.print(
                 f"[red]× subagent[/red] {body} {payload.status}: "
-                f"{_escape_markup(payload.error)}"
+                f"{_escape_markup(payload.error)}",
+                soft_wrap=True,
             )
         else:
             self.console.print(f"[magenta]↳ subagent[/magenta] {body} {payload.status}")
 
     def _render_diff(self, result: str) -> None:
         """Render a diff with syntax highlighting."""
-        render_diff_panel(result, self.console)
+        render_diff_panel(
+            result,
+            self.console,
+            max_lines=self.policy.tool_preview_lines,
+            max_chars=self.policy.tool_preview_chars,
+        )
 
     def _render_error(self, message: str | None) -> None:
         """Render an error message."""
@@ -405,14 +397,9 @@ class CLIRenderer:
         if isinstance(event.payload, ReasoningNoticePayload):
             self._close_active_content_block()
             self.console.print(
-                Panel(
-                    event.message,
-                    title=event.payload.title,
-                    border_style="bright_black",
-                    box=box.ROUNDED,
-                    padding=(0, 1),
-                )
+                f"[bold bright_black]{_escape_markup(event.payload.title)}[/bold bright_black]"
             )
+            self.console.print(event.message, soft_wrap=True)
             return
 
         border_style = {
@@ -438,15 +425,14 @@ class CLIRenderer:
         if event.level is UIEventLevel.SUCCESS:
             self.console.print(f"[green]✓[/green] {_escape_markup(event.message)}")
             return
-        title = f"{event.kind.value.upper()} · {event.level.value.upper()}"
+        marker = "⚠" if event.level is UIEventLevel.WARNING else "×"
+        category = (
+            f"{event.kind.value}: " if event.kind is not UIEventKind.SYSTEM else ""
+        )
         self.console.print(
-            Panel(
-                event.message,
-                title=title,
-                border_style=border_style,
-                box=box.ROUNDED,
-                padding=(0, 1),
-            )
+            f"[{border_style}]{marker} {category}{_escape_markup(event.message)}"
+            f"[/{border_style}]",
+            soft_wrap=True,
         )
 
     def _render_view_event(
@@ -524,15 +510,15 @@ def show_banner(model: str, base_url: str | None, version: str) -> None:
     shell = platform_info.get_preferred_shell()
     platform_line = f"Platform: [yellow]{platform_info.system.upper()}[/yellow]  Shell: [yellow]{shell.value}[/yellow]"
 
+    console.print(f"[bold]ReuleauxCoder[/bold] v{version}")
     console.print(
-        Panel(
-            f"[bold]ReuleauxCoder[/bold] v{version}\n"
-            f"Model: [cyan]{model}[/cyan]"
-            + (f"  Base: [dim]{base_url}[/dim]" if base_url else "")
-            + f"\n{platform_line}"
-            + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]/quit[/bold] to exit.",
-            border_style="blue",
-        )
+        f"Model: [cyan]{model}[/cyan]"
+        + (f"  Base: [dim]{base_url}[/dim]" if base_url else "")
+    )
+    console.print(platform_line)
+    console.print(
+        "Type [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, "
+        "[bold]/quit[/bold] to exit."
     )
 
 

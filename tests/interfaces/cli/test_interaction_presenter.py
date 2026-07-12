@@ -48,8 +48,45 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
     render_interaction_request(remote, request)
 
     assert local.export_text() == export_remote_console(remote)
+    assert not set("╭╮╰╯─│").intersection(local.export_text())
     assert interaction_constraints(request) == {
         "value_type": "boolean",
         "approve_label": "Approve",
         "reject_label": "Reject",
     }
+
+
+def test_large_write_review_is_head_tail_folded_without_box_borders() -> None:
+    diff = "\n".join(
+        ["--- a/demo.py", "+++ b/demo.py", "@@ -0,0 +1,80 @@"]
+        + [f"+line-{index}" for index in range(80)]
+    )
+    request = ReviewRequest(
+        title="Approval required: write_file",
+        summary="Tool 'write_file' requires approval.",
+        sections=(
+            ApprovalSection(
+                id="diff",
+                title="Proposed file diff",
+                kind=ApprovalSectionKind.DIFF,
+                content=diff,
+            ),
+        ),
+    )
+    console = Console(
+        file=StringIO(),
+        record=True,
+        width=60,
+        color_system=None,
+        force_terminal=False,
+    )
+
+    render_interaction_request(
+        console, request, max_preview_lines=8, max_preview_chars=300
+    )
+    output = console.export_text()
+
+    assert "+line-0" in output
+    assert "+line-79" in output
+    assert "output folded" in output
+    assert not set("╭╮╰╯─│").intersection(output)

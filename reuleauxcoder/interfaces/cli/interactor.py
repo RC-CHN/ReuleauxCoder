@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import sys
 import threading
+
+from prompt_toolkit import prompt as pt_prompt
 
 from reuleauxcoder.interfaces.events import UIEvent, UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.interactions import (
@@ -20,9 +24,25 @@ from reuleauxcoder.interfaces.interactions import (
 class CLIUIInteractor:
     """Blocking terminal-based UI interaction adapter."""
 
-    def __init__(self, ui_bus: UIEventBus):
+    def __init__(
+        self,
+        ui_bus: UIEventBus,
+        *,
+        prompt_fn: Callable[[str], str] = pt_prompt,
+    ):
         self.ui_bus = ui_bus
+        self._prompt = prompt_fn
         self._interaction_lock = threading.Lock()
+
+    @staticmethod
+    def _finish_interrupted_prompt() -> None:
+        """Move structured output off a partially painted input line."""
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _interrupted(self) -> None:
+        self._finish_interrupted_prompt()
+        self.ui_bus.warning("Interrupted.", kind=UIEventKind.APPROVAL)
 
     def notify(self, event: UIEvent) -> None:
         """Forward a notification into the UI bus."""
@@ -32,7 +52,11 @@ class CLIUIInteractor:
         with self._interaction_lock:
             self.ui_bus.emit_interaction_prompt(request)
             while True:
-                answer = input("Confirm? [y/n]: ").strip().lower()
+                try:
+                    answer = self._prompt("Confirm? [y/n]: ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    self._interrupted()
+                    return ConfirmResponse(confirmed=False, cancelled=True)
                 if answer in {"y", "yes"}:
                     return ConfirmResponse(confirmed=True)
                 if answer in {"n", "no"}:
@@ -54,7 +78,11 @@ class CLIUIInteractor:
             prompt += ": "
 
             while True:
-                answer = input(prompt).strip()
+                try:
+                    answer = self._prompt(prompt).strip()
+                except (KeyboardInterrupt, EOFError):
+                    self._interrupted()
+                    return ChooseOneResponse(selected_id=None, cancelled=True)
                 if answer == "" and request.allow_cancel:
                     return ChooseOneResponse(selected_id=None, cancelled=True)
                 if answer.isdigit():
@@ -76,7 +104,11 @@ class CLIUIInteractor:
             prompt += ": "
 
             while True:
-                answer = input(prompt)
+                try:
+                    answer = self._prompt(prompt)
+                except (KeyboardInterrupt, EOFError):
+                    self._interrupted()
+                    return InputTextResponse(value=None, cancelled=True)
                 if answer == "" and request.initial_value:
                     answer = request.initial_value
                 if answer == "":
@@ -92,14 +124,14 @@ class CLIUIInteractor:
             while True:
                 try:
                     answer = (
-                        input(
+                        self._prompt(
                             f"{request.approve_label}/{request.reject_label}? [y/n]: "
                         )
                         .strip()
                         .lower()
                     )
                 except (KeyboardInterrupt, EOFError):
-                    self.ui_bus.warning("Interrupted.", kind=UIEventKind.APPROVAL)
+                    self._interrupted()
                     return ReviewResponse(
                         approved=False, cancelled=True, reason="approval interrupted"
                     )

@@ -11,7 +11,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
-from reuleauxcoder.interfaces.events import UIEvent
+from reuleauxcoder.interfaces.events import UIEvent, UIEventKind
 from reuleauxcoder.interfaces.view_registry import ViewRendererRegistry
 from reuleauxcoder.presentation import (
     NotificationThreshold,
@@ -72,9 +72,14 @@ def test_compact_notification_snapshot() -> None:
 
     renderer.on_ui_event(UIEvent.info("Loaded session"))
     renderer.on_ui_event(UIEvent.success("Saved session"))
+    renderer.on_ui_event(
+        UIEvent.warning("Interrupted.", kind=UIEventKind.APPROVAL)
+    )
     renderer.on_ui_event(UIEvent.debug("internal detail"))
 
-    assert console.export_text() == "Loaded session\n✓ Saved session\n"
+    assert console.export_text() == (
+        "Loaded session\n✓ Saved session\n⚠ approval: Interrupted.\n"
+    )
 
 
 @pytest.mark.parametrize(

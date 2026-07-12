@@ -387,7 +387,12 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             def _request(self, request):
                 _flush_output()
                 remote_session.register_interaction(request.request_id)
-                render_interaction_request(ansi_console, request)
+                render_interaction_request(
+                    ansi_console,
+                    request,
+                    max_preview_lines=renderer.policy.tool_preview_lines,
+                    max_preview_chars=renderer.policy.tool_preview_chars,
+                )
                 rendered_frame = export_remote_console(ansi_console)
                 kind = {
                     ConfirmRequest: "confirm",

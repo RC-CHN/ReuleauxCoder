@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from rich.markdown import Markdown
-from rich.panel import Panel
+from rich.markup import escape
 
 
 def stop_stream_and_clear(renderer) -> None:
@@ -16,11 +16,12 @@ def stop_stream_and_clear(renderer) -> None:
 def render_markdown_panel(
     renderer, *, markdown_text: str, title: str, border_style: str = "blue"
 ) -> bool:
-    """Render markdown content in a standard CLI panel."""
+    """Render titled markdown without width-dependent box borders."""
     if not markdown_text:
         return False
     stop_stream_and_clear(renderer)
     renderer.console.print(
-        Panel(Markdown(markdown_text), title=title, border_style=border_style)
+        f"[bold {border_style}]{escape(title)}[/bold {border_style}]"
     )
+    renderer.console.print(Markdown(markdown_text))
     return True

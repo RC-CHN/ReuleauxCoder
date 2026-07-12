@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 
 from rich.console import Console
-from rich.json import JSON
-from rich.panel import Panel
+from rich.markup import escape
 from rich.table import Table
 
 from reuleauxcoder.domain.approval import ApprovalSectionKind
@@ -18,15 +18,28 @@ from reuleauxcoder.interfaces.interactions import (
     ReviewRequest,
 )
 from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
+from reuleauxcoder.presentation.policy import fold_text
 
 
-def render_interaction_request(console: Console, request: InteractionRequest) -> None:
-    """Render adapter-neutral interaction facts with one terminal policy."""
+def render_interaction_request(
+    console: Console,
+    request: InteractionRequest,
+    *,
+    max_preview_lines: int = 20,
+    max_preview_chars: int = 1_200,
+) -> None:
+    """Render adapter-neutral facts without resize-fragile box borders."""
     if isinstance(request, ConfirmRequest):
-        console.print(Panel(request.message, title=request.title, border_style="yellow"))
+        _heading(console, request.title)
+        _body(console, request.message, max_preview_lines, max_preview_chars)
         return
     if isinstance(request, ChooseOneRequest):
-        table = Table(title=request.title, show_header=True)
+        table = Table(
+            title=request.title,
+            show_header=True,
+            box=None,
+            pad_edge=False,
+        )
         table.add_column("#", justify="right")
         table.add_column("Choice")
         table.add_column("Description")
@@ -37,28 +50,51 @@ def render_interaction_request(console: Console, request: InteractionRequest) ->
             console.print(request.message)
         return
     if isinstance(request, InputTextRequest):
-        console.print(Panel(request.prompt, title=request.title, border_style="blue"))
+        _heading(console, request.title, color="cyan")
+        _body(console, request.prompt, max_preview_lines, max_preview_chars)
         return
     if isinstance(request, ReviewRequest):
-        console.print(
-            Panel(request.summary, title=request.title, border_style="yellow")
-        )
+        _heading(console, request.title)
+        _body(console, request.summary, max_preview_lines, max_preview_chars)
         for section in request.sections:
+            console.print(f"[bold]{escape(section.title)}[/bold]")
             if (
                 section.kind is ApprovalSectionKind.DIFF
                 and isinstance(section.content, str)
             ):
-                console.print(f"[bold]{section.title}[/bold]")
-                render_diff_panel(section.content, console)
+                render_diff_panel(
+                    section.content,
+                    console,
+                    max_lines=max_preview_lines,
+                    max_chars=max_preview_chars,
+                )
             elif (
                 section.kind is ApprovalSectionKind.JSON
                 and isinstance(section.content, Mapping)
             ):
-                console.print(
-                    Panel(JSON.from_data(dict(section.content)), title=section.title)
+                rendered = json.dumps(
+                    dict(section.content),
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
                 )
+                _body(console, rendered, max_preview_lines, max_preview_chars)
             else:
-                console.print(Panel(str(section.content), title=section.title))
+                _body(
+                    console,
+                    str(section.content),
+                    max_preview_lines,
+                    max_preview_chars,
+                )
+
+
+def _heading(console: Console, title: str, *, color: str = "yellow") -> None:
+    console.print(f"[bold {color}]◆ {escape(title)}[/bold {color}]")
+
+
+def _body(console: Console, text: str, max_lines: int, max_chars: int) -> None:
+    bounded = fold_text(text, max_lines=max_lines, max_chars=max_chars)
+    console.print(bounded, markup=False, soft_wrap=True)
 
 
 def interaction_constraints(request: InteractionRequest) -> dict[str, object]:
