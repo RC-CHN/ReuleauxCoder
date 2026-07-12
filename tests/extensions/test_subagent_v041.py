@@ -5,6 +5,7 @@ import pytest
 from reuleauxcoder.extensions.subagent.context import project_parent_context
 from reuleauxcoder.extensions.subagent.isolation import create_worktree, remove_worktree
 from reuleauxcoder.extensions.subagent.manager import SubagentManager
+from reuleauxcoder.extensions.subagent.models import SubagentResult
 
 
 class _Parent:
@@ -28,6 +29,18 @@ def test_context_projection_modes_are_bounded() -> None:
     assert "current request" in minimal
     assert "old answer" not in minimal
     assert "old answer" in full
+
+
+def test_result_projection_hash_ignores_wall_clock_duration() -> None:
+    first = SubagentResult(
+        status="ok", summary="done", files=["a.py"], duration_seconds=1.0
+    )
+    second = SubagentResult(
+        status="ok", summary="done", files=["a.py"], duration_seconds=999.0
+    )
+    assert first.content_hash() == second.content_hash()
+    assert first.model_text() == second.model_text()
+    assert "duration_seconds" not in first.model_text()
 
 
 def test_background_completion_is_drained_from_mailbox(monkeypatch) -> None:

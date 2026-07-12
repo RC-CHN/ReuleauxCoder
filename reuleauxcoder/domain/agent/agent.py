@@ -670,6 +670,7 @@ class Agent:
             f"kind={item.kind}\n"
             f"sender_agent_id={item.sender_agent_id}\n"
             f"sender_job_id={item.sender_job_id or '-'}\n\n"
+            f"content_hash={item.content_hash or '-'}\n\n"
             f"{item.content}\n"
             "[/Sub-agent context item]"
         )

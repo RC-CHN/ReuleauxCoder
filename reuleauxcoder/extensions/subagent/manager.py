@@ -7,6 +7,8 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from collections import deque
 from pathlib import Path
+import hashlib
+import json
 import threading
 import time
 import uuid
@@ -30,6 +32,16 @@ SubagentDelivery = Literal["awaited", "detached"]
 SubagentMessageKind = Literal[
     "milestone", "blocked", "approval_needed", "partial", "amendment"
 ]
+
+
+def _subagent_item_hash(**payload) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
@@ -156,6 +168,7 @@ class SubagentCommunication:
     created_at: float
     generation: int
     kind: SubagentMessageKind = "milestone"
+    content_hash: str = ""
 
 
 class SubagentManager:
@@ -628,6 +641,14 @@ class SubagentManager:
                     created_at=time.time(),
                     generation=self._generation,
                     kind=kind,
+                    content_hash=_subagent_item_hash(
+                        sender_agent_id=sender_agent_id,
+                        sender_job_id=self._agent_jobs.get(sender_agent_id),
+                        recipient_agent_id=recipient,
+                        generation=self._generation,
+                        kind=kind,
+                        content=text,
+                    ),
                 )
             )
             self._slot_cv.notify_all()

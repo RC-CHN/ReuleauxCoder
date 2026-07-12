@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -32,8 +33,9 @@ class SubagentResult:
     partial: bool = False
     worktree_path: str | None = None
 
-    def model_text(self, *, max_chars: int = 6_000) -> str:
-        payload = {
+    def canonical_payload(self) -> dict:
+        """Return the stable model-visible result without wall-clock noise."""
+        return {
             "status": self.status,
             "summary": self.summary,
             "evidence": self.evidence,
@@ -41,14 +43,24 @@ class SubagentResult:
             "changes": self.changes,
             "unresolved": self.unresolved,
             "confidence": self.confidence,
-            "usage": {
-                "tool_uses": self.tool_uses,
-                "duration_seconds": round(self.duration_seconds, 3),
-            },
+            "usage": {"tool_uses": self.tool_uses},
             "transcript_ref": self.transcript_ref,
             "partial": self.partial,
             "worktree_path": self.worktree_path,
         }
+
+    def content_hash(self) -> str:
+        encoded = json.dumps(
+            self.canonical_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def model_text(self, *, max_chars: int = 6_000) -> str:
+        payload = self.canonical_payload()
+        payload["content_hash"] = self.content_hash()
         encoded = json.dumps(payload, ensure_ascii=False, indent=2)
         if len(encoded) <= max_chars:
             return encoded

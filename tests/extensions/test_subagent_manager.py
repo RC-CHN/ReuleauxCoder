@@ -317,6 +317,7 @@ def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
 
     assert [item.content for item in messages] == ["second", "first"]
     assert [item.seq for item in messages] == sorted(item.seq for item in messages)
+    assert all(len(item.content_hash) == 64 for item in messages)
     assert manager.drain_parent_messages("child-a") == []
     manager.shutdown()
 
