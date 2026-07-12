@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind, ToolOutcome
-from reuleauxcoder.domain.approval import ApprovalRequest
+from reuleauxcoder.domain.approval import ApprovalRequest, ApprovalSectionKind
 from reuleauxcoder.domain.approval_preview import build_approval_preview
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
@@ -28,6 +28,7 @@ class ToolExecutor:
 
     def execute(self, tc: "ToolCall") -> str:
         """Execute a single tool call."""
+        reviewed_diff: str | None = None
         tool = self.agent.get_tool(tc.name)
         if tool is None:
             tool = get_tool(tc.name)
@@ -171,6 +172,15 @@ class ToolExecutor:
                     )
                 )
                 return message
+            if decision.reviewed and approval_request.preview is not None:
+                reviewed_diff = next(
+                    (
+                        str(section.content)
+                        for section in approval_request.preview.sections
+                        if section.kind is ApprovalSectionKind.DIFF
+                    ),
+                    None,
+                )
 
         try:
             before_context = self.agent.extension_runtime.contribute_tool_context(
@@ -238,6 +248,13 @@ class ToolExecutor:
             outcome = after_context.outcome or ToolOutcome.from_legacy(
                 after_context.result
             )
+            if (
+                reviewed_diff is not None
+                and outcome.diff is not None
+                and outcome.diff.unified == reviewed_diff
+            ):
+                outcome = outcome.with_metadata(diff_reviewed=True)
+                after_context.outcome = outcome
             # Legacy transforms may still replace ``result``.  Preserve that
             # compatibility at this single hook boundary.
             if after_context.result != outcome.model_text:

@@ -8,8 +8,11 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
+from reuleauxcoder.domain.approval import ApprovalDecision
 from reuleauxcoder.domain.hooks.types import GuardDecision
 from reuleauxcoder.domain.llm.models import ToolCall
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
+from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 
 
 class _ShellToolStub:
@@ -163,3 +166,74 @@ def test_guard_warning_is_emitted_as_structured_diagnostic() -> None:
     assert diagnostic.data["code"] == "tool.guard_warning"
     assert diagnostic.data["message"] == "command deserves review"
     assert diagnostic.data["details"]["tool_call_id"] == "call_warn"
+
+
+class _ReviewingProvider:
+    def __init__(self, *, mutate=None, reviewed: bool = True) -> None:
+        self.mutate = mutate
+        self.reviewed = reviewed
+
+    def request_approval(self, request):  # noqa: ARG002
+        if self.mutate is not None:
+            self.mutate()
+        return ApprovalDecision.allow_once("approved", reviewed=self.reviewed)
+
+
+def test_tool_outcome_marks_identical_human_reviewed_diff(tmp_path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("old\n")
+    tool = EditFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+        )
+    )
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.require_approval()
+    ]
+    agent.approval_provider = _ReviewingProvider()
+
+    ToolExecutor(agent).execute(
+        ToolCall(
+            id="reviewed",
+            name="edit_file",
+            arguments={
+                "file_path": str(target),
+                "old_string": "old",
+                "new_string": "new",
+            },
+        )
+    )
+
+    assert agent.events[-1].tool_outcome.metadata["diff_reviewed"] is True
+
+
+def test_changed_diff_is_not_hidden_after_human_review(tmp_path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("old\n")
+    tool = EditFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+        )
+    )
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.require_approval()
+    ]
+    agent.approval_provider = _ReviewingProvider(
+        mutate=lambda: target.write_text("old\nexternal change\n")
+    )
+
+    ToolExecutor(agent).execute(
+        ToolCall(
+            id="stale-review",
+            name="edit_file",
+            arguments={
+                "file_path": str(target),
+                "old_string": "old",
+                "new_string": "new",
+            },
+        )
+    )
+
+    assert "diff_reviewed" not in agent.events[-1].tool_outcome.metadata

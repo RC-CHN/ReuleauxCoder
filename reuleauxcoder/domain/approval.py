@@ -51,14 +51,17 @@ class ApprovalDecision:
 
     mode: ApprovalDecisionMode
     reason: str | None = None
+    reviewed: bool = False
 
     @property
     def approved(self) -> bool:
         return self.mode == "allow_once"
 
     @classmethod
-    def allow_once(cls, reason: str | None = None) -> "ApprovalDecision":
-        return cls(mode="allow_once", reason=reason)
+    def allow_once(
+        cls, reason: str | None = None, *, reviewed: bool = False
+    ) -> "ApprovalDecision":
+        return cls(mode="allow_once", reason=reason, reviewed=reviewed)
 
     @classmethod
     def deny_once(cls, reason: str | None = None) -> "ApprovalDecision":

@@ -61,7 +61,8 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
         if response.approved:
             pending.resolve(
                 ApprovalDecision.allow_once(
-                    response.reason or "approved via interaction"
+                    response.reason or "approved via interaction",
+                    reviewed=True,
                 )
             )
         else:

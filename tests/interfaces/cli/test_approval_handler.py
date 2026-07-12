@@ -39,3 +39,4 @@ def test_cli_handler_forwards_shared_typed_preview_without_rebuilding() -> None:
     assert interactor.request.sections == (section,)
     assert interactor.request.context.tool_name == "edit_file"
     assert pending.decision is not None and pending.decision.approved is True
+    assert pending.decision.reviewed is True

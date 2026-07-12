@@ -72,6 +72,19 @@ def test_summary_mode_does_not_render_unrequested_diff() -> None:
     assert policy.tool_diff_preview(outcome) == ""
 
 
+def test_summary_mode_does_not_repeat_identical_reviewed_diff() -> None:
+    from reuleauxcoder.domain.agent.tool_outcome import ToolDiff
+
+    policy = PresentationPolicy(tool_output_mode=ToolOutputMode.SUMMARY)
+    outcome = ToolOutcome(
+        summary="Edited demo.txt",
+        diff=ToolDiff(path="demo.txt", unified="--- a/demo\n+++ b/demo\n-x\n+y"),
+        metadata={"show_diff_by_default": True, "diff_reviewed": True},
+    )
+
+    assert policy.tool_diff_preview(outcome) == ""
+
+
 def test_debug_preview_is_unbounded() -> None:
     text = "x" * 5_000
     policy = PresentationPolicy(

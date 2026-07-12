@@ -140,6 +140,10 @@ class ToolOutcome:
             archive_reference=archive_reference or self.archive_reference,
         )
 
+    def with_metadata(self, **values: object) -> "ToolOutcome":
+        """Return an outcome enriched with immutable presentation facts."""
+        return replace(self, metadata={**self.metadata, **values})
+
     def _detailed_text(self, *, include_diagnostics: bool) -> str:
         sections: list[str] = []
         if self.content:

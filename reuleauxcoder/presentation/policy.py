@@ -88,6 +88,7 @@ class PresentationPolicy:
             self.tool_output_mode is not ToolOutputMode.SUMMARY
             or outcome.diff is None
             or not outcome.metadata.get("show_diff_by_default")
+            or outcome.metadata.get("diff_reviewed")
         ):
             return ""
         return fold_text(
