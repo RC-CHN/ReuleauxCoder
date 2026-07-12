@@ -113,6 +113,11 @@ class Agent:
         # State
         self.state = AgentState()
         self._state_lock = threading.Lock()
+        # All RuntimeContextView mutations share this revision boundary. Worker
+        # callbacks only enqueue ledger/mailbox data, so a candidate rewrite can
+        # be committed without overwriting steering or child results.
+        self._context_revision_lock = threading.RLock()
+        self._context_revision = 0
         self._stop_event = threading.Event()
         self._current_turn_id: str | None = None
         self.history_ledger = HistoryLedger(
@@ -226,20 +231,22 @@ class Agent:
         return synthesized
 
     def _append_message(self, message: dict, *, source: str) -> None:
-        api_round_id = (
-            f"{self._current_turn_id}:{self.state.current_round}"
-            if self._current_turn_id is not None
-            else None
-        )
-        self.history_ledger.append_message(
-            message,
-            source=source,
-            agent_id=self.agent_id,
-            turn_id=self._current_turn_id,
-            api_round_id=api_round_id,
-        )
-        self.state.messages.append(message)
-        self.persist_runtime_snapshot()
+        with self._context_revision_lock:
+            api_round_id = (
+                f"{self._current_turn_id}:{self.state.current_round}"
+                if self._current_turn_id is not None
+                else None
+            )
+            self.history_ledger.append_message(
+                message,
+                source=source,
+                agent_id=self.agent_id,
+                turn_id=self._current_turn_id,
+                api_round_id=api_round_id,
+            )
+            self.state.messages.append(message)
+            self._context_revision += 1
+            self.persist_runtime_snapshot()
 
     def bind_session_persistence(self, *, events_path, callback) -> None:
         self.history_ledger.bind_context(
@@ -265,41 +272,49 @@ class Agent:
         checkpoint_id: str | None = None,
         record: bool = True,
     ) -> None:
-        replacement = [dict(message) for message in messages]
-        if record:
-            self.history_ledger.append_context_view(
-                replacement,
-                reason=reason,
-                history_version=self.context.history_version,
-                checkpoint_id=checkpoint_id,
-            )
-        self.state.messages[:] = replacement
-        if record:
-            self.persist_runtime_snapshot()
+        with self._context_revision_lock:
+            replacement = [dict(message) for message in messages]
+            if record:
+                self.history_ledger.append_context_view(
+                    replacement,
+                    reason=reason,
+                    history_version=self.context.history_version,
+                    checkpoint_id=checkpoint_id,
+                )
+            self.state.messages[:] = replacement
+            self._context_revision += 1
+            if record:
+                self.persist_runtime_snapshot()
 
     def maybe_compress_context(self, llm, *, reason: str) -> bool:
-        candidate = [dict(message) for message in self.state.messages]
-        if not self.context.maybe_compress(candidate, llm):
-            return False
-        checkpoint = self.context.checkpoints[-1]
-        self._replace_context_messages(
-            candidate,
-            reason=reason,
-            checkpoint_id=checkpoint.id,
-        )
-        return True
+        with self._context_revision_lock:
+            source_revision = self._context_revision
+            candidate = [dict(message) for message in self.state.messages]
+            if not self.context.maybe_compress(candidate, llm):
+                return False
+            if source_revision != self._context_revision:
+                self.context._reset_compression_state()
+                return False
+            checkpoint = self.context.checkpoints[-1]
+            self._replace_context_messages(
+                candidate,
+                reason=reason,
+                checkpoint_id=checkpoint.id,
+            )
+            return True
 
     def force_compress_context(self, strategy: str, llm) -> bool:
-        candidate = [dict(message) for message in self.state.messages]
-        if not self.context.force_compress(candidate, strategy, llm):
-            return False
-        checkpoint = self.context.checkpoints[-1]
-        self._replace_context_messages(
-            candidate,
-            reason="manual compact command",
-            checkpoint_id=checkpoint.id,
-        )
-        return True
+        with self._context_revision_lock:
+            candidate = [dict(message) for message in self.state.messages]
+            if not self.context.force_compress(candidate, strategy, llm):
+                return False
+            checkpoint = self.context.checkpoints[-1]
+            self._replace_context_messages(
+                candidate,
+                reason="manual compact command",
+                checkpoint_id=checkpoint.id,
+            )
+            return True
 
     def restore_history_runtime(self, session) -> None:
         self.history_ledger = HistoryLedger(
@@ -415,10 +430,13 @@ class Agent:
             for content, generation, _event_id in pending
             if generation == self.session_generation
         ]
-        for content in accepted:
-            self.state.messages.append({"role": "user", "content": content})
         if accepted:
-            self.persist_runtime_snapshot()
+            with self._context_revision_lock:
+                self.state.messages.extend(
+                    {"role": "user", "content": content} for content in accepted
+                )
+                self._context_revision += 1
+                self.persist_runtime_snapshot()
         return len(accepted)
 
     def get_active_mode_config(self) -> ModeConfig | None:
@@ -871,7 +889,9 @@ class Agent:
             reason="runtime reset",
             history_version=self.context.history_version,
         )
-        self.state.messages.clear()
+        with self._context_revision_lock:
+            self.state.messages.clear()
+            self._context_revision += 1
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0
         self.state.current_round = 0

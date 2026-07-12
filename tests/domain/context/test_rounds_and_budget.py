@@ -1,3 +1,5 @@
+import json
+
 from reuleauxcoder.domain.context.budget import ContextBudget
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.context.rounds import group_api_rounds, recent_round_start
@@ -91,3 +93,24 @@ def test_provider_compaction_uses_provider_neutral_boundary() -> None:
     assert manager.maybe_compress(messages) is True
     assert messages[0]["content"] == "provider compacted"
     assert manager.checkpoints[-1].strategy == ("provider_tool_cache_compaction",)
+
+
+def test_phase_boundary_commits_semantic_checkpoint_below_token_wall() -> None:
+    manager = ContextManager(
+        max_tokens=100_000,
+        reserved_output_tokens=0,
+        safety_margin_tokens=0,
+        summarize_keep_recent_turns=2,
+    )
+    messages = [
+        {"role": "assistant", "content": f"completed phase detail {index}"}
+        for index in range(8)
+    ]
+
+    manager.mark_phase_boundary()
+
+    assert manager.maybe_compress(messages) is True
+    assert manager.checkpoints[-1].strategy == ("phase_checkpoint",)
+    summary = json.loads(messages[0]["content"].split("\n", 1)[1])
+    assert summary["scope"]["checkpoint_kind"] == "phase_checkpoint"
+    assert summary["scope"]["recent_rounds_preserved"] == 2
