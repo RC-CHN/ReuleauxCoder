@@ -158,6 +158,43 @@ def test_inject_direct_when_no_pending_tool_calls() -> None:
     assert agent._pending_subagent_injections == []
 
 
+def test_reconcile_moves_recovered_tool_outputs_before_session_markers() -> None:
+    agent = _make_agent()
+    assistant = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_a",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
+            {
+                "id": "call_b",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
+        ],
+    }
+    agent.state.messages[:] = [
+        assistant,
+        {"role": "tool", "tool_call_id": "call_a", "content": "A"},
+        {"role": "user", "content": "[SESSION_EXIT]"},
+        {"role": "tool", "tool_call_id": "call_b", "content": "B"},
+    ]
+
+    synthesized = agent.reconcile_pending_tool_calls()
+
+    assert synthesized == 0
+    assert [message["role"] for message in agent.state.messages] == [
+        "assistant",
+        "tool",
+        "tool",
+        "user",
+    ]
+    assert agent._collect_pending_tool_calls() == []
+
+
 def test_flush_empty_is_noop() -> None:
     agent = _make_agent()
     assert agent._flush_pending_subagent_injections() == 0

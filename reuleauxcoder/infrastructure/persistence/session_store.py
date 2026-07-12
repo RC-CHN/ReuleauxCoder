@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from reuleauxcoder.domain.context.manager import ensure_message_token_counts
+from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 from reuleauxcoder.domain.session.models import (
     Session,
     SessionMetadata,
@@ -53,7 +54,12 @@ class SessionStore:
             if not session_id:
                 session_id = self.generate_session_id()
 
-            saved_messages = [dict(message) for message in messages]
+            saved_messages, _ = reconcile_tool_call_adjacency(
+                [dict(message) for message in messages],
+                missing_content=lambda _tool_call_id, tool_name: (
+                    f"Tool '{tool_name}' interrupted before session persistence."
+                ),
+            )
             ensure_message_token_counts(saved_messages)
             if is_exit:
                 exit_time = time.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -138,7 +144,12 @@ class SessionStore:
 
             data = json.loads(path.read_text())
             session = Session.from_dict(data)
-            updated_messages = [dict(message) for message in session.messages]
+            updated_messages, _ = reconcile_tool_call_adjacency(
+                [dict(message) for message in session.messages],
+                missing_content=lambda _tool_call_id, tool_name: (
+                    f"Tool '{tool_name}' interrupted in persisted session."
+                ),
+            )
             ensure_message_token_counts(updated_messages)
             session.messages = updated_messages
             if session.runtime_state.model is None:

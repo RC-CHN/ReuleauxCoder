@@ -55,6 +55,40 @@ def test_session_store_save_with_exit_appends_exit_marker(tmp_path: Path) -> Non
     assert store.get_exit_time(loaded.messages) is not None
 
 
+def test_session_store_places_synthetic_tool_result_before_exit_marker(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_pending",
+                        "type": "function",
+                        "function": {"name": "edit_file", "arguments": "{}"},
+                    }
+                ],
+            }
+        ],
+        model="gpt-4o",
+        is_exit=True,
+    )
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert [message["role"] for message in loaded.messages] == [
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert loaded.messages[1]["tool_call_id"] == "call_pending"
+    assert loaded.messages[2]["content"].startswith("[SESSION_EXIT]")
+
+
 def test_session_store_append_system_message_updates_existing_session(
     tmp_path: Path,
 ) -> None:
@@ -98,6 +132,56 @@ def test_session_store_load_backfills_missing_message_token_counts(
 
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(persisted["messages"][0].get(MESSAGE_TOKEN_KEY), int)
+
+
+def test_session_store_load_repairs_legacy_out_of_order_tool_results(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[{"role": "user", "content": "seed"}], model="gpt-4o"
+    )
+    path = tmp_path / f"{session_id}.json"
+
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assistant = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_legacy",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            }
+        ],
+    }
+    data["messages"] = [
+        assistant,
+        {"role": "user", "content": "[SESSION_EXIT] old"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_legacy",
+            "content": "recovered later",
+        },
+    ]
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert [message["role"] for message in loaded.messages] == [
+        "assistant",
+        "tool",
+        "user",
+    ]
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert [message["role"] for message in persisted["messages"]] == [
+        "assistant",
+        "tool",
+        "user",
+    ]
 
 
 def test_session_store_list_filters_by_fingerprint(tmp_path: Path) -> None:

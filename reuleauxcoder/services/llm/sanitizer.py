@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from reuleauxcoder.domain.llm.models import EMPTY_ASSISTANT_CONTENT_PLACEHOLDER
+from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 
 DEFAULT_REASONING_REPLAY_PLACEHOLDER = "[PLACE_HOLDER]"
 
@@ -26,8 +27,6 @@ def _sanitize_messages_for_llm_core(
 ) -> list[dict]:
     """Repair/trim malformed tool-call history before sending to the LLM."""
     sanitized: list[dict] = []
-    tool_call_names: dict[str, str] = {}
-    seen_tool_outputs: set[str] = set()
     effective_backfill = preserve_reasoning_content and (
         backfill_reasoning_content_for_tool_calls
         or require_reasoning_content_for_tool_calls
@@ -79,7 +78,6 @@ def _sanitize_messages_for_llm_core(
 
             fn = dict(tc_item.get("function") or {})
             tc_item["function"] = fn
-            tool_call_names[tc_id] = fn.get("name") or "unknown_tool"
             repaired_tool_calls.append(tc_item)
 
         item["tool_calls"] = repaired_tool_calls
@@ -87,37 +85,7 @@ def _sanitize_messages_for_llm_core(
             item["reasoning_content"] = reasoning_replay_placeholder
         sanitized.append(item)
 
-    final_messages: list[dict] = []
-    for item in sanitized:
-        if item.get("role") != "tool":
-            final_messages.append(item)
-            continue
-
-        tool_call_id = (item.get("tool_call_id") or "").strip()
-        if not tool_call_id:
-            continue
-        if tool_call_id not in tool_call_names:
-            continue
-
-        content = item.get("content")
-        if content is None or not str(content).strip():
-            item = dict(item)
-            item["content"] = f"Tool '{tool_call_names[tool_call_id]}' output missing."
-
-        seen_tool_outputs.add(tool_call_id)
-        final_messages.append(item)
-
-    for tool_call_id, tool_name in tool_call_names.items():
-        if tool_call_id in seen_tool_outputs:
-            continue
-        final_messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": f"Tool '{tool_name}' output missing.",
-            }
-        )
-
+    final_messages, _ = reconcile_tool_call_adjacency(sanitized)
     return final_messages
 
 

@@ -21,6 +21,7 @@ from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.hooks import HookBase, HookDiagnostic, HookPoint, HookRegistry
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
+from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.services.prompt.builder import system_prompt
@@ -181,26 +182,19 @@ class Agent:
         return pending
 
     def reconcile_pending_tool_calls(self, reason: str | None = None) -> int:
-        """Append fallback tool outputs for any dangling assistant tool calls.
+        """Repair adjacency and synthesize any dangling tool outputs.
 
         Returns the number of synthetic tool results appended.
         """
-        pending = self._collect_pending_tool_calls()
-        if not pending:
-            return 0
-
         suffix = f" {reason}" if reason else ""
-        for tc_id, tc_name in pending:
-            if not tc_id:
-                continue
-            self.state.messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": f"Tool '{tc_name}' interrupted before returning output.{suffix}",
-                }
-            )
-        return len([tc_id for tc_id, _ in pending if tc_id])
+        repaired, synthesized = reconcile_tool_call_adjacency(
+            self.state.messages,
+            missing_content=lambda _tool_call_id, tool_name: (
+                f"Tool '{tool_name}' interrupted before returning output.{suffix}"
+            ),
+        )
+        self.state.messages[:] = repaired
+        return synthesized
 
     def request_stop(self) -> None:
         """Request cooperative stop for the current/next agent loop iteration."""

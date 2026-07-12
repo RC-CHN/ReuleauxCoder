@@ -371,6 +371,45 @@ def test_sanitize_messages_strips_reasoning_content_when_preserve_disabled() -> 
     assert "reasoning_content" not in sanitized[0]
 
 
+def test_sanitize_messages_repairs_tool_responses_appended_after_session_exit() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                },
+                {
+                    "id": "tool_2",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tool_1", "content": "first"},
+        {"role": "user", "content": "[SESSION_EXIT]"},
+        {"role": "tool", "tool_call_id": "tool_2", "content": "recovered"},
+        {"role": "user", "content": "[SESSION_RESUME] next"},
+    ]
+
+    sanitized = sanitize_messages_for_llm(messages)
+
+    assert [message["role"] for message in sanitized] == [
+        "assistant",
+        "tool",
+        "tool",
+        "user",
+        "user",
+    ]
+    assert [sanitized[1]["tool_call_id"], sanitized[2]["tool_call_id"]] == [
+        "tool_1",
+        "tool_2",
+    ]
+
+
 class _FakeUsage:
     def __init__(self, prompt_tokens: int, completion_tokens: int):
         self.prompt_tokens = prompt_tokens
