@@ -95,6 +95,9 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 "progress": list(job.progress),
                 "current_tool": job.current_tool,
                 "last_activity_at": job.last_activity_at,
+                "max_rounds": job.max_rounds,
+                "model_profile_name": job.model_profile_name,
+                "auto_verify": job.auto_verify,
             },
             agent_id=getattr(parent_agent, "agent_id", None),
             parent_agent_id=job.parent_agent_id,
@@ -273,6 +276,9 @@ class SubagentJob:
     cancellation_epoch: int = 0
     current_tool: str | None = None
     last_activity_at: float | None = None
+    max_rounds: int = _DEFAULT_MAX_ROUNDS
+    model_profile_name: str | None = None
+    auto_verify: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,6 +484,9 @@ class SubagentManager:
             verification_for=parent_job_id if mode == "verify" else None,
             working_directory=working_directory,
             resume_reference=resume_reference,
+            max_rounds=effective_max_rounds,
+            model_profile_name=model_profile_name,
+            auto_verify=auto_verify,
         )
         cancel_event = threading.Event()
 
@@ -832,6 +841,9 @@ class SubagentManager:
                 progress=tuple(str(item) for item in payload.get("progress") or ()),
                 current_tool=payload.get("current_tool"),
                 last_activity_at=_optional_float(payload.get("last_activity_at")),
+                max_rounds=int(payload.get("max_rounds") or _DEFAULT_MAX_ROUNDS),
+                model_profile_name=payload.get("model_profile_name"),
+                auto_verify=bool(payload.get("auto_verify", True)),
             )
             restored.append(job)
             if status == "stale" and str(payload.get("status")) != "stale":
@@ -899,9 +911,135 @@ class SubagentManager:
                     self._next_sequence,
                     max(item.seq for item in pending_messages) + 1,
                 )
+        for job in restored:
+            if job.status == "blocked" and job.resume_reference:
+                self._install_restored_blocked_scheduler(parent_agent, job.id)
         for job in stale_jobs:
             _publish_job_event(parent_agent, job)
         return len(restored)
+
+    def _install_restored_blocked_scheduler(self, parent_agent, job_id: str) -> None:
+        """Recreate a dormant resume closure without starting the worker."""
+        cancel_event = self._cancel_events[job_id]
+
+        def _runner():
+            with self._slot_cv:
+                while self._active_explore >= self._runtime_parallel_explore:
+                    if cancel_event.is_set() or self._shutdown:
+                        return "[Sub-agent finished status=cancelled]"
+                    self._slot_cv.wait(timeout=0.5)
+                job = self._jobs[job_id]
+                if cancel_event.is_set() or self._shutdown:
+                    return "[Sub-agent finished status=cancelled]"
+                self._active_explore += 1
+                job.status = "running"
+                job.started_at = time.time()
+                job.finished_at = None
+                job.worker_generation += 1
+            _publish_job_event(parent_agent, job)
+            directives = tuple(
+                directive.model_text() for directive in self.drain_messages(job_id)
+            )
+            try:
+                return run_subagent_task(
+                    parent_agent=parent_agent,
+                    task=job.task,
+                    mode=job.mode,
+                    max_rounds=job.max_rounds,
+                    timeout_seconds=job.timeout_seconds or self._default_timeout_seconds,
+                    model_profile_name=job.model_profile_name,
+                    cancel_event=cancel_event,
+                    job_id=job.id,
+                    context_mode=job.context_mode,
+                    depth=job.depth,
+                    resume_reference=job.resume_reference,
+                    resume_directives=directives,
+                    initial_prompt_tokens=job.prompt_tokens,
+                    initial_completion_tokens=job.completion_tokens,
+                    initial_tool_calls=job.tool_calls,
+                    initial_model_calls=job.model_calls,
+                    worker_generation=job.worker_generation,
+                    cancellation_epoch=job.cancellation_epoch,
+                    max_tool_calls=job.max_tool_calls,
+                    max_tokens=job.max_tokens,
+                    working_directory=job.worktree_path or job.working_directory,
+                )
+            finally:
+                with self._slot_cv:
+                    self._active_explore = max(0, self._active_explore - 1)
+                    self._slot_cv.notify_all()
+
+        def _on_done(done: Future) -> None:
+            resume_immediately = False
+            with self._slot_cv:
+                job = self._jobs.get(job_id)
+                if job is None:
+                    return
+                try:
+                    result = done.result()
+                except Exception as error:  # pragma: no cover - defensive
+                    job.status = "failed"
+                    job.error = str(error)
+                    job.finished_at = time.time()
+                else:
+                    if job.cancel_requested:
+                        job.status = "cancelled"
+                        job.result = None
+                        job.error = "Sub-agent cancelled; late result quarantined."
+                        job.finished_at = time.time()
+                    elif isinstance(result, SubagentResult) and result.status == "blocked":
+                        job.status = "blocked"
+                        job.structured_result = result
+                        job.result = result.summary
+                        job.resume_reference = result.transcript_ref
+                        job.prompt_tokens = result.prompt_tokens
+                        job.completion_tokens = result.completion_tokens
+                        job.tool_calls = result.tool_uses
+                        job.model_calls = result.model_calls
+                        job.finished_at = None
+                        resume_immediately = bool(self._message_queues.get(job_id))
+                        if resume_immediately:
+                            job.status = "resuming"
+                            job.guidance_request_id = None
+                    else:
+                        structured = _coerce_subagent_result(result)
+                        job.structured_result = structured
+                        job.result = structured.summary
+                        job.worktree_path = structured.worktree_path or job.worktree_path
+                        job.status = (
+                            "completed" if structured.status == "ok" else structured.status
+                        )
+                        if not self._is_actionable_terminal(job):
+                            job.status = "failed"
+                        job.error = (
+                            None if job.status == "completed" else structured.summary
+                        )
+                        job.finished_at = time.time()
+                if self._is_actionable_terminal(job):
+                    self._enqueue_completion_locked(job)
+                self._slot_cv.notify_all()
+            _publish_job_event(parent_agent, job)
+            if resume_immediately:
+                _schedule()
+
+        def _schedule() -> bool:
+            with self._lock:
+                job = self._jobs.get(job_id)
+                current = self._futures.get(job_id)
+                if (
+                    job is None
+                    or self._shutdown
+                    or job.status != "resuming"
+                    or (current is not None and not current.done())
+                ):
+                    return False
+                future = self._explore_pool.submit(_runner)
+                self._futures[job_id] = future
+            future.add_done_callback(_on_done)
+            return True
+
+        with self._lock:
+            self._job_schedulers[job_id] = _schedule
 
     def get_job(self, job_id: str) -> SubagentJob | None:
         with self._lock:
@@ -1173,6 +1311,10 @@ class SubagentManager:
                 "parking",
                 "blocked",
             }:
+                return None
+            if job.status == "blocked" and (
+                not job.resume_reference or job_id not in self._job_schedulers
+            ):
                 return None
             seq = self._allocate_sequence_locked()
             directive = SubagentDirective(

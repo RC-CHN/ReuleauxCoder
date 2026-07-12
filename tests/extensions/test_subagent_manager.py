@@ -364,6 +364,50 @@ def test_restore_persists_unrecoverable_worker_as_stale() -> None:
     manager.shutdown()
 
 
+def test_restored_blocked_job_resumes_same_identity_after_guidance(
+    monkeypatch, tmp_path
+) -> None:
+    calls = []
+
+    def run(**kwargs):
+        calls.append(kwargs)
+        return SubagentResult(status="ok", summary="resumed")
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    parent = _Parent()
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text('{"messages": []}', encoding="utf-8")
+    parent.history_ledger.append(
+        "subagent_job_changed",
+        {
+            "job_id": "sj_blocked",
+            "mode": "explore",
+            "task": "await choice",
+            "status": "blocked",
+            "created_at": time.time(),
+            "generation": 0,
+            "depth": 1,
+            "resume_reference": str(checkpoint),
+            "guidance_request_id": "sc_guidance",
+            "max_rounds": 20,
+            "max_tool_calls": 10,
+        },
+    )
+    manager = SubagentManager(parent_agent_id=parent.agent_id)
+    assert manager.restore_from_history(parent, parent.history_ledger.events) == 1
+    assert manager.get_job("sj_blocked").status == "blocked"
+
+    assert manager.send_message("sj_blocked", "Choose the compatible API")
+    terminal = manager.wait_job("sj_blocked", timeout=2)
+
+    assert terminal is not None and terminal.id == "sj_blocked"
+    assert terminal.status == "completed"
+    assert len(calls) == 1
+    assert calls[0]["resume_reference"] == str(checkpoint)
+    assert "Choose the compatible API" in calls[0]["resume_directives"][0]
+    manager.shutdown()
+
+
 def test_background_execute_waits_for_runtime_managed_verify(monkeypatch) -> None:
     calls = []
 
