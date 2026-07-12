@@ -51,7 +51,7 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
     assert local_frame == export_remote_console(remote)
     assert "[1/Y] Approve" in local_frame
     assert "[2/N] Reject" in local_frame
-    assert not set("╭╮╰╯─│").intersection(local_frame)
+    assert set("┏┓┗┛┃━").intersection(local_frame)
     assert interaction_constraints(request) == {
         "value_type": "boolean",
         "approve_label": "Approve",
@@ -59,7 +59,7 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
     }
 
 
-def test_large_write_review_is_head_tail_folded_without_box_borders() -> None:
+def test_large_write_review_is_head_tail_folded_inside_bounded_frame() -> None:
     diff = "\n".join(
         ["--- a/demo.py", "+++ b/demo.py", "@@ -0,0 +1,80 @@"]
         + [f"+line-{index}" for index in range(80)]
@@ -92,4 +92,5 @@ def test_large_write_review_is_head_tail_folded_without_box_borders() -> None:
     assert "+line-0" in output
     assert "+line-79" in output
     assert "output folded" in output
-    assert not set("╭╮╰╯─│").intersection(output)
+    assert set("┏┓┗┛┃━").intersection(output)
+    assert max(map(len, output.splitlines())) <= 60

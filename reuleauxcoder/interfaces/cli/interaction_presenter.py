@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 
-from rich.console import Console
-from rich.markup import escape
+from rich import box
+from rich.console import Console, Group
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.interfaces.interactions import (
@@ -17,7 +19,7 @@ from reuleauxcoder.interfaces.interactions import (
     InteractionRequest,
     ReviewRequest,
 )
-from reuleauxcoder.interfaces.cli.terminal import render_diff_panel
+from reuleauxcoder.interfaces.cli.terminal import build_diff_text
 from reuleauxcoder.interfaces.cli.theme import CLITheme, DEFAULT_CLI_THEME
 from reuleauxcoder.presentation.policy import fold_text
 from reuleauxcoder.presentation.semantics import DisplayTone
@@ -58,21 +60,29 @@ def render_interaction_request(
         _body(console, request.prompt, max_preview_lines, max_preview_chars)
         return
     if isinstance(request, ReviewRequest):
-        _heading(console, request.title, theme=theme, tone=DisplayTone.WARNING)
-        _body(console, request.summary, max_preview_lines, max_preview_chars)
+        renderables = [
+            Text(
+                fold_text(
+                    request.summary,
+                    max_lines=max_preview_lines,
+                    max_chars=max_preview_chars,
+                ),
+                style=theme.style(DisplayTone.NEUTRAL),
+            )
+        ]
         for section in request.sections:
-            _heading(console, section.title, theme=theme, tone=DisplayTone.NEUTRAL)
+            renderables.append(Text())
+            renderables.append(theme.label(section.title, DisplayTone.NEUTRAL))
             if (
                 section.kind is ApprovalSectionKind.DIFF
                 and isinstance(section.content, str)
             ):
-                render_diff_panel(
+                renderables.append(build_diff_text(
                     section.content,
-                    console,
                     max_lines=max_preview_lines,
                     max_chars=max_preview_chars,
                     theme=theme,
-                )
+                ))
             elif (
                 section.kind is ApprovalSectionKind.JSON
                 and isinstance(section.content, Mapping)
@@ -83,20 +93,46 @@ def render_interaction_request(
                     indent=2,
                     default=str,
                 )
-                _body(console, rendered, max_preview_lines, max_preview_chars)
-            else:
-                _body(
-                    console,
-                    str(section.content),
-                    max_preview_lines,
-                    max_preview_chars,
+                renderables.append(
+                    Text(
+                        fold_text(
+                            rendered,
+                            max_lines=max_preview_lines,
+                            max_chars=max_preview_chars,
+                        ),
+                        style=theme.style(DisplayTone.NEUTRAL),
+                    )
                 )
-        console.print()
-        console.print(f"  [1/Y] {escape(request.approve_label)}")
-        console.print(f"  [2/N] {escape(request.reject_label)}")
+            else:
+                renderables.append(
+                    Text(
+                        fold_text(
+                            str(section.content),
+                            max_lines=max_preview_lines,
+                            max_chars=max_preview_chars,
+                        ),
+                        style=theme.style(DisplayTone.ACCENT),
+                    )
+                )
+        choices = Text("\n")
+        choices.append("[1/Y] ", style=theme.style(DisplayTone.SUCCESS))
+        choices.append(request.approve_label, style="bold")
+        choices.append("    ")
+        choices.append("[2/N] ", style=theme.style(DisplayTone.ERROR))
+        choices.append(request.reject_label, style="bold")
+        choices.append("\nSELECT 1/2 OR Y/N // CTRL+C CANCELS", style=theme.style(DisplayTone.MUTED))
+        renderables.append(choices)
         console.print(
-            "  SELECT 1/2 OR Y/N // CTRL+C CANCELS",
-            style=theme.style(DisplayTone.MUTED),
+            Panel(
+                Group(*renderables),
+                title=theme.label(request.title, DisplayTone.WARNING),
+                title_align="left",
+                border_style=theme.style(DisplayTone.WARNING),
+                box=box.HEAVY,
+                padding=(0, 1),
+                width=min(100, console.width),
+                expand=False,
+            )
         )
 
 
@@ -113,7 +149,7 @@ def _heading(
 
 def _body(console: Console, text: str, max_lines: int, max_chars: int) -> None:
     bounded = fold_text(text, max_lines=max_lines, max_chars=max_chars)
-    console.print(bounded, markup=False, soft_wrap=True)
+    console.print(bounded, markup=False, highlight=False, soft_wrap=True)
 
 
 def interaction_constraints(request: InteractionRequest) -> dict[str, object]:
