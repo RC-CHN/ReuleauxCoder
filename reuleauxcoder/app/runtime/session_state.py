@@ -31,6 +31,7 @@ def get_session_fingerprint(config: Config, agent: Agent) -> str:
 def build_session_persistence_kwargs(agent: Agent) -> dict:
     """Return canonical history/replay state for SessionStore.save."""
     ledger = getattr(agent, "history_ledger", None)
+    context = getattr(agent, "context", None)
     return {
         "history_events": list(ledger.events) if ledger is not None else None,
         "replay_envelope": getattr(agent, "replay_envelope", None),
@@ -40,7 +41,7 @@ def build_session_persistence_kwargs(agent: Agent) -> dict:
             "history_completeness",
             "complete" if ledger is not None else "legacy_snapshot_only",
         ),
-        "checkpoints": list(getattr(agent.context, "checkpoints", ())),
+        "checkpoints": list(getattr(context, "checkpoints", ())),
     }
 
 
