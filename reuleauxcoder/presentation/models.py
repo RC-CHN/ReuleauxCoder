@@ -130,10 +130,20 @@ class TranscriptModel:
         self.max_text_chars = max_text_chars
         self._cells: list[TranscriptCell] = []
         self._indexes: dict[str, int] = {}
+        self._text_chars_total = 0
+        self._revision = 0
+        self._cells_snapshot: tuple[TranscriptCell, ...] = ()
+
+    @property
+    def revision(self) -> int:
+        """Monotonic source revision for cheap retained-view invalidation."""
+        return self._revision
 
     @property
     def cells(self) -> tuple[TranscriptCell, ...]:
-        return tuple(self._cells)
+        if len(self._cells_snapshot) != len(self._cells):
+            self._cells_snapshot = tuple(self._cells)
+        return self._cells_snapshot
 
     def get(self, cell_id: str) -> TranscriptCell | None:
         index = self._indexes.get(cell_id)
@@ -144,6 +154,8 @@ class TranscriptModel:
             raise ValueError(f"Duplicate transcript cell id: {cell.id}")
         self._indexes[cell.id] = len(self._cells)
         self._cells.append(cell)
+        self._text_chars_total += self._cell_text_chars(cell)
+        self._mark_changed()
         return self._enforce_retention()
 
     def replace(self, cell: TranscriptCell) -> TranscriptCell:
@@ -152,20 +164,30 @@ class TranscriptModel:
             raise KeyError(cell.id)
         previous = self._cells[index]
         self._cells[index] = cell
+        self._text_chars_total += self._cell_text_chars(
+            cell
+        ) - self._cell_text_chars(previous)
+        self._mark_changed()
         self._enforce_retention()
         return previous
 
     def clear(self) -> None:
+        if not self._cells:
+            return
         self._cells.clear()
         self._indexes.clear()
+        self._text_chars_total = 0
+        self._mark_changed()
 
     def _enforce_retention(self) -> tuple[TranscriptCell, ...]:
         evicted: list[TranscriptCell] = []
         while (
             len(self._cells) > self.max_cells
-            or self._text_chars() > self.max_text_chars
+            or self._text_chars_total > self.max_text_chars
         ):
-            evicted.append(self._cells.pop(0))
+            cell = self._cells.pop(0)
+            self._text_chars_total -= self._cell_text_chars(cell)
+            evicted.append(cell)
         if evicted:
             self._reindex()
         return tuple(evicted)
@@ -173,20 +195,23 @@ class TranscriptModel:
     def _reindex(self) -> None:
         self._indexes = {cell.id: index for index, cell in enumerate(self._cells)}
 
-    def _text_chars(self) -> int:
-        total = 0
-        for cell in self._cells:
-            if isinstance(cell, (UserCell, AssistantCell)):
-                total += len(cell.text)
-            elif isinstance(cell, ToolCell) and cell.outcome is not None:
-                total += len(cell.outcome.display_text)
-            elif isinstance(cell, NoticeCell):
-                total += len(cell.message)
-            elif isinstance(cell, SubagentCell):
-                total += len(cell.result or "") + len(cell.error or "")
-            elif isinstance(cell, DiffCell):
-                total += len(cell.diff)
-        return total
+    def _mark_changed(self) -> None:
+        self._revision += 1
+        self._cells_snapshot = ()
+
+    @staticmethod
+    def _cell_text_chars(cell: TranscriptCell) -> int:
+        if isinstance(cell, (UserCell, AssistantCell)):
+            return len(cell.text)
+        if isinstance(cell, ToolCell) and cell.outcome is not None:
+            return len(cell.outcome.display_text)
+        if isinstance(cell, NoticeCell):
+            return len(cell.message)
+        if isinstance(cell, SubagentCell):
+            return len(cell.result or "") + len(cell.error or "")
+        if isinstance(cell, DiffCell):
+            return len(cell.diff)
+        return 0
 
 
 def next_revision(cell: TranscriptCell, **changes) -> TranscriptCell:

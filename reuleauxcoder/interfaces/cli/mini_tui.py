@@ -166,6 +166,7 @@ class MiniTUIEventAdapter:
             tuple[str, int, int, int], tuple[tuple[tuple[str, str], ...], ...]
         ] = {}
         self._transcript_layout_key: tuple[tuple[str, int, int, int], ...] = ()
+        self._transcript_layout_source_key: tuple[int, int, int, int] | None = None
         self._transcript_layout = VirtualTranscriptLayout(())
         self._flattened_layout: VirtualTranscriptLayout | None = None
         self._transcript_rendered = FormattedText()
@@ -336,6 +337,7 @@ class MiniTUIEventAdapter:
             )
             self._cell_visual_cache.clear()
             self._transcript_layout_key = ()
+            self._transcript_layout_source_key = None
             self._transcript_layout = VirtualTranscriptLayout(())
             self._flattened_layout = None
             self._transcript_rendered = FormattedText()
@@ -396,7 +398,16 @@ class MiniTUIEventAdapter:
         if width is not None:
             self.set_viewport_width(width)
         with self._lock:
-            cells = self.transcript.state.transcript.cells
+            model = self.transcript.state.transcript
+            source_key = (
+                id(model),
+                model.revision,
+                self._viewport_width,
+                self._theme_revision,
+            )
+            if source_key == self._transcript_layout_source_key:
+                return self._transcript_layout
+            cells = model.cells
         render_key = tuple(
             (
                 cell.id,
@@ -449,6 +460,7 @@ class MiniTUIEventAdapter:
                 if key in live_keys
             }
         self._transcript_layout_key = render_key
+        self._transcript_layout_source_key = source_key
         self._transcript_layout = VirtualTranscriptLayout(tuple(visual_cells))
         self._flattened_layout = None
         return self._transcript_layout

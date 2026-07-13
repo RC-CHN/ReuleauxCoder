@@ -169,6 +169,23 @@ def test_thousand_cell_transcript_reuses_virtual_layout() -> None:
     assert resized is not first
 
 
+def test_unchanged_transcript_layout_uses_model_revision_fast_path(
+    monkeypatch,
+) -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.append_restored_conversation(
+        [{"role": "assistant", "content": "stable"}]
+    )
+    first = adapter.transcript_layout(80)
+
+    def unexpected_compose(_cells):
+        raise AssertionError("unchanged transcript should not be recomposed")
+
+    monkeypatch.setattr(mini_tui_module, "compose_transcript", unexpected_compose)
+
+    assert adapter.transcript_layout(80) is first
+
+
 def test_transcript_groups_turns_with_role_labels_and_one_separator() -> None:
     adapter = MiniTUIEventAdapter()
     adapter.append_restored_conversation(
