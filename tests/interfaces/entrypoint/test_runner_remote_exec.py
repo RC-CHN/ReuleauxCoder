@@ -141,9 +141,12 @@ class FakeAgent:
         return response
 
 
-def _build_runner_with_fake_agent(relay_bind: str, chat_behavior=None) -> AppRunner:
+def _build_runner_with_fake_agent(
+    relay_bind: str, *, session_dir: Path, chat_behavior=None
+) -> AppRunner:
     config = Config(
         api_key="key",
+        session_dir=str(session_dir),
         remote_exec=RemoteExecConfig(
             enabled=True, host_mode=True, relay_bind=relay_bind
         ),
@@ -396,7 +399,9 @@ class TestRunnerRemoteExec:
             return f"call:{count}"
 
         runner = _build_runner_with_fake_agent(
-            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+            f"127.0.0.1:{port}",
+            session_dir=tmp_path / "sessions",
+            chat_behavior=chat_behavior,
         )
         ctx = runner.initialize()
         try:
@@ -448,7 +453,9 @@ class TestRunnerRemoteExec:
             return f"reply:{prompt}:{getattr(agent, 'current_session_id', '-')}"
 
         runner = _build_runner_with_fake_agent(
-            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+            f"127.0.0.1:{port}",
+            session_dir=tmp_path / "sessions",
+            chat_behavior=chat_behavior,
         )
         ctx = runner.initialize()
         try:
@@ -507,7 +514,9 @@ class TestRunnerRemoteExec:
             return f"cwd:{getattr(agent, 'runtime_working_directory', '<missing>')}"
 
         runner = _build_runner_with_fake_agent(
-            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+            f"127.0.0.1:{port}",
+            session_dir=tmp_path / "sessions",
+            chat_behavior=chat_behavior,
         )
         ctx = runner.initialize()
         try:
@@ -535,7 +544,9 @@ class TestRunnerRemoteExec:
         self, tmp_path: Path
     ) -> None:
         port = _free_port()
-        runner = _build_runner_with_fake_agent(f"127.0.0.1:{port}")
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}", session_dir=tmp_path / "sessions"
+        )
         ctx = runner.initialize()
         try:
             assert runner._relay_server is not None
@@ -588,7 +599,9 @@ class TestRunnerRemoteExec:
             return "approved" if decision.approved else "denied"
 
         runner = _build_runner_with_fake_agent(
-            f"127.0.0.1:{port}", chat_behavior=chat_behavior
+            f"127.0.0.1:{port}",
+            session_dir=tmp_path / "sessions",
+            chat_behavior=chat_behavior,
         )
         ctx = runner.initialize()
         try:
