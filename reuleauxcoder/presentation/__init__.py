@@ -33,19 +33,25 @@ from reuleauxcoder.presentation.semantics import (
 from reuleauxcoder.presentation.execution import (
     AttentionItem,
     ExecutionAgentState,
+    ExecutionPanelAgent,
+    ExecutionPanelView,
     ExecutionPlanItem,
     ExecutionViewReducer,
     ExecutionViewState,
     execution_panel_lines,
+    execution_panel_view,
 )
 
 __all__ = [
     "AttentionItem",
     "ExecutionAgentState",
+    "ExecutionPanelAgent",
+    "ExecutionPanelView",
     "ExecutionPlanItem",
     "ExecutionViewReducer",
     "ExecutionViewState",
     "execution_panel_lines",
+    "execution_panel_view",
     "ApprovalCell",
     "AssistantCell",
     "DiagnosticCell",

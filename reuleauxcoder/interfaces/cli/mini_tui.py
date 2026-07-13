@@ -73,6 +73,7 @@ from reuleauxcoder.presentation import (
     AssistantCell,
     DiagnosticCell,
     DiffCell,
+    ExecutionPanelView,
     ExecutionViewReducer,
     NoticeCell,
     PresentationReducer,
@@ -82,6 +83,7 @@ from reuleauxcoder.presentation import (
     TranscriptModel,
     UserCell,
     execution_panel_lines,
+    execution_panel_view,
 )
 
 
@@ -91,6 +93,13 @@ MINI_TUI_STYLE = Style.from_dict(
         "frame.border": "#64748b",
         "panel.header": "bold #f8fafc bg:#334155",
         "panel.body": "#dbeafe",
+        "panel.label": "bold #071013 bg:#67e8f9",
+        "panel.label.secondary": "bold #e2e8f0 bg:#334155",
+        "panel.label.need": "bold #071013 bg:#ffd75f",
+        "panel.value": "#f8fafc",
+        "panel.phase": "bold #b5ff72",
+        "panel.live": "bold #67e8f9",
+        "panel.detail": "#94a3b8",
         "user": "bold #ffffff bg:#5b4bc4",
         "assistant": "#f8fafc",
         "tool": "#67e8f9",
@@ -344,6 +353,11 @@ class MiniTUIEventAdapter:
         self._drain_pending_events()
         with self._lock:
             return execution_panel_lines(self.execution.state, width=width)
+
+    def panel_view(self, *, now: float | None = None) -> ExecutionPanelView:
+        self._drain_pending_events()
+        with self._lock:
+            return execution_panel_view(self.execution.state, now=now)
 
     def set_viewport_width(self, width: int) -> None:
         self._viewport_width = max(20, width)
@@ -853,31 +867,33 @@ class MiniTUIApplication:
         except Exception:
             pass
         self.events.set_viewport_width(max(20, self._width - 1))
-        lines = self._panel_lines()
         return FormattedText(
-            [
-                (
-                    "class:panel.header" if index == 0 else "class:panel.body",
-                    line + "\n",
-                )
-                for index, line in enumerate(lines)
-            ]
+            fragment
+            for row in self._panel_rows()
+            for fragment in (*row, ("", "\n"))
         )
 
     def _panel_height(self) -> int:
-        return max(3, min(12, len(self._panel_lines())))
+        return len(self._panel_rows())
 
     def _panel_lines(self) -> tuple[str, ...]:
-        lines = list(self.events.panel_lines(self._width))
-        if self.session_header_expanded:
-            details = [
-                f"MODEL {self.config.model}",
-                f"ROOT  {Path.cwd()}",
-                f"SESSION {self.current_session_id or 'new'}",
-                *self.startup_lines,
-            ]
-            lines[1:1] = details[:8]
-        return tuple(_clip(line, self._width) for line in lines)
+        return tuple(
+            "".join(text for _style, text in row) for row in self._panel_rows()
+        )
+
+    def _panel_rows(self) -> tuple[tuple[tuple[str, str], ...], ...]:
+        details = (
+            f"MODEL {self.config.model}",
+            f"ROOT {Path.cwd()}",
+            f"SESSION {self.current_session_id or 'new'}",
+            *self.startup_lines,
+        )
+        return _execution_panel_rows(
+            self.events.panel_view(),
+            width=max(20, self._width),
+            expanded=self.session_header_expanded,
+            details=details,
+        )
 
     def _interaction_height(self) -> int:
         request = self.interactor.active_request
@@ -1100,6 +1116,227 @@ def _cell_fragments(
             )
         ]
     return [("class:muted", str(cell) + "\n")]
+
+
+def _decorate_transcript_fragments(
+    placement: TranscriptPlacement,
+    fragments: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Apply turn chrome and one centralized outer-spacing policy."""
+    output: list[tuple[str, str]] = []
+    if placement.begins_turn:
+        output.append(("class:turn.separator", " ╶────────────────\n"))
+    if placement.show_assistant_label:
+        output.append(("class:assistant.label", " FORGE "))
+        output.append(("", "\n"))
+    output.extend(_rstrip_fragment_newlines(fragments))
+    if placement.blank_lines_after:
+        output.append(("", "\n" * placement.blank_lines_after))
+    return output
+
+
+def _rstrip_fragment_newlines(
+    fragments: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    trimmed = list(fragments)
+    while trimmed:
+        style, text = trimmed[-1]
+        stripped = text.rstrip("\n")
+        if stripped:
+            trimmed[-1] = (style, stripped)
+            break
+        trimmed.pop()
+    return trimmed
+
+
+def _execution_panel_rows(
+    view: ExecutionPanelView,
+    *,
+    width: int,
+    expanded: bool,
+    details: tuple[str, ...] = (),
+) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """Render a semantic panel snapshot without leaking layout into reducers."""
+    width = max(20, width)
+    plan_count = (
+        f"{view.plan_completed}/{view.plan_total}" if view.plan_total else "—"
+    )
+    live = "LIVE" if view.is_live else "IDLE"
+
+    if width < 60:
+        summary = [
+            ("class:panel.label", " RUN "),
+            ("class:panel.phase", f" {view.phase} "),
+            ("class:panel.label.secondary", " P "),
+            ("class:panel.value", f" {plan_count} "),
+            ("class:panel.label.secondary", " A "),
+            ("class:panel.value", f" {len(view.subagents)}"),
+        ]
+        final = _compact_panel_tail(view)
+        rows = [
+            _fit_styled_row(summary, width),
+            _fit_styled_row(
+                _labeled_panel_row(
+                    "PLAN", f"{'●' if view.plan_total else '○'} {view.active_plan}"
+                ),
+                width,
+            ),
+            _fit_styled_row(final, width),
+        ]
+    else:
+        summary = [
+            ("class:panel.label", " RUN "),
+            ("class:panel.phase", f" {view.phase} "),
+            ("class:panel.label.secondary", " PLAN "),
+            ("class:panel.value", f" {plan_count} "),
+            ("class:panel.label.secondary", " AGENTS "),
+            ("class:panel.value", f" {len(view.subagents)} "),
+            ("class:panel.live", f"● {live}"),
+        ]
+        if view.attention:
+            summary.extend(
+                [
+                    ("class:panel.label.need", " NEED "),
+                    ("class:warning", f" {len(view.attention)}"),
+                ]
+            )
+        rows = [
+            _fit_styled_row(summary, width),
+            _fit_styled_row(
+                _labeled_panel_row(
+                    "PLAN", f"{'●' if view.plan_total else '○'} {view.active_plan}"
+                ),
+                width,
+            ),
+            _fit_styled_row(
+                _labeled_panel_row(
+                    "MAIN",
+                    f"{view.main.marker} {view.main.activity or 'ready'}",
+                ),
+                width,
+            ),
+            _fit_styled_row(_compact_panel_tail(view), width),
+        ]
+
+    if not expanded:
+        return tuple(rows)
+
+    expanded_rows: list[tuple[tuple[str, str], ...]] = list(rows)
+    for detail in details[:3]:
+        label, _, value = detail.partition(" ")
+        expanded_rows.append(
+            _fit_styled_row(
+                _labeled_panel_row(label, value, secondary=True), width
+            )
+        )
+    for item in view.plan:
+        marker = {
+            "completed": "✓",
+            "in_progress": "●",
+            "pending": "○",
+        }.get(item.status, "○")
+        label = item.active_form if item.status == "in_progress" else item.step
+        expanded_rows.append(
+            _fit_styled_row(
+                _labeled_panel_row("PLAN", f"{marker} {label}", secondary=True),
+                width,
+            )
+        )
+    for agent in view.subagents:
+        expanded_rows.append(
+            _fit_styled_row(
+                _labeled_panel_row("SUB", _panel_agent_text(agent), secondary=True),
+                width,
+            )
+        )
+    for detail in details[3:]:
+        expanded_rows.append(
+            _fit_styled_row([("class:panel.detail", f"  {detail}")], width)
+        )
+    return tuple(expanded_rows[:12])
+
+
+def _compact_panel_tail(view: ExecutionPanelView) -> list[tuple[str, str]]:
+    if view.attention:
+        row = _labeled_panel_row(
+            "NEED",
+            f"! {view.attention[0].title}",
+            need=True,
+        )
+        if view.subagents:
+            row.extend(
+                [
+                    ("class:panel.label.secondary", " SUB "),
+                    ("class:panel.value", f" {_panel_agent_text(view.subagents[0])}"),
+                ]
+            )
+        return row
+    if view.subagents:
+        return _labeled_panel_row("SUB", _panel_agent_text(view.subagents[0]))
+    next_step = view.progress_next or view.progress_summary or "ready"
+    return _labeled_panel_row("NEXT", next_step, secondary=True)
+
+
+def _panel_agent_text(agent) -> str:
+    task = agent.task or "working"
+    activity = f" · {agent.activity}" if agent.activity else ""
+    budget = f" · {agent.budget}" if agent.budget else ""
+    return f"{agent.marker} {agent.label} · {task}{activity}{budget}"
+
+
+def _labeled_panel_row(
+    label: str,
+    value: str,
+    *,
+    secondary: bool = False,
+    need: bool = False,
+) -> list[tuple[str, str]]:
+    label_style = (
+        "class:panel.label.need"
+        if need
+        else "class:panel.label.secondary"
+        if secondary
+        else "class:panel.label"
+    )
+    value_style = "class:warning" if need else "class:panel.value"
+    return [(label_style, f" {label:<5} "), (value_style, f" {value}")]
+
+
+def _fit_styled_row(
+    fragments: list[tuple[str, str]], width: int
+) -> tuple[tuple[str, str], ...]:
+    """Clip styled fragments by terminal cell width and preserve their tones."""
+    output: list[tuple[str, str]] = []
+    used = 0
+    clipped = False
+    for style, text in fragments:
+        chunk = ""
+        for character in text:
+            char_width = max(0, get_cwidth(character))
+            if used + char_width > width:
+                clipped = True
+                break
+            chunk += character
+            used += char_width
+        if chunk:
+            output.append((style, chunk))
+        if clipped:
+            break
+    if clipped and width > 0:
+        while output and used >= width:
+            style, text = output[-1]
+            if not text:
+                output.pop()
+                continue
+            removed = text[-1]
+            used -= max(0, get_cwidth(removed))
+            text = text[:-1]
+            if text:
+                output[-1] = (style, text)
+            else:
+                output.pop()
+        output.append(("class:panel.detail", "…"))
+    return tuple(output)
 
 
 def _wrap_fragments(

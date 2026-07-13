@@ -13,6 +13,7 @@ from reuleauxcoder.domain.runtime.events import (
 from reuleauxcoder.presentation.execution import (
     ExecutionViewReducer,
     execution_panel_lines,
+    execution_panel_view,
 )
 
 
@@ -103,13 +104,30 @@ def test_attention_and_width_aware_projection() -> None:
     )
     wide = execution_panel_lines(reducer.state, width=100, now=100.1)
     narrow = execution_panel_lines(reducer.state, width=40, now=100.1)
-    assert "NEEDS YOU" in wide[0]
+    assert "NEED 1" in wide[0]
     assert any("Review file edit" in line for line in wide)
     assert len(narrow) == 3
     assert all(len(line) <= 40 for line in narrow)
 
     reducer.apply(_event(ApprovalResolved("approval-1", True), event_id="resolved"))
     assert not reducer.state.attention
+
+
+def test_panel_view_keeps_semantics_separate_from_terminal_layout() -> None:
+    reducer = ExecutionViewReducer()
+    reducer.apply(
+        _event(
+            ProgressReported(1, "implementing", "building panel", "verify"),
+            event_id="progress-view",
+        )
+    )
+
+    view = execution_panel_view(reducer.state, now=100.1)
+
+    assert view.phase == "IMPLEMENTING"
+    assert view.main.label == "MAIN"
+    assert view.main.activity == "building panel"
+    assert view.progress_next == "verify"
 
 
 def test_stale_generation_and_duplicate_events_are_ignored() -> None:
@@ -143,7 +161,7 @@ def test_panel_animates_only_inside_real_event_lease() -> None:
     assert not any(marker in "\n".join(expired) for marker in ("◐", "◓", "◑", "◒"))
 
 
-def test_recent_plan_update_expands_then_collapses_to_active_item() -> None:
+def test_panel_expands_plan_only_when_details_are_requested() -> None:
     reducer = ExecutionViewReducer()
     reducer.apply(
         _event(
@@ -162,13 +180,16 @@ def test_recent_plan_update_expands_then_collapses_to_active_item() -> None:
         )
     )
 
-    expanded = execution_panel_lines(reducer.state, width=100, now=100.5)
-    collapsed = execution_panel_lines(reducer.state, width=100, now=104.0)
+    expanded = execution_panel_lines(
+        reducer.state, width=100, now=100.5, expanded=True
+    )
+    collapsed = execution_panel_lines(reducer.state, width=100, now=100.5)
 
     assert any("done step" in line for line in expanded)
     assert any("working actively" in line for line in expanded)
     assert not any("done step" in line for line in collapsed)
     assert any("working actively" in line for line in collapsed)
+    assert len(collapsed) == 4
 
 
 def test_subagent_panel_shows_live_activity_budget_and_blocker() -> None:
@@ -197,6 +218,7 @@ def test_subagent_panel_shows_live_activity_budget_and_blocker() -> None:
     assert "inspect parser" in rendered
     assert "running lsp" in rendered
     assert "tools 4/20 · tok 1200/8000" in rendered
+    assert "LIVE" in lines[0]
 
 
 def test_subagent_lifecycle_and_worker_events_share_one_panel_row() -> None:

@@ -63,6 +63,37 @@ class AttentionItem:
     preview: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionPanelAgent:
+    """Stable semantic agent row; terminal renderers choose its styling."""
+
+    label: str
+    status: str
+    task: str
+    activity: str
+    budget: str
+    marker: str
+    is_subagent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPanelView:
+    """Framework-neutral snapshot for compact and expanded execution panels."""
+
+    phase: str
+    plan_completed: int
+    plan_total: int
+    runtime_state: str
+    is_live: bool
+    active_plan: str
+    plan: tuple[ExecutionPlanItem, ...]
+    main: ExecutionPanelAgent
+    subagents: tuple[ExecutionPanelAgent, ...]
+    attention: tuple[AttentionItem, ...]
+    progress_summary: str
+    progress_next: str | None
+
+
 @dataclass(slots=True)
 class ExecutionViewState:
     phase: str = "investigating"
@@ -318,34 +349,107 @@ class ExecutionViewReducer:
         return False
 
 
+def execution_panel_view(
+    state: ExecutionViewState,
+    *,
+    now: float | None = None,
+) -> ExecutionPanelView:
+    """Project runtime facts without committing to a terminal layout."""
+    now = time.time() if now is None else now
+    active = state.active_plan_item
+    projected = tuple(_panel_agent(agent, now=now) for agent in state.agents.values())
+    main = next(
+        (agent for agent in projected if not agent.is_subagent),
+        ExecutionPanelAgent(
+            label="MAIN",
+            status=state.runtime_state,
+            task="",
+            activity=state.progress_summary or "ready",
+            budget="",
+            marker="○",
+        ),
+    )
+    subagents = tuple(agent for agent in projected if agent.is_subagent)
+    active_statuses = {
+        "thinking",
+        "tool",
+        "working",
+        "running",
+        "queued",
+        "waiting_approval",
+        "cancelling",
+    }
+    return ExecutionPanelView(
+        phase=state.phase.upper(),
+        plan_completed=state.completed_plan_items,
+        plan_total=len(state.plan),
+        runtime_state=state.runtime_state,
+        is_live=(
+            state.runtime_state != "idle"
+            or main.status in active_statuses
+            or any(agent.status in active_statuses for agent in subagents)
+        ),
+        active_plan=active.active_form if active else "no active step",
+        plan=state.plan,
+        main=main,
+        subagents=subagents,
+        attention=tuple(state.attention.values()),
+        progress_summary=state.progress_summary,
+        progress_next=state.progress_next,
+    )
+
+
 def execution_panel_lines(
     state: ExecutionViewState,
     *,
     width: int,
     now: float | None = None,
+    expanded: bool = False,
 ) -> tuple[str, ...]:
-    """Project execution state to width-aware plain lines for any terminal UI."""
+    """Compatibility/plain-text projection backed by the structured view."""
     width = max(20, width)
-    now = time.time() if now is None else now
-    phase = state.phase.upper()
+    view = execution_panel_view(state, now=now)
     plan_count = (
-        f"{state.completed_plan_items}/{len(state.plan)}" if state.plan else "—"
+        f"{view.plan_completed}/{view.plan_total}" if view.plan_total else "—"
     )
-    attention = " · NEEDS YOU" if state.attention else ""
-    header = _fit(f"FORGE · {phase} · PLAN {plan_count}{attention}", width)
-    active = state.active_plan_item
-    plan_line = f"PLAN  {'● ' + active.active_form if active else '○ no active step'}"
-
-    active_agents = [agent for agent in state.agents.values() if agent.status != "idle"]
+    live = "LIVE" if view.is_live else "IDLE"
+    need = f" · NEED {len(view.attention)}" if view.attention else ""
     if width < 60:
-        activity = (
-            active_agents[0].activity if active_agents else state.progress_summary
+        final = (
+            f"NEED  ! {view.attention[0].title}"
+            if view.attention
+            else _agent_line(view.subagents[0])
+            if view.subagents
+            else f"MAIN  {view.main.marker} {view.main.activity or 'ready'}"
         )
-        return (header, _fit(plan_line, width), _fit(activity or "ready", width))
+        return (
+            _fit(f"{view.phase} · PLAN {plan_count} · A {len(view.subagents)}{need}", width),
+            _fit(f"PLAN  {'●' if view.plan_total else '○'} {view.active_plan}", width),
+            _fit(final, width),
+        )
 
-    lines = [header]
-    if state.plan and now < state.plan_updated_at + 3.0:
-        for item in state.plan[:6]:
+    lines = [
+        _fit(
+            f"STATUS  {view.phase} · PLAN {plan_count} · "
+            f"AGENTS {len(view.subagents)} · {live}{need}",
+            width,
+        ),
+        _fit(f"PLAN  {'●' if view.plan_total else '○'} {view.active_plan}", width),
+        _fit(f"MAIN  {view.main.marker} {view.main.activity or 'ready'}", width),
+    ]
+    if view.attention:
+        child = (
+            f" · SUB {_agent_line(view.subagents[0])}" if view.subagents else ""
+        )
+        lines.append(_fit(f"NEED  ! {view.attention[0].title}{child}", width))
+    elif view.subagents:
+        lines.append(_fit(f"SUB   {_agent_line(view.subagents[0])}", width))
+    else:
+        next_step = view.progress_next or view.progress_summary or "ready"
+        lines.append(_fit(f"NEXT  {next_step}", width))
+
+    if expanded:
+        for item in view.plan:
             marker = {
                 "completed": "✓",
                 "in_progress": "●",
@@ -353,36 +457,40 @@ def execution_panel_lines(
             }.get(item.status, "○")
             label = item.active_form if item.status == "in_progress" else item.step
             lines.append(_fit(f"PLAN  {marker} {label}", width))
-    else:
-        lines.append(_fit(plan_line, width))
-    for index, agent in enumerate(active_agents[:4]):
-        marker = (
-            ("◐", "◓", "◑", "◒")[int(now * 8) % 4]
-            if agent.is_animating(now)
-            else (
-                "✓"
-                if agent.status in {"completed", "succeeded"}
-                else "!"
-                if agent.status in {"failed", "blocked", "stale", "indeterminate"}
-                else "○"
-            )
-        )
-        branch = "├─" if index < len(active_agents[:4]) - 1 else "└─"
-        task = agent.task or "working"
-        activity = f" · {agent.activity}" if agent.activity else ""
-        budget = f" · {agent.budget}" if agent.budget else ""
-        lines.append(
-            _fit(
-                f"{branch} {marker} {agent.label}  {task}{activity}{budget}",
-                width,
-            )
-        )
-        if agent.output_tail:
-            lines.append(_fit(f"   └ {agent.output_tail[-1]}", width))
-    if state.attention:
-        first = next(iter(state.attention.values()))
-        lines.append(_fit(f"! {first.title}", width))
+        for agent in view.subagents:
+            lines.append(_fit(f"SUB   {_agent_line(agent)}", width))
     return tuple(lines)
+
+
+def _panel_agent(agent: ExecutionAgentState, *, now: float) -> ExecutionPanelAgent:
+    marker = (
+        ("◐", "◓", "◑", "◒")[int(now * 8) % 4]
+        if agent.is_animating(now)
+        else (
+            "✓"
+            if agent.status in {"completed", "succeeded"}
+            else "!"
+            if agent.status
+            in {"failed", "blocked", "stale", "indeterminate", "timed_out"}
+            else "○"
+        )
+    )
+    return ExecutionPanelAgent(
+        label=agent.label,
+        status=agent.status,
+        task=agent.task,
+        activity=agent.activity,
+        budget=agent.budget,
+        marker=marker,
+        is_subagent=agent.is_subagent,
+    )
+
+
+def _agent_line(agent: ExecutionPanelAgent) -> str:
+    task = agent.task or "working"
+    activity = f" · {agent.activity}" if agent.activity else ""
+    budget = f" · {agent.budget}" if agent.budget else ""
+    return f"{agent.marker} {agent.label}  {task}{activity}{budget}"
 
 
 def _fit(text: str, width: int) -> str:

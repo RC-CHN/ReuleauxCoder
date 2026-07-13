@@ -20,6 +20,7 @@ from reuleauxcoder.interfaces.cli.mini_tui import (
     MiniTUIEventAdapter,
     MiniTUIInteractor,
     MiniTUIApplication,
+    _execution_panel_rows,
     _interaction_lines,
     _interaction_response,
     _wrap_fragments,
@@ -68,6 +69,26 @@ def test_event_adapter_projects_user_and_execution_state() -> None:
 
 def test_mini_tui_leaves_mouse_to_terminal_native_selection() -> None:
     assert MINI_TUI_MOUSE_SUPPORT is False
+
+
+def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
+    adapter = MiniTUIEventAdapter()
+    view = adapter.panel_view(now=100.0)
+
+    wide = _execution_panel_rows(view, width=100, expanded=False)
+    narrow = _execution_panel_rows(view, width=40, expanded=False)
+    expanded = _execution_panel_rows(
+        view,
+        width=100,
+        expanded=True,
+        details=("MODEL demo", "ROOT /workspace", "SESSION new"),
+    )
+
+    assert len(wide) == 4
+    assert len(narrow) == 3
+    assert len(expanded) == 7
+    assert "RUN" in "".join(text for _style, text in wide[0])
+    assert "MODEL" in "".join(text for row in expanded for _style, text in row)
 
 
 def test_alternate_scroll_protocol_keeps_native_selection_and_wheel_keys() -> None:
