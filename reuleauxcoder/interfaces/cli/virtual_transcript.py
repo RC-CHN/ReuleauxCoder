@@ -31,7 +31,37 @@ class VirtualTranscriptLayout:
             starts.append(total)
             total += len(cell.lines)
         self._starts = tuple(starts)
+        self._cell_indexes = {cell.key[0]: index for index, cell in enumerate(cells)}
         self.line_count = max(1, total)
+
+    def anchor_at(self, line_number: int) -> tuple[str, int] | None:
+        """Return the stable cell/local-line identity at one visual row."""
+        if not self.cells:
+            return None
+        line_number = max(0, min(line_number, self.line_count - 1))
+        cell_index = bisect_right(self._starts, line_number) - 1
+        cell_index = max(0, cell_index)
+        return (
+            self.cells[cell_index].key[0],
+            line_number - self._starts[cell_index],
+        )
+
+    def line_for_anchor(
+        self,
+        anchor: tuple[str, int] | None,
+        *,
+        fallback: int = 0,
+    ) -> int:
+        """Resolve a prior cell/local-line anchor in this layout revision."""
+        if not self.cells or anchor is None:
+            return max(0, min(fallback, self.line_count - 1))
+        cell_id, local_line = anchor
+        cell_index = self._cell_indexes.get(cell_id)
+        if cell_index is None:
+            return max(0, min(fallback, self.line_count - 1))
+        cell = self.cells[cell_index]
+        bounded_local = max(0, min(local_line, max(0, len(cell.lines) - 1)))
+        return self._starts[cell_index] + bounded_local
 
     def get_line(self, line_number: int) -> list[tuple[str, str]]:
         if not self.cells or line_number < 0 or line_number >= self.line_count:

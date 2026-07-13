@@ -381,15 +381,18 @@ def test_interaction_parser_uses_kiss_defaults() -> None:
 def test_transcript_scroll_reenables_tail_follow_at_bottom() -> None:
     app = object.__new__(MiniTUIApplication)
     app._transcript_max_scroll = 30
+    app._transcript_scroll = 30
     app._follow_transcript = True
     app.transcript_pane = SimpleNamespace(vertical_scroll=30)
     app.invalidate = lambda: None
 
     app._scroll_transcript(-10)
+    assert app._transcript_scroll == 20
     assert app.transcript_pane.vertical_scroll == 20
     assert app._follow_transcript is False
 
     app._scroll_transcript(10)
+    assert app._transcript_scroll == 30
     assert app.transcript_pane.vertical_scroll == 30
     assert app._follow_transcript is True
 
@@ -398,7 +401,10 @@ def test_before_render_keeps_scrolled_view_stable_and_tail_sticky() -> None:
     app = object.__new__(MiniTUIApplication)
     line_count = [100]
     app.events = SimpleNamespace(
-        transcript_layout=lambda _width: SimpleNamespace(line_count=line_count[0])
+        transcript_layout_rebased=lambda _width, scroll: (
+            SimpleNamespace(line_count=line_count[0]),
+            scroll,
+        )
     )
     app.application = SimpleNamespace(
         output=SimpleNamespace(
@@ -410,25 +416,59 @@ def test_before_render_keeps_scrolled_view_stable_and_tail_sticky() -> None:
     app._panel_height = lambda: 3
     app._interaction_height = lambda: 2
     app._last_terminal_rows = 40
+    app._transcript_scroll = 0
     app._follow_transcript = True
 
     app._before_render(None)
     assert app.transcript_pane.vertical_scroll == 70
 
     app._follow_transcript = False
-    app.transcript_pane.vertical_scroll = 25
+    app._transcript_scroll = 25
     line_count[0] = 130
     app._before_render(None)
     assert app.transcript_pane.vertical_scroll == 25
     assert app._follow_transcript is False
 
-    app.transcript_pane.vertical_scroll = app._transcript_max_scroll
+    app._transcript_scroll = app._transcript_max_scroll
     app.invalidate = lambda: None
     app._scroll_transcript(0)
     line_count[0] = 135
     app._before_render(None)
     assert app.transcript_pane.vertical_scroll == 105
     assert app._follow_transcript is True
+
+
+def test_virtual_layout_rebases_scroll_to_same_cell_after_markdown_reflow() -> None:
+    old = VirtualTranscriptLayout(
+        (
+            VisualCell(
+                key=("markdown", 1, 80, 0),
+                lines=((('', "a"),), (('', "b"),), (('', "c"),)),
+            ),
+            VisualCell(
+                key=("answer", 0, 80, 0),
+                lines=((('', "one"),), (('', "two"),), (('', "three"),)),
+            ),
+        )
+    )
+    anchor = old.anchor_at(4)
+    assert anchor == ("answer", 1)
+
+    reflowed = VirtualTranscriptLayout(
+        (
+            VisualCell(
+                key=("markdown", 2, 80, 0),
+                lines=tuple((("", f"line-{index}"),) for index in range(8)),
+            ),
+            VisualCell(
+                key=("answer", 0, 80, 0),
+                lines=((('', "one"),), (('', "two"),), (('', "three"),)),
+            ),
+        )
+    )
+
+    assert reflowed.line_for_anchor(anchor) == 9
+    assert reflowed.anchor_at(9) == ("answer", 1)
 
 
 def test_mixed_transcript_repeated_resize_never_reuses_old_width_rows() -> None:

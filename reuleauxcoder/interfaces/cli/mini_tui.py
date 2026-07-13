@@ -408,6 +408,19 @@ class MiniTUIEventAdapter:
         self._flattened_layout = None
         return self._transcript_layout
 
+    def transcript_layout_rebased(
+        self,
+        width: int,
+        scroll_line: int,
+    ) -> tuple[VirtualTranscriptLayout, int]:
+        """Render at width while preserving the prior top cell/local-line anchor."""
+        previous = self._transcript_layout
+        anchor = previous.anchor_at(scroll_line)
+        current = self.transcript_layout(width)
+        if current is previous:
+            return current, scroll_line
+        return current, current.line_for_anchor(anchor, fallback=scroll_line)
+
     def transcript_fragments(self) -> FormattedText:
         """Compatibility projection; the live Window resolves visual rows lazily."""
         layout = self.transcript_layout()
@@ -553,6 +566,7 @@ class MiniTUIApplication:
         self._animation_thread: threading.Thread | None = None
         self._width = 100
         self._follow_transcript = True
+        self._transcript_scroll = 0
         self._transcript_max_scroll = 0
         self._last_terminal_rows = 0
         self.session_header_expanded = True
@@ -581,6 +595,7 @@ class MiniTUIApplication:
             self.transcript_control,
             wrap_lines=False,
             always_hide_cursor=True,
+            get_vertical_scroll=lambda _window: self._transcript_scroll,
             right_margins=[
                 ScrollbarMargin(
                     display_arrows=True,
@@ -724,6 +739,7 @@ class MiniTUIApplication:
             ):
                 self.events.clear_transcript()
                 self._follow_transcript = True
+                self._transcript_scroll = 0
                 self.transcript_pane.vertical_scroll = 0
             if result["action"] == "continue" and session_changed:
                 self.events.restore_control_state(
@@ -815,6 +831,7 @@ class MiniTUIApplication:
         @bindings.add("home")
         def _history_start(event) -> None:  # noqa: ARG001
             self._follow_transcript = False
+            self._transcript_scroll = 0
             self.transcript_pane.vertical_scroll = 0
             self.invalidate()
 
@@ -935,9 +952,11 @@ class MiniTUIApplication:
         try:
             size = self.application.output.get_size()
             content_width = max(20, size.columns - 1)
-            content_height = self.events.transcript_layout(
-                content_width
-            ).line_count
+            layout, rebased_scroll = self.events.transcript_layout_rebased(
+                content_width,
+                self._transcript_scroll,
+            )
+            content_height = layout.line_count
             resized = size.rows != self._last_terminal_rows
             viewport = max(
                 1,
@@ -954,13 +973,12 @@ class MiniTUIApplication:
             maximum = max(0, content_height - viewport)
             self._transcript_max_scroll = maximum
             if self._follow_transcript:
-                self.transcript_pane.vertical_scroll = maximum
+                self._transcript_scroll = maximum
             else:
-                self.transcript_pane.vertical_scroll = min(
-                    self.transcript_pane.vertical_scroll, maximum
-                )
-                if self.transcript_pane.vertical_scroll >= maximum:
+                self._transcript_scroll = min(rebased_scroll, maximum)
+                if self._transcript_scroll >= maximum:
                     self._follow_transcript = True
+            self.transcript_pane.vertical_scroll = self._transcript_scroll
         except Exception:
             # Rendering must stay available on minimal/dumb terminal outputs.
             return
@@ -973,17 +991,17 @@ class MiniTUIApplication:
         return max(3, rows // 2)
 
     def _transcript_cursor_position(self) -> Point:
-        pane = getattr(self, "transcript_pane", None)
-        return Point(x=0, y=max(0, getattr(pane, "vertical_scroll", 0)))
+        return Point(x=0, y=max(0, self._transcript_scroll))
 
     def _scroll_transcript(self, delta: int) -> None:
         target = max(
             0,
             min(
                 self._transcript_max_scroll,
-                self.transcript_pane.vertical_scroll + delta,
+                self._transcript_scroll + delta,
             ),
         )
+        self._transcript_scroll = target
         self.transcript_pane.vertical_scroll = target
         # Scrolling up opts out of tail-follow. Returning to the current bottom
         # opts back in, so subsequent streaming chunks remain visible.
