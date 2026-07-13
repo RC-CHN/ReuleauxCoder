@@ -701,6 +701,8 @@ class MiniTUIApplication:
             full_screen=True,
             style=MINI_TUI_STYLE,
             mouse_support=MINI_TUI_MOUSE_SUPPORT,
+            min_redraw_interval=1 / 30,
+            max_render_postpone_time=0.05,
             before_render=self._before_render,
         )
         self.events.bind_invalidator(self.invalidate)

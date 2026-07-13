@@ -1,4 +1,10 @@
-from reuleauxcoder.interfaces.cli.markdown_fragments import RetainedMarkdownRenderer
+import pytest
+
+from reuleauxcoder.interfaces.cli.markdown_fragments import (
+    RetainedMarkdownRenderer,
+    _plain_markdown_fragments,
+    _rich_markdown_fragments,
+)
 
 
 def _text(fragments) -> str:
@@ -98,3 +104,37 @@ def test_markdown_cache_evicts_the_least_recently_used_entry() -> None:
     assert "assistant:0" in cached_cell_ids
     assert "assistant:20" in cached_cell_ids
     assert "assistant:1" not in cached_cell_ids
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A normal answer without markdown.",
+        "hello\nworld",
+        "first paragraph\n\nsecond paragraph",
+        "two  spaces",
+        "literal * star",
+        "escaped \\* star and &amp; entity",
+        "中文与 emoji 🚀",
+    ],
+)
+def test_plain_markdown_fast_path_matches_rich_fragments(text: str) -> None:
+    assert _plain_markdown_fragments(text) == _rich_markdown_fragments(
+        text, width=72
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "**bold**",
+        "`code`",
+        "# heading",
+        "- list item",
+        "[link](https://example.com)",
+        "hard break  \nnext",
+        "| A | B |\n|---|---|\n| one | two |",
+    ],
+)
+def test_plain_markdown_fast_path_rejects_styled_syntax(text: str) -> None:
+    assert _plain_markdown_fragments(text) is None
