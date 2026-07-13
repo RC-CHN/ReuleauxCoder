@@ -204,16 +204,19 @@ func (m *Manager) poll(args map[string]any) protocol.WorkspaceResult {
 	if processState == nil {
 		return failure("not_found", "process not found")
 	}
-	stdout := processState.stdout.snapshot()
-	stderr := processState.stderr.snapshot()
-	stdoutOffset := boundedOffset(intArg(args["stdout_offset"]), len(stdout))
-	stderrOffset := boundedOffset(intArg(args["stderr_offset"]), len(stderr))
 	done := false
 	select {
 	case <-processState.done:
 		done = true
 	default:
 	}
+	// Observe completion before snapshotting output. Closing done happens only
+	// after both pipe-copy goroutines finish, so a received close establishes
+	// the happens-before edge needed for a complete terminal snapshot.
+	stdout := processState.stdout.snapshot()
+	stderr := processState.stderr.snapshot()
+	stdoutOffset := boundedOffset(intArg(args["stdout_offset"]), len(stdout))
+	stderrOffset := boundedOffset(intArg(args["stderr_offset"]), len(stderr))
 	processState.mu.Lock()
 	data := map[string]any{
 		"process_id": processID,
