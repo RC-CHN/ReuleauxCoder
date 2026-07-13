@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-from fnmatch import fnmatchcase
-
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolRetentionHint,
     ToolRetentionStrategy,
 )
-from reuleauxcoder.domain.workspace import WorkspaceError
+from reuleauxcoder.domain.workspace import WorkspaceError, portable_glob_match
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -18,31 +15,7 @@ from reuleauxcoder.extensions.tools.registry import register_tool
 
 def _glob_full_match(relative_path: str, pattern: str) -> bool:
     """Match path segments with portable ``**`` semantics on Python 3.10+."""
-    path_parts = tuple(
-        part for part in relative_path.replace("\\", "/").split("/") if part
-    )
-    pattern_parts = tuple(
-        part for part in pattern.replace("\\", "/").split("/") if part
-    )
-    if not path_parts or not pattern_parts:
-        return False
-
-    @lru_cache(maxsize=None)
-    def match(path_index: int, pattern_index: int) -> bool:
-        if pattern_index == len(pattern_parts):
-            return path_index == len(path_parts)
-        segment = pattern_parts[pattern_index]
-        if segment == "**":
-            return match(path_index, pattern_index + 1) or (
-                path_index < len(path_parts) and match(path_index + 1, pattern_index)
-            )
-        return (
-            path_index < len(path_parts)
-            and fnmatchcase(path_parts[path_index], segment)
-            and match(path_index + 1, pattern_index + 1)
-        )
-
-    return match(0, 0)
+    return portable_glob_match(relative_path, pattern)
 
 
 @register_tool
@@ -94,26 +67,20 @@ class GlobTool(Tool):
             base = self.backend.workspace.stat_entry(path)
             if not base.is_dir:
                 return f"Error: {path} is not a directory"
-            listing = self.backend.workspace.list_entries(
+            listing = self.backend.workspace.glob_paths(
+                pattern,
                 path,
-                recursive=True,
-                include_hidden=True,
                 max_entries=20_000,
+                max_matches=100,
             )
-            hits = [
-                entry
-                for entry in listing.entries
-                if _glob_full_match(entry.relative_path, pattern)
-            ]
-            hits.sort(key=lambda entry: entry.mtime, reverse=True)
-            total = len(hits)
-            shown = hits[:100]
+            total = listing.match_count
+            shown = listing.entries
             lines = [entry.path for entry in shown]
             result = "\n".join(lines)
 
             if total > 100:
                 result += f"\n... ({total} matches, showing first 100)"
-            elif listing.truncated:
+            elif listing.listing_truncated:
                 result += "\n... (workspace listing limit reached)"
             content = result or "No files matched."
             return ToolOutcome(
@@ -125,7 +92,7 @@ class GlobTool(Tool):
                     "path": path,
                     "match_count": total,
                     "shown_count": len(shown),
-                    "truncated": total > len(shown) or listing.truncated,
+                    "truncated": listing.truncated,
                 },
                 retention_hint=ToolRetentionHint(
                     strategy=ToolRetentionStrategy.HEAD_TAIL

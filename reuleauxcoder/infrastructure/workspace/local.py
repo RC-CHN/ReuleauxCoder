@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
+from fnmatch import translate as fnmatch_translate
 
 from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
     WorkspaceError,
     WorkspaceErrorCode,
+    WorkspaceGlobResult,
     WorkspaceListResult,
+    WorkspaceSearchMatch,
     WorkspaceSearchResult,
-    search_text_via_primitives,
+    compile_portable_glob,
 )
 
 
@@ -190,14 +194,182 @@ class LocalWorkspacePort:
         max_files: int = 5_000,
         max_matches: int = 200,
     ) -> WorkspaceSearchResult:
-        return search_text_via_primitives(
-            self,
-            pattern,
-            path,
-            include=include,
-            exclude_dirs=exclude_dirs,
-            max_files=max_files,
-            max_matches=max_matches,
+        try:
+            regex = re.compile(pattern)
+        except re.error as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.INVALID_PATH, f"invalid regex: {error}"
+            ) from error
+        if max_files < 1 or max_matches < 1:
+            raise WorkspaceError(
+                WorkspaceErrorCode.INVALID_PATH,
+                "max_files and max_matches must be positive",
+            )
+
+        base = self.stat_entry(path)
+        listing_truncated = False
+        if base.is_file:
+            files = [base]
+        elif base.is_dir:
+            excluded = set(exclude_dirs)
+            files: list[WorkspaceEntry] = []
+            candidate_overflow = False
+            simple_include = (
+                re.compile(fnmatch_translate(os.path.normcase(include)))
+                if include is not None
+                and "/" not in include
+                and "\\" not in include
+                else None
+            )
+
+            def collect(entry: os.DirEntry[str], relative_path: str) -> None:
+                nonlocal candidate_overflow
+                if not entry.is_file(follow_symlinks=False):
+                    return
+                if excluded.intersection(relative_path.split(os.sep)):
+                    return
+                if include is not None:
+                    if simple_include is not None:
+                        if simple_include.fullmatch(os.path.normcase(entry.name)) is None:
+                            return
+                    elif not Path(relative_path).match(include):
+                        return
+                if len(files) >= max_files:
+                    candidate_overflow = True
+                    return
+                files.append(
+                    self._entry_from_dir_entry(entry, relative_path)
+                )
+
+            base_path = self.resolve(path)
+            listing_truncated = self._scan_entries(
+                base_path,
+                include_hidden=True,
+                max_entries=max_files * 4,
+                visit=collect,
+            )
+            listing_truncated = listing_truncated or candidate_overflow
+        else:
+            raise WorkspaceError(
+                WorkspaceErrorCode.NOT_A_FILE, f"{path} is not searchable"
+            )
+
+        matches: list[WorkspaceSearchMatch] = []
+        for entry in files:
+            try:
+                with open(
+                    entry.path,
+                    "r",
+                    encoding="utf-8",
+                    errors="replace",
+                    newline="",
+                ) as stream:
+                    text = stream.read()
+            except (FileNotFoundError, OSError):
+                continue
+            for line_number, line in enumerate(text.splitlines(), 1):
+                if not regex.search(line):
+                    continue
+                matches.append(
+                    WorkspaceSearchMatch(
+                        path=entry.path,
+                        line_number=line_number,
+                        line=line.rstrip(),
+                    )
+                )
+                if len(matches) >= max_matches:
+                    return WorkspaceSearchResult(tuple(matches), truncated=True)
+        return WorkspaceSearchResult(tuple(matches), truncated=listing_truncated)
+
+    def glob_paths(
+        self,
+        pattern: str,
+        path: str | Path,
+        *,
+        max_entries: int = 20_000,
+        max_matches: int = 100,
+    ) -> WorkspaceGlobResult:
+        if max_entries < 1 or max_matches < 1:
+            raise WorkspaceError(
+                WorkspaceErrorCode.INVALID_PATH,
+                "max_entries and max_matches must be positive",
+            )
+        base = self.resolve(path)
+        if not base.exists():
+            raise WorkspaceError(WorkspaceErrorCode.NOT_FOUND, f"{path} not found")
+        if not base.is_dir():
+            raise WorkspaceError(
+                WorkspaceErrorCode.NOT_A_DIRECTORY, f"{path} is not a directory"
+            )
+
+        hits: list[WorkspaceEntry] = []
+        matcher = compile_portable_glob(pattern)
+
+        def collect(entry: os.DirEntry[str], relative_path: str) -> None:
+            if matcher.matches(relative_path):
+                hits.append(self._entry_from_dir_entry(entry, relative_path))
+
+        listing_truncated = self._scan_entries(
+            base,
+            include_hidden=True,
+            max_entries=max_entries,
+            visit=collect,
+        )
+        hits.sort(key=lambda entry: entry.mtime, reverse=True)
+        return WorkspaceGlobResult(
+            entries=tuple(hits[:max_matches]),
+            match_count=len(hits),
+            listing_truncated=listing_truncated,
+        )
+
+    @staticmethod
+    def _scan_entries(
+        base: Path,
+        *,
+        include_hidden: bool,
+        max_entries: int,
+        visit,
+    ) -> bool:
+        pending = [(os.fspath(base), "")]
+        scanned = 0
+        try:
+            while pending:
+                directory, prefix = pending.pop()
+                with os.scandir(directory) as iterator:
+                    children = sorted(iterator, key=lambda item: item.name.lower())
+                for child in children:
+                    if not include_hidden and child.name.startswith("."):
+                        continue
+                    relative_path = (
+                        os.path.join(prefix, child.name) if prefix else child.name
+                    )
+                    visit(child, relative_path)
+                    scanned += 1
+                    if scanned >= max_entries:
+                        return True
+                    if child.is_dir(follow_symlinks=False):
+                        pending.append((child.path, relative_path))
+        except OSError as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR,
+                f"failed to scan {base}: {error}",
+            ) from error
+        return False
+
+    @staticmethod
+    def _entry_from_dir_entry(
+        entry: os.DirEntry[str], relative_path: str
+    ) -> WorkspaceEntry:
+        stat_result = entry.stat(follow_symlinks=False)
+        return WorkspaceEntry(
+            path=entry.path,
+            relative_path=relative_path,
+            name=entry.name,
+            is_file=stat.S_ISREG(stat_result.st_mode),
+            is_dir=stat.S_ISDIR(stat_result.st_mode),
+            size=stat_result.st_size,
+            mtime=stat_result.st_mtime,
+            mode=stat_result.st_mode,
         )
 
     @staticmethod

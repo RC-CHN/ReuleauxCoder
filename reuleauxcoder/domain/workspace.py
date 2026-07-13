@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from fnmatch import translate as fnmatch_translate
+from functools import lru_cache
 from pathlib import Path
 import re
 from typing import Protocol
@@ -45,6 +47,17 @@ class WorkspaceListResult:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceGlobResult:
+    entries: tuple[WorkspaceEntry, ...]
+    match_count: int
+    listing_truncated: bool = False
+
+    @property
+    def truncated(self) -> bool:
+        return self.listing_truncated or self.match_count > len(self.entries)
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceSearchMatch:
     path: str
     line_number: int
@@ -81,6 +94,15 @@ class WorkspacePort(Protocol):
         max_entries: int = 10_000,
     ) -> WorkspaceListResult: ...
 
+    def glob_paths(
+        self,
+        pattern: str,
+        path: str | Path,
+        *,
+        max_entries: int = 20_000,
+        max_matches: int = 100,
+    ) -> WorkspaceGlobResult: ...
+
     def search_text(
         self,
         pattern: str,
@@ -91,6 +113,87 @@ class WorkspacePort(Protocol):
         max_files: int = 5_000,
         max_matches: int = 200,
     ) -> WorkspaceSearchResult: ...
+
+
+class PortableGlobMatcher:
+    """Precompiled segment matcher with stable ``**`` semantics."""
+
+    def __init__(self, pattern: str) -> None:
+        pattern_parts = tuple(
+            part for part in pattern.replace("\\", "/").split("/") if part
+        )
+        self._segments: tuple[re.Pattern[str] | None, ...] = tuple(
+            None if part == "**" else re.compile(fnmatch_translate(part))
+            for part in pattern_parts
+        )
+
+    def matches(self, relative_path: str) -> bool:
+        path_parts = tuple(
+            part for part in relative_path.replace("\\", "/").split("/") if part
+        )
+        if not path_parts or not self._segments:
+            return False
+        previous = [False] * (len(self._segments) + 1)
+        previous[0] = True
+        for pattern_index, segment in enumerate(self._segments, 1):
+            if segment is None:
+                previous[pattern_index] = previous[pattern_index - 1]
+        for part in path_parts:
+            current = [False] * (len(self._segments) + 1)
+            for pattern_index, segment in enumerate(self._segments, 1):
+                if segment is None:
+                    current[pattern_index] = (
+                        current[pattern_index - 1] or previous[pattern_index]
+                    )
+                else:
+                    current[pattern_index] = previous[
+                        pattern_index - 1
+                    ] and segment.fullmatch(part) is not None
+            previous = current
+        return previous[-1]
+
+
+@lru_cache(maxsize=256)
+def compile_portable_glob(pattern: str) -> PortableGlobMatcher:
+    return PortableGlobMatcher(pattern)
+
+
+def portable_glob_match(relative_path: str, pattern: str) -> bool:
+    """Match path segments with stable ``**`` semantics on every platform."""
+    return compile_portable_glob(pattern).matches(relative_path)
+
+
+def glob_paths_via_primitives(
+    workspace: WorkspacePort,
+    pattern: str,
+    path: str | Path,
+    *,
+    max_entries: int = 20_000,
+    max_matches: int = 100,
+) -> WorkspaceGlobResult:
+    """Portable compatibility projection built from stat/list primitives."""
+    base = workspace.stat_entry(path)
+    if not base.is_dir:
+        raise WorkspaceError(
+            WorkspaceErrorCode.NOT_A_DIRECTORY, f"{path} is not a directory"
+        )
+    listing = workspace.list_entries(
+        path,
+        recursive=True,
+        include_hidden=True,
+        max_entries=max_entries,
+    )
+    hits = [
+        entry
+        for entry in listing.entries
+        if portable_glob_match(entry.relative_path, pattern)
+    ]
+    hits.sort(key=lambda entry: entry.mtime, reverse=True)
+    return WorkspaceGlobResult(
+        entries=tuple(hits[:max_matches]),
+        match_count=len(hits),
+        listing_truncated=listing.truncated,
+    )
 
 
 def search_text_via_primitives(

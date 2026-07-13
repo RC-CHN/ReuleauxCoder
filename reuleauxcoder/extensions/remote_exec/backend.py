@@ -19,8 +19,10 @@ from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
     WorkspaceError,
     WorkspaceErrorCode,
+    WorkspaceGlobResult,
     WorkspaceListResult,
     WorkspaceSearchResult,
+    glob_paths_via_primitives,
     search_text_via_primitives,
 )
 from reuleauxcoder.extensions.remote_exec.errors import (
@@ -332,6 +334,22 @@ class RemoteWorkspacePort:
             include=include,
             exclude_dirs=exclude_dirs,
             max_files=max_files,
+            max_matches=max_matches,
+        )
+
+    def glob_paths(
+        self,
+        pattern: str,
+        path: str | Path,
+        *,
+        max_entries: int = 20_000,
+        max_matches: int = 100,
+    ) -> WorkspaceGlobResult:
+        return glob_paths_via_primitives(
+            self,
+            pattern,
+            path,
+            max_entries=max_entries,
             max_matches=max_matches,
         )
 
