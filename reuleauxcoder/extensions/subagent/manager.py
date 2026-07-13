@@ -559,8 +559,7 @@ class SubagentManager:
                 _publish_job_event(parent_agent, tracked)
             resume_directives = (
                 tuple(
-                    directive.model_text()
-                    for directive in self.drain_messages(job_id)
+                    directive.model_text() for directive in self.drain_messages(job_id)
                 )
                 if active_resume_reference
                 else ()
@@ -682,9 +681,7 @@ class SubagentManager:
                             tracked.status = "blocked"
                             tracked.finished_at = None
                             tracked.error = None
-                            self._arm_guidance_deadline_locked(
-                                tracked, preserve=True
-                            )
+                            self._arm_guidance_deadline_locked(tracked, preserve=True)
                             resume_immediately = tracked.resume_ready or bool(
                                 self._message_queues.get(job_id)
                             )
@@ -996,9 +993,7 @@ class SubagentManager:
                 continue
             seq = max(1, int(payload.get("seq") or 1))
             sender = str(
-                payload.get("sender_agent_id")
-                or self._parent_agent_id
-                or "root"
+                payload.get("sender_agent_id") or self._parent_agent_id or "root"
             )
             pending_directives.append(
                 SubagentDirective(
@@ -1136,7 +1131,10 @@ class SubagentManager:
                         if job.status != "timed_out":
                             job.error = "Sub-agent cancelled; late result quarantined."
                         job.finished_at = time.time()
-                    elif isinstance(result, SubagentResult) and result.status == "blocked":
+                    elif (
+                        isinstance(result, SubagentResult)
+                        and result.status == "blocked"
+                    ):
                         job.status = "blocked"
                         job.structured_result = result
                         job.result = result.summary
@@ -1158,9 +1156,13 @@ class SubagentManager:
                         structured = _coerce_subagent_result(result)
                         job.structured_result = structured
                         job.result = structured.summary
-                        job.worktree_path = structured.worktree_path or job.worktree_path
+                        job.worktree_path = (
+                            structured.worktree_path or job.worktree_path
+                        )
                         job.status = (
-                            "completed" if structured.status == "ok" else structured.status
+                            "completed"
+                            if structured.status == "ok"
+                            else structured.status
                         )
                         if not self._is_actionable_terminal(job):
                             job.status = "failed"
@@ -1225,12 +1227,15 @@ class SubagentManager:
     ) -> bool:
         """Queue one child report for its immediate parent agent."""
 
-        return self.queue_to_parent(
-            sender_agent_id,
-            message,
-            kind=kind,
-            reply_to=reply_to,
-        ) is not None
+        return (
+            self.queue_to_parent(
+                sender_agent_id,
+                message,
+                kind=kind,
+                reply_to=reply_to,
+            )
+            is not None
+        )
 
     def queue_to_parent(
         self,
@@ -1334,9 +1339,7 @@ class SubagentManager:
             _publish_job_event(self._root_agent, job)
         return True
 
-    def record_tool_activity(
-        self, sender_agent_id: str, tool_name: str | None
-    ) -> bool:
+    def record_tool_activity(self, sender_agent_id: str, tool_name: str | None) -> bool:
         """Record a newly started broker call or clear its active indicator."""
         with self._lock:
             job = self._jobs.get(self._agent_jobs.get(sender_agent_id, ""))
@@ -1387,7 +1390,9 @@ class SubagentManager:
             _publish_job_event(self._root_agent, job)
         return True
 
-    def drain_parent_messages(self, parent_agent_id: str) -> list[SubagentCommunication]:
+    def drain_parent_messages(
+        self, parent_agent_id: str
+    ) -> list[SubagentCommunication]:
         with self._lock:
             selected = [
                 message
@@ -1483,12 +1488,15 @@ class SubagentManager:
     ) -> bool:
         """Queue a message for a running worker; it is consumed next model round."""
 
-        return self.queue_message(
-            job_id,
-            message,
-            sender_agent_id=sender_agent_id,
-            source=source,
-        ) is not None
+        return (
+            self.queue_message(
+                job_id,
+                message,
+                sender_agent_id=sender_agent_id,
+                source=source,
+            )
+            is not None
+        )
 
     def queue_message(
         self,
@@ -1509,13 +1517,18 @@ class SubagentManager:
         with self._lock:
             job = self._jobs.get(job_id)
             queue = self._message_queues.get(job_id)
-            if job is None or queue is None or job.status not in {
-                "queued",
-                "running",
-                "parking",
-                "blocked",
-                "resuming",
-            }:
+            if (
+                job is None
+                or queue is None
+                or job.status
+                not in {
+                    "queued",
+                    "running",
+                    "parking",
+                    "blocked",
+                    "resuming",
+                }
+            ):
                 return None
             if job.status == "blocked" and (
                 not job.resume_reference or job_id not in self._job_schedulers
@@ -1937,9 +1950,7 @@ class SubagentManager:
         return sorted(
             drained,
             key=lambda item: (
-                item.completion_seq
-                if item.completion_seq is not None
-                else float("inf")
+                item.completion_seq if item.completion_seq is not None else float("inf")
             ),
         )
 
@@ -2019,9 +2030,7 @@ def _filter_subagent_tools(parent_agent, mode: str):
         "verify": {"read_file", "list_file", "glob", "grep", "lsp", "shell"},
     }
     allowed = mode_allowlist[mode]
-    allowed.update(
-        {"report_progress", "report_to_parent", "request_guidance"}
-    )
+    allowed.update({"report_progress", "report_to_parent", "request_guidance"})
     selected = [tool for tool in parent_agent.tools if tool.name in allowed]
     present = {tool.name for tool in selected}
     for control_type in (ReportProgressTool, ReportToParentTool, RequestGuidanceTool):
@@ -2183,19 +2192,15 @@ def run_subagent_task(
         broker,
         cancel_event=cancellation,
         timeout_seconds=effective_timeout_seconds,
-        directive_source=(
-            (lambda: manager.drain_messages(job_id)) if job_id else None
-        ),
+        directive_source=((lambda: manager.drain_messages(job_id)) if job_id else None),
         event_sink=parent_event_sink if callable(parent_event_sink) else None,
         checkpoint_sink=(
             (
-                lambda reference, checkpoint, payload: (
-                    manager.commit_worker_checkpoint(
-                        job_id,
-                        reference,
-                        checkpoint,
-                        resume_ready=bool(payload.get("embedded_directive_ids")),
-                    )
+                lambda reference, checkpoint, payload: manager.commit_worker_checkpoint(
+                    job_id,
+                    reference,
+                    checkpoint,
+                    resume_ready=bool(payload.get("embedded_directive_ids")),
                 )
             )
             if job_id
@@ -2217,7 +2222,8 @@ def run_subagent_task(
         started_at=started_at,
         job_id=job_id,
         parent_agent=parent_agent,
-        partial=status
+        partial=execution.partial
+        or status
         in {
             "blocked",
             "cancelled",
@@ -2246,7 +2252,9 @@ def _normalize_subagent_terminal_status(status: str, summary: str) -> str:
         "max rounds reached",
         "sub-agent tool-call budget exhausted",
     )
-    return "failed" if any(marker in normalized for marker in budget_markers) else status
+    return (
+        "failed" if any(marker in normalized for marker in budget_markers) else status
+    )
 
 
 def build_delegated_prompt(
@@ -2276,9 +2284,7 @@ def build_delegated_prompt(
             "[/Isolated worktree]"
         )
     elif working_directory:
-        sections.append(
-            f"[Execution root]\n{working_directory}\n[/Execution root]"
-        )
+        sections.append(f"[Execution root]\n{working_directory}\n[/Execution root]")
     sections.extend(
         [
             f"[Assigned task]\n{task}\n[/Assigned task]",
@@ -2327,10 +2333,7 @@ def _result_from_agent(
     messages = list(getattr(sub, "messages", []))
     reported = _parse_delegated_final_response(summary)
     files = sorted(
-        {
-            match.group(0)
-            for match in re.finditer(r"(?:[\w.-]+/)+[\w.-]+", summary)
-        }
+        {match.group(0) for match in re.finditer(r"(?:[\w.-]+/)+[\w.-]+", summary)}
     )
     tool_facts = [
         event
@@ -2383,9 +2386,7 @@ def _result_from_agent(
         resume_ready=resume_ready,
     )
     if job_id:
-        root = (
-            getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
-        )
+        root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
         try:
             result.transcript_ref = SubagentTranscriptStore(root).write(
                 job_id,

@@ -30,6 +30,7 @@ class AgentLoop:
         self._prompt_fn = prompt_fn
         self._shell = shell_name
         self.last_response_streamed = False
+        self.round_limit_reached = False
 
     def _wire_settings(self) -> dict:
         """Return canonical settings that can change the provider wire payload."""
@@ -95,7 +96,9 @@ class AgentLoop:
             pass
         notes_text = ""
         try:
-            from reuleauxcoder.infrastructure.persistence.notes_store import render_notes
+            from reuleauxcoder.infrastructure.persistence.notes_store import (
+                render_notes,
+            )
 
             notes_text = render_notes()[:1_200]
         except Exception:
@@ -143,7 +146,7 @@ class AgentLoop:
             encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e")
         content = (
             f'<execution_state plan_revision="{plan.revision}">\n'
-            "<execution_data trust=\"untrusted_data\">\n"
+            '<execution_data trust="untrusted_data">\n'
             f"{encoded}\n"
             "</execution_data>\n"
             "<runtime_instruction>Continue the in-progress checklist step. "
@@ -348,6 +351,7 @@ class AgentLoop:
 
     def run(self) -> str:
         """Run the conversation loop."""
+        self.round_limit_reached = False
         # Compress if needed
         self.agent.maybe_compress_context(
             self.agent.llm, reason="pre-request checkpoint"
@@ -461,16 +465,12 @@ class AgentLoop:
                 max_output_tokens=max_output_tokens,
             )
             self.agent.state.total_model_calls += 1
-            dispatched = getattr(
-                self.agent.llm, "last_dispatched_request", None
-            )
+            dispatched = getattr(self.agent.llm, "last_dispatched_request", None)
             if isinstance(dispatched, dict):
                 actual_messages = [
                     dict(message) for message in dispatched.get("messages") or []
                 ]
-                actual_tools = [
-                    dict(tool) for tool in dispatched.get("tools") or []
-                ]
+                actual_tools = [dict(tool) for tool in dispatched.get("tools") or []]
                 if not actual_messages:
                     actual_messages = request_messages
                 actual_settings = {
@@ -521,15 +521,11 @@ class AgentLoop:
                 "usage_observed",
                 {
                     "actual_prompt_tokens": resp.prompt_tokens,
-                    "cached_input_tokens": getattr(
-                        resp, "cached_input_tokens", None
-                    ),
+                    "cached_input_tokens": getattr(resp, "cached_input_tokens", None),
                     "local_request_estimate": local_request_estimate,
                     "local_history_estimate": local_history_estimate,
                     "request_boundary": f"{self.agent._current_turn_id}:{round_num}",
-                    "model_profile": str(
-                        getattr(self.agent.llm, "model", "unknown")
-                    ),
+                    "model_profile": str(getattr(self.agent.llm, "model", "unknown")),
                 },
                 agent_id=self.agent.agent_id,
                 turn_id=self.agent._current_turn_id,
@@ -641,13 +637,16 @@ class AgentLoop:
             self.agent._flush_pending_subagent_injections()
             self.agent._inject_completed_subagent_jobs()
 
-        if getattr(self.agent, "subagent_depth", 0) > 0:
-            return "(reached maximum tool-call rounds)"
+        self.round_limit_reached = True
+        if self.agent.stop_requested():
+            return "(stopped by cancellation request)"
 
         summary_prompt = (
-            "Maximum tool-call rounds reached. Do not call any tools. "
-            "Briefly summarize the current findings/status, list any blockers or incomplete work, "
-            "and end the task."
+            "Your working-round budget is exhausted. Stop working and do not call any tools. "
+            "Return a concise handoff of the work already performed. Include: "
+            "(1) completed findings or changes, (2) concrete evidence and relevant files, "
+            "(3) incomplete items or blockers, and (4) the recommended next step. "
+            "Do not discard partial results and do not claim unfinished work is complete."
         )
         self.agent._append_message(
             {"role": "system", "content": summary_prompt},
@@ -667,6 +666,20 @@ class AgentLoop:
         summary_local_history = self.agent.context.get_context_tokens(
             self.agent.state.messages
         )
+        summary_max_output_tokens = None
+        if self.agent.max_total_tokens is not None:
+            remaining = (
+                self.agent.max_total_tokens
+                - self.agent.state.total_prompt_tokens
+                - self.agent.state.total_completion_tokens
+                - summary_local_request
+            )
+            if remaining <= 0:
+                return "(sub-agent token budget exhausted before final handoff)"
+            summary_max_output_tokens = min(
+                int(getattr(self.agent.llm, "max_tokens", remaining)),
+                remaining,
+            )
         self._record_request_envelopes(summary_messages, [])
         summary_resp = self.agent.llm.chat(
             messages=summary_messages,
@@ -684,6 +697,7 @@ class AgentLoop:
                 "summary_phase": True,
                 "pending_tool_calls": len(self.agent._collect_pending_tool_calls()),
             },
+            max_output_tokens=summary_max_output_tokens,
         )
         self.agent.state.total_model_calls += 1
         self.last_response_streamed = summary_streamed
@@ -707,9 +721,7 @@ class AgentLoop:
                 "local_request_estimate": summary_local_request,
                 "local_history_estimate": summary_local_history,
                 "request_boundary": f"{self.agent._current_turn_id}:summary",
-                "model_profile": str(
-                    getattr(self.agent.llm, "model", "unknown")
-                ),
+                "model_profile": str(getattr(self.agent.llm, "model", "unknown")),
             },
             agent_id=self.agent.agent_id,
             turn_id=self.agent._current_turn_id,

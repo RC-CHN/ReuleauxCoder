@@ -57,6 +57,7 @@ class WorkerExecutionResult:
     killed: bool = False
     usage_uncertain: bool = False
     resume_ready: bool = False
+    partial: bool = False
 
 
 class BrokeredWorkerTool(Tool):
@@ -192,9 +193,7 @@ class WorkerIPCClient:
                         )
                         self._state_lock.notify_all()
                 elif envelope.type == "park_ack":
-                    checkpoint_id = str(
-                        envelope.payload.get("checkpoint_id") or ""
-                    )
+                    checkpoint_id = str(envelope.payload.get("checkpoint_id") or "")
                     with self._state_lock:
                         self._park_acks.add(checkpoint_id)
                         self._state_lock.notify_all()
@@ -227,7 +226,9 @@ class ParentToolBroker:
                 backend_context.cancellation_event = cancellation_event
         agent.add_event_handler(self._capture_event)
 
-    def execute(self, call_id: str, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+    def execute(
+        self, call_id: str, name: str, arguments: dict[str, Any]
+    ) -> ToolOutcome:
         fingerprint = json.dumps(
             arguments,
             ensure_ascii=False,
@@ -274,13 +275,17 @@ class ParentToolBroker:
             return
         if self.cancellation_event.is_set():
             return
-        if event.event_type in {
-            AgentEventType.TOOL_OUTPUT_DELTA,
-            AgentEventType.PROGRESS_REPORTED,
-            AgentEventType.DIAGNOSTIC,
-            AgentEventType.APPROVAL_REQUESTED,
-            AgentEventType.APPROVAL_RESOLVED,
-        } and self.event_sink is not None:
+        if (
+            event.event_type
+            in {
+                AgentEventType.TOOL_OUTPUT_DELTA,
+                AgentEventType.PROGRESS_REPORTED,
+                AgentEventType.DIAGNOSTIC,
+                AgentEventType.APPROVAL_REQUESTED,
+                AgentEventType.APPROVAL_RESOLVED,
+            }
+            and self.event_sink is not None
+        ):
             self.event_sink(event)
 
     def ipc_tool_result(self, outcome: ToolOutcome) -> dict[str, Any]:
@@ -337,14 +342,20 @@ class ParentToolBroker:
 
     def is_effectful(self, tool_name: str) -> bool:
         tool = next(
-            (candidate for candidate in self.agent.tools if candidate.name == tool_name),
+            (
+                candidate
+                for candidate in self.agent.tools
+                if candidate.name == tool_name
+            ),
             None,
         )
         effect_class = getattr(tool, "effect_class", None)
         return effect_class in {"workspace_write", "process_execution", "remote_effect"}
 
 
-def worker_process_main(spec_data: dict[str, Any], connection: Connection, cancel) -> None:
+def worker_process_main(
+    spec_data: dict[str, Any], connection: Connection, cancel
+) -> None:
     """Spawn target: run one child model loop and no workspace primitives."""
     from reuleauxcoder.domain.agent.agent import Agent
 
@@ -375,11 +386,7 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
         child.add_event_handler(
             lambda event: client.send(
                 "runtime_event",
-                {
-                    "event": runtime_event_to_dict(
-                        agent_event_to_runtime_event(event)
-                    )
-                },
+                {"event": runtime_event_to_dict(agent_event_to_runtime_event(event))},
             )
         )
         if spec.replay_messages:
@@ -427,9 +434,7 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
                 "prompt_tokens": child.state.total_prompt_tokens,
                 "completion_tokens": child.state.total_completion_tokens,
                 "tool_calls": child.state.total_tool_calls,
-                "guidance_request_id": child._park_request.get(
-                    "guidance_request_id"
-                ),
+                "guidance_request_id": child._park_request.get("guidance_request_id"),
                 "model_calls": child.state.total_model_calls,
             }
             checkpoint_id = "cp_" + _stable_hash(checkpoint_state)[:16]
@@ -459,6 +464,7 @@ def worker_process_main(spec_data: dict[str, Any], connection: Connection, cance
                     else None
                 ),
                 "model_calls": child.state.total_model_calls,
+                "partial": child._loop.round_limit_reached,
             },
         )
     except BaseException as error:
@@ -582,11 +588,7 @@ def run_isolated_worker(
                             },
                         )
 
-            if (
-                not active_tool
-                and pending_tool_requests
-                and cancel_started is None
-            ):
+            if not active_tool and pending_tool_requests and cancel_started is None:
                 call_id, tool_name, arguments = pending_tool_requests.popleft()
                 active_tool = True
                 active_tool_name = tool_name
@@ -632,9 +634,7 @@ def run_isolated_worker(
                     )
                 )
             elif envelope.type == "checkpoint":
-                checkpoint_id = str(
-                    envelope.payload.get("checkpoint_id") or ""
-                )
+                checkpoint_id = str(envelope.payload.get("checkpoint_id") or "")
                 if not checkpoint_id:
                     terminal = WorkerExecutionResult(
                         status="failed",
@@ -658,6 +658,7 @@ def run_isolated_worker(
                         else None
                     ),
                     model_calls=int(envelope.payload.get("model_calls") or 0),
+                    partial=bool(envelope.payload.get("partial", False)),
                 )
                 for directive in inflight_directives.values():
                     checkpoint.messages.append(
@@ -775,10 +776,14 @@ def run_isolated_worker(
             killed=True,
             usage_uncertain=True,
         )
-    return terminal or checkpoint or WorkerExecutionResult(
-        status="failed",
-        summary=f"Worker exited without terminal frame (exit={process.exitcode}).",
-        messages=[],
+    return (
+        terminal
+        or checkpoint
+        or WorkerExecutionResult(
+            status="failed",
+            summary=f"Worker exited without terminal frame (exit={process.exitcode}).",
+            messages=[],
+        )
     )
 
 
@@ -796,9 +801,7 @@ def _required_object(value: object, label: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _validate_tool_result_ref(
-    reference: ToolResultRef, outcome: ToolOutcome
-) -> None:
+def _validate_tool_result_ref(reference: ToolResultRef, outcome: ToolOutcome) -> None:
     path = Path(reference.path)
     payload = path.read_bytes()
     if len(payload) != reference.size_bytes:

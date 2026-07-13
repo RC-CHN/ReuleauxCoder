@@ -113,16 +113,27 @@ def test_subagent_request_caps_output_by_remaining_total_budget() -> None:
     assert llm.calls[0]["max_output_tokens"] == 180
 
 
-def test_subagent_round_limit_never_dispatches_unbudgeted_summary_request() -> None:
-    llm = _BudgetLLM(
-        LLMResponse(
-            tool_calls=[ToolCall(id="missing", name="unknown", arguments={})]
-        )
-    )
+def test_subagent_round_limit_returns_tool_free_partial_handoff() -> None:
+    class _HandoffLLM(_BudgetLLM):
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return LLMResponse(
+                    tool_calls=[ToolCall(id="missing", name="unknown", arguments={})]
+                )
+            return LLMResponse(
+                content="Found two relevant tests; one count remains incomplete."
+            )
+
+    llm = _HandoffLLM()
     agent = Agent(llm=llm, tools=[], max_rounds=1)
     agent.subagent_depth = 1
 
     result = agent._loop.run()
 
-    assert result == "(reached maximum tool-call rounds)"
-    assert len(llm.calls) == 1
+    assert result == "Found two relevant tests; one count remains incomplete."
+    assert len(llm.calls) == 2
+    assert llm.calls[1]["tools"] is None
+    assert llm.calls[1]["metadata"]["summary_phase"] is True
+    assert "Do not discard partial results" in llm.calls[1]["messages"][-2]["content"]
+    assert agent._loop.round_limit_reached is True
