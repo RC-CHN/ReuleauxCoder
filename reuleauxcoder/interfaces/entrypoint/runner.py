@@ -55,6 +55,7 @@ from reuleauxcoder.interfaces.entrypoint.remote_relay import (
 from reuleauxcoder.interfaces.entrypoint.session_lifecycle import restore_session
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.infrastructure.persistence.notes_store import NoteStore
+from reuleauxcoder.infrastructure.version_control import GitMonitor
 from reuleauxcoder.services.llm.client import LLM
 
 __all__ = ["AppRunner", "_default_create_remote_artifact_provider"]
@@ -74,6 +75,7 @@ class AppRunner:
         self._relay_server: RelayServer | None = None
         self._relay_http_service: RemoteRelayHTTPService | None = None
         self._lsp_manager: LspManager | None = None
+        self._git_monitor: GitMonitor | None = None
         self._agent: Agent | None = None
         self._ui_bus: UIEventBus | None = None
         self._remote_chat_cleanup: Callable[[], None] | None = None
@@ -184,6 +186,7 @@ class AppRunner:
         agent.context._ui_bus = ui_bus
 
         self._register_hooks(agent, config)
+        self._init_git_monitor(agent)
         self._init_lsp(config, agent, ui_bus)
         self._wire_agent_tools(agent)
         self._hint_rtk_install(config, ui_bus)
@@ -287,6 +290,14 @@ class AppRunner:
             bind = getattr(tool, "bind_lsp_manager", None)
             if callable(bind):
                 bind(manager)
+
+    def _init_git_monitor(self, agent: Agent) -> None:
+        """Bind root-local Git observation to its request-tail hook."""
+        if self._relay_server is not None:
+            self._git_monitor = None
+        else:
+            self._git_monitor = GitMonitor(Path.cwd())
+        agent.hook_registry.bind_runtime_service("git_monitor", self._git_monitor)
 
     @staticmethod
     def _wire_agent_tools(agent: Agent) -> None:
@@ -417,6 +428,9 @@ class AppRunner:
             self._lsp_manager = None
             if self._agent is not None:
                 self._agent.lsp_manager = None
+        if self._agent is not None:
+            self._agent.hook_registry.bind_runtime_service("git_monitor", None)
+        self._git_monitor = None
         self._agent = None
         self._ui_bus = None
 

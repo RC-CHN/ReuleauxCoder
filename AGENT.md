@@ -158,7 +158,7 @@ Rules match tool name/source and resolve to `allow`, `warn`, `require_approval`,
 
 `domain/extensions/` adds versioned manifests, dependency ordering, runner/session/agent/subagent scopes, explicit subagent rebuild/omit policy, and reverse-order disposal. The legacy hook runtime is bridged through `app/runtime/extension_bridge.py`; new extension work should use explicit scope ownership rather than module globals or shallow copies.
 
-Built-in hooks include tool policy, tool output truncation/archive, project context, LSP edit observation, and LSP diagnostic injection.
+Built-in hooks include tool policy, tool output truncation/archive, project context, LSP edit observation/diagnostic injection, and bounded Git-state injection. Git state is sampled by a root-local `BEFORE_LLM_REQUEST` transform and inserted only into the volatile execution overlay; it never mutates replay history, never runs against remote or child workspaces, and never blocks a model request. Status, changed HEAD commits and generic path-prefix summaries have strict time/output limits; non-repositories are reported explicitly.
 
 ## Subagents
 

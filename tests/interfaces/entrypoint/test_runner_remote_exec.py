@@ -213,8 +213,10 @@ class TestRunnerRemoteExec:
         )
         ctx = runner.initialize()
         assert runner._relay_server is None
+        assert runner._git_monitor is not None
         assert ctx.agent is not None
         runner.cleanup(ctx.agent)
+        assert runner._git_monitor is None
 
     def test_local_mode_smoke_startup_uses_local_backends(self, tmp_path: Path) -> None:
         """Smoke test: normal local startup should not initialize remote services."""
@@ -251,6 +253,7 @@ class TestRunnerRemoteExec:
         )
         ctx = runner.initialize()
         assert runner._relay_server is not None
+        assert runner._git_monitor is None
         assert isinstance(runner._relay_server, RelayServer)
         assert all(
             isinstance(tool.backend, RemoteRelayToolBackend) for tool in ctx.agent.tools

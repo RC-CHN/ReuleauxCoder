@@ -8,6 +8,7 @@ from reuleauxcoder.domain.hooks.builtin.project_context import (
 )
 from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
 from reuleauxcoder.domain.hooks.builtin.lsp_injector import LspDiagnosticsInjectorHook
+from reuleauxcoder.domain.hooks.builtin.git_state import GitStateInjectorHook
 
 __all__ = [
     "ToolOutputTruncationHook",
@@ -16,4 +17,5 @@ __all__ = [
     "ProjectContextStartupNotifier",
     "LspEditObserverHook",
     "LspDiagnosticsInjectorHook",
+    "GitStateInjectorHook",
 ]

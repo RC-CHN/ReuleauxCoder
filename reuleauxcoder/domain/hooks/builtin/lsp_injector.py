@@ -19,6 +19,10 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.hooks.discovery import register_hook
+from reuleauxcoder.domain.hooks.runtime_overlay import (
+    has_runtime_overlay_tail,
+    inject_runtime_overlay_region,
+)
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.extensions.lsp.diagnostics import (
     DiagnosticRouteFilter,
@@ -77,16 +81,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         # Never claim a batch unless there is a valid request-time overlay to
         # receive it. This prevents a schema migration or malformed request
         # from acknowledging diagnostics that the model never saw.
-        if not context.messages:
-            return context
-        last = context.messages[-1]
-        content = str(last.get("content") or "")
-        marker = "<runtime_instruction>"
-        if (
-            last.get("role") != "system"
-            or not content.startswith("<execution_state")
-            or marker not in content
-        ):
+        if not has_runtime_overlay_tail(context.messages):
             return context
 
         batches = self.lsp_manager.consume_diagnostic_batches(
@@ -133,7 +128,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             f"{rendered}\n"
             "</lsp_diagnostics>\n"
         )
-        last["content"] = content.replace(marker, injection + marker, 1)
+        inject_runtime_overlay_region(context.messages, injection)
 
         # Emit a compact UI feedback panel
         ui_bus = getattr(self.lsp_manager, "ui_bus", None)
