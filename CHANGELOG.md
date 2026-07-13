@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.3 - 2026-07-13
+
+- Added bounded Git working-state and changed-HEAD summaries to the volatile request overlay, alongside stale-safe LSP diagnostics, without mutating replay history or sampling remote/child workspaces.
+- Hardened global/workspace notes with durable scoped storage and editing, capped all active subagents globally at four, and tightened capacity and terminal-event behavior.
+- Improved mini-TUI structure, transcript grouping, Markdown scroll anchoring and rendering performance through incremental retained state, LRU caching and plain-text fast paths.
+- Made local and remote workspace search primitives faster and cross-platform while preserving result semantics, and allowed external read-only access with exact approval previews for external mutations.
+- Added SOCKS proxy support and fixed the remote peer process race that could lose stdout/stderr from immediately exiting commands.
+
 ## 0.4.2 - 2026-07-13
 
 - Hardened asynchronous subagent lifecycle handling with isolated workers, durable guidance parking/resume, stable mailbox ordering, parallel broker request queuing, terminal-result delivery receipts, partial handoffs at round limits, and strict root/child tool scopes.

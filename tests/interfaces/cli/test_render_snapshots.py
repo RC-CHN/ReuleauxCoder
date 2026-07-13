@@ -329,7 +329,7 @@ def test_startup_banner_is_compact_and_terminal_bounded(width: int) -> None:
     show_banner(
         "demo/model",
         "https://example.invalid/openai-compatible/v1",
-        "0.4.2",
+        "0.4.3",
         console_override=console,
         startup_events=(
             UIEvent.info("LSP: 9/9 language servers ready\n  ✓ python\n  ✓ rust"),
@@ -338,7 +338,7 @@ def test_startup_banner_is_compact_and_terminal_bounded(width: int) -> None:
     )
     output = console.export_text()
 
-    assert "FORGE   REULEAUXCODER  //  V0.4.2" in output
+    assert "FORGE   REULEAUXCODER  //  V0.4.3" in output
     assert "SESSION PLATE" in output
     assert "demo/model" in output
     assert "LSP: 9/9 language servers" in output
