@@ -21,6 +21,7 @@ from reuleauxcoder.domain.workspace import (
     WorkspaceErrorCode,
     WorkspaceGlobResult,
     WorkspaceListResult,
+    WorkspaceSearchMatch,
     WorkspaceSearchResult,
     glob_paths_via_primitives,
     search_text_via_primitives,
@@ -261,16 +262,7 @@ class RemoteWorkspacePort:
 
     def stat_entry(self, path: str | Path) -> WorkspaceEntry:
         item = self._request("fs.stat", path=str(path))["entry"]
-        return WorkspaceEntry(
-            path=str(item["path"]),
-            relative_path=str(item["relative_path"]),
-            name=str(item["name"]),
-            is_file=bool(item["is_file"]),
-            is_dir=bool(item["is_dir"]),
-            size=int(item["size"]),
-            mtime=float(item["mtime"]),
-            mode=int(item["mode"]),
-        )
+        return _workspace_entry(item)
 
     def write_text_atomic(self, path: str | Path, content: str) -> str:
         return str(
@@ -303,16 +295,7 @@ class RemoteWorkspacePort:
             max_entries=max_entries,
         )
         entries = tuple(
-            WorkspaceEntry(
-                path=str(item["path"]),
-                relative_path=str(item["relative_path"]),
-                name=str(item["name"]),
-                is_file=bool(item["is_file"]),
-                is_dir=bool(item["is_dir"]),
-                size=int(item["size"]),
-                mtime=float(item["mtime"]),
-                mode=int(item["mode"]),
-            )
+            _workspace_entry(item)
             for item in data.get("entries", [])
         )
         return WorkspaceListResult(entries, truncated=bool(data.get("truncated")))
@@ -327,6 +310,30 @@ class RemoteWorkspacePort:
         max_files: int = 5_000,
         max_matches: int = 200,
     ) -> WorkspaceSearchResult:
+        if self.backend.supports_capability(
+            "workspace.fs.search_text"
+        ) and _peer_literal_search_safe(pattern, include):
+            data = self._request(
+                "fs.search_text",
+                path=str(path),
+                pattern=pattern,
+                literal=True,
+                include=include,
+                exclude_dirs=list(exclude_dirs),
+                max_files=max_files,
+                max_matches=max_matches,
+            )
+            return WorkspaceSearchResult(
+                matches=tuple(
+                    WorkspaceSearchMatch(
+                        path=str(item["path"]),
+                        line_number=int(item["line_number"]),
+                        line=str(item["line"]),
+                    )
+                    for item in data.get("matches", [])
+                ),
+                truncated=bool(data.get("truncated")),
+            )
         return search_text_via_primitives(
             self,
             pattern,
@@ -345,6 +352,23 @@ class RemoteWorkspacePort:
         max_entries: int = 20_000,
         max_matches: int = 100,
     ) -> WorkspaceGlobResult:
+        if self.backend.supports_capability(
+            "workspace.fs.glob"
+        ) and _peer_glob_safe(pattern):
+            data = self._request(
+                "fs.glob",
+                path=str(path),
+                pattern=pattern,
+                max_entries=max_entries,
+                max_matches=max_matches,
+            )
+            return WorkspaceGlobResult(
+                entries=tuple(
+                    _workspace_entry(item) for item in data.get("entries", [])
+                ),
+                match_count=int(data.get("match_count", 0)),
+                listing_truncated=bool(data.get("listing_truncated")),
+            )
         return glob_paths_via_primitives(
             self,
             pattern,
@@ -352,6 +376,37 @@ class RemoteWorkspacePort:
             max_entries=max_entries,
             max_matches=max_matches,
         )
+
+
+def _workspace_entry(item: dict[str, Any]) -> WorkspaceEntry:
+    return WorkspaceEntry(
+        path=str(item["path"]),
+        relative_path=str(item["relative_path"]),
+        name=str(item["name"]),
+        is_file=bool(item["is_file"]),
+        is_dir=bool(item["is_dir"]),
+        size=int(item["size"]),
+        mtime=float(item["mtime"]),
+        mode=int(item["mode"]),
+    )
+
+
+def _peer_literal_search_safe(pattern: str, include: str | None) -> bool:
+    regex_metacharacters = frozenset(r".\^$*+?{}[]|()")
+    if any(character in regex_metacharacters for character in pattern):
+        return False
+    if include is None:
+        return True
+    return (
+        "/" not in include
+        and "\\" not in include
+        and "[" not in include
+        and "]" not in include
+    )
+
+
+def _peer_glob_safe(pattern: str) -> bool:
+    return "\\" not in pattern and "[" not in pattern and "]" not in pattern
 
 
 class RemoteProcessPort:

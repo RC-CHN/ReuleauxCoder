@@ -74,6 +74,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Capabilities: []string{
 			"shell", "process.start", "process.input", "process.poll", "process.cancel",
 			"workspace.fs.stat", "workspace.fs.list", "workspace.fs.read_text",
+			"workspace.fs.glob", "workspace.fs.search_text",
 			"workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
 		},
 		ProtocolVersion: 2,

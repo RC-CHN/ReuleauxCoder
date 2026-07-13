@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 )
@@ -144,6 +146,95 @@ func TestExecuteUsesStableValidationErrors(t *testing.T) {
 				t.Fatalf("expected %s, got %#v", test.code, result)
 			}
 		})
+	}
+}
+
+func TestGlobPrimitivePreservesPortableRecursiveMatches(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, filename := range []string{
+		filepath.Join(root, "one.py"),
+		filepath.Join(nested, "two.py"),
+		filepath.Join(nested, "plain.txt"),
+	} {
+		if err := os.WriteFile(filename, []byte(filename), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(filepath.Join(nested, "two.py"), time.Unix(20, 0), time.Unix(20, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(root, "one.py"), time.Unix(10, 0), time.Unix(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(request("fs.glob", map[string]any{
+		"path": ".", "pattern": "**/*.py", "max_entries": 100, "max_matches": 10,
+	}), root, root)
+	if !result.OK {
+		t.Fatalf("unexpected glob result: %#v", result)
+	}
+	if result.Data["match_count"] != 2 || result.Data["listing_truncated"] != false {
+		t.Fatalf("unexpected glob metadata: %#v", result.Data)
+	}
+	entries := result.Data["entries"].([]map[string]any)
+	got := []string{entries[0]["relative_path"].(string), entries[1]["relative_path"].(string)}
+	want := []string{"nested/two.py", "one.py"}
+	if runtime.GOOS == "windows" {
+		for index := range got {
+			got[index] = filepath.ToSlash(got[index])
+		}
+	}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected glob order: got %#v want %#v", got, want)
+	}
+}
+
+func TestLiteralSearchPrimitivePreservesPythonLineProjection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(root, "one.py"),
+		[]byte("first\nneedle one\vneedle two\r\nlast\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "two.py"), []byte("needle nested\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	skipped := filepath.Join(root, ".git")
+	if err := os.Mkdir(skipped, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skipped, "hidden.py"), []byte("needle hidden\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := Execute(request("fs.search_text", map[string]any{
+		"path": ".", "pattern": "needle", "literal": true, "include": "*.py",
+		"exclude_dirs": []any{".git"}, "max_files": 10, "max_matches": 3,
+	}), root, root)
+	if !result.OK || result.Data["truncated"] != true {
+		t.Fatalf("unexpected search result: %#v", result)
+	}
+	matches := result.Data["matches"].([]map[string]any)
+	lines := make([]string, 0, len(matches))
+	for _, match := range matches {
+		lines = append(lines, match["line"].(string))
+	}
+	sort.Strings(lines)
+	want := []string{"needle nested", "needle one", "needle two"}
+	for index := range want {
+		if lines[index] != want[index] {
+			t.Fatalf("unexpected lines: got %#v want %#v", lines, want)
+		}
 	}
 }
 

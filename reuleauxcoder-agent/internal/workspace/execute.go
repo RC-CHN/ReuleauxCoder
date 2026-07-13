@@ -11,7 +11,7 @@ import (
 )
 
 func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.WorkspaceResult {
-	if req.Operation != "fs.read_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.replace_exact_atomic" && req.Operation != "fs.stat" && req.Operation != "fs.list" {
+	if req.Operation != "fs.read_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.replace_exact_atomic" && req.Operation != "fs.stat" && req.Operation != "fs.list" && req.Operation != "fs.glob" && req.Operation != "fs.search_text" {
 		return failure("invalid_path", fmt.Sprintf("unsupported workspace operation %q", req.Operation))
 	}
 	cwd := defaultCWD
@@ -38,6 +38,10 @@ func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.Wo
 		return success(map[string]any{"entry": workspaceEntry(path, filepath.Dir(path), info)})
 	case "fs.list":
 		return listEntries(path, pathValue, req.Args)
+	case "fs.glob":
+		return globEntries(path, pathValue, req.Args)
+	case "fs.search_text":
+		return searchText(path, pathValue, req.Args)
 	case "fs.read_text":
 		content, err := os.ReadFile(path)
 		if err != nil {
