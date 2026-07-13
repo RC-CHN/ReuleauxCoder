@@ -33,17 +33,28 @@ from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.registry import get_tool
 
 
-_EXTERNAL_FILE_TOOLS = frozenset({"edit_file", "write_file"})
+_EXTERNAL_PATH_ARGUMENTS = {
+    "edit_file": "file_path",
+    "glob": "path",
+    "grep": "path",
+    "list_file": "path",
+    "lsp": "filePath",
+    "read_file": "file_path",
+    "write_file": "file_path",
+}
+_EXTERNAL_MUTATION_TOOLS = frozenset({"edit_file", "write_file"})
 
 
 def _external_workspace_target(tool, arguments: dict) -> str | None:
     """Detect an exact local file target outside the configured workspace."""
-    if tool is None or getattr(tool, "name", None) not in _EXTERNAL_FILE_TOOLS:
+    tool_name = getattr(tool, "name", None)
+    path_argument = _EXTERNAL_PATH_ARGUMENTS.get(tool_name)
+    if tool is None or path_argument is None:
         return None
     workspace = getattr(getattr(tool, "backend", None), "workspace", None)
     inspect_external = getattr(workspace, "external_path", None)
     grant_external = getattr(workspace, "grant_external_path", None)
-    file_path = arguments.get("file_path")
+    file_path = arguments.get(path_argument, ".")
     if not callable(inspect_external) or not callable(grant_external):
         return None
     if not isinstance(file_path, str) or not file_path:
@@ -135,9 +146,15 @@ class ToolExecutor:
                 )
 
         external_target = _external_workspace_target(tool, tc.arguments)
+        external_mutation = (
+            external_target is not None and tc.name in _EXTERNAL_MUTATION_TOOLS
+        )
+        backend = getattr(tool, "backend", None)
+        workspace = getattr(backend, "workspace", None)
         preflight_error = None
-        if external_target is None and tool is not None:
-            preflight_error = tool.preflight_validate(**tc.arguments)
+        if not external_mutation and tool is not None:
+            with _workspace_access_scope(workspace, external_target):
+                preflight_error = tool.preflight_validate(**tc.arguments)
         if preflight_error:
             self.agent._emit_event(
                 AgentEvent.tool_call_end(
@@ -176,7 +193,7 @@ class ToolExecutor:
             )
             return message
 
-        if external_target is not None:
+        if external_mutation:
             approval_required = GuardDecision.require_approval(
                 "Target is outside the workspace. Approval grants this tool call "
                 f"access to one exact file only: {external_target}"
@@ -198,8 +215,6 @@ class ToolExecutor:
                     )
                 )
                 return message
-            backend = getattr(tool, "backend", None)
-            workspace = getattr(backend, "workspace", None)
             try:
                 for approval_attempt in range(3):
                     approval_request = ApprovalRequest(
@@ -238,10 +253,10 @@ class ToolExecutor:
                                 if external_target is not None
                                 else None
                             ),
-                            "force_human_review": external_target is not None,
+                            "force_human_review": external_mutation,
                         },
                     )
-                    if external_target is None and isinstance(
+                    if not external_mutation and isinstance(
                         tc.arguments.get("reason"), str
                     ):
                         approval_request.reason = tc.arguments["reason"].strip()
@@ -305,7 +320,7 @@ class ToolExecutor:
                     None,
                 )
 
-            if external_target is not None and tool is not None:
+            if external_mutation and tool is not None:
                 with _workspace_access_scope(workspace, external_target):
                     preflight_error = tool.preflight_validate(**tc.arguments)
                 if preflight_error:

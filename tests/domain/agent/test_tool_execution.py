@@ -17,6 +17,10 @@ from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
+from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
+from reuleauxcoder.extensions.tools.builtin.grep import GrepTool
+from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
+from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 
@@ -195,6 +199,95 @@ class _DenyingProvider:
     def request_approval(self, request):
         self.requests.append(request)
         return ApprovalDecision.deny_once("external path rejected")
+
+
+@pytest.mark.parametrize(
+    ("tool_type", "tool_name"),
+    [
+        (ReadFileTool, "read_file"),
+        (ListFileTool, "list_file"),
+        (GlobTool, "glob"),
+        (GrepTool, "grep"),
+    ],
+)
+def test_external_readonly_workspace_tools_are_allowed_by_default(
+    tmp_path, tool_type, tool_name
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    target = external / "sample.txt"
+    target.write_text("needle outside\n")
+    backend = LocalToolBackend(
+        ExecutionContext(cwd=str(root), workspace_root=str(root))
+    )
+    tool = tool_type(backend=backend)
+    agent = _AgentStub(tool)
+    if tool_name == "read_file":
+        arguments = {"file_path": str(target)}
+        granted_target = target
+        expected = "needle outside"
+    elif tool_name == "glob":
+        arguments = {"pattern": "*.txt", "path": str(external)}
+        granted_target = external
+        expected = str(target)
+    elif tool_name == "grep":
+        arguments = {"pattern": "needle", "path": str(external)}
+        granted_target = external
+        expected = "needle outside"
+    else:
+        arguments = {"path": str(external)}
+        granted_target = external
+        expected = "sample.txt"
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id=f"external-{tool_name}", name=tool_name, arguments=arguments)
+    )
+
+    assert expected in result
+    assert agent.events[-1].tool_success is True
+    with pytest.raises(WorkspaceError) as revoked:
+        backend.workspace.stat_entry(granted_target)
+    assert revoked.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
+
+
+def test_external_readonly_tool_still_honors_explicit_approval_policy(
+    tmp_path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = tmp_path / "external.txt"
+    target.write_text("not exposed\n")
+    tool = ReadFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(root), workspace_root=str(root))
+        )
+    )
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.require_approval("explicit review")
+    ]
+    provider = _DenyingProvider()
+    agent.approval_provider = provider
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="external-read-review",
+            name="read_file",
+            arguments={"file_path": str(target)},
+        )
+    )
+
+    assert result == "external path rejected"
+    assert len(provider.requests) == 1
+    request = provider.requests[0]
+    assert request.metadata["force_human_review"] is False
+    assert request.metadata["external_workspace_path"] == str(target.resolve())
+    assert [section.title for section in request.preview.sections] == [
+        "Outside workspace",
+        "Target",
+    ]
 
 
 def test_external_write_forces_exact_path_review_and_revokes_access(tmp_path) -> None:
