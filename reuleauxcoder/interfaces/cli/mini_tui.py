@@ -302,6 +302,26 @@ class MiniTUIEventAdapter:
                 )
         self._invalidate()
 
+    def clear_transcript(self) -> None:
+        """Clear only the visible canvas while preserving persisted session history."""
+        with self._lock:
+            policy = self.transcript.policy
+            self.transcript = PresentationReducer(
+                state=RuntimeViewState(
+                    transcript=TranscriptModel(
+                        max_cells=2_000,
+                        max_text_chars=2_000_000,
+                    )
+                ),
+                policy=policy,
+            )
+            self._cell_visual_cache.clear()
+            self._transcript_layout_key = ()
+            self._transcript_layout = VirtualTranscriptLayout(())
+            self._flattened_layout = None
+            self._transcript_rendered = FormattedText()
+        self._invalidate()
+
     def append_restored_conversation(self, entries) -> None:
         """Replay a bounded human transcript without adding model history."""
         with self._lock:
@@ -693,10 +713,19 @@ class MiniTUIApplication:
             )
             self.current_session_id = result["session_id"]
             self.agent.current_session_id = self.current_session_id
-            if result["action"] == "continue" and (
+            session_changed = (
                 self.current_session_id != previous_session_id
                 or self.agent.session_generation != previous_generation
+            )
+            if (
+                result.get("action_id") == "sessions.new"
+                and result["action"] == "continue"
+                and session_changed
             ):
+                self.events.clear_transcript()
+                self._follow_transcript = True
+                self.transcript_pane.vertical_scroll = 0
+            if result["action"] == "continue" and session_changed:
                 self.events.restore_control_state(
                     self.agent.plan_controller.state,
                     self.agent.plan_controller.progress,

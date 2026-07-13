@@ -497,6 +497,27 @@ def test_session_switch_replaces_execution_projection() -> None:
     assert adapter.execution.state.active_plan_item.step == "new session"
 
 
+def test_new_session_clear_removes_visible_transcript_and_render_cache() -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.append_restored_conversation(
+        [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+    )
+    adapter.transcript_layout(80)
+
+    assert adapter.transcript.state.transcript.cells
+    assert adapter._cell_visual_cache
+
+    adapter.clear_transcript()
+
+    assert adapter.transcript.state.transcript.cells == ()
+    assert adapter._cell_visual_cache == {}
+    assert adapter._transcript_layout_key == ()
+    assert adapter.transcript_layout(80).cells == ()
+
+
 def test_restored_conversation_replays_human_rows_only() -> None:
     adapter = MiniTUIEventAdapter()
     adapter.append_restored_conversation(

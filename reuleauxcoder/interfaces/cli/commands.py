@@ -165,6 +165,7 @@ def handle_command(
         _apply_command_effect(result, ui_bus)
         return {
             "action": result.control,
+            "action_id": parsed_action.action.action_id,
             "session_id": result.session_id
             if result.session_id is not None
             else current_session_id,
@@ -175,9 +176,17 @@ def handle_command(
     suggestion = _suggest_command(user_input, action_registry, ui_profile)
     if suggestion is not None:
         ui_bus.warning(suggestion, kind=UIEventKind.COMMAND)
-        return {"action": "continue", "session_id": current_session_id}
+        return {
+            "action": "continue",
+            "action_id": None,
+            "session_id": current_session_id,
+        }
 
-    return {"action": "chat", "session_id": current_session_id}
+    return {
+        "action": "chat",
+        "action_id": None,
+        "session_id": current_session_id,
+    }
 
 
 def _record_command_control_event(agent, action_id: str, result: CommandEffect) -> None:
