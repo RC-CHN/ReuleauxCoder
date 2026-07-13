@@ -1,8 +1,11 @@
 """Tool execution - handles tool calls."""
 
 from __future__ import annotations
-from typing import TYPE_CHECKING, List
+
 import concurrent.futures
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.agent.agent import Agent
@@ -23,9 +26,44 @@ from reuleauxcoder.domain.approval_preview import (
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeToolExecuteContext,
+    GuardDecision,
     HookPoint,
 )
+from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.registry import get_tool
+
+
+_EXTERNAL_FILE_TOOLS = frozenset({"edit_file", "write_file"})
+
+
+def _external_workspace_target(tool, arguments: dict) -> str | None:
+    """Detect an exact local file target outside the configured workspace."""
+    if tool is None or getattr(tool, "name", None) not in _EXTERNAL_FILE_TOOLS:
+        return None
+    workspace = getattr(getattr(tool, "backend", None), "workspace", None)
+    inspect_external = getattr(workspace, "external_path", None)
+    grant_external = getattr(workspace, "grant_external_path", None)
+    file_path = arguments.get("file_path")
+    if not callable(inspect_external) or not callable(grant_external):
+        return None
+    if not isinstance(file_path, str) or not file_path:
+        return None
+    try:
+        external = inspect_external(file_path)
+    except (WorkspaceError, OSError, ValueError):
+        return None
+    return str(external) if external is not None else None
+
+
+@contextmanager
+def _workspace_access_scope(workspace, external_target: str | None) -> Iterator[None]:
+    """Grant an approved exact path for the duration of one local operation."""
+    grant_external = getattr(workspace, "grant_external_path", None)
+    if external_target is None or not callable(grant_external):
+        yield
+        return
+    with grant_external(external_target):
+        yield
 
 
 class ToolExecutor:
@@ -96,9 +134,10 @@ class ToolExecutor:
                     )
                 )
 
-        preflight_error = (
-            tool.preflight_validate(**tc.arguments) if tool is not None else None
-        )
+        external_target = _external_workspace_target(tool, tc.arguments)
+        preflight_error = None
+        if external_target is None and tool is not None:
+            preflight_error = tool.preflight_validate(**tc.arguments)
         if preflight_error:
             self.agent._emit_event(
                 AgentEvent.tool_call_end(
@@ -137,9 +176,15 @@ class ToolExecutor:
             )
             return message
 
-        approval_required = next(
-            (d for d in guard_decisions if d.requires_approval), None
-        )
+        if external_target is not None:
+            approval_required = GuardDecision.require_approval(
+                "Target is outside the workspace. Approval grants this tool call "
+                f"access to one exact file only: {external_target}"
+            )
+        else:
+            approval_required = next(
+                (d for d in guard_decisions if d.requires_approval), None
+            )
         if approval_required is not None:
             provider = self.agent.approval_provider
             if provider is None:
@@ -185,28 +230,35 @@ class ToolExecutor:
                             "subagent_job_id": getattr(
                                 self.agent, "subagent_job_id", None
                             ),
-                            "subagent_mode": getattr(
-                                self.agent, "subagent_mode", None
+                            "subagent_mode": getattr(self.agent, "subagent_mode", None),
+                            "subagent_task": getattr(self.agent, "subagent_task", None),
+                            "external_workspace_path": external_target,
+                            "workspace_root": (
+                                str(getattr(workspace, "root", ""))
+                                if external_target is not None
+                                else None
                             ),
-                            "subagent_task": getattr(
-                                self.agent, "subagent_task", None
-                            ),
+                            "force_human_review": external_target is not None,
                         },
                     )
-                    if isinstance(tc.arguments.get("reason"), str):
+                    if external_target is None and isinstance(
+                        tc.arguments.get("reason"), str
+                    ):
                         approval_request.reason = tc.arguments["reason"].strip()
-                    before_approval = capture_approval_document(
-                        approval_request, workspace=workspace
-                    )
-                    approval_request.preview = build_approval_preview(
-                        approval_request, workspace=workspace
-                    )
+                    with _workspace_access_scope(workspace, external_target):
+                        before_approval = capture_approval_document(
+                            approval_request, workspace=workspace
+                        )
+                        approval_request.preview = build_approval_preview(
+                            approval_request, workspace=workspace
+                        )
                     decision = provider.request_approval(approval_request)
                     if not decision.approved:
                         break
-                    after_approval = capture_approval_document(
-                        approval_request, workspace=workspace
-                    )
+                    with _workspace_access_scope(workspace, external_target):
+                        after_approval = capture_approval_document(
+                            approval_request, workspace=workspace
+                        )
                     if before_approval == after_approval:
                         break
                     if before_approval is not None and after_approval is not None:
@@ -252,6 +304,25 @@ class ToolExecutor:
                     ),
                     None,
                 )
+
+            if external_target is not None and tool is not None:
+                with _workspace_access_scope(workspace, external_target):
+                    preflight_error = tool.preflight_validate(**tc.arguments)
+                if preflight_error:
+                    self.agent._emit_event(
+                        AgentEvent.tool_call_end(
+                            tc.name,
+                            preflight_error,
+                            success=False,
+                            tool_call_id=tc.id,
+                            outcome=ToolOutcome.from_legacy(
+                                preflight_error,
+                                success=False,
+                                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+                            ),
+                        )
+                    )
+                    return preflight_error
 
         try:
             before_context = self.agent.extension_runtime.contribute_tool_context(
@@ -343,7 +414,9 @@ class ToolExecutor:
                     session_generation=self.agent.session_generation,
                 )
             try:
-                raw_result = tool.execute(**tool_call.arguments)
+                execution_workspace = getattr(backend, "workspace", None)
+                with _workspace_access_scope(execution_workspace, external_target):
+                    raw_result = tool.execute(**tool_call.arguments)
             finally:
                 if execution_context is not None:
                     execution_context.remote_stream_handler = previous_stream_handler
@@ -356,9 +429,7 @@ class ToolExecutor:
                 change_report = "\n\n".join(
                     item for item in approval_workspace_changes if item
                 )
-                notice = (
-                    "[workspace changed while approval was pending; preview was refreshed]"
-                )
+                notice = "[workspace changed while approval was pending; preview was refreshed]"
                 if change_report:
                     notice += f"\n{change_report}"
                 outcome = outcome.with_model_projection(

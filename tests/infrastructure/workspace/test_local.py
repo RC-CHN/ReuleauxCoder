@@ -1,6 +1,7 @@
 from pathlib import Path
 from fnmatch import fnmatchcase
 from functools import lru_cache
+import threading
 
 import pytest
 
@@ -25,6 +26,64 @@ def test_relative_and_absolute_paths_are_confined(tmp_path: Path) -> None:
     assert escaped.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
     with pytest.raises(WorkspaceError):
         workspace.resolve("../escape.txt")
+
+
+def test_exact_external_path_grant_is_scoped_and_does_not_widen_root(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    external = tmp_path / "external.txt"
+    other = tmp_path / "other.txt"
+    workspace = LocalWorkspacePort(root)
+
+    assert workspace.external_path(external) == external.resolve()
+    assert workspace.external_path(root / "inside.txt") is None
+    with pytest.raises(WorkspaceError) as before:
+        workspace.write_text_atomic(external, "outside")
+    assert before.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
+
+    with workspace.grant_external_path(external):
+        workspace.write_text_atomic(external, "outside")
+        assert workspace.read_text(external) == "outside"
+        with pytest.raises(WorkspaceError) as unrelated:
+            workspace.write_text_atomic(other, "not granted")
+        assert unrelated.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
+
+    assert external.read_text() == "outside"
+    with pytest.raises(WorkspaceError) as after:
+        workspace.read_text(external)
+    assert after.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
+
+
+def test_external_path_grant_does_not_leak_between_execution_threads(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("outside")
+    workspace = LocalWorkspacePort(root)
+    granted = threading.Event()
+    release = threading.Event()
+
+    def hold_grant() -> None:
+        with workspace.grant_external_path(external):
+            assert workspace.read_text(external) == "outside"
+            granted.set()
+            release.wait(timeout=2)
+
+    worker = threading.Thread(target=hold_grant)
+    worker.start()
+    assert granted.wait(timeout=1)
+    try:
+        with pytest.raises(WorkspaceError) as separate_context:
+            workspace.read_text(external)
+        assert separate_context.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
+    finally:
+        release.set()
+        worker.join(timeout=1)
+    assert not worker.is_alive()
 
 
 def test_atomic_write_returns_previous_content(tmp_path: Path) -> None:
@@ -133,9 +192,7 @@ def test_optimized_glob_matches_primitive_reference_exactly(tmp_path: Path) -> N
     (nested / "plain.txt").write_text("plain")
     workspace = LocalWorkspacePort(tmp_path)
 
-    optimized = workspace.glob_paths(
-        "**/*.py", ".", max_entries=100, max_matches=2
-    )
+    optimized = workspace.glob_paths("**/*.py", ".", max_entries=100, max_matches=2)
     reference = glob_paths_via_primitives(
         workspace,
         "**/*.py",
@@ -181,9 +238,7 @@ def test_optimized_search_matches_primitive_reference_exactly(
     }
 
     optimized = workspace.search_text("needle", ".", **arguments)
-    reference = search_text_via_primitives(
-        workspace, "needle", ".", **arguments
-    )
+    reference = search_text_via_primitives(workspace, "needle", ".", **arguments)
 
     assert optimized == reference
 
@@ -196,9 +251,7 @@ def test_optimized_single_file_search_matches_primitive_reference(
     workspace = LocalWorkspacePort(tmp_path)
 
     optimized = workspace.search_text("needle", target, max_matches=1)
-    reference = search_text_via_primitives(
-        workspace, "needle", target, max_matches=1
-    )
+    reference = search_text_via_primitives(workspace, "needle", target, max_matches=1)
 
     assert optimized == reference
 

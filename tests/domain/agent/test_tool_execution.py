@@ -2,16 +2,19 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
 )
-from reuleauxcoder.domain.approval import ApprovalDecision
+from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalSectionKind
 from reuleauxcoder.domain.hooks.types import GuardDecision
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
+from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
@@ -185,6 +188,115 @@ class _ReviewingProvider:
         return ApprovalDecision.allow_once("approved", reviewed=self.reviewed)
 
 
+class _DenyingProvider:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def request_approval(self, request):
+        self.requests.append(request)
+        return ApprovalDecision.deny_once("external path rejected")
+
+
+def test_external_write_forces_exact_path_review_and_revokes_access(tmp_path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = tmp_path / "external.txt"
+    tool = WriteFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(root), workspace_root=str(root))
+        )
+    )
+    agent = _AgentStub(tool)
+    provider = _ReviewingProvider()
+    agent.approval_provider = provider
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="external-write",
+            name="write_file",
+            arguments={"file_path": str(target), "content": "review me\n"},
+        )
+    )
+
+    assert result.startswith(f"Wrote 1 lines to {target}")
+    assert target.read_text() == "review me\n"
+    assert len(provider.requests) == 1
+    request = provider.requests[0]
+    assert request.metadata["force_human_review"] is True
+    assert request.metadata["external_workspace_path"] == str(target.resolve())
+    assert request.metadata["workspace_root"] == str(root.resolve())
+    assert [section.kind for section in request.preview.sections] == [
+        ApprovalSectionKind.TEXT,
+        ApprovalSectionKind.DIFF,
+    ]
+    assert request.preview.sections[0].title == "Outside workspace"
+    assert "this file only" in request.preview.sections[0].content
+    with pytest.raises(WorkspaceError) as revoked:
+        tool.backend.workspace.read_text(target)
+    assert revoked.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
+
+
+def test_external_edit_is_preflighted_after_review_under_exact_path_grant(
+    tmp_path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = tmp_path / "external.txt"
+    target.write_text("old value\n")
+    tool = EditFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(root), workspace_root=str(root))
+        )
+    )
+    agent = _AgentStub(tool)
+    provider = _ReviewingProvider()
+    agent.approval_provider = provider
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="external-edit",
+            name="edit_file",
+            arguments={
+                "file_path": str(target),
+                "old_string": "old",
+                "new_string": "new",
+            },
+        )
+    )
+
+    assert result.startswith(f"Edited {target}")
+    assert target.read_text() == "new value\n"
+    assert len(provider.requests) == 1
+    assert "-old value" in provider.requests[0].preview.sections[1].content
+    assert "+new value" in provider.requests[0].preview.sections[1].content
+
+
+def test_denied_external_write_does_not_create_target(tmp_path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = tmp_path / "external.txt"
+    tool = WriteFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(root), workspace_root=str(root))
+        )
+    )
+    agent = _AgentStub(tool)
+    provider = _DenyingProvider()
+    agent.approval_provider = provider
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="external-deny",
+            name="write_file",
+            arguments={"file_path": str(target), "content": "blocked\n"},
+        )
+    )
+
+    assert result == "external path rejected"
+    assert not target.exists()
+    assert len(provider.requests) == 1
+
+
 def test_tool_outcome_marks_identical_human_reviewed_diff(tmp_path) -> None:
     target = tmp_path / "demo.txt"
     target.write_text("old\n")
@@ -214,7 +326,9 @@ def test_tool_outcome_marks_identical_human_reviewed_diff(tmp_path) -> None:
     assert agent.events[-1].tool_outcome.metadata["diff_reviewed"] is True
 
 
-def test_stale_approval_is_refreshed_and_external_change_reaches_model(tmp_path) -> None:
+def test_stale_approval_is_refreshed_and_external_change_reaches_model(
+    tmp_path,
+) -> None:
     target = tmp_path / "demo.txt"
     target.write_text("old\n")
     tool = EditFileTool(

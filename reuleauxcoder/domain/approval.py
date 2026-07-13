@@ -173,16 +173,20 @@ class SharedApprovalProvider(ApprovalProvider):
         return self._coordinator
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
-        request.metadata["reviewer"] = self._reviewer
+        force_human_review = bool(request.metadata.get("force_human_review"))
+        request.metadata["reviewer"] = "user" if force_human_review else self._reviewer
         if self._on_request is not None:
             self._on_request(request)
         try:
-            for judge in self._judges:
-                decision = judge(request)
-                if decision is not None:
-                    break
-            else:
+            if force_human_review:
                 decision = self._coordinator.request_approval(request)
+            else:
+                for judge in self._judges:
+                    decision = judge(request)
+                    if decision is not None:
+                        break
+                else:
+                    decision = self._coordinator.request_approval(request)
         except BaseException:
             interrupted = ApprovalDecision.deny_once("approval interrupted")
             if self._on_decision is not None:
@@ -264,9 +268,7 @@ class ApprovalCoordinator(ApprovalProvider):
     ) -> tuple[str, ...]:
         """Fail closed queued/focused approvals matching one runtime owner."""
         with self._condition:
-            matches = [
-                pending for pending in self._queue if predicate(pending.request)
-            ]
+            matches = [pending for pending in self._queue if predicate(pending.request)]
             for pending in matches:
                 try:
                     self._queue.remove(pending)

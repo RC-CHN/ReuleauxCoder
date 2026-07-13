@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 import os
 from pathlib import Path
 import re
@@ -25,6 +28,9 @@ class LocalWorkspacePort:
     def __init__(self, root: str | Path, *, cwd: str | Path | None = None):
         self.root = Path(root).expanduser().resolve()
         self.cwd = Path(cwd).expanduser().resolve() if cwd is not None else self.root
+        self._external_path_grants: ContextVar[frozenset[Path]] = ContextVar(
+            f"workspace_external_path_grants_{id(self)}", default=frozenset()
+        )
         try:
             self.cwd.relative_to(self.root)
         except ValueError as error:
@@ -34,6 +40,37 @@ class LocalWorkspacePort:
             ) from error
 
     def resolve(self, path: str | Path) -> Path:
+        resolved = self._resolve_candidate(path)
+        if (
+            self._is_inside_root(resolved)
+            or resolved in self._external_path_grants.get()
+        ):
+            return resolved
+        raise WorkspaceError(
+            WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE,
+            f"path escapes workspace root: {path}",
+        )
+
+    def external_path(self, path: str | Path) -> Path | None:
+        """Return the normalized path only when it is outside the workspace."""
+        resolved = self._resolve_candidate(path)
+        return None if self._is_inside_root(resolved) else resolved
+
+    @contextmanager
+    def grant_external_path(self, path: str | Path) -> Iterator[Path]:
+        """Temporarily grant this execution context one exact external path."""
+        resolved = self._resolve_candidate(path)
+        if self._is_inside_root(resolved):
+            yield resolved
+            return
+        grants = self._external_path_grants.get()
+        token = self._external_path_grants.set(grants | {resolved})
+        try:
+            yield resolved
+        finally:
+            self._external_path_grants.reset(token)
+
+    def _resolve_candidate(self, path: str | Path) -> Path:
         if not isinstance(path, (str, Path)) or not str(path):
             raise WorkspaceError(
                 WorkspaceErrorCode.INVALID_PATH, "path must be a non-empty string"
@@ -41,15 +78,20 @@ class LocalWorkspacePort:
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = self.cwd / candidate
-        resolved = candidate.resolve()
+        try:
+            return candidate.resolve()
+        except (OSError, RuntimeError) as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.INVALID_PATH,
+                f"failed to resolve path {path}: {error}",
+            ) from error
+
+    def _is_inside_root(self, resolved: Path) -> bool:
         try:
             resolved.relative_to(self.root)
-        except ValueError as error:
-            raise WorkspaceError(
-                WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE,
-                f"path escapes workspace root: {path}",
-            ) from error
-        return resolved
+        except ValueError:
+            return False
+        return True
 
     def read_text(self, path: str | Path) -> str:
         resolved = self.resolve(path)
@@ -216,9 +258,7 @@ class LocalWorkspacePort:
             candidate_overflow = False
             simple_include = (
                 re.compile(fnmatch_translate(os.path.normcase(include)))
-                if include is not None
-                and "/" not in include
-                and "\\" not in include
+                if include is not None and "/" not in include and "\\" not in include
                 else None
             )
 
@@ -230,16 +270,17 @@ class LocalWorkspacePort:
                     return
                 if include is not None:
                     if simple_include is not None:
-                        if simple_include.fullmatch(os.path.normcase(entry.name)) is None:
+                        if (
+                            simple_include.fullmatch(os.path.normcase(entry.name))
+                            is None
+                        ):
                             return
                     elif not Path(relative_path).match(include):
                         return
                 if len(files) >= max_files:
                     candidate_overflow = True
                     return
-                files.append(
-                    self._entry_from_dir_entry(entry, relative_path)
-                )
+                files.append(self._entry_from_dir_entry(entry, relative_path))
 
             base_path = self.resolve(path)
             listing_truncated = self._scan_entries(

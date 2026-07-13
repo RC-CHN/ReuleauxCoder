@@ -4,6 +4,7 @@ from reuleauxcoder.domain.approval import (
     ApprovalCoordinator,
     ApprovalDecision,
     ApprovalRequest,
+    SharedApprovalProvider,
 )
 
 
@@ -72,6 +73,33 @@ def test_handler_failure_denies_and_promotes_next_request() -> None:
     assert "failed closed" in (denied.reason or "")
     assert allowed.approved is True
     assert calls == ["broken", "next"]
+
+
+def test_forced_human_review_bypasses_automatic_judges() -> None:
+    judge_calls = []
+    presented = []
+
+    def judge(request):
+        judge_calls.append(request)
+        return ApprovalDecision.allow_once("automatic approval")
+
+    def handler(pending) -> None:
+        presented.append(pending.request)
+        pending.resolve(ApprovalDecision.deny_once("human rejected"))
+
+    provider = SharedApprovalProvider(handler, judges=[judge], reviewer="auto_review")
+    request = ApprovalRequest(
+        tool_name="write_file",
+        metadata={"force_human_review": True},
+    )
+
+    decision = provider.request_approval(request)
+
+    assert decision.approved is False
+    assert decision.reason == "human rejected"
+    assert judge_calls == []
+    assert presented == [request]
+    assert request.metadata["reviewer"] == "user"
 
 
 def test_cancel_matching_denies_focused_and_queued_requests() -> None:

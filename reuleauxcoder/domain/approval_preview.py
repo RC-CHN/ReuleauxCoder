@@ -61,6 +61,7 @@ def build_approval_preview(
     workspace: WorkspacePort | None,
 ) -> ApprovalPreview:
     """Build the review payload against the Tool's actual workspace view."""
+    boundary = _workspace_boundary_section(request)
     diff = _build_diff(request, workspace=workspace)
     if diff is not None:
         title = (
@@ -69,7 +70,8 @@ def build_approval_preview(
             else "Proposed edit diff"
         )
         return ApprovalPreview(
-            sections=(
+            sections=boundary
+            + (
                 ApprovalSection(
                     id="diff",
                     title=title,
@@ -81,7 +83,8 @@ def build_approval_preview(
     compact = _read_only_preview(request)
     if compact is not None:
         return ApprovalPreview(
-            sections=(
+            sections=boundary
+            + (
                 ApprovalSection(
                     id="target",
                     title="Target",
@@ -92,7 +95,8 @@ def build_approval_preview(
         )
     if request.tool_args:
         return ApprovalPreview(
-            sections=(
+            sections=boundary
+            + (
                 ApprovalSection(
                     id="args",
                     title="Arguments",
@@ -101,7 +105,28 @@ def build_approval_preview(
                 ),
             )
         )
-    return ApprovalPreview()
+    return ApprovalPreview(sections=boundary)
+
+
+def _workspace_boundary_section(
+    request: ApprovalRequest,
+) -> tuple[ApprovalSection, ...]:
+    target = request.metadata.get("external_workspace_path")
+    if not isinstance(target, str) or not target:
+        return ()
+    root = request.metadata.get("workspace_root")
+    root_line = f"\nWorkspace root: {root}" if isinstance(root, str) and root else ""
+    return (
+        ApprovalSection(
+            id="workspace_boundary",
+            title="Outside workspace",
+            kind=ApprovalSectionKind.TEXT,
+            content=(
+                f"Exact external target: {target}{root_line}\n"
+                "Approval grants this tool call access to this file only."
+            ),
+        ),
+    )
 
 
 def _read_only_preview(request: ApprovalRequest) -> str | None:
