@@ -137,6 +137,7 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
                 if job.status == "blocked"
                 else None
             ),
+            child_agent_id=job.agent_id,
         )
     )
 

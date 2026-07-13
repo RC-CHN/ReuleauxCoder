@@ -49,18 +49,14 @@ class RuntimeEventKind(str, Enum):
 @dataclass(frozen=True)
 class TurnStarted:
     user_input: str
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.TURN_STARTED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.TURN_STARTED, init=False)
 
 
 @dataclass(frozen=True)
 class TurnFinished:
     response: str
     render_response: bool = True
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.TURN_FINISHED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.TURN_FINISHED, init=False)
 
 
 @dataclass(frozen=True)
@@ -75,26 +71,20 @@ class AssistantContentDelta:
 class ReasoningDelta:
     text: str
     display_mode: str | None = None
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.REASONING_DELTA, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.REASONING_DELTA, init=False)
 
 
 @dataclass(frozen=True)
 class ChatStarted:
     user_input: str
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.CHAT_STARTED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.CHAT_STARTED, init=False)
 
 
 @dataclass(frozen=True)
 class ChatCompleted:
     response: str
     render_response: bool = True
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.CHAT_COMPLETED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.CHAT_COMPLETED, init=False)
 
 
 @dataclass(frozen=True)
@@ -194,6 +184,7 @@ class SubagentJobChanged:
     tokens: int = 0
     max_tokens: int | None = None
     blocker: str | None = None
+    child_agent_id: str | None = None
     kind: RuntimeEventKind = field(
         default=RuntimeEventKind.SUBAGENT_JOB_CHANGED, init=False
     )
@@ -226,9 +217,7 @@ class ApprovalResolved:
 @dataclass(frozen=True)
 class ErrorOccurred:
     message: str
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.ERROR_OCCURRED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.ERROR_OCCURRED, init=False)
 
 
 @dataclass(frozen=True)
@@ -246,9 +235,7 @@ class NotificationRaised:
 class SessionChanged:
     action: str
     session_id: str | None = None
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.SESSION_CHANGED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.SESSION_CHANGED, init=False)
 
 
 @dataclass(frozen=True)
@@ -265,9 +252,7 @@ class PlanUpdated:
     revision: int
     items: tuple[dict, ...]
     explanation: str | None = None
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.PLAN_UPDATED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.PLAN_UPDATED, init=False)
 
 
 @dataclass(frozen=True)
@@ -285,9 +270,7 @@ class ProgressReported:
 class ViewRequested:
     request_id: str
     view_type: str
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.VIEW_REQUESTED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.VIEW_REQUESTED, init=False)
 
 
 @dataclass(frozen=True)
@@ -295,9 +278,7 @@ class ViewRefreshed:
     request_id: str
     view_type: str
     revision: int
-    kind: RuntimeEventKind = field(
-        default=RuntimeEventKind.VIEW_REFRESHED, init=False
-    )
+    kind: RuntimeEventKind = field(default=RuntimeEventKind.VIEW_REFRESHED, init=False)
 
 
 RuntimePayload: TypeAlias = (
@@ -409,6 +390,7 @@ def agent_event_to_runtime_event(
             tokens=int(event.data.get("tokens") or 0),
             max_tokens=event.data.get("max_tokens"),
             blocker=event.data.get("blocker"),
+            child_agent_id=event.data.get("child_agent_id"),
         )
     elif event.event_type is AgentEventType.ERROR:
         payload = ErrorOccurred(event.error_message or "Unknown agent error")
@@ -520,6 +502,7 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
             tokens=payload.tokens,
             max_tokens=payload.max_tokens,
             blocker=payload.blocker,
+            child_agent_id=payload.child_agent_id,
         )
     elif isinstance(payload, ErrorOccurred):
         legacy = AgentEvent.error(payload.message)

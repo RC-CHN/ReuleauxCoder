@@ -48,6 +48,8 @@ class ExecutionAgentState:
     output_tail: deque[str] = field(default_factory=lambda: deque(maxlen=5))
     budget: str = ""
     blocker: str | None = None
+    child_agent_id: str | None = None
+    is_subagent: bool = False
 
     def is_animating(self, now: float | None = None) -> bool:
         return (now if now is not None else time.time()) < self.animation_lease_until
@@ -144,7 +146,11 @@ class ExecutionViewReducer:
             self._touch(event, "thinking", status="thinking")
             return True
         if isinstance(payload, ToolCallStarted):
-            self._touch(event, _tool_activity(payload.tool_name, payload.arguments), status="tool")
+            self._touch(
+                event,
+                _tool_activity(payload.tool_name, payload.arguments),
+                status="tool",
+            )
             return True
         if isinstance(payload, ToolOutputDelta):
             agent = self._touch(event, "tool output", status="tool")
@@ -153,16 +159,32 @@ class ExecutionViewReducer:
             return True
         if isinstance(payload, ToolCallFinished):
             status = "working" if payload.outcome.success else "failed"
-            self._touch(event, f"{payload.tool_name} {'done' if payload.outcome.success else 'failed'}", status=status)
+            self._touch(
+                event,
+                f"{payload.tool_name} {'done' if payload.outcome.success else 'failed'}",
+                status=status,
+            )
             return True
         if isinstance(payload, SubagentJobChanged):
+            is_new_job = payload.job_id not in self.state.agents
+            if is_new_job and payload.status in {"queued", "running"}:
+                self._remove_terminal_subagents()
+
             agent = self.state.agents.get(payload.job_id)
+            child_agent_id = payload.child_agent_id or f"sa_{payload.job_id}"
+            duplicate = self.state.agents.pop(child_agent_id, None)
+            if agent is None and duplicate is not None:
+                agent = duplicate
             if agent is None:
                 agent = ExecutionAgentState(
                     agent_id=payload.job_id,
                     label=_short_agent_label(payload.job_id),
                 )
-                self.state.agents[payload.job_id] = agent
+            agent.agent_id = payload.job_id
+            agent.label = _short_agent_label(payload.job_id)
+            agent.child_agent_id = child_agent_id
+            agent.is_subagent = True
+            self.state.agents[payload.job_id] = agent
             agent.task = payload.task
             agent.status = payload.status
             agent.activity = (
@@ -213,7 +235,10 @@ class ExecutionViewReducer:
             self.state.runtime_state = "failed"
             self._touch(event, payload.message, status="failed")
             return True
-        if isinstance(payload, NotificationRaised) and payload.code == "subagent.conflict":
+        if (
+            isinstance(payload, NotificationRaised)
+            and payload.code == "subagent.conflict"
+        ):
             attention_id = f"notice:{event.event_id}"
             self.state.attention[attention_id] = AttentionItem(
                 request_id=attention_id,
@@ -235,7 +260,8 @@ class ExecutionViewReducer:
         status: str,
     ) -> ExecutionAgentState:
         agent_id = event.agent_id or "main"
-        agent = self.state.agents.get(agent_id)
+        state_key = self._state_key_for_agent(agent_id)
+        agent = self.state.agents.get(state_key)
         if agent is None:
             agent = ExecutionAgentState(
                 agent_id=agent_id,
@@ -245,12 +271,40 @@ class ExecutionViewReducer:
                     else _short_agent_label(agent_id)
                 ),
             )
-            self.state.agents[agent_id] = agent
+            self.state.agents[state_key] = agent
         agent.activity = activity
         agent.status = status
         agent.last_activity_at = event.timestamp
         agent.animation_lease_until = event.timestamp + self.animation_lease_seconds
         return agent
+
+    def _state_key_for_agent(self, agent_id: str) -> str:
+        for key, agent in self.state.agents.items():
+            if agent.child_agent_id == agent_id:
+                return key
+        if agent_id.startswith("sa_") and agent_id[3:] in self.state.agents:
+            return agent_id[3:]
+        return agent_id
+
+    def _remove_terminal_subagents(self) -> None:
+        terminal = {
+            "completed",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "killed",
+            "timed_out",
+            "indeterminate",
+            "stale",
+        }
+        retired = [
+            key
+            for key, agent in self.state.agents.items()
+            if agent.is_subagent and agent.status in terminal
+        ]
+        for key in retired:
+            self.state.agents.pop(key, None)
+            self.state.attention.pop(f"job:{key}", None)
 
     def _is_stale_generation(self, event: RuntimeEvent) -> bool:
         if event.agent_id is None or event.session_generation is None:
@@ -274,19 +328,19 @@ def execution_panel_lines(
     width = max(20, width)
     now = time.time() if now is None else now
     phase = state.phase.upper()
-    plan_count = f"{state.completed_plan_items}/{len(state.plan)}" if state.plan else "—"
+    plan_count = (
+        f"{state.completed_plan_items}/{len(state.plan)}" if state.plan else "—"
+    )
     attention = " · NEEDS YOU" if state.attention else ""
     header = _fit(f"FORGE · {phase} · PLAN {plan_count}{attention}", width)
     active = state.active_plan_item
     plan_line = f"PLAN  {'● ' + active.active_form if active else '○ no active step'}"
 
-    active_agents = [
-        agent
-        for agent in state.agents.values()
-        if agent.status not in {"idle", "completed", "succeeded"}
-    ]
+    active_agents = [agent for agent in state.agents.values() if agent.status != "idle"]
     if width < 60:
-        activity = active_agents[0].activity if active_agents else state.progress_summary
+        activity = (
+            active_agents[0].activity if active_agents else state.progress_summary
+        )
         return (header, _fit(plan_line, width), _fit(activity or "ready", width))
 
     lines = [header]
@@ -306,7 +360,9 @@ def execution_panel_lines(
             ("◐", "◓", "◑", "◒")[int(now * 8) % 4]
             if agent.is_animating(now)
             else (
-                "!"
+                "✓"
+                if agent.status in {"completed", "succeeded"}
+                else "!"
                 if agent.status in {"failed", "blocked", "stale", "indeterminate"}
                 else "○"
             )

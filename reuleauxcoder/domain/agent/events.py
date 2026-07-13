@@ -97,9 +97,7 @@ class AgentEvent:
         outcome: ToolOutcome | None = None,
     ) -> "AgentEvent":
         """Create a tool call end event."""
-        effective_outcome = outcome or ToolOutcome.from_legacy(
-            result, success=success
-        )
+        effective_outcome = outcome or ToolOutcome.from_legacy(result, success=success)
         return cls(
             event_type=AgentEventType.TOOL_CALL_END,
             correlation_id=tool_call_id,
@@ -142,6 +140,7 @@ class AgentEvent:
         tokens: int = 0,
         max_tokens: int | None = None,
         blocker: str | None = None,
+        child_agent_id: str | None = None,
     ) -> "AgentEvent":
         """Create a sub-agent completion event."""
         return cls(
@@ -160,6 +159,7 @@ class AgentEvent:
                 "tokens": tokens,
                 "max_tokens": max_tokens,
                 "blocker": blocker,
+                "child_agent_id": child_agent_id,
             },
         )
 

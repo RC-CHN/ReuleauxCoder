@@ -34,8 +34,16 @@ def test_execution_view_reduces_plan_progress_and_real_activity() -> None:
             PlanUpdated(
                 revision=2,
                 items=(
-                    {"step": "research", "active_form": "researching", "status": "completed"},
-                    {"step": "implement", "active_form": "implementing", "status": "in_progress"},
+                    {
+                        "step": "research",
+                        "active_form": "researching",
+                        "status": "completed",
+                    },
+                    {
+                        "step": "implement",
+                        "active_form": "implementing",
+                        "status": "in_progress",
+                    },
                 ),
             ),
             event_id="plan",
@@ -73,9 +81,7 @@ def test_execution_view_keeps_five_latest_tool_lines_for_humans() -> None:
             event_id="output",
         )
     )
-    assert tuple(reducer.state.agents["main"].output_tail) == (
-        "3", "4", "5", "6", "7"
-    )
+    assert tuple(reducer.state.agents["main"].output_tail) == ("3", "4", "5", "6", "7")
     reducer.apply(
         _event(
             ToolCallFinished(
@@ -108,9 +114,7 @@ def test_attention_and_width_aware_projection() -> None:
 
 def test_stale_generation_and_duplicate_events_are_ignored() -> None:
     reducer = ExecutionViewReducer()
-    current = _event(
-        ProgressReported(2, "verifying", "current", None), event_id="same"
-    )
+    current = _event(ProgressReported(2, "verifying", "current", None), event_id="same")
     assert reducer.apply(current)
     assert not reducer.apply(current)
     stale = RuntimeEvent(
@@ -193,3 +197,92 @@ def test_subagent_panel_shows_live_activity_budget_and_blocker() -> None:
     assert "inspect parser" in rendered
     assert "running lsp" in rendered
     assert "tools 4/20 · tok 1200/8000" in rendered
+
+
+def test_subagent_lifecycle_and_worker_events_share_one_panel_row() -> None:
+    reducer = ExecutionViewReducer(root_agent_id="main")
+    reducer.apply(
+        _event(
+            SubagentJobChanged(
+                job_id="sj_same",
+                mode="explore",
+                task="inspect tests",
+                status="running",
+                child_agent_id="sa_sj_same",
+            ),
+            event_id="job-running",
+        )
+    )
+    reducer.apply(
+        _event(
+            ToolCallStarted("child-tool", "grep", {"pattern": "approval"}),
+            event_id="child-tool",
+            agent_id="sa_sj_same",
+        )
+    )
+
+    assert list(reducer.state.agents) == ["sj_same"]
+    assert reducer.state.agents["sj_same"].activity == "grep approval"
+
+
+def test_subagent_lifecycle_merges_worker_event_that_arrives_first() -> None:
+    reducer = ExecutionViewReducer(root_agent_id="main")
+    reducer.apply(
+        _event(
+            ToolCallStarted("child-tool", "read_file", {"file_path": "a.py"}),
+            event_id="child-tool-first",
+            agent_id="sa_sj_race",
+        )
+    )
+    reducer.apply(
+        _event(
+            SubagentJobChanged(
+                job_id="sj_race",
+                mode="explore",
+                task="inspect a.py",
+                status="running",
+                child_agent_id="sa_sj_race",
+            ),
+            event_id="job-second",
+        )
+    )
+
+    assert list(reducer.state.agents) == ["sj_race"]
+    assert reducer.state.agents["sj_race"].task == "inspect a.py"
+
+
+def test_terminal_subagent_remains_until_next_subagent_starts() -> None:
+    reducer = ExecutionViewReducer(root_agent_id="main")
+    reducer.apply(
+        _event(
+            SubagentJobChanged(
+                job_id="sj_old",
+                mode="explore",
+                task="old task",
+                status="completed",
+            ),
+            event_id="old-completed",
+        )
+    )
+
+    assert "sj_old" in reducer.state.agents
+    assert any(
+        "old task" in line
+        for line in execution_panel_lines(reducer.state, width=100, now=101.0)
+    )
+
+    reducer.apply(
+        _event(
+            SubagentJobChanged(
+                job_id="sj_new",
+                mode="explore",
+                task="new task",
+                status="queued",
+            ),
+            event_id="new-queued",
+            timestamp=102.0,
+        )
+    )
+
+    assert "sj_old" not in reducer.state.agents
+    assert "sj_new" in reducer.state.agents

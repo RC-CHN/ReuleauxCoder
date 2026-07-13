@@ -150,7 +150,9 @@ class Agent:
                 snip_min_lines=context_cfg.snip_min_lines,
                 summarize_keep_recent_turns=context_cfg.summarize_keep_recent_turns,
                 token_fudge_factor=getattr(context_cfg, "token_fudge_factor", 1.1),
-                reserved_output_tokens=getattr(context_cfg, "reserved_output_tokens", 8192),
+                reserved_output_tokens=getattr(
+                    context_cfg, "reserved_output_tokens", 8192
+                ),
                 fixed_prompt_tokens=getattr(context_cfg, "fixed_prompt_tokens", 0),
                 tool_schema_tokens=getattr(context_cfg, "tool_schema_tokens", 0),
                 safety_margin_tokens=getattr(context_cfg, "safety_margin_tokens", 2048),
@@ -393,9 +395,7 @@ class Agent:
                 history_version=self.replay_envelope.history_version,
                 cache_epoch=self.replay_envelope.cache_epoch,
             )
-        self.context.restore_checkpoints(
-            list(getattr(session, "checkpoints", ()))
-        )
+        self.context.restore_checkpoints(list(getattr(session, "checkpoints", ())))
         self._replace_context_messages(
             list(session.messages), reason="session resume", record=False
         )
@@ -446,9 +446,7 @@ class Agent:
                 turn_id=turn_id,
                 api_round_id=f"{turn_id}:{self.state.current_round}",
             )
-            self._pending_user_steering.append(
-                (content, generation, event.event_id)
-            )
+            self._pending_user_steering.append((content, generation, event.event_id))
         self.persist_runtime_snapshot()
         return True
 
@@ -616,9 +614,7 @@ class Agent:
             agent_id=event.agent_id,
             turn_id=event.turn_id,
             api_round_id=(
-                f"{event.turn_id}:{self.state.current_round}"
-                if event.turn_id
-                else None
+                f"{event.turn_id}:{self.state.current_round}" if event.turn_id else None
             ),
             artifact_refs=((archive.path,) if archive else ()),
         )
@@ -716,6 +712,7 @@ class Agent:
                     task=job.task,
                     status=job.status,
                     result=job.result,
+                    child_agent_id=getattr(job, "agent_id", None),
                 )
             )
         else:
@@ -726,6 +723,7 @@ class Agent:
                     task=job.task,
                     status=job.status,
                     error=job.error,
+                    child_agent_id=getattr(job, "agent_id", None),
                 )
             )
 
@@ -741,7 +739,10 @@ class Agent:
         parent_agent_id = getattr(job, "parent_agent_id", None)
         if parent_agent_id is not None and parent_agent_id != self.agent_id:
             return False
-        if getattr(job, "generation", self.session_generation) != self.session_generation:
+        if (
+            getattr(job, "generation", self.session_generation)
+            != self.session_generation
+        ):
             return False
         manager = getattr(self, "_subagent_manager", None)
         if (
@@ -869,8 +870,7 @@ class Agent:
                 {"files": conflicts},
             )
         ordered = [
-            (getattr(job, "completion_seq", None) or 2**63, "job", job)
-            for job in jobs
+            (getattr(job, "completion_seq", None) or 2**63, "job", job) for job in jobs
         ] + [(item.seq, "communication", item) for item in communications]
 
         injected = 0
