@@ -38,7 +38,11 @@ class PlanState:
     @property
     def active_index(self) -> int | None:
         return next(
-            (index for index, item in enumerate(self.items) if item.status == "in_progress"),
+            (
+                index
+                for index, item in enumerate(self.items)
+                if item.status == "in_progress"
+            ),
             None,
         )
 
@@ -105,7 +109,9 @@ class PlanController:
             cached = self._committed_calls.get(tool_call_id)
             if cached is not None:
                 if cached[0] != fingerprint:
-                    raise ValueError("tool_call_id was already committed with different plan data")
+                    raise ValueError(
+                        "tool_call_id was already committed with different plan data"
+                    )
                 return self._state, False
             if session_generation != self._agent.session_generation:
                 raise ValueError("session generation changed before plan commit")
@@ -166,7 +172,9 @@ class PlanController:
             cached = self._committed_calls.get(tool_call_id)
             if cached is not None:
                 if cached[0] != fingerprint:
-                    raise ValueError("tool_call_id was already committed with different progress data")
+                    raise ValueError(
+                        "tool_call_id was already committed with different progress data"
+                    )
                 return self._progress, False
             if session_generation != self._agent.session_generation:
                 raise ValueError("session generation changed before progress commit")
@@ -337,7 +345,9 @@ class PlanController:
             active_form = str(raw.get("active_form") or step).strip()
             status = str(raw.get("status") or "")
             if not step or len(step) > cls.MAX_ITEM_CHARS:
-                raise ValueError(f"plan[{index}].step must contain 1-{cls.MAX_ITEM_CHARS} characters")
+                raise ValueError(
+                    f"plan[{index}].step must contain 1-{cls.MAX_ITEM_CHARS} characters"
+                )
             if not active_form or len(active_form) > cls.MAX_ITEM_CHARS:
                 raise ValueError(
                     f"plan[{index}].active_form must contain 1-{cls.MAX_ITEM_CHARS} characters"

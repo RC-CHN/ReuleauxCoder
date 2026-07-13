@@ -83,7 +83,9 @@ def _handle_current_mode(command, ctx) -> CommandEffect:
             kind=UIEventKind.COMMAND,
             mode_name=mode_name,
         )
-        return ctx.effect.finish(control="continue", state_changes={"active_mode": mode_name})
+        return ctx.effect.finish(
+            control="continue", state_changes={"active_mode": mode_name}
+        )
 
     ctx.effect.warning("No active mode set.", kind=UIEventKind.COMMAND)
     return ctx.effect.finish(control="continue", state_changes={"active_mode": None})

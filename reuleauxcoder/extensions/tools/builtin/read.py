@@ -115,9 +115,7 @@ class ReadFileTool(Tool):
             else:
                 line_range = f"0 of {total} lines"
             return ToolOutcome(
-                summary=(
-                    f"Read {line_range} ({source_chars} chars) from {file_path}"
-                ),
+                summary=(f"Read {line_range} ({source_chars} chars) from {file_path}"),
                 content=model_content,
                 metadata={
                     "operation": "read",

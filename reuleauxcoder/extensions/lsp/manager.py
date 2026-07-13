@@ -292,10 +292,7 @@ class LspManager:
             raise ValueError("diagnostic route file_path must match request path")
 
         with self._lock:
-            if (
-                route.agent_id is not None
-                and route.session_generation is not None
-            ):
+            if route.agent_id is not None and route.session_generation is not None:
                 current_generation = self._session_generations.get(route.agent_id)
                 if (
                     current_generation is not None
@@ -365,11 +362,7 @@ class LspManager:
         self._latest_diagnostic_sequence = {
             key: sequence
             for key, sequence in self._latest_diagnostic_sequence.items()
-            if not (
-                key[0] == agent_id
-                and key[1] is not None
-                and key[1] < generation
-            )
+            if not (key[0] == agent_id and key[1] is not None and key[1] < generation)
         }
 
     @staticmethod
@@ -397,9 +390,7 @@ class LspManager:
                 and (route is None or self._route_matches(batch.route, route))
             )
 
-    def acknowledge_diagnostic_batch(
-        self, batch_id: str, *, consumer_id: str
-    ) -> bool:
+    def acknowledge_diagnostic_batch(self, batch_id: str, *, consumer_id: str) -> bool:
         """Acknowledge exactly one batch, preventing a second consumer."""
         with self._lock:
             if self._diagnostic_batches.pop(batch_id, None) is None:
@@ -653,10 +644,10 @@ class LspManager:
                     request.route.session_generation,
                     file_path,
                 )
-                if (
-                    self._latest_diagnostic_sequence.get(key)
-                    == request.request_sequence
-                    and self._route_generation_is_current(request.route)
+                if self._latest_diagnostic_sequence.get(
+                    key
+                ) == request.request_sequence and self._route_generation_is_current(
+                    request.route
                 ):
                     self._diagnostic_batches[batch.batch_id] = batch
                     accepted = True
@@ -676,9 +667,7 @@ class LspManager:
         return current is None or route.session_generation >= current
 
     @staticmethod
-    def _route_matches(
-        actual: DiagnosticRoute, query: DiagnosticRouteFilter
-    ) -> bool:
+    def _route_matches(actual: DiagnosticRoute, query: DiagnosticRouteFilter) -> bool:
         if query.file_path is not None and actual.file_path != query.file_path:
             return False
         for name in (

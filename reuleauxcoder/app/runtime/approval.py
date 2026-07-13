@@ -275,9 +275,7 @@ def _approval_identity(agent, request: ApprovalRequest) -> dict:
         "turn_id": metadata.get("turn_id"),
         "tool_call_id": metadata.get("tool_call_id"),
         "job_id": metadata.get("subagent_job_id"),
-        "parent_agent_id": (
-            agent.agent_id if metadata.get("is_subagent") else None
-        ),
+        "parent_agent_id": (agent.agent_id if metadata.get("is_subagent") else None),
     }
 
 

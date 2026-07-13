@@ -137,8 +137,7 @@ class TestHandleShow:
         result = _handle_show(None, ctx)
         assert result.control == "continue"
         assert any(
-            e.level == "info"
-            and "No reasoning content" in e.message
+            e.level == "info" and "No reasoning content" in e.message
             for e in ctx.effect.notifications
         )
 
@@ -169,8 +168,7 @@ class TestHandleInline:
         _handle_inline(ToggleInlineCommand(), ctx)
         assert agent.reasoning_display_mode == "inline"
         assert any(
-            e.level == "info"
-            and "inline" in e.message
+            e.level == "info" and "inline" in e.message
             for e in ctx.effect.notifications
         )
 
@@ -181,9 +179,7 @@ class TestHandleInline:
         _handle_inline(ToggleInlineCommand(), ctx)
         assert agent.reasoning_display_mode == "quiet"
         assert any(
-            e.level == "info"
-            and "quiet" in e.message
-            for e in ctx.effect.notifications
+            e.level == "info" and "quiet" in e.message for e in ctx.effect.notifications
         )
 
 
@@ -215,7 +211,8 @@ class TestHandleEffortShow:
         result = _handle_effort_show(None, ctx)
         assert result.control == "continue"
         msg = next(
-            e.message for e in ctx.effect.notifications
+            e.message
+            for e in ctx.effect.notifications
             if e.level == "info" and "thinking_level" in e.message
         )
         assert "low → high" in msg
@@ -235,9 +232,7 @@ class TestHandleEffortSet:
         _handle_effort_set(SetEffortCommand(level="high"), ctx)
         assert llm.reasoning_effort == "high"
         assert any(
-            e.level == "success"
-            and "high" in e.message
-            and "medium" in e.message
+            e.level == "success" and "high" in e.message and "medium" in e.message
             for e in ctx.effect.notifications
         )
 
@@ -249,8 +244,7 @@ class TestHandleEffortSet:
         _handle_effort_set(SetEffortCommand(level="low"), ctx)
         assert llm.reasoning_effort == "medium"  # unchanged
         assert any(
-            e.level == "error"
-            and "not available" in e.message
+            e.level == "error" and "not available" in e.message
             for e in ctx.effect.notifications
         )
 
@@ -263,8 +257,6 @@ class TestHandleEffortSet:
         _handle_effort_set(SetEffortCommand(level="high"), ctx)
         assert llm.reasoning_effort == "high"
         assert any(
-            e.level == "success"
-            and "10" in e.message
-            and "think" in e.message
+            e.level == "success" and "10" in e.message and "think" in e.message
             for e in ctx.effect.notifications
         )

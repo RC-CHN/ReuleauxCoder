@@ -123,13 +123,7 @@ class CLIUIInteractor:
 
             while True:
                 try:
-                    answer = (
-                        self._prompt(
-                            "Select [1/2, y/n]: "
-                        )
-                        .strip()
-                        .lower()
-                    )
+                    answer = self._prompt("Select [1/2, y/n]: ").strip().lower()
                 except (KeyboardInterrupt, EOFError):
                     self._interrupted()
                     return ReviewResponse(

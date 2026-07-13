@@ -10,7 +10,10 @@ from enum import Enum
 from typing import Any, Protocol, TypeAlias
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
-from reuleauxcoder.domain.runtime.events import RuntimeEvent, agent_event_to_runtime_event
+from reuleauxcoder.domain.runtime.events import (
+    RuntimeEvent,
+    agent_event_to_runtime_event,
+)
 from reuleauxcoder.interfaces.interactions import InteractionRequest
 
 
@@ -367,9 +370,7 @@ class UIEventBus:
             )
         )
 
-    def emit_remote_stream(
-        self, *, tool_name: str, stream: str, chunk: str
-    ) -> None:
+    def emit_remote_stream(self, *, tool_name: str, stream: str, chunk: str) -> None:
         self.emit(
             UIEvent.info(
                 "",

@@ -173,9 +173,7 @@ def test_unchanged_transcript_layout_uses_model_revision_fast_path(
     monkeypatch,
 ) -> None:
     adapter = MiniTUIEventAdapter()
-    adapter.append_restored_conversation(
-        [{"role": "assistant", "content": "stable"}]
-    )
+    adapter.append_restored_conversation([{"role": "assistant", "content": "stable"}])
     first = adapter.transcript_layout(80)
 
     def unexpected_compose(_cells):
@@ -218,10 +216,7 @@ def test_visual_prewrap_counts_cjk_and_emoji_width() -> None:
 def test_stream_revision_reformats_only_changed_cell(monkeypatch) -> None:
     adapter = MiniTUIEventAdapter()
     adapter.append_restored_conversation(
-        [
-            {"role": "assistant", "content": f"stable {index}"}
-            for index in range(100)
-        ]
+        [{"role": "assistant", "content": f"stable {index}"} for index in range(100)]
     )
     adapter.transcript_layout(80)
     original = mini_tui_module._cell_fragments
@@ -253,7 +248,7 @@ def test_virtual_control_resolves_only_requested_rows() -> None:
         tuple(
             VisualCell(
                 key=(f"cell-{index}", 0, 80, 0),
-                lines=((('', f"row {index}"),),),
+                lines=((("", f"row {index}"),),),
             )
             for index in range(1_000)
         )
@@ -464,9 +459,7 @@ def test_before_render_keeps_scrolled_view_stable_and_tail_sticky() -> None:
         )
     )
     app.application = SimpleNamespace(
-        output=SimpleNamespace(
-            get_size=lambda: SimpleNamespace(columns=80, rows=40)
-        )
+        output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=80, rows=40))
     )
     app.transcript_control = SimpleNamespace(last_height=30)
     app.transcript_pane = SimpleNamespace(vertical_scroll=0)
@@ -500,11 +493,11 @@ def test_virtual_layout_rebases_scroll_to_same_cell_after_markdown_reflow() -> N
         (
             VisualCell(
                 key=("markdown", 1, 80, 0),
-                lines=((('', "a"),), (('', "b"),), (('', "c"),)),
+                lines=((("", "a"),), (("", "b"),), (("", "c"),)),
             ),
             VisualCell(
                 key=("answer", 0, 80, 0),
-                lines=((('', "one"),), (('', "two"),), (('', "three"),)),
+                lines=((("", "one"),), (("", "two"),), (("", "three"),)),
             ),
         )
     )
@@ -519,7 +512,7 @@ def test_virtual_layout_rebases_scroll_to_same_cell_after_markdown_reflow() -> N
             ),
             VisualCell(
                 key=("answer", 0, 80, 0),
-                lines=((('', "one"),), (('', "two"),), (('', "three"),)),
+                lines=((("", "one"),), (("", "two"),), (("", "three"),)),
             ),
         )
     )
@@ -535,8 +528,7 @@ def test_mixed_transcript_repeated_resize_never_reuses_old_width_rows() -> None:
         mini_tui_module.AssistantCell(
             id="mixed:markdown",
             text=(
-                "**粗体中文 🚀**\n\n"
-                "| 项目 | 状态 |\n| --- | --- |\n| parser | ready |"
+                "**粗体中文 🚀**\n\n| 项目 | 状态 |\n| --- | --- |\n| parser | ready |"
             ),
             complete=True,
         )
@@ -559,7 +551,9 @@ def test_mixed_transcript_repeated_resize_never_reuses_old_width_rows() -> None:
     for width, layout in zip((72, 31, 90, 31), layouts, strict=True):
         assert all(cell.key[2] == width for cell in layout.cells)
         for line_number in range(layout.line_count):
-            text = "".join(fragment for _style, fragment in layout.get_line(line_number))
+            text = "".join(
+                fragment for _style, fragment in layout.get_line(line_number)
+            )
             assert get_cwidth(text) <= width
     narrow = "\n".join(
         "".join(text for _style, text in layouts[1].get_line(line))

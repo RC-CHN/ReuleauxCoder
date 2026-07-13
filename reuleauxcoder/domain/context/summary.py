@@ -439,7 +439,10 @@ def project_summary_input(
         selected = selected[1:]
         omitted_rounds += 1
         projected = render()
-    if len(json.dumps(projected, ensure_ascii=False, separators=(",", ":"))) > max_chars:
+    if (
+        len(json.dumps(projected, ensure_ascii=False, separators=(",", ":")))
+        > max_chars
+    ):
         # One complete API round may itself exceed the summarizer budget. Keep
         # every protocol item/call ID but compact payloads inside that round.
         for item in projected:

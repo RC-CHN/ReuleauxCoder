@@ -104,9 +104,7 @@ class RemoteRelayToolBackend(ToolBackend):
         """
         return self.exec_tool_outcome(tool_name, args).model_text
 
-    def exec_tool_outcome(
-        self, tool_name: str, args: dict[str, Any]
-    ) -> ToolOutcome:
+    def exec_tool_outcome(self, tool_name: str, args: dict[str, Any]) -> ToolOutcome:
         """Adapt protocol-v1 execution into the canonical Host outcome."""
         peer_id = self.context.peer_id
         if peer_id is None:
@@ -223,9 +221,7 @@ class RemoteWorkspacePort:
 
     def __init__(self, backend: RemoteRelayToolBackend):
         self.backend = backend
-        self.root = Path(
-            backend.context.workspace_root or backend.context.cwd or "/"
-        )
+        self.root = Path(backend.context.workspace_root or backend.context.cwd or "/")
 
     def resolve(self, path: str | Path) -> Path:
         value = Path(path)
@@ -244,9 +240,7 @@ class RemoteWorkspacePort:
         except WorkspaceError:
             raise
         except Exception as error:
-            raise WorkspaceError(
-                WorkspaceErrorCode.IO_ERROR, str(error)
-            ) from error
+            raise WorkspaceError(WorkspaceErrorCode.IO_ERROR, str(error)) from error
         if not result.ok:
             try:
                 code = WorkspaceErrorCode(result.error_code or "io_error")
@@ -294,10 +288,7 @@ class RemoteWorkspacePort:
             include_hidden=include_hidden,
             max_entries=max_entries,
         )
-        entries = tuple(
-            _workspace_entry(item)
-            for item in data.get("entries", [])
-        )
+        entries = tuple(_workspace_entry(item) for item in data.get("entries", []))
         return WorkspaceListResult(entries, truncated=bool(data.get("truncated")))
 
     def search_text(
@@ -352,9 +343,9 @@ class RemoteWorkspacePort:
         max_entries: int = 20_000,
         max_matches: int = 100,
     ) -> WorkspaceGlobResult:
-        if self.backend.supports_capability(
-            "workspace.fs.glob"
-        ) and _peer_glob_safe(pattern):
+        if self.backend.supports_capability("workspace.fs.glob") and _peer_glob_safe(
+            pattern
+        ):
             data = self._request(
                 "fs.glob",
                 path=str(path),
@@ -465,9 +456,7 @@ class RemoteProcessPort:
                 )
             time.sleep(0.05)
 
-    def write_input(
-        self, process_id: str, data: str, *, close: bool = False
-    ) -> int:
+    def write_input(self, process_id: str, data: str, *, close: bool = False) -> int:
         result = self.backend.workspace._request(
             "process.input",
             process_id=process_id,

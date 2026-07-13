@@ -247,9 +247,7 @@ def test_resume_cross_fingerprint_by_id_warns_but_allows(tmp_path: Path) -> None
 
 def test_resume_auto_saves_the_session_being_left(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
-    target_id = store.save(
-        messages=[{"role": "user", "content": "target"}], model="m1"
-    )
+    target_id = store.save(messages=[{"role": "user", "content": "target"}], model="m1")
     ctx = _build_ctx(tmp_path)
     ctx.agent.messages.append({"role": "user", "content": "unsaved current work"})
 

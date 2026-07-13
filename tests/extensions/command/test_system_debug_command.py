@@ -50,7 +50,9 @@ def test_config_command_emits_typed_effective_view() -> None:
         llm=SimpleNamespace(model="demo"),
     )
 
-    result = _handle_config(None, SimpleNamespace(config=config, agent=agent, effect=effect))
+    result = _handle_config(
+        None, SimpleNamespace(config=config, agent=agent, effect=effect)
+    )
 
     view = result.views[-1]
     assert view.view_type == "effective_config"

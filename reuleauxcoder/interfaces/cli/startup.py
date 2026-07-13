@@ -42,7 +42,9 @@ def show_banner(
     if base_url:
         _fact(body, "BASE", _truncate_middle(base_url, value_width), theme)
 
-    visible = [event for event in startup_events if event.level is not UIEventLevel.DEBUG]
+    visible = [
+        event for event in startup_events if event.level is not UIEventLevel.DEBUG
+    ]
     if visible:
         body.append("\n")
     for index, event in enumerate(visible):

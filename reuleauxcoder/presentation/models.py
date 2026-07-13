@@ -164,9 +164,9 @@ class TranscriptModel:
             raise KeyError(cell.id)
         previous = self._cells[index]
         self._cells[index] = cell
-        self._text_chars_total += self._cell_text_chars(
-            cell
-        ) - self._cell_text_chars(previous)
+        self._text_chars_total += self._cell_text_chars(cell) - self._cell_text_chars(
+            previous
+        )
         self._mark_changed()
         self._enforce_retention()
         return previous

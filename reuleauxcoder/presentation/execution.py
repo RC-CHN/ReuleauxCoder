@@ -409,9 +409,7 @@ def execution_panel_lines(
     """Compatibility/plain-text projection backed by the structured view."""
     width = max(20, width)
     view = execution_panel_view(state, now=now)
-    plan_count = (
-        f"{view.plan_completed}/{view.plan_total}" if view.plan_total else "—"
-    )
+    plan_count = f"{view.plan_completed}/{view.plan_total}" if view.plan_total else "—"
     live = "LIVE" if view.is_live else "IDLE"
     need = f" · NEED {len(view.attention)}" if view.attention else ""
     if width < 60:
@@ -423,7 +421,10 @@ def execution_panel_lines(
             else f"MAIN  {view.main.marker} {view.main.activity or 'ready'}"
         )
         return (
-            _fit(f"{view.phase} · PLAN {plan_count} · A {len(view.subagents)}{need}", width),
+            _fit(
+                f"{view.phase} · PLAN {plan_count} · A {len(view.subagents)}{need}",
+                width,
+            ),
             _fit(f"PLAN  {'●' if view.plan_total else '○'} {view.active_plan}", width),
             _fit(final, width),
         )
@@ -438,9 +439,7 @@ def execution_panel_lines(
         _fit(f"MAIN  {view.main.marker} {view.main.activity or 'ready'}", width),
     ]
     if view.attention:
-        child = (
-            f" · SUB {_agent_line(view.subagents[0])}" if view.subagents else ""
-        )
+        child = f" · SUB {_agent_line(view.subagents[0])}" if view.subagents else ""
         lines.append(_fit(f"NEED  ! {view.attention[0].title}{child}", width))
     elif view.subagents:
         lines.append(_fit(f"SUB   {_agent_line(view.subagents[0])}", width))

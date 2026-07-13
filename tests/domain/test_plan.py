@@ -9,8 +9,16 @@ class _LLM:
 
 def _items(status="in_progress"):
     return [
-        {"step": "Implement history", "active_form": "Implementing history", "status": status},
-        {"step": "Verify resume", "active_form": "Verifying resume", "status": "pending"},
+        {
+            "step": "Implement history",
+            "active_form": "Implementing history",
+            "status": status,
+        },
+        {
+            "step": "Verify resume",
+            "active_form": "Verifying resume",
+            "status": "pending",
+        },
     ]
 
 
@@ -32,7 +40,9 @@ def test_plan_commit_is_ledger_first_and_tool_call_idempotent() -> None:
     assert changed is True
     assert changed_again is False
     assert same.revision == state.revision == 1
-    events = [event for event in agent.history_ledger.events if event.kind == "plan_updated"]
+    events = [
+        event for event in agent.history_ledger.events if event.kind == "plan_updated"
+    ]
     assert len(events) == 1
     assert state.event_id == events[0].event_id
 

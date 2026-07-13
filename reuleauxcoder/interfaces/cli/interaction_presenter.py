@@ -60,7 +60,10 @@ def render_interaction_request(
         choices.append("    ")
         choices.append("[2/N] ", style=theme.style(DisplayTone.ERROR))
         choices.append(request.reject_label, style="bold")
-        choices.append("\nSELECT 1/2 OR Y/N // CTRL+C CANCELS", style=theme.style(DisplayTone.MUTED))
+        choices.append(
+            "\nSELECT 1/2 OR Y/N // CTRL+C CANCELS",
+            style=theme.style(DisplayTone.MUTED),
+        )
         console.print(
             build_review_frame(
                 title=request.title,

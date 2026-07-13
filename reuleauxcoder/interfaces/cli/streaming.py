@@ -31,9 +31,7 @@ def find_committed_boundary(text: str) -> int | None:
         elif token.nesting == -1:
             depth -= 1
         elif (
-            depth == 0
-            and token.type in _SELF_CLOSING_BLOCKS
-            and token.map is not None
+            depth == 0 and token.type in _SELF_CLOSING_BLOCKS and token.map is not None
         ):
             block_maps.append(token.map)
     if len(block_maps) < 2:

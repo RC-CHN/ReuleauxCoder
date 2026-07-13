@@ -125,7 +125,21 @@ BUILTIN_MODES = {
     },
     "planner": {
         "description": "Planning-first mode; focus on analysis and implementation plans.",
-        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress", "spawn_agent", "send_message", "list_agents", "wait_agent", "interrupt_agent"],
+        "tools": [
+            "read_file",
+            "glob",
+            "grep",
+            "history_search",
+            "history_read",
+            "artifact_read",
+            "update_plan",
+            "report_progress",
+            "spawn_agent",
+            "send_message",
+            "list_agents",
+            "wait_agent",
+            "interrupt_agent",
+        ],
         "prompt_append": (
             "Focus on analysis, architecture, and step-by-step plans. Avoid file mutations "
             "unless explicitly requested."
@@ -134,7 +148,22 @@ BUILTIN_MODES = {
     },
     "debugger": {
         "description": "Debugging mode focused on diagnosis and verification.",
-        "tools": ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress", "shell", "spawn_agent", "send_message", "list_agents", "wait_agent", "interrupt_agent"],
+        "tools": [
+            "read_file",
+            "glob",
+            "grep",
+            "history_search",
+            "history_read",
+            "artifact_read",
+            "update_plan",
+            "report_progress",
+            "shell",
+            "spawn_agent",
+            "send_message",
+            "list_agents",
+            "wait_agent",
+            "interrupt_agent",
+        ],
         "prompt_append": (
             "Focus on root-cause analysis, minimal repro steps, and targeted fixes with "
             "clear verification."

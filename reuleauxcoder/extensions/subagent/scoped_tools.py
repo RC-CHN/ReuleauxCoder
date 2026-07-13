@@ -54,21 +54,15 @@ class ScopedSubagentTool(Tool):
     def preflight_validate(self, **kwargs) -> str | None:
         arguments = dict(kwargs)
         reason = arguments.pop("reason", None)
-        if self._require_reason and (
-            not isinstance(reason, str) or not reason.strip()
-        ):
+        if self._require_reason and (not isinstance(reason, str) or not reason.strip()):
             return f"Error: child tool '{self.name}' requires a non-empty reason."
         return self._inner.preflight_validate(**arguments)
 
     def execute(self, **kwargs) -> ToolResult:
         arguments = dict(kwargs)
         reason = arguments.pop("reason", None)
-        if self._require_reason and (
-            not isinstance(reason, str) or not reason.strip()
-        ):
-            raise ValueError(
-                f"child tool '{self.name}' requires a non-empty reason"
-            )
+        if self._require_reason and (not isinstance(reason, str) or not reason.strip()):
+            raise ValueError(f"child tool '{self.name}' requires a non-empty reason")
         return self._inner.execute(**arguments)
 
     def bind_agent(self, agent) -> None:

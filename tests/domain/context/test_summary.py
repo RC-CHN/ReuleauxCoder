@@ -73,9 +73,7 @@ def test_generate_summary_uses_llm_when_available() -> None:
     assert document["user_intent"]["explicit_requests"] == [
         {"event_ref": "message:0", "text": "hello"}
     ]
-    assert document["progress"]["completed"] == [
-        "Validated the checkpoint schema"
-    ]
+    assert document["progress"]["completed"] == ["Validated the checkpoint schema"]
     assert len(llm.calls) == 1
     assert llm.call_kwargs[0]["max_output_tokens"] == 4096
 
@@ -196,9 +194,15 @@ def test_deterministic_summary_uses_ledger_provenance_and_control_facts() -> Non
         )
     )
 
-    assert document["user_intent"]["explicit_requests"][0]["event_ref"] == user_event.event_id
+    assert (
+        document["user_intent"]["explicit_requests"][0]["event_ref"]
+        == user_event.event_id
+    )
     assert "approval-1: edit_file" in document["agent_state"]["pending_approvals"]
-    assert any("sj_active: running" in item for item in document["agent_state"]["active_subagents"])
+    assert any(
+        "sj_active: running" in item
+        for item in document["agent_state"]["active_subagents"]
+    )
     assert document["code_state"]["worktrees_and_commits"] == [
         "sj_active: /tmp/worktree"
     ]

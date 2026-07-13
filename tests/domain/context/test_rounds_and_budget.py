@@ -51,11 +51,24 @@ def test_compression_records_versioned_checkpoint() -> None:
     )
     messages = [
         {"role": "user", "content": "run"},
-        {"role": "assistant", "tool_calls": [{"id": "x", "function": {"name": "shell"}}]},
-        {"role": "tool", "tool_call_id": "x", "content": "\n".join(str(i) * 100 for i in range(20))},
-        {"role": "assistant", "tool_calls": [{"id": "y", "function": {"name": "read_file"}}]},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "x", "function": {"name": "shell"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "x",
+            "content": "\n".join(str(i) * 100 for i in range(20)),
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "y", "function": {"name": "read_file"}}],
+        },
         {"role": "tool", "tool_call_id": "y", "content": "new"},
-        {"role": "assistant", "tool_calls": [{"id": "z", "function": {"name": "grep"}}]},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "z", "function": {"name": "grep"}}],
+        },
         {"role": "tool", "tool_call_id": "z", "content": "latest"},
     ]
 

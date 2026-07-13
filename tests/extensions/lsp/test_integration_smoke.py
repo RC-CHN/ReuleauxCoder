@@ -313,9 +313,7 @@ def test_python_broken_fixed_broken_and_rapid_save_sequence(
         client = await _start_python_client(tmp_path)
         try:
             await client.did_open(path, broken_one)
-            first = await _wait_for_fresh_publish(
-                client, path, after_generation=0
-            )
+            first = await _wait_for_fresh_publish(client, path, after_generation=0)
             assert first
 
             baseline = client.diagnostics_generation(path)
@@ -435,8 +433,7 @@ def test_python_parent_transport_remains_owned_while_subagent_scope_is_omitted(
     )
     report = manager.health_check()
     if not any(
-        name == "python" and available
-        for name, available, _details in report.languages
+        name == "python" and available for name, available, _details in report.languages
     ):
         pytest.skip("Python language server is not available")
     registry = HookRegistry()

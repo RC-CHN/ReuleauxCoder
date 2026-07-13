@@ -82,8 +82,7 @@ def restore_session(
         agent,
         session_store,
         current_session_id,
-        fingerprint=getattr(agent, "session_fingerprint", None)
-        or current_fingerprint,
+        fingerprint=getattr(agent, "session_fingerprint", None) or current_fingerprint,
     )
 
     return current_session_id, session_exit_time, sessions_dir

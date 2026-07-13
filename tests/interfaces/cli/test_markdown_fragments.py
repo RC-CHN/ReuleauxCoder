@@ -119,9 +119,7 @@ def test_markdown_cache_evicts_the_least_recently_used_entry() -> None:
     ],
 )
 def test_plain_markdown_fast_path_matches_rich_fragments(text: str) -> None:
-    assert _plain_markdown_fragments(text) == _rich_markdown_fragments(
-        text, width=72
-    )
+    assert _plain_markdown_fragments(text) == _rich_markdown_fragments(text, width=72)
 
 
 @pytest.mark.parametrize(

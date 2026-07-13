@@ -36,7 +36,9 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
             source("models.active_sub", runtime=runtime_sub != configured_sub),
         ),
         EffectiveConfigRowViewModel(
-            "models.runtime_model", str(getattr(getattr(agent, "llm", None), "model", config.model)), "session"
+            "models.runtime_model",
+            str(getattr(getattr(agent, "llm", None), "model", config.model)),
+            "session",
         ),
         EffectiveConfigRowViewModel(
             "modes.active",
@@ -122,8 +124,7 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
     active_jobs = tuple(
         f"{job.id}:{job.status}:g{job.generation}:{job.parent_agent_id or '-'}"
         for job in jobs
-        if job.status
-        in {"queued", "running", "cancelling"}
+        if job.status in {"queued", "running", "cancelling"}
     )
     return EffectiveConfigViewModel(
         rows=rows,

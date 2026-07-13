@@ -381,7 +381,9 @@ class LLM:
                     else:
                         cached_value = getattr(details, "cached_tokens", None)
                     if cached_value is None:
-                        cached_value = getattr(chunk.usage, "cache_read_input_tokens", None)
+                        cached_value = getattr(
+                            chunk.usage, "cache_read_input_tokens", None
+                        )
                     if cached_value is None:
                         cached_value = getattr(chunk.usage, "cached_tokens", None)
                     if cached_value is not None:

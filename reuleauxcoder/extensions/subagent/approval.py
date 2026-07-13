@@ -13,6 +13,7 @@ from reuleauxcoder.domain.approval import (
     ApprovalRequest,
 )
 
+
 class _BubbledApprovalProvider:
     """Attribute and serialize child approvals through the parent provider."""
 

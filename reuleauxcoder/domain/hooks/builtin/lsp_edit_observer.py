@@ -185,7 +185,9 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
                 if err_count:
                     parts.append(f"{err_count} error{'s' if err_count != 1 else ''}")
                 if warn_count:
-                    parts.append(f"{warn_count} warning{'s' if warn_count != 1 else ''}")
+                    parts.append(
+                        f"{warn_count} warning{'s' if warn_count != 1 else ''}"
+                    )
                 if parts:
                     ui_bus.info(
                         f"LSP: {', '.join(parts)} after {tool_call.name}",

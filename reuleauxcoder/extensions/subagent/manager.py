@@ -468,8 +468,7 @@ class SubagentManager:
 
     def _active_job_count_locked(self) -> int:
         return sum(
-            job.status not in _TERMINAL_JOB_STATUSES
-            for job in self._jobs.values()
+            job.status not in _TERMINAL_JOB_STATUSES for job in self._jobs.values()
         )
 
     @staticmethod
@@ -993,11 +992,7 @@ class SubagentManager:
         # every overflow explicit instead of silently restoring an over-cap
         # control plane.
         restored_active = sorted(
-            (
-                job
-                for job in restored
-                if job.status not in _TERMINAL_JOB_STATUSES
-            ),
+            (job for job in restored if job.status not in _TERMINAL_JOB_STATUSES),
             key=lambda job: job.created_at,
             reverse=True,
         )
@@ -1006,9 +1001,7 @@ class SubagentManager:
             overflow.finished_at = time.time()
             overflow.guidance_request_id = None
             overflow.guidance_deadline_at = None
-            overflow.error = (
-                "Restored subagent exceeded the global four-agent limit."
-            )
+            overflow.error = "Restored subagent exceeded the global four-agent limit."
             stale_jobs.append(overflow)
 
         pending_messages: list[SubagentCommunication] = []
@@ -1754,10 +1747,7 @@ class SubagentManager:
             job = self._jobs.get(job_id)
             while job is not None and (
                 job.status not in _TERMINAL_JOB_STATUSES
-                or (
-                    terminal_published is not None
-                    and not terminal_published.is_set()
-                )
+                or (terminal_published is not None and not terminal_published.is_set())
             ):
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
@@ -2311,9 +2301,7 @@ def run_subagent_task(
     checkpoint_reference = None
     if status == "blocked" and job_id:
         tracked = manager.get_job(job_id)
-        checkpoint_reference = (
-            tracked.resume_reference if tracked is not None else None
-        )
+        checkpoint_reference = tracked.resume_reference if tracked is not None else None
 
     final_result = _result_from_agent(
         sub,

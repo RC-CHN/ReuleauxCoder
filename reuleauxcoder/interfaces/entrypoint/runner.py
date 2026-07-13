@@ -199,6 +199,7 @@ class AppRunner:
         if rtk_mode == "off":
             return
         import shutil
+
         if shutil.which("rtk"):
             ui_bus.info(
                 "[rtk] shell output filtering enabled (60-90% token savings).",
@@ -231,7 +232,10 @@ class AppRunner:
         lsp_config = LspConfig.from_config(config)
         if not lsp_config.enabled:
             return
-        if any(getattr(tool, "backend_id", "local") == "remote_relay" for tool in agent.tools):
+        if any(
+            getattr(tool, "backend_id", "local") == "remote_relay"
+            for tool in agent.tools
+        ):
             ui_bus.info(
                 "LSP: Host diagnostics disabled for the remote workspace target.",
                 kind=UIEventKind.SYSTEM,

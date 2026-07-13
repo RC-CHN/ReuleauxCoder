@@ -47,9 +47,7 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         self.store_full_output = store_full_output
         self.output_dir = get_tool_outputs_dir(store_dir)
         self.sessions_dir = (
-            Path(sessions_dir).expanduser()
-            if sessions_dir
-            else get_sessions_dir()
+            Path(sessions_dir).expanduser() if sessions_dir else get_sessions_dir()
         )
 
     @classmethod
@@ -156,7 +154,10 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         )
 
     def _archive_output(
-        self, tool_name: str, content: str, round_index: int | None,
+        self,
+        tool_name: str,
+        content: str,
+        round_index: int | None,
         *,
         session_id: str | None,
         tool_call_id: str | None,
@@ -238,11 +239,7 @@ def _retain_text(
         tail_chars = max_chars - head_chars
         if not tail_chars:
             return selected[:head_chars].rstrip()
-        return (
-            selected[:head_chars].rstrip()
-            + "\n"
-            + selected[-tail_chars:].lstrip()
-        )
+        return selected[:head_chars].rstrip() + "\n" + selected[-tail_chars:].lstrip()
     selected = "\n".join(lines[:max_lines])
     return selected[:max_chars].rstrip()
 

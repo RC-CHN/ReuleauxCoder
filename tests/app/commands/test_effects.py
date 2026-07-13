@@ -50,9 +50,7 @@ def test_effect_requires_and_preserves_typed_view_model() -> None:
 def test_cli_applies_command_effect_once() -> None:
     result = CommandEffect()
     result.info("hello")
-    result.open_view(
-        "help", title="Help", view_model=HelpViewModel(sections=())
-    )
+    result.open_view("help", title="Help", view_model=HelpViewModel(sections=()))
     result.finish()
     bus = UIEventBus()
 

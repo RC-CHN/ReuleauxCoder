@@ -176,6 +176,7 @@ Here's an example of how your output should be structured:
 Please provide your summary based on the conversation so far, following this structure and ensuring precision and thoroughness in your response.
 """
 
+
 class ContextManager:
     """Manages conversation context with multi-layer compression."""
 
@@ -398,7 +399,10 @@ class ContextManager:
         """Predict current request size from actual usage plus calibrated growth."""
         local_history = self.get_context_tokens(messages)
         observation = self._latest_usage
-        if observation is not None and observation.history_version == self._history_version:
+        if (
+            observation is not None
+            and observation.history_version == self._history_version
+        ):
             scale = self._estimate_scale_by_profile.get(observation.model_profile, 1.0)
             delta = local_history - observation.local_history_estimate
             return max(1, int(observation.actual_prompt_tokens + delta * scale))
@@ -465,15 +469,18 @@ class ContextManager:
             rounds_since_semantic >= max(20, self._summarize_keep_recent_turns * 4)
             or (
                 self._snip_epochs_since_summary >= 2
-                and rounds_since_semantic >= max(
-                    12, self._summarize_keep_recent_turns * 2
-                )
+                and rounds_since_semantic
+                >= max(12, self._summarize_keep_recent_turns * 2)
             )
         )
 
         summarized = False
         checkpoint_kind = "phase_checkpoint" if phase_due else "partial_prefix"
-        if candidate_prediction > self._rewrite_target_high or semantic_due or phase_due:
+        if (
+            candidate_prediction > self._rewrite_target_high
+            or semantic_due
+            or phase_due
+        ):
             summarized = self._summarize_old(
                 candidate,
                 llm,
@@ -589,9 +596,7 @@ class ContextManager:
 
         after_local = self.get_context_tokens(messages)
         scale = before_tokens / max(1, before_local)
-        after_tokens = max(
-            1, int(before_tokens - (before_local - after_local) * scale)
-        )
+        after_tokens = max(1, int(before_tokens - (before_local - after_local) * scale))
         self._last_compact_tokens = after_tokens
         self._last_compact_strategy = strategy
         source_version = self._history_version

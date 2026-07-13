@@ -109,12 +109,14 @@ _SERVER_COMMANDS: dict[LanguageId, tuple[str, list[str]]] = {
     LanguageId.YAML: ("npx", ["-y", "yaml-language-server", "--stdio"]),
 }
 
+
 @dataclass(frozen=True, slots=True)
 class LspServerLaunch:
     command: str
     args: tuple[str, ...]
     initialization_options: dict[str, Any] | None = None
     implementation: str = "default"
+
 
 # === Workspace root markers ===
 #

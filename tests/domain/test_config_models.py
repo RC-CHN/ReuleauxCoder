@@ -54,7 +54,11 @@ def test_model_profile_config_custom_reasoning_effort_param() -> None:
     )
     assert profile.reasoning_effort == "high"
     assert profile.reasoning_effort_param == "thinking_level"
-    assert profile.reasoning_effort_values == {"low": "high", "medium": "high", "high": "max"}
+    assert profile.reasoning_effort_values == {
+        "low": "high",
+        "medium": "high",
+        "high": "max",
+    }
 
 
 def test_model_profile_config_reasoning_effort_values_roundtrip() -> None:
@@ -72,7 +76,11 @@ def test_model_profile_config_reasoning_effort_values_roundtrip() -> None:
 
 
 def test_default_reasoning_effort_values() -> None:
-    assert DEFAULT_REASONING_EFFORT_VALUES == {"low": "low", "medium": "medium", "high": "high"}
+    assert DEFAULT_REASONING_EFFORT_VALUES == {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+    }
 
 
 def test_mode_config_from_dict_normalizes_invalid_fields() -> None:

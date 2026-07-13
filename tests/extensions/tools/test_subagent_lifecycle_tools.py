@@ -27,9 +27,7 @@ class _Root:
         self.stopped = False
 
     def get_active_mode_config(self):
-        return SimpleNamespace(
-            allowed_subagent_modes=["explore", "execute", "verify"]
-        )
+        return SimpleNamespace(allowed_subagent_modes=["explore", "execute", "verify"])
 
     def _has_user_steering(self):
         return self.steered

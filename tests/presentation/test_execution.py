@@ -180,9 +180,7 @@ def test_panel_expands_plan_only_when_details_are_requested() -> None:
         )
     )
 
-    expanded = execution_panel_lines(
-        reducer.state, width=100, now=100.5, expanded=True
-    )
+    expanded = execution_panel_lines(reducer.state, width=100, now=100.5, expanded=True)
     collapsed = execution_panel_lines(reducer.state, width=100, now=100.5)
 
     assert any("done step" in line for line in expanded)

@@ -36,9 +36,7 @@ def test_message_ledger_event_has_top_level_runtime_attribution(tmp_path) -> Non
     )
     agent._current_turn_id = "turn-7"
     agent.state.current_round = 2
-    agent._append_message(
-        {"role": "user", "content": "hello"}, source="user_input"
-    )
+    agent._append_message({"role": "user", "content": "hello"}, source="user_input")
 
     event = agent.history_ledger.events[-1]
     encoded = event.to_dict()
@@ -80,9 +78,7 @@ def test_structured_tool_lifecycle_is_persisted_as_runtime_truth() -> None:
 
 def test_request_audit_keeps_overlay_out_of_replay_items() -> None:
     agent = Agent(llm=_LLM(), tools=[])
-    agent._append_message(
-        {"role": "user", "content": "do work"}, source="user_input"
-    )
+    agent._append_message({"role": "user", "content": "do work"}, source="user_input")
     request_messages = agent._loop._full_messages()
 
     agent._loop._record_request_envelopes(request_messages, [])

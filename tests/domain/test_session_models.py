@@ -5,7 +5,9 @@ def test_session_runtime_state_round_trips_plan_and_progress() -> None:
     state = SessionRuntimeState(
         plan_state={
             "revision": 2,
-            "items": [{"step": "Verify", "active_form": "Verifying", "status": "in_progress"}],
+            "items": [
+                {"step": "Verify", "active_form": "Verifying", "status": "in_progress"}
+            ],
         },
         progress_state={
             "phase": "verifying",

@@ -67,9 +67,7 @@ def test_worker_cannot_drain_cli_output() -> None:
 def test_close_drains_and_releases_renderer() -> None:
     renderer = _Renderer()
     output = CLIOutputCoordinator(renderer)
-    thread = threading.Thread(
-        target=output.on_ui_event, args=(UIEvent.info("last"),)
-    )
+    thread = threading.Thread(target=output.on_ui_event, args=(UIEvent.info("last"),))
     thread.start()
     thread.join()
 

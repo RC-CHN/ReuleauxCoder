@@ -450,7 +450,9 @@ def test_llm_stream_closes_when_agent_scope_is_cancelled() -> None:
 
     class Stream:
         def __init__(self) -> None:
-            self._chunks = iter([_FakeChunk(content="first"), _FakeChunk(content="late")])
+            self._chunks = iter(
+                [_FakeChunk(content="first"), _FakeChunk(content="late")]
+            )
             self.closed = False
 
         def __iter__(self):

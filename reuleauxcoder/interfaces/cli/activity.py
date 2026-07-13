@@ -41,7 +41,9 @@ class _PulseRenderable:
         self.tail = tail
 
     def __rich_console__(
-        self, console: Console, options: ConsoleOptions  # noqa: ARG002
+        self,
+        console: Console,
+        options: ConsoleOptions,  # noqa: ARG002
     ) -> RenderResult:
         phase = (
             int((time.monotonic() - self.started_at) * 4) % len(_PHASES)
@@ -103,9 +105,7 @@ class CLIActivityPresenter:
                 return False
             self._tail.clear()
             self._partials.clear()
-            self._pulse = _PulseRenderable(
-                label, detail, timed=timed, theme=self.theme
-            )
+            self._pulse = _PulseRenderable(label, detail, timed=timed, theme=self.theme)
             self._live = self._live_factory(
                 self._pulse,
                 console=self.console,

@@ -262,9 +262,7 @@ class GitMonitor:
                 turn_id=normalized_turn_id,
             )
             result: dict[str, Any] = {
-                "repository_root": _clip(
-                    str(repo_root), max(96, self.path_limit * 2)
-                ),
+                "repository_root": _clip(str(repo_root), max(96, self.path_limit * 2)),
                 "available": True,
                 "branch": branch,
                 "head": (

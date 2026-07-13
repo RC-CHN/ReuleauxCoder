@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import threading
 
-from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind, ToolOutcome, ToolOutcomeStatus
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -64,9 +68,7 @@ class UpdatePlanTool(_AgentControlTool):
         "required": ["plan"],
     }
 
-    def execute(
-        self, plan: list[dict], explanation: str | None = None
-    ) -> ToolOutcome:
+    def execute(self, plan: list[dict], explanation: str | None = None) -> ToolOutcome:
         return self.run_backend(plan=plan, explanation=explanation)
 
     @backend_handler("local")
@@ -82,9 +84,7 @@ class UpdatePlanTool(_AgentControlTool):
                 session_generation=generation,
             )
             active = state.active_index
-            suffix = (
-                f" · step {active + 1} active" if active is not None else ""
-            )
+            suffix = f" · step {active + 1} active" if active is not None else ""
             verb = "updated" if changed else "unchanged"
             return ToolOutcome(
                 summary=f"Plan {verb}",
@@ -124,9 +124,7 @@ class ReportProgressTool(_AgentControlTool):
         "required": ["phase", "summary"],
     }
 
-    def execute(
-        self, phase: str, summary: str, next: str | None = None
-    ) -> ToolOutcome:
+    def execute(self, phase: str, summary: str, next: str | None = None) -> ToolOutcome:
         return self.run_backend(phase=phase, summary=summary, next=next)
 
     @backend_handler("local")
@@ -251,9 +249,7 @@ class RequestGuidanceTool(_AgentControlTool):
         return self.run_backend(question=question, context=context)
 
     @backend_handler("local")
-    def _execute_local(
-        self, question: str, context: str | None = None
-    ) -> ToolOutcome:
+    def _execute_local(self, question: str, context: str | None = None) -> ToolOutcome:
         try:
             self._identity()
             if self._agent is None or getattr(self._agent, "subagent_depth", 0) <= 0:
@@ -271,8 +267,7 @@ class RequestGuidanceTool(_AgentControlTool):
             return ToolOutcome(
                 summary="Guidance requested; child will pause",
                 content=(
-                    "Guidance checkpoint requested · "
-                    f"request_id={request.item_id}"
+                    f"Guidance checkpoint requested · request_id={request.item_id}"
                 ),
                 metadata={
                     "park_subagent": True,

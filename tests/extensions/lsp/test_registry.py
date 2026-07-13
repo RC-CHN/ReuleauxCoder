@@ -126,9 +126,7 @@ class TestServerCommands:
         assert launch.args[-2:] == ("--lsp", "--stdio")
         assert launch.initialization_options is None
 
-    def test_typescript_auto_selects_workspace_native_v7(
-        self, tmp_path: Path
-    ) -> None:
+    def test_typescript_auto_selects_workspace_native_v7(self, tmp_path: Path) -> None:
         package = tmp_path / "node_modules" / "typescript"
         (package / "bin").mkdir(parents=True)
         (package / "package.json").write_text('{"version":"7.0.2"}')
@@ -152,9 +150,7 @@ class TestServerCommands:
 
         assert launch.implementation == "typescript-legacy"
         assert "@typescript/typescript6@6" in launch.args
-        assert launch.initialization_options == {
-            "tsserver": {"path": str(tsserver)}
-        }
+        assert launch.initialization_options == {"tsserver": {"path": str(tsserver)}}
 
     def test_rust_analyzer_is_native(self) -> None:
         cmd, args = get_server_command(LanguageId.RUST)

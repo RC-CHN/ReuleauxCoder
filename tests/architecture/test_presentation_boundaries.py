@@ -36,10 +36,12 @@ def test_presentation_core_has_no_ui_framework_or_io_dependencies() -> None:
 
 
 def test_cli_renderer_does_not_restore_legacy_string_protocols() -> None:
-    source = (ROOT / "reuleauxcoder/interfaces/cli/render.py").read_text(encoding="utf-8")
-    view_source = (
-        ROOT / "reuleauxcoder/interfaces/cli/views/builtin.py"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "reuleauxcoder/interfaces/cli/render.py").read_text(
+        encoding="utf-8"
+    )
+    view_source = (ROOT / "reuleauxcoder/interfaces/cli/views/builtin.py").read_text(
+        encoding="utf-8"
+    )
     assert "_completed_blocks" not in source
     assert "_compact_tool_output" not in source
     assert "[truncated]" not in source
@@ -91,9 +93,9 @@ def test_remote_commands_reuse_the_peer_presentation_bus() -> None:
 
 
 def test_core_config_parser_does_not_consume_legacy_model_alias() -> None:
-    source = (
-        ROOT / "reuleauxcoder" / "services" / "config" / "loader.py"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "reuleauxcoder" / "services" / "config" / "loader.py").read_text(
+        encoding="utf-8"
+    )
     parser_source = source.split("def _parse_config", 1)[1]
 
     assert 'models_config.get("active")' not in parser_source
@@ -113,5 +115,7 @@ def test_runtime_does_not_dynamically_inject_agent_dependencies() -> None:
                 continue
             target = ast.unparse(node.args[0])
             if target.endswith("agent") or target.endswith(".agent"):
-                violations.append(f"{path.relative_to(ROOT)} dynamically mutates {target}")
+                violations.append(
+                    f"{path.relative_to(ROOT)} dynamically mutates {target}"
+                )
     assert violations == []

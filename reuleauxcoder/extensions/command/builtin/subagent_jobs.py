@@ -85,9 +85,7 @@ def _parse_control_job(user_input: str, parse_ctx):
                 action=action, job_id=captures["job_id"].strip()
             )
     for action in ("message", "resume"):
-        captures = _match_agent_command(
-            user_input, f"{action} {{job_id}} {{message+}}"
-        )
+        captures = _match_agent_command(user_input, f"{action} {{job_id}} {{message+}}")
         if captures is not None:
             return ControlSubagentJobCommand(
                 action=action,
@@ -238,9 +236,7 @@ def _handle_control_job(command, ctx) -> CommandEffect:
         message = str(error)
 
     if ok:
-        ctx.effect.success(
-            f"{message}: {command.job_id}", kind=UIEventKind.COMMAND
-        )
+        ctx.effect.success(f"{message}: {command.job_id}", kind=UIEventKind.COMMAND)
     else:
         ctx.effect.error(
             f"Sub-agent {command.action} failed: {message}", kind=UIEventKind.COMMAND

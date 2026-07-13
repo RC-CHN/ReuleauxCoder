@@ -35,9 +35,7 @@ _RUNTIME_CONFIG_ACTIONS = frozenset(
         "system.debug",
     }
 )
-_SESSION_ACTIONS = frozenset(
-    {"sessions.resume", "sessions.save", "sessions.new"}
-)
+_SESSION_ACTIONS = frozenset({"sessions.resume", "sessions.save", "sessions.new"})
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +156,7 @@ def handle_command(
             _record_command_control_event(agent, parsed_action.action.action_id, result)
         except Exception as exc:
             result = CommandEffect()
-            result.error(
-                f"Command failed: {exc}", kind=UIEventKind.COMMAND
-            )
+            result.error(f"Command failed: {exc}", kind=UIEventKind.COMMAND)
             result.finish(control="continue")
         _apply_command_effect(result, ui_bus)
         return {

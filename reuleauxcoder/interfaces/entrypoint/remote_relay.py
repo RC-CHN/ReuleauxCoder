@@ -197,11 +197,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
 
     def _connection_marker(peer_id: str) -> str:
         peer = relay_server.registry.get(peer_id)
-        return (
-            f"{getattr(peer, 'connected_at', 0):.6f}"
-            if peer is not None
-            else "0"
-        )
+        return f"{getattr(peer, 'connected_at', 0):.6f}" if peer is not None else "0"
 
     def _dispose_peer(peer_id: str) -> None:
         presenter = peer_presenters.pop(peer_id, None)

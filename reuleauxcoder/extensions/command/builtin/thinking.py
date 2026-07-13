@@ -51,9 +51,7 @@ def _parse_inline(user_input: str, _parse_ctx):
 
 
 def _parse_effort_show(user_input: str, _parse_ctx):
-    if matches_any(
-        user_input, ("/thinking effort",), case_insensitive=True
-    ):
+    if matches_any(user_input, ("/thinking effort",), case_insensitive=True):
         return EmptyCommand()
     return None
 
@@ -121,10 +119,14 @@ def _handle_effort_show(_command, ctx) -> CommandEffect:
             profiles = getattr(config, "model_profiles", {}) or {}
             profile = profiles.get(active_main)
             if profile is not None:
-                profile_default = getattr(profile, "reasoning_effort", None) or "(not set)"
+                profile_default = (
+                    getattr(profile, "reasoning_effort", None) or "(not set)"
+                )
 
     # Build available values display
-    mapping = getattr(llm, "reasoning_effort_values", None) or DEFAULT_REASONING_EFFORT_VALUES
+    mapping = (
+        getattr(llm, "reasoning_effort_values", None) or DEFAULT_REASONING_EFFORT_VALUES
+    )
     param = getattr(llm, "reasoning_effort_param", "reasoning_effort")
 
     value_lines: list[str] = []
@@ -156,7 +158,9 @@ def _handle_effort_set(command, ctx) -> CommandEffect:
     old = getattr(llm, "reasoning_effort", None) or "(not set)"
 
     # Validate against available values
-    mapping = getattr(llm, "reasoning_effort_values", None) or DEFAULT_REASONING_EFFORT_VALUES
+    mapping = (
+        getattr(llm, "reasoning_effort_values", None) or DEFAULT_REASONING_EFFORT_VALUES
+    )
     if level not in mapping:
         available = ", ".join(sorted(mapping.keys()))
         ctx.effect.error(

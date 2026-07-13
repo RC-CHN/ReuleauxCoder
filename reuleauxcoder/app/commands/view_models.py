@@ -48,6 +48,7 @@ class HelpViewModel:
             "diagnostic": self.diagnostic,
         }
 
+
 @dataclass(frozen=True, slots=True)
 class ModelProfileViewModel:
     name: str
@@ -319,8 +320,7 @@ class SessionResumeViewModel:
             "saved_at": self.saved_at,
             "active_mode": self.active_mode,
             "entries": [
-                {"role": entry.role, "content": entry.content}
-                for entry in self.entries
+                {"role": entry.role, "content": entry.content} for entry in self.entries
             ],
         }
 

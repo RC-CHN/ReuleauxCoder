@@ -18,16 +18,12 @@ def _replay(items: list[dict]) -> ReplayEnvelope:
 
 
 def test_canonical_hash_normalizes_object_keys_and_newlines() -> None:
-    assert content_hash({"b": 2, "a": "x\r\ny"}) == content_hash(
-        {"a": "x\ny", "b": 2}
-    )
+    assert content_hash({"b": 2, "a": "x\r\ny"}) == content_hash({"a": "x\ny", "b": 2})
 
 
 def test_replay_hash_detects_tampering() -> None:
     replay = _replay([{"role": "user", "content": "hello"}])
-    tampered = replace(
-        replay, items=({"role": "user", "content": "changed"},)
-    )
+    tampered = replace(replay, items=({"role": "user", "content": "changed"},))
     assert replay.validate() is True
     assert tampered.validate() is False
 

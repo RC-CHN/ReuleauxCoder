@@ -119,8 +119,7 @@ class WorkerSpec:
                 _require_object(message, "replay message") for message in messages
             ),
             resume_directives=tuple(
-                _required_list_str(value, "resume directive")
-                for value in directives
+                _required_list_str(value, "resume directive") for value in directives
             ),
             initial_prompt_tokens=_required_int(values, "initial_prompt_tokens"),
             initial_completion_tokens=_required_int(

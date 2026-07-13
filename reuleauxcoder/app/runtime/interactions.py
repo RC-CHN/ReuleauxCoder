@@ -119,9 +119,7 @@ class InteractionCoordinator:
         return self._invoke(
             request,
             lambda: self.adapter.confirm(request),
-            lambda reason: ConfirmResponse(
-                confirmed=False, cancelled=True
-            ),
+            lambda reason: ConfirmResponse(confirmed=False, cancelled=True),
         )
 
     def choose_one(self, request: ChooseOneRequest) -> ChooseOneResponse:
@@ -170,7 +168,9 @@ class InteractionCoordinator:
                     return cancelled(reason)
                 timeout = 0.05
                 if request.deadline is not None:
-                    timeout = min(timeout, max(0.0, request.deadline - time.monotonic()))
+                    timeout = min(
+                        timeout, max(0.0, request.deadline - time.monotonic())
+                    )
                 acquired = self._slot.acquire(timeout=timeout)
 
             reason = self._cancel_reason(request.deadline, cancellation)

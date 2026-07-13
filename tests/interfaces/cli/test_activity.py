@@ -86,9 +86,7 @@ def test_tool_activity_uses_low_frequency_timed_refresh() -> None:
 
 def test_tool_activity_only_renders_latest_five_output_lines() -> None:
     stream = StringIO()
-    console = Console(
-        file=stream, record=True, force_terminal=True, color_system=None
-    )
+    console = Console(file=stream, record=True, force_terminal=True, color_system=None)
     lives = []
 
     def factory(renderable, **kwargs):

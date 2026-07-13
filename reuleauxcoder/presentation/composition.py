@@ -37,12 +37,14 @@ def compose_transcript(
     placements: list[TranscriptPlacement] = []
     for index, cell in enumerate(cells):
         group_key = cell.group_id or f"cell:{cell.id}"
-        show_assistant = isinstance(cell, AssistantCell) and group_key not in assistant_groups
+        show_assistant = (
+            isinstance(cell, AssistantCell) and group_key not in assistant_groups
+        )
         if isinstance(cell, AssistantCell):
             assistant_groups.add(group_key)
-        compact_notice = isinstance(cell, (NoticeCell, DiagnosticCell)) and not isinstance(
-            cell, UserCell
-        )
+        compact_notice = isinstance(
+            cell, (NoticeCell, DiagnosticCell)
+        ) and not isinstance(cell, UserCell)
         placements.append(
             TranscriptPlacement(
                 cell=cell,

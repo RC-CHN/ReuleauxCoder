@@ -54,9 +54,7 @@ def _benchmark_case(
         content = control.create_content(width, viewport_rows)
         for row in range(cursor[0], min(content.line_count, cursor[0] + viewport_rows)):
             content.get_line(row)
-    scroll_frame_ms = (
-        (time.perf_counter() - started) * 1_000 / max(1, iterations)
-    )
+    scroll_frame_ms = (time.perf_counter() - started) * 1_000 / max(1, iterations)
 
     started = time.perf_counter()
     adapter.transcript_layout(max(40, width - 28))

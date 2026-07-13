@@ -31,9 +31,7 @@ def _approval_agent() -> Agent:
         approval=ApprovalConfig(reviewer="user"), model_profiles={}
     )
     agent.current_session_id = "session"
-    agent.history_ledger.bind_context(
-        session_id="session", agent_id=agent.agent_id
-    )
+    agent.history_ledger.bind_context(session_id="session", agent_id=agent.agent_id)
     return agent
 
 
@@ -129,8 +127,7 @@ def test_runtime_approval_is_ledgered_and_emitted_before_resolution() -> None:
 
     def handler(pending) -> None:
         assert any(
-            event.kind == "approval_requested"
-            for event in agent.history_ledger.events
+            event.kind == "approval_requested" for event in agent.history_ledger.events
         )
         pending.resolve(ApprovalDecision.allow_once("approved", reviewed=True))
 

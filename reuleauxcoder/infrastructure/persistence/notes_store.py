@@ -332,9 +332,7 @@ class NoteStore:
             return removed
 
     @staticmethod
-    def _render_scope(
-        scope: str, entries: list[NoteEntry], *, max_chars: int
-    ) -> str:
+    def _render_scope(scope: str, entries: list[NoteEntry], *, max_chars: int) -> str:
         title = "Workspace notes" if scope == "workspace" else "Global notes"
         lines = [f"{title} ({len(entries)}, newest first):"]
         remaining = max(0, max_chars - len(lines[0]))
@@ -370,9 +368,7 @@ class NoteStore:
             separator = "\n\n"
             first_budget = max(60, (budget - len(separator)) // 2)
             second_budget = max(60, budget - len(separator) - first_budget)
-            first = self._render_scope(
-                "workspace", workspace, max_chars=first_budget
-            )
+            first = self._render_scope("workspace", workspace, max_chars=first_budget)
             second = self._render_scope(
                 "global", global_entries, max_chars=second_budget
             )
@@ -448,8 +444,6 @@ def delete_note(
 ) -> bool:
     """Compatibility wrapper deleting by stable ID or legacy 1-based index."""
     return (
-        _compat_store(workspace_dir).delete(
-            scope=scope, note_id=note_id, index=index
-        )
+        _compat_store(workspace_dir).delete(scope=scope, note_id=note_id, index=index)
         is not None
     )

@@ -35,7 +35,9 @@ def test_tool_output_truncates_regular_read_file_output() -> None:
     assert "[truncated]" in out.result
 
 
-def test_tool_output_retains_structured_source_while_bounding_model_projection() -> None:
+def test_tool_output_retains_structured_source_while_bounding_model_projection() -> (
+    None
+):
     hook = ToolOutputTruncationHook(max_chars=12, max_lines=2, store_full_output=False)
     source = "line1\nline2\nline3"
     ctx = _ctx("/tmp/notes.md", source)

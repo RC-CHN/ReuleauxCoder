@@ -118,7 +118,9 @@ class SubagentTranscriptStore:
         payload = json.loads(Path(reference).read_text(encoding="utf-8"))
         expected = payload.get("content_hash")
         if expected:
-            stable = {key: value for key, value in payload.items() if key != "content_hash"}
+            stable = {
+                key: value for key, value in payload.items() if key != "content_hash"
+            }
             if _checkpoint_hash(stable) != expected:
                 raise ValueError("subagent transcript checkpoint hash mismatch")
         messages = payload.get("messages", [])

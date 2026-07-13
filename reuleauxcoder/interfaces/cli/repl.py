@@ -67,9 +67,7 @@ def run_repl(
         if output_coordinator is not None:
             output_coordinator.drain()
         try:
-            foreground = getattr(
-                interaction_coordinator, "foreground_input", None
-            )
+            foreground = getattr(interaction_coordinator, "foreground_input", None)
             if callable(foreground):
                 with foreground() as available:
                     if not available:

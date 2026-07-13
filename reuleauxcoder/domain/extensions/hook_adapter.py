@@ -25,9 +25,7 @@ class HookExtensionAdapter:
     def authorize_tool(
         self, context: BeforeToolExecuteContext
     ) -> tuple[GuardDecision, ...]:
-        return tuple(
-            self.registry.run_guards(HookPoint.BEFORE_TOOL_EXECUTE, context)
-        )
+        return tuple(self.registry.run_guards(HookPoint.BEFORE_TOOL_EXECUTE, context))
 
     def contribute_tool_context(
         self, context: BeforeToolExecuteContext

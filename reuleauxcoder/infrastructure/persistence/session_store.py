@@ -108,9 +108,7 @@ class SessionStore:
                     else effective_runtime.model or model
                 ),
                 provider_family=(
-                    base_replay.provider_family
-                    if base_replay
-                    else "openai-compatible"
+                    base_replay.provider_family if base_replay else "openai-compatible"
                 ),
                 request_mode=(
                     base_replay.request_mode if base_replay else "chat-completions"
@@ -121,9 +119,7 @@ class SessionStore:
                 instructions=list(base_replay.instructions) if base_replay else [],
                 tools=list(base_replay.tools) if base_replay else [],
                 items=saved_messages,
-                item_provenance=align_item_provenance(
-                    saved_messages, ledger.events
-                ),
+                item_provenance=align_item_provenance(saved_messages, ledger.events),
             )
             session = Session(
                 id=session_id,

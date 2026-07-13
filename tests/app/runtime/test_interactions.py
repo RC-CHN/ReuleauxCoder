@@ -75,7 +75,9 @@ def test_cancel_active_interaction_notifies_adapter_and_denies_response() -> Non
     coordinator = InteractionCoordinator(adapter)
     request = ConfirmRequest(title="confirm", message="confirm")
     results = []
-    thread = threading.Thread(target=lambda: results.append(coordinator.confirm(request)))
+    thread = threading.Thread(
+        target=lambda: results.append(coordinator.confirm(request))
+    )
     thread.start()
     assert adapter.entered.wait(timeout=1)
     assert coordinator.active_request_id == request.request_id

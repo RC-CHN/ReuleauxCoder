@@ -30,6 +30,7 @@ class OpenViewRequest:
     reuse_key: str | None = None
     action: Literal["open", "refresh"] = "open"
 
+
 @dataclass(frozen=True, slots=True)
 class NotificationEffect:
     """Framework-neutral notification requested by a command."""

@@ -50,9 +50,7 @@ class LspConfig:
         include_warnings = bool(lsp_raw.get("include_warnings", True))
         typescript_mode = str(lsp_raw.get("typescript_mode", "auto")).lower()
         if typescript_mode not in {"auto", "native", "legacy"}:
-            raise ValueError(
-                "lsp.typescript_mode must be one of: auto, native, legacy"
-            )
+            raise ValueError("lsp.typescript_mode must be one of: auto, native, legacy")
 
         overrides: dict[str, LspServerOverride] = {}
         servers_raw = lsp_raw.get("servers", {}) or {}

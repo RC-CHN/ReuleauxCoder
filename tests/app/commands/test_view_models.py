@@ -11,15 +11,15 @@ def test_sessions_payload_round_trip_uses_typed_model() -> None:
         "fingerprint": "local",
         "show_all": False,
         "sessions": [
-                {
-                    "id": "s1",
-                    "position": None,
-                    "model": "gpt",
+            {
+                "id": "s1",
+                "position": None,
+                "model": "gpt",
                 "saved_at": "today",
                 "preview": "hello",
-                    "fingerprint": "local",
-                    "active": False,
-                }
+                "fingerprint": "local",
+                "active": False,
+            }
         ],
     }
 
@@ -44,16 +44,12 @@ def test_sessions_payload_round_trip_uses_typed_model() -> None:
 
 def test_mcp_payload_round_trip_uses_typed_model() -> None:
     payload = {
-        "servers": [
-            {"name": "demo", "enabled": True, "runtime_connected": False}
-        ]
+        "servers": [{"name": "demo", "enabled": True, "runtime_connected": False}]
     }
 
     model = MCPServersViewModel(
         servers=(
-            MCPServerViewModel(
-                name="demo", enabled=True, runtime_connected=False
-            ),
+            MCPServerViewModel(name="demo", enabled=True, runtime_connected=False),
         )
     )
 

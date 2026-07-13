@@ -30,9 +30,7 @@ def _bind(tool, tmp_path):
 def test_history_search_and_read_use_append_only_jsonl(tmp_path) -> None:
     session_id = _saved_history(tmp_path)
 
-    searched = _bind(HistorySearchTool(), tmp_path).execute(
-        session_id, "stale cache"
-    )
+    searched = _bind(HistorySearchTool(), tmp_path).execute(session_id, "stale cache")
     read = _bind(HistoryReadTool(), tmp_path).execute(session_id, start_seq=1)
 
     assert searched.success is True

@@ -63,9 +63,7 @@ class ConfigLoader:
         self.config_path = config_path
         self._effective_sources: dict[str, str] = {}
 
-    def _record_sources(
-        self, value: object, source: str, prefix: str = ""
-    ) -> None:
+    def _record_sources(self, value: object, source: str, prefix: str = "") -> None:
         if isinstance(value, dict):
             for key, child in value.items():
                 path = f"{prefix}.{key}" if prefix else str(key)
@@ -201,8 +199,8 @@ class ConfigLoader:
                 f"  No config.yaml found. I've created an example at:\n"
                 f"    {self.GLOBAL_CONFIG_PATH}\n\n"
                 "  Please edit it: fill in your API key, then delete the line\n"
-                '    meta:\n'
-                '      example: true\n'
+                "    meta:\n"
+                "      example: true\n"
                 "  and restart.\n"
             )
 
@@ -464,21 +462,13 @@ class ConfigLoader:
                 app_config.get("llm_debug_trace", DEFAULTS["llm_debug_trace"])
             ),
             ui=UIConfig(
-                verbosity=ui_config.get(
-                    "verbosity", DEFAULTS["ui_verbosity"]
-                ),
-                tool_output=ui_config.get(
-                    "tool_output", DEFAULTS["ui_tool_output"]
-                ),
+                verbosity=ui_config.get("verbosity", DEFAULTS["ui_verbosity"]),
+                tool_output=ui_config.get("tool_output", DEFAULTS["ui_tool_output"]),
                 max_preview_lines=int(
-                    ui_config.get(
-                        "max_preview_lines", DEFAULTS["ui_max_preview_lines"]
-                    )
+                    ui_config.get("max_preview_lines", DEFAULTS["ui_max_preview_lines"])
                 ),
                 max_preview_chars=int(
-                    ui_config.get(
-                        "max_preview_chars", DEFAULTS["ui_max_preview_chars"]
-                    )
+                    ui_config.get("max_preview_chars", DEFAULTS["ui_max_preview_chars"])
                 ),
                 show_tool_args=bool(
                     ui_config.get("show_tool_args", DEFAULTS["ui_show_tool_args"])

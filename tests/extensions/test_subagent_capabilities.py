@@ -98,7 +98,9 @@ def test_child_control_trio_does_not_depend_on_root_mode_tool_list() -> None:
         tools=[ReadFileTool(), ReportProgressTool(), UpdatePlanTool()]
     )
 
-    child_tools = {tool.name: tool for tool in _filter_subagent_tools(parent, "explore")}
+    child_tools = {
+        tool.name: tool for tool in _filter_subagent_tools(parent, "explore")
+    }
 
     assert set(child_tools) == {
         "read_file",
@@ -157,7 +159,9 @@ def test_root_cannot_recover_child_only_control_from_global_registry() -> None:
     )
 
 
-def test_effectful_child_schema_requires_reason_and_strips_it_before_primitive() -> None:
+def test_effectful_child_schema_requires_reason_and_strips_it_before_primitive() -> (
+    None
+):
     scoped = materialize_subagent_tool(_RecordingShell())
 
     schema = scoped.schema()["function"]["parameters"]

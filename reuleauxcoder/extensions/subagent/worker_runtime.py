@@ -144,9 +144,7 @@ class WorkerIPCClient:
         """
         with self._send_lock:
             self._tool_call_sequence += 1
-            return (
-                f"broker_{self.spec.worker_generation}_{self._tool_call_sequence}"
-            )
+            return f"broker_{self.spec.worker_generation}_{self._tool_call_sequence}"
 
     def drain_directives(self) -> list[str]:
         with self._state_lock:

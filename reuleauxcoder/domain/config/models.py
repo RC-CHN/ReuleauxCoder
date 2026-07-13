@@ -328,9 +328,7 @@ class Config:
         if self.ui.tool_output not in {"errors", "summary", "preview", "full"}:
             errors.append("ui.tool_output must be errors, summary, preview, or full")
         if self.ui.reasoning_display not in {"hidden", "indicator", "inline"}:
-            errors.append(
-                "ui.reasoning_display must be hidden, indicator, or inline"
-            )
+            errors.append("ui.reasoning_display must be hidden, indicator, or inline")
         if self.ui.notification_threshold not in {
             "debug",
             "info",

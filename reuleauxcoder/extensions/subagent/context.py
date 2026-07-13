@@ -10,7 +10,9 @@ from reuleauxcoder.domain.context.rounds import recent_round_start
 VALID_CONTEXT_MODES = frozenset({"minimal", "recent", "full"})
 
 
-def project_parent_context(parent_agent, mode: str = "recent", recent_rounds: int = 4) -> str:
+def project_parent_context(
+    parent_agent, mode: str = "recent", recent_rounds: int = 4
+) -> str:
     """Render a provider-neutral, bounded parent history projection."""
 
     if mode not in VALID_CONTEXT_MODES:

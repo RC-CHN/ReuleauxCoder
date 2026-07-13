@@ -834,9 +834,7 @@ class MiniTUIApplication:
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
-        transcript_arrow_scroll = Condition(
-            self._should_route_arrows_to_transcript
-        )
+        transcript_arrow_scroll = Condition(self._should_route_arrows_to_transcript)
 
         @bindings.add("c-c")
         def _ctrl_c(event) -> None:
@@ -913,9 +911,7 @@ class MiniTUIApplication:
             pass
         self.events.set_viewport_width(max(20, self._width - 1))
         return FormattedText(
-            fragment
-            for row in self._panel_rows()
-            for fragment in (*row, ("", "\n"))
+            fragment for row in self._panel_rows() for fragment in (*row, ("", "\n"))
         )
 
     def _panel_height(self) -> int:
@@ -1022,10 +1018,7 @@ class MiniTUIApplication:
             viewport = max(
                 1,
                 (
-                    size.rows
-                    - self._panel_height()
-                    - self._interaction_height()
-                    - 6
+                    size.rows - self._panel_height() - self._interaction_height() - 6
                     if resized or not self.transcript_control.last_height
                     else self.transcript_control.last_height
                 ),
@@ -1206,9 +1199,7 @@ def _execution_panel_rows(
 ) -> tuple[tuple[tuple[str, str], ...], ...]:
     """Render a semantic panel snapshot without leaking layout into reducers."""
     width = max(20, width)
-    plan_count = (
-        f"{view.plan_completed}/{view.plan_total}" if view.plan_total else "—"
-    )
+    plan_count = f"{view.plan_completed}/{view.plan_total}" if view.plan_total else "—"
     live = "LIVE" if view.is_live else "IDLE"
 
     if width < 60:
@@ -1273,9 +1264,7 @@ def _execution_panel_rows(
     for detail in details[:3]:
         label, _, value = detail.partition(" ")
         expanded_rows.append(
-            _fit_styled_row(
-                _labeled_panel_row(label, value, secondary=True), width
-            )
+            _fit_styled_row(_labeled_panel_row(label, value, secondary=True), width)
         )
     for item in view.plan:
         marker = {

@@ -29,7 +29,9 @@ def render_markdown_panel(
     return True
 
 
-def render_heading(renderer, title: str, tone: DisplayTone = DisplayTone.ACCENT) -> None:
+def render_heading(
+    renderer, title: str, tone: DisplayTone = DisplayTone.ACCENT
+) -> None:
     renderer.console.print(renderer.theme.label(escape(title), tone))
 
 

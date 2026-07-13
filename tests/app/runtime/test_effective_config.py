@@ -71,9 +71,7 @@ def test_effective_config_includes_runtime_scope_diagnostics() -> None:
             describe_graph=lambda: ("core.hooks [50]",),
             describe_scopes=lambda: ("runner:runner -> core.hooks",),
         ),
-        lsp_manager=SimpleNamespace(
-            describe_scopes=lambda: ("python:/workspace",)
-        ),
+        lsp_manager=SimpleNamespace(describe_scopes=lambda: ("python:/workspace",)),
         relay_server=SimpleNamespace(
             registry=SimpleNamespace(list_online=lambda: [peer])
         ),

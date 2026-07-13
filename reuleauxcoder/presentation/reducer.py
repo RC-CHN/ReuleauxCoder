@@ -74,9 +74,9 @@ class RuntimeViewState:
     active_assistant_cells: dict[
         tuple[str | None, str | None, int | None, str | None], str
     ] = field(default_factory=dict)
-    active_turn_groups: dict[
-        tuple[str | None, str | None, int | None], str
-    ] = field(default_factory=dict)
+    active_turn_groups: dict[tuple[str | None, str | None, int | None], str] = field(
+        default_factory=dict
+    )
 
 
 class PresentationReducer:

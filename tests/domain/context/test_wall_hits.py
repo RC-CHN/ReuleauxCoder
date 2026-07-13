@@ -84,7 +84,9 @@ def test_actual_usage_plus_calibrated_growth_drives_prediction() -> None:
     assert manager.latest_usage.local_history_estimate == local
 
 
-def test_reconfigure_invalidates_pending_candidate_but_keeps_observation_audit() -> None:
+def test_reconfigure_invalidates_pending_candidate_but_keeps_observation_audit() -> (
+    None
+):
     manager = ContextManager(max_tokens=10_000)
     messages = [{"role": "user", "content": "hello"}]
     _observe(manager, messages, actual=100)

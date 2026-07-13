@@ -6,14 +6,11 @@ from reuleauxcoder.infrastructure.process.local import LocalProcessPort
 
 def test_timeout_preserves_and_streams_partial_output(tmp_path) -> None:
     chunks = []
-    command = (
-        f"{shlex.quote(sys.executable)} -u -c "
-        + shlex.quote(
-            "import time\n"
-            "print('line-0', flush=True)\n"
-            "print('line-1', flush=True)\n"
-            "time.sleep(30)\n"
-        )
+    command = f"{shlex.quote(sys.executable)} -u -c " + shlex.quote(
+        "import time\n"
+        "print('line-0', flush=True)\n"
+        "print('line-1', flush=True)\n"
+        "time.sleep(30)\n"
     )
 
     result = LocalProcessPort().run(

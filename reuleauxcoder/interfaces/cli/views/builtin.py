@@ -48,12 +48,8 @@ def render_mcp_servers_view(renderer, event) -> bool:
     lines = []
     for server in servers:
         enabled = "enabled" if server.enabled else "disabled"
-        connected = (
-            "connected" if server.runtime_connected else "disconnected"
-        )
-        lines.append(
-            f"- **{server.name}**: {enabled}, runtime={connected}"
-        )
+        connected = "connected" if server.runtime_connected else "disconnected"
+        lines.append(f"- **{server.name}**: {enabled}, runtime={connected}")
     renderer.console.print(Markdown("\n".join(lines)))
     return True
 
@@ -92,9 +88,7 @@ def render_sessions_view(renderer, event) -> bool:
             cells.append(str(session.position or ""))
         cells.extend((state, saved_at, session.model))
         if show_all:
-            cells.append(
-                f"{session.session_id}\n{session.fingerprint or 'local'}"
-            )
+            cells.append(f"{session.session_id}\n{session.fingerprint or 'local'}")
         cells.append(session.preview or "(no user message)")
         table.add_row(*cells)
     renderer.console.print(table)
@@ -131,7 +125,9 @@ def render_session_resume_view(renderer, event) -> bool:
         is_user = entry.role == "user"
         label = Text(
             " YOU " if is_user else " AGENT ",
-            style=(renderer.theme.user_label if is_user else renderer.theme.assistant_label),
+            style=(
+                renderer.theme.user_label if is_user else renderer.theme.assistant_label
+            ),
         )
         content = fold_text(
             entry.content,
@@ -148,8 +144,12 @@ def render_effective_config_view(renderer, event) -> bool:
     if not isinstance(model, EffectiveConfigViewModel):
         return False
     stop_stream_and_clear(renderer)
-    table = make_table(renderer,
-        title="Effective Configuration", show_header=True, box=None, pad_edge=False
+    table = make_table(
+        renderer,
+        title="Effective Configuration",
+        show_header=True,
+        box=None,
+        pad_edge=False,
     )
     table.add_column("Path")
     table.add_column("Value")
@@ -207,8 +207,8 @@ def render_model_profiles_view(renderer, event) -> bool:
         f"Main: {model.active_main or model.current_model}  "
         f"Sub: {model.active_sub or 'inherits main'}"
     )
-    table = make_table(renderer,
-        title="Model Profiles", show_header=True, box=None, pad_edge=False
+    table = make_table(
+        renderer, title="Model Profiles", show_header=True, box=None, pad_edge=False
     )
     table.add_column("Profile")
     table.add_column("Route")
@@ -240,7 +240,8 @@ def render_modes_view(renderer, event) -> bool:
     if not isinstance(model, ModesViewModel):
         return False
     stop_stream_and_clear(renderer)
-    table = make_table(renderer,
+    table = make_table(
+        renderer,
         title=f"Modes · active={model.active_mode or 'none'}",
         box=None,
         pad_edge=False,
@@ -265,8 +266,8 @@ def render_token_usage_view(renderer, event) -> bool:
     if not isinstance(model, TokenUsageViewModel):
         return False
     stop_stream_and_clear(renderer)
-    table = make_table(renderer,
-        title="Token Usage", show_header=False, box=None, pad_edge=False
+    table = make_table(
+        renderer, title="Token Usage", show_header=False, box=None, pad_edge=False
     )
     table.add_column("Metric")
     table.add_column("Value", justify="right")
@@ -344,9 +345,7 @@ def render_skills_view(renderer, event) -> bool:
     renderer.console.print(table)
     for diagnostic in model.diagnostics:
         tone = (
-            DisplayTone.WARNING
-            if diagnostic.level == "warning"
-            else DisplayTone.ERROR
+            DisplayTone.WARNING if diagnostic.level == "warning" else DisplayTone.ERROR
         )
         render_notice(renderer, diagnostic.message, tone)
     return True
@@ -406,9 +405,7 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
     specs: list[ViewRendererSpec] = []
     specs.extend(
         [
-            ViewRendererSpec(
-                view_type="mcp_servers", render=render_mcp_servers_view
-            ),
+            ViewRendererSpec(view_type="mcp_servers", render=render_mcp_servers_view),
             ViewRendererSpec(view_type="sessions", render=render_sessions_view),
             ViewRendererSpec(
                 view_type="session_resume", render=render_session_resume_view
@@ -421,9 +418,7 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
                 view_type="model_profiles", render=render_model_profiles_view
             ),
             ViewRendererSpec(view_type="mode_profiles", render=render_modes_view),
-            ViewRendererSpec(
-                view_type="token_usage", render=render_token_usage_view
-            ),
+            ViewRendererSpec(view_type="token_usage", render=render_token_usage_view),
             ViewRendererSpec(
                 view_type="approval_rules", render=render_approval_rules_view
             ),

@@ -111,7 +111,9 @@ class HistoryLedger:
                 kind=kind,
                 created_at=time.time(),
                 session_generation=self._generation,
-                payload=json.loads(json.dumps(payload, ensure_ascii=False, default=str)),
+                payload=json.loads(
+                    json.dumps(payload, ensure_ascii=False, default=str)
+                ),
                 session_id=self._session_id,
                 agent_id=agent_id or self._agent_id,
                 parent_agent_id=parent_agent_id,
@@ -137,9 +139,7 @@ class HistoryLedger:
         api_round_id: str | None = None,
     ) -> HistoryEvent:
         canonical_message = {
-            key: value
-            for key, value in message.items()
-            if key != "_rc_token_count"
+            key: value for key, value in message.items() if key != "_rc_token_count"
         }
         role = _optional_str(message.get("role"))
         with self._lock:

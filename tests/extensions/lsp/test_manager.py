@@ -94,9 +94,7 @@ class TestReSpawnLimit:
 
         async def run():
             with patch.object(manager, "_spawn_async", return_value=dead) as spawn:
-                result = await manager._get_or_create_server(
-                    LanguageId.PYTHON, path
-                )
+                result = await manager._get_or_create_server(LanguageId.PYTHON, path)
             return result, spawn
 
         result, spawn = asyncio.run(run())
@@ -116,9 +114,7 @@ class TestReSpawnLimit:
         manager._transports[key] = dead
 
         async def run():
-            return await manager._get_or_create_server(
-                LanguageId.PYTHON, path
-            )
+            return await manager._get_or_create_server(LanguageId.PYTHON, path)
 
         result = asyncio.run(run())
         assert result is None
@@ -151,12 +147,8 @@ class TestWorkspaceTransportIsolation:
 
         async def run():
             return (
-                await manager._get_or_create_server(
-                    LanguageId.PYTHON, first_path
-                ),
-                await manager._get_or_create_server(
-                    LanguageId.PYTHON, second_path
-                ),
+                await manager._get_or_create_server(LanguageId.PYTHON, first_path),
+                await manager._get_or_create_server(LanguageId.PYTHON, second_path),
             )
 
         resolved_first, resolved_second = asyncio.run(run())

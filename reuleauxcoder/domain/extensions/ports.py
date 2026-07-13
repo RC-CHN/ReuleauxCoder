@@ -57,4 +57,3 @@ class ToolExtensionRuntime(
     Protocol,
 ):
     """Composite dependency consumed by the fixed core tool pipeline."""
-

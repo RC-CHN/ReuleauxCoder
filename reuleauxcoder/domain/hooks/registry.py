@@ -156,9 +156,7 @@ class HookRegistry:
         """Create a scope-aware copy of the registry and registered hooks."""
         cloned = HookRegistry(diagnostic_sink=self._diagnostic_sink)
         for hook_point, hooks in self._hooks.items():
-            cloned._hooks[hook_point] = [
-                hook.clone_for_scope(scope) for hook in hooks
-            ]
+            cloned._hooks[hook_point] = [hook.clone_for_scope(scope) for hook in hooks]
         return cloned
 
     @staticmethod
@@ -195,7 +193,9 @@ class HookRegistry:
     @classmethod
     def _freeze(cls, value: Any) -> Any:
         if isinstance(value, Mapping):
-            return MappingProxyType({key: cls._freeze(item) for key, item in value.items()})
+            return MappingProxyType(
+                {key: cls._freeze(item) for key, item in value.items()}
+            )
         if isinstance(value, list):
             return tuple(cls._freeze(item) for item in value)
         if isinstance(value, set):

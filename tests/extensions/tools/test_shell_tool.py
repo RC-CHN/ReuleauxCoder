@@ -40,9 +40,7 @@ def test_explicit_cwd_overrides_and_can_be_persisted(tmp_path: Path) -> None:
     tool = _tool(process, cwd=str(tmp_path))
     alternate = str(tmp_path / "alternate")
 
-    result = tool._execute_local(
-        "echo ok", cwd=alternate, persist_cwd=True
-    )
+    result = tool._execute_local("echo ok", cwd=alternate, persist_cwd=True)
 
     assert result.model_text == "ok"
     assert result.summary is not None
@@ -76,9 +74,7 @@ def test_shell_formats_stderr_exit_timeout_and_cancel(tmp_path: Path) -> None:
     assert failed.exit_code == 7
     assert failed.status is ToolOutcomeStatus.FAILED
 
-    process.result = ProcessResult(
-        stdout="first\nlatest\n", timed_out=True
-    )
+    process.result = ProcessResult(stdout="first\nlatest\n", timed_out=True)
     timed_out = tool._execute_local("demo", timeout=3)
     assert timed_out.model_text == (
         "first\nlatest\n"
@@ -89,8 +85,7 @@ def test_shell_formats_stderr_exit_timeout_and_cancel(tmp_path: Path) -> None:
     process.result = ProcessResult(stdout="partial\n", cancelled=True)
     cancelled = tool._execute_local("demo")
     assert cancelled.model_text == (
-        "partial\n"
-        "[system] Command was cancelled; output captured until termination."
+        "partial\n[system] Command was cancelled; output captured until termination."
     )
     assert cancelled.status is ToolOutcomeStatus.CANCELLED
 
@@ -135,7 +130,10 @@ def test_invalid_inputs_are_rejected_before_process_port() -> None:
 
     assert "non-empty" in tool.execute("").model_text
     assert "positive integer" in tool.execute("echo", timeout=0).model_text
-    assert "cwd must be" in tool.execute(  # type: ignore[arg-type]
-        "echo", cwd=123
-    ).model_text
+    assert (
+        "cwd must be"
+        in tool.execute(  # type: ignore[arg-type]
+            "echo", cwd=123
+        ).model_text
+    )
     assert process.calls == []

@@ -6,7 +6,9 @@ import subprocess
 import pytest
 
 from reuleauxcoder.infrastructure.version_control import GitMonitor
-from reuleauxcoder.infrastructure.version_control import git_monitor as git_monitor_module
+from reuleauxcoder.infrastructure.version_control import (
+    git_monitor as git_monitor_module,
+)
 
 
 def _git(root: Path, *args: str) -> str:

@@ -179,9 +179,7 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
     else:
         agent.llm.debug_trace = getattr(config, "llm_debug_trace", False)
     agent.active_main_model_profile = main_profile_name
-    agent.active_sub_model_profile = getattr(
-        config, "active_sub_model_profile", None
-    )
+    agent.active_sub_model_profile = getattr(config, "active_sub_model_profile", None)
     agent.session_approval_rules = []
     refresh_approval_runtime(agent, config.approval)
 

@@ -45,9 +45,7 @@ class ShellTool(Tool):
             },
             "persist_cwd": {
                 "type": "boolean",
-                "description": (
-                    "Persist the provided cwd as this session's default."
-                ),
+                "description": ("Persist the provided cwd as this session's default."),
             },
         },
         "required": ["command"],
@@ -194,8 +192,7 @@ class ShellTool(Tool):
             return ToolOutcome(
                 status=ToolOutcomeStatus.CANCELLED,
                 content=(
-                    "[system] Command was cancelled; "
-                    "output captured until termination."
+                    "[system] Command was cancelled; output captured until termination."
                 ),
                 stdout=result.stdout.strip(),
                 stderr=result.stderr.strip(),
@@ -207,7 +204,9 @@ class ShellTool(Tool):
         failed = result.exit_code not in {None, 0}
         elapsed = _format_duration(duration)
         return ToolOutcome(
-            status=(ToolOutcomeStatus.FAILED if failed else ToolOutcomeStatus.SUCCEEDED),
+            status=(
+                ToolOutcomeStatus.FAILED if failed else ToolOutcomeStatus.SUCCEEDED
+            ),
             summary=(
                 f"Command failed (exit {result.exit_code}) · {elapsed}"
                 if failed
@@ -233,6 +232,7 @@ class ShellTool(Tool):
                 self.backend.context, "remote_stream_handler", None
             )
             if callable(context_handler):
+
                 def forward_context_chunk(chunk) -> None:
                     context_handler("shell", chunk)
 
@@ -243,9 +243,7 @@ class ShellTool(Tool):
         def handle(chunk) -> None:
             from reuleauxcoder.extensions.remote_exec.protocol import ToolStreamChunk
 
-            remote_handler(
-                ToolStreamChunk(chunk_type=chunk.stream, data=chunk.data)
-            )
+            remote_handler(ToolStreamChunk(chunk_type=chunk.stream, data=chunk.data))
 
         return handle
 

@@ -130,9 +130,7 @@ def test_agent_event_bridge_exposes_tool_correlation_and_outcome() -> None:
     bus.subscribe(lambda event: seen.append(event), replay_history=False)
 
     AgentEventBridge(bus).on_agent_event(
-        AgentEvent.tool_call_end(
-            "shell", "ok", tool_call_id="call-7", success=True
-        )
+        AgentEvent.tool_call_end("shell", "ok", tool_call_id="call-7", success=True)
     )
 
     event = seen[0]

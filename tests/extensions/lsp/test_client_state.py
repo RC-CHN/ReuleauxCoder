@@ -59,16 +59,12 @@ def test_publish_diagnostics_rejects_older_document_version(tmp_path: Path) -> N
     uri = path.resolve().as_uri()
     client._document_versions[uri] = 3
 
-    client._handle_publish_diagnostics(
-        {"uri": uri, "version": 2, "diagnostics": []}
-    )
+    client._handle_publish_diagnostics({"uri": uri, "version": 2, "diagnostics": []})
 
     assert client.diagnostics_generation(path) == 0
     assert uri not in client._diagnostics_buffer
 
-    client._handle_publish_diagnostics(
-        {"uri": uri, "version": 3, "diagnostics": []}
-    )
+    client._handle_publish_diagnostics({"uri": uri, "version": 3, "diagnostics": []})
 
     assert client.diagnostics_generation(path) == 1
     assert client.diagnostic_document_version(path) == 3
@@ -127,9 +123,7 @@ def test_wait_timeout_does_not_return_preexisting_batch(tmp_path: Path) -> None:
     baseline = client.diagnostics_generation(path)
 
     diagnostics = asyncio.run(
-        client.wait_for_diagnostics(
-            path, timeout=0.01, after_generation=baseline
-        )
+        client.wait_for_diagnostics(path, timeout=0.01, after_generation=baseline)
     )
 
     assert diagnostics == []

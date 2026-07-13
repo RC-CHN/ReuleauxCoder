@@ -61,9 +61,7 @@ def test_transcript_checkpoint_is_atomic_and_hash_validated(tmp_path) -> None:
         [{"role": "assistant", "content": "stable"}],
         {"status": "blocked"},
     )
-    assert store.read(reference) == [
-        {"role": "assistant", "content": "stable"}
-    ]
+    assert store.read(reference) == [{"role": "assistant", "content": "stable"}]
     payload = json.loads(Path(reference).read_text(encoding="utf-8"))
     payload["messages"][0]["content"] = "tampered"
     Path(reference).write_text(json.dumps(payload), encoding="utf-8")
@@ -118,7 +116,9 @@ def test_running_agent_message_queue_is_lossless(monkeypatch) -> None:
         release.wait(timeout=2)
         return "done"
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
     job_id = manager.submit_background(parent_agent=parent, task="wait", mode="explore")
@@ -171,7 +171,9 @@ def test_directive_arriving_before_park_completion_resumes_without_loss(
             )
         return SubagentResult(status="ok", summary="continued")
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
     job_id = manager.submit_background(
@@ -211,7 +213,9 @@ def test_park_pauses_but_does_not_reset_active_timeout(monkeypatch, tmp_path) ->
             )
         return SubagentResult(status="ok", summary="continued", duration_seconds=1.0)
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
     job_id = manager.submit_background(
@@ -239,7 +243,9 @@ def test_park_pauses_but_does_not_reset_active_timeout(monkeypatch, tmp_path) ->
 
 def test_worktree_lease_round_trip(tmp_path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     (tmp_path / "tracked.txt").write_text("base", encoding="utf-8")
     subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)

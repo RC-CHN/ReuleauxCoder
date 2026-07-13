@@ -20,9 +20,7 @@ def has_runtime_overlay_tail(messages: list[dict[str, Any]]) -> bool:
     )
 
 
-def inject_runtime_overlay_region(
-    messages: list[dict[str, Any]], region: str
-) -> bool:
+def inject_runtime_overlay_region(messages: list[dict[str, Any]], region: str) -> bool:
     """Insert one already-sanitized region before the trusted instruction."""
     if not has_runtime_overlay_tail(messages):
         return False

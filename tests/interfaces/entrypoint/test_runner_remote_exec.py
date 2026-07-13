@@ -621,8 +621,7 @@ class TestRunnerRemoteExec:
                 first_events.extend(first["events"])
                 cursor = first["next_cursor"]
                 if any(
-                    event["type"] == "interaction_request"
-                    for event in first_events
+                    event["type"] == "interaction_request" for event in first_events
                 ):
                     break
             interaction = next(

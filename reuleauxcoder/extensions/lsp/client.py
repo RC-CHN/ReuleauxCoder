@@ -512,13 +512,9 @@ class LspClient:
         # were explicitly cleared by the server.
         self._diagnostics_buffer[uri] = items
         self._diagnostics_snapshots[uri] = items
-        self._diagnostic_generations[uri] = (
-            self._diagnostic_generations.get(uri, 0) + 1
-        )
+        self._diagnostic_generations[uri] = self._diagnostic_generations.get(uri, 0) + 1
         self._diagnostic_document_versions[uri] = (
-            published_version
-            if isinstance(published_version, int)
-            else current_version
+            published_version if isinstance(published_version, int) else current_version
         )
 
     async def _pull_document_diagnostics(self, file_path: Path) -> None:
@@ -548,9 +544,7 @@ class LspClient:
             self._diagnostic_result_ids[uri] = result_id
         self._diagnostics_buffer[uri] = items
         self._diagnostics_snapshots[uri] = items
-        self._diagnostic_generations[uri] = (
-            self._diagnostic_generations.get(uri, 0) + 1
-        )
+        self._diagnostic_generations[uri] = self._diagnostic_generations.get(uri, 0) + 1
         self._diagnostic_document_versions[uri] = self._document_versions.get(uri, 0)
 
     @staticmethod

@@ -57,9 +57,7 @@ class PresentationPolicy:
             tool_preview_lines=config.max_preview_lines,
             show_tool_args=config.show_tool_args,
             reasoning_display=ReasoningDisplay(config.reasoning_display),
-            notification_threshold=NotificationThreshold(
-                config.notification_threshold
-            ),
+            notification_threshold=NotificationThreshold(config.notification_threshold),
         )
 
     def tool_preview(self, outcome: ToolOutcome) -> str:

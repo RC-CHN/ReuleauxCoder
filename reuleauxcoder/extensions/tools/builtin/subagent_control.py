@@ -209,8 +209,7 @@ class ListAgentsTool(_RootSubagentTool):
             )
             return ToolOutcome(
                 summary=(
-                    f"{running} running · {terminal} terminal · "
-                    f"{delivered} delivered"
+                    f"{running} running · {terminal} terminal · {delivered} delivered"
                 ),
                 content=content,
                 metadata={
@@ -283,7 +282,9 @@ class WaitAgentTool(_RootSubagentTool):
 @register_tool
 class InterruptAgentTool(_RootSubagentTool):
     name = "interrupt_agent"
-    description = "Stop one child job and prevent its late result entering root context."
+    description = (
+        "Stop one child job and prevent its late result entering root context."
+    )
     parameters = {
         "type": "object",
         "properties": {"job_id": {"type": "string"}},
@@ -353,8 +354,7 @@ def _agent_snapshot(job, *, now: float) -> dict:
         max(0.0, now - last_activity_at) if last_activity_at is not None else None
     )
     blocker = (
-        getattr(job, "error", None)
-        or getattr(job, "guidance_request_id", None)
+        getattr(job, "error", None) or getattr(job, "guidance_request_id", None)
         if getattr(job, "status", "") == "blocked"
         else None
     )

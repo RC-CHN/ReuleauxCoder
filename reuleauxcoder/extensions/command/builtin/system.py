@@ -228,7 +228,9 @@ def _handle_tokens(command, ctx) -> CommandEffect:
         max_context_tokens=max_context_tokens,
         context_percent=context_percent,
         message_count=len(ctx.agent.messages),
-        actual_prompt_tokens=(observation.actual_prompt_tokens if observation else None),
+        actual_prompt_tokens=(
+            observation.actual_prompt_tokens if observation else None
+        ),
         cached_input_tokens=(observation.cached_input_tokens if observation else None),
         planning_at=thresholds["planning_at"],
         quality_wall=thresholds["quality_wall"],

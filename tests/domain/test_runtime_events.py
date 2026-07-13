@@ -192,9 +192,7 @@ def test_runtime_event_json_round_trip_preserves_structured_tool_outcome() -> No
                 metadata={"attempt": 2, "labels": ["lsp"]},
                 error_kind=ToolErrorKind.EXECUTION,
                 model_content="bounded",
-                retention_hint=ToolRetentionHint(
-                    strategy=ToolRetentionStrategy.TAIL
-                ),
+                retention_hint=ToolRetentionHint(strategy=ToolRetentionStrategy.TAIL),
             ),
         ),
         event_id="event-1",

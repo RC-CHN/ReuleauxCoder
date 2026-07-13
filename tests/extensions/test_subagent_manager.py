@@ -208,9 +208,7 @@ def test_fast_background_completion_never_loses_job_registration(monkeypatch) ->
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
 
-    job_id = manager.submit_background(
-        parent_agent=parent, task="fast", mode="explore"
-    )
+    job_id = manager.submit_background(parent_agent=parent, task="fast", mode="explore")
     job = manager.wait_job(job_id, timeout=2)
 
     assert job is not None and job.status == "completed"
@@ -270,9 +268,7 @@ def test_background_exception_becomes_failed_job(monkeypatch) -> None:
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
 
-    job_id = manager.submit_background(
-        parent_agent=parent, task="fail", mode="explore"
-    )
+    job_id = manager.submit_background(parent_agent=parent, task="fail", mode="explore")
     job = manager.wait_job(job_id, timeout=2)
 
     assert job is not None and job.status == "failed"
@@ -309,17 +305,14 @@ def test_unknown_non_ok_worker_status_fails_closed(monkeypatch) -> None:
 
 def test_child_messages_route_to_immediate_parent_in_sequence() -> None:
     manager = SubagentManager(parent_agent_id="root")
-    manager.register_child_agent(
-        "child-a", 1, parent_agent_id="root", job_id="sj_a"
-    )
-    manager.register_child_agent(
-        "child-b", 1, parent_agent_id="root", job_id="sj_b"
-    )
+    manager.register_child_agent("child-a", 1, parent_agent_id="root", job_id="sj_a")
+    manager.register_child_agent("child-b", 1, parent_agent_id="root", job_id="sj_b")
 
     assert manager.send_to_parent("child-b", "second") is True
-    assert manager.send_to_parent(
-        "child-a", "first", kind="reply", reply_to="sd_request"
-    ) is True
+    assert (
+        manager.send_to_parent("child-a", "first", kind="reply", reply_to="sd_request")
+        is True
+    )
     messages = manager.drain_parent_messages("root")
 
     assert [item.content for item in messages] == ["second", "first"]
@@ -400,7 +393,9 @@ def test_multiple_completions_drain_in_stable_activity_sequence(monkeypatch) -> 
         gates[kwargs["task"]].wait(timeout=2)
         return kwargs["task"]
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     parent = _Parent()
     manager = SubagentManager(max_parallel_explore=2)
     first = manager.submit_background(
@@ -432,7 +427,9 @@ def test_global_active_job_cap_rejects_fifth_until_a_terminal_slot_opens(
         gates[kwargs["task"]].wait(timeout=3)
         return kwargs["task"]
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     parent = _Parent()
     manager = SubagentManager(max_parallel_explore=4)
     try:
@@ -635,7 +632,9 @@ def test_restored_blocked_job_resumes_same_identity_after_guidance(
         calls.append(kwargs)
         return SubagentResult(status="ok", summary="resumed")
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     parent = _Parent()
     checkpoint = tmp_path / "checkpoint.json"
     checkpoint.write_text('{"messages": []}', encoding="utf-8")
@@ -682,7 +681,9 @@ def test_blocked_job_uses_independent_guidance_deadline(monkeypatch, tmp_path) -
             transcript_ref=str(checkpoint),
         )
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", parked)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", parked
+    )
     parent = _Parent()
     manager = SubagentManager(guidance_timeout_seconds=0.05)
     job_id = manager.submit_background(
@@ -718,7 +719,9 @@ def test_guidance_resume_cancels_old_deadline(monkeypatch, tmp_path) -> None:
             )
         return SubagentResult(status="ok", summary="resumed")
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     parent = _Parent()
     manager = SubagentManager(guidance_timeout_seconds=0.2)
     job_id = manager.submit_background(
@@ -782,7 +785,9 @@ def test_background_execute_waits_for_runtime_managed_verify(monkeypatch) -> Non
     manager.shutdown()
 
 
-def test_failed_automatic_verify_releases_execute_barrier_as_attention(monkeypatch) -> None:
+def test_failed_automatic_verify_releases_execute_barrier_as_attention(
+    monkeypatch,
+) -> None:
     def run(**kwargs):
         if kwargs["mode"] == "verify":
             return SubagentResult(status="failed", summary="tests failed")
@@ -847,9 +852,7 @@ def test_generation_change_prevents_old_result_injection(monkeypatch) -> None:
     )
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
-    job_id = manager.submit_background(
-        parent_agent=parent, task="old", mode="explore"
-    )
+    job_id = manager.submit_background(parent_agent=parent, task="old", mode="explore")
 
     manager.advance_generation(cancel_pending=False)
     release.set()
@@ -905,7 +908,9 @@ def test_cancel_advances_epoch_before_worker_terminalizes(monkeypatch) -> None:
         release.wait(timeout=2)
         return "done"
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
     job_id = manager.submit_background(
@@ -933,7 +938,9 @@ def test_child_progress_and_tool_activity_update_job_snapshot(monkeypatch) -> No
         release.wait(timeout=2)
         return "done"
 
-    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_subagent_task", run
+    )
     manager = SubagentManager(max_parallel_explore=1)
     parent = _Parent()
     job_id = manager.submit_background(
@@ -1057,7 +1064,8 @@ def test_subagent_tools_are_distinct_instances() -> None:
     parent = SimpleNamespace(tools=[tool])
 
     child_tool = next(
-        tool for tool in _filter_subagent_tools(parent, "explore")
+        tool
+        for tool in _filter_subagent_tools(parent, "explore")
         if tool.name == "read_file"
     )
 
@@ -1078,7 +1086,8 @@ def test_subagent_tool_backend_context_is_isolated() -> None:
     parent = SimpleNamespace(tools=[tool])
 
     child_tool = next(
-        tool for tool in _filter_subagent_tools(parent, "explore")
+        tool
+        for tool in _filter_subagent_tools(parent, "explore")
         if tool.name == "read_file"
     )
     child_tool.backend.context.cwd = "/child"
@@ -1104,7 +1113,8 @@ def test_subagent_shell_cwd_state_is_not_shared() -> None:
     parent = SimpleNamespace(tools=[parent_tool])
 
     child_tool = next(
-        tool for tool in _filter_subagent_tools(parent, "execute")
+        tool
+        for tool in _filter_subagent_tools(parent, "execute")
         if tool.name == "shell"
     )
     child_tool._cwd = "/tmp/child"

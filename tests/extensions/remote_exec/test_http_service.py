@@ -162,9 +162,10 @@ class TestRemoteRelayHTTPService:
                 timeout=5,
             ) as resp:
                 assert resp.status == 200
-                assert resp.headers["X-ReuleauxCoder-SHA256"] == sha256(
-                    b"peer-binary"
-                ).hexdigest()
+                assert (
+                    resp.headers["X-ReuleauxCoder-SHA256"]
+                    == sha256(b"peer-binary").hexdigest()
+                )
                 assert resp.read() == b"peer-binary"
         finally:
             service.stop()
@@ -203,10 +204,7 @@ class TestRemoteRelayHTTPService:
         os.name == "nt"
         or shutil.which("sh") is None
         or shutil.which("curl") is None
-        or (
-            shutil.which("sha256sum") is None
-            and shutil.which("shasum") is None
-        ),
+        or (shutil.which("sha256sum") is None and shutil.which("shasum") is None),
         reason="requires POSIX shell, curl and a SHA-256 utility",
     )
     def test_bootstrap_script_downloads_verifies_and_executes_peer(self) -> None:
@@ -302,9 +300,10 @@ class TestRemoteRelayHTTPService:
             )
             assert status == 200
             assert heartbeat_body["peer_id"] == peer_id
-            assert service.relay_server.registry.get(peer_id).meta["terminal"][
-                "width"
-            ] == 111
+            assert (
+                service.relay_server.registry.get(peer_id).meta["terminal"]["width"]
+                == 111
+            )
 
             status, poll_body = _json_request(
                 "POST",
@@ -519,9 +518,7 @@ class TestRemoteRelayHTTPService:
             thread = threading.Thread(
                 target=lambda: holder.setdefault(
                     "result",
-                    WriteFileTool(backend=backend).execute(
-                        "/tmp/demo.txt", "hello"
-                    ),
+                    WriteFileTool(backend=backend).execute("/tmp/demo.txt", "hello"),
                 )
             )
             thread.start()
@@ -535,9 +532,7 @@ class TestRemoteRelayHTTPService:
             thread = threading.Thread(
                 target=lambda: holder.setdefault(
                     "result",
-                    EditFileTool(backend=backend).execute(
-                        "/tmp/demo.txt", "a", "b"
-                    ),
+                    EditFileTool(backend=backend).execute("/tmp/demo.txt", "a", "b"),
                 )
             )
             thread.start()
@@ -1317,9 +1312,12 @@ class TestRemoteRelayHTTPService:
                 cancellation.clear()
             assert "cancelled" in cancel_result.model_text.lower()
             assert time.monotonic() - cancel_started < 3
-            assert "still-alive" in ShellTool(backend=backend).execute(
-                command="printf 'still-alive'"
-            ).model_text
+            assert (
+                "still-alive"
+                in ShellTool(backend=backend)
+                .execute(command="printf 'still-alive'")
+                .model_text
+            )
 
             read_result = ReadFileTool(backend=backend).execute(
                 file_path=str(target_file)
@@ -1327,9 +1325,7 @@ class TestRemoteRelayHTTPService:
             assert "1\thello world" in read_result.model_text
 
             local_backend = LocalToolBackend(
-                ExecutionContext(
-                    cwd=str(work_dir), workspace_root=str(work_dir)
-                )
+                ExecutionContext(cwd=str(work_dir), workspace_root=str(work_dir))
             )
             write_result = WriteFileTool(backend=backend).execute(
                 file_path=str(target_file),
@@ -1468,9 +1464,7 @@ class TestRemoteRelayHTTPService:
         not _GO_AVAILABLE or sys.platform == "win32",
         reason="requires Go and POSIX process signals",
     )
-    def test_interactive_go_peer_ctrl_c_cancels_host_chat(
-        self, tmp_path: Path
-    ) -> None:
+    def test_interactive_go_peer_ctrl_c_cancels_host_chat(self, tmp_path: Path) -> None:
         relay = RelayServer()
         relay.start()
         port = _free_port()

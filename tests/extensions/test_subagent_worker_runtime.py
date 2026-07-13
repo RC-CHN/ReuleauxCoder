@@ -35,7 +35,9 @@ def test_worker_broker_call_ids_are_unique_when_generated_concurrently() -> None
     client._tool_call_sequence = 0
 
     with ThreadPoolExecutor(max_workers=8) as executor:
-        call_ids = list(executor.map(lambda _index: client._next_tool_call_id(), range(64)))
+        call_ids = list(
+            executor.map(lambda _index: client._next_tool_call_id(), range(64))
+        )
 
     assert len(set(call_ids)) == 64
     assert set(call_ids) == {f"broker_7_{index}" for index in range(1, 65)}
@@ -181,14 +183,13 @@ class _StreamingHandler(BaseHTTPRequestHandler):
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": "test",
-                "choices": [
-                    {"index": 0, "delta": {}, "finish_reason": "stop"}
-                ],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             },
         ]
-        body = "".join(
-            f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
-        ) + "data: [DONE]\n\n"
+        body = (
+            "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            + "data: [DONE]\n\n"
+        )
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("content-length", str(len(body.encode())))
@@ -238,7 +239,7 @@ class _ToolCallingHandler(BaseHTTPRequestHandler):
                                             "name": "read_file",
                                             "arguments": '{"file_path":"other.txt"}',
                                         },
-                                    }
+                                    },
                                 ]
                             },
                             "finish_reason": None,
@@ -275,14 +276,13 @@ class _ToolCallingHandler(BaseHTTPRequestHandler):
                     "object": "chat.completion.chunk",
                     "created": 0,
                     "model": "test",
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": "stop"}
-                    ],
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 },
             ]
-        body = "".join(
-            f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
-        ) + "data: [DONE]\n\n"
+        body = (
+            "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            + "data: [DONE]\n\n"
+        )
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("content-length", str(len(body.encode())))
@@ -344,23 +344,20 @@ class _GuidanceHandler(BaseHTTPRequestHandler):
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": "test",
-                "choices": [
-                    {"index": 0, "delta": delta, "finish_reason": None}
-                ],
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
             },
             {
                 "id": "chatcmpl-guidance",
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": "test",
-                "choices": [
-                    {"index": 0, "delta": {}, "finish_reason": finish_reason}
-                ],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
             },
         ]
-        body = "".join(
-            f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
-        ) + "data: [DONE]\n\n"
+        body = (
+            "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            + "data: [DONE]\n\n"
+        )
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("content-length", str(len(body.encode())))
@@ -793,8 +790,7 @@ def test_directive_arriving_during_provider_round_survives_immediate_park(
     assert len(matching) == 1
     assert any(
         message.get("role") == "system"
-        and "Re-read every relevant file or symbol"
-        in str(message.get("content") or "")
+        and "Re-read every relevant file or symbol" in str(message.get("content") or "")
         for message in resumed_messages
     )
 

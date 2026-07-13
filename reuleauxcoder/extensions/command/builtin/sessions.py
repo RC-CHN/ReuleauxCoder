@@ -57,13 +57,15 @@ class NewSessionCommand:
 
 
 def _parse_list_sessions(user_input: str, parse_ctx):
-    if match_template(user_input, "/session all") is not None or match_template(
-        user_input, "/sessions all"
-    ) is not None:
+    if (
+        match_template(user_input, "/session all") is not None
+        or match_template(user_input, "/sessions all") is not None
+    ):
         return ListSessionsCommand(show_all=True)
-    if match_template(user_input, "/sessions") is not None or match_template(
-        user_input, "/session"
-    ) is not None:
+    if (
+        match_template(user_input, "/sessions") is not None
+        or match_template(user_input, "/session") is not None
+    ):
         return ListSessionsCommand()
     return None
 

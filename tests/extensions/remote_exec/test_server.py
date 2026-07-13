@@ -90,9 +90,7 @@ class TestRegistration:
                 )
 
             response = srv._on_register(
-                RegisterRequest(
-                    bootstrap_token=token, cwd="/tmp", protocol_version=2
-                )
+                RegisterRequest(bootstrap_token=token, cwd="/tmp", protocol_version=2)
             )
             assert response.protocol_version == 2
         finally:
@@ -111,9 +109,7 @@ class TestRegistration:
                 )
             )
 
-            with pytest.raises(
-                RemoteExecError, match="REMOTE_CAPABILITY_UNAVAILABLE"
-            ):
+            with pytest.raises(RemoteExecError, match="REMOTE_CAPABILITY_UNAVAILABLE"):
                 srv.send_workspace_request(
                     response.peer_id,
                     WorkspaceRequest(
@@ -138,9 +134,7 @@ class TestRegistration:
                 )
             )
 
-            with pytest.raises(
-                RemoteExecError, match="REMOTE_CAPABILITY_UNAVAILABLE"
-            ):
+            with pytest.raises(RemoteExecError, match="REMOTE_CAPABILITY_UNAVAILABLE"):
                 srv.send_workspace_request(
                     response.peer_id,
                     WorkspaceRequest(
@@ -188,7 +182,10 @@ class TestRegistration:
 
             assert srv.refresh_peer_token(response.peer_token) == response.peer_id
             now[0] = 1023.0
-            assert srv.token_manager.verify_peer_token(response.peer_token) == response.peer_id
+            assert (
+                srv.token_manager.verify_peer_token(response.peer_token)
+                == response.peer_id
+            )
         finally:
             srv.stop()
 

@@ -103,9 +103,7 @@ def test_errors_mode_suppresses_success_but_keeps_failure() -> None:
     policy = PresentationPolicy(tool_output_mode=ToolOutputMode.ERRORS)
 
     assert policy.tool_preview(ToolOutcome.from_legacy("ok")) == ""
-    assert policy.tool_preview(
-        ToolOutcome.from_legacy("bad", success=False)
-    ) == "bad"
+    assert policy.tool_preview(ToolOutcome.from_legacy("bad", success=False)) == "bad"
 
 
 def test_timeout_preview_shows_latest_five_lines_and_system_footer() -> None:

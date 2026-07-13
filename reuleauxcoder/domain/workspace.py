@@ -146,9 +146,10 @@ class PortableGlobMatcher:
                         current[pattern_index - 1] or previous[pattern_index]
                     )
                 else:
-                    current[pattern_index] = previous[
-                        pattern_index - 1
-                    ] and segment.fullmatch(part) is not None
+                    current[pattern_index] = (
+                        previous[pattern_index - 1]
+                        and segment.fullmatch(part) is not None
+                    )
             previous = current
         return previous[-1]
 
@@ -236,24 +237,23 @@ def search_text_via_primitives(
             entry
             for entry in listing.entries
             if entry.is_file
-            and not any(
-                part in excluded for part in Path(entry.relative_path).parts
-            )
+            and not any(part in excluded for part in Path(entry.relative_path).parts)
             and (include is None or Path(entry.relative_path).match(include))
         ]
         listing_truncated = listing_truncated or len(candidates) > max_files
         files = candidates[:max_files]
     else:
-        raise WorkspaceError(
-            WorkspaceErrorCode.NOT_A_FILE, f"{path} is not searchable"
-        )
+        raise WorkspaceError(WorkspaceErrorCode.NOT_A_FILE, f"{path} is not searchable")
 
     matches: list[WorkspaceSearchMatch] = []
     for entry in files:
         try:
             text = workspace.read_text(entry.path)
         except WorkspaceError as error:
-            if error.code in {WorkspaceErrorCode.NOT_FOUND, WorkspaceErrorCode.IO_ERROR}:
+            if error.code in {
+                WorkspaceErrorCode.NOT_FOUND,
+                WorkspaceErrorCode.IO_ERROR,
+            }:
                 continue
             raise
         for line_number, line in enumerate(text.splitlines(), 1):

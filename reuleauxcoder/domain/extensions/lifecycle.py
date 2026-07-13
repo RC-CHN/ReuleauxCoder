@@ -88,7 +88,9 @@ class LifecycleCoordinator:
 
     def _dispatch(self, hook_point: HookPoint, context: HookContext) -> bool:
         decisions = self.registry.run_guards(hook_point, context)
-        denied = next((decision for decision in decisions if not decision.allowed), None)
+        denied = next(
+            (decision for decision in decisions if not decision.allowed), None
+        )
         for decision in decisions:
             if decision.warning:
                 self._notify(

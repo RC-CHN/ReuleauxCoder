@@ -223,9 +223,7 @@ def test_parse_config_reports_legacy_active_alias() -> None:
         {
             "models": {
                 "active": "first",
-                "profiles": {
-                    "first": {"model": "gpt-first", "api_key": "key-1"}
-                },
+                "profiles": {"first": {"model": "gpt-first", "api_key": "key-1"}},
             },
             "modes": {"profiles": {"coder": {}}},
         }
@@ -236,9 +234,7 @@ def test_parse_config_reports_legacy_active_alias() -> None:
     assert diagnostic.source == "workspace"
     assert "active" not in migrated["models"]
     assert migrated["models"]["active_main"] == "first"
-    assert not any(
-        item.code == "legacy_config_alias" for item in config.diagnostics
-    )
+    assert not any(item.code == "legacy_config_alias" for item in config.diagnostics)
     assert config.active_main_model_profile == "first"
 
 
@@ -248,9 +244,7 @@ def test_record_sources_tracks_highest_precedence_leaf() -> None:
         {"models": {"active_main": "global", "active_sub": "global"}},
         "global",
     )
-    loader._record_sources(
-        {"models": {"active_main": "workspace"}}, "workspace"
-    )
+    loader._record_sources({"models": {"active_main": "workspace"}}, "workspace")
 
     assert loader._effective_sources == {
         "models.active_main": "workspace",

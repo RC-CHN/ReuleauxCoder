@@ -50,7 +50,9 @@ def test_auto_review_uses_user_authorization_not_agent_prose_or_tool_output() ->
         f'"authorization_event_ids":["{event_id}"]}}'
     )
     judge = AutoReviewJudge(agent=agent, llm=llm)
-    decision = judge(ApprovalRequest(tool_name="shell", tool_args={"command": "rm temp"}))
+    decision = judge(
+        ApprovalRequest(tool_name="shell", tool_args={"command": "rm temp"})
+    )
     payload = json.loads(llm.messages[1]["content"])
     encoded = json.dumps(payload)
     assert decision.approved is True

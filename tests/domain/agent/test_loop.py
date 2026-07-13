@@ -108,9 +108,7 @@ def test_runtime_tail_uses_bound_two_scope_notes_store() -> None:
 def test_runtime_tail_honors_notes_inject_false() -> None:
     agent = _AgentStub()
     agent.runtime_config.notes_inject = False
-    agent.notes_store = SimpleNamespace(
-        render=lambda **_kwargs: "MUST NOT BE INJECTED"
-    )
+    agent.notes_store = SimpleNamespace(render=lambda **_kwargs: "MUST NOT BE INJECTED")
     loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
 
     content = loop._full_messages()[-1]["content"]

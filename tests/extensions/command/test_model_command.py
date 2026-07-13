@@ -134,8 +134,7 @@ def test_use_sub_model_alias_switches_session_sub_model() -> None:
     assert ctx.config.active_sub_model_profile == "alpha"
     assert result.state["active_sub_profile"] == "beta"
     assert any(
-        event.level == "success"
-        and "session sub-agent model profile" in event.message
+        event.level == "success" and "session sub-agent model profile" in event.message
         for event in ctx.effect.notifications
     )
 
@@ -160,7 +159,6 @@ def test_set_sub_model_updates_global_sub_profile(monkeypatch) -> None:
     assert ctx.agent.active_sub_model_profile == "alpha"
     assert result.state["active_sub_profile"] == "alpha"
     assert any(
-        event.level == "success"
-        and "global sub-agent model profile" in event.message
+        event.level == "success" and "global sub-agent model profile" in event.message
         for event in ctx.effect.notifications
     )

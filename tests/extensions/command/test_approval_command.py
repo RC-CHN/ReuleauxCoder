@@ -46,8 +46,7 @@ def test_set_approval_rule_is_session_scoped() -> None:
     assert session_rules[0].action == "deny"
     assert result.state["rules"][0]["tool_name"] == "shell"
     assert any(
-        event.level == "success"
-        and event.message == "Updated session approval rule"
+        event.level == "success" and event.message == "Updated session approval rule"
         for event in ctx.effect.notifications
     )
 
@@ -78,15 +77,12 @@ def test_set_global_approval_rule_updates_config_and_runtime(monkeypatch) -> Non
     assert getattr(ctx.agent, "session_approval_rules", []) == []
     assert result.state["saved_path"] == "/tmp/config.yaml"
     assert any(
-        event.level == "success"
-        and "Updated global approval rule" in event.message
+        event.level == "success" and "Updated global approval rule" in event.message
         for event in ctx.effect.notifications
     )
 
 
-def test_set_global_approval_rule_replaces_same_target(
-    tmp_path, monkeypatch
-) -> None:
+def test_set_global_approval_rule_replaces_same_target(tmp_path, monkeypatch) -> None:
     workspace_config = tmp_path / ".rcoder" / "config.yaml"
     monkeypatch.setattr(
         ConfigLoader,

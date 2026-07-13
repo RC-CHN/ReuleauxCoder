@@ -14,9 +14,7 @@ def test_committed_messages_and_plan_are_durable_before_exit(tmp_path) -> None:
     agent = Agent(llm=_LLM(), tools=[], config=config)
     store = SessionStore(tmp_path)
     session_id = store.generate_session_id()
-    bind_session_persistence(
-        config, agent, store, session_id, fingerprint="local"
-    )
+    bind_session_persistence(config, agent, store, session_id, fingerprint="local")
 
     agent._append_message(
         {"role": "user", "content": "durable before exit"}, source="user"
@@ -40,9 +38,7 @@ def test_unbound_reset_does_not_replace_saved_session_view(tmp_path) -> None:
     agent = Agent(llm=_LLM(), tools=[], config=config)
     store = SessionStore(tmp_path)
     session_id = store.generate_session_id()
-    bind_session_persistence(
-        config, agent, store, session_id, fingerprint="local"
-    )
+    bind_session_persistence(config, agent, store, session_id, fingerprint="local")
     agent._append_message({"role": "user", "content": "keep me"}, source="user")
 
     agent.unbind_session_persistence()
