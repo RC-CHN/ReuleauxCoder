@@ -45,7 +45,6 @@ type state struct {
 	timedOut       bool
 	cancelled      bool
 	terminated     bool
-	ioWG           sync.WaitGroup
 }
 
 type Manager struct {
@@ -104,14 +103,6 @@ func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
 	cmd := exec.Command(shell, shellArgs...)
 	cmd.Dir = resolvedCWD
 	configureProcessGroup(cmd)
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return failure("io_error", err.Error())
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return failure("io_error", err.Error())
-	}
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return failure("io_error", err.Error())
@@ -120,6 +111,11 @@ func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
 		id: processID, idempotencyKey: idempotencyKey,
 		cmd: cmd, stdin: stdinPipe, done: make(chan struct{}),
 	}
+	// Let os/exec own the copy goroutines. Wait does not return until these
+	// writers have consumed the pipes, which prevents a fast command from
+	// exiting and closing StdoutPipe before our reader goroutine is scheduled.
+	cmd.Stdout = &processState.stdout
+	cmd.Stderr = &processState.stderr
 	if err := cmd.Start(); err != nil {
 		return failure("io_error", err.Error())
 	}
@@ -133,15 +129,6 @@ func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
 	m.idempotent[idempotencyKey] = processID
 	m.mu.Unlock()
 
-	processState.ioWG.Add(2)
-	go func() {
-		defer processState.ioWG.Done()
-		_, _ = io.Copy(&processState.stdout, stdoutPipe)
-	}()
-	go func() {
-		defer processState.ioWG.Done()
-		_, _ = io.Copy(&processState.stderr, stderrPipe)
-	}()
 	go processState.wait()
 	deadlineMillis := int64Arg(args["deadline_unix_ms"])
 	if deadlineMillis > 0 {
@@ -165,7 +152,6 @@ func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
 
 func (s *state) wait() {
 	err := s.cmd.Wait()
-	s.ioWG.Wait()
 	exitCode := 0
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {

@@ -3,6 +3,7 @@
 package process
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -30,6 +31,27 @@ func TestProcessStartPollAndIdempotency(t *testing.T) {
 	result := waitDone(t, manager, "p1")
 	if result.Data["stdout_all"] != "hello" || result.Data["exit_code"] != 0 {
 		t.Fatalf("unexpected process result: %#v", result)
+	}
+}
+
+func TestProcessCapturesOutputFromImmediatelyExitingCommands(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	for index := 0; index < 8; index++ {
+		processID := fmt.Sprintf("quick-%d", index)
+		started := manager.Execute(request("process.start", map[string]any{
+			"process_id": processID, "idempotency_key": processID,
+			"command": "printf quick-output", "cwd": root,
+			"deadline_unix_ms": time.Now().Add(5 * time.Second).UnixMilli(),
+		}))
+		if !started.OK {
+			t.Fatalf("start %d failed: %#v", index, started)
+		}
+		result := waitDone(t, manager, processID)
+		if result.Data["stdout_all"] != "quick-output" {
+			t.Fatalf("output %d was lost: %#v", index, result)
+		}
 	}
 }
 
