@@ -9,7 +9,10 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
-from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
+from reuleauxcoder.extensions.subagent.manager import (
+    SubagentCapacityError,
+    get_subagent_manager,
+)
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
@@ -50,7 +53,8 @@ class SpawnAgentTool(_RootSubagentTool):
     effect_class = "model_delegation"
     description = (
         "Create one subagent and return its job ID immediately. The child runs "
-        "asynchronously; call wait_agent only when there is no other useful work."
+        "asynchronously; call wait_agent only when there is no other useful work. "
+        "At most four queued/running/blocked subagents may exist globally."
     )
     parameters = {
         "type": "object",
@@ -131,6 +135,18 @@ class SpawnAgentTool(_RootSubagentTool):
                 content=f"Subagent created · job_id={job_id}",
                 metadata={"job_id": job_id, "mode": mode},
             )
+        except SubagentCapacityError as error:
+            return ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                summary=f"Subagent capacity full ({error.active}/{error.maximum})",
+                content=f"capacity_full · active={error.active} · max={error.maximum}",
+                error_kind=ToolErrorKind.EXECUTION,
+                metadata={
+                    "reason": "capacity_full",
+                    "active": error.active,
+                    "max": error.maximum,
+                },
+            )
         except (TypeError, ValueError, RuntimeError) as error:
             return _invalid(str(error))
 
@@ -179,7 +195,8 @@ class ListAgentsTool(_RootSubagentTool):
 
     def execute(self) -> ToolOutcome:
         try:
-            jobs = get_subagent_manager(self._root()).list_jobs()
+            manager = get_subagent_manager(self._root())
+            jobs = manager.list_jobs()
             now = time.time()
             rows = [_agent_snapshot(job, now=now) for job in jobs]
             lines = [_agent_snapshot_line(row) for row in rows]
@@ -201,6 +218,10 @@ class ListAgentsTool(_RootSubagentTool):
                     "running": running,
                     "terminal": terminal,
                     "delivered": delivered,
+                    "capacity": {
+                        "active": getattr(manager, "active_job_count", running),
+                        "max": getattr(manager, "max_active_jobs", 4),
+                    },
                     "agents": rows,
                 },
             )

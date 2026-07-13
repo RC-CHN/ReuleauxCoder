@@ -9,6 +9,7 @@ from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.extensions.subagent.models import SubagentResult
 from reuleauxcoder.extensions.subagent.manager import (
+    SubagentCapacityError,
     SubagentJob,
     SubagentManager,
     _filter_subagent_tools,
@@ -422,6 +423,75 @@ def test_multiple_completions_drain_in_stable_activity_sequence(monkeypatch) -> 
     manager.shutdown()
 
 
+def test_global_active_job_cap_rejects_fifth_until_a_terminal_slot_opens(
+    monkeypatch,
+) -> None:
+    gates = {f"job-{index}": threading.Event() for index in range(5)}
+
+    def run(**kwargs):
+        gates[kwargs["task"]].wait(timeout=3)
+        return kwargs["task"]
+
+    monkeypatch.setattr("reuleauxcoder.extensions.subagent.manager.run_subagent_task", run)
+    parent = _Parent()
+    manager = SubagentManager(max_parallel_explore=4)
+    try:
+        jobs = [
+            manager.submit_background(
+                parent_agent=parent,
+                task=f"job-{index}",
+                mode="explore",
+                auto_verify=False,
+            )
+            for index in range(4)
+        ]
+
+        assert manager.active_job_count == 4
+        assert manager.max_active_jobs == 4
+        with pytest.raises(SubagentCapacityError, match=r"full \(4/4 active\)"):
+            manager.submit_background(
+                parent_agent=parent,
+                task="job-4",
+                mode="verify",
+                auto_verify=False,
+            )
+        assert len(manager.list_jobs()) == 4
+
+        gates["job-0"].set()
+        assert manager.wait_job(jobs[0], timeout=2).status == "completed"
+        replacement = manager.submit_background(
+            parent_agent=parent,
+            task="job-4",
+            mode="execute",
+            auto_verify=False,
+        )
+        assert isinstance(replacement, str)
+        assert manager.active_job_count == 4
+    finally:
+        for gate in gates.values():
+            gate.set()
+        manager.shutdown()
+
+
+def test_global_cap_counts_blocked_and_prior_generation_jobs() -> None:
+    manager = SubagentManager(parent_agent_id="root", initial_generation=2)
+    now = time.time()
+    manager._jobs = {
+        status: SubagentJob(
+            id=f"sj_{status}",
+            mode="explore",
+            task=status,
+            status=status,
+            created_at=now,
+            generation=1 if status == "cancelling" else 2,
+        )
+        for status in ("blocked", "queued", "cancelling", "completed")
+    }
+
+    assert manager.active_job_count == 3
+    manager.shutdown()
+
+
 def test_parent_mailbox_recovers_unacknowledged_item_exactly_once() -> None:
     parent = _Parent()
     manager = SubagentManager(parent_agent_id=parent.agent_id)
@@ -479,6 +549,37 @@ def test_restore_persists_unrecoverable_worker_as_stale() -> None:
     assert manager.get_job("sj_lost").status == "stale"
     assert parent.history_ledger.events[-1].kind == "subagent_job_changed"
     assert parent.history_ledger.events[-1].payload["status"] == "stale"
+    manager.shutdown()
+
+
+def test_restore_cancels_oldest_blocked_job_above_global_cap(tmp_path) -> None:
+    parent = _Parent()
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text('{"messages": []}', encoding="utf-8")
+    for index in range(5):
+        parent.history_ledger.append(
+            "subagent_job_changed",
+            {
+                "job_id": f"sj_blocked_{index}",
+                "mode": "explore",
+                "task": f"blocked {index}",
+                "status": "blocked",
+                "created_at": float(index + 1),
+                "generation": 0,
+                "depth": 1,
+                "resume_reference": str(checkpoint),
+            },
+        )
+    manager = SubagentManager(parent_agent_id=parent.agent_id)
+
+    assert manager.restore_from_history(parent, parent.history_ledger.events) == 5
+    assert manager.active_job_count == 4
+    assert manager.get_job("sj_blocked_0").status == "cancelled"
+    assert "four-agent limit" in manager.get_job("sj_blocked_0").error
+    assert all(
+        manager.get_job(f"sj_blocked_{index}").status == "blocked"
+        for index in range(1, 5)
+    )
     manager.shutdown()
 
 

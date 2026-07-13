@@ -15,6 +15,7 @@ from reuleauxcoder.extensions.tools.builtin.subagent_control import (
     WaitAgentTool,
 )
 from reuleauxcoder.extensions.tools.registry import iter_tool_classes
+from reuleauxcoder.extensions.subagent.manager import SubagentCapacityError
 
 
 class _Root:
@@ -80,9 +81,33 @@ def test_spawn_agent_only_registers_async_job(monkeypatch) -> None:
     assert "tasks" not in SpawnAgentTool.parameters["properties"]
 
 
+def test_spawn_agent_returns_structured_capacity_full_outcome(monkeypatch) -> None:
+    class _Manager:
+        def submit_background(self, **_kwargs):
+            raise SubagentCapacityError(active=4)
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.tools.builtin.subagent_control.get_subagent_manager",
+        lambda _root: _Manager(),
+    )
+
+    outcome = _bind(SpawnAgentTool()).execute(message="one task too many")
+
+    assert not outcome.success
+    assert outcome.summary == "Subagent capacity full (4/4)"
+    assert outcome.metadata == {
+        "reason": "capacity_full",
+        "active": 4,
+        "max": 4,
+    }
+    assert "capacity_full" in outcome.content
+
+
 def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> None:
     directive = SimpleNamespace(directive_id="sd_1")
     manager = SimpleNamespace(
+        active_job_count=1,
+        max_active_jobs=4,
         queue_message=lambda *args, **kwargs: directive,
         list_jobs=lambda: [
             SimpleNamespace(
@@ -121,6 +146,7 @@ def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> 
     assert "sj_1/sa_sj_1" in listed.content
     assert "last_activity_seconds_ago" in listed.metadata["agents"][0]
     assert listed.metadata["agents"][0]["tokens"] == 120
+    assert listed.metadata["capacity"] == {"active": 1, "max": 4}
 
 
 def test_list_agents_marks_terminal_result_as_already_delivered(monkeypatch) -> None:

@@ -39,6 +39,18 @@ _DEFAULT_MAX_ROUNDS = 50
 _DEFAULT_TIMEOUT_SECONDS = 300
 _MAX_TIMEOUT_SECONDS = 3_600
 _DEFAULT_GUIDANCE_TIMEOUT_SECONDS = 3_600
+_MAX_ACTIVE_SUBAGENTS = 4
+_TERMINAL_JOB_STATUSES = frozenset(
+    {
+        "completed",
+        "failed",
+        "cancelled",
+        "killed",
+        "timed_out",
+        "indeterminate",
+        "stale",
+    }
+)
 SubagentMessageKind = Literal[
     "reply",
     "milestone",
@@ -48,6 +60,18 @@ SubagentMessageKind = Literal[
     "partial",
     "guidance",
 ]
+
+
+class SubagentCapacityError(RuntimeError):
+    """Raised when the root already owns the global active-agent limit."""
+
+    def __init__(self, active: int, maximum: int = _MAX_ACTIVE_SUBAGENTS):
+        self.active = active
+        self.maximum = maximum
+        super().__init__(
+            f"Subagent capacity full ({active}/{maximum} active); wait for a child "
+            "to finish or interrupt one before spawning another."
+        )
 
 
 def _subagent_item_hash(**payload) -> str:
@@ -377,6 +401,7 @@ class SubagentManager:
         self._slot_cv = threading.Condition(self._lock)
         self._jobs: dict[str, SubagentJob] = {}
         self._futures: dict[str, Future] = {}
+        self._terminal_published: dict[str, threading.Event] = {}
         self._job_schedulers: dict[str, Callable[[], bool]] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._parent_agent_id = parent_agent_id
@@ -401,6 +426,15 @@ class SubagentManager:
     @property
     def max_parallel_explore(self) -> int:
         return self._max_parallel_explore
+
+    @property
+    def max_active_jobs(self) -> int:
+        return _MAX_ACTIVE_SUBAGENTS
+
+    @property
+    def active_job_count(self) -> int:
+        with self._lock:
+            return self._active_job_count_locked()
 
     @property
     def runtime_parallel_explore(self) -> int:
@@ -431,6 +465,12 @@ class SubagentManager:
         """Bind only the root owner used for ledger persistence and recovery."""
         if getattr(agent, "agent_id", None) == self._parent_agent_id:
             self._root_agent = agent
+
+    def _active_job_count_locked(self) -> int:
+        return sum(
+            job.status not in _TERMINAL_JOB_STATUSES
+            for job in self._jobs.values()
+        )
 
     @staticmethod
     def is_valid_mode(mode: str) -> bool:
@@ -605,7 +645,11 @@ class SubagentManager:
         # Register the job before submission. A very fast Future may invoke its
         # callback immediately; it must always find the tracked job.
         with self._lock:
+            active_jobs = self._active_job_count_locked()
+            if active_jobs >= _MAX_ACTIVE_SUBAGENTS:
+                raise SubagentCapacityError(active_jobs)
             self._jobs[job_id] = job
+            self._terminal_published[job_id] = threading.Event()
             self._message_queues[job_id] = deque()
             self._cancel_events[job_id] = cancel_event
         _publish_job_event(parent_agent, job)
@@ -788,6 +832,13 @@ class SubagentManager:
                         tracked.verification_job_id = verification_id
                     _publish_job_event(parent_agent, tracked)
 
+            if tracked.status in _TERMINAL_JOB_STATUSES:
+                published = self._terminal_published.get(job_id)
+                if published is not None:
+                    published.set()
+                with self._slot_cv:
+                    self._slot_cv.notify_all()
+
             # The parent drains this mailbox at an API-safe boundary. Worker
             # callbacks never mutate parent history directly.
 
@@ -824,6 +875,7 @@ class SubagentManager:
         with self._lock:
             self._jobs.clear()
             self._futures.clear()
+            self._terminal_published.clear()
             self._job_schedulers.clear()
             self._message_queues.clear()
             self._cancel_events.clear()
@@ -936,6 +988,29 @@ class SubagentManager:
             if status == "stale" and str(payload.get("status")) != "stale":
                 stale_jobs.append(job)
 
+        # Older releases could persist more parked workers than the global
+        # admission limit. Preserve the four newest resumable jobs and make
+        # every overflow explicit instead of silently restoring an over-cap
+        # control plane.
+        restored_active = sorted(
+            (
+                job
+                for job in restored
+                if job.status not in _TERMINAL_JOB_STATUSES
+            ),
+            key=lambda job: job.created_at,
+            reverse=True,
+        )
+        for overflow in restored_active[_MAX_ACTIVE_SUBAGENTS:]:
+            overflow.status = "cancelled"
+            overflow.finished_at = time.time()
+            overflow.guidance_request_id = None
+            overflow.guidance_deadline_at = None
+            overflow.error = (
+                "Restored subagent exceeded the global four-agent limit."
+            )
+            stale_jobs.append(overflow)
+
         pending_messages: list[SubagentCommunication] = []
         for item_id, payload in queued_messages.items():
             if item_id in delivered_messages or f"item_id={item_id}" in visible_context:
@@ -1015,6 +1090,9 @@ class SubagentManager:
             self._generation = getattr(parent_agent, "session_generation", 0)
             for job in restored:
                 self._jobs[job.id] = job
+                self._terminal_published[job.id] = threading.Event()
+                if job.status in _TERMINAL_JOB_STATUSES:
+                    self._terminal_published[job.id].set()
                 self._message_queues.setdefault(job.id, deque())
                 self._cancel_events.setdefault(job.id, threading.Event())
             for directive in sorted(pending_directives, key=lambda item: item.seq):
@@ -1177,6 +1255,12 @@ class SubagentManager:
             _publish_job_event(parent_agent, job)
             if resume_immediately:
                 _schedule()
+            if job.status in _TERMINAL_JOB_STATUSES:
+                published = self._terminal_published.get(job_id)
+                if published is not None:
+                    published.set()
+                with self._slot_cv:
+                    self._slot_cv.notify_all()
 
         def _schedule() -> bool:
             with self._lock:
@@ -1654,6 +1738,7 @@ class SubagentManager:
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._lock:
             future = self._futures.get(job_id)
+            terminal_published = self._terminal_published.get(job_id)
         if future is None:
             return None
 
@@ -1665,18 +1750,15 @@ class SubagentManager:
             # The done callback owns the public failed/stale terminal state.
             pass
 
-        terminal = {
-            "completed",
-            "failed",
-            "cancelled",
-            "killed",
-            "timed_out",
-            "indeterminate",
-            "stale",
-        }
         with self._slot_cv:
             job = self._jobs.get(job_id)
-            while job is not None and job.status not in terminal:
+            while job is not None and (
+                job.status not in _TERMINAL_JOB_STATUSES
+                or (
+                    terminal_published is not None
+                    and not terminal_published.is_set()
+                )
+            ):
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
                     break
@@ -1724,6 +1806,11 @@ class SubagentManager:
         if was_blocked:
             if self._root_agent is not None:
                 _publish_job_event(self._root_agent, job)
+            published = self._terminal_published.get(job_id)
+            if published is not None:
+                published.set()
+            with self._slot_cv:
+                self._slot_cv.notify_all()
             return True
         # Future.cancel() may invoke callbacks synchronously. Never call it
         # while holding the manager lock because callbacks acquire that lock.
@@ -1809,6 +1896,7 @@ class SubagentManager:
             for job_id in remove_ids:
                 self._jobs.pop(job_id, None)
                 self._futures.pop(job_id, None)
+                self._terminal_published.pop(job_id, None)
                 self._job_schedulers.pop(job_id, None)
                 self._cancel_events.pop(job_id, None)
                 self._message_queues.pop(job_id, None)
@@ -1875,6 +1963,11 @@ class SubagentManager:
             self._slot_cv.notify_all()
         if self._root_agent is not None:
             _publish_job_event(self._root_agent, job)
+        published = self._terminal_published.get(job_id)
+        if published is not None:
+            published.set()
+        with self._slot_cv:
+            self._slot_cv.notify_all()
 
     def drain_completed_for_parent(
         self,
