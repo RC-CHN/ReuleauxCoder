@@ -917,10 +917,7 @@ class MiniTUIApplication:
         return " REVIEW " if self.interactor.active_request else " YOU "
 
     def _should_route_arrows_to_transcript(self) -> bool:
-        return (
-            self.interactor.active_request is None
-            and not self.input_buffer.text
-        )
+        return self.interactor.active_request is not None or not self.input_buffer.text
 
     def _set_alternate_scroll(self, *, enabled: bool) -> None:
         """Let the terminal translate wheel motion to Up/Down without mouse capture."""

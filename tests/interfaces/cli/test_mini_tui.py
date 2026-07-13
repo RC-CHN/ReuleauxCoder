@@ -90,7 +90,7 @@ def test_alternate_scroll_protocol_keeps_native_selection_and_wheel_keys() -> No
     ]
 
 
-def test_alternate_scroll_arrows_only_own_empty_unblocked_input() -> None:
+def test_alternate_scroll_routes_approval_wheel_to_transcript() -> None:
     app = object.__new__(MiniTUIApplication)
     app.input_buffer = SimpleNamespace(text="")
     app.interactor = SimpleNamespace(active_request=None)
@@ -98,9 +98,8 @@ def test_alternate_scroll_arrows_only_own_empty_unblocked_input() -> None:
     assert app._should_route_arrows_to_transcript() is True
     app.input_buffer.text = "editing"
     assert app._should_route_arrows_to_transcript() is False
-    app.input_buffer.text = ""
     app.interactor.active_request = object()
-    assert app._should_route_arrows_to_transcript() is False
+    assert app._should_route_arrows_to_transcript() is True
 
 
 def test_static_transcript_cells_reuse_width_revision_fragment_cache(
