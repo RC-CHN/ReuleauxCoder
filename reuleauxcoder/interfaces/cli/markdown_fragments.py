@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from io import StringIO
 
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
@@ -16,9 +17,9 @@ class RetainedMarkdownRenderer:
 
     def __init__(self, *, max_entries: int = 1_000) -> None:
         self.max_entries = max(20, max_entries)
-        self._cache: dict[
+        self._cache: OrderedDict[
             tuple[str, int, int, int, bool, str], tuple[tuple[str, str], ...]
-        ] = {}
+        ] = OrderedDict()
 
     def render(
         self,
@@ -34,6 +35,7 @@ class RetainedMarkdownRenderer:
         key = (cell_id, revision, width, theme_revision, complete, text)
         cached = self._cache.get(key)
         if cached is not None:
+            self._cache.move_to_end(key)
             return list(cached)
 
         if complete:
@@ -55,9 +57,8 @@ class RetainedMarkdownRenderer:
         return list(fragments)
 
     def _prune(self) -> None:
-        overflow = len(self._cache) - self.max_entries
-        for key in tuple(self._cache)[: max(0, overflow)]:
-            self._cache.pop(key, None)
+        while len(self._cache) > self.max_entries:
+            self._cache.popitem(last=False)
 
 
 def _rich_markdown_fragments(text: str, *, width: int) -> list[tuple[str, str]]:

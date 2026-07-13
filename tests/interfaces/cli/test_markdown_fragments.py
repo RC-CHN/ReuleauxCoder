@@ -65,3 +65,36 @@ def test_markdown_cache_is_keyed_by_revision_width_and_theme() -> None:
 
     assert narrow and wide
     assert len(renderer._cache) == 2
+
+
+def test_markdown_cache_evicts_the_least_recently_used_entry() -> None:
+    renderer = RetainedMarkdownRenderer(max_entries=20)
+    for index in range(20):
+        renderer.render(
+            cell_id=f"assistant:{index}",
+            revision=1,
+            text=f"message {index}",
+            complete=True,
+            width=80,
+        )
+
+    renderer.render(
+        cell_id="assistant:0",
+        revision=1,
+        text="message 0",
+        complete=True,
+        width=80,
+    )
+    renderer.render(
+        cell_id="assistant:20",
+        revision=1,
+        text="message 20",
+        complete=True,
+        width=80,
+    )
+
+    cached_cell_ids = {key[0] for key in renderer._cache}
+    assert len(renderer._cache) == 20
+    assert "assistant:0" in cached_cell_ids
+    assert "assistant:20" in cached_cell_ids
+    assert "assistant:1" not in cached_cell_ids
