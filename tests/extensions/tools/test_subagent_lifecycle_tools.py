@@ -100,6 +100,7 @@ def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> 
                 progress=("reading parser",),
                 agent_id="sa_sj_1",
                 last_activity_at=time.time() - 1,
+                injected_to_parent=False,
             )
         ],
     )
@@ -113,12 +114,48 @@ def test_send_and_list_agents_are_compact_non_blocking_controls(monkeypatch) -> 
 
     assert sent.success and sent.metadata["directive_id"] == "sd_1"
     assert listed.success and listed.metadata["count"] == 1
+    assert listed.summary == "1 running · 0 terminal · 0 delivered"
     assert len(listed.content.splitlines()) == 1
     assert len(listed.content) < 240
     assert "tools 3/20" in listed.content
     assert "sj_1/sa_sj_1" in listed.content
     assert "last_activity_seconds_ago" in listed.metadata["agents"][0]
     assert listed.metadata["agents"][0]["tokens"] == 120
+
+
+def test_list_agents_marks_terminal_result_as_already_delivered(monkeypatch) -> None:
+    manager = SimpleNamespace(
+        list_jobs=lambda: [
+            SimpleNamespace(
+                id="sj_done",
+                status="completed",
+                mode="explore",
+                task="inspect parser",
+                started_at=time.time() - 2,
+                finished_at=time.time() - 1,
+                prompt_tokens=100,
+                completion_tokens=20,
+                max_tokens=1000,
+                tool_calls=3,
+                max_tool_calls=20,
+                progress=(),
+                agent_id="sa_sj_done",
+                last_activity_at=time.time() - 1,
+                injected_to_parent=True,
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.tools.builtin.subagent_control.get_subagent_manager",
+        lambda _root: manager,
+    )
+
+    listed = _bind(ListAgentsTool()).execute()
+
+    assert listed.summary == "0 running · 1 terminal · 1 delivered"
+    assert listed.metadata["agents"][0]["delivered_to_parent"] is True
+    assert "completed" in listed.content
+    assert "delivered" in listed.content
 
 
 def test_wait_agent_is_interruptible_by_human_without_cancelling_child(

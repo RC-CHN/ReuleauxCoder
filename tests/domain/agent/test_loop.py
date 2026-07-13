@@ -87,6 +87,40 @@ def test_agent_loop_runtime_working_directory_override() -> None:
     assert '"working_directory":"/tmp/remote-workspace"' in messages[-1]["content"]
 
 
+def test_runtime_tail_distinguishes_running_and_delivered_subagents() -> None:
+    agent = _AgentStub()
+    agent._subagent_manager = SimpleNamespace(
+        list_jobs=lambda: [
+            SimpleNamespace(
+                id="sj_running",
+                parent_agent_id="agent",
+                status="running",
+                mode="explore",
+                task="inspect parser",
+                injected_to_parent=False,
+            ),
+            SimpleNamespace(
+                id="sj_done",
+                parent_agent_id="agent",
+                status="completed",
+                mode="explore",
+                task="inspect tests",
+                injected_to_parent=True,
+            ),
+        ]
+    )
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert (
+        '"subagents":{"running":1,"blocked":0,"terminal":1,'
+        '"delivered_terminal":1}' in content
+    )
+    assert '"job_id":"sj_running"' in content
+    assert '"job_id":"sj_done"' not in content
+
+
 class _BudgetLLM:
     model = "budget-model"
     max_tokens = 4096

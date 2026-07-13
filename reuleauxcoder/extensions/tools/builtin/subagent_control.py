@@ -184,10 +184,25 @@ class ListAgentsTool(_RootSubagentTool):
             rows = [_agent_snapshot(job, now=now) for job in jobs]
             lines = [_agent_snapshot_line(row) for row in rows]
             content = "\n".join(lines) if lines else "No subagents."
+            running = sum(row["status"] not in _TERMINAL for row in rows)
+            terminal = len(rows) - running
+            delivered = sum(
+                row["status"] in _TERMINAL and row["delivered_to_parent"]
+                for row in rows
+            )
             return ToolOutcome(
-                summary=f"{len(jobs)} subagent{'s' if len(jobs) != 1 else ''}",
+                summary=(
+                    f"{running} running · {terminal} terminal · "
+                    f"{delivered} delivered"
+                ),
                 content=content,
-                metadata={"count": len(jobs), "agents": rows},
+                metadata={
+                    "count": len(jobs),
+                    "running": running,
+                    "terminal": terminal,
+                    "delivered": delivered,
+                    "agents": rows,
+                },
             )
         except RuntimeError as error:
             return _invalid(str(error))
@@ -197,8 +212,10 @@ class ListAgentsTool(_RootSubagentTool):
 class WaitAgentTool(_RootSubagentTool):
     name = "wait_agent"
     description = (
-        "Wait for subagent mailbox activity. New human input interrupts this wait; "
-        "timeout does not cancel any child."
+        "Wait only for new, not-yet-delivered subagent mailbox activity. Terminal "
+        "results are injected into context automatically and must not be retrieved by "
+        "calling wait_agent again. New human input interrupts this wait; timeout does "
+        "not cancel any child."
     )
     parameters = {
         "type": "object",
@@ -342,6 +359,7 @@ def _agent_snapshot(job, *, now: float) -> dict:
         "tokens": prompt_tokens + completion_tokens,
         "max_tokens": max_tokens,
         "blocker": blocker,
+        "delivered_to_parent": bool(getattr(job, "injected_to_parent", False)),
     }
 
 
@@ -355,8 +373,9 @@ def _agent_snapshot_line(row: dict) -> str:
     detail = row["blocker"] or row["activity"] or row["task"]
     activity_age = row["last_activity_seconds_ago"]
     activity = f" · active {activity_age:.1f}s ago" if activity_age is not None else ""
+    delivery = " · delivered" if row["delivered_to_parent"] else ""
     return (
         f"{row['job_id']}/{row['agent_id']} · {row['status']} · {row['mode']} · "
-        f"{row['elapsed_seconds']:.1f}s{activity} · {budget} · "
+        f"{row['elapsed_seconds']:.1f}s{activity}{delivery} · {budget} · "
         f"{_clip(str(detail), 100)}"
     )

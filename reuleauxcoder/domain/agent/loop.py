@@ -108,8 +108,40 @@ class AgentLoop:
         progress = self.agent.plan_controller.progress
         agent_updates: list[dict] = []
         manager = getattr(self.agent, "_subagent_manager", None)
+        subagent_status = {
+            "running": 0,
+            "blocked": 0,
+            "terminal": 0,
+            "delivered_terminal": 0,
+        }
         if manager is not None:
-            terminal = {"completed", "cancelled", "stale"}
+            terminal = {
+                "completed",
+                "failed",
+                "cancelled",
+                "killed",
+                "timed_out",
+                "indeterminate",
+                "stale",
+            }
+            visible_jobs = [
+                job
+                for job in manager.list_jobs()
+                if job.parent_agent_id == self.agent.agent_id
+            ]
+            subagent_status = {
+                "running": sum(
+                    job.status not in terminal and job.status != "blocked"
+                    for job in visible_jobs
+                ),
+                "blocked": sum(job.status == "blocked" for job in visible_jobs),
+                "terminal": sum(job.status in terminal for job in visible_jobs),
+                "delivered_terminal": sum(
+                    job.status in terminal
+                    and bool(getattr(job, "injected_to_parent", False))
+                    for job in visible_jobs
+                ),
+            }
             agent_updates = [
                 {
                     "job_id": job.id,
@@ -117,13 +149,13 @@ class AgentLoop:
                     "mode": job.mode,
                     "task": job.task[:180],
                 }
-                for job in manager.list_jobs()
-                if job.parent_agent_id == self.agent.agent_id
-                and job.status not in terminal
+                for job in visible_jobs
+                if job.status not in terminal
             ][:8]
         data = {
             "plan": plan.to_dict(),
             "progress": progress.to_dict(),
+            "subagents": subagent_status,
             "relevant_agents": agent_updates,
             "environment": {
                 "utc_time": now_utc,
