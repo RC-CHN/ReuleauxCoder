@@ -87,6 +87,37 @@ def test_agent_loop_runtime_working_directory_override() -> None:
     assert '"working_directory":"/tmp/remote-workspace"' in messages[-1]["content"]
 
 
+def test_runtime_tail_uses_bound_two_scope_notes_store() -> None:
+    agent = _AgentStub()
+    agent.notes_store = SimpleNamespace(
+        render=lambda *, max_chars: (
+            "Workspace notes:\n  [wn_one] project\n\n"
+            "Global notes:\n  [gn_one] preference"
+        )[:max_chars]
+    )
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert "Workspace notes" in content
+    assert "Global notes" in content
+    assert "wn_one" in content
+    assert "gn_one" in content
+
+
+def test_runtime_tail_honors_notes_inject_false() -> None:
+    agent = _AgentStub()
+    agent.runtime_config.notes_inject = False
+    agent.notes_store = SimpleNamespace(
+        render=lambda **_kwargs: "MUST NOT BE INJECTED"
+    )
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert "MUST NOT BE INJECTED" not in content
+
+
 def test_runtime_tail_distinguishes_running_and_delivered_subagents() -> None:
     agent = _AgentStub()
     agent._subagent_manager = SimpleNamespace(

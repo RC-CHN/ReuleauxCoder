@@ -136,6 +136,9 @@ BUILTIN_TOOL_NAMES = {
     "list_agents",
     "wait_agent",
     "interrupt_agent",
+    "write_note",
+    "edit_note",
+    "delete_note",
 }
 
 

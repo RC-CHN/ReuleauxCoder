@@ -87,6 +87,7 @@ class Agent:
             config, "active_sub_model_profile", None
         )
         self.runtime_working_directory: str | None = None
+        self.notes_store = None
         self.mcp_manager = None
         self.skills_service = None
         self.skills_catalog: str = ""

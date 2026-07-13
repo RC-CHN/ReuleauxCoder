@@ -376,6 +376,11 @@ class Config:
             if not mode.name:
                 errors.append(f"modes[{mode_name}] must have a name")
 
+        if self.notes_workspace_max < 1:
+            errors.append("notes_workspace_max must be positive")
+        if self.notes_global_max < 1:
+            errors.append("notes_global_max must be positive")
+
         if self.approval.default_mode not in valid_actions:
             errors.append(
                 "approval.default_mode must be one of allow, warn, require_approval, deny"

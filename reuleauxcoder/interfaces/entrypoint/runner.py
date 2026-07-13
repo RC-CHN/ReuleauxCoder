@@ -54,6 +54,7 @@ from reuleauxcoder.interfaces.entrypoint.remote_relay import (
 )
 from reuleauxcoder.interfaces.entrypoint.session_lifecycle import restore_session
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
+from reuleauxcoder.infrastructure.persistence.notes_store import NoteStore
 from reuleauxcoder.services.llm.client import LLM
 
 __all__ = ["AppRunner", "_default_create_remote_artifact_provider"]
@@ -164,7 +165,16 @@ class AppRunner:
             )
         tools = self.dependencies.load_tools(tool_backend)
         agent = self.dependencies.create_agent(llm, tools, config)
+        # Custom dependency factories may return an Agent without forwarding
+        # config.  Runtime services and tool adapters must still see the exact
+        # effective configuration loaded by this runner.
+        agent.config = config
         agent.runtime_config = config
+        agent.notes_store = NoteStore(
+            Path.cwd(),
+            workspace_max=config.notes_workspace_max,
+            global_max=config.notes_global_max,
+        )
         agent.reasoning_display_mode = (
             "inline" if config.ui.reasoning_display == "inline" else "quiet"
         )

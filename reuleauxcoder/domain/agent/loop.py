@@ -94,15 +94,7 @@ class AgentLoop:
                 directory = [line.strip() for line in listing[1].splitlines()]
         except Exception:
             pass
-        notes_text = ""
-        try:
-            from reuleauxcoder.infrastructure.persistence.notes_store import (
-                render_notes,
-            )
-
-            notes_text = render_notes()[:1_200]
-        except Exception:
-            pass
+        notes_text = self._render_notes(max_chars=1_200)
 
         plan = self.agent.plan_controller.state
         progress = self.agent.plan_controller.progress
@@ -172,7 +164,7 @@ class AgentLoop:
         encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e")
         if len(encoded) > 7_000:
             data["environment"]["directory"] = directory[:10]
-            data["environment"]["notes"] = notes_text[:400]
+            data["environment"]["notes"] = self._render_notes(max_chars=400)
             data["relevant_agents"] = agent_updates[:4]
             encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e")
@@ -188,6 +180,22 @@ class AgentLoop:
             "</execution_state>"
         )
         return {"role": "system", "content": content}
+
+    def _render_notes(self, *, max_chars: int) -> str:
+        """Render the agent-bound two-scope notes repository, if enabled."""
+        config = getattr(self.agent, "runtime_config", None) or getattr(
+            self.agent, "config", None
+        )
+        if config is not None and not getattr(config, "notes_inject", True):
+            return ""
+        store = getattr(self.agent, "notes_store", None)
+        render = getattr(store, "render", None)
+        if not callable(render):
+            return ""
+        try:
+            return render(max_chars=max_chars) or ""
+        except Exception as exc:
+            return f"Notes unavailable: {type(exc).__name__}"
 
     def _full_messages(self) -> list[dict]:
         """Get full messages including system prompt and ephemeral runtime tail."""
