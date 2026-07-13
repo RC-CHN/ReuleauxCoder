@@ -2215,6 +2215,12 @@ def run_subagent_task(
     sub.state.total_model_calls = execution.model_calls
     result = execution.summary
     status = _normalize_subagent_terminal_status(execution.status, result)
+    checkpoint_reference = None
+    if status == "blocked" and job_id:
+        tracked = manager.get_job(job_id)
+        checkpoint_reference = (
+            tracked.resume_reference if tracked is not None else None
+        )
 
     final_result = _result_from_agent(
         sub,
@@ -2235,6 +2241,7 @@ def run_subagent_task(
         },
         usage_uncertain=execution.usage_uncertain,
         resume_ready=execution.resume_ready,
+        transcript_ref=checkpoint_reference,
     )
     final_result.worktree_path = str(lease.path) if lease is not None else None
     return final_result
@@ -2330,6 +2337,7 @@ def _result_from_agent(
     partial: bool = False,
     usage_uncertain: bool = False,
     resume_ready: bool = False,
+    transcript_ref: str | None = None,
 ) -> SubagentResult:
     messages = list(getattr(sub, "messages", []))
     reported = _parse_delegated_final_response(summary)
@@ -2385,8 +2393,9 @@ def _result_from_agent(
         model_calls=int(getattr(sub.state, "total_model_calls", 0)),
         usage_uncertain=usage_uncertain,
         resume_ready=resume_ready,
+        transcript_ref=transcript_ref,
     )
-    if job_id:
+    if job_id and transcript_ref is None:
         root = getattr(parent_agent, "runtime_working_directory", None) or Path.cwd()
         try:
             result.transcript_ref = SubagentTranscriptStore(root).write(
