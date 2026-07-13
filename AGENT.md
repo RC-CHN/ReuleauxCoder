@@ -4,7 +4,7 @@ This file describes the current repository, not a future design. Detailed design
 
 ## Current snapshot
 
-- Package version: `0.4.1`.
+- Package version: `0.4.2`.
 - Primary shipped interface: prompt_toolkit-owned interactive mini-TUI; Rich remains the append-only renderer for one-shot, non-TTY, server and remote-peer paths.
 - TUI status: the production CLI now owns a persistent viewport, but there is still no production Textual application.
 - Remote peer: `reuleauxcoder-agent/`, a CLI-only Go peer.
