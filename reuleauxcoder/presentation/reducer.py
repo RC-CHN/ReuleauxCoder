@@ -74,6 +74,9 @@ class RuntimeViewState:
     active_assistant_cells: dict[
         tuple[str | None, str | None, int | None, str | None], str
     ] = field(default_factory=dict)
+    active_turn_groups: dict[
+        tuple[str | None, str | None, int | None], str
+    ] = field(default_factory=dict)
 
 
 class PresentationReducer:
@@ -99,6 +102,7 @@ class PresentationReducer:
         if isinstance(payload, (TurnStarted, ChatStarted)):
             self._complete_active_assistant(event)
             identity = event.turn_id or event.event_id
+            group_id = self._start_turn_group(event)
             return self._append(
                 UserCell(
                     id=(
@@ -107,6 +111,7 @@ class PresentationReducer:
                         else f"user:{identity}"
                     ),
                     text=_visible_user_input(payload.user_input),
+                    group_id=group_id,
                 )
             )
         if isinstance(payload, AssistantContentDelta):
@@ -118,7 +123,9 @@ class PresentationReducer:
                 return ()
             return self._append_stream(event, payload.text)
         if isinstance(payload, (TurnFinished, ChatCompleted)):
-            return self._complete_chat(event, payload)
+            changes = self._complete_chat(event, payload)
+            self.state.active_turn_groups.pop(self._turn_route(event), None)
+            return changes
         if isinstance(payload, ToolCallStarted):
             # A provider can continue streaming prose after a tool result.
             # Close the pre-tool block so that continuation is appended after
@@ -129,12 +136,13 @@ class PresentationReducer:
                 tool_call_id=payload.tool_call_id,
                 name=payload.tool_name,
                 arguments=payload.arguments,
+                group_id=self._event_group(event),
             )
             return self._append(cell)
         if isinstance(payload, ToolCallFinished):
-            return self._finish_tool(payload)
+            return self._finish_tool(event, payload)
         if isinstance(payload, ToolOutputDelta):
-            return self._append_tool_output(payload)
+            return self._append_tool_output(event, payload)
         if isinstance(payload, SubagentFinished):
             cell = SubagentCell(
                 id=f"subagent:{payload.job_id}",
@@ -144,6 +152,7 @@ class PresentationReducer:
                 status=payload.status,
                 result=payload.result,
                 error=payload.error,
+                group_id=self._event_group(event),
             )
             existing = self.state.transcript.get(cell.id)
             if isinstance(existing, SubagentCell):
@@ -164,6 +173,7 @@ class PresentationReducer:
                     message=payload.message,
                     level="error",
                     category="agent",
+                    group_id=self._event_group(event),
                 )
             )
         if isinstance(payload, NotificationRaised):
@@ -173,6 +183,7 @@ class PresentationReducer:
                     message=payload.message,
                     level=payload.severity,
                     category=payload.code,
+                    group_id=self._event_group(event),
                 )
             )
         if isinstance(payload, DiagnosticsPublished):
@@ -180,9 +191,9 @@ class PresentationReducer:
         if isinstance(payload, DiagnosticsCleared):
             return self._clear_diagnostics(event, payload)
         if isinstance(payload, ApprovalRequested):
-            return self._request_approval(payload)
+            return self._request_approval(event, payload)
         if isinstance(payload, ApprovalResolved):
-            return self._resolve_approval(payload)
+            return self._resolve_approval(event, payload)
         if isinstance(payload, SessionChanged):
             self.state.active_session_id = payload.session_id
             return ()
@@ -220,6 +231,7 @@ class PresentationReducer:
         message: str,
         level: str = "info",
         category: str = "system",
+        group_id: str | None = None,
     ) -> tuple[PresentationChange, ...]:
         """Compatibility boundary for legacy interface-only notifications."""
         cell_id = f"notice:{notice_id}"
@@ -231,6 +243,7 @@ class PresentationReducer:
                 message=message,
                 level=level,
                 category=category,
+                group_id=group_id,
             )
         )
 
@@ -286,7 +299,11 @@ class PresentationReducer:
             existing_same_id = self.state.transcript.get(cell_id)
             if isinstance(existing_same_id, AssistantCell):
                 cell_id = f"{cell_id}:{event.event_id}"
-            cell = AssistantCell(id=cell_id, text=text)
+            cell = AssistantCell(
+                id=cell_id,
+                text=text,
+                group_id=self._event_group(event),
+            )
             self.state.active_assistant_cells[route] = cell_id
             return self._append(cell)
         updated = next_revision(existing, text=existing.text + text)
@@ -314,6 +331,7 @@ class PresentationReducer:
                     ),
                     text=payload.response,
                     complete=True,
+                    group_id=self._event_group(event),
                 )
             )
         return ()
@@ -337,7 +355,36 @@ class PresentationReducer:
             event.turn_id,
         )
 
-    def _finish_tool(self, payload: ToolCallFinished) -> tuple[PresentationChange, ...]:
+    @staticmethod
+    def _turn_route(
+        event: RuntimeEvent,
+    ) -> tuple[str | None, str | None, int | None]:
+        return (event.agent_id, event.session_id, event.session_generation)
+
+    def _start_turn_group(self, event: RuntimeEvent) -> str:
+        group_id = self._group_identity(event, event.turn_id or event.event_id)
+        self.state.active_turn_groups[self._turn_route(event)] = group_id
+        return group_id
+
+    def _event_group(self, event: RuntimeEvent) -> str | None:
+        if event.turn_id:
+            return self._group_identity(event, event.turn_id)
+        return self.state.active_turn_groups.get(self._turn_route(event))
+
+    @staticmethod
+    def _group_identity(event: RuntimeEvent, identity: str) -> str:
+        return ":".join(
+            (
+                event.agent_id or "agent",
+                event.session_id or "session",
+                str(event.session_generation or 0),
+                identity,
+            )
+        )
+
+    def _finish_tool(
+        self, event: RuntimeEvent, payload: ToolCallFinished
+    ) -> tuple[PresentationChange, ...]:
         cell_id = f"tool:{payload.tool_call_id}"
         existing = self.state.transcript.get(cell_id)
         status = (
@@ -357,11 +404,14 @@ class PresentationReducer:
                 status=status,
                 outcome=payload.outcome,
                 orphaned=True,
+                group_id=self._event_group(event),
             )
             changes = self._append(orphan)
-        return changes + self._record_diff(payload)
+        return changes + self._record_diff(event, payload)
 
-    def _record_diff(self, payload: ToolCallFinished) -> tuple[PresentationChange, ...]:
+    def _record_diff(
+        self, event: RuntimeEvent, payload: ToolCallFinished
+    ) -> tuple[PresentationChange, ...]:
         # A reviewed write/edit diff already lives in the approval transcript
         # cell.  Re-emitting the identical applied diff makes the main viewport
         # noisy and was especially confusing in the fixed mini-TUI.
@@ -376,10 +426,17 @@ class PresentationReducer:
             return self._replace(
                 next_revision(existing, path=diff.path, diff=diff.unified)
             )
-        return self._append(DiffCell(id=cell_id, path=diff.path, diff=diff.unified))
+        return self._append(
+            DiffCell(
+                id=cell_id,
+                path=diff.path,
+                diff=diff.unified,
+                group_id=self._event_group(event),
+            )
+        )
 
     def _append_tool_output(
-        self, payload: ToolOutputDelta
+        self, event: RuntimeEvent, payload: ToolOutputDelta
     ) -> tuple[PresentationChange, ...]:
         cell_id = f"tool:{payload.tool_call_id}"
         existing = self.state.transcript.get(cell_id)
@@ -403,6 +460,7 @@ class PresentationReducer:
                     payload.text, max_chars=self.policy.tool_preview_chars
                 ),
                 orphaned=True,
+                group_id=self._event_group(event),
             )
         )
 
@@ -421,6 +479,7 @@ class PresentationReducer:
             document_version=payload.document_version,
             diagnostic_generation=payload.diagnostic_generation,
             diagnostics=payload.diagnostics,
+            group_id=self._event_group(event),
         )
         existing = self.state.transcript.get(cell.id)
         if isinstance(existing, DiagnosticCell):
@@ -450,7 +509,7 @@ class PresentationReducer:
         )
 
     def _request_approval(
-        self, payload: ApprovalRequested
+        self, event: RuntimeEvent, payload: ApprovalRequested
     ) -> tuple[PresentationChange, ...]:
         cell = ApprovalCell(
             id=f"approval:{payload.request_id}",
@@ -458,6 +517,7 @@ class PresentationReducer:
             title=payload.title,
             status="pending",
             preview=payload.preview,
+            group_id=self._event_group(event),
         )
         existing = self.state.transcript.get(cell.id)
         if isinstance(existing, ApprovalCell):
@@ -468,12 +528,13 @@ class PresentationReducer:
                     status="pending",
                     preview=payload.preview,
                     reason=None,
+                    group_id=existing.group_id or cell.group_id,
                 )
             )
         return self._append(cell)
 
     def _resolve_approval(
-        self, payload: ApprovalResolved
+        self, event: RuntimeEvent, payload: ApprovalResolved
     ) -> tuple[PresentationChange, ...]:
         cell_id = f"approval:{payload.request_id}"
         existing = self.state.transcript.get(cell_id)
@@ -489,6 +550,7 @@ class PresentationReducer:
                 title="Approval",
                 status=status,
                 reason=payload.reason,
+                group_id=self._event_group(event),
             )
         )
 

@@ -169,6 +169,25 @@ def test_thousand_cell_transcript_reuses_virtual_layout() -> None:
     assert resized is not first
 
 
+def test_transcript_groups_turns_with_role_labels_and_one_separator() -> None:
+    adapter = MiniTUIEventAdapter()
+    adapter.append_restored_conversation(
+        [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "before tool"},
+            {"role": "assistant", "content": "same turn continuation"},
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "second answer"},
+        ]
+    )
+
+    rendered = "".join(text for _style, text in adapter.transcript_fragments())
+
+    assert rendered.count(" FORGE ") == 2
+    assert rendered.count("╶────────────────") == 1
+    assert rendered.count(" YOU ") == 2
+
+
 def test_visual_prewrap_counts_cjk_and_emoji_width() -> None:
     wrapped = _wrap_fragments(
         [("class:assistant", "ab中文🚀cd")],

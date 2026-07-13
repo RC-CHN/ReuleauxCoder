@@ -41,7 +41,11 @@ def test_stream_deltas_merge_into_one_assistant_cell() -> None:
 
     assert reducer.state.transcript.cells == (
         AssistantCell(
-            id="assistant:turn-1", text="hello world", complete=True, revision=2
+            id="assistant:turn-1",
+            text="hello world",
+            complete=True,
+            revision=2,
+            group_id="agent:session:0:turn-1",
         ),
     )
 
@@ -86,7 +90,11 @@ def test_user_cell_hides_resume_lifecycle_prefix() -> None:
         )
     )
     assert reducer.state.transcript.cells == (
-        UserCell(id="user:turn-1", text="continue the work"),
+        UserCell(
+            id="user:turn-1",
+            text="continue the work",
+            group_id="agent:session:0:turn-1",
+        ),
     )
 
 
@@ -221,7 +229,11 @@ def test_late_event_from_older_session_generation_is_rejected() -> None:
 
     assert changes == ()
     assert reducer.state.transcript.cells == (
-        AssistantCell(id="assistant:agent-1:turn-1", text="current"),
+        AssistantCell(
+            id="assistant:agent-1:turn-1",
+            text="current",
+            group_id="agent-1:session-1:2:turn-1",
+        ),
     )
 
 
@@ -239,8 +251,16 @@ def test_generation_watermarks_are_isolated_by_agent_and_session() -> None:
     assert reducer.apply(_runtime(parent))
     assert reducer.apply(_runtime(child))
     assert reducer.state.transcript.cells == (
-        AssistantCell(id="assistant:parent:turn-1", text="parent"),
-        AssistantCell(id="assistant:child:turn-1", text="child"),
+        AssistantCell(
+            id="assistant:parent:turn-1",
+            text="parent",
+            group_id="parent:session:3:turn-1",
+        ),
+        AssistantCell(
+            id="assistant:child:turn-1",
+            text="child",
+            group_id="child:session:1:turn-1",
+        ),
     )
 
 

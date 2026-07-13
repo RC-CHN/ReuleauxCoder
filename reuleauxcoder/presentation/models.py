@@ -17,6 +17,7 @@ class AssistantCell:
     text: str = ""
     complete: bool = False
     revision: int = 0
+    group_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class UserCell:
     id: str
     text: str
     revision: int = 0
+    group_id: str | None = None
 
 
 class ToolCellStatus(str, Enum):
@@ -43,6 +45,7 @@ class ToolCell:
     outcome: ToolOutcome | None = None
     orphaned: bool = False
     revision: int = 0
+    group_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,7 @@ class DiffCell:
     path: str | None
     diff: str
     revision: int = 0
+    group_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,7 @@ class DiagnosticCell:
     diagnostic_generation: int
     diagnostics: tuple[RuntimeDiagnostic, ...]
     revision: int = 0
+    group_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,7 @@ class SubagentCell:
     result: str | None = None
     error: str | None = None
     revision: int = 0
+    group_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +89,7 @@ class NoticeCell:
     level: str = "info"
     category: str = "system"
     revision: int = 0
+    group_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +103,7 @@ class ApprovalCell:
     sections: tuple[ApprovalSection, ...] = ()
     reason: str | None = None
     revision: int = 0
+    group_id: str | None = None
 
 
 TranscriptCell: TypeAlias = (

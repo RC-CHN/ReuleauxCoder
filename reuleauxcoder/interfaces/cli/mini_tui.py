@@ -80,8 +80,10 @@ from reuleauxcoder.presentation import (
     RuntimeViewState,
     SubagentCell,
     ToolCell,
+    TranscriptPlacement,
     TranscriptModel,
     UserCell,
+    compose_transcript,
     execution_panel_lines,
     execution_panel_view,
 )
@@ -101,6 +103,9 @@ MINI_TUI_STYLE = Style.from_dict(
         "panel.live": "bold #67e8f9",
         "panel.detail": "#94a3b8",
         "user": "bold #ffffff bg:#5b4bc4",
+        "user.label": "bold #ffffff bg:#6d5ce7",
+        "assistant.label": "bold #071013 bg:#67e8f9",
+        "turn.separator": "#475569",
         "assistant": "#f8fafc",
         "tool": "#67e8f9",
         "muted": "#94a3b8",
@@ -217,11 +222,17 @@ class MiniTUIEventAdapter:
                 event.payload.view_model, "entries"
             ):
                 model = event.payload.view_model
+                restored_group: str | None = None
                 for index, entry in enumerate(model.entries):
                     cell_id = f"restored:{index}:{self._notice_seq}"
                     if entry.role == "user":
+                        restored_group = f"restored-turn:{index}:{self._notice_seq}"
                         self.transcript.state.transcript.append(
-                            UserCell(id=cell_id, text=entry.content)
+                            UserCell(
+                                id=cell_id,
+                                text=entry.content,
+                                group_id=restored_group,
+                            )
                         )
                     elif entry.role == "assistant":
                         self.transcript.state.transcript.append(
@@ -229,6 +240,7 @@ class MiniTUIEventAdapter:
                                 id=cell_id,
                                 text=entry.content,
                                 complete=True,
+                                group_id=restored_group or cell_id,
                             )
                         )
                 self._notice_seq += 1
@@ -262,11 +274,9 @@ class MiniTUIEventAdapter:
     def append_user_command(self, text: str) -> None:
         with self._lock:
             self._notice_seq += 1
-            self.transcript.append_notice(
-                notice_id=f"command:{self._notice_seq}",
-                message=text,
-                level="user",
-                category="user",
+            cell_id = f"command:{self._notice_seq}"
+            self.transcript.state.transcript.append(
+                UserCell(id=cell_id, text=text, group_id=cell_id)
             )
         self._invalidate()
 
@@ -334,17 +344,28 @@ class MiniTUIEventAdapter:
     def append_restored_conversation(self, entries) -> None:
         """Replay a bounded human transcript without adding model history."""
         with self._lock:
+            restored_group: str | None = None
             for index, entry in enumerate(entries):
                 role = entry.get("role")
                 content = str(entry.get("content") or "")
                 cell_id = f"restored:{index}:{self._notice_seq}"
                 if role == "user":
+                    restored_group = f"restored-turn:{index}:{self._notice_seq}"
                     self.transcript.state.transcript.append(
-                        UserCell(id=cell_id, text=content)
+                        UserCell(
+                            id=cell_id,
+                            text=content,
+                            group_id=restored_group,
+                        )
                     )
                 elif role == "assistant":
                     self.transcript.state.transcript.append(
-                        AssistantCell(id=cell_id, text=content, complete=True)
+                        AssistantCell(
+                            id=cell_id,
+                            text=content,
+                            complete=True,
+                            group_id=restored_group or cell_id,
+                        )
                     )
             self._notice_seq += 1
         self._invalidate()
@@ -389,10 +410,17 @@ class MiniTUIEventAdapter:
             return self._transcript_layout
         live_keys: set[tuple[str, int, int, int]] = set()
         visual_cells: list[VisualCell] = []
-        for cell in cells:
+        for placement in compose_transcript(cells):
+            cell = placement.cell
+            decoration_revision = (
+                cell.revision * 8
+                + int(placement.begins_turn) * 4
+                + int(placement.show_assistant_label) * 2
+                + placement.blank_lines_after
+            )
             key = (
                 cell.id,
-                cell.revision,
+                decoration_revision,
                 self._viewport_width,
                 self._theme_revision,
             )
@@ -401,10 +429,13 @@ class MiniTUIEventAdapter:
             if lines is None:
                 lines = _fragments_to_visual_lines(
                     _wrap_fragments(
-                        _cell_fragments(
-                            cell,
-                            width=self._viewport_width,
-                            markdown_renderer=self._markdown,
+                        _decorate_transcript_fragments(
+                            placement,
+                            _cell_fragments(
+                                cell,
+                                width=self._viewport_width,
+                                markdown_renderer=self._markdown,
+                            ),
                         ),
                         width=max(1, self._viewport_width),
                     )
@@ -1056,7 +1087,10 @@ def _cell_fragments(
     markdown_renderer: RetainedMarkdownRenderer | None = None,
 ) -> list[tuple[str, str]]:
     if isinstance(cell, UserCell):
-        return [("class:user", f" YOU  {cell.text}\n"), ("", "\n")]
+        return [
+            ("class:user.label", " YOU "),
+            ("class:user", f" {cell.text} "),
+        ]
     if isinstance(cell, AssistantCell):
         renderer = markdown_renderer or RetainedMarkdownRenderer()
         return renderer.render(

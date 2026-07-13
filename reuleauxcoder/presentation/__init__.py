@@ -1,5 +1,10 @@
 """Framework-neutral presentation state shared by CLI and future TUI."""
 
+from reuleauxcoder.presentation.composition import (
+    TranscriptPlacement,
+    compose_transcript,
+)
+
 from reuleauxcoder.presentation.models import (
     ApprovalCell,
     AssistantCell,
@@ -71,7 +76,9 @@ __all__ = [
     "ToolCellStatus",
     "ToolInvocationDisplay",
     "TranscriptModel",
+    "TranscriptPlacement",
     "UserCell",
     "Verbosity",
     "describe_tool_invocation",
+    "compose_transcript",
 ]
