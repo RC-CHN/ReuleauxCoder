@@ -46,7 +46,25 @@ def test_subagent_progress_updates_panel_state_without_parent_context_item() -> 
 
     assert outcome.success is True
     assert manager.drain_parent_messages("root") == []
-    assert "blocked" not in ReportProgressTool.parameters["properties"]["phase"]["enum"]
+    assert "blocked" in ReportProgressTool.parameters["properties"]["phase"]["enum"]
+    manager.shutdown()
+
+
+def test_subagent_can_report_blocked_progress_without_modifying_plan() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent.subagent_depth = 1
+    manager = SubagentManager(parent_agent_id="root")
+    manager.register_child_agent(
+        agent.agent_id, 1, parent_agent_id="root", job_id="sj_blocked"
+    )
+    agent._subagent_manager = manager
+    tool = _bind(ReportProgressTool(), agent, "blocked-call")
+
+    outcome = tool.execute("blocked", "Need a parser ownership decision")
+
+    assert outcome.success is True
+    assert agent.plan_controller.progress.phase == "blocked"
+    assert agent.plan_controller.state.items == ()
     manager.shutdown()
 
 

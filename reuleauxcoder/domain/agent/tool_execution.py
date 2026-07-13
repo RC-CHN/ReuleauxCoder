@@ -39,7 +39,11 @@ class ToolExecutor:
         reviewed_diff: str | None = None
         approval_workspace_changes: list[str] = []
         tool = self.agent.get_tool(tc.name)
-        if tool is None and not getattr(self.agent, "strict_tool_scope", False):
+        if (
+            tool is None
+            and not getattr(self.agent, "strict_tool_scope", False)
+            and self.agent.is_tool_in_scope(tc.name)
+        ):
             tool = get_tool(tc.name)
 
         before_context = BeforeToolExecuteContext(
@@ -277,7 +281,11 @@ class ToolExecutor:
 
         # First check agent's tools, then fall back to global registry
         tool = self.agent.get_tool(tool_call.name)
-        if tool is None and not getattr(self.agent, "strict_tool_scope", False):
+        if (
+            tool is None
+            and not getattr(self.agent, "strict_tool_scope", False)
+            and self.agent.is_tool_in_scope(tool_call.name)
+        ):
             tool = get_tool(tool_call.name)
 
         if tool is None:

@@ -114,6 +114,7 @@ class ReportProgressTool(_AgentControlTool):
                     "investigating",
                     "implementing",
                     "verifying",
+                    "blocked",
                     "ready",
                 ],
             },

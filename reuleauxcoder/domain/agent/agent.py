@@ -494,26 +494,45 @@ class Agent:
 
     def get_active_tools(self) -> list["Tool"]:
         """Return tools visible to the LLM in current mode."""
+        scoped_tools = [tool for tool in self.tools if self.is_tool_in_scope(tool.name)]
         mode = self.get_active_mode_config()
         if mode is None:
-            return self.tools
+            return scoped_tools
 
         if not mode.tools or "*" in mode.tools:
-            return self.tools
+            return scoped_tools
 
         allowed = set(mode.tools)
-        return [tool for tool in self.tools if tool.name in allowed]
+        return [tool for tool in scoped_tools if tool.name in allowed]
 
     def get_blocked_tools(self) -> list["Tool"]:
         """Return tools hidden/blocked by current mode."""
+        scoped_tools = [tool for tool in self.tools if self.is_tool_in_scope(tool.name)]
         mode = self.get_active_mode_config()
         if mode is None or not mode.tools or "*" in mode.tools:
             return []
         allowed = set(mode.tools)
-        return [tool for tool in self.tools if tool.name not in allowed]
+        return [tool for tool in scoped_tools if tool.name not in allowed]
+
+    def is_tool_in_scope(self, tool_name: str) -> bool:
+        """Return whether a tool belongs to this root/child agent scope."""
+        child_only = {"report_to_parent", "request_guidance"}
+        root_only = {
+            "update_plan",
+            "spawn_agent",
+            "send_message",
+            "list_agents",
+            "wait_agent",
+            "interrupt_agent",
+        }
+        if self.subagent_depth > 0:
+            return tool_name not in root_only
+        return tool_name not in child_only
 
     def suggest_modes_for_tool(self, tool_name: str) -> list[str]:
         """Return mode names that allow the given tool."""
+        if not self.is_tool_in_scope(tool_name):
+            return []
         suggestions: list[str] = []
         for mode_name, mode in self.available_modes.items():
             if not mode.tools or "*" in mode.tools or tool_name in set(mode.tools):
@@ -522,6 +541,8 @@ class Agent:
 
     def is_tool_allowed_in_mode(self, tool_name: str) -> bool:
         """Return whether a tool can execute in current mode."""
+        if not self.is_tool_in_scope(tool_name):
+            return False
         mode = self.get_active_mode_config()
         if mode is None:
             return True
@@ -658,6 +679,8 @@ class Agent:
 
     def get_tool(self, name: str) -> Optional["Tool"]:
         """Look up a tool by name."""
+        if not self.is_tool_in_scope(name):
+            return None
         for t in self.tools:
             if t.name == name:
                 return t
