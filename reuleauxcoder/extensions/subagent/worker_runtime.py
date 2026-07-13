@@ -95,6 +95,7 @@ class WorkerIPCClient:
         self._send_lock = threading.Lock()
         self._state_lock = threading.Condition()
         self._sequence = 0
+        self._tool_call_sequence = 0
         self._tool_results: dict[str, ToolOutcome] = {}
         self._directives: list[tuple[str, str]] = []
         self._park_acks: set[str] = set()
@@ -118,7 +119,7 @@ class WorkerIPCClient:
             self.connection.send(envelope.to_dict())
 
     def request_tool(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
-        call_id = f"broker_{time.time_ns()}"
+        call_id = self._next_tool_call_id()
         self.send(
             "tool_request",
             {"call_id": call_id, "name": name, "arguments": arguments},
@@ -133,6 +134,19 @@ class WorkerIPCClient:
                     )
                 self._state_lock.wait(timeout=0.05)
             return self._tool_results.pop(call_id)
+
+    def _next_tool_call_id(self) -> str:
+        """Return a worker-local, concurrency-safe broker correlation ID.
+
+        ``time.time_ns`` is not guaranteed to advance for concurrent calls on
+        Windows. A per-worker sequence avoids same-ID idempotency conflicts
+        while preserving a compact, inspectable identifier.
+        """
+        with self._send_lock:
+            self._tool_call_sequence += 1
+            return (
+                f"broker_{self.spec.worker_generation}_{self._tool_call_sequence}"
+            )
 
     def drain_directives(self) -> list[str]:
         with self._state_lock:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -17,6 +18,7 @@ from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 from reuleauxcoder.extensions.subagent.worker_protocol import WorkerSpec
 from reuleauxcoder.extensions.subagent.worker_runtime import (
     ParentToolBroker,
+    WorkerIPCClient,
     run_isolated_worker,
 )
 from reuleauxcoder.domain.runtime import tool_outcome_from_dict
@@ -24,6 +26,19 @@ from reuleauxcoder.domain.runtime import tool_outcome_from_dict
 
 class _UnusedLLM:
     model = "unused"
+
+
+def test_worker_broker_call_ids_are_unique_when_generated_concurrently() -> None:
+    client = object.__new__(WorkerIPCClient)
+    client.spec = SimpleNamespace(worker_generation=7)
+    client._send_lock = threading.Lock()
+    client._tool_call_sequence = 0
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        call_ids = list(executor.map(lambda _index: client._next_tool_call_id(), range(64)))
+
+    assert len(set(call_ids)) == 64
+    assert set(call_ids) == {f"broker_7_{index}" for index in range(1, 65)}
 
 
 def test_isolated_worker_hard_stop_reaches_terminal_without_model_request() -> None:
