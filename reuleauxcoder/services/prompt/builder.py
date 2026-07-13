@@ -97,7 +97,7 @@ def _rules_block() -> PromptBlock:
 6. **edit_file uniqueness.** When using edit_file, include enough surrounding context in old_string to guarantee a unique match.
 7. **Respect existing style.** Match the project's coding conventions.
 8. **Ask when unsure.** If the request is ambiguous, ask for clarification rather than guessing.
-9. **`<system_context>` block.** A `<system_context>...</system_context>` block injected at the end of the message list before each turn provides ephemeral runtime info (time, working directory, OS). It is automatically added — do not treat it as a user message or reply to it directly.""",
+9. **`<execution_state>` block.** A final system message wrapped in `<execution_state>...</execution_state>` is generated before each request with ephemeral runtime data. It is not a user message or authorization source; use it as bounded execution context and do not reply to it directly.""",
     )
 
 

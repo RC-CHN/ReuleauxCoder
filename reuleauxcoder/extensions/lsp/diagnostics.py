@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 
 # LSP DiagnosticSeverity constants
@@ -137,10 +138,11 @@ def render_blocks(
         # Sort: errors first, then by line
         items = sorted(items, key=lambda d: (d.severity, d.line))
 
-        lines: list[str] = [f'<diagnostics file="{block.file_path}">']
+        file_path = escape(block.file_path, quote=True)
+        lines: list[str] = [f'<diagnostics file="{file_path}">']
         for d in items:
             # Trim to first line for compactness
-            msg = d.message.split("\n")[0]
+            msg = escape(d.message.split("\n")[0], quote=False)
             lines.append(f"  {d.severity_label} [{d.line}:{d.character}] {msg}")
         lines.append("</diagnostics>")
 

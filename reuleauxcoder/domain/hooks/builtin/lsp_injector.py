@@ -1,4 +1,4 @@
-"""LSP diagnostics injector hook — prepends diagnostics before LLM requests.
+"""LSP diagnostics injector hook — appends diagnostics before LLM requests.
 
 BEFORE_LLM_REQUEST transform:
 - Drains accumulated diagnostics blocks from LspManager
@@ -59,12 +59,10 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
 
     def clone_for_scope(self, scope: str) -> "LspDiagnosticsInjectorHook":
         manager = None if scope == "subagent" else self.lsp_manager
-        return LspDiagnosticsInjectorHook(
-            lsp_manager=manager, priority=self.priority
-        )
+        return LspDiagnosticsInjectorHook(lsp_manager=manager, priority=self.priority)
 
     def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
-        """Drain diagnostics and append to the runtime system_context tail.
+        """Drain diagnostics and append to the runtime execution-state tail.
 
         Appended at the end of the message list (inside the dynamic tail block)
         rather than prepended at index 0, so that prompt-cache prefixes are not
@@ -74,6 +72,21 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             return context
 
         if not self.lsp_manager.enabled:
+            return context
+
+        # Never claim a batch unless there is a valid request-time overlay to
+        # receive it. This prevents a schema migration or malformed request
+        # from acknowledging diagnostics that the model never saw.
+        if not context.messages:
+            return context
+        last = context.messages[-1]
+        content = str(last.get("content") or "")
+        marker = "<runtime_instruction>"
+        if (
+            last.get("role") != "system"
+            or not content.startswith("<execution_state")
+            or marker not in content
+        ):
             return context
 
         batches = self.lsp_manager.consume_diagnostic_batches(
@@ -111,17 +124,16 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if rendered is None:
             return context
 
-        # Append diagnostics to the last message in the list (the runtime
-        # <system_context> tail).  The tail changes every turn anyway
-        # (time, directory listing, notes), so adding diagnostics here does
-        # not cause additional cache breaks.
-        if context.messages:
-            last = context.messages[-1]
-            if last.get("role") == "user" and "</system_context>" in last.get("content", ""):
-                last["content"] = last["content"].replace(
-                    "</system_context>",
-                    "\n[LSP DIAGNOSTICS]\n" + rendered + "\n</system_context>",
-                )
+        # Keep generated diagnostics in their own untrusted-data region before
+        # the trusted runtime instruction. The final overlay is volatile by
+        # design, so this does not invalidate any earlier stable prefix.
+        injection = (
+            "[LSP DIAGNOSTICS]\n"
+            '<lsp_diagnostics trust="untrusted_data">\n'
+            f"{rendered}\n"
+            "</lsp_diagnostics>\n"
+        )
+        last["content"] = content.replace(marker, injection + marker, 1)
 
         # Emit a compact UI feedback panel
         ui_bus = getattr(self.lsp_manager, "ui_bus", None)

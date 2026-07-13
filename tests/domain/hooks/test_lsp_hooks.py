@@ -79,6 +79,18 @@ def _complete_enqueued_batch(mgr: LspManager, block: DiagnosticBlock) -> None:
     mgr.enqueue_diagnostics = MagicMock(side_effect=enqueue)  # type: ignore[method-assign]
 
 
+def _execution_state_tail() -> dict:
+    return {
+        "role": "system",
+        "content": (
+            '<execution_state plan_revision="0">\n'
+            '<execution_data trust="untrusted_data">\n{}\n</execution_data>\n'
+            "<runtime_instruction>Continue.</runtime_instruction>\n"
+            "</execution_state>"
+        ),
+    }
+
+
 # === LspEditObserverHook ===
 
 
@@ -292,18 +304,20 @@ class TestLspDiagnosticsInjectorBasic:
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
             hook_point=HookPoint.BEFORE_LLM_REQUEST,
-            messages=[{"role": "user", "content": "hello</system_context>"}],
+            messages=[_execution_state_tail()],
         )
         result = hook.run(context)
 
-        # Diagnostics are appended inside the <system_context> tail of the last
-        # user message, not prepended as a separate message.
+        # Diagnostics are appended inside the request-time execution overlay,
+        # before the trusted runtime instruction.
         assert len(result.messages) == 1
         assert "err" in result.messages[0]["content"]
-        assert "hello" in result.messages[0]["content"]
         assert "[LSP DIAGNOSTICS]" in result.messages[0]["content"]
+        assert result.messages[0]["content"].index("err") < result.messages[0][
+            "content"
+        ].index("<runtime_instruction>")
 
-    def test_drains_and_clears_diagnostics(self) -> None:
+    def test_invalid_tail_does_not_consume_diagnostics(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
 
         mgr = _make_manager()
@@ -321,9 +335,8 @@ class TestLspDiagnosticsInjectorBasic:
             messages=[],
         )
         hook.run(context)
-        # Results should be drained after hook runs
-        assert mgr.pending_diagnostic_batches() == ()
-        assert mgr.diagnostic_batch_acknowledgement("batch-1") is not None
+        assert len(mgr.pending_diagnostic_batches()) == 1
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") is None
 
 
 class TestLspDiagnosticsInjectorCreateFromConfig:
@@ -446,9 +459,7 @@ class TestLspEditObserverDedup:
         hook.run(tool_context)
 
         assert tool_context.outcome is not None
-        assert [item.message for item in tool_context.outcome.diagnostics] == [
-            "edited"
-        ]
+        assert [item.message for item in tool_context.outcome.diagnostics] == ["edited"]
         remaining = mgr.pending_diagnostic_batches()
         assert [batch.block.file_path for batch in remaining] == ["/tmp/other.py"]
 
@@ -470,7 +481,7 @@ class TestLspDiagnosticsInjectorDedup:
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
             hook_point=HookPoint.BEFORE_LLM_REQUEST,
-            messages=[{"role": "user", "content": "hello</system_context>"}],
+            messages=[_execution_state_tail()],
         )
         result = hook.run(context)
 
@@ -493,7 +504,7 @@ class TestLspDiagnosticsInjectorDedup:
         hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
         context = BeforeLLMRequestContext(
             hook_point=HookPoint.BEFORE_LLM_REQUEST,
-            messages=[{"role": "user", "content": "hello</system_context>"}],
+            messages=[_execution_state_tail()],
         )
         result = hook.run(context)
 
