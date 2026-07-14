@@ -178,7 +178,6 @@ class PlanController:
                 return self._progress, False
             if session_generation != self._agent.session_generation:
                 raise ValueError("session generation changed before progress commit")
-            previous_phase = self._progress.phase
             revision = self._progress.revision + 1
             event = self._agent.history_ledger.append(
                 "progress_reported",
@@ -200,8 +199,6 @@ class PlanController:
                 event_id=event.event_id,
             )
             self._committed_calls[tool_call_id] = (fingerprint, revision)
-            if phase != previous_phase:
-                self._agent.context.mark_phase_boundary()
             self._persist_or_require_recovery()
             self._agent._emit_event(
                 AgentEvent.progress_reported(

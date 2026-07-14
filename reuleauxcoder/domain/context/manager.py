@@ -227,7 +227,6 @@ class ContextManager:
         self._last_rewrite_plan: dict[str, Any] | None = None
         self._rounds_at_last_semantic_checkpoint = 0
         self._snip_epochs_since_summary = 0
-        self._phase_boundary_pending = False
 
     def get_context_tokens(self, messages: list[dict]) -> int:
         """Get current locally-estimated context token count."""
@@ -257,7 +256,6 @@ class ContextManager:
         self._latest_usage = None
         self._last_rewrite_plan = None
         self._snip_epochs_since_summary = 0
-        self._phase_boundary_pending = False
 
     def invalidate_replay_prefix(self) -> None:
         """Start a new committed epoch after reset or stable-prefix replacement."""
@@ -267,11 +265,6 @@ class ContextManager:
         self._last_rewrite_plan = None
         self._rounds_at_last_semantic_checkpoint = 0
         self._snip_epochs_since_summary = 0
-        self._phase_boundary_pending = False
-
-    def mark_phase_boundary(self) -> None:
-        """Request a semantic checkpoint at the next safe compression boundary."""
-        self._phase_boundary_pending = True
 
     def _recompute_thresholds(self) -> None:
         limit = self._budget.request_input_limit
@@ -425,13 +418,7 @@ class ContextManager:
         """Plan and commit at most one low-frequency checkpoint rewrite epoch."""
         before_local_tokens = self.get_context_tokens(messages)
         before_tokens = self.predict_request_tokens(messages)
-        before_message_count = len(messages)
-        before_snapshot = self._snapshot_messages(messages)
-        applied_layers: list[str] = []
-        round_count = len(group_api_rounds(messages))
-        checkpointable = round_count > self._summarize_keep_recent_turns + 2
-        phase_due = self._phase_boundary_pending and checkpointable
-        if before_tokens < self._planning_at and not phase_due:
+        if before_tokens < self._planning_at:
             self._last_rewrite_plan = None
             return False
 
@@ -442,9 +429,22 @@ class ContextManager:
             "target": self._rewrite_target,
             "actual_usage": self._latest_usage is not None,
         }
-        if before_tokens < self._quality_wall and not phase_due:
+        if before_tokens < self._quality_wall:
             return False
 
+        trigger = "emergency" if before_tokens >= self._emergency_at else "quality_wall"
+        before_message_count = len(messages)
+        before_snapshot = self._snapshot_messages(messages)
+        self._emit_compression_started(
+            before_tokens=before_tokens,
+            before_message_count=before_message_count,
+            before_snapshot=before_snapshot,
+            trigger=trigger,
+        )
+
+        applied_layers: list[str] = []
+        round_count = len(group_api_rounds(messages))
+        checkpointable = round_count > self._summarize_keep_recent_turns + 2
         candidate = [dict(message) for message in messages]
         if self._provider_compactor is not None:
             provider_result = self._provider_compactor.compact_tool_results(
@@ -475,12 +475,8 @@ class ContextManager:
         )
 
         summarized = False
-        checkpoint_kind = "phase_checkpoint" if phase_due else "partial_prefix"
-        if (
-            candidate_prediction > self._rewrite_target_high
-            or semantic_due
-            or phase_due
-        ):
+        checkpoint_kind = "partial_prefix"
+        if candidate_prediction > self._rewrite_target_high or semantic_due:
             summarized = self._summarize_old(
                 candidate,
                 llm,
@@ -495,6 +491,7 @@ class ContextManager:
             self._last_compact_strategy = "snip"
 
         if not applied_layers:
+            self._emit_compression_skipped(trigger=trigger)
             return False
 
         after_local_tokens = self.get_context_tokens(candidate)
@@ -520,7 +517,7 @@ class ContextManager:
         observation = self._latest_usage
         self._checkpoints.append(
             CompactionCheckpoint.create(
-                trigger="quality_wall",
+                trigger=trigger,
                 strategy=applied_layers,
                 source_history_version=source_version,
                 replacement_history=messages,
@@ -550,15 +547,16 @@ class ContextManager:
         if summarized:
             self._rounds_at_last_semantic_checkpoint = len(group_api_rounds(messages))
             self._snip_epochs_since_summary = 0
-            self._phase_boundary_pending = False
         elif snipped or applied_layers:
             self._snip_epochs_since_summary += 1
-        self._emit_compression_events(
+        self._emit_compression_completed(
             before_tokens=before_tokens,
+            after_tokens=after_tokens,
             before_message_count=before_message_count,
             before_snapshot=before_snapshot,
             after_messages=messages,
             applied_layers=applied_layers,
+            trigger=trigger,
         )
         return True
 
@@ -575,6 +573,12 @@ class ContextManager:
         before_local = self.get_context_tokens(messages)
         before_count = len(messages)
         before_snapshot = self._snapshot_messages(messages)
+        self._emit_compression_started(
+            before_tokens=before_tokens,
+            before_message_count=before_count,
+            before_snapshot=before_snapshot,
+            trigger="manual",
+        )
         changed = False
         if strategy == "snip":
             changed = self._snip_tool_outputs(messages)
@@ -588,10 +592,12 @@ class ContextManager:
             )
         elif strategy == "collapse":
             if len(messages) <= 4:
+                self._emit_compression_skipped(trigger="manual")
                 return False
             self._hard_collapse(messages, llm, history_events=history_events)
             changed = True
         if not changed:
+            self._emit_compression_skipped(trigger="manual")
             return False
 
         after_local = self.get_context_tokens(messages)
@@ -629,15 +635,16 @@ class ContextManager:
         if strategy in {"summarize", "collapse"}:
             self._rounds_at_last_semantic_checkpoint = len(group_api_rounds(messages))
             self._snip_epochs_since_summary = 0
-            self._phase_boundary_pending = False
         elif strategy == "snip":
             self._snip_epochs_since_summary += 1
-        self._emit_compression_events(
+        self._emit_compression_completed(
             before_tokens=before_tokens,
+            after_tokens=after_tokens,
             before_message_count=before_count,
             before_snapshot=before_snapshot,
             after_messages=messages,
             applied_layers=[strategy],
+            trigger="manual",
         )
         return True
 
@@ -794,32 +801,34 @@ class ContextManager:
         self._consecutive_summary_failures = 0
         return summary
 
-    def _emit_compression_events(
+    def _emit_compression_started(
         self,
         *,
         before_tokens: int,
         before_message_count: int,
         before_snapshot: list[dict[str, Any]],
-        after_messages: list[dict],
-        applied_layers: list[str],
+        trigger: str,
     ) -> None:
-        """Push UI events describing context compression lifecycle."""
+        """Tell the UI before any potentially slow compaction work begins."""
         if not self._ui_bus:
             return
 
-        after_tokens = self.get_context_tokens(after_messages)
-        after_message_count = len(after_messages)
-        after_snapshot = self._snapshot_messages(after_messages)
-        strategy = self._describe_strategy(applied_layers)
-        delta_tokens = after_tokens - before_tokens
-        delta_messages = after_message_count - before_message_count
-
+        capacity = before_tokens / max(1, self.request_input_limit)
+        operation = (
+            "Context compression" if trigger == "manual" else "Context auto-compression"
+        )
         self._ui_bus.info(
-            f"Context auto-compression triggered at {before_tokens} tokens / {before_message_count} messages.",
+            (
+                f"{operation} started: "
+                f"{before_tokens} tokens / {before_message_count} messages "
+                f"({capacity:.1%} capacity; reason: {trigger})."
+            ),
             kind=self._context_event_kind(),
             phase="before",
+            trigger=trigger,
             trigger_tokens=before_tokens,
             trigger_message_count=before_message_count,
+            capacity_ratio=capacity,
             max_tokens=self.max_tokens,
             thresholds={
                 "planning_at": self._planning_at,
@@ -827,18 +836,53 @@ class ContextManager:
                 "target": self._rewrite_target,
                 "emergency_at": self._emergency_at,
             },
-            strategy=strategy,
-            applied_layers=applied_layers,
             context_snapshot=before_snapshot,
         )
+
+    def _emit_compression_skipped(self, *, trigger: str) -> None:
+        """Close a started UI operation when compaction found no safe rewrite."""
+        if not self._ui_bus:
+            return
+        self._ui_bus.info(
+            "Context compression made no changes.",
+            kind=self._context_event_kind(),
+            phase="skipped",
+            trigger=trigger,
+        )
+
+    def _emit_compression_completed(
+        self,
+        *,
+        before_tokens: int,
+        after_tokens: int,
+        before_message_count: int,
+        before_snapshot: list[dict[str, Any]],
+        after_messages: list[dict],
+        applied_layers: list[str],
+        trigger: str,
+    ) -> None:
+        """Push the completion event using the planner's calibrated estimate."""
+        if not self._ui_bus:
+            return
+
+        after_message_count = len(after_messages)
+        after_snapshot = self._snapshot_messages(after_messages)
+        strategy = self._describe_strategy(applied_layers)
+        delta_tokens = after_tokens - before_tokens
+        delta_messages = after_message_count - before_message_count
+        operation = (
+            "Context compression" if trigger == "manual" else "Context auto-compression"
+        )
+
         self._ui_bus.success(
             (
-                "Context auto-compression completed: "
-                f"{before_tokens} → {after_tokens} tokens, "
+                f"{operation} completed: "
+                f"{before_tokens} → ~{after_tokens} tokens, "
                 f"{before_message_count} → {after_message_count} messages."
             ),
             kind=self._context_event_kind(),
             phase="after",
+            trigger=trigger,
             strategy=strategy,
             applied_layers=applied_layers,
             before_tokens=before_tokens,
@@ -901,12 +945,12 @@ class ContextManager:
                 {
                     "layer": "planning",
                     "threshold": self._planning_at,
-                    "description": "At about 52% of request capacity, compute a rewrite candidate without mutating committed history.",
+                    "description": "At about 52% of request capacity, track approaching pressure without mutating committed history.",
                 },
                 {
                     "layer": "checkpoint_rewrite",
                     "threshold": self._quality_wall,
-                    "description": f"Near the 60% quality wall, batch snip and semantic summary in one cache epoch, preserving {self._summarize_keep_recent_turns} recent API rounds and targeting 35–45%.",
+                    "description": f"Near the 60% quality wall, batch eligible snip and semantic summary work in one cache epoch, preserving {self._summarize_keep_recent_turns} recent API rounds and targeting 35–45%.",
                 },
                 {
                     "layer": "hard_collapse",

@@ -87,6 +87,27 @@ def test_same_tool_call_cannot_commit_different_control_data() -> None:
         )
 
 
+def test_progress_updates_do_not_touch_context_compression_policy() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+
+    class CompressionPolicyMustNotBeRead:
+        def __getattribute__(self, name):
+            raise AssertionError(f"progress must not access context.{name}")
+
+    agent.context = CompressionPolicyMustNotBeRead()
+
+    progress, changed = agent.plan_controller.report(
+        phase="ready",
+        summary="Implementation and verification are complete.",
+        next_step=None,
+        tool_call_id="progress_ready",
+        session_generation=0,
+    )
+
+    assert changed is True
+    assert progress.phase == "ready"
+
+
 def test_snapshot_failure_recovers_control_state_and_idempotency_from_ledger() -> None:
     agent = Agent(llm=_LLM(), tools=[])
     calls = 0
