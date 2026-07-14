@@ -94,9 +94,7 @@ def test_provider_compaction_uses_provider_neutral_boundary() -> None:
     class Adapter:
         def compact_tool_results(self, messages, *, keep_recent_rounds):
             assert keep_recent_rounds == 2
-            started = ui_bus.history_snapshot()[-1]
-            assert started.data["phase"] == "before"
-            assert started.data["trigger"] == "quality_wall"
+            assert ui_bus.history_snapshot() == ()
             return ProviderCompactionResult(
                 messages=[{"role": "user", "content": "provider compacted"}]
             )
@@ -112,7 +110,10 @@ def test_provider_compaction_uses_provider_neutral_boundary() -> None:
     assert manager.maybe_compress(messages) is True
     assert messages[0]["content"] == "provider compacted"
     assert manager.checkpoints[-1].strategy == ("provider_tool_cache_compaction",)
-    completed = ui_bus.history_snapshot()[-1]
+    assert manager.checkpoints[-1].trigger == "profitable_snip"
+    started, completed = ui_bus.history_snapshot()
+    assert started.data["phase"] == "before"
+    assert started.data["trigger"] == "profitable_snip"
     assert completed.data["phase"] == "after"
     assert completed.data["after_tokens"] == manager.checkpoints[-1].tokens_after
     assert manager.maybe_compress(messages) is False
@@ -120,7 +121,7 @@ def test_provider_compaction_uses_provider_neutral_boundary() -> None:
     assert manager.cache_epoch == 1
 
 
-def test_long_task_below_quality_wall_preserves_history_and_cache_epoch() -> None:
+def test_long_task_below_snip_wall_preserves_history_and_cache_epoch() -> None:
     ui_bus = UIEventBus()
     manager = ContextManager(
         max_tokens=400_000,
@@ -154,12 +155,12 @@ def test_long_task_below_quality_wall_preserves_history_and_cache_epoch() -> Non
     assert ui_bus.history_snapshot() == ()
 
 
-def test_resume_restores_snip_starvation_state_from_checkpoint_epochs() -> None:
+def test_resume_restores_checkpoint_audit_without_regenerating_history() -> None:
     history = [{"role": "assistant", "content": f"round {index}"} for index in range(3)]
 
     def checkpoint(strategy):
         return CompactionCheckpoint.create(
-            trigger="quality_wall",
+            trigger="semantic_wall",
             strategy=[strategy],
             source_history_version=0,
             replacement_history=history,
@@ -169,13 +170,11 @@ def test_resume_restores_snip_starvation_state_from_checkpoint_epochs() -> None:
         )
 
     manager = ContextManager()
-    manager.restore_checkpoints(
-        [
-            checkpoint("partial_prefix"),
-            checkpoint("snip_tool_outputs"),
-            checkpoint("provider_tool_cache_compaction"),
-        ]
-    )
+    checkpoints = [
+        checkpoint("partial_prefix"),
+        checkpoint("snip_tool_outputs"),
+        checkpoint("provider_tool_cache_compaction"),
+    ]
+    manager.restore_checkpoints(checkpoints)
 
-    assert manager._snip_epochs_since_summary == 2
-    assert manager._rounds_at_last_semantic_checkpoint == 3
+    assert manager.checkpoints == tuple(checkpoints)

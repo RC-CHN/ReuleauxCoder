@@ -284,8 +284,11 @@ def render_token_usage_view(renderer, event) -> bool:
     if model.cached_input_tokens is not None:
         table.add_row("Last cached input", str(model.cached_input_tokens))
     table.add_row(
-        "Planner",
-        f"plan {model.planning_at} · wall {model.quality_wall} · target {model.rewrite_target}",
+        "Compression",
+        (
+            f"snip {model.snip_wall} (gain ≥ {model.snip_min_gain}) · "
+            f"summary {model.semantic_wall} · target {model.rewrite_target}"
+        ),
     )
     table.add_row("Cache epoch", str(model.cache_epoch))
     renderer.console.print(table)

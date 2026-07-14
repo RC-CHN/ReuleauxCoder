@@ -328,7 +328,6 @@ class Agent:
             ):
                 return False
             if source_revision != self._context_revision:
-                self.context._reset_compression_state()
                 return False
             checkpoint = self.context.checkpoints[-1]
             self._replace_context_messages(

@@ -232,8 +232,9 @@ def _handle_tokens(command, ctx) -> CommandEffect:
             observation.actual_prompt_tokens if observation else None
         ),
         cached_input_tokens=(observation.cached_input_tokens if observation else None),
-        planning_at=thresholds["planning_at"],
-        quality_wall=thresholds["quality_wall"],
+        snip_wall=thresholds["snip_wall"],
+        semantic_wall=thresholds["semantic_wall"],
+        snip_min_gain=thresholds["snip_min_gain"],
         rewrite_target=thresholds["rewrite_target"],
         emergency_at=thresholds["emergency_at"],
         cache_epoch=ctx.agent.context.cache_epoch,

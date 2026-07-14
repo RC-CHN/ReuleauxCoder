@@ -148,8 +148,9 @@ class TokenUsageViewModel:
     message_count: int
     actual_prompt_tokens: int | None
     cached_input_tokens: int | None
-    planning_at: int
-    quality_wall: int
+    snip_wall: int
+    semantic_wall: int
+    snip_min_gain: int
     rewrite_target: int
     emergency_at: int
     cache_epoch: int
@@ -168,8 +169,9 @@ class TokenUsageViewModel:
                 "message_count",
                 "actual_prompt_tokens",
                 "cached_input_tokens",
-                "planning_at",
-                "quality_wall",
+                "snip_wall",
+                "semantic_wall",
+                "snip_min_gain",
                 "rewrite_target",
                 "emergency_at",
                 "cache_epoch",

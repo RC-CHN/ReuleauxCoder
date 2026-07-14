@@ -218,23 +218,14 @@ class ContextManager:
         self._consecutive_summary_failures = 0
         self._provider_compactor = provider_compactor
         # Rewrite/cache state
-        self._last_compact_tokens = 0
-        self._last_compact_strategy: str | None = None
         self._cache_epoch = 0
         self._usage_observations: list[UsageObservation] = []
         self._latest_usage: UsageObservation | None = None
         self._estimate_scale_by_profile: dict[str, float] = {}
-        self._last_rewrite_plan: dict[str, Any] | None = None
-        self._rounds_at_last_semantic_checkpoint = 0
-        self._snip_epochs_since_summary = 0
 
     def get_context_tokens(self, messages: list[dict]) -> int:
         """Get current locally-estimated context token count."""
         return estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
-
-    def _reset_compression_state(self) -> None:
-        """Discard a stale candidate; committed checkpoint state is retained."""
-        self._last_rewrite_plan = None
 
     def reconfigure(self, max_tokens: int) -> None:
         """Update context budget and recompute layer thresholds."""
@@ -247,32 +238,25 @@ class ContextManager:
             safety_margin=self._budget.safety_margin,
         )
         self._recompute_thresholds()
-        self._reset_compression_state()
 
     def restore_replay_state(self, *, history_version: int, cache_epoch: int) -> None:
         """Restore committed version watermarks without regenerating history."""
         self._history_version = max(0, int(history_version))
         self._cache_epoch = max(0, int(cache_epoch))
         self._latest_usage = None
-        self._last_rewrite_plan = None
-        self._snip_epochs_since_summary = 0
 
     def invalidate_replay_prefix(self) -> None:
         """Start a new committed epoch after reset or stable-prefix replacement."""
         self._history_version += 1
         self._cache_epoch += 1
         self._latest_usage = None
-        self._last_rewrite_plan = None
-        self._rounds_at_last_semantic_checkpoint = 0
-        self._snip_epochs_since_summary = 0
 
     def _recompute_thresholds(self) -> None:
         limit = self._budget.request_input_limit
-        self._planning_at = max(1, int(limit * 0.52))
-        self._quality_wall = max(1, int(limit * 0.60))
-        self._rewrite_target_low = max(1, int(limit * 0.35))
-        self._rewrite_target = max(1, int(limit * 0.42))
-        self._rewrite_target_high = max(1, int(limit * 0.45))
+        self._snip_wall = max(1, int(limit * 0.60))
+        self._semantic_wall = max(1, int(limit * 0.75))
+        self._snip_min_gain = max(1, int(limit * 0.20))
+        self._rewrite_target = max(1, int(limit * 0.40))
         self._emergency_at = max(1, int(limit * 0.90))
 
     @property
@@ -286,8 +270,9 @@ class ContextManager:
     @property
     def rewrite_thresholds(self) -> dict[str, int]:
         return {
-            "planning_at": self._planning_at,
-            "quality_wall": self._quality_wall,
+            "snip_wall": self._snip_wall,
+            "semantic_wall": self._semantic_wall,
+            "snip_min_gain": self._snip_min_gain,
             "rewrite_target": self._rewrite_target,
             "emergency_at": self._emergency_at,
         }
@@ -305,30 +290,6 @@ class ContextManager:
     ) -> None:
         """Restore immutable checkpoint metadata without regenerating summaries."""
         self._checkpoints = list(checkpoints)
-        self._snip_epochs_since_summary = 0
-        self._rounds_at_last_semantic_checkpoint = 0
-        semantic_layers = {
-            "partial_prefix",
-            "phase_checkpoint",
-            "full_recovery",
-            "summarize",
-            "summarize_old",
-            "collapse",
-            "hard_collapse",
-        }
-        for checkpoint in reversed(self._checkpoints):
-            strategy = set(checkpoint.strategy)
-            if strategy & semantic_layers:
-                self._rounds_at_last_semantic_checkpoint = len(
-                    group_api_rounds(list(checkpoint.replacement_history))
-                )
-                break
-            if strategy & {
-                "snip",
-                "snip_tool_outputs",
-                "provider_tool_cache_compaction",
-            }:
-                self._snip_epochs_since_summary += 1
 
     def clear_usage_observations(self) -> None:
         """Clear request-local calibration before restoring another session."""
@@ -415,36 +376,12 @@ class ContextManager:
         *,
         history_events: tuple | list = (),
     ) -> bool:
-        """Plan and commit at most one low-frequency checkpoint rewrite epoch."""
-        before_local_tokens = self.get_context_tokens(messages)
+        """Commit one profitable snip or one semantic-wall rewrite epoch."""
         before_tokens = self.predict_request_tokens(messages)
-        if before_tokens < self._planning_at:
-            self._last_rewrite_plan = None
+        if before_tokens < self._snip_wall:
             return False
-
-        self._last_rewrite_plan = {
-            "predicted_request_tokens": before_tokens,
-            "planning_at": self._planning_at,
-            "quality_wall": self._quality_wall,
-            "target": self._rewrite_target,
-            "actual_usage": self._latest_usage is not None,
-        }
-        if before_tokens < self._quality_wall:
-            return False
-
-        trigger = "emergency" if before_tokens >= self._emergency_at else "quality_wall"
-        before_message_count = len(messages)
-        before_snapshot = self._snapshot_messages(messages)
-        self._emit_compression_started(
-            before_tokens=before_tokens,
-            before_message_count=before_message_count,
-            before_snapshot=before_snapshot,
-            trigger=trigger,
-        )
 
         applied_layers: list[str] = []
-        round_count = len(group_api_rounds(messages))
-        checkpointable = round_count > self._summarize_keep_recent_turns + 2
         candidate = [dict(message) for message in messages]
         if self._provider_compactor is not None:
             provider_result = self._provider_compactor.compact_tool_results(
@@ -457,60 +394,52 @@ class ContextManager:
         if snipped:
             applied_layers.append("snip_tool_outputs")
 
-        candidate_local = self.get_context_tokens(candidate)
-        scale = before_tokens / max(1, before_local_tokens)
-        candidate_prediction = max(
-            1, int(before_tokens - (before_local_tokens - candidate_local) * scale)
+        candidate_prediction = self.predict_request_tokens(candidate)
+        snip_gain = max(0, before_tokens - candidate_prediction)
+        semantic_due = before_tokens >= self._semantic_wall
+        if not semantic_due and snip_gain < self._snip_min_gain:
+            return False
+
+        trigger = (
+            "emergency"
+            if before_tokens >= self._emergency_at
+            else "semantic_wall"
+            if semantic_due
+            else "profitable_snip"
         )
-        rounds_since_semantic = max(
-            0, round_count - self._rounds_at_last_semantic_checkpoint
-        )
-        semantic_due = checkpointable and (
-            rounds_since_semantic >= max(20, self._summarize_keep_recent_turns * 4)
-            or (
-                self._snip_epochs_since_summary >= 2
-                and rounds_since_semantic
-                >= max(12, self._summarize_keep_recent_turns * 2)
-            )
+        before_message_count = len(messages)
+        before_snapshot = self._snapshot_messages(messages)
+        self._emit_compression_started(
+            before_tokens=before_tokens,
+            before_message_count=before_message_count,
+            before_snapshot=before_snapshot,
+            trigger=trigger,
+            snip_gain=snip_gain,
         )
 
         summarized = False
-        checkpoint_kind = "partial_prefix"
-        if candidate_prediction > self._rewrite_target_high or semantic_due:
+        if semantic_due:
             summarized = self._summarize_old(
                 candidate,
                 llm,
                 keep_recent_user_turns=self._summarize_keep_recent_turns,
-                checkpoint_kind=checkpoint_kind,
+                checkpoint_kind="partial_prefix",
                 history_events=history_events,
             )
             if summarized:
-                applied_layers.append(checkpoint_kind)
-                self._last_compact_strategy = "summarize"
-        elif snipped or applied_layers:
-            self._last_compact_strategy = "snip"
+                applied_layers.append("partial_prefix")
 
-        if not applied_layers:
+        if not summarized and snip_gain < self._snip_min_gain:
             self._emit_compression_skipped(trigger=trigger)
             return False
 
-        after_local_tokens = self.get_context_tokens(candidate)
-        after_tokens = max(
-            1, int(before_tokens - (before_local_tokens - after_local_tokens) * scale)
-        )
+        after_tokens = self.predict_request_tokens(candidate)
         if after_tokens > self._emergency_at and len(candidate) > 4:
             self._hard_collapse(candidate, llm, history_events=history_events)
             applied_layers.append("full_recovery")
-            self._last_compact_strategy = "collapse"
-            summarized = True
-            after_local_tokens = self.get_context_tokens(candidate)
-            after_tokens = max(
-                1,
-                int(before_tokens - (before_local_tokens - after_local_tokens) * scale),
-            )
+            after_tokens = self.predict_request_tokens(candidate)
 
         messages[:] = candidate
-        self._last_compact_tokens = after_tokens
         source_version = self._history_version
         self._history_version += 1
         self._cache_epoch += 1
@@ -543,12 +472,6 @@ class ContextManager:
             )
         )
         self._latest_usage = None
-        self._last_rewrite_plan = None
-        if summarized:
-            self._rounds_at_last_semantic_checkpoint = len(group_api_rounds(messages))
-            self._snip_epochs_since_summary = 0
-        elif snipped or applied_layers:
-            self._snip_epochs_since_summary += 1
         self._emit_compression_completed(
             before_tokens=before_tokens,
             after_tokens=after_tokens,
@@ -570,7 +493,6 @@ class ContextManager:
     ) -> bool:
         """Force one specific compression strategy regardless of thresholds."""
         before_tokens = self.predict_request_tokens(messages)
-        before_local = self.get_context_tokens(messages)
         before_count = len(messages)
         before_snapshot = self._snapshot_messages(messages)
         self._emit_compression_started(
@@ -600,11 +522,7 @@ class ContextManager:
             self._emit_compression_skipped(trigger="manual")
             return False
 
-        after_local = self.get_context_tokens(messages)
-        scale = before_tokens / max(1, before_local)
-        after_tokens = max(1, int(before_tokens - (before_local - after_local) * scale))
-        self._last_compact_tokens = after_tokens
-        self._last_compact_strategy = strategy
+        after_tokens = self.predict_request_tokens(messages)
         source_version = self._history_version
         self._history_version += 1
         self._cache_epoch += 1
@@ -632,11 +550,6 @@ class ContextManager:
             )
         )
         self._latest_usage = None
-        if strategy in {"summarize", "collapse"}:
-            self._rounds_at_last_semantic_checkpoint = len(group_api_rounds(messages))
-            self._snip_epochs_since_summary = 0
-        elif strategy == "snip":
-            self._snip_epochs_since_summary += 1
         self._emit_compression_completed(
             before_tokens=before_tokens,
             after_tokens=after_tokens,
@@ -707,7 +620,10 @@ class ContextManager:
         history_events: tuple | list = (),
     ) -> bool:
         """Layer 2: Summarize old conversation while keeping recent user turns intact."""
-        split_index = recent_round_start(messages, keep_recent_user_turns)
+        split_index = self._find_recent_user_turn_boundary(
+            messages, keep_recent_user_turns
+        )
+        split_index = self._safe_round_boundary_at_or_before(messages, split_index)
         if split_index <= 0 or split_index >= len(messages):
             return False
 
@@ -743,6 +659,19 @@ class ContextManager:
         if len(user_turn_starts) <= keep_recent_user_turns:
             return 0
         return user_turn_starts[-keep_recent_user_turns]
+
+    @staticmethod
+    def _safe_round_boundary_at_or_before(
+        messages: list[dict], split_index: int
+    ) -> int:
+        """Move a user-turn split backward so tool calls and results stay adjacent."""
+        offset = 0
+        for round_ in group_api_rounds(messages):
+            next_offset = offset + len(round_.messages)
+            if split_index < next_offset:
+                return offset
+            offset = next_offset
+        return min(split_index, len(messages))
 
     def _hard_collapse(
         self,
@@ -808,6 +737,7 @@ class ContextManager:
         before_message_count: int,
         before_snapshot: list[dict[str, Any]],
         trigger: str,
+        snip_gain: int | None = None,
     ) -> None:
         """Tell the UI before any potentially slow compaction work begins."""
         if not self._ui_bus:
@@ -817,11 +747,15 @@ class ContextManager:
         operation = (
             "Context compression" if trigger == "manual" else "Context auto-compression"
         )
+        gain_text = ""
+        if snip_gain is not None:
+            gain_ratio = snip_gain / max(1, self.request_input_limit)
+            gain_text = f"; deterministic snip gain: {snip_gain} ({gain_ratio:.1%})"
         self._ui_bus.info(
             (
                 f"{operation} started: "
                 f"{before_tokens} tokens / {before_message_count} messages "
-                f"({capacity:.1%} capacity; reason: {trigger})."
+                f"({capacity:.1%} capacity; reason: {trigger}{gain_text})."
             ),
             kind=self._context_event_kind(),
             phase="before",
@@ -831,11 +765,13 @@ class ContextManager:
             capacity_ratio=capacity,
             max_tokens=self.max_tokens,
             thresholds={
-                "planning_at": self._planning_at,
-                "quality_wall": self._quality_wall,
+                "snip_wall": self._snip_wall,
+                "semantic_wall": self._semantic_wall,
+                "snip_min_gain": self._snip_min_gain,
                 "target": self._rewrite_target,
                 "emergency_at": self._emergency_at,
             },
+            snip_gain=snip_gain,
             context_snapshot=before_snapshot,
         )
 
@@ -943,14 +879,14 @@ class ContextManager:
         return {
             "policy": [
                 {
-                    "layer": "planning",
-                    "threshold": self._planning_at,
-                    "description": "At about 52% of request capacity, track approaching pressure without mutating committed history.",
+                    "layer": "profitable_snip",
+                    "threshold": self._snip_wall,
+                    "description": "From 60% of request capacity, commit deterministic tool-output snipping only when it reclaims at least 20% of total request capacity.",
                 },
                 {
-                    "layer": "checkpoint_rewrite",
-                    "threshold": self._quality_wall,
-                    "description": f"Near the 60% quality wall, batch eligible snip and semantic summary work in one cache epoch, preserving {self._summarize_keep_recent_turns} recent API rounds and targeting 35–45%.",
+                    "layer": "semantic_checkpoint",
+                    "threshold": self._semantic_wall,
+                    "description": f"At 75% of request capacity, batch deterministic snip and semantic summary in one cache epoch, preserving {self._summarize_keep_recent_turns} recent API rounds and targeting about 40%.",
                 },
                 {
                     "layer": "hard_collapse",
