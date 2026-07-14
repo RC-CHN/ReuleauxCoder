@@ -41,6 +41,8 @@ Layer rules:
 
 `domain/agent/loop.py` owns the LLM/tool round loop, context compression checks, runtime-tail context, token accounting, tool-call adjacency, and max-round handling.
 
+Provider requests use exactly one leading `system` message. Project context, summaries, resume/runtime updates, subagent data, diagnostics and the volatile execution state are application-generated synthetic `user` messages with reserved provenance tags documented by that fixed system prompt. The provider boundary fail-closes legacy or extension-injected later system messages into `<legacy_runtime_context>`. Only nested/standalone runtime-instruction regions receive runtime-control authority; file, tool, note, Git, LSP and delegated payloads remain untrusted data.
+
 `domain/agent/tool_execution.py` is the shared tool pipeline:
 
 1. resolve the scoped tool;
@@ -143,6 +145,7 @@ Session invariants:
 - explicit IDs may cross fingerprints but emit a warning;
 - interactive restore auto-saves the session being left when auto-save is enabled;
 - the agent receives the full restored transcript;
+- sessions created before the single-system context protocol take one explicit cache-epoch migration on first request; subsequent replay uses the current fixed system prompt and tagged synthetic context;
 - the CLI replays only the latest three valid user turns and their assistant replies;
 - `[SESSION_EXIT]`, `[SESSION_RESUME]`, tool messages and protocol-only entries do not pollute human replay.
 

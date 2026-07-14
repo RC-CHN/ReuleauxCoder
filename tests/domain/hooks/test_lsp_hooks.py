@@ -81,7 +81,7 @@ def _complete_enqueued_batch(mgr: LspManager, block: DiagnosticBlock) -> None:
 
 def _execution_state_tail() -> dict:
     return {
-        "role": "system",
+        "role": "user",
         "content": (
             '<execution_state plan_revision="0">\n'
             '<execution_data trust="untrusted_data">\n{}\n</execution_data>\n'

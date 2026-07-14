@@ -8,10 +8,13 @@ from typing import Any
 from reuleauxcoder.domain.context.replay import ReplayEnvelope, RequestEnvelope
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.history import HistoryEvent
+from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
 
 
 def _display_message_text(message: dict) -> str:
     """Return user-facing conversation text without persistence markers."""
+    if is_synthetic_context_message(message):
+        return ""
     content = message.get("content")
     if not isinstance(content, str):
         return ""

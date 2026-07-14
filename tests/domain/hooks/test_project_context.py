@@ -84,7 +84,8 @@ def test_run_injects_single_file(tmp_path: Path, monkeypatch) -> None:
 
     assert len(result.messages) == 3
     assert result.messages[0]["content"] == "[system prompt]"
-    assert result.messages[1]["role"] == "system"
+    assert result.messages[1]["role"] == "user"
+    assert result.messages[1]["content"].startswith("<project_context")
     assert "Rule: use Chinese" in result.messages[1]["content"]
     assert "--- AGENT.md ---" in result.messages[1]["content"]
     assert result.messages[2] == {"role": "user", "content": "hello"}
@@ -106,7 +107,7 @@ def test_run_concatenates_multiple_files(tmp_path: Path, monkeypatch) -> None:
 
     assert len(result.messages) == 3
     msg = result.messages[1]
-    assert msg["role"] == "system"
+    assert msg["role"] == "user"
     # Order: AGENT.md before CLAUDE.md
     agent_idx = msg["content"].index("--- AGENT.md ---")
     claude_idx = msg["content"].index("--- CLAUDE.md ---")
@@ -142,7 +143,7 @@ def test_transformed_messages_flow_to_request_params() -> None:
     result = hook.run(context)
 
     assert len(result.messages) == 3
-    assert result.messages[1]["role"] == "system"
+    assert result.messages[1]["role"] == "user"
     assert "Keep it short" in result.messages[1]["content"]
 
 

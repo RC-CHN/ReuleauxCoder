@@ -18,6 +18,14 @@ from reuleauxcoder.domain.context.replay import (
     RequestEnvelope,
     content_hash,
 )
+from reuleauxcoder.domain.llm.context_messages import (
+    mark_synthetic_user_message,
+    normalize_provider_message_roles,
+    synthetic_user_message,
+)
+
+
+_SINGLE_SYSTEM_PROTOCOL_MARKER = "# Runtime Context Protocol"
 
 
 class AgentLoop:
@@ -179,7 +187,11 @@ class AgentLoop:
             "at meaningful phase boundaries.</runtime_instruction>\n"
             "</execution_state>"
         )
-        return {"role": "system", "content": content}
+        return mark_synthetic_user_message(
+            content,
+            tag="execution_state",
+            source="agent_loop_request_tail",
+        )
 
     def _render_notes(self, *, max_chars: int) -> str:
         """Render the agent-bound two-scope notes repository, if enabled."""
@@ -239,6 +251,25 @@ class AgentLoop:
         current_system = {"role": "system", "content": system}
         system_message = current_system
         restored = getattr(self.agent, "_restored_replay_envelope", None)
+        if (
+            restored is not None
+            and restored.validate()
+            and restored.instructions
+            and _SINGLE_SYSTEM_PROTOCOL_MARKER
+            not in str(restored.instructions[0].get("content") or "")
+        ):
+            self.agent.context.invalidate_replay_prefix()
+            self.agent.history_ledger.append(
+                "stable_context_updated",
+                {
+                    "reason": "migrated to single-system synthetic context protocol",
+                    "previous_hash": restored.stable_prefix_hash,
+                    "history_version": self.agent.context.history_version,
+                    "cache_epoch": self.agent.context.cache_epoch,
+                },
+            )
+            self.agent._restored_replay_envelope = None
+            restored = None
         if restored is not None and restored.validate() and restored.instructions:
             system_message = dict(restored.instructions[0])
             current_descriptor = {
@@ -275,16 +306,17 @@ class AgentLoop:
                     ],
                     "request_settings": current_descriptor["request_settings"],
                 }
-                update_message = {
-                    "role": "system",
-                    "content": "[Runtime context update]\n"
-                    + json.dumps(
+                update_message = synthetic_user_message(
+                    "runtime_context_update",
+                    json.dumps(
                         changed,
                         ensure_ascii=False,
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
-                }
+                    source="resume_runtime_descriptor",
+                    escape_payload=False,
+                )
                 self.agent._append_message(
                     update_message, source="resume_runtime_context_update"
                 )
@@ -298,11 +330,13 @@ class AgentLoop:
                     },
                 )
             self.agent._resume_runtime_descriptor_hash = current_descriptor_hash
-        return [
-            system_message,
-            *self.agent.state.messages,
-            self._runtime_tail_message(),
-        ]
+        return normalize_provider_message_roles(
+            [
+                system_message,
+                *self.agent.state.messages,
+                self._runtime_tail_message(),
+            ]
+        )
 
     def _record_request_envelopes(
         self,
@@ -417,10 +451,11 @@ class AgentLoop:
                         else str(external_message)
                     )
                     self.agent._append_message(
-                        {
-                            "role": "system",
-                            "content": f"[Inter-agent message]\n{content}\n[/Inter-agent message]",
-                        },
+                        synthetic_user_message(
+                            "inter_agent_message",
+                            content,
+                            source="parent_to_child_mailbox",
+                        ),
                         source="parent_to_child",
                     )
 
@@ -689,7 +724,12 @@ class AgentLoop:
             "Do not discard partial results and do not claim unfinished work is complete."
         )
         self.agent._append_message(
-            {"role": "system", "content": summary_prompt},
+            synthetic_user_message(
+                "runtime_instruction",
+                summary_prompt,
+                source="max_round_handoff",
+                attributes={"kind": "max_round_handoff"},
+            ),
             source="max_round_summary_instruction",
         )
         summary_streamed = False
@@ -720,6 +760,7 @@ class AgentLoop:
                 int(getattr(self.agent.llm, "max_tokens", remaining)),
                 remaining,
             )
+        summary_messages = normalize_provider_message_roles(summary_messages)
         self._record_request_envelopes(summary_messages, [])
         summary_resp = self.agent.llm.chat(
             messages=summary_messages,

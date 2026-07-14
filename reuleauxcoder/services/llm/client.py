@@ -15,6 +15,7 @@ from reuleauxcoder.domain.hooks.types import (
     BeforeLLMRequestContext,
     HookPoint,
 )
+from reuleauxcoder.domain.llm.context_messages import normalize_provider_message_roles
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
@@ -326,7 +327,9 @@ class LLM:
         params = dict(before_context.request_params)
         # Use messages from the transform chain so hooks like
         # ProjectContextHook can inject additional context.
-        params["messages"] = before_context.messages
+        params["messages"] = normalize_provider_message_roles(
+            before_context.messages
+        )
 
         debug_stream_events: list[dict[str, Any]] = []
         debug_stream_options_enabled = False

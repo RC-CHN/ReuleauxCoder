@@ -19,6 +19,7 @@ from reuleauxcoder.domain.context.replay import (
     align_item_provenance,
 )
 from reuleauxcoder.domain.history import HistoryEvent, HistoryLedger
+from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 from reuleauxcoder.domain.session.models import (
     Session,
@@ -159,12 +160,17 @@ class SessionStore:
         runtime_state: SessionRuntimeState | None = None,
         fingerprint: str = DEFAULT_SESSION_FINGERPRINT,
     ) -> None:
-        """Append a system message to an existing session, creating it if needed."""
+        """Append a tagged runtime diagnostic, retaining the legacy API name."""
+        appended = synthetic_user_message(
+            "session_diagnostic",
+            content,
+            source="session_store",
+        )
         with self._lock:
             loaded = self.load(session_id)
             if loaded is None:
                 self.save(
-                    messages=[{"role": "system", "content": content}],
+                    messages=[appended],
                     model=model,
                     session_id=session_id,
                     active_mode=active_mode,
@@ -174,10 +180,9 @@ class SessionStore:
                 return
 
             updated_messages = list(loaded.messages)
-            appended = {"role": "system", "content": content}
             updated_messages.append(appended)
             ledger = HistoryLedger(loaded.history_events)
-            ledger.append_message(appended, source="system_diagnostic")
+            ledger.append_message(appended, source="session_diagnostic")
             self.save(
                 messages=updated_messages,
                 model=loaded.model or model,

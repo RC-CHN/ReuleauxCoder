@@ -65,13 +65,14 @@ def test_agent_loop_appends_ephemeral_runtime_context_at_tail() -> None:
 
     assert messages[0]["role"] == "system"
     assert "# Tools" in messages[0]["content"]
+    assert "# Runtime Context Protocol" in messages[0]["content"]
     assert "# Environment" not in messages[0]["content"]
 
     assert messages[1:] == [
         {"role": "user", "content": "hello"},
         messages[-1],
     ]
-    assert messages[-1]["role"] == "system"
+    assert messages[-1]["role"] == "user"
     assert "<execution_state" in messages[-1]["content"]
     assert '"working_directory":' in messages[-1]["content"]
     assert '"shell":"bash"' in messages[-1]["content"]

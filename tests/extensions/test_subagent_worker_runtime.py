@@ -712,7 +712,7 @@ def test_guidance_parks_and_resumes_same_job_with_stable_replay_prefix(
     assert stable_resumed[: len(stable_first)] == stable_first
     assert any(message.get("role") == "tool" for message in resumed_messages)
     assert any(
-        message.get("role") == "system"
+            message.get("role") == "user"
         and "Preserve the public v1 API" in str(message.get("content") or "")
         for message in resumed_messages
     )
@@ -789,7 +789,7 @@ def test_directive_arriving_during_provider_round_survives_immediate_park(
     ]
     assert len(matching) == 1
     assert any(
-        message.get("role") == "system"
+            message.get("role") == "user"
         and "Re-read every relevant file or symbol" in str(message.get("content") or "")
         for message in resumed_messages
     )

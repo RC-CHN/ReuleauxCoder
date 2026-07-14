@@ -13,6 +13,10 @@ from reuleauxcoder.domain.context.rounds import (
 from reuleauxcoder.domain.context.summary import CheckpointKind, generate_summary
 from reuleauxcoder.domain.context.provider import ProviderContextCompactor
 from reuleauxcoder.domain.context.usage import UsageObservation
+from reuleauxcoder.domain.llm.context_messages import (
+    is_synthetic_context_message,
+    synthetic_user_message,
+)
 
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
@@ -639,7 +643,12 @@ class ContextManager:
         )
 
         replacement = [
-            {"role": "system", "content": f"[Context checkpoint summary]\n{summary}"},
+            synthetic_user_message(
+                "context_summary",
+                summary,
+                source="context_compactor",
+                attributes={"kind": checkpoint_kind},
+            ),
             *tail,
         ]
         messages[:] = normalize_history(replacement, reason="context compaction")
@@ -654,7 +663,9 @@ class ContextManager:
             return len(messages)
 
         user_turn_starts = [
-            i for i, msg in enumerate(messages) if msg.get("role") == "user"
+            i
+            for i, msg in enumerate(messages)
+            if msg.get("role") == "user" and not is_synthetic_context_message(msg)
         ]
         if len(user_turn_starts) <= keep_recent_user_turns:
             return 0
@@ -695,10 +706,12 @@ class ContextManager:
         messages.extend(
             normalize_history(
                 [
-                    {
-                        "role": "system",
-                        "content": f"[Hard context checkpoint]\n{summary}",
-                    },
+                    synthetic_user_message(
+                        "context_summary",
+                        summary,
+                        source="context_compactor",
+                        attributes={"kind": "full_recovery"},
+                    ),
                     *tail,
                 ],
                 reason="hard context compaction",

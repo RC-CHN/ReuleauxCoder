@@ -123,7 +123,8 @@ def test_semantic_wall_summarizes_and_keeps_five_recent_user_turns() -> None:
     checkpoint = manager.checkpoints[-1]
     assert checkpoint.trigger == "semantic_wall"
     assert "partial_prefix" in checkpoint.strategy
-    assert messages[0]["role"] == "system"
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"].startswith("<context_summary")
     remaining_users = [
         message["content"] for message in messages if message.get("role") == "user"
     ]

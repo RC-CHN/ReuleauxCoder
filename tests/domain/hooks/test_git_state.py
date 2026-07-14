@@ -9,7 +9,7 @@ from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 
 def _tail() -> dict:
     return {
-        "role": "system",
+        "role": "user",
         "content": (
             '<execution_state plan_revision="0">\n'
             '<execution_data trust="untrusted_data">{}</execution_data>\n'

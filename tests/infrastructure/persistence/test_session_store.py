@@ -255,7 +255,8 @@ def test_session_store_append_system_message_updates_existing_session(
 
     loaded = store.load(session_id)
     assert loaded is not None
-    assert loaded.messages[-1]["role"] == "system"
+    assert loaded.messages[-1]["role"] == "user"
+    assert loaded.messages[-1]["content"].startswith("<session_diagnostic")
     assert "[LLM_ERROR_DIAGNOSTIC]" in loaded.messages[-1]["content"]
     assert isinstance(loaded.messages[-1].get(MESSAGE_TOKEN_KEY), int)
 

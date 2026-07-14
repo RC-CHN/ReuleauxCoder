@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from reuleauxcoder.domain.context.rounds import recent_round_start
+from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
 
 
 VALID_CONTEXT_MODES = frozenset({"minimal", "recent", "full"})
@@ -19,7 +20,12 @@ def project_parent_context(
         raise ValueError(f"Unknown sub-agent context mode: {mode}")
     messages = list(getattr(parent_agent, "messages", []))
     if mode == "minimal":
-        messages = [item for item in messages if item.get("role") == "user"][-2:]
+        messages = [
+            item
+            for item in messages
+            if item.get("role") == "user"
+            and not is_synthetic_context_message(item)
+        ][-2:]
     elif mode == "recent":
         messages = messages[recent_round_start(messages, recent_rounds) :]
 

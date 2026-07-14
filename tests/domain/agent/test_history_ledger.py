@@ -155,7 +155,7 @@ def test_resume_restores_committed_history_and_cache_watermarks() -> None:
     assert agent._restored_replay_envelope is replay
 
 
-def test_resume_appends_runtime_changes_without_rewriting_old_prefix() -> None:
+def test_resume_migrates_legacy_system_prefix_once() -> None:
     agent = Agent(llm=_LLM(), tools=[])
     replay = ReplayEnvelope.create(
         session_id="session",
@@ -182,16 +182,19 @@ def test_resume_appends_runtime_changes_without_rewriting_old_prefix() -> None:
     first = agent._loop._full_messages()
     second = agent._loop._full_messages()
 
-    assert first[0] == {"role": "system", "content": "old stable instructions"}
+    assert first[0]["role"] == "system"
+    assert "# Runtime Context Protocol" in first[0]["content"]
     assert first[1] == {"role": "user", "content": "restored user message"}
-    updates = [
-        item
-        for item in agent.messages
-        if str(item.get("content", "")).startswith("[Runtime context update]")
-    ]
-    assert len(updates) == 1
     assert second[0] == first[0]
-    assert agent._restored_replay_envelope is replay
+    assert agent._restored_replay_envelope is None
+    assert agent.context.history_version == 8
+    assert agent.context.cache_epoch == 4
+    migrations = [
+        event
+        for event in agent.history_ledger.events
+        if event.kind == "stable_context_updated"
+    ]
+    assert len(migrations) == 1
 
 
 def test_resume_does_not_emit_false_update_for_matching_configured_settings() -> None:
@@ -301,7 +304,7 @@ def test_execution_overlay_injects_plan_as_escaped_ephemeral_data() -> None:
     overlay = messages[-1]
     agent._loop._record_request_envelopes(messages, [])
 
-    assert overlay["role"] == "system"
+    assert overlay["role"] == "user"
     assert 'plan_revision="1"' in overlay["content"]
     assert overlay["content"].count("</execution_data>") == 1
     assert "\\u003c/execution_data\\u003e" in overlay["content"]

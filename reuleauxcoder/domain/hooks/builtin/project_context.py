@@ -16,6 +16,7 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
     RunnerStartupContext,
 )
+from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 
 
 # Candidate filenames to search for project context.
@@ -35,9 +36,8 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
     """Inject project-level context files (AGENT.md, etc.) into messages.
 
     Searches for project context files in the current working directory
-    and injects the content as a separate system message after the main
-    system prompt. This enables prompt caching stability since the
-    project context remains constant during a session.
+    and injects the content as a tagged synthetic user message after the
+    sole system prompt. This keeps the provider-visible system prefix singular.
     """
 
     def __init__(
@@ -64,10 +64,14 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
             # order so the KV cache prefix stays stable.
             context.messages.insert(
                 1,
-                {
-                    "role": "system",
-                    "content": self._format_multi_message(parts),
-                },
+                synthetic_user_message(
+                    "project_context",
+                    self._format_multi_message(parts),
+                    source="workspace_instruction_files",
+                    attributes={
+                        "files": ",".join(filename for filename, _ in parts)
+                    },
+                ),
             )
         return context
 

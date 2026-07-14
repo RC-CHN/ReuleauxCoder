@@ -14,7 +14,7 @@ def has_runtime_overlay_tail(messages: list[dict[str, Any]]) -> bool:
     tail = messages[-1]
     content = str(tail.get("content") or "")
     return (
-        tail.get("role") == "system"
+        tail.get("role") == "user"
         and content.startswith("<execution_state")
         and _RUNTIME_MARKER in content
     )

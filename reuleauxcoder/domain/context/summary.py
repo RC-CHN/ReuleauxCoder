@@ -6,6 +6,8 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
+
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
 
@@ -123,7 +125,11 @@ def build_summary_document(
         if not content:
             continue
         role = message.get("role")
-        if role == "user" and not content.startswith("[SESSION_"):
+        if (
+            role == "user"
+            and not content.startswith("[SESSION_")
+            and not is_synthetic_context_message(message)
+        ):
             users.append(
                 {
                     "event_ref": f"message:{index}",
@@ -178,7 +184,11 @@ def build_summary_document(
         event_id = str(getattr(event, "event_id", ""))
         if kind == "message_committed":
             message = payload.get("message")
-            if isinstance(message, dict) and message.get("role") == "user":
+            if (
+                isinstance(message, dict)
+                and message.get("role") == "user"
+                and not is_synthetic_context_message(message)
+            ):
                 text = " ".join(str(message.get("content") or "").split())[:500]
                 if text:
                     user_event_refs.setdefault(text, []).append(event_id)
@@ -418,10 +428,12 @@ def project_summary_input(
         if omitted_rounds:
             projected.append(
                 {
-                    "role": "system",
+                    "role": "user",
                     "content": (
-                        "[summary input loss marker: "
-                        f"{omitted_rounds} older complete API rounds omitted]"
+                        '<context_summary source="summary_projection" '
+                        'kind="loss_marker">'
+                        f"{omitted_rounds} older complete API rounds omitted"
+                        "</context_summary>"
                     ),
                 }
             )
@@ -557,4 +569,8 @@ def _empty_summary_document() -> dict:
 
 
 def _count_user_rounds(messages: list[dict]) -> int:
-    return sum(message.get("role") == "user" for message in messages)
+    return sum(
+        message.get("role") == "user"
+        and not is_synthetic_context_message(message)
+        for message in messages
+    )

@@ -22,6 +22,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.llm.models import ToolCall
+from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 from reuleauxcoder.domain.runtime import (
     agent_event_to_runtime_event,
     runtime_event_from_dict,
@@ -416,14 +417,11 @@ def worker_process_main(
             child._current_turn_id = f"resume-{spec.worker_generation}"
             for directive in spec.resume_directives:
                 child._append_message(
-                    {
-                        "role": "system",
-                        "content": (
-                            "[Guidance resolution]\n"
-                            f"{directive}\n"
-                            "[/Guidance resolution]"
-                        ),
-                    },
+                    synthetic_user_message(
+                        "guidance_resolution",
+                        directive,
+                        source="parent_guidance_resume",
+                    ),
                     source="subagent_guidance",
                 )
             result = (
@@ -674,14 +672,11 @@ def run_isolated_worker(
                 )
                 for directive in inflight_directives.values():
                     checkpoint.messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                "[Guidance resolution]\n"
-                                f"{directive.model_text()}\n"
-                                "[/Guidance resolution]"
-                            ),
-                        }
+                        synthetic_user_message(
+                            "guidance_resolution",
+                            directive.model_text(),
+                            source="parent_guidance_checkpoint",
+                        )
                     )
                 checkpoint.resume_ready = bool(inflight_directives)
                 checkpoint_payload = {

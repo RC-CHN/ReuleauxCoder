@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
+from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
+
 
 @dataclass(frozen=True, slots=True)
 class HistoryEvent:
@@ -251,7 +253,7 @@ def _message_semantic_kind(message: dict, source: str) -> str | None:
         message.get("content") or ""
     ).startswith("[SESSION_"):
         return "session_lifecycle"
-    if role == "user":
+    if role == "user" and not is_synthetic_context_message(message):
         return "user_message"
     if role == "assistant" and message.get("tool_calls"):
         return "tool_call"

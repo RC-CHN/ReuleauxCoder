@@ -35,7 +35,7 @@ def test_inject_subagent_job_result_appends_message_and_emits_events() -> None:
 
     assert injected is True
     assert job.injected_to_parent is True
-    assert agent.state.messages[-1]["role"] == "system"
+    assert agent.state.messages[-1]["role"] == "user"
     content = agent.state.messages[-1]["content"]
     assert 'type="result"' in content
     assert 'delivery="delivered_to_parent"' in content
@@ -128,7 +128,7 @@ def test_inject_defers_when_pending_tool_calls_exist() -> None:
     assert flushed == 1
 
     # Now the sub-agent result must be in messages.
-    assert agent.state.messages[-1]["role"] == "system"
+    assert agent.state.messages[-1]["role"] == "user"
     content = agent.state.messages[-1]["content"]
     assert 'type="result"' in content
     assert 'delivery="delivered_to_parent"' in content
@@ -161,13 +161,13 @@ def test_inject_direct_when_no_pending_tool_calls() -> None:
 
     injected = agent.inject_subagent_job_result(job)
     assert injected is True
-    assert agent.state.messages[-1]["role"] == "system"
+    assert agent.state.messages[-1]["role"] == "user"
     assert "done" in agent.state.messages[-1]["content"]
     # Buffer should remain empty.
     assert agent._pending_subagent_injections == []
 
 
-def test_child_communication_is_committed_as_system_control_item() -> None:
+def test_child_communication_is_committed_as_synthetic_user_control_item() -> None:
     agent = _make_agent()
     item = SubagentCommunication(
         item_id="sc_1",
@@ -182,7 +182,7 @@ def test_child_communication_is_committed_as_system_control_item() -> None:
     )
 
     assert agent.inject_subagent_communication(item) is True
-    assert agent.state.messages[-1]["role"] == "system"
+    assert agent.state.messages[-1]["role"] == "user"
     assert "item_id=sc_1" in agent.state.messages[-1]["content"]
     assert "kind=blocked" in agent.state.messages[-1]["content"]
 
@@ -214,7 +214,7 @@ def test_overlapping_execute_results_create_explicit_conflict_item() -> None:
     conflict = next(
         message
         for message in agent.messages
-        if "[Sub-agent conflict]" in str(message.get("content"))
+        if "<subagent_conflict" in str(message.get("content"))
     )
     assert "shared.py: sj_1, sj_2" in conflict["content"]
     manager.shutdown()
