@@ -856,16 +856,21 @@ class TestRemoteRelayHTTPService:
             assert status == 200
             assert cancel_body["ok"] is True
             assert cancelled.wait(timeout=1)
-            _, stream_body = _json_request(
-                "POST",
-                f"{service.base_url}/remote/chat/stream",
-                {
-                    "peer_token": peer_token,
-                    "chat_id": chat_id,
-                    "cursor": 0,
-                    "timeout_sec": 2,
-                },
-            )
+            cursor = 0
+            stream_body = {"done": False, "next_cursor": cursor}
+            deadline = time.time() + 2
+            while not stream_body["done"] and time.time() < deadline:
+                _, stream_body = _json_request(
+                    "POST",
+                    f"{service.base_url}/remote/chat/stream",
+                    {
+                        "peer_token": peer_token,
+                        "chat_id": chat_id,
+                        "cursor": cursor,
+                        "timeout_sec": 2,
+                    },
+                )
+                cursor = stream_body["next_cursor"]
             assert stream_body["done"] is True
         finally:
             service.stop()
