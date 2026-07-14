@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.4.4 - 2026-07-14
+
+- Reworked automatic context compression into cache-preserving capacity tiers: deterministic snip commits from 60% only when it reclaims at least 20% of total request capacity, semantic summary starts at 75%, and 90% remains emergency-only.
+- Decoupled progress reporting from compression, calibrated reclaim estimates from upstream usage, emitted compression lifecycle UI before slow work, and kept storage/UI token projections consistent.
+- Preserved at least the five latest user turns across summaries while aligning the retained boundary to complete protocol rounds so tool calls and results remain adjacent.
+
 ## 0.4.3 - 2026-07-13
 
 - Added bounded Git working-state and changed-HEAD summaries to the volatile request overlay, alongside stale-safe LSP diagnostics, without mutating replay history or sampling remote/child workspaces.
