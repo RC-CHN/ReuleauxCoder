@@ -8,6 +8,7 @@ from io import StringIO
 
 from markdown_it import MarkdownIt
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 
@@ -150,7 +151,39 @@ def _rich_markdown_fragments(text: str, *, width: int) -> list[tuple[str, str]]:
     # breakable over-wide lines (notably CJK bullets) instead of wrapping.
     console.print(Markdown(text), end="")
     converted = list(to_formatted_text(ANSI(stream.getvalue())))
-    return _compact_fragments(_rstrip_visual_lines(converted))
+    trimmed = _rstrip_visual_lines(converted)
+    return _compact_fragments(_wrap_visual_fragments(trimmed, width=width))
+
+
+def _wrap_visual_fragments(
+    fragments: list[tuple[str, str]], *, width: int
+) -> list[tuple[str, str]]:
+    """Enforce terminal-cell width when Rich leaves CJK runs unbroken."""
+    width = max(1, width)
+    output: list[tuple[str, str]] = []
+    column = 0
+    for style, text in fragments:
+        chunk = ""
+        for character in text:
+            if character == "\n":
+                if chunk:
+                    output.append((style, chunk))
+                    chunk = ""
+                output.append(("", "\n"))
+                column = 0
+                continue
+            character_width = max(0, get_cwidth(character))
+            if column and column + character_width > width:
+                if chunk:
+                    output.append((style, chunk))
+                    chunk = ""
+                output.append(("", "\n"))
+                column = 0
+            chunk += character
+            column += character_width
+        if chunk:
+            output.append((style, chunk))
+    return output
 
 
 def _rstrip_visual_lines(
