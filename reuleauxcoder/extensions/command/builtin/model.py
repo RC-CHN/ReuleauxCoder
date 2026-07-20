@@ -20,7 +20,7 @@ from reuleauxcoder.app.commands.shared import (
     non_empty_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.app.runtime.session_state import build_session_runtime_state
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
     WorkspaceConfigStore,
@@ -359,6 +359,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/model"),),
                 parser=_parse_show_model,
                 handler=_handle_show_model,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="model.use_main",

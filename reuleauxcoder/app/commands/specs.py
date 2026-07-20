@@ -20,6 +20,13 @@ class TriggerKind(str, Enum):
     SHORTCUT = "shortcut"
 
 
+class DuringTurnPolicy(str, Enum):
+    """How a slash command behaves while an agent turn is still running."""
+
+    IMMEDIATE = "immediate"
+    REQUIRE_IDLE = "require_idle"
+
+
 @dataclass(frozen=True, slots=True)
 class TriggerSpec:
     """One way to invoke an action."""
@@ -67,6 +74,7 @@ class ActionSpec:
     parser: ActionParser | None = None
     handler: ActionHandler | None = None
     interactive: bool = False
+    during_turn: DuringTurnPolicy = DuringTurnPolicy.REQUIRE_IDLE
 
     def is_available_in(self, ui_profile: UIProfile) -> bool:
         """Return whether this action is available in the given UI profile."""

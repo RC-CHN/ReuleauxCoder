@@ -17,7 +17,7 @@ from reuleauxcoder.app.commands.shared import (
     non_empty_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.app.runtime.approval import (
     VALID_APPROVAL_ACTIONS,
     build_approval_view,
@@ -196,6 +196,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/approval show"),),
                 parser=_parse_show_approval,
                 handler=_handle_show_approval,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="approval.set",
@@ -206,6 +207,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/approval set <target> <action>"),),
                 parser=_parse_set_approval,
                 handler=_handle_set_approval_rule,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="approval.set_global",
@@ -216,6 +218,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/approval set-global <target> <action>"),),
                 parser=_parse_set_global_approval,
                 handler=_handle_set_global_approval_rule,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
         ]
     )

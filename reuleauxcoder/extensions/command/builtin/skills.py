@@ -16,7 +16,7 @@ from reuleauxcoder.app.commands.shared import (
     non_empty_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.extensions.skills.models import SkillsSummary, SkillsViewModel
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -185,6 +185,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/skills"),),
                 parser=_parse_show_skills,
                 handler=_handle_show_skills,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="skills.reload",
@@ -195,6 +196,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/skills reload"),),
                 parser=_parse_reload_skills,
                 handler=_handle_reload_skills,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="skills.enable",
@@ -205,6 +207,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/skills enable <name>"),),
                 parser=_parse_enable_skill,
                 handler=_handle_toggle_skill,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="skills.disable",
@@ -215,6 +218,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/skills disable <name>"),),
                 parser=_parse_disable_skill,
                 handler=_handle_toggle_skill,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
         ]
     )

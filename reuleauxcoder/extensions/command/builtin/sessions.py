@@ -15,7 +15,7 @@ from reuleauxcoder.app.commands.shared import (
     non_empty_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.app.commands.view_models import (
     SessionResumeViewModel,
     SessionTranscriptEntryViewModel,
@@ -347,6 +347,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 ),
                 parser=_parse_list_sessions,
                 handler=_handle_list_sessions,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="sessions.resume",

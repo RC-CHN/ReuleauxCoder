@@ -35,6 +35,8 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame
 
 from reuleauxcoder import __version__
+from reuleauxcoder.app.commands import parse_command
+from reuleauxcoder.app.commands.specs import DuringTurnPolicy
 from reuleauxcoder.app.runtime.session_state import build_session_persistence_kwargs
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
@@ -60,6 +62,7 @@ from reuleauxcoder.interfaces.events import (
     InteractionPromptPayload,
     RuntimeEventPayload,
     UIEvent,
+    UIEventKind,
     ViewEventPayload,
 )
 from reuleauxcoder.interfaces.interactions import (
@@ -899,9 +902,7 @@ class MiniTUIApplication:
         if not text:
             return True
         if self.running:
-            # Queued steering hangs above the input lane as a preview and only
-            # enters the transcript when the agent injects it (drain event).
-            self.agent.submit_user_steering(text)
+            self._submit_during_turn(text)
             self.invalidate()
             return True
         self.exit_confirm = False
@@ -917,6 +918,68 @@ class MiniTUIApplication:
         self._worker.start()
         self.invalidate()
         return True
+
+    def _submit_during_turn(self, text: str) -> None:
+        """Route active-turn input without leaking slash commands to the model."""
+        if not text.startswith("/"):
+            # Queued steering hangs above the input lane as a preview and only
+            # enters the transcript when the agent injects it (drain event).
+            self.agent.submit_user_steering(text)
+            return
+
+        self.events.append_user_command(text)
+        parsed = parse_command(
+            text,
+            ui_profile=self.ui_profile,
+            action_registry=self.action_registry,
+            current_session_id=self.current_session_id,
+        )
+        if (
+            parsed is not None
+            and parsed.action.during_turn is DuringTurnPolicy.REQUIRE_IDLE
+        ):
+            self.ui_bus.warning(
+                f"Command '{text}' requires an idle agent. "
+                "Press Ctrl+C to stop the current turn, then run it again.",
+                kind=UIEventKind.COMMAND,
+            )
+            return
+
+        thread = threading.Thread(
+            target=self._handle_concurrent_command,
+            args=(text,),
+            name="rcoder-cli-command",
+            daemon=True,
+        )
+        thread.start()
+
+    def _handle_concurrent_command(self, user_input: str) -> None:
+        """Execute an immediate local command alongside the active agent turn."""
+        try:
+            result = handle_command(
+                user_input,
+                self.agent,
+                self.config,
+                self.current_session_id,
+                self.ui_bus,
+                self.ui_profile,
+                self.action_registry,
+                self.sessions_dir,
+                self.skills_service,
+            )
+            if result["action"] != "continue":
+                self.ui_bus.warning(
+                    f"Command '{user_input}' cannot change session control "
+                    "while an agent turn is running.",
+                    kind=UIEventKind.COMMAND,
+                )
+        except Exception as error:
+            self.ui_bus.error(
+                f"Command failed: {error}",
+                kind=UIEventKind.COMMAND,
+            )
+        finally:
+            self.invalidate()
 
     def _handle_input(self, user_input: str) -> None:
         try:

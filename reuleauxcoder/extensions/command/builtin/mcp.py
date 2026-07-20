@@ -16,7 +16,7 @@ from reuleauxcoder.app.commands.shared import (
     non_empty_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.extensions.mcp.runtime import (
     build_mcp_servers_view,
     toggle_mcp_server,
@@ -152,6 +152,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/mcp show"),),
                 parser=_parse_show_mcp,
                 handler=_handle_show_mcp_servers,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="mcp.enable",

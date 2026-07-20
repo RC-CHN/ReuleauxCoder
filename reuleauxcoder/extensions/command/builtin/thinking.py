@@ -15,7 +15,7 @@ from reuleauxcoder.app.commands.shared import (
     UI_TARGETS,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.domain.config.models import DEFAULT_REASONING_EFFORT_VALUES
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -201,6 +201,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/thinking"),),
                 parser=_parse_show,
                 handler=_handle_show,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="thinking.toggle_inline",
@@ -211,6 +212,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/thinking inline"),),
                 parser=_parse_inline,
                 handler=_handle_inline,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="thinking.show_effort",
@@ -221,6 +223,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/thinking effort"),),
                 parser=_parse_effort_show,
                 handler=_handle_effort_show,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="thinking.set_effort",
@@ -231,6 +234,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/thinking effort {level}"),),
                 parser=_parse_effort_set,
                 handler=_handle_effort_set,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
         ]
     )

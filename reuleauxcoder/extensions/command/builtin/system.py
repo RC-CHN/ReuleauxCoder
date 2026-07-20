@@ -18,7 +18,7 @@ from reuleauxcoder.app.commands.shared import (
     enum_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.app.runtime.session_state import (
     build_session_persistence_kwargs,
     build_session_runtime_state,
@@ -386,6 +386,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/help"),),
                 parser=_parse_help,
                 handler=_handle_show_help,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="system.exit",
@@ -426,6 +427,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/tokens"),),
                 parser=_parse_tokens,
                 handler=_handle_tokens,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="system.debug",
@@ -436,6 +438,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/debug"),),
                 parser=_parse_debug,
                 handler=_handle_debug,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="system.config",
@@ -446,6 +449,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/config"),),
                 parser=_parse_config,
                 handler=_handle_config,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
         ]
     )

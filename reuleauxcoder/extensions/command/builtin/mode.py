@@ -17,7 +17,7 @@ from reuleauxcoder.app.commands.shared import (
     non_empty_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
@@ -170,6 +170,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/mode"),),
                 parser=_parse_show_mode,
                 handler=_handle_show_mode,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="mode.current",
@@ -180,6 +181,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/mode current"), slash_trigger("/mode now")),
                 parser=_parse_current_mode,
                 handler=_handle_current_mode,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="mode.switch",

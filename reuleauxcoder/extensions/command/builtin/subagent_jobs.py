@@ -15,7 +15,7 @@ from reuleauxcoder.app.commands.shared import (
     non_empty_text,
     slash_trigger,
 )
-from reuleauxcoder.app.commands.specs import ActionSpec
+from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.app.commands.view_models import (
     SubagentJobsViewModel,
     SubagentJobViewModel,
@@ -257,6 +257,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/agents"), slash_trigger("/jobs")),
                 parser=_parse_list_jobs,
                 handler=_handle_list_jobs,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="subagent.jobs.get",
@@ -270,6 +271,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 ),
                 parser=_parse_get_job,
                 handler=_handle_get_job,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="subagent.jobs.wait",
@@ -283,6 +285,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 ),
                 parser=_parse_wait_job,
                 handler=_handle_wait_job,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(
                 action_id="subagent.jobs.control",
@@ -303,6 +306,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 ),
                 parser=_parse_control_job,
                 handler=_handle_control_job,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
         ]
     )

@@ -5,6 +5,7 @@ from dataclasses import replace
 from prompt_toolkit.utils import get_cwidth
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.app.commands.specs import DuringTurnPolicy
 from reuleauxcoder.domain.approval import ApprovalSection, ApprovalSectionKind
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
@@ -120,6 +121,83 @@ def test_interaction_lane_shows_queued_steering_while_running() -> None:
     assert " ↳ and also that" in rendered
     assert "Agent running" in rendered
     assert app._interaction_height() == 3
+
+
+def test_active_turn_plain_text_is_queued_as_model_steering() -> None:
+    queued = []
+    app = object.__new__(MiniTUIApplication)
+    app.agent = SimpleNamespace(submit_user_steering=queued.append)
+
+    app._submit_during_turn("change direction")
+
+    assert queued == ["change direction"]
+
+
+def test_active_turn_immediate_slash_command_executes_locally(monkeypatch) -> None:
+    commands = []
+    steering = []
+    appended = []
+    app = object.__new__(MiniTUIApplication)
+    app.agent = SimpleNamespace(submit_user_steering=steering.append)
+    app.events = SimpleNamespace(append_user_command=appended.append)
+    app.ui_bus = SimpleNamespace(warning=lambda *args, **kwargs: None)
+    app.ui_profile = object()
+    app.action_registry = object()
+    app.current_session_id = "s1"
+    app._handle_concurrent_command = commands.append
+
+    monkeypatch.setattr(
+        mini_tui_module,
+        "parse_command",
+        lambda *args, **kwargs: SimpleNamespace(
+            action=SimpleNamespace(during_turn=DuringTurnPolicy.IMMEDIATE)
+        ),
+    )
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, **kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(mini_tui_module.threading, "Thread", ImmediateThread)
+
+    app._submit_during_turn("/tokens")
+
+    assert appended == ["/tokens"]
+    assert commands == ["/tokens"]
+    assert steering == []
+
+
+def test_active_turn_idle_only_slash_command_is_rejected_locally(monkeypatch) -> None:
+    warnings = []
+    steering = []
+    appended = []
+    app = object.__new__(MiniTUIApplication)
+    app.agent = SimpleNamespace(submit_user_steering=steering.append)
+    app.events = SimpleNamespace(append_user_command=appended.append)
+    app.ui_bus = SimpleNamespace(
+        warning=lambda message, **kwargs: warnings.append(message)
+    )
+    app.ui_profile = object()
+    app.action_registry = object()
+    app.current_session_id = "s1"
+
+    monkeypatch.setattr(
+        mini_tui_module,
+        "parse_command",
+        lambda *args, **kwargs: SimpleNamespace(
+            action=SimpleNamespace(during_turn=DuringTurnPolicy.REQUIRE_IDLE)
+        ),
+    )
+
+    app._submit_during_turn("/reset")
+
+    assert appended == ["/reset"]
+    assert steering == []
+    assert warnings and "requires an idle agent" in warnings[0]
 
 
 def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
