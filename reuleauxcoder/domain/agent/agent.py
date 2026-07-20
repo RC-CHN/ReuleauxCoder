@@ -32,6 +32,7 @@ from reuleauxcoder.domain.llm.context_messages import (
 )
 from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.infrastructure.platform import get_platform_info
+from reuleauxcoder.services.llm.client import LLMRequestCancelled
 from reuleauxcoder.services.prompt.builder import system_prompt
 
 
@@ -958,6 +959,30 @@ class Agent:
     def _has_subagent_activity(self) -> bool:
         return self._wait_for_subagent_activity(timeout=0.0)
 
+    def _pivot_turn_for_queued_steering(self) -> bool:
+        """Keep the turn alive when the user interrupted with a queued direction."""
+        if not self.stop_requested():
+            return False
+        with self._steering_lock:
+            pending = any(
+                generation == self.session_generation
+                for _, generation, _ in self._pending_user_steering
+            )
+        if not pending:
+            return False
+        self.reconcile_pending_tool_calls(
+            reason="Interrupted by user; queued direction follows."
+        )
+        self.clear_stop_request()
+        self._emit_event(
+            AgentEvent.diagnostic(
+                "Interrupted; continuing with the queued direction.",
+                code="turn_pivot",
+                severity="info",
+            )
+        )
+        return True
+
     def chat(self, user_input: str) -> str:
         """Process one user message."""
         self.clear_stop_request()
@@ -993,7 +1018,14 @@ class Agent:
         # Run the loop
         try:
             while True:
-                result = self._loop.run()
+                try:
+                    result = self._loop.run()
+                except LLMRequestCancelled:
+                    if self._pivot_turn_for_queued_steering():
+                        continue
+                    raise
+                if self._pivot_turn_for_queued_steering():
+                    continue
                 with self._steering_lock:
                     pending = any(
                         generation == self.session_generation

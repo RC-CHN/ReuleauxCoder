@@ -1016,6 +1016,15 @@ class MiniTUIApplication:
 
     def _before_render(self, _app) -> None:
         """Clamp scrolling and follow new output only while tail-follow is on."""
+        stop_requested = getattr(getattr(self, "agent", None), "stop_requested", None)
+        if (
+            getattr(self, "cancelling", False)
+            and callable(stop_requested)
+            and not stop_requested()
+        ):
+            # A queued direction pivoted the turn: the stop request was
+            # consumed and the agent kept running.
+            self.cancelling = False
         try:
             size = self.application.output.get_size()
             content_width = max(20, size.columns - 1)
