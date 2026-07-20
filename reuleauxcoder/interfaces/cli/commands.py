@@ -120,6 +120,33 @@ def _suggest_command(
     return f"Unknown command '/{typed}'."
 
 
+def _invalid_command_usage(
+    user_input: str,
+    registry: ActionRegistry,
+    ui_profile: UIProfile,
+) -> str | None:
+    """Explain malformed input for a known slash-command namespace."""
+    if not user_input.startswith("/"):
+        return None
+
+    typed = user_input[1:].lstrip().split()[0] if user_input[1:].strip() else ""
+    if not typed:
+        return "Unknown command '/'. Use /help to list available commands."
+
+    from reuleauxcoder.app.commands.specs import TriggerKind
+
+    usages: list[str] = []
+    for action in registry.iter_actions(ui_profile):
+        for trigger in action.matching_triggers(ui_profile, kind=TriggerKind.SLASH):
+            if _extract_base_name(trigger.value) == typed and trigger.value not in usages:
+                usages.append(trigger.value)
+
+    if not usages:
+        return None
+    rendered = "; ".join(usages)
+    return f"Invalid '/{typed}' command. Usage: {rendered}"
+
+
 def handle_command(
     user_input: str,
     agent: Agent,
@@ -170,8 +197,23 @@ def handle_command(
 
     # No command matched — check for fuzzy suggestions on /-prefixed input
     suggestion = _suggest_command(user_input, action_registry, ui_profile)
+    if suggestion is None:
+        suggestion = _invalid_command_usage(user_input, action_registry, ui_profile)
     if suggestion is not None:
         ui_bus.warning(suggestion, kind=UIEventKind.COMMAND)
+        return {
+            "action": "continue",
+            "action_id": None,
+            "session_id": current_session_id,
+        }
+
+    # Slash-prefixed input belongs to the local command namespace.  It must
+    # never leak into model context, even when no registered parser accepts it.
+    if user_input.startswith("/"):
+        ui_bus.warning(
+            "Unknown slash command. Use /help to list available commands.",
+            kind=UIEventKind.COMMAND,
+        )
         return {
             "action": "continue",
             "action_id": None,

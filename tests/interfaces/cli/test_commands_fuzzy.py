@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from reuleauxcoder.interfaces.cli.commands import (
     _extract_base_name,
+    _invalid_command_usage,
     _levenshtein,
     _suggest_command,
+    handle_command,
 )
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.specs import ActionSpec, TriggerKind, TriggerSpec
@@ -172,3 +176,49 @@ class TestSuggestCommand:
         # /thinking effort xml  → thinking is exact match, parser rejected
         # because the subcommand value is invalid
         assert _suggest_command("/thinking effort xml", registry, _CLI_PROFILE) is None
+
+
+def test_invalid_known_command_reports_registered_usage() -> None:
+    registry = _make_registry({"thinking"})
+
+    message = _invalid_command_usage(
+        "/thinking effort xml", registry, _CLI_PROFILE
+    )
+
+    assert message == "Invalid '/thinking' command. Usage: /thinking"
+
+
+def test_invalid_known_slash_command_never_falls_through_to_chat() -> None:
+    warnings = []
+    registry = ActionRegistry(
+        [
+            ActionSpec(
+                action_id="thinking.test",
+                feature_id="thinking",
+                description="Test thinking",
+                ui_targets=frozenset({"cli"}),
+                triggers=(
+                    TriggerSpec(kind=TriggerKind.SLASH, value="/thinking effort <level>"),
+                ),
+                parser=lambda user_input, parse_ctx: None,
+            )
+        ]
+    )
+    ui_bus = SimpleNamespace(
+        warning=lambda message, **kwargs: warnings.append(message)
+    )
+
+    result = handle_command(
+        "/thinking effort invalid",
+        agent=SimpleNamespace(),
+        config=SimpleNamespace(),
+        current_session_id="s1",
+        ui_bus=ui_bus,
+        ui_profile=_CLI_PROFILE,
+        action_registry=registry,
+    )
+
+    assert result["action"] == "continue"
+    assert warnings == [
+        "Invalid '/thinking' command. Usage: /thinking effort <level>"
+    ]
