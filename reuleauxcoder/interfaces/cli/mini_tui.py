@@ -1332,17 +1332,55 @@ class MiniTUIApplication:
 
     def _panel_rows(self) -> tuple[tuple[tuple[str, str], ...], ...]:
         details = (
-            f"MODEL {self.config.model}",
+            # MODEL lives in the always-visible right-side context tail.
             f"ROOT {Path.cwd()}",
             f"SESSION {self.current_session_id or 'new'}",
             *self.startup_lines,
         )
-        return _execution_panel_rows(
+        rows = _execution_panel_rows(
             self.events.panel_view(),
             width=max(20, self._width),
             expanded=self.session_header_expanded,
             details=details,
         )
+        tail = self._context_tail()
+        if tail and rows:
+            width = max(20, self._width)
+            first = rows[0]
+            used = sum(get_cwidth(text) for _style, text in first)
+            tail_width = sum(get_cwidth(text) for _style, text in tail)
+            padding = " " * max(1, width - used - tail_width)
+            rows = (_fit_styled_row([*first, ("", padding), *tail], width), *rows[1:])
+        return rows
+
+    def _context_tail(self) -> tuple[tuple[str, str], ...]:
+        """Right-side summary: runtime model plus context capacity bar."""
+        agent = self.agent
+        try:
+            revision = getattr(agent, "_context_revision", 0)
+            cached = getattr(self, "_context_tail_cache", None)
+            if cached is not None and cached[0] == revision:
+                return cached[1]
+            current = agent.context.predict_request_tokens(agent.messages)
+            limit = agent.context.request_input_limit
+        except Exception:
+            return ()
+        model = getattr(getattr(agent, "llm", None), "model", None) or self.config.model
+        fragments: list[tuple[str, str]] = [("class:panel.label.secondary", f" {model} ")]
+        if limit:
+            ratio = max(0.0, min(1.0, current / limit))
+            filled = round(ratio * 8)
+            bar = "█" * filled + "·" * (8 - filled)
+            style = (
+                "class:success"
+                if ratio < 0.6
+                else ("class:warning" if ratio < 0.8 else "class:error")
+            )
+            fragments.append((style, bar))
+            fragments.append(("class:panel.value", f" {ratio * 100:.0f}%"))
+        result = tuple(fragments)
+        self._context_tail_cache = (revision, result)
+        return result
 
     def _input_height(self) -> int:
         """Grow the single-line input visually as wrapped rows (capped)."""
