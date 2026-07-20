@@ -105,6 +105,23 @@ def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
     assert get_cwidth(header) <= 50
 
 
+def test_interaction_lane_shows_queued_steering_while_running() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app.interactor = SimpleNamespace(active_request=None)
+    app.exit_confirm = False
+    app.cancelling = False
+    app.running = True
+    app.agent = SimpleNamespace(
+        pending_user_steering=lambda: ("do this instead", "and also that"),
+    )
+
+    rendered = "".join(text for _style, text in app._interaction_text())
+    assert " ↳ do this instead" in rendered
+    assert " ↳ and also that" in rendered
+    assert "Agent running" in rendered
+    assert app._interaction_height() == 3
+
+
 def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
     assert _wrapped_row_count("", 40) == 1
     assert _wrapped_row_count("short", 40) == 1

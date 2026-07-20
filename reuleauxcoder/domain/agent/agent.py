@@ -325,6 +325,10 @@ class Agent:
                 self.persist_runtime_snapshot()
 
     def maybe_compress_context(self, llm, *, reason: str) -> bool:
+        # Compression can issue uncancellable LLM calls; never start one
+        # while the user is trying to unwind the turn.
+        if self.stop_requested():
+            return False
         with self._context_revision_lock:
             source_revision = self._context_revision
             candidate = [dict(message) for message in self.state.messages]
@@ -464,6 +468,15 @@ class Agent:
                 for _, generation, _ in self._pending_user_steering
             )
 
+    def pending_user_steering(self) -> tuple[str, ...]:
+        """Queued steering previews for the current generation (UI display)."""
+        with self._steering_lock:
+            return tuple(
+                content
+                for content, generation, _event_id in self._pending_user_steering
+                if generation == self.session_generation
+            )
+
     def _drain_user_steering(self) -> int:
         """Project already-ledgered user messages into the runtime context."""
         with self._steering_lock:
@@ -481,6 +494,13 @@ class Agent:
                 )
                 self._context_revision += 1
                 self.persist_runtime_snapshot()
+            # The transcript shows steering only now, at the injection point,
+            # matching the actual context order (queued previews stay at the
+            # input lane until this event lands).
+            for content in accepted:
+                self._emit_event(
+                    AgentEvent.diagnostic(content, code="user", severity="info")
+                )
         return len(accepted)
 
     def get_active_mode_config(self) -> ModeConfig | None:

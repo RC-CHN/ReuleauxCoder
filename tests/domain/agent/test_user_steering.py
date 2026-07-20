@@ -142,3 +142,36 @@ def test_interrupt_without_queued_steering_stops_cleanly() -> None:
 
     assert result == "(stopped by cancellation request)"
     assert agent._pending_user_steering == []
+
+
+def test_drain_emits_user_event_and_exposes_pending_preview() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent._current_turn_id = "turn"
+    agent._accepting_user_steering = True
+    emitted = []
+    agent._emit_event = emitted.append
+
+    assert agent.submit_user_steering("first direction")
+    assert agent.submit_user_steering("second direction")
+    assert agent.pending_user_steering() == ("first direction", "second direction")
+
+    assert agent._drain_user_steering() == 2
+
+    assert agent.pending_user_steering() == ()
+    assert [(event.data["code"], event.data["message"]) for event in emitted] == [
+        ("user", "first direction"),
+        ("user", "second direction"),
+    ]
+
+
+def test_compression_is_skipped_while_stop_is_requested() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent.request_stop()
+
+    class _ExplodingContext:
+        def maybe_compress(self, *_args, **_kwargs):
+            raise AssertionError("compression must not run during unwind")
+
+    agent.context = _ExplodingContext()
+
+    assert agent.maybe_compress_context(agent.llm, reason="test") is False

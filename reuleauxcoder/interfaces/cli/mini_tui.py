@@ -751,9 +751,10 @@ class MiniTUIApplication:
         if not text:
             return True
         if self.running:
-            if self.agent.submit_user_steering(text):
-                self.events.append_user_command(text)
-                self.ui_bus.info("Direction queued for the next safe boundary.")
+            # Queued steering hangs above the input lane as a preview and only
+            # enters the transcript when the agent injects it (drain event).
+            self.agent.submit_user_steering(text)
+            self.invalidate()
             return True
         self.exit_confirm = False
         self.session_header_expanded = False
@@ -946,10 +947,21 @@ class MiniTUIApplication:
         content_width = max(20, columns - 4)
         return _wrapped_row_count(self.input_buffer.text, content_width, cap=8)
 
+    def _queued_steering(self) -> tuple[str, ...]:
+        preview = getattr(
+            getattr(self, "agent", None), "pending_user_steering", None
+        )
+        if not callable(preview):
+            return ()
+        return tuple(preview())
+
     def _interaction_height(self) -> int:
         request = self.interactor.active_request
         if request is None:
-            return 1
+            queued = self._queued_steering()
+            if not queued:
+                return 1
+            return 1 + min(3, len(queued)) + int(len(queued) > 3)
         return min(
             8,
             max(
@@ -985,9 +997,16 @@ class MiniTUIApplication:
         if self.cancelling:
             return FormattedText([("class:warning", "Cancelling safely…\n")])
         if self.running:
-            return FormattedText(
-                [("class:muted", "Agent running · Ctrl+C interrupts\n")]
-            )
+            queued = self._queued_steering()
+            lines: list[tuple[str, str]] = [
+                ("class:user", f" ↳ {_clip(text, 60)}\n") for text in queued[:3]
+            ]
+            if len(queued) > 3:
+                lines.append(
+                    ("class:muted", f" ↳ … {len(queued) - 3} more queued\n")
+                )
+            lines.append(("class:muted", "Agent running · Ctrl+C interrupts\n"))
+            return FormattedText(lines)
         return FormattedText(
             [
                 (
