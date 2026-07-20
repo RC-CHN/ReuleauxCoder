@@ -195,16 +195,25 @@ class AppRunner:
     @staticmethod
     def _hint_rtk_install(config: Config, ui_bus: UIEventBus) -> None:
         """Emit a startup notice for rtk availability."""
-        rtk_mode = getattr(config, "shell_rtk", "auto")
+        rtk_mode = getattr(config, "shell_rtk", "off")
         if rtk_mode == "off":
-            return
+            return  # explicitly silenced
         import shutil
 
-        if shutil.which("rtk"):
-            ui_bus.info(
-                "[rtk] shell output filtering enabled (60-90% token savings).",
-                kind=UIEventKind.SYSTEM,
-            )
+        installed = shutil.which("rtk") is not None
+        if installed:
+            if rtk_mode == "auto":
+                ui_bus.info(
+                    "[rtk] rtk is installed but disabled — set shell.rtk: on in "
+                    "~/.rcoder/config.yaml to enable (60-90% token savings on "
+                    "shell output).",
+                    kind=UIEventKind.SYSTEM,
+                )
+            else:
+                ui_bus.info(
+                    "[rtk] shell output filtering enabled (60-90% token savings).",
+                    kind=UIEventKind.SYSTEM,
+                )
             return
         ui_bus.info(
             "[rtk] not detected — install with:\n"
