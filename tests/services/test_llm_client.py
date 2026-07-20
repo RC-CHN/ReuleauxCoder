@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 
 from reuleauxcoder.domain.llm.models import (
     EMPTY_ASSISTANT_CONTENT_PLACEHOLDER,
@@ -479,6 +480,49 @@ def test_llm_stream_closes_when_agent_scope_is_cancelled() -> None:
         raise AssertionError("cancelled stream must raise LLMRequestCancelled")
 
     assert stream.closed is True
+
+
+def test_llm_stream_cancel_aborts_during_silent_gap() -> None:
+    cancellation = threading.Event()
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    class SilentStream:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            time.sleep(30)
+            raise StopIteration
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = SilentStream()
+    llm._call_with_retry = lambda params: stream  # type: ignore[method-assign]
+
+    def cancel_soon() -> None:
+        time.sleep(0.2)
+        cancellation.set()
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    started = time.monotonic()
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            cancellation_event=cancellation,
+        )
+    except LLMRequestCancelled:
+        pass
+    else:
+        raise AssertionError("silent stream must raise LLMRequestCancelled")
+    elapsed = time.monotonic() - started
+
+    assert stream.closed is True
+    # Cancel is observed by polling, not by waiting for the next chunk.
+    assert elapsed < 2.0
 
 
 def test_llm_chat_sends_explicit_thinking_enabled_state() -> None:

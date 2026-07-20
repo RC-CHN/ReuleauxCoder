@@ -1,6 +1,7 @@
 """LLM client - wraps OpenAI-compatible APIs."""
 
 import json
+import queue
 import threading
 import time
 from collections.abc import Callable
@@ -35,6 +36,51 @@ MAX_DEBUG_STREAM_EVENTS = 200
 
 class LLMRequestCancelled(RuntimeError):
     """Raised when a scoped Agent cancels an in-flight streamed request."""
+
+
+_STREAM_DONE = object()
+
+
+def _cancellable_stream_chunks(stream, cancellation_event):
+    """Yield stream chunks; abort promptly on cancel even between chunks.
+
+    The SDK stream blocks on socket reads, so a cancel that lands while the
+    model is silent (long thinking, slow first chunk) would otherwise wait
+    for the next chunk. A producer thread feeds a queue instead; the
+    consumer polls with a short timeout, closes the stream and raises as
+    soon as cancellation is observed.
+    """
+    if cancellation_event is None:
+        yield from stream
+        return
+    items: queue.Queue = queue.Queue()
+
+    def produce() -> None:
+        try:
+            for chunk in stream:
+                items.put(chunk)
+            items.put(_STREAM_DONE)
+        except Exception as exc:  # surfaced to the consumer thread
+            items.put(exc)
+
+    threading.Thread(
+        target=produce, name="rcoder-llm-stream", daemon=True
+    ).start()
+    while True:
+        try:
+            item = items.get(timeout=0.1)
+        except queue.Empty:
+            if cancellation_event.is_set():
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+                raise LLMRequestCancelled("LLM stream cancelled")
+            continue
+        if item is _STREAM_DONE:
+            return
+        if isinstance(item, Exception):
+            raise item
+        yield item
 
 
 def _mask_api_key(api_key: str) -> str:
@@ -358,7 +404,7 @@ class LLM:
             completion_tok = 0
             cached_input_tok: int | None = None
 
-            for chunk in stream:
+            for chunk in _cancellable_stream_chunks(stream, cancellation_event):
                 if cancellation_event is not None and cancellation_event.is_set():
                     close = getattr(stream, "close", None)
                     if callable(close):
