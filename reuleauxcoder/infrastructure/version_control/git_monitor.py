@@ -127,6 +127,14 @@ def _path_prefix(path: str) -> str:
     return f"{head}/**" if separator else head
 
 
+def _stat_signature(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+
 class GitMonitor:
     """Observe one project repository with strict time and output budgets."""
 
@@ -155,6 +163,8 @@ class GitMonitor:
         self._head_initialized = False
         self._notice_turn_id: str | None = None
         self._head_notice: dict[str, Any] | None = None
+        self._head_cache_signature: tuple | None = None
+        self._head_cache_result: tuple[dict[str, str] | None, bool] | None = None
 
     def _git(
         self,
@@ -371,6 +381,13 @@ class GitMonitor:
     def _read_head(
         self, repo_root: Path, *, branch: str | None
     ) -> tuple[dict[str, str] | None, bool]:
+        signature = self._head_signature(repo_root, branch=branch)
+        if (
+            signature is not None
+            and signature == self._head_cache_signature
+            and self._head_cache_result is not None
+        ):
+            return self._head_cache_result
         result = self._git(
             "show",
             "-s",
@@ -383,11 +400,15 @@ class GitMonitor:
             # Porcelain status identifies an unborn branch explicitly. Other
             # failures are transient/unknown and must not look like HEAD was
             # deleted, otherwise a slow Git process creates stale notices.
-            return None, bool(branch and branch.startswith("No commits yet on "))
+            outcome = (None, bool(branch and branch.startswith("No commits yet on ")))
+            if signature is not None and outcome[1]:
+                self._head_cache_signature = signature
+                self._head_cache_result = outcome
+            return outcome
         parts = result.stdout.rstrip(b"\r\n").split(b"\x00", 2)
         if len(parts) != 3:
             return None, False
-        return (
+        outcome = (
             {
                 "oid": parts[0].decode("ascii", errors="replace"),
                 "short_oid": parts[1].decode("ascii", errors="replace"),
@@ -397,6 +418,72 @@ class GitMonitor:
             },
             True,
         )
+        if signature is not None:
+            self._head_cache_signature = signature
+            self._head_cache_result = outcome
+        return outcome
+
+    @staticmethod
+    def _head_signature(repo_root: Path, *, branch: str | None) -> tuple | None:
+        """Describe the Git HEAD/ref files without spawning another process."""
+        marker = repo_root / ".git"
+        git_dir: Path
+        if marker.is_dir():
+            git_dir = marker
+        elif marker.is_file():
+            try:
+                prefix, separator, target = (
+                    marker.read_text(encoding="utf-8", errors="replace")
+                    .strip()
+                    .partition(":")
+                )
+            except OSError:
+                return None
+            if not separator or prefix.strip().lower() != "gitdir":
+                return None
+            candidate = Path(target.strip())
+            git_dir = (
+                candidate if candidate.is_absolute() else (repo_root / candidate)
+            ).resolve(strict=False)
+        elif (repo_root / "HEAD").is_file():
+            git_dir = repo_root
+        else:
+            return None
+
+        common_dir = git_dir
+        common_marker = git_dir / "commondir"
+        if common_marker.is_file():
+            try:
+                candidate = Path(common_marker.read_text(encoding="utf-8").strip())
+            except OSError:
+                return None
+            common_dir = (
+                candidate if candidate.is_absolute() else git_dir / candidate
+            ).resolve(strict=False)
+
+        head_path = git_dir / "HEAD"
+        try:
+            head_content = head_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        signatures: list[object] = [
+            branch,
+            head_content,
+            _stat_signature(head_path),
+        ]
+        if head_content.startswith("ref:"):
+            ref_name = head_content[4:].strip()
+            ref_path = common_dir / ref_name
+            if not ref_path.exists():
+                ref_path = git_dir / ref_name
+            signatures.extend(
+                (
+                    ref_name,
+                    _stat_signature(ref_path),
+                    _stat_signature(common_dir / "packed-refs"),
+                )
+            )
+        return tuple(signatures)
 
     def _observe_head_change(
         self,

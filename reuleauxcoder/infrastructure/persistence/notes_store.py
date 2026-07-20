@@ -198,6 +198,14 @@ def _load(path: Path, *, scope: str = "workspace") -> list[NoteEntry]:
     return _decode_entries(data, scope=scope, path=path)
 
 
+def _file_signature(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+
 def _save(path: Path, entries: list[NoteEntry], *, scope: str = "workspace") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -237,6 +245,10 @@ class NoteStore:
         self.home_dir = (home_dir or Path.home()).expanduser().resolve(strict=False)
         self.workspace_max = max(1, int(workspace_max))
         self.global_max = max(1, int(global_max))
+        self._cache_lock = threading.Lock()
+        self._read_cache: dict[
+            str, tuple[tuple[int, int, int, int] | None, tuple[NoteEntry, ...]]
+        ] = {}
 
     def path_for(self, scope: str) -> Path:
         normalized = _validate_scope(scope)
@@ -253,7 +265,29 @@ class NoteStore:
 
     def read(self, scope: str = "workspace") -> list[NoteEntry]:
         normalized = _validate_scope(scope)
-        return _load(self.path_for(normalized), scope=normalized)
+        path = self.path_for(normalized)
+        try:
+            signature = _file_signature(path)
+        except OSError:
+            return _load(path, scope=normalized)
+        with self._cache_lock:
+            cached = self._read_cache.get(normalized)
+            if cached is not None and cached[0] == signature:
+                return list(cached[1])
+        entries = _load(path, scope=normalized)
+        with self._cache_lock:
+            self._read_cache[normalized] = (signature, tuple(entries))
+        return entries
+
+    def _cache_entries(self, scope: str, path: Path, entries: list[NoteEntry]) -> None:
+        try:
+            signature = _file_signature(path)
+        except OSError:
+            with self._cache_lock:
+                self._read_cache.pop(scope, None)
+            return
+        with self._cache_lock:
+            self._read_cache[scope] = (signature, tuple(entries))
 
     def write(self, content: str, *, scope: str = "workspace") -> NoteEntry:
         normalized = _validate_scope(scope)
@@ -274,6 +308,7 @@ class NoteStore:
             entries.append(entry)
             entries = entries[-self.max_for(normalized) :]
             _save(path, entries, scope=normalized)
+            self._cache_entries(normalized, path, entries)
         return entry
 
     def edit(
@@ -301,6 +336,7 @@ class NoteStore:
                 )
                 entries[index] = updated
                 _save(path, entries, scope=normalized)
+                self._cache_entries(normalized, path, entries)
                 return updated
         return None
 
@@ -329,6 +365,7 @@ class NoteStore:
                 return None
             removed = entries.pop(target_index)
             _save(path, entries, scope=normalized)
+            self._cache_entries(normalized, path, entries)
             return removed
 
     @staticmethod
