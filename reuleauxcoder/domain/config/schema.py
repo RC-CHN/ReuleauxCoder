@@ -205,7 +205,7 @@ DEFAULTS = {
     "tool_output_max_lines": 120,
     "tool_output_store_full": True,
     "tool_output_store_dir": None,
-    "shell_rtk": "auto",  # "auto" | "on" | "off"
+    "shell_rtk": "off",  # "auto" | "on" | "off"
     "notes_workspace_max": 30,
     "notes_global_max": 20,
     "notes_inject": True,

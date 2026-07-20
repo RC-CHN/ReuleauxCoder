@@ -260,7 +260,7 @@ class Config:
     active_mode: Optional[str] = None
 
     # Shell settings
-    shell_rtk: str = "auto"  # "auto" | "on" | "off"
+    shell_rtk: str = "off"  # "auto" | "on" | "off"
 
     # Notes settings
     notes_workspace_max: int = 30
