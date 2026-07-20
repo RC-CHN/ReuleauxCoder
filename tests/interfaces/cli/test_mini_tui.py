@@ -24,6 +24,7 @@ from reuleauxcoder.interfaces.cli.mini_tui import (
     _interaction_lines,
     _interaction_response,
     _wrap_fragments,
+    _wrapped_row_count,
 )
 from reuleauxcoder.interfaces.cli.virtual_transcript import (
     VirtualTranscriptControl,
@@ -69,6 +70,15 @@ def test_event_adapter_projects_user_and_execution_state() -> None:
 
 def test_mini_tui_leaves_mouse_to_terminal_native_selection() -> None:
     assert MINI_TUI_MOUSE_SUPPORT is False
+
+
+def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
+    assert _wrapped_row_count("", 40) == 1
+    assert _wrapped_row_count("short", 40) == 1
+    assert _wrapped_row_count("a" * 41, 40) == 2
+    # CJK characters occupy two cells each.
+    assert _wrapped_row_count("汉" * 21, 40) == 2
+    assert _wrapped_row_count("a" * 400, 40) == 8
 
 
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:

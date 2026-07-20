@@ -668,7 +668,8 @@ class MiniTUIApplication:
         self.interaction_control = FormattedTextControl(self._interaction_text)
         self.input_window = Window(
             BufferControl(buffer=self.input_buffer),
-            height=1,
+            height=self._input_height,
+            wrap_lines=True,
             style="class:input",
         )
         body = HSplit(
@@ -935,6 +936,15 @@ class MiniTUIApplication:
             expanded=self.session_header_expanded,
             details=details,
         )
+
+    def _input_height(self) -> int:
+        """Grow the single-line input visually as wrapped rows (capped)."""
+        try:
+            columns = self.application.output.get_size().columns
+        except Exception:
+            columns = self._width
+        content_width = max(20, columns - 4)
+        return _wrapped_row_count(self.input_buffer.text, content_width, cap=8)
 
     def _interaction_height(self) -> int:
         request = self.interactor.active_request
@@ -1405,6 +1415,20 @@ def _wrap_fragments(
         if chunk:
             output.append((style, chunk))
     return output
+
+
+def _wrapped_row_count(text: str, width: int, *, cap: int = 8) -> int:
+    """Count visual rows for single-line text wrapped at a cell width."""
+    width = max(1, width)
+    used = 0
+    rows = 1
+    for character in text:
+        char_width = max(0, get_cwidth(character))
+        if used and used + char_width > width:
+            rows += 1
+            used = 0
+        used += char_width
+    return min(cap, rows)
 
 
 def _fragments_to_visual_lines(

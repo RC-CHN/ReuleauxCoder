@@ -119,7 +119,9 @@ def _rich_markdown_fragments(text: str, *, width: int) -> list[tuple[str, str]]:
         width=width,
         legacy_windows=False,
     )
-    console.print(Markdown(text), end="", soft_wrap=True)
+    # Let Rich fold long lines at the console width: soft_wrap would crop
+    # breakable over-wide lines (notably CJK bullets) instead of wrapping.
+    console.print(Markdown(text), end="")
     converted = list(to_formatted_text(ANSI(stream.getvalue())))
     return _compact_fragments(_rstrip_visual_lines(converted))
 

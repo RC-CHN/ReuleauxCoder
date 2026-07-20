@@ -136,3 +136,20 @@ def test_plain_markdown_fast_path_matches_rich_fragments(text: str) -> None:
 )
 def test_plain_markdown_fast_path_rejects_styled_syntax(text: str) -> None:
     assert _plain_markdown_fragments(text) is None
+
+
+def test_rich_markdown_wraps_long_cjk_bullets_without_losing_text() -> None:
+    source = (
+        "- 单 system 提示词协议：所有运行时上下文都是带 provenance 标签的合成"
+        " user 消息，供应商边界 fail-close，这条很长很长用来测试换行行为\n"
+        "- 第二条也凑得比较长一点，看看窄宽度下能不能正常折行显示完整内容\n"
+    )
+    fragments = _rich_markdown_fragments(source, width=40)
+
+    rendered = _text(fragments)
+    expected = source.replace("- ", "").replace("\n", "")
+    kept = "".join(character for character in expected if character in rendered)
+    assert kept == expected
+    lines = rendered.splitlines()
+    assert len(lines) > 2
+    assert all(len(line) <= 40 for line in lines)
