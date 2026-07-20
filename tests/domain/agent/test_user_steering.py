@@ -1,4 +1,5 @@
 from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.agent.events import AgentEventType
 from reuleauxcoder.services.llm.client import LLMRequestCancelled
 
 
@@ -158,9 +159,11 @@ def test_drain_emits_user_event_and_exposes_pending_preview() -> None:
     assert agent._drain_user_steering() == 2
 
     assert agent.pending_user_steering() == ()
-    assert [(event.data["code"], event.data["message"]) for event in emitted] == [
-        ("user", "first direction"),
-        ("user", "second direction"),
+    assert [
+        (event.event_type, event.data["user_input"]) for event in emitted
+    ] == [
+        (AgentEventType.USER_STEERING, "first direction"),
+        (AgentEventType.USER_STEERING, "second direction"),
     ]
 
 

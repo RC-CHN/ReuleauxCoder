@@ -24,6 +24,7 @@ class AgentEventType(Enum):
     COMPRESSION_END = "compression_end"
     ERROR = "error"
     DIAGNOSTIC = "diagnostic"
+    USER_STEERING = "user_steering"
     PLAN_UPDATED = "plan_updated"
     PROGRESS_REPORTED = "progress_reported"
     APPROVAL_REQUESTED = "approval_requested"
@@ -205,6 +206,14 @@ class AgentEvent:
                 "severity": severity,
                 "details": dict(details or {}),
             },
+        )
+
+    @classmethod
+    def user_steering(cls, user_input: str) -> "AgentEvent":
+        """Create an event for steering injected into the active turn."""
+        return cls(
+            event_type=AgentEventType.USER_STEERING,
+            data={"user_input": user_input},
         )
 
     @classmethod

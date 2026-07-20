@@ -38,6 +38,7 @@ class RuntimeEventKind(str, Enum):
     APPROVAL_RESOLVED = "approval_resolved"
     ERROR_OCCURRED = "error_occurred"
     NOTIFICATION_RAISED = "notification_raised"
+    USER_STEERING_APPLIED = "user_steering_applied"
     SESSION_CHANGED = "session_changed"
     RUNTIME_STATE_CHANGED = "runtime_state_changed"
     VIEW_REQUESTED = "view_requested"
@@ -232,6 +233,16 @@ class NotificationRaised:
 
 
 @dataclass(frozen=True)
+class UserSteeringApplied:
+    """Steering injected into the active turn at a protocol-safe boundary."""
+
+    user_input: str
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.USER_STEERING_APPLIED, init=False
+    )
+
+
+@dataclass(frozen=True)
 class SessionChanged:
     action: str
     session_id: str | None = None
@@ -299,6 +310,7 @@ RuntimePayload: TypeAlias = (
     | ApprovalResolved
     | ErrorOccurred
     | NotificationRaised
+    | UserSteeringApplied
     | SessionChanged
     | RuntimeStateChanged
     | PlanUpdated
@@ -392,6 +404,8 @@ def agent_event_to_runtime_event(
             blocker=event.data.get("blocker"),
             child_agent_id=event.data.get("child_agent_id"),
         )
+    elif event.event_type is AgentEventType.USER_STEERING:
+        payload = UserSteeringApplied(str(event.data.get("user_input", "")))
     elif event.event_type is AgentEventType.ERROR:
         payload = ErrorOccurred(event.error_message or "Unknown agent error")
     elif event.event_type is AgentEventType.DIAGNOSTIC:
@@ -504,6 +518,8 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
             blocker=payload.blocker,
             child_agent_id=payload.child_agent_id,
         )
+    elif isinstance(payload, UserSteeringApplied):
+        legacy = AgentEvent.user_steering(payload.user_input)
     elif isinstance(payload, ErrorOccurred):
         legacy = AgentEvent.error(payload.message)
     elif isinstance(payload, NotificationRaised):

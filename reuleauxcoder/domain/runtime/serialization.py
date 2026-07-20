@@ -44,6 +44,7 @@ _PAYLOAD_TYPES = {
         events.ApprovalResolved,
         events.ErrorOccurred,
         events.NotificationRaised,
+        events.UserSteeringApplied,
         events.SessionChanged,
         events.RuntimeStateChanged,
         events.PlanUpdated,

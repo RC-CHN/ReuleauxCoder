@@ -28,6 +28,7 @@ from reuleauxcoder.domain.runtime.events import (
     ToolOutputDelta,
     TurnFinished,
     TurnStarted,
+    UserSteeringApplied,
     ViewRefreshed,
     ViewRequested,
 )
@@ -112,6 +113,14 @@ class PresentationReducer:
                     ),
                     text=_visible_user_input(payload.user_input),
                     group_id=group_id,
+                )
+            )
+        if isinstance(payload, UserSteeringApplied):
+            return self._append(
+                UserCell(
+                    id=f"user-steer:{event.event_id}",
+                    text=_visible_user_input(payload.user_input),
+                    group_id=self._event_group(event),
                 )
             )
         if isinstance(payload, AssistantContentDelta):

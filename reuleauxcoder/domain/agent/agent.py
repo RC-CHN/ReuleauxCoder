@@ -498,9 +498,7 @@ class Agent:
             # matching the actual context order (queued previews stay at the
             # input lane until this event lands).
             for content in accepted:
-                self._emit_event(
-                    AgentEvent.diagnostic(content, code="user", severity="info")
-                )
+                self._emit_event(AgentEvent.user_steering(content))
         return len(accepted)
 
     def get_active_mode_config(self) -> ModeConfig | None:
