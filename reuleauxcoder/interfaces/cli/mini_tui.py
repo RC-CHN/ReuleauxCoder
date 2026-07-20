@@ -14,7 +14,7 @@ from pathlib import Path
 import queue
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
@@ -50,7 +50,10 @@ from reuleauxcoder.domain.runtime.events import (
     StreamChunk,
     SubagentJobChanged,
 )
-from reuleauxcoder.app.commands.view_models import SessionResumeViewModel
+from reuleauxcoder.app.commands.view_models import (
+    ModesViewModel,
+    SessionResumeViewModel,
+)
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
@@ -60,6 +63,10 @@ from reuleauxcoder.interfaces.cli.command_popup import (
     filter_entries,
 )
 from reuleauxcoder.interfaces.cli.markdown_fragments import RetainedMarkdownRenderer
+from reuleauxcoder.interfaces.cli.selection_panel import (
+    SelectionItem,
+    SelectionPanel,
+)
 from reuleauxcoder.interfaces.cli.virtual_transcript import (
     VirtualTranscriptControl,
     VirtualTranscriptLayout,
@@ -238,6 +245,11 @@ class MiniTUIEventAdapter:
 
     def __init__(self, *, root_agent_id: str | None = None) -> None:
         self.root_agent_id = root_agent_id
+        # Optional hook: focused interactive views (selection panels) may be
+        # claimed by the app instead of being projected as transcript notices.
+        self.interactive_view_handler: (
+            Callable[[ViewEventPayload], bool] | None
+        ) = None
         self.transcript = PresentationReducer(
             state=RuntimeViewState(
                 transcript=TranscriptModel(
@@ -321,6 +333,11 @@ class MiniTUIEventAdapter:
             return
         message = event.message
         if isinstance(event.payload, ViewEventPayload):
+            # Interactive presenters (selection panels) own focused views;
+            # they suppress the passive transcript projection.
+            handler = self.interactive_view_handler
+            if event.payload.focus and handler is not None and handler(event.payload):
+                return
             if event.payload.view_type == "session_resume" and isinstance(
                 event.payload.view_model, SessionResumeViewModel
             ):
@@ -813,6 +830,8 @@ class MiniTUIApplication:
         self._popup_index = 0
         self._popup_last_text = ""
         self._popup_dismissed = False
+        self._selection: SelectionPanel | None = None
+        self.events.interactive_view_handler = self._open_interactive_view
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
             self._transcript_cursor_position,
@@ -841,6 +860,12 @@ class MiniTUIApplication:
             height=self._popup_height,
             style="class:popup",
         )
+        self.selection_control = FormattedTextControl(self._selection_text)
+        self.selection_window = Window(
+            self.selection_control,
+            height=self._selection_height,
+            style="class:popup",
+        )
         self.input_window = Window(
             BufferControl(buffer=self.input_buffer),
             height=self._input_height,
@@ -858,6 +883,7 @@ class MiniTUIApplication:
                 Frame(
                     HSplit(
                         [
+                            self.selection_window,
                             self.popup_window,
                             Window(
                                 self.interaction_control,
@@ -1219,6 +1245,28 @@ class MiniTUIApplication:
             self._follow_transcript = True
             self.invalidate()
 
+        selection_active = Condition(lambda: self._selection is not None)
+
+        @bindings.add("up", filter=selection_active)
+        def _selection_up(event) -> None:  # noqa: ARG001
+            if self._selection is not None:
+                self._selection.move(-1)
+                self.invalidate()
+
+        @bindings.add("down", filter=selection_active)
+        def _selection_down(event) -> None:  # noqa: ARG001
+            if self._selection is not None:
+                self._selection.move(1)
+                self.invalidate()
+
+        @bindings.add("enter", filter=selection_active)
+        def _selection_enter(event) -> None:  # noqa: ARG001
+            self._selection_confirm()
+
+        @bindings.add("escape", filter=selection_active)
+        def _selection_escape(event) -> None:  # noqa: ARG001
+            self._selection_close()
+
         popup_visible = Condition(lambda: bool(self._popup_candidates()))
 
         @bindings.add("up", filter=popup_visible)
@@ -1297,7 +1345,7 @@ class MiniTUIApplication:
         """Grow the single-line input visually as wrapped rows (capped)."""
         # Hide the input lane while an approval/review is pending so the draft
         # buffer is preserved and single-key Y / N bindings take over.
-        if self.interactor.active_request is not None:
+        if self.interactor.active_request is not None or self._selection is not None:
             return 0
         try:
             columns = self.application.output.get_size().columns
@@ -1316,7 +1364,7 @@ class MiniTUIApplication:
         return tuple(str(item) for item in result)
 
     def _popup_candidates(self) -> tuple[PopupEntry, ...]:
-        if self.interactor.active_request is not None:
+        if self.interactor.active_request is not None or self._selection is not None:
             return ()
         text = self.input_buffer.text
         if text != self._popup_last_text:
@@ -1360,6 +1408,77 @@ class MiniTUIApplication:
             else:
                 fragments.append(("class:popup.cmd", cmd))
                 fragments.append(("class:popup", pad + entry.description + "\n"))
+        return FormattedText(fragments)
+
+    def _open_interactive_view(self, payload) -> bool:
+        """Claim a focused view as a modal selection panel, if supported."""
+        if payload.view_type != "mode_profiles":
+            return False
+        model = payload.view_model
+        if not isinstance(model, ModesViewModel):
+            return False
+        items = tuple(
+            SelectionItem(
+                label=mode.name,
+                description=mode.description,
+                command=f"/mode switch {mode.name}",
+                current=mode.active,
+            )
+            for mode in model.modes
+        )
+        if self._selection is not None and self._selection.view_type == payload.view_type:
+            self._selection.refresh(items)
+        else:
+            self._selection = SelectionPanel.open(
+                title=payload.title,
+                items=items,
+                view_type=payload.view_type,
+            )
+        self.invalidate()
+        return True
+
+    def _selection_height(self) -> int:
+        if self._selection is None:
+            return 0
+        return min(9, len(self._selection.items) + 1)
+
+    def _selection_close(self) -> None:
+        self._selection = None
+        self.invalidate()
+
+    def _selection_confirm(self) -> None:
+        if self._selection is None or self._selection.selected is None:
+            return
+        command = self._selection.selected.command
+        self._selection = None
+        self.input_buffer.text = command
+        self.input_buffer.cursor_position = len(command)
+        self._accept_buffer(self.input_buffer)
+
+    def _selection_text(self) -> FormattedText:
+        panel = self._selection
+        if panel is None:
+            return FormattedText([])
+        fragments: list[tuple[str, str]] = [
+            ("class:popup.cmd", f" {panel.title} "),
+            ("class:popup", "· Enter select · Esc close\n"),
+        ]
+        limit = 8
+        index = min(panel.index, max(0, len(panel.items) - 1))
+        start = max(0, min(index - limit // 2, max(0, len(panel.items) - limit)))
+        for offset, item in enumerate(panel.items[start : start + limit]):
+            i = start + offset
+            marker = "›" if i == index else " "
+            current = " (current)" if item.current else ""
+            row = f" {marker} {item.label}{current}"
+            pad = " " * max(1, 24 - len(row))
+            if i == index:
+                fragments.append(
+                    ("class:popup.selected", row + pad + item.description + "\n")
+                )
+            else:
+                fragments.append(("class:popup.cmd", row))
+                fragments.append(("class:popup", pad + item.description + "\n"))
         return FormattedText(fragments)
 
     def _interaction_height(self) -> int:

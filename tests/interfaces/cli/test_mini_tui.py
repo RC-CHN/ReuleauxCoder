@@ -1,3 +1,5 @@
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportAssignmentType=false, reportOptionalMemberAccess=false
+# Duck-typed stubs (SimpleNamespace, object.__new__) are intentional here.
 import threading
 import time
 from collections import deque
@@ -364,6 +366,7 @@ def test_command_popup_adopts_candidate_and_hides_on_non_slash() -> None:
 
     app = object.__new__(MiniTUIApplication)
     app.interactor = SimpleNamespace(active_request=None)
+    app._selection = None
     app.input_buffer = SimpleNamespace(text="/mo", cursor_position=3)
     app._popup_entries = (
         PopupEntry("/mode", "Choose the active session mode", False, False),
@@ -393,6 +396,7 @@ def test_command_popup_dismissed_until_text_changes() -> None:
 
     app = object.__new__(MiniTUIApplication)
     app.interactor = SimpleNamespace(active_request=None)
+    app._selection = None
     app.input_buffer = SimpleNamespace(text="/he", cursor_position=3)
     app._popup_entries = (
         PopupEntry("/help", "Show command help", False, False),
@@ -409,6 +413,70 @@ def test_command_popup_dismissed_until_text_changes() -> None:
     # Typing more reopens the popup.
     app.input_buffer.text = "/hel"
     assert app._popup_candidates()
+
+
+def test_mode_view_opens_selection_panel_and_confirm_resubmits() -> None:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.commands.view_models import (
+        ModeProfileViewModel,
+        ModesViewModel,
+    )
+
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = NS(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    payload = NS(
+        view_type="mode_profiles",
+        title="Modes",
+        view_model=ModesViewModel(
+            active_mode="coder",
+            modes=(
+                ModeProfileViewModel(
+                    name="coder",
+                    active=True,
+                    description="Default coding mode",
+                    tools=(),
+                    prompt_append="",
+                    allowed_subagent_modes=(),
+                ),
+                ModeProfileViewModel(
+                    name="plan",
+                    active=False,
+                    description="Planning first",
+                    tools=(),
+                    prompt_append="",
+                    allowed_subagent_modes=(),
+                ),
+            ),
+            diagnostics=(),
+        ),
+    )
+
+    assert app._open_interactive_view(payload) is True
+    assert app._selection is not None
+    assert app._selection.selected.label == "coder"
+
+    app._selection.move(1)
+    app._selection_confirm()
+    assert accepted == ["/mode switch plan"]
+    assert app._selection is None
+
+
+def test_unknown_view_type_is_not_claimed() -> None:
+    from types import SimpleNamespace as NS
+
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app.invalidate = lambda: None
+
+    payload = NS(view_type="token_usage", title="Tokens", view_model=NS())
+    assert app._open_interactive_view(payload) is False
+    assert app._selection is None
 
 
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
