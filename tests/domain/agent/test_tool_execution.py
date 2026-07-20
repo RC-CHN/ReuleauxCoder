@@ -38,7 +38,7 @@ class _ShellToolStub:
     def execute(self, command: str, timeout: int = 120) -> str:
         return "(no output)"
 
-    def preflight_validate(self, **kwargs) -> str | None:  # noqa: ARG002
+    def preflight_validate(self, arguments, *, schema_only=False):  # noqa: ARG002
         return None
 
     def schema(self) -> dict:
@@ -111,7 +111,7 @@ def test_non_shell_tool_does_not_set_runtime_working_directory() -> None:
     tool = SimpleNamespace(
         name="read_file",
         execute=lambda **kwargs: "file content",
-        preflight_validate=lambda **kwargs: None,
+        preflight_validate=lambda arguments, **kwargs: None,
         schema=lambda: {"type": "function", "function": {"name": "read_file"}},
     )
     agent = _AgentStub(tool)
@@ -146,7 +146,7 @@ def test_structured_failure_status_is_preserved_without_string_guessing() -> Non
     tool = SimpleNamespace(
         name="structured",
         execute=lambda **kwargs: failure,
-        preflight_validate=lambda **kwargs: None,
+        preflight_validate=lambda arguments, **kwargs: None,
         schema=lambda: {"type": "function", "function": {"name": "structured"}},
     )
     agent = _AgentStub(tool)
@@ -158,6 +158,47 @@ def test_structured_failure_status_is_preserved_without_string_guessing() -> Non
     assert result == "plain failure without legacy prefix"
     assert agent.events[-1].tool_success is False
     assert agent.events[-1].tool_outcome is failure
+
+
+def test_missing_required_arguments_are_rejected_before_execution(tmp_path) -> None:
+    target = tmp_path / "should-not-exist.txt"
+    tool = WriteFileTool()
+    agent = _AgentStub(tool)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="missing-content",
+            name="write_file",
+            arguments={"file_path": str(target)},
+        )
+    )
+
+    assert "Tool call rejected [invalid_arguments]" in result
+    assert "content" in result
+    assert not target.exists()
+    outcome = agent.events[-1].tool_outcome
+    assert outcome.error_kind is ToolErrorKind.INVALID_ARGUMENTS
+    assert outcome.metadata["missing_arguments"] == ("content",)
+    assert agent.events[-1].tool_result == outcome.display_text
+    assert result == outcome.model_text
+    assert outcome.display_text != outcome.model_text
+
+
+def test_unknown_tool_returns_active_name_suggestion() -> None:
+    agent = _AgentStub(ReadFileTool())
+    agent.strict_tool_scope = True
+    agent.get_tool = lambda name: None
+    agent.get_active_tools = lambda: [ReadFileTool()]
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="unknown-read", name="reed_file", arguments={})
+    )
+
+    assert "Tool call rejected [unknown_tool]" in result
+    assert "'read_file'" in result
+    outcome = agent.events[-1].tool_outcome
+    assert outcome.error_kind is ToolErrorKind.NOT_FOUND
+    assert outcome.metadata["suggested_tools"] == ("read_file",)
 
 
 def test_guard_warning_is_emitted_as_structured_diagnostic() -> None:

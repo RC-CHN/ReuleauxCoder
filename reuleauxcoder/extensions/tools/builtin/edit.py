@@ -44,7 +44,7 @@ class EditFileTool(Tool):
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
 
-    def preflight_validate(
+    def _preflight_validate(
         self, file_path: str, old_string: str, new_string: str
     ) -> str | None:
         """Fast validation so invalid edit requests can be rejected before approval."""
@@ -54,16 +54,14 @@ class EditFileTool(Tool):
 
     def execute(self, file_path: str, old_string: str, new_string: str) -> ToolOutcome:
         validation_error = self.preflight_validate(
-            file_path=file_path,
-            old_string=old_string,
-            new_string=new_string,
+            {
+                "file_path": file_path,
+                "old_string": old_string,
+                "new_string": new_string,
+            }
         )
         if validation_error:
-            return ToolOutcome(
-                status=ToolOutcomeStatus.FAILED,
-                content=validation_error,
-                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
-            )
+            return validation_error
         return self.run_backend(
             file_path=file_path,
             old_string=old_string,

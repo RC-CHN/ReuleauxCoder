@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 from collections.abc import Iterator
 from contextlib import contextmanager
+from difflib import get_close_matches
 from typing import TYPE_CHECKING, List
 
 if TYPE_CHECKING:
@@ -83,6 +84,56 @@ class ToolExecutor:
     def __init__(self, agent: "Agent"):
         self.agent = agent
 
+    def _finish_rejected_call(self, tc: "ToolCall", outcome: ToolOutcome) -> str:
+        self.agent._emit_event(
+            AgentEvent.tool_call_end(
+                tc.name,
+                outcome.display_text,
+                success=False,
+                tool_call_id=tc.id,
+                outcome=outcome,
+            )
+        )
+        return outcome.model_text
+
+    def _unknown_tool_outcome(self, tool_name: str) -> ToolOutcome:
+        active_tools = getattr(self.agent, "get_active_tools", None)
+        available_names = (
+            sorted(
+                {
+                    str(getattr(tool, "name", ""))
+                    for tool in active_tools()
+                    if getattr(tool, "name", None)
+                }
+            )
+            if callable(active_tools)
+            else []
+        )
+        matches = get_close_matches(tool_name, available_names, n=3, cutoff=0.5)
+        suggestion = (
+            f" Closest available tool{'s' if len(matches) != 1 else ''}: "
+            f"{', '.join(repr(name) for name in matches)}."
+            if matches
+            else ""
+        )
+        return ToolOutcome(
+            status=ToolOutcomeStatus.FAILED,
+            summary=f"Unknown tool: {tool_name}",
+            content=f"Error: unknown tool '{tool_name}'",
+            model_content=(
+                f"Tool call rejected [unknown_tool]: '{tool_name}' is not available."
+                f"{suggestion}\n"
+                "Retry only with an exact currently available tool name, or continue "
+                "without a tool. Do not repeat the unavailable tool call."
+            ),
+            error_kind=ToolErrorKind.NOT_FOUND,
+            metadata={
+                "preflight_code": "unknown_tool",
+                "requested_tool": tool_name,
+                "suggested_tools": tuple(matches),
+            },
+        )
+
     def execute(self, tc: "ToolCall") -> str:
         """Execute a single tool call."""
         reviewed_diff: str | None = None
@@ -94,6 +145,11 @@ class ToolExecutor:
             and self.agent.is_tool_in_scope(tc.name)
         ):
             tool = get_tool(tc.name)
+        if tool is None and (
+            getattr(self.agent, "strict_tool_scope", False)
+            or self.agent.is_tool_in_scope(tc.name)
+        ):
+            return self._finish_rejected_call(tc, self._unknown_tool_outcome(tc.name))
 
         before_context = BeforeToolExecuteContext(
             hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
@@ -145,32 +201,6 @@ class ToolExecutor:
                     )
                 )
 
-        external_target = _external_workspace_target(tool, tc.arguments)
-        external_mutation = (
-            external_target is not None and tc.name in _EXTERNAL_MUTATION_TOOLS
-        )
-        backend = getattr(tool, "backend", None)
-        workspace = getattr(backend, "workspace", None)
-        preflight_error = None
-        if not external_mutation and tool is not None:
-            with _workspace_access_scope(workspace, external_target):
-                preflight_error = tool.preflight_validate(**tc.arguments)
-        if preflight_error:
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tc.name,
-                    preflight_error,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=ToolOutcome.from_legacy(
-                        preflight_error,
-                        success=False,
-                        error_kind=ToolErrorKind.INVALID_ARGUMENTS,
-                    ),
-                )
-            )
-            return preflight_error
-
         if not self.agent.is_tool_allowed_in_mode(tc.name):
             mode_name = self.agent.active_mode or "default"
             suggested_modes = self.agent.suggest_modes_for_tool(tc.name)
@@ -192,6 +222,22 @@ class ToolExecutor:
                 )
             )
             return message
+
+        external_target = _external_workspace_target(tool, tc.arguments)
+        external_mutation = (
+            external_target is not None and tc.name in _EXTERNAL_MUTATION_TOOLS
+        )
+        backend = getattr(tool, "backend", None)
+        workspace = getattr(backend, "workspace", None)
+        if tool is not None:
+            preflight_target = None if external_mutation else external_target
+            with _workspace_access_scope(workspace, preflight_target):
+                preflight_failure = tool.preflight_validate(
+                    tc.arguments,
+                    schema_only=external_mutation,
+                )
+            if preflight_failure is not None:
+                return self._finish_rejected_call(tc, preflight_failure)
 
         if external_mutation:
             approval_required = GuardDecision.require_approval(
@@ -322,22 +368,9 @@ class ToolExecutor:
 
             if external_mutation and tool is not None:
                 with _workspace_access_scope(workspace, external_target):
-                    preflight_error = tool.preflight_validate(**tc.arguments)
-                if preflight_error:
-                    self.agent._emit_event(
-                        AgentEvent.tool_call_end(
-                            tc.name,
-                            preflight_error,
-                            success=False,
-                            tool_call_id=tc.id,
-                            outcome=ToolOutcome.from_legacy(
-                                preflight_error,
-                                success=False,
-                                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
-                            ),
-                        )
-                    )
-                    return preflight_error
+                    preflight_failure = tool.preflight_validate(tc.arguments)
+                if preflight_failure is not None:
+                    return self._finish_rejected_call(tc, preflight_failure)
 
         try:
             before_context = self.agent.extension_runtime.contribute_tool_context(

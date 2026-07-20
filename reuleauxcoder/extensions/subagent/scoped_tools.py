@@ -51,12 +51,12 @@ class ScopedSubagentTool(Tool):
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
 
-    def preflight_validate(self, **kwargs) -> str | None:
+    def _preflight_validate(self, **kwargs) -> ToolResult | None:
         arguments = dict(kwargs)
         reason = arguments.pop("reason", None)
         if self._require_reason and (not isinstance(reason, str) or not reason.strip()):
             return f"Error: child tool '{self.name}' requires a non-empty reason."
-        return self._inner.preflight_validate(**arguments)
+        return self._inner.preflight_validate(arguments)
 
     def execute(self, **kwargs) -> ToolResult:
         arguments = dict(kwargs)

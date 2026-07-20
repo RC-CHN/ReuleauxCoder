@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
+from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind
 from reuleauxcoder.domain.config.models import ApprovalConfig
 from reuleauxcoder.domain.hooks.builtin.tool_policy import ToolPolicyGuardHook
 from reuleauxcoder.domain.hooks.types import BeforeToolExecuteContext, HookPoint
@@ -167,9 +168,10 @@ def test_effectful_child_schema_requires_reason_and_strips_it_before_primitive()
     schema = scoped.schema()["function"]["parameters"]
     assert "reason" in schema["required"]
     assert scoped.effect_class == "process_execution"
-    assert scoped.preflight_validate(command="true") == (
-        "Error: child tool 'shell' requires a non-empty reason."
-    )
+    preflight_failure = scoped.preflight_validate({"command": "true"})
+    assert preflight_failure is not None
+    assert preflight_failure.error_kind is ToolErrorKind.INVALID_ARGUMENTS
+    assert preflight_failure.metadata["missing_arguments"] == ("reason",)
 
     assert scoped.execute(command="true", reason="verify the implementation") == "ok"
     assert scoped._inner.received == {"command": "true"}
@@ -209,4 +211,5 @@ def test_strict_child_scope_cannot_fall_back_to_global_registry() -> None:
         ToolCall(id="illegal-plan", name="update_plan", arguments={"plan": []})
     )
 
-    assert result == "Error: unknown tool 'update_plan'"
+    assert "Tool call rejected [unknown_tool]" in result
+    assert "'update_plan' is not available" in result
