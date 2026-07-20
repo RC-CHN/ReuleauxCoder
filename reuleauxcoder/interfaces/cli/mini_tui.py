@@ -38,7 +38,10 @@ from prompt_toolkit.widgets import Frame
 from reuleauxcoder import __version__
 from reuleauxcoder.app.commands import parse_command
 from reuleauxcoder.app.commands.specs import DuringTurnPolicy
-from reuleauxcoder.app.runtime.session_state import build_session_persistence_kwargs
+from reuleauxcoder.app.runtime.session_state import (
+    build_session_persistence_kwargs,
+    build_session_runtime_state,
+)
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
     ApprovalResolved,
@@ -1787,6 +1790,7 @@ class MiniTUIApplication:
             total_prompt_tokens=self.agent.state.total_prompt_tokens,
             total_completion_tokens=self.agent.state.total_completion_tokens,
             active_mode=getattr(self.agent, "active_mode", None),
+            runtime_state=build_session_runtime_state(self.config, self.agent),
             incremental=True,
             events_already_persisted=True,
             **build_session_persistence_kwargs(self.agent),
