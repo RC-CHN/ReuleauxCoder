@@ -20,8 +20,16 @@ from reuleauxcoder.app.commands.view_models import (
     SubagentJobsViewModel,
     SubagentJobViewModel,
 )
-from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.interfaces.events import UIEventKind
+
+
+def get_subagent_manager(agent):
+    """Load the worker runtime only when a subagent command is executed."""
+    from reuleauxcoder.extensions.subagent.manager import (
+        get_subagent_manager as resolve,
+    )
+
+    return resolve(agent)
 
 
 @dataclass(frozen=True, slots=True)

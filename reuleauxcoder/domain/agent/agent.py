@@ -30,7 +30,6 @@ from reuleauxcoder.domain.llm.context_messages import (
     mark_synthetic_user_message,
     synthetic_user_message,
 )
-from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.services.llm.client import LLMRequestCancelled
 from reuleauxcoder.services.prompt.builder import system_prompt
@@ -413,8 +412,19 @@ class Agent:
         self._replace_context_messages(
             list(session.messages), reason="session resume", record=False
         )
-        manager = get_subagent_manager(self)
-        manager.restore_from_history(self, self.history_ledger.events)
+        events = self.history_ledger.events
+        restorable_subagent_kinds = {
+            "subagent_job_changed",
+            "subagent_communication_queued",
+            "subagent_communication_delivered",
+        }
+        if any(event.kind in restorable_subagent_kinds for event in events):
+            from reuleauxcoder.extensions.subagent.manager import (
+                get_subagent_manager,
+            )
+
+            manager = get_subagent_manager(self)
+            manager.restore_from_history(self, events)
 
     def start_new_history(self) -> None:
         self.history_ledger = HistoryLedger(
@@ -909,9 +919,8 @@ class Agent:
         """Drain typed child messages/results into parent history in sequence order."""
         if self.subagent_depth > 0:
             return 0
-        try:
-            manager = get_subagent_manager(self)
-        except Exception:
+        manager = self._subagent_manager
+        if manager is None:
             return 0
 
         jobs = manager.drain_completed_for_parent(

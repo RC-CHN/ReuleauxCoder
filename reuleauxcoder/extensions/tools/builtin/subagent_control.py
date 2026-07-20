@@ -9,13 +9,18 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
-from reuleauxcoder.extensions.subagent.manager import (
-    SubagentCapacityError,
-    get_subagent_manager,
-)
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 from reuleauxcoder.extensions.tools.registry import register_tool
+
+
+def get_subagent_manager(agent):
+    """Load the worker runtime only when a subagent tool is executed."""
+    from reuleauxcoder.extensions.subagent.manager import (
+        get_subagent_manager as resolve,
+    )
+
+    return resolve(agent)
 
 
 _TERMINAL = {
@@ -98,6 +103,8 @@ class SpawnAgentTool(_RootSubagentTool):
         max_tokens: int | None = None,
         isolation: str | None = None,
     ) -> ToolOutcome:
+        from reuleauxcoder.extensions.subagent.manager import SubagentCapacityError
+
         try:
             root = self._root()
             text = message.strip()
