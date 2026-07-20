@@ -39,6 +39,22 @@ class AgentLoop:
         self._shell = shell_name
         self.last_response_streamed = False
         self.round_limit_reached = False
+        self._prompt_cache_key: tuple | None = None
+        self._prompt_cache_value = ""
+        self._tool_schema_cache_key: tuple | None = None
+        self._tool_schema_cache: tuple[dict, ...] = ()
+
+    @staticmethod
+    def _tool_signature(tools) -> tuple:
+        return tuple(
+            (
+                id(tool),
+                tool.name,
+                tool.description,
+                id(getattr(tool, "parameters", None)),
+            )
+            for tool in tools
+        )
 
     def _wire_settings(self) -> dict:
         """Return canonical settings that can change the provider wire payload."""
@@ -231,23 +247,36 @@ class AgentLoop:
             for name, mode_cfg in sorted(self.agent.available_modes.items())
         ]
 
-        system = self._prompt_fn(
-            active_tools,
-            mode_name=self.agent.active_mode,
-            mode_prompt_append=mode.prompt_append if mode is not None else "",
-            user_system_append=(
-                getattr(
-                    getattr(self.agent, "runtime_config", None), "prompt", None
-                ).system_append
-                if getattr(getattr(self.agent, "runtime_config", None), "prompt", None)
-                is not None
-                else ""
-            ),
-            blocked_tools=blocked_tools,
-            mode_switch_hints=suggested_modes,
-            available_modes=available_modes,
-            skills_catalog=getattr(self.agent, "skills_catalog", ""),
+        prompt_config = getattr(
+            getattr(self.agent, "runtime_config", None), "prompt", None
         )
+        user_system_append = (
+            prompt_config.system_append if prompt_config is not None else ""
+        )
+        skills_catalog = getattr(self.agent, "skills_catalog", "")
+        prompt_key = (
+            self._tool_signature(active_tools),
+            self.agent.active_mode,
+            mode.prompt_append if mode is not None else "",
+            user_system_append,
+            tuple(blocked_tools),
+            tuple(suggested_modes),
+            tuple(available_modes),
+            skills_catalog,
+        )
+        if prompt_key != self._prompt_cache_key:
+            self._prompt_cache_value = self._prompt_fn(
+                active_tools,
+                mode_name=self.agent.active_mode,
+                mode_prompt_append=mode.prompt_append if mode is not None else "",
+                user_system_append=user_system_append,
+                blocked_tools=blocked_tools,
+                mode_switch_hints=suggested_modes,
+                available_modes=available_modes,
+                skills_catalog=skills_catalog,
+            )
+            self._prompt_cache_key = prompt_key
+        system = self._prompt_cache_value
         current_system = {"role": "system", "content": system}
         system_message = current_system
         restored = getattr(self.agent, "_restored_replay_envelope", None)
@@ -275,7 +304,7 @@ class AgentLoop:
             current_descriptor = {
                 "model_profile": str(getattr(self.agent.llm, "model", "unknown")),
                 "instructions": [current_system],
-                "tools": self._tool_schemas(),
+                "tools": self._tool_schemas(active_tools),
                 "request_settings": self._wire_settings(),
             }
             restored_descriptor = {
@@ -419,9 +448,20 @@ class AgentLoop:
         )
         self.agent.persist_runtime_snapshot()
 
-    def _tool_schemas(self) -> list[dict]:
+    def _tool_schemas(self, tools=None) -> list[dict]:
         """Get tool schemas for LLM."""
-        return [t.schema() for t in self.agent.get_active_tools()]
+        active_tools = tools if tools is not None else self.agent.get_active_tools()
+        cache_key = self._tool_signature(active_tools)
+        if cache_key != self._tool_schema_cache_key:
+            self._tool_schema_cache = tuple(tool.schema() for tool in active_tools)
+            self._tool_schema_cache_key = cache_key
+        return [
+            {
+                **schema,
+                "function": dict(schema["function"]),
+            }
+            for schema in self._tool_schema_cache
+        ]
 
     def run(self) -> str:
         """Run the conversation loop."""

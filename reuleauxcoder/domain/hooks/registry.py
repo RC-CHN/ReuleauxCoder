@@ -33,18 +33,23 @@ class HookRegistry:
         diagnostic_sink: Callable[[HookDiagnostic], None] | None = None,
     ):
         self._hooks: dict[HookPoint, list[HookBase[Any]]] = defaultdict(list)
+        self._kind_cache: dict[
+            tuple[HookPoint, HookKind], tuple[HookBase[Any], ...]
+        ] = {}
         self._diagnostic_sink = diagnostic_sink
         self._diagnostics: list[HookDiagnostic] = []
 
     def register(self, hook_point: HookPoint, hook: HookBase[Any]) -> None:
         """Register a hook for a hook point."""
         self._hooks[hook_point].append(hook)
+        self._invalidate_hook_cache(hook_point)
 
     def unregister(self, hook_point: HookPoint, hook_name: str) -> None:
         """Remove a hook by name from a hook point."""
         self._hooks[hook_point] = [
             h for h in self._hooks.get(hook_point, []) if h.name != hook_name
         ]
+        self._invalidate_hook_cache(hook_point)
 
     def list_hooks(self, hook_point: HookPoint | None = None) -> dict[str, list[str]]:
         """List registered hook names."""
@@ -131,9 +136,12 @@ class HookRegistry:
         self, hook_point: HookPoint, context: HookContext
     ) -> tuple[HookDiagnostic, ...]:
         """Run observers against an immutable snapshot and report failures."""
+        observers = self._iter_kind(hook_point, HookKind.OBSERVER)
+        if not observers:
+            return ()
         snapshot = self._snapshot(context)
         diagnostics: list[HookDiagnostic] = []
-        for hook in self._iter_kind(hook_point, HookKind.OBSERVER):
+        for hook in observers:
             try:
                 cast(ObserverHook[HookContext], hook).run(snapshot)
             except Exception as exc:
@@ -144,13 +152,26 @@ class HookRegistry:
                 continue
         return tuple(diagnostics)
 
-    def _iter_kind(self, hook_point: HookPoint, kind: HookKind) -> list[HookBase[Any]]:
+    def _iter_kind(
+        self, hook_point: HookPoint, kind: HookKind
+    ) -> tuple[HookBase[Any], ...]:
+        cache_key = (hook_point, kind)
+        cached = self._kind_cache.get(cache_key)
+        if cached is not None:
+            return cached
         hooks = self._sorted_hooks(self._hooks.get(hook_point, []))
         if kind is HookKind.GUARD:
-            return [h for h in hooks if isinstance(h, GuardHook)]
-        if kind is HookKind.TRANSFORM:
-            return [h for h in hooks if isinstance(h, TransformHook)]
-        return [h for h in hooks if isinstance(h, ObserverHook)]
+            selected = tuple(h for h in hooks if isinstance(h, GuardHook))
+        elif kind is HookKind.TRANSFORM:
+            selected = tuple(h for h in hooks if isinstance(h, TransformHook))
+        else:
+            selected = tuple(h for h in hooks if isinstance(h, ObserverHook))
+        self._kind_cache[cache_key] = selected
+        return selected
+
+    def _invalidate_hook_cache(self, hook_point: HookPoint) -> None:
+        for kind in HookKind:
+            self._kind_cache.pop((hook_point, kind), None)
 
     def clone(self, *, scope: str = "child") -> "HookRegistry":
         """Create a scope-aware copy of the registry and registered hooks."""
