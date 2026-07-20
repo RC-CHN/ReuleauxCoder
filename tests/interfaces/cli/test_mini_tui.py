@@ -72,6 +72,39 @@ def test_mini_tui_leaves_mouse_to_terminal_native_selection() -> None:
     assert MINI_TUI_MOUSE_SUPPORT is False
 
 
+def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
+    from types import SimpleNamespace
+
+    from reuleauxcoder.presentation.models import ToolCell, ToolCellStatus
+    from reuleauxcoder.interfaces.cli.mini_tui import (
+        _cell_fragments,
+        _fragments_to_visual_lines,
+    )
+
+    outcome = SimpleNamespace(
+        summary="npm run build",
+        ui_text=lambda include_details=True: "",
+    )
+    cell = ToolCell(
+        id="t1",
+        tool_call_id="tc1",
+        name="shell",
+        arguments={"command": "npm run build"},
+        status=ToolCellStatus.SUCCEEDED,
+        outcome=outcome,
+        output="✓ built in 4.21s",
+    )
+
+    lines = _fragments_to_visual_lines(
+        _wrap_fragments(_cell_fragments(cell, width=50), width=50)
+    )
+    header = "".join(text for _style, text in lines[0])
+
+    assert header.startswith(" shell · npm run build")
+    assert header.rstrip().endswith("SUCCEEDED")
+    assert get_cwidth(header) <= 50
+
+
 def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
     assert _wrapped_row_count("", 40) == 1
     assert _wrapped_row_count("short", 40) == 1

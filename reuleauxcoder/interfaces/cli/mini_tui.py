@@ -1120,14 +1120,24 @@ def _cell_fragments(
     if isinstance(cell, ToolCell):
         status = cell.status.value.upper()
         style = "class:error" if cell.status.value == "failed" else "class:tool"
-        text = f" {status}  {cell.name}"
+        text = f" {cell.name}"
         if cell.outcome is not None:
             summary = cell.outcome.summary or _first_meaningful_line(
                 cell.outcome.ui_text(include_details=True)
             )
             if summary:
                 text += f" · {_clip(summary, 160)}"
-        fragments = [(style, text + "\n")]
+        status_text = f" {status} "
+        text = _fit_display(text, max(10, width - get_cwidth(status_text) - 2))
+        padding = " " * max(
+            2, width - get_cwidth(text) - get_cwidth(status_text)
+        )
+        fragments = [
+            (style, text),
+            (style, padding),
+            (f"{style} bold", status_text),
+            ("", "\n"),
+        ]
         for line in cell.output.splitlines()[-5:]:
             fragments.append(("class:muted", f" └ {line}\n"))
         if cell.status.value != "running":
