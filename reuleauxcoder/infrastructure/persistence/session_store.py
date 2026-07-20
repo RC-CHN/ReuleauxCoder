@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -31,12 +32,20 @@ from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 DEFAULT_SESSION_FINGERPRINT = "local"
 
 
+@dataclass(slots=True)
+class _DirectoryWriteCursor:
+    initialized: bool = False
+    request_ids: set[str] = field(default_factory=set)
+    checkpoint_ids: set[str] = field(default_factory=set)
+
+
 class SessionStore:
     """File-backed store for conversation sessions."""
 
     def __init__(self, sessions_dir: Path | None = None):
         self._sessions_dir = sessions_dir or get_sessions_dir()
         self._lock = threading.RLock()
+        self._write_cursors: dict[str, _DirectoryWriteCursor] = {}
 
     @property
     def sessions_dir(self) -> Path:
@@ -59,6 +68,8 @@ class SessionStore:
         request_envelopes: list[RequestEnvelope] | tuple[RequestEnvelope, ...] = (),
         history_completeness: str | None = None,
         checkpoints: list[CompactionCheckpoint] | tuple[CompactionCheckpoint, ...] = (),
+        incremental: bool = False,
+        events_already_persisted: bool = False,
     ) -> str:
         """Save conversation to disk and return the session ID."""
         with self._lock:
@@ -146,7 +157,11 @@ class SessionStore:
                 ),
             )
             path = self._get_session_path(session_id)
-            self._write_session_directory(session)
+            self._write_session_directory(
+                session,
+                incremental=incremental,
+                events_already_persisted=events_already_persisted,
+            )
             self._atomic_write_json(path, session.to_dict())
             return session_id
 
@@ -350,7 +365,13 @@ class SessionStore:
         )
         temporary.replace(path)
 
-    def _write_session_directory(self, session: Session) -> None:
+    def _write_session_directory(
+        self,
+        session: Session,
+        *,
+        incremental: bool = False,
+        events_already_persisted: bool = False,
+    ) -> None:
         directory = self._get_session_directory(session.id)
         directory.mkdir(parents=True, exist_ok=True)
         requests_dir = directory / "requests"
@@ -358,35 +379,52 @@ class SessionStore:
         checkpoints_dir = directory / "checkpoints"
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
+        cursor = self._write_cursors.setdefault(session.id, _DirectoryWriteCursor())
+        if incremental and not cursor.initialized:
+            cursor.request_ids = {path.stem for path in requests_dir.glob("*.json")}
+            cursor.checkpoint_ids = {
+                path.stem for path in checkpoints_dir.glob("*.json")
+            }
+            cursor.initialized = True
+
         events_path = directory / "events.jsonl"
-        existing_ids: set[str] = set()
-        if events_path.exists():
-            for line in events_path.read_text(encoding="utf-8").splitlines():
-                try:
-                    existing_ids.add(str(json.loads(line).get("event_id")))
-                except json.JSONDecodeError:
-                    continue
-        new_events = [
-            event
-            for event in sorted(session.history_events, key=lambda item: item.seq)
-            if event.event_id not in existing_ids
-        ]
-        if new_events:
-            with events_path.open("a", encoding="utf-8") as stream:
-                for event in new_events:
-                    stream.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+        if not events_already_persisted:
+            existing_ids: set[str] = set()
+            if events_path.exists():
+                for line in events_path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        existing_ids.add(str(json.loads(line).get("event_id")))
+                    except json.JSONDecodeError:
+                        continue
+            new_events = [
+                event
+                for event in sorted(session.history_events, key=lambda item: item.seq)
+                if event.event_id not in existing_ids
+            ]
+            if new_events:
+                with events_path.open("a", encoding="utf-8") as stream:
+                    for event in new_events:
+                        stream.write(
+                            json.dumps(event.to_dict(), ensure_ascii=False) + "\n"
+                        )
 
         replay = session.replay_envelope
         if replay is not None:
             self._atomic_write_json(directory / "replay.json", replay.to_dict())
         for request in session.request_envelopes:
+            if incremental and request.request_id in cursor.request_ids:
+                continue
             self._atomic_write_json(
                 requests_dir / f"{request.request_id}.json", request.to_dict()
             )
+            cursor.request_ids.add(request.request_id)
         for checkpoint in session.checkpoints:
+            if incremental and checkpoint.id in cursor.checkpoint_ids:
+                continue
             self._atomic_write_json(
                 checkpoints_dir / f"{checkpoint.id}.json", checkpoint.to_dict()
             )
+            cursor.checkpoint_ids.add(checkpoint.id)
         manifest = session.to_dict()
         manifest.pop("messages", None)
         manifest.pop("replay_envelope", None)

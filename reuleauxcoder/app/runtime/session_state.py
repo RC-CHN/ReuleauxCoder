@@ -69,6 +69,8 @@ def bind_session_persistence(
             active_mode=getattr(agent, "active_mode", None),
             runtime_state=build_session_runtime_state(config, agent),
             fingerprint=fingerprint,
+            incremental=True,
+            events_already_persisted=True,
             **build_session_persistence_kwargs(agent),
         )
 
