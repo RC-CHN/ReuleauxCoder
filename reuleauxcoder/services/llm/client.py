@@ -39,6 +39,7 @@ class LLMRequestCancelled(RuntimeError):
 
 
 _STREAM_DONE = object()
+_STREAM_QUEUE_MAXSIZE = 256
 
 
 def _cancellable_stream_chunks(stream, cancellation_event):
@@ -46,41 +47,60 @@ def _cancellable_stream_chunks(stream, cancellation_event):
 
     The SDK stream blocks on socket reads, so a cancel that lands while the
     model is silent (long thinking, slow first chunk) would otherwise wait
-    for the next chunk. A producer thread feeds a queue instead; the
-    consumer polls with a short timeout, closes the stream and raises as
-    soon as cancellation is observed.
+    for the next chunk. A producer thread feeds a bounded queue instead; the
+    consumer polls with a short timeout, signals the producer to stop,
+    closes the stream and raises as soon as cancellation is observed. The
+    bounded queue back-pressures the producer so a slow consumer cannot
+    accumulate unbounded chunks, and the stop event lets the producer exit
+    even if the underlying iterator never responds to close().
     """
     if cancellation_event is None:
         yield from stream
         return
-    items: queue.Queue = queue.Queue()
+    items: queue.Queue = queue.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
+    stop = threading.Event()
+
+    def offer(item) -> bool:
+        while not stop.is_set():
+            try:
+                items.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
 
     def produce() -> None:
         try:
             for chunk in stream:
-                items.put(chunk)
-            items.put(_STREAM_DONE)
+                if stop.is_set() or not offer(chunk):
+                    return
+            offer(_STREAM_DONE)
         except Exception as exc:  # surfaced to the consumer thread
-            items.put(exc)
+            offer(exc)
 
     threading.Thread(
         target=produce, name="rcoder-llm-stream", daemon=True
     ).start()
-    while True:
-        try:
-            item = items.get(timeout=0.1)
-        except queue.Empty:
+    try:
+        while True:
+            # Check before every item, not only on an empty queue: a producer
+            # that already finished may have left a full queue behind.
             if cancellation_event.is_set():
-                close = getattr(stream, "close", None)
-                if callable(close):
-                    close()
                 raise LLMRequestCancelled("LLM stream cancelled")
-            continue
-        if item is _STREAM_DONE:
-            return
-        if isinstance(item, Exception):
-            raise item
-        yield item
+            try:
+                item = items.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is _STREAM_DONE:
+                return
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        stop.set()
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
 
 
 def _mask_api_key(api_key: str) -> str:
