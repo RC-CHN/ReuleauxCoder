@@ -334,10 +334,10 @@ class MiniTUIEventAdapter:
             return
         message = event.message
         if isinstance(event.payload, ViewEventPayload):
-            # Interactive presenters (selection panels) own focused views;
-            # they suppress the passive transcript projection.
+            # Interactive presenters (selection panels) own their view types,
+            # for both opens and refreshes; they suppress passive projection.
             handler = self.interactive_view_handler
-            if event.payload.focus and handler is not None and handler(event.payload):
+            if handler is not None and handler(event.payload):
                 return
             if event.payload.view_type == "session_resume" and isinstance(
                 event.payload.view_model, SessionResumeViewModel
@@ -1421,18 +1421,34 @@ class MiniTUIApplication:
     )
 
     def _open_interactive_view(self, payload) -> bool:
-        """Claim a focused view as a modal selection panel, if supported."""
+        """Claim a view as a modal selection panel, or absorb its refresh."""
+        is_refresh = payload.action == "refresh" or not payload.focus
         if payload.view_type == "mode_profiles":
+            model = payload.view_model
+            if not isinstance(model, ModesViewModel):
+                return False
+            if is_refresh:
+                if self._selection is not None and (
+                    self._selection.view_type == "mode_profiles"
+                ):
+                    self._selection.refresh(self._mode_items(model))
+                    self.invalidate()
+                return True
             return self._open_mode_panel(payload)
         if payload.view_type == "model_profiles":
+            model = payload.view_model
+            if not isinstance(model, ModelListViewModel):
+                return False
+            if is_refresh:
+                # The success notice already says what changed; suppress the
+                # passive JSON dump.
+                return True
             return self._open_model_panel(payload)
         return False
 
-    def _open_mode_panel(self, payload) -> bool:
-        model = payload.view_model
-        if not isinstance(model, ModesViewModel):
-            return False
-        items = tuple(
+    @staticmethod
+    def _mode_items(model: ModesViewModel) -> tuple[SelectionItem, ...]:
+        return tuple(
             SelectionItem(
                 label=mode.name,
                 description=mode.description,
@@ -1441,6 +1457,12 @@ class MiniTUIApplication:
             )
             for mode in model.modes
         )
+
+    def _open_mode_panel(self, payload) -> bool:
+        model = payload.view_model
+        if not isinstance(model, ModesViewModel):
+            return False
+        items = self._mode_items(model)
         if self._selection is not None and self._selection.view_type == payload.view_type:
             self._selection.refresh(items)
         else:

@@ -433,6 +433,8 @@ def test_mode_view_opens_selection_panel_and_confirm_resubmits() -> None:
     payload = NS(
         view_type="mode_profiles",
         title="Modes",
+        action="open",
+        focus=True,
         view_model=ModesViewModel(
             active_mode="coder",
             modes=(
@@ -474,7 +476,9 @@ def test_unknown_view_type_is_not_claimed() -> None:
     app._selection = None
     app.invalidate = lambda: None
 
-    payload = NS(view_type="token_usage", title="Tokens", view_model=NS())
+    payload = NS(
+        view_type="token_usage", title="Tokens", action="open", focus=True, view_model=NS()
+    )
     assert app._open_interactive_view(payload) is False
     assert app._selection is None
 
@@ -490,6 +494,8 @@ def _model_view_payload() -> object:
     return NS(
         view_type="model_profiles",
         title="Models",
+        action="open",
+        focus=True,
         view_model=ModelListViewModel(
             active_main="sonnet",
             active_sub="haiku",
