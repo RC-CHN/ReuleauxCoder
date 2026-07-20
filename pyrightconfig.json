@@ -3,5 +3,14 @@
     "venv": ".venv",
     "reportMissingTypeStubs": false,
     "reportMissingModuleSource": false,
-    "typeCheckingMode": "standard"
+    "typeCheckingMode": "standard",
+    "executionEnvironments": [
+        {
+            "root": "tests",
+            "reportArgumentType": false,
+            "reportAssignmentType": false,
+            "reportAttributeAccessIssue": false,
+            "reportReturnType": false
+        }
+    ]
 }

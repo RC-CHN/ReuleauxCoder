@@ -50,6 +50,7 @@ from reuleauxcoder.domain.runtime.events import (
     StreamChunk,
     SubagentJobChanged,
 )
+from reuleauxcoder.app.commands.view_models import SessionResumeViewModel
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
@@ -217,14 +218,17 @@ def _coalesce_stream_events(events: list[UIEvent]) -> list[UIEvent]:
             continue
         envelope = event.payload
         assert isinstance(envelope, RuntimeEventPayload)
+        stream_payload = envelope.event.payload
+        # _stream_event_key only admits _COALESCIBLE_STREAM_TYPES payloads.
+        assert isinstance(stream_payload, _COALESCIBLE_STREAM_TYPES)
         if current is not None and key == current_key:
             current = event
-            text_parts.append(str(envelope.event.payload.text))
+            text_parts.append(stream_payload.text)
             continue
         flush()
         current = event
         current_key = key
-        text_parts = [str(envelope.event.payload.text)]
+        text_parts = [stream_payload.text]
     flush()
     return merged
 
@@ -317,8 +321,8 @@ class MiniTUIEventAdapter:
             return
         message = event.message
         if isinstance(event.payload, ViewEventPayload):
-            if event.payload.view_type == "session_resume" and hasattr(
-                event.payload.view_model, "entries"
+            if event.payload.view_type == "session_resume" and isinstance(
+                event.payload.view_model, SessionResumeViewModel
             ):
                 model = event.payload.view_model
                 restored_group: str | None = None
@@ -651,7 +655,7 @@ class MiniTUIInteractor:
         self.ui_bus = ui_bus
         self._condition = threading.Condition()
         self._active: Any | None = None
-        self._response: Any | None = None
+        self._response: Any = None
         self._invalidate = lambda: None
 
     @property
@@ -1306,7 +1310,10 @@ class MiniTUIApplication:
         preview = getattr(getattr(self, "agent", None), "pending_user_steering", None)
         if not callable(preview):
             return ()
-        return tuple(preview())
+        result = preview()
+        if not isinstance(result, (tuple, list)):
+            return ()
+        return tuple(str(item) for item in result)
 
     def _popup_candidates(self) -> tuple[PopupEntry, ...]:
         if self.interactor.active_request is not None:
@@ -2043,21 +2050,25 @@ def _cancelled_response(request, reason: str):
 
 def _view_text(payload: ViewEventPayload) -> str:
     model = payload.view_model
-    if payload.view_type == "session_resume" and hasattr(model, "entries"):
+    if payload.view_type == "session_resume" and isinstance(
+        model, SessionResumeViewModel
+    ):
         lines = [f"RESTORED {model.session_id} · {model.model} · {model.saved_at[:19]}"]
         lines.extend(
             f"{'YOU' if entry.role == 'user' else 'AGENT'}  {entry.content}"
             for entry in model.entries
         )
         return "\n".join(lines)
-    if hasattr(model, "to_payload"):
+    to_payload = getattr(model, "to_payload", None)
+    if callable(to_payload):
         try:
-            return json.dumps(model.to_payload(), ensure_ascii=False, indent=2)
+            return json.dumps(to_payload(), ensure_ascii=False, indent=2)
         except Exception:
             pass
-    if hasattr(model, "to_dict"):
+    to_dict = getattr(model, "to_dict", None)
+    if callable(to_dict):
         try:
-            return json.dumps(model.to_dict(), ensure_ascii=False, indent=2)
+            return json.dumps(to_dict(), ensure_ascii=False, indent=2)
         except Exception:
             pass
     return f"{payload.title}: {model}"
