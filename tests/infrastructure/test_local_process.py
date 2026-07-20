@@ -1,5 +1,7 @@
 import shlex
 import sys
+import threading
+import time
 
 from reuleauxcoder.infrastructure.process.local import LocalProcessPort
 
@@ -24,3 +26,26 @@ def test_timeout_preserves_and_streams_partial_output(tmp_path) -> None:
     assert "line-0" in result.stdout
     assert "line-1" in result.stdout
     assert "".join(chunk.data for chunk in chunks) == result.stdout
+
+
+def test_cancellation_returns_promptly_without_reaping(tmp_path) -> None:
+    cancellation = threading.Event()
+
+    def cancel_soon() -> None:
+        time.sleep(0.2)
+        cancellation.set()
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    started = time.monotonic()
+    result = LocalProcessPort().run(
+        "sleep 30" if sys.platform != "win32" else "timeout /t 30 /nobreak",
+        cwd=str(tmp_path),
+        timeout=60,
+        cancellation_event=cancellation,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.cancelled is True
+    # Termination signals fire and the caller unwinds without waiting for the
+    # process group to actually die (reaped asynchronously).
+    assert elapsed < 1.5

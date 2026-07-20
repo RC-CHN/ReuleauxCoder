@@ -86,8 +86,12 @@ class LocalProcessPort:
                     stream_handler(chunk)
 
         def finish_result(**state) -> ProcessResult:
+            # On cancel/timeout the caller is unwinding: bound reader joins so
+            # we keep already-collected output without waiting on late streams.
+            discard = bool(state.get("cancelled") or state.get("timed_out"))
+            join_timeout = 0.15 if discard else 1.0
             for reader in readers:
-                reader.join(timeout=1.0)
+                reader.join(timeout=join_timeout)
             drain_chunks()
             return ProcessResult(
                 stdout="".join(stdout_parts),
@@ -115,27 +119,62 @@ class LocalProcessPort:
 
     @staticmethod
     def _terminate_process_tree(process: subprocess.Popen) -> None:
+        """Signal the process tree; reap/escalate off the caller's path."""
         if process.poll() is not None:
             return
         if os.name == "nt":
+            # taskkill /T /F is already forceful; reap the handle off-path.
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
                 check=False,
             )
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                return
+            threading.Thread(
+                target=LocalProcessPort._reap_process,
+                args=(process,),
+                name="rcoder-process-reaper",
+                daemon=True,
+            ).start()
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        threading.Thread(
+            target=LocalProcessPort._reap_process_tree,
+            args=(process,),
+            name="rcoder-process-reaper",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _reap_process(process: subprocess.Popen) -> None:
+        try:
+            process.wait(timeout=2.0)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            process.kill()
+        except OSError:
+            return
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+    @staticmethod
+    def _reap_process_tree(process: subprocess.Popen) -> None:
         try:
             process.wait(timeout=0.5)
+            return
         except subprocess.TimeoutExpired:
-            if os.name == "nt":
-                process.kill()
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        try:
             process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
