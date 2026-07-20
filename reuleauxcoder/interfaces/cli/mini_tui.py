@@ -7,6 +7,7 @@ interaction responses.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import queue
@@ -38,9 +39,12 @@ from reuleauxcoder.app.runtime.session_state import build_session_persistence_kw
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
     ApprovalResolved,
+    AssistantContentDelta,
     PlanUpdated,
     ProgressReported,
+    ReasoningDelta,
     RuntimeEvent,
+    StreamChunk,
     SubagentJobChanged,
 )
 from reuleauxcoder.domain.approval import ApprovalSectionKind
@@ -76,6 +80,7 @@ from reuleauxcoder.presentation import (
     ExecutionPanelView,
     ExecutionViewReducer,
     NoticeCell,
+    PresentationChangeKind,
     PresentationReducer,
     RuntimeViewState,
     SubagentCell,
@@ -141,6 +146,77 @@ ALTERNATE_SCROLL_ENABLE = "\x1b[?1007h"
 ALTERNATE_SCROLL_DISABLE = "\x1b[?1007l"
 
 
+_COALESCIBLE_STREAM_TYPES = (AssistantContentDelta, ReasoningDelta, StreamChunk)
+
+
+def _stream_event_key(event: UIEvent) -> tuple | None:
+    envelope = event.payload
+    if not isinstance(envelope, RuntimeEventPayload):
+        return None
+    runtime = envelope.event
+    payload = runtime.payload
+    if not isinstance(payload, _COALESCIBLE_STREAM_TYPES):
+        return None
+    payload_variant = (
+        getattr(payload, "reasoning", None),
+        getattr(payload, "display_mode", None),
+    )
+    return (
+        type(payload),
+        runtime.agent_id,
+        runtime.session_id,
+        runtime.session_generation,
+        runtime.turn_id,
+        runtime.correlation_id,
+        payload_variant,
+    )
+
+
+def _coalesce_stream_events(events: list[UIEvent]) -> list[UIEvent]:
+    """Merge adjacent stream deltas already waiting for the same UI paint."""
+    merged: list[UIEvent] = []
+    current: UIEvent | None = None
+    current_key: tuple | None = None
+    text_parts: list[str] = []
+
+    def flush() -> None:
+        nonlocal current, current_key, text_parts
+        if current is None:
+            return
+        if len(text_parts) > 1:
+            envelope = current.payload
+            assert isinstance(envelope, RuntimeEventPayload)
+            runtime = envelope.event
+            payload = replace(runtime.payload, text="".join(text_parts))
+            current = replace(
+                current,
+                payload=RuntimeEventPayload(replace(runtime, payload=payload)),
+            )
+        merged.append(current)
+        current = None
+        current_key = None
+        text_parts = []
+
+    for event in events:
+        key = _stream_event_key(event)
+        if key is None:
+            flush()
+            merged.append(event)
+            continue
+        envelope = event.payload
+        assert isinstance(envelope, RuntimeEventPayload)
+        if current is not None and key == current_key:
+            current = event
+            text_parts.append(str(envelope.event.payload.text))
+            continue
+        flush()
+        current = event
+        current_key = key
+        text_parts = [str(envelope.event.payload.text)]
+    flush()
+    return merged
+
+
 class MiniTUIEventAdapter:
     """Thread-safe, source-backed event projection for the mini-TUI."""
 
@@ -168,6 +244,10 @@ class MiniTUIEventAdapter:
         self._transcript_layout_key: tuple[tuple[str, int, int, int], ...] = ()
         self._transcript_layout_source_key: tuple[int, int, int, int] | None = None
         self._transcript_layout = VirtualTranscriptLayout(())
+        self._layout_model_revision = -1
+        self._layout_structure_dirty = True
+        self._layout_dirty_ids: set[str] = set()
+        self._placement_by_id: dict[str, TranscriptPlacement] = {}
         self._flattened_layout: VirtualTranscriptLayout | None = None
         self._transcript_rendered = FormattedText()
 
@@ -182,22 +262,26 @@ class MiniTUIEventAdapter:
 
     def _drain_pending_events(self) -> None:
         with self._lock:
+            pending: list[UIEvent] = []
             while True:
                 try:
-                    event = self._pending_events.get_nowait()
+                    pending.append(self._pending_events.get_nowait())
                 except queue.Empty:
                     break
+            for event in _coalesce_stream_events(pending):
                 try:
                     self._apply_pending_event_locked(event)
                 except Exception as error:
                     # A malformed view projection must not stop the agent or the
                     # viewport. Keep one bounded diagnostic in the transcript.
                     self._notice_seq += 1
-                    self.transcript.append_notice(
-                        notice_id=f"ui-projection:{self._notice_seq}",
-                        message=f"UI projection skipped: {error}",
-                        level="warning",
-                        category="ui",
+                    self._record_presentation_changes(
+                        self.transcript.append_notice(
+                            notice_id=f"ui-projection:{self._notice_seq}",
+                            message=f"UI projection skipped: {error}",
+                            level="warning",
+                            category="ui",
+                        )
                     )
 
     def _apply_pending_event_locked(self, event: UIEvent) -> None:
@@ -205,16 +289,18 @@ class MiniTUIEventAdapter:
             runtime = event.payload.event
             self.execution.apply(runtime)
             if self._is_root_transcript_event(runtime):
-                self.transcript.apply(runtime)
+                self._record_presentation_changes(self.transcript.apply(runtime))
             return
         if isinstance(event.payload, InteractionPromptPayload):
             request = event.payload.request
             if isinstance(request, ReviewRequest):
-                self.transcript.hydrate_approval(
-                    request_id=request.request_id,
-                    title=request.title,
-                    summary=request.summary,
-                    sections=request.sections,
+                self._record_presentation_changes(
+                    self.transcript.hydrate_approval(
+                        request_id=request.request_id,
+                        title=request.title,
+                        summary=request.summary,
+                        sections=request.sections,
+                    )
                 )
             return
         message = event.message
@@ -253,12 +339,21 @@ class MiniTUIEventAdapter:
                 message = _view_text(event.payload)
         if message:
             self._notice_seq += 1
-            self.transcript.append_notice(
-                notice_id=f"ui:{event.timestamp}:{self._notice_seq}",
-                message=message,
-                level=event.level.value,
-                category=event.kind.value,
+            self._record_presentation_changes(
+                self.transcript.append_notice(
+                    notice_id=f"ui:{event.timestamp}:{self._notice_seq}",
+                    message=message,
+                    level=event.level.value,
+                    category=event.kind.value,
+                )
             )
+
+    def _record_presentation_changes(self, changes) -> None:
+        for change in changes:
+            if change.kind is PresentationChangeKind.UPDATE and change.cell is not None:
+                self._layout_dirty_ids.add(change.cell.id)
+            else:
+                self._layout_structure_dirty = True
 
     def _is_root_transcript_event(self, event: RuntimeEvent) -> bool:
         """Keep child internals observable without publishing them as chat."""
@@ -279,6 +374,7 @@ class MiniTUIEventAdapter:
             self.transcript.state.transcript.append(
                 UserCell(id=cell_id, text=text, group_id=cell_id)
             )
+            self._layout_structure_dirty = True
         self._invalidate()
 
     def restore_control_state(self, plan, progress, *, session_id: str | None) -> None:
@@ -339,6 +435,10 @@ class MiniTUIEventAdapter:
             self._transcript_layout_key = ()
             self._transcript_layout_source_key = None
             self._transcript_layout = VirtualTranscriptLayout(())
+            self._layout_model_revision = -1
+            self._layout_structure_dirty = True
+            self._layout_dirty_ids.clear()
+            self._placement_by_id.clear()
             self._flattened_layout = None
             self._transcript_rendered = FormattedText()
         self._invalidate()
@@ -370,6 +470,7 @@ class MiniTUIEventAdapter:
                         )
                     )
             self._notice_seq += 1
+            self._layout_structure_dirty = True
         self._invalidate()
 
     def panel_lines(self, width: int) -> tuple[str, ...]:
@@ -408,6 +509,42 @@ class MiniTUIEventAdapter:
             if source_key == self._transcript_layout_source_key:
                 return self._transcript_layout
             cells = model.cells
+            can_update_incrementally = (
+                not self._layout_structure_dirty
+                and self._layout_model_revision >= 0
+                and bool(self._layout_dirty_ids)
+                and self._transcript_layout_source_key is not None
+                and self._transcript_layout_source_key[0] == id(model)
+                and self._transcript_layout_source_key[2] == self._viewport_width
+                and self._transcript_layout_source_key[3] == self._theme_revision
+            )
+        if can_update_incrementally:
+            replacements: dict[str, VisualCell] = {}
+            for cell_id in self._layout_dirty_ids:
+                cell = model.get(cell_id)
+                placement = self._placement_by_id.get(cell_id)
+                if cell is None or placement is None:
+                    self._layout_structure_dirty = True
+                    break
+                updated_placement = replace(placement, cell=cell)
+                self._placement_by_id[cell_id] = updated_placement
+                previous_visual = self._transcript_layout.cell(cell_id)
+                updated_visual = self._visual_cell(updated_placement)
+                replacements[cell_id] = updated_visual
+                if (
+                    previous_visual is not None
+                    and previous_visual.key != updated_visual.key
+                ):
+                    self._cell_visual_cache.pop(previous_visual.key, None)
+            if not self._layout_structure_dirty:
+                self._transcript_layout = self._transcript_layout.with_replacements(
+                    replacements
+                )
+                self._transcript_layout_source_key = source_key
+                self._layout_model_revision = model.revision
+                self._layout_dirty_ids.clear()
+                self._flattened_layout = None
+                return self._transcript_layout
         render_key = tuple(
             (
                 cell.id,
@@ -419,40 +556,12 @@ class MiniTUIEventAdapter:
         )
         if render_key == self._transcript_layout_key:
             return self._transcript_layout
-        live_keys: set[tuple[str, int, int, int]] = set()
-        visual_cells: list[VisualCell] = []
-        for placement in compose_transcript(cells):
-            cell = placement.cell
-            decoration_revision = (
-                cell.revision * 8
-                + int(placement.begins_turn) * 4
-                + int(placement.show_assistant_label) * 2
-                + placement.blank_lines_after
-            )
-            key = (
-                cell.id,
-                decoration_revision,
-                self._viewport_width,
-                self._theme_revision,
-            )
-            live_keys.add(key)
-            lines = self._cell_visual_cache.get(key)
-            if lines is None:
-                lines = _fragments_to_visual_lines(
-                    _wrap_fragments(
-                        _decorate_transcript_fragments(
-                            placement,
-                            _cell_fragments(
-                                cell,
-                                width=self._viewport_width,
-                                markdown_renderer=self._markdown,
-                            ),
-                        ),
-                        width=max(1, self._viewport_width),
-                    )
-                )
-                self._cell_visual_cache[key] = lines
-            visual_cells.append(VisualCell(key=key, lines=lines))
+        placements = compose_transcript(cells)
+        self._placement_by_id = {
+            placement.cell.id: placement for placement in placements
+        }
+        visual_cells = [self._visual_cell(placement) for placement in placements]
+        live_keys = {cell.key for cell in visual_cells}
         if len(self._cell_visual_cache) > max(50, len(live_keys) * 2):
             self._cell_visual_cache = {
                 key: value
@@ -462,8 +571,43 @@ class MiniTUIEventAdapter:
         self._transcript_layout_key = render_key
         self._transcript_layout_source_key = source_key
         self._transcript_layout = VirtualTranscriptLayout(tuple(visual_cells))
+        self._layout_model_revision = model.revision
+        self._layout_structure_dirty = False
+        self._layout_dirty_ids.clear()
         self._flattened_layout = None
         return self._transcript_layout
+
+    def _visual_cell(self, placement: TranscriptPlacement) -> VisualCell:
+        cell = placement.cell
+        decoration_revision = (
+            cell.revision * 8
+            + int(placement.begins_turn) * 4
+            + int(placement.show_assistant_label) * 2
+            + placement.blank_lines_after
+        )
+        key = (
+            cell.id,
+            decoration_revision,
+            self._viewport_width,
+            self._theme_revision,
+        )
+        lines = self._cell_visual_cache.get(key)
+        if lines is None:
+            lines = _fragments_to_visual_lines(
+                _wrap_fragments(
+                    _decorate_transcript_fragments(
+                        placement,
+                        _cell_fragments(
+                            cell,
+                            width=self._viewport_width,
+                            markdown_renderer=self._markdown,
+                        ),
+                    ),
+                    width=max(1, self._viewport_width),
+                )
+            )
+            self._cell_visual_cache[key] = lines
+        return VisualCell(key=key, lines=lines)
 
     def transcript_layout_rebased(
         self,
@@ -948,9 +1092,7 @@ class MiniTUIApplication:
         return _wrapped_row_count(self.input_buffer.text, content_width, cap=8)
 
     def _queued_steering(self) -> tuple[str, ...]:
-        preview = getattr(
-            getattr(self, "agent", None), "pending_user_steering", None
-        )
+        preview = getattr(getattr(self, "agent", None), "pending_user_steering", None)
         if not callable(preview):
             return ()
         return tuple(preview())
@@ -1002,9 +1144,7 @@ class MiniTUIApplication:
                 ("class:user", f" ↳ {_clip(text, 60)}\n") for text in queued[:3]
             ]
             if len(queued) > 3:
-                lines.append(
-                    ("class:muted", f" ↳ … {len(queued) - 3} more queued\n")
-                )
+                lines.append(("class:muted", f" ↳ … {len(queued) - 3} more queued\n"))
             lines.append(("class:muted", "Agent running · Ctrl+C interrupts\n"))
             return FormattedText(lines)
         return FormattedText(
@@ -1157,9 +1297,7 @@ def _cell_fragments(
                 text += f" · {_clip(summary, 160)}"
         status_text = f" {status} "
         text = _fit_display(text, max(10, width - get_cwidth(status_text) - 2))
-        padding = " " * max(
-            2, width - get_cwidth(text) - get_cwidth(status_text)
-        )
+        padding = " " * max(2, width - get_cwidth(text) - get_cwidth(status_text))
         fragments = [
             (style, text),
             (style, padding),

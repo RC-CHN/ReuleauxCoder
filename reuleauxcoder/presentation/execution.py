@@ -26,6 +26,7 @@ from reuleauxcoder.domain.runtime.events import (
     ToolOutputDelta,
     TurnFinished,
     TurnStarted,
+    is_transient_runtime_payload,
 )
 
 
@@ -138,13 +139,14 @@ class ExecutionViewReducer:
         self.root_agent_id = root_agent_id
 
     def apply(self, event: RuntimeEvent) -> bool:
-        if event.event_id in self.state.seen_event_ids:
-            return False
-        self.state.seen_event_ids.add(event.event_id)
+        payload = event.payload
+        if not is_transient_runtime_payload(payload):
+            if event.event_id in self.state.seen_event_ids:
+                return False
+            self.state.seen_event_ids.add(event.event_id)
         if self._is_stale_generation(event):
             return False
 
-        payload = event.payload
         if isinstance(payload, PlanUpdated):
             if payload.revision < self.state.plan_revision:
                 return False

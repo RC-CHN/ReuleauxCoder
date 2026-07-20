@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from io import StringIO
 
 from markdown_it import MarkdownIt
@@ -15,6 +16,13 @@ from reuleauxcoder.interfaces.cli.streaming import find_committed_boundary
 _PLAIN_MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
 
 
+@dataclass(slots=True)
+class _StreamingMarkdownState:
+    revision: int
+    committed_chars: int = 0
+    committed_fragments: list[tuple[str, str]] = field(default_factory=list)
+
+
 class RetainedMarkdownRenderer:
     """Cache width-aware Markdown fragments without writing ANSI to stdout."""
 
@@ -22,6 +30,9 @@ class RetainedMarkdownRenderer:
         self.max_entries = max(20, max_entries)
         self._cache: OrderedDict[
             tuple[str, int, int, int, bool], tuple[tuple[str, str], ...]
+        ] = OrderedDict()
+        self._stream_states: OrderedDict[
+            tuple[str, int, int], _StreamingMarkdownState
         ] = OrderedDict()
 
     def render(
@@ -43,14 +54,28 @@ class RetainedMarkdownRenderer:
 
         if complete:
             fragments = _markdown_fragments(text, width=width)
+            self._stream_states.pop((cell_id, width, theme_revision), None)
         else:
-            boundary = find_committed_boundary(text)
+            stream_key = (cell_id, width, theme_revision)
+            state = self._stream_states.get(stream_key)
+            if state is None or revision <= state.revision:
+                state = _StreamingMarkdownState(revision=revision)
+                self._stream_states[stream_key] = state
+            state.revision = revision
+            pending = text[state.committed_chars :]
+            boundary = find_committed_boundary(pending)
             if boundary is None:
-                fragments = [("class:assistant", text)] if text else []
+                fragments = list(state.committed_fragments)
+                if pending:
+                    fragments.append(("class:assistant", pending))
             else:
-                fragments = _markdown_fragments(text[:boundary], width=width)
-                if tail := text[boundary:]:
+                committed = _markdown_fragments(pending[:boundary], width=width)
+                state.committed_fragments.extend(committed)
+                state.committed_chars += boundary
+                fragments = list(state.committed_fragments)
+                if tail := text[state.committed_chars :]:
                     fragments.append(("class:assistant", tail))
+            self._stream_states.move_to_end(stream_key)
         if text and (not fragments or not fragments[-1][1].endswith("\n")):
             fragments.append(("", "\n"))
         if complete and text:
@@ -62,6 +87,8 @@ class RetainedMarkdownRenderer:
     def _prune(self) -> None:
         while len(self._cache) > self.max_entries:
             self._cache.popitem(last=False)
+        while len(self._stream_states) > self.max_entries:
+            self._stream_states.popitem(last=False)
 
 
 def _markdown_fragments(text: str, *, width: int) -> list[tuple[str, str]]:

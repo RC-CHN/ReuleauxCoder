@@ -31,6 +31,7 @@ from reuleauxcoder.domain.runtime.events import (
     UserSteeringApplied,
     ViewRefreshed,
     ViewRequested,
+    is_transient_runtime_payload,
 )
 from reuleauxcoder.domain.approval import ApprovalSection
 from reuleauxcoder.presentation.models import (
@@ -93,13 +94,14 @@ class PresentationReducer:
         self.policy = policy or PresentationPolicy()
 
     def apply(self, event: RuntimeEvent) -> tuple[PresentationChange, ...]:
-        if event.event_id in self.state.seen_event_ids:
-            return ()
-        self.state.seen_event_ids.add(event.event_id)
+        payload = event.payload
+        if not is_transient_runtime_payload(payload):
+            if event.event_id in self.state.seen_event_ids:
+                return ()
+            self.state.seen_event_ids.add(event.event_id)
         if self._is_stale_generation(event):
             return ()
 
-        payload = event.payload
         if isinstance(payload, (TurnStarted, ChatStarted)):
             self._complete_active_assistant(event)
             identity = event.turn_id or event.event_id

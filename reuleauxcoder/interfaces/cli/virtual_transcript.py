@@ -46,6 +46,19 @@ class VirtualTranscriptLayout:
             line_number - self._starts[cell_index],
         )
 
+    def with_replacements(
+        self, replacements: dict[str, VisualCell]
+    ) -> "VirtualTranscriptLayout":
+        """Return a new index with only the named visual cells replaced."""
+        if not replacements:
+            return self
+        cells = tuple(replacements.get(cell.key[0], cell) for cell in self.cells)
+        return VirtualTranscriptLayout(cells)
+
+    def cell(self, cell_id: str) -> VisualCell | None:
+        index = self._cell_indexes.get(cell_id)
+        return self.cells[index] if index is not None else None
+
     def line_for_anchor(
         self,
         anchor: tuple[str, int] | None,

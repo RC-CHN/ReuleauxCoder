@@ -46,7 +46,20 @@ def find_committed_boundary(text: str) -> int | None:
 @dataclass(slots=True)
 class ContentBlock:
     text_parts: list[str] = field(default_factory=list)
+    pending_parts: list[str] = field(default_factory=list)
     rendered_length: int = 0
+
+    def append(self, text: str) -> None:
+        self.text_parts.append(text)
+        self.pending_parts.append(text)
+
+    def consume_pending(self, count: int) -> str:
+        pending = "".join(self.pending_parts)
+        committed = pending[:count]
+        tail = pending[count:]
+        self.pending_parts = [tail] if tail else []
+        self.rendered_length += len(committed)
+        return committed
 
     @property
     def text(self) -> str:
@@ -54,7 +67,7 @@ class ContentBlock:
 
     @property
     def pending_text(self) -> str:
-        return self.text[self.rendered_length :]
+        return "".join(self.pending_parts)
 
     @property
     def is_empty(self) -> bool:
@@ -76,7 +89,7 @@ class CLIStreamPresenter:
     def append(self, token: str) -> None:
         if self.active_block is None:
             self.active_block = ContentBlock()
-        self.active_block.text_parts.append(token)
+        self.active_block.append(token)
         self._flush_completed()
 
     def close(self) -> None:
@@ -103,18 +116,22 @@ class CLIStreamPresenter:
 
     def _flush_completed(self) -> None:
         block = self.active_block
-        if block is None or not block.pending_text:
+        if block is None:
             return
-        boundary = find_committed_boundary(block.pending_text)
+        pending = block.pending_text
+        if not pending:
+            return
+        boundary = find_committed_boundary(pending)
         if boundary is None:
             return
-        text = block.pending_text[:boundary]
+        text = block.consume_pending(boundary)
         if text:
             self._render_markdown(text)
-            block.rendered_length += len(text)
 
     def _flush_remaining(self) -> None:
         block = self.active_block
-        if block is not None and block.pending_text:
-            self._render_markdown(block.pending_text)
-            block.rendered_length = len(block.text)
+        if block is None:
+            return
+        pending = block.pending_text
+        if pending:
+            self._render_markdown(block.consume_pending(len(pending)))

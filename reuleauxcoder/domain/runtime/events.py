@@ -320,6 +320,19 @@ RuntimePayload: TypeAlias = (
 )
 
 
+_TRANSIENT_PAYLOAD_TYPES = (
+    AssistantContentDelta,
+    ReasoningDelta,
+    StreamChunk,
+    ToolOutputDelta,
+)
+
+
+def is_transient_runtime_payload(payload: RuntimePayload) -> bool:
+    """Return whether a payload is a high-rate, non-replayable stream delta."""
+    return isinstance(payload, _TRANSIENT_PAYLOAD_TYPES)
+
+
 @dataclass(frozen=True)
 class RuntimeEvent:
     """Stable envelope used for correlation, replay and transport."""

@@ -13,6 +13,7 @@ from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.runtime.events import (
     RuntimeEvent,
     agent_event_to_runtime_event,
+    is_transient_runtime_payload,
 )
 from reuleauxcoder.interfaces.interactions import InteractionRequest
 
@@ -228,7 +229,12 @@ class UIEventBus:
                     pass
 
     def emit(self, event: UIEvent) -> None:
-        self._history.append(event)
+        payload = event.payload
+        if not (
+            isinstance(payload, RuntimeEventPayload)
+            and is_transient_runtime_payload(payload.event.payload)
+        ):
+            self._history.append(event)
         if self._queue is not None:
             self._queue.put(event)
         else:
