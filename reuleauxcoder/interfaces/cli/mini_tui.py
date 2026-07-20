@@ -888,10 +888,14 @@ class MiniTUIApplication:
 
     def _accept_buffer(self, buffer: Buffer) -> bool:
         text = buffer.text.strip()
-        buffer.reset()
         if self.interactor.active_request is not None:
+            # Approval is active: the buffer stays *untouched*.  Single-key
+            # Y / N bindings handle the interaction; Enter submits the draft
+            # content when the user intentionally typed a custom response.
+            buffer.reset()
             self.interactor.submit(text)
             return True
+        buffer.reset()
         if not text:
             return True
         if self.running:
@@ -1043,6 +1047,18 @@ class MiniTUIApplication:
             self._follow_transcript = True
             self.invalidate()
 
+        @bindings.add("y")
+        def _interaction_yes(event) -> None:  # noqa: ARG001
+            if self.interactor.active_request is not None:
+                self.interactor.submit("y")
+                self.invalidate()
+
+        @bindings.add("n")
+        def _interaction_no(event) -> None:  # noqa: ARG001
+            if self.interactor.active_request is not None:
+                self.interactor.submit("n")
+                self.invalidate()
+
         @bindings.add("f2")
         def _toggle_header(event) -> None:  # noqa: ARG001
             self.session_header_expanded = not self.session_header_expanded
@@ -1084,6 +1100,10 @@ class MiniTUIApplication:
 
     def _input_height(self) -> int:
         """Grow the single-line input visually as wrapped rows (capped)."""
+        # Hide the input lane while an approval/review is pending so the draft
+        # buffer is preserved and single-key Y / N bindings take over.
+        if self.interactor.active_request is not None:
+            return 0
         try:
             columns = self.application.output.get_size().columns
         except Exception:
