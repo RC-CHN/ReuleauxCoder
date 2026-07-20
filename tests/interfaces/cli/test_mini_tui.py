@@ -479,6 +479,96 @@ def test_unknown_view_type_is_not_claimed() -> None:
     assert app._selection is None
 
 
+def _model_view_payload() -> object:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.commands.view_models import (
+        ModelListViewModel,
+        ModelProfileViewModel,
+    )
+
+    return NS(
+        view_type="model_profiles",
+        title="Models",
+        view_model=ModelListViewModel(
+            active_main="sonnet",
+            active_sub="haiku",
+            current_model="claude-sonnet",
+            profiles=(
+                ModelProfileViewModel(
+                    name="haiku",
+                    model="claude-haiku",
+                    active_main=False,
+                    active_sub=True,
+                    base_url=None,
+                    max_tokens=4096,
+                    temperature=0.5,
+                    max_context_tokens=200000,
+                    api_key_hint="...key",
+                ),
+                ModelProfileViewModel(
+                    name="sonnet",
+                    model="claude-sonnet",
+                    active_main=True,
+                    active_sub=False,
+                    base_url=None,
+                    max_tokens=8192,
+                    temperature=1.0,
+                    max_context_tokens=200000,
+                    api_key_hint="...key",
+                ),
+            ),
+            diagnostics=(),
+        ),
+    )
+
+
+def test_model_view_opens_slot_panel_then_profile_panel() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app._model_slot_profiles = {}
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(_model_view_payload()) is True
+    assert app._selection.view_type == "model_slots"
+    assert len(app._selection.items) == 4
+
+    # Confirm "Session · Main model" opens the profile panel.
+    app._selection_confirm()
+    assert app._selection.view_type == "model_profiles"
+    assert len(app._selection_stack) == 1
+    assert app._selection.selected.label == "sonnet"  # current main preselected
+
+    # Confirm a profile resubmits the canonical command.
+    app._selection_confirm()
+    assert accepted == ["/model use-main sonnet"]
+    assert app._selection is None
+    assert app._selection_stack == []
+
+
+def test_model_panel_escape_returns_to_slot_panel() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app._model_slot_profiles = {}
+    app.invalidate = lambda: None
+
+    app._open_interactive_view(_model_view_payload())
+    app._selection.move(1)  # Session · Sub-agent model
+    app._selection_confirm()
+    assert app._selection.view_type == "model_profiles"
+    assert app._selection.selected.label == "haiku"  # current sub preselected
+
+    app._selection_close()  # back to slots
+    assert app._selection.view_type == "model_slots"
+    app._selection_close()  # close entirely
+    assert app._selection is None
+
+
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
     adapter = MiniTUIEventAdapter()
     view = adapter.panel_view(now=100.0)

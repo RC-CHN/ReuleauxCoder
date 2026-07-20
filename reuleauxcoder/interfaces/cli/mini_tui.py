@@ -51,6 +51,7 @@ from reuleauxcoder.domain.runtime.events import (
     SubagentJobChanged,
 )
 from reuleauxcoder.app.commands.view_models import (
+    ModelListViewModel,
     ModesViewModel,
     SessionResumeViewModel,
 )
@@ -831,6 +832,8 @@ class MiniTUIApplication:
         self._popup_last_text = ""
         self._popup_dismissed = False
         self._selection: SelectionPanel | None = None
+        self._selection_stack: list[SelectionPanel] = []
+        self._model_slot_profiles: dict[str, tuple[SelectionItem, ...]] = {}
         self.events.interactive_view_handler = self._open_interactive_view
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
@@ -1410,10 +1413,22 @@ class MiniTUIApplication:
                 fragments.append(("class:popup", pad + entry.description + "\n"))
         return FormattedText(fragments)
 
+    _MODEL_SLOTS = (
+        ("Session · Main model", "use-main"),
+        ("Session · Sub-agent model", "use-sub"),
+        ("Defaults · Main model", "set-main"),
+        ("Defaults · Sub-agent model", "set-sub"),
+    )
+
     def _open_interactive_view(self, payload) -> bool:
         """Claim a focused view as a modal selection panel, if supported."""
-        if payload.view_type != "mode_profiles":
-            return False
+        if payload.view_type == "mode_profiles":
+            return self._open_mode_panel(payload)
+        if payload.view_type == "model_profiles":
+            return self._open_model_panel(payload)
+        return False
+
+    def _open_mode_panel(self, payload) -> bool:
         model = payload.view_model
         if not isinstance(model, ModesViewModel):
             return False
@@ -1437,20 +1452,81 @@ class MiniTUIApplication:
         self.invalidate()
         return True
 
+    def _open_model_panel(self, payload) -> bool:
+        model = payload.view_model
+        if not isinstance(model, ModelListViewModel):
+            return False
+        active_by_slot = {
+            "use-main": model.active_main,
+            "use-sub": model.active_sub,
+            "set-main": model.active_main,
+            "set-sub": model.active_sub,
+        }
+        self._model_slot_profiles = {
+            slot: tuple(
+                SelectionItem(
+                    label=profile.name,
+                    description=f"{profile.model} · ctx {profile.max_context_tokens}",
+                    command=f"/model {slot} {profile.name}",
+                    current=(
+                        profile.active_main if slot.endswith("main") else profile.active_sub
+                    ),
+                )
+                for profile in model.profiles
+            )
+            for _label, slot in self._MODEL_SLOTS
+        }
+        items = tuple(
+            SelectionItem(
+                label=label,
+                description=active_by_slot[slot] or "(none)",
+                command="",
+            )
+            for label, slot in self._MODEL_SLOTS
+        )
+        self._selection = SelectionPanel.open(
+            title=payload.title,
+            items=items,
+            view_type="model_slots",
+        )
+        self.invalidate()
+        return True
+
     def _selection_height(self) -> int:
         if self._selection is None:
             return 0
         return min(9, len(self._selection.items) + 1)
 
     def _selection_close(self) -> None:
-        self._selection = None
+        if self._selection_stack:
+            self._selection = self._selection_stack.pop()
+        else:
+            self._selection = None
         self.invalidate()
 
     def _selection_confirm(self) -> None:
         if self._selection is None or self._selection.selected is None:
             return
-        command = self._selection.selected.command
+        selected = self._selection.selected
+        if self._selection.view_type == "model_slots":
+            slot = next(
+                (slot for label, slot in self._MODEL_SLOTS if label == selected.label),
+                None,
+            )
+            profiles = self._model_slot_profiles.get(slot or "", ())
+            if not profiles:
+                return
+            self._selection_stack.append(self._selection)
+            self._selection = SelectionPanel.open(
+                title=f"{self._selection.title} · {selected.label}",
+                items=profiles,
+                view_type="model_profiles",
+            )
+            self.invalidate()
+            return
+        command = selected.command
         self._selection = None
+        self._selection_stack = []
         self.input_buffer.text = command
         self.input_buffer.cursor_position = len(command)
         self._accept_buffer(self.input_buffer)
