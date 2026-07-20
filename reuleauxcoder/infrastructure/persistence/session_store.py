@@ -12,7 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from reuleauxcoder.domain.context.manager import ensure_message_token_counts
+from reuleauxcoder.domain.context.manager import (
+    MESSAGE_TOKEN_KEY,
+    ensure_message_token_counts,
+)
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.replay import (
     ReplayEnvelope,
@@ -85,6 +88,7 @@ class SessionStore:
                 ),
             )
             ensure_message_token_counts(saved_messages)
+            exit_events: tuple[HistoryEvent, ...] = ()
             if is_exit:
                 exit_time = time.strftime("%Y-%m-%d %H:%M:%S %Z")
                 exit_message = {
@@ -97,9 +101,14 @@ class SessionStore:
             ledger = HistoryLedger(history_events or ())
             if not history_events:
                 for message in saved_messages:
+                    event_count = len(ledger.events)
                     ledger.append_message(message, source="legacy_save_snapshot")
+                    if is_exit and message is exit_message:
+                        exit_events = ledger.events[event_count:]
             elif is_exit:
+                event_count = len(ledger.events)
                 ledger.append_message(exit_message, source="session_exit")
+                exit_events = ledger.events[event_count:]
 
             effective_runtime = runtime_state or SessionRuntimeState(
                 model=model, active_mode=active_mode
@@ -161,8 +170,11 @@ class SessionStore:
                 session,
                 incremental=incremental,
                 events_already_persisted=events_already_persisted,
+                additional_events=(
+                    exit_events if events_already_persisted else ()
+                ),
             )
-            self._atomic_write_json(path, session.to_dict())
+            self._atomic_write_json(path, self._legacy_session_payload(session))
             return session_id
 
     def append_system_message(
@@ -265,7 +277,33 @@ class SessionStore:
                 tuple[tuple[int, datetime, str], SessionMetadata]
             ] = []
             seen_ids: set[str] = set()
+            entries = list(self._sessions_dir.iterdir())
+
+            # Directory sessions are the canonical format. Listing only needs
+            # their compact manifest; loading replay, ledger, requests and
+            # checkpoints for every session made auto-resume scale with the
+            # complete archive size.
+            for directory in entries:
+                if not directory.is_dir():
+                    continue
+                metadata = self._load_directory_metadata(directory)
+                if metadata is None:
+                    continue
+                seen_ids.add(metadata.id)
+                if fingerprint is not None and metadata.fingerprint != fingerprint:
+                    continue
+                ranked_sessions.append(
+                    (
+                        self._metadata_rank(
+                            metadata, directory / "manifest.json"
+                        ),
+                        metadata,
+                    )
+                )
+
             for file_path in self._sessions_dir.glob("*.json"):
+                if file_path.stem in seen_ids:
+                    continue
                 try:
                     data = json.loads(file_path.read_text())
                     session = Session.from_dict(data)
@@ -281,48 +319,11 @@ class SessionStore:
                     )
                     seen_ids.add(metadata.id)
 
-                    stat = file_path.stat()
-                    try:
-                        saved_at_rank = datetime.fromisoformat(session.saved_at)
-                    except (TypeError, ValueError):
-                        try:
-                            saved_at_rank = datetime.strptime(
-                                session.saved_at, "%Y-%m-%d %H:%M:%S"
-                            )
-                        except (TypeError, ValueError):
-                            saved_at_rank = datetime.fromtimestamp(0)
-
                     ranked_sessions.append(
-                        ((stat.st_mtime_ns, saved_at_rank, metadata.id), metadata)
+                        (self._metadata_rank(metadata, file_path), metadata)
                     )
                 except (json.JSONDecodeError, KeyError):
                     continue
-
-            for directory in self._sessions_dir.iterdir():
-                if not directory.is_dir() or directory.name in seen_ids:
-                    continue
-                session = self._load_session_directory(directory)
-                if session is None:
-                    continue
-                if fingerprint is not None and session.fingerprint != fingerprint:
-                    continue
-                metadata = SessionMetadata(
-                    id=session.id or directory.name,
-                    model=session.model,
-                    saved_at=session.saved_at,
-                    preview=session.get_preview(),
-                    fingerprint=session.fingerprint,
-                )
-                try:
-                    saved_at_rank = datetime.fromisoformat(session.saved_at)
-                except (TypeError, ValueError):
-                    saved_at_rank = datetime.fromtimestamp(0)
-                ranked_sessions.append(
-                    (
-                        (directory.stat().st_mtime_ns, saved_at_rank, metadata.id),
-                        metadata,
-                    )
-                )
 
             ranked_sessions.sort(key=lambda item: item[0], reverse=True)
             return [metadata for _, metadata in ranked_sessions[:limit]]
@@ -357,6 +358,57 @@ class SessionStore:
         return self._sessions_dir / safe_id
 
     @staticmethod
+    def _legacy_session_payload(session: Session) -> dict:
+        """Keep the existing single-file fallback contract intact."""
+        return session.to_dict()
+
+    @staticmethod
+    def _metadata_rank(
+        metadata: SessionMetadata, source_path: Path
+    ) -> tuple[int, datetime, str]:
+        try:
+            modified_ns = source_path.stat().st_mtime_ns
+        except OSError:
+            modified_ns = 0
+        try:
+            saved_at_rank = datetime.fromisoformat(metadata.saved_at)
+        except (TypeError, ValueError):
+            try:
+                saved_at_rank = datetime.strptime(
+                    metadata.saved_at, "%Y-%m-%d %H:%M:%S"
+                )
+            except (TypeError, ValueError):
+                saved_at_rank = datetime.fromtimestamp(0)
+        return modified_ns, saved_at_rank, metadata.id
+
+    @staticmethod
+    def _load_directory_metadata(directory: Path) -> SessionMetadata | None:
+        manifest_path = directory / "manifest.json"
+        replay_path = directory / "replay.json"
+        if not manifest_path.exists() or not replay_path.exists():
+            return None
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            preview = str(manifest.get("preview") or "")
+            if not preview:
+                replay = json.loads(replay_path.read_text(encoding="utf-8"))
+                preview = Session(
+                    id=str(manifest.get("id") or directory.name),
+                    model=str(manifest.get("model") or "?"),
+                    saved_at=str(manifest.get("saved_at") or "?"),
+                    messages=list(replay.get("items") or ()),
+                ).get_preview()
+            return SessionMetadata(
+                id=str(manifest.get("id") or directory.name),
+                model=str(manifest.get("model") or "?"),
+                saved_at=str(manifest.get("saved_at") or "?"),
+                preview=preview,
+                fingerprint=str(manifest.get("fingerprint") or "local"),
+            )
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _atomic_write_json(path: Path, payload: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -371,6 +423,7 @@ class SessionStore:
         *,
         incremental: bool = False,
         events_already_persisted: bool = False,
+        additional_events: tuple[HistoryEvent, ...] = (),
     ) -> None:
         directory = self._get_session_directory(session.id)
         directory.mkdir(parents=True, exist_ok=True)
@@ -388,6 +441,7 @@ class SessionStore:
             cursor.initialized = True
 
         events_path = directory / "events.jsonl"
+        new_events: list[HistoryEvent] = list(additional_events)
         if not events_already_persisted:
             existing_ids: set[str] = set()
             if events_path.exists():
@@ -401,12 +455,10 @@ class SessionStore:
                 for event in sorted(session.history_events, key=lambda item: item.seq)
                 if event.event_id not in existing_ids
             ]
-            if new_events:
-                with events_path.open("a", encoding="utf-8") as stream:
-                    for event in new_events:
-                        stream.write(
-                            json.dumps(event.to_dict(), ensure_ascii=False) + "\n"
-                        )
+        if new_events:
+            with events_path.open("a", encoding="utf-8") as stream:
+                for event in new_events:
+                    stream.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
 
         replay = session.replay_envelope
         if replay is not None:
@@ -427,10 +479,15 @@ class SessionStore:
             cursor.checkpoint_ids.add(checkpoint.id)
         manifest = session.to_dict()
         manifest.pop("messages", None)
+        manifest.pop("history_events", None)
         manifest.pop("replay_envelope", None)
         manifest.pop("request_envelopes", None)
         manifest.pop("checkpoints", None)
         manifest["checkpoint_ids"] = [item.id for item in session.checkpoints]
+        manifest["preview"] = session.get_preview()
+        manifest["message_token_counts"] = [
+            message.get(MESSAGE_TOKEN_KEY) for message in session.messages
+        ]
         self._atomic_write_json(directory / "manifest.json", manifest)
 
     def _load_session_directory(self, directory: Path) -> Session | None:
@@ -480,9 +537,25 @@ class SessionStore:
                     )
                 except (OSError, KeyError, json.JSONDecodeError, TypeError, ValueError):
                     continue
-        manifest["messages"] = list(replay.items)
-        manifest["replay_envelope"] = replay.to_dict()
-        manifest["history_events"] = [event.to_dict() for event in events]
-        manifest["request_envelopes"] = [item.to_dict() for item in requests]
-        manifest["checkpoints"] = [item.to_dict() for item in checkpoints]
-        return Session.from_dict(manifest)
+        # Avoid serializing these potentially huge structures to dictionaries
+        # only for Session.from_dict() to reconstruct the same objects again.
+        for key in (
+            "messages",
+            "history_events",
+            "replay_envelope",
+            "request_envelopes",
+            "checkpoints",
+        ):
+            manifest.pop(key, None)
+        session = Session.from_dict(manifest)
+        session.messages = list(replay.items)
+        token_counts = manifest.get("message_token_counts") or ()
+        if len(token_counts) == len(session.messages):
+            for message, token_count in zip(session.messages, token_counts):
+                if isinstance(token_count, int):
+                    message[MESSAGE_TOKEN_KEY] = token_count
+        session.replay_envelope = replay
+        session.history_events = events
+        session.request_envelopes = requests
+        session.checkpoints = checkpoints
+        return session

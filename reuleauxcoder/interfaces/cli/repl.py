@@ -94,6 +94,8 @@ def run_repl(
                     total_prompt_tokens=agent.state.total_prompt_tokens,
                     total_completion_tokens=agent.state.total_completion_tokens,
                     active_mode=getattr(agent, "active_mode", None),
+                    incremental=True,
+                    events_already_persisted=True,
                     **build_session_persistence_kwargs(agent),
                 )
                 agent.lifecycle.session_saved(sid)

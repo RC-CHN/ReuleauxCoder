@@ -297,6 +297,19 @@ def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
     assert app.running is True
 
 
+def test_exit_finalizer_skips_duplicate_save_after_exit_command() -> None:
+    prepared = []
+    app = object.__new__(MiniTUIApplication)
+    app._exit_session_saved = True
+    app.agent = SimpleNamespace(messages=[{"role": "user", "content": "done"}])
+    app.config = SimpleNamespace(session_auto_save=True)
+    app._prepare_forced_exit = prepared.append
+
+    app._save_exit_session()
+
+    assert prepared == ["CLI session closed"]
+
+
 def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
     assert _wrapped_row_count("", 40) == 1
     assert _wrapped_row_count("short", 40) == 1

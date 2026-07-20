@@ -137,6 +137,8 @@ def _handle_exit(command, ctx) -> CommandEffect:
             active_mode=getattr(ctx.agent, "active_mode", None),
             runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
             fingerprint=get_session_fingerprint(ctx.config, ctx.agent),
+            incremental=True,
+            events_already_persisted=True,
             **build_session_persistence_kwargs(ctx.agent),
         )
         ctx.agent.lifecycle.session_saved(sid)

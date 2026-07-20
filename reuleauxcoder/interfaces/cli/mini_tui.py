@@ -765,6 +765,7 @@ class MiniTUIApplication:
         self.running = False
         self.cancelling = False
         self.exit_confirm = False
+        self._exit_session_saved = False
         self._closed = False
         self._worker: threading.Thread | None = None
         self._deferred_commands: deque[str] = deque()
@@ -1029,6 +1030,7 @@ class MiniTUIApplication:
             if result["action"] == "exit":
                 drain_deferred = False
                 self._clear_deferred_commands()
+                self._exit_session_saved = result.get("action_id") == "system.exit"
                 self.application.exit()
                 return
             if result["action"] == "continue":
@@ -1405,7 +1407,11 @@ class MiniTUIApplication:
     def _save_exit_session(self) -> None:
         self._closed = True
         self._prepare_forced_exit("CLI session closed")
-        if not self.agent.messages or not self.config.session_auto_save:
+        if (
+            getattr(self, "_exit_session_saved", False)
+            or not self.agent.messages
+            or not self.config.session_auto_save
+        ):
             return
         sid = SessionStore(self.sessions_dir).save(
             self.agent.messages,
@@ -1415,6 +1421,8 @@ class MiniTUIApplication:
             total_prompt_tokens=self.agent.state.total_prompt_tokens,
             total_completion_tokens=self.agent.state.total_completion_tokens,
             active_mode=getattr(self.agent, "active_mode", None),
+            incremental=True,
+            events_already_persisted=True,
             **build_session_persistence_kwargs(self.agent),
         )
         self.agent.lifecycle.session_saved(sid)

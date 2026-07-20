@@ -31,6 +31,28 @@ def test_session_preview_uses_latest_real_user_request(tmp_path: Path) -> None:
     assert metadata.preview == "latest request"
 
 
+def test_session_listing_uses_directory_metadata_without_full_restore(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[{"role": "user", "content": "metadata only"}], model="m1"
+    )
+
+    monkeypatch.setattr(
+        store,
+        "_load_session_directory",
+        lambda _directory: (_ for _ in ()).throw(
+            AssertionError("listing must not restore full sessions")
+        ),
+    )
+
+    listed = store.list()
+
+    assert [item.id for item in listed] == [session_id]
+    assert listed[0].preview == "metadata only"
+
+
 def test_session_store_save_and_load_roundtrip(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     messages = [{"role": "user", "content": "hello world"}]
@@ -169,6 +191,56 @@ def test_events_jsonl_only_appends_new_event_ids(tmp_path: Path) -> None:
         history_events=list(ledger.events),
     )
     assert len(events_path.read_text(encoding="utf-8").splitlines()) == 4
+
+
+def test_incremental_exit_appends_only_new_exit_events(tmp_path: Path) -> None:
+    ledger = HistoryLedger()
+    message = {"role": "user", "content": "one"}
+    ledger.append_message(message, source="user")
+    session_id = SessionStore(tmp_path).save(
+        messages=[message],
+        model="model",
+        history_events=list(ledger.events),
+    )
+    events_path = tmp_path / session_id / "events.jsonl"
+    before = events_path.read_text(encoding="utf-8").splitlines()
+
+    SessionStore(tmp_path).save(
+        messages=[message],
+        model="model",
+        session_id=session_id,
+        is_exit=True,
+        history_events=list(ledger.events),
+        incremental=True,
+        events_already_persisted=True,
+    )
+
+    after = events_path.read_text(encoding="utf-8").splitlines()
+    assert after[: len(before)] == before
+    assert len(after) == len(before) + 2
+    loaded = SessionStore(tmp_path).load(session_id)
+    assert loaded is not None
+    assert loaded.messages[-1]["content"].startswith("[SESSION_EXIT]")
+
+
+def test_legacy_fallback_keeps_compatibility_snapshot_without_event_ledger(
+    tmp_path: Path,
+) -> None:
+    ledger = HistoryLedger()
+    ledger.append_message({"role": "user", "content": "one"}, source="user")
+    session_id = SessionStore(tmp_path).save(
+        messages=[{"role": "user", "content": "one"}],
+        model="model",
+        history_events=list(ledger.events),
+    )
+
+    payload = json.loads(
+        (tmp_path / f"{session_id}.json").read_text(encoding="utf-8")
+    )
+
+    assert payload["messages"][0]["content"] == "one"
+    assert "history_events" not in payload
+    assert payload["replay_envelope"] is not None
 
 
 def test_tampered_replay_does_not_claim_canonical_directory_restore(
