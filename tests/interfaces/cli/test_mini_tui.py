@@ -74,6 +74,46 @@ def test_mini_tui_leaves_mouse_to_terminal_native_selection() -> None:
     assert MINI_TUI_MOUSE_SUPPORT is False
 
 
+def test_yes_no_key_bindings_only_capture_binary_interactions() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app.interactor = SimpleNamespace(active_request=None)
+
+    bindings = {
+        binding.keys: binding
+        for binding in app._key_bindings().bindings
+        if binding.keys in {("y",), ("n",)}
+    }
+
+    assert bindings[("y",)].filter() is False
+    assert bindings[("n",)].filter() is False
+
+    app.interactor.active_request = InputTextRequest(
+        title="Name",
+        prompt="Enter a name",
+    )
+
+    assert bindings[("y",)].filter() is False
+    assert bindings[("n",)].filter() is False
+
+    app.interactor.active_request = ChooseOneRequest(
+        title="Choose",
+        items=[ChoiceItem("one", "One")],
+    )
+
+    assert bindings[("y",)].filter() is False
+    assert bindings[("n",)].filter() is False
+
+    app.interactor.active_request = ConfirmRequest(title="Confirm", message="Continue?")
+
+    assert bindings[("y",)].filter() is True
+    assert bindings[("n",)].filter() is True
+
+    app.interactor.active_request = ReviewRequest(title="Review", summary="Command")
+
+    assert bindings[("y",)].filter() is True
+    assert bindings[("n",)].filter() is True
+
+
 def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
     from types import SimpleNamespace
 
@@ -317,6 +357,58 @@ def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
     # CJK characters occupy two cells each.
     assert _wrapped_row_count("汉" * 21, 40) == 2
     assert _wrapped_row_count("a" * 400, 40) == 8
+
+
+def test_command_popup_adopts_candidate_and_hides_on_non_slash() -> None:
+    from reuleauxcoder.interfaces.cli.command_popup import PopupEntry
+
+    app = object.__new__(MiniTUIApplication)
+    app.interactor = SimpleNamespace(active_request=None)
+    app.input_buffer = SimpleNamespace(text="/mo", cursor_position=3)
+    app._popup_entries = (
+        PopupEntry("/mode", "Choose the active session mode", False, False),
+        PopupEntry("/model", "Choose model profiles and routing", False, False),
+    )
+    app._popup_index = 0
+    app._popup_last_text = ""
+    app._popup_dismissed = False
+    app.invalidate = lambda: None
+
+    candidates = app._popup_candidates()
+    assert [entry.completion for entry in candidates] == ["/mode", "/model"]
+    assert app._popup_height() == 2
+
+    # Adopting fills the buffer without submitting.
+    app._popup_adopt()
+    assert app.input_buffer.text == "/mode"
+
+    # Non-slash input hides the popup.
+    app.input_buffer.text = "hello"
+    assert app._popup_candidates() == ()
+    assert app._popup_height() == 0
+
+
+def test_command_popup_dismissed_until_text_changes() -> None:
+    from reuleauxcoder.interfaces.cli.command_popup import PopupEntry
+
+    app = object.__new__(MiniTUIApplication)
+    app.interactor = SimpleNamespace(active_request=None)
+    app.input_buffer = SimpleNamespace(text="/he", cursor_position=3)
+    app._popup_entries = (
+        PopupEntry("/help", "Show command help", False, False),
+    )
+    app._popup_index = 0
+    app._popup_last_text = ""
+    app._popup_dismissed = False
+    app.invalidate = lambda: None
+
+    assert app._popup_candidates()
+    app._popup_dismissed = True
+    assert app._popup_candidates() == ()
+
+    # Typing more reopens the popup.
+    app.input_buffer.text = "/hel"
+    assert app._popup_candidates()
 
 
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:

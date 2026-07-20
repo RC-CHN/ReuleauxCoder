@@ -53,6 +53,11 @@ from reuleauxcoder.domain.runtime.events import (
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
+from reuleauxcoder.interfaces.cli.command_popup import (
+    PopupEntry,
+    build_popup_entries,
+    filter_entries,
+)
 from reuleauxcoder.interfaces.cli.markdown_fragments import RetainedMarkdownRenderer
 from reuleauxcoder.interfaces.cli.virtual_transcript import (
     VirtualTranscriptControl,
@@ -125,6 +130,9 @@ MINI_TUI_STYLE = Style.from_dict(
         "diff.del": "#ffd0d7 bg:#3a1720",
         "diff.header": "bold #67e8f9 bg:#102b33",
         "input": "#ffffff bg:#191827",
+        "popup": "#8a86a8 bg:#1c1a2e",
+        "popup.cmd": "bold #d8d4f0 bg:#1c1a2e",
+        "popup.selected": "bold #ffffff bg:#5b4bc4",
         "interaction": "#fff7d6 bg:#332a12",
         "review.border": "bold #ffd75f",
         "review.approved": "bold #67e8f9",
@@ -795,6 +803,12 @@ class MiniTUIApplication:
             accept_handler=self._accept_buffer,
         )
         self.panel_control = FormattedTextControl(self._panel_text)
+        self._popup_entries: tuple[PopupEntry, ...] = build_popup_entries(
+            action_registry, ui_profile
+        )
+        self._popup_index = 0
+        self._popup_last_text = ""
+        self._popup_dismissed = False
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
             self._transcript_cursor_position,
@@ -817,6 +831,12 @@ class MiniTUIApplication:
         # allocate a transcript-height off-screen Screen on every frame.
         self.transcript_pane = self.transcript_window
         self.interaction_control = FormattedTextControl(self._interaction_text)
+        self.popup_control = FormattedTextControl(self._popup_text)
+        self.popup_window = Window(
+            self.popup_control,
+            height=self._popup_height,
+            style="class:popup",
+        )
         self.input_window = Window(
             BufferControl(buffer=self.input_buffer),
             height=self._input_height,
@@ -834,6 +854,7 @@ class MiniTUIApplication:
                 Frame(
                     HSplit(
                         [
+                            self.popup_window,
                             Window(
                                 self.interaction_control,
                                 height=self._interaction_height,
@@ -894,6 +915,13 @@ class MiniTUIApplication:
                 pass
 
     def _accept_buffer(self, buffer: Buffer) -> bool:
+        popup = self._popup_candidates()
+        if popup:
+            entry = popup[min(self._popup_index, len(popup) - 1)]
+            if entry.completion != buffer.text.strip():
+                # Adopt the highlighted candidate without submitting.
+                self._popup_adopt()
+                return True
         text = buffer.text.strip()
         if self.interactor.active_request is not None:
             # Approval is active: the buffer stays *untouched*.  Single-key
@@ -1104,6 +1132,12 @@ class MiniTUIApplication:
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
         transcript_arrow_scroll = Condition(self._should_route_arrows_to_transcript)
+        binary_interaction_active = Condition(
+            lambda: isinstance(
+                self.interactor.active_request,
+                (ConfirmRequest, ReviewRequest),
+            )
+        )
 
         @bindings.add("c-c")
         def _ctrl_c(event) -> None:
@@ -1181,17 +1215,40 @@ class MiniTUIApplication:
             self._follow_transcript = True
             self.invalidate()
 
-        @bindings.add("y")
-        def _interaction_yes(event) -> None:  # noqa: ARG001
-            if self.interactor.active_request is not None:
-                self.interactor.submit("y")
+        popup_visible = Condition(lambda: bool(self._popup_candidates()))
+
+        @bindings.add("up", filter=popup_visible)
+        def _popup_up(event) -> None:  # noqa: ARG001
+            candidates = self._popup_candidates()
+            if candidates:
+                self._popup_index = (self._popup_index - 1) % len(candidates)
                 self.invalidate()
 
-        @bindings.add("n")
-        def _interaction_no(event) -> None:  # noqa: ARG001
-            if self.interactor.active_request is not None:
-                self.interactor.submit("n")
+        @bindings.add("down", filter=popup_visible)
+        def _popup_down(event) -> None:  # noqa: ARG001
+            candidates = self._popup_candidates()
+            if candidates:
+                self._popup_index = (self._popup_index + 1) % len(candidates)
                 self.invalidate()
+
+        @bindings.add("tab", filter=popup_visible)
+        def _popup_tab(event) -> None:  # noqa: ARG001
+            self._popup_adopt()
+
+        @bindings.add("escape", filter=popup_visible)
+        def _popup_escape(event) -> None:  # noqa: ARG001
+            self._popup_dismissed = True
+            self.invalidate()
+
+        @bindings.add("y", filter=binary_interaction_active)
+        def _interaction_yes(event) -> None:  # noqa: ARG001
+            self.interactor.submit("y")
+            self.invalidate()
+
+        @bindings.add("n", filter=binary_interaction_active)
+        def _interaction_no(event) -> None:  # noqa: ARG001
+            self.interactor.submit("n")
+            self.invalidate()
 
         @bindings.add("f2")
         def _toggle_header(event) -> None:  # noqa: ARG001
@@ -1250,6 +1307,53 @@ class MiniTUIApplication:
         if not callable(preview):
             return ()
         return tuple(preview())
+
+    def _popup_candidates(self) -> tuple[PopupEntry, ...]:
+        if self.interactor.active_request is not None:
+            return ()
+        text = self.input_buffer.text
+        if text != self._popup_last_text:
+            self._popup_last_text = text
+            self._popup_index = 0
+            self._popup_dismissed = False
+        if self._popup_dismissed:
+            return ()
+        return filter_entries(self._popup_entries, text)
+
+    def _popup_height(self) -> int:
+        return min(8, len(self._popup_candidates()))
+
+    def _popup_adopt(self) -> None:
+        candidates = self._popup_candidates()
+        if not candidates:
+            return
+        entry = candidates[min(self._popup_index, len(candidates) - 1)]
+        text = entry.completion + (" " if entry.has_arg else "")
+        self.input_buffer.text = text
+        self.input_buffer.cursor_position = len(text)
+        self.invalidate()
+
+    def _popup_text(self) -> FormattedText:
+        candidates = self._popup_candidates()
+        if not candidates:
+            return FormattedText([])
+        limit = 8
+        index = min(self._popup_index, len(candidates) - 1)
+        start = max(0, min(index - limit // 2, max(0, len(candidates) - limit)))
+        fragments: list[tuple[str, str]] = []
+        for offset, entry in enumerate(candidates[start : start + limit]):
+            i = start + offset
+            marker = "›" if i == index else " "
+            cmd = f" {marker} {entry.completion}"
+            pad = " " * max(1, 24 - len(cmd))
+            if i == index:
+                fragments.append(
+                    ("class:popup.selected", cmd + pad + entry.description + "\n")
+                )
+            else:
+                fragments.append(("class:popup.cmd", cmd))
+                fragments.append(("class:popup", pad + entry.description + "\n"))
+        return FormattedText(fragments)
 
     def _interaction_height(self) -> int:
         request = self.interactor.active_request
