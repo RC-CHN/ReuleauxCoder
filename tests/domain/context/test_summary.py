@@ -1,4 +1,5 @@
 import json
+import threading
 
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.context.summary import (
@@ -9,6 +10,7 @@ from reuleauxcoder.domain.context.summary import (
     project_summary_input,
     validate_summary_document,
 )
+from reuleauxcoder.services.llm.client import LLMRequestCancelled
 
 
 class DummyResponse:
@@ -97,6 +99,23 @@ def test_generate_summary_falls_back_when_llm_fails() -> None:
     )
     assert "app.py" in result
     assert "Decision" in result
+
+
+def test_generate_summary_propagates_turn_cancellation() -> None:
+    cancellation = threading.Event()
+
+    class CancelledLLM:
+        def chat(self, messages, **kwargs):
+            assert kwargs["cancellation_event"] is cancellation
+            cancellation.set()
+            raise LLMRequestCancelled("cancelled")
+
+    try:
+        generate_summary([], llm=CancelledLLM(), cancellation_event=cancellation)
+    except LLMRequestCancelled:
+        pass
+    else:
+        raise AssertionError("summary cancellation must stop the current turn")
 
 
 def test_summary_projection_never_splits_a_tool_batch() -> None:

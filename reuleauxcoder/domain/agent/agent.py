@@ -325,8 +325,9 @@ class Agent:
                 self.persist_runtime_snapshot()
 
     def maybe_compress_context(self, llm, *, reason: str) -> bool:
-        # Compression can issue uncancellable LLM calls; never start one
-        # while the user is trying to unwind the turn.
+        # Never start a model-backed compression while the user is trying to
+        # unwind the turn. If cancellation lands after this check, propagate
+        # the same turn-scoped event into the summary request.
         if self.stop_requested():
             return False
         with self._context_revision_lock:
@@ -336,6 +337,7 @@ class Agent:
                 candidate,
                 llm,
                 history_events=self.history_ledger.events,
+                cancellation_event=self._stop_event,
             ):
                 return False
             if source_revision != self._context_revision:
@@ -356,6 +358,7 @@ class Agent:
                 strategy,
                 llm,
                 history_events=self.history_ledger.events,
+                cancellation_event=self._stop_event,
             ):
                 return False
             checkpoint = self.context.checkpoints[-1]

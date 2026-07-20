@@ -40,6 +40,7 @@ def generate_summary(
     summarized_history_version: int = 0,
     recent_rounds_preserved: int = 0,
     history_events: tuple | list = (),
+    cancellation_event=None,
 ) -> str:
     """Return canonical JSON from deterministic facts plus validated enrichment."""
     deterministic = build_summary_document(
@@ -61,16 +62,19 @@ def generate_summary(
             f"{json.dumps(projected, ensure_ascii=False)}"
         )
         try:
-            response = llm.chat(
+            request_kwargs = dict(
                 messages=[
                     {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 max_output_tokens=4_096,
             )
+            if cancellation_event is not None:
+                request_kwargs["cancellation_event"] = cancellation_event
+            response = llm.chat(**request_kwargs)
             enriched = _parse_summary(response.content or "")
             if enriched is None:
-                repair = llm.chat(
+                repair_kwargs = dict(
                     messages=[
                         {
                             "role": "system",
@@ -89,8 +93,13 @@ def generate_summary(
                     ],
                     max_output_tokens=2_048,
                 )
+                if cancellation_event is not None:
+                    repair_kwargs["cancellation_event"] = cancellation_event
+                repair = llm.chat(**repair_kwargs)
                 enriched = _parse_summary(repair.content or "")
         except Exception:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise
             enriched = None
 
     document = (

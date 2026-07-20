@@ -40,6 +40,100 @@ class LLMRequestCancelled(RuntimeError):
 
 _STREAM_DONE = object()
 _STREAM_QUEUE_MAXSIZE = 256
+_CANCELLATION_POLL_SECONDS = 0.05
+
+
+def _close_stream(stream) -> None:
+    """Best-effort close for an SDK stream."""
+    close = getattr(stream, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        # Closing an abandoned response is cleanup only.  In particular, a
+        # provider transport must not turn cancellation into another failure.
+        pass
+
+
+def _close_stream_detached(stream) -> None:
+    """Release a provider stream without holding up the cancelling turn."""
+    threading.Thread(
+        target=_close_stream,
+        args=(stream,),
+        name="rcoder-llm-close",
+        daemon=True,
+    ).start()
+
+
+def _cancellable_stream_open(
+    call: Callable[[], Any], cancellation_event: threading.Event | None
+) -> Any:
+    """Open a stream while allowing its foreground consumer to be dropped.
+
+    OpenAI-compatible clients perform connection setup synchronously.  Once a
+    request is in that call there is no portable way to abort every supported
+    transport.  Keep the provider call in a daemon thread and transfer stream
+    ownership only while the foreground turn is still interested in it.  A
+    late stream is closed by that worker and otherwise discarded.
+    """
+    if cancellation_event is None:
+        return call()
+
+    ready = threading.Condition()
+    state: dict[str, Any] = {
+        "abandoned": False,
+        "done": False,
+        "succeeded": False,
+        "value": None,
+    }
+
+    def open_stream() -> None:
+        try:
+            value = call()
+            succeeded = True
+        except BaseException as exc:
+            value = exc
+            succeeded = False
+
+        with ready:
+            if state["abandoned"]:
+                abandoned_stream = value if succeeded else None
+            else:
+                state.update(done=True, succeeded=succeeded, value=value)
+                abandoned_stream = None
+                ready.notify()
+
+        # This is already the detached provider worker, so a slow close cannot
+        # delay the cancelled foreground turn.
+        if abandoned_stream is not None:
+            _close_stream(abandoned_stream)
+
+    threading.Thread(
+        target=open_stream,
+        name="rcoder-llm-open",
+        daemon=True,
+    ).start()
+
+    abandoned_stream = None
+    with ready:
+        while True:
+            # Cancellation wins over a response that becomes ready at the same
+            # boundary.  That is the drop-consumer behavior expected by Ctrl+C.
+            if cancellation_event.is_set():
+                state["abandoned"] = True
+                if state["done"] and state["succeeded"]:
+                    abandoned_stream = state["value"]
+                break
+            if state["done"]:
+                if state["succeeded"]:
+                    return state["value"]
+                raise state["value"]
+            ready.wait(timeout=_CANCELLATION_POLL_SECONDS)
+
+    if abandoned_stream is not None:
+        _close_stream_detached(abandoned_stream)
+    raise LLMRequestCancelled("LLM request cancelled during dispatch")
 
 
 def _cancellable_stream_chunks(stream, cancellation_event):
@@ -48,8 +142,9 @@ def _cancellable_stream_chunks(stream, cancellation_event):
     The SDK stream blocks on socket reads, so a cancel that lands while the
     model is silent (long thinking, slow first chunk) would otherwise wait
     for the next chunk. A producer thread feeds a bounded queue instead; the
-    consumer polls with a short timeout, signals the producer to stop,
-    closes the stream and raises as soon as cancellation is observed. The
+    consumer polls with a short timeout, signals the producer to stop, and
+    raises as soon as cancellation is observed. Stream cleanup is detached on
+    cancellation so a slow provider close cannot hold up the turn. The
     bounded queue back-pressures the producer so a slow consumer cannot
     accumulate unbounded chunks, and the stop event lets the producer exit
     even if the underlying iterator never responds to close().
@@ -63,7 +158,7 @@ def _cancellable_stream_chunks(stream, cancellation_event):
     def offer(item) -> bool:
         while not stop.is_set():
             try:
-                items.put(item, timeout=0.1)
+                items.put(item, timeout=_CANCELLATION_POLL_SECONDS)
                 return True
             except queue.Full:
                 continue
@@ -88,9 +183,11 @@ def _cancellable_stream_chunks(stream, cancellation_event):
             if cancellation_event.is_set():
                 raise LLMRequestCancelled("LLM stream cancelled")
             try:
-                item = items.get(timeout=0.1)
+                item = items.get(timeout=_CANCELLATION_POLL_SECONDS)
             except queue.Empty:
                 continue
+            if cancellation_event.is_set():
+                raise LLMRequestCancelled("LLM stream cancelled")
             if item is _STREAM_DONE:
                 return
             if isinstance(item, Exception):
@@ -98,9 +195,10 @@ def _cancellable_stream_chunks(stream, cancellation_event):
             yield item
     finally:
         stop.set()
-        close = getattr(stream, "close", None)
-        if callable(close):
-            close()
+        if cancellation_event.is_set():
+            _close_stream_detached(stream)
+        else:
+            _close_stream(stream)
 
 
 def _mask_api_key(api_key: str) -> str:
@@ -406,11 +504,17 @@ class LLM:
             # stream_options is an OpenAI extension
             try:
                 params["stream_options"] = {"include_usage": True}
-                stream = self._call_with_retry(params)
+                stream = _cancellable_stream_open(
+                    lambda: self._call_with_retry(params), cancellation_event
+                )
                 debug_stream_options_enabled = True
+            except LLMRequestCancelled:
+                raise
             except Exception:
                 params.pop("stream_options", None)
-                stream = self._call_with_retry(params)
+                stream = _cancellable_stream_open(
+                    lambda: self._call_with_retry(params), cancellation_event
+                )
             # This is the exact hook-transformed payload accepted by the client,
             # retained without credentials for request-boundary audit/replay.
             self.last_dispatched_request = canonicalize_request_params(params)
@@ -426,9 +530,6 @@ class LLM:
 
             for chunk in _cancellable_stream_chunks(stream, cancellation_event):
                 if cancellation_event is not None and cancellation_event.is_set():
-                    close = getattr(stream, "close", None)
-                    if callable(close):
-                        close()
                     raise LLMRequestCancelled("LLM stream cancelled")
                 if (
                     self.debug_trace
@@ -489,6 +590,9 @@ class LLM:
                                 tc_map[idx]["name"] = tc_delta.function.name
                             if tc_delta.function.arguments:
                                 tc_map[idx]["args"] += tc_delta.function.arguments
+
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise LLMRequestCancelled("LLM stream cancelled")
 
             # Parse accumulated tool calls
             parsed: list[ToolCall] = []

@@ -525,6 +525,96 @@ def test_llm_stream_cancel_aborts_during_silent_gap() -> None:
     assert elapsed < 2.0
 
 
+def test_llm_cancel_drops_slow_stream_open_and_discards_late_result() -> None:
+    cancellation = threading.Event()
+    release_open = threading.Event()
+    late_stream_closed = threading.Event()
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    class LateStream:
+        def close(self) -> None:
+            late_stream_closed.set()
+
+    def slow_open(_params):
+        release_open.wait(timeout=5)
+        return LateStream()
+
+    llm._call_with_retry = slow_open  # type: ignore[method-assign]
+
+    def cancel_soon() -> None:
+        time.sleep(0.1)
+        cancellation.set()
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    started = time.monotonic()
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            cancellation_event=cancellation,
+        )
+    except LLMRequestCancelled:
+        pass
+    else:
+        raise AssertionError("slow dispatch must raise LLMRequestCancelled")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert llm.last_dispatched_request is None
+
+    # The abandoned provider call may return later, but it never transfers
+    # ownership back to this turn and is closed by its detached worker.
+    release_open.set()
+    assert late_stream_closed.wait(timeout=1)
+    assert llm.last_dispatched_request is None
+
+
+def test_llm_cancel_does_not_wait_for_slow_stream_close() -> None:
+    cancellation = threading.Event()
+    release_close = threading.Event()
+    close_started = threading.Event()
+    close_finished = threading.Event()
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    class SlowCloseStream:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            time.sleep(30)
+            raise StopIteration
+
+        def close(self) -> None:
+            close_started.set()
+            release_close.wait(timeout=5)
+            close_finished.set()
+
+    llm._call_with_retry = lambda _params: SlowCloseStream()  # type: ignore[method-assign]
+
+    def cancel_soon() -> None:
+        time.sleep(0.1)
+        cancellation.set()
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    started = time.monotonic()
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            cancellation_event=cancellation,
+        )
+    except LLMRequestCancelled:
+        pass
+    else:
+        raise AssertionError("slow stream must raise LLMRequestCancelled")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert close_started.wait(timeout=1)
+    assert close_finished.is_set() is False
+
+    release_close.set()
+    assert close_finished.wait(timeout=1)
+
+
 def test_llm_chat_sends_explicit_thinking_enabled_state() -> None:
     captured = {}
 

@@ -379,6 +379,7 @@ class ContextManager:
         llm: Optional["LLM"] = None,
         *,
         history_events: tuple | list = (),
+        cancellation_event=None,
     ) -> bool:
         """Commit one profitable snip or one semantic-wall rewrite epoch."""
         before_tokens = self.predict_request_tokens(messages)
@@ -429,6 +430,7 @@ class ContextManager:
                 keep_recent_user_turns=self._summarize_keep_recent_turns,
                 checkpoint_kind="partial_prefix",
                 history_events=history_events,
+                cancellation_event=cancellation_event,
             )
             if summarized:
                 applied_layers.append("partial_prefix")
@@ -439,7 +441,12 @@ class ContextManager:
 
         after_tokens = self.predict_request_tokens(candidate)
         if after_tokens > self._emergency_at and len(candidate) > 4:
-            self._hard_collapse(candidate, llm, history_events=history_events)
+            self._hard_collapse(
+                candidate,
+                llm,
+                history_events=history_events,
+                cancellation_event=cancellation_event,
+            )
             applied_layers.append("full_recovery")
             after_tokens = self.predict_request_tokens(candidate)
 
@@ -494,6 +501,7 @@ class ContextManager:
         llm: Optional["LLM"] = None,
         *,
         history_events: tuple | list = (),
+        cancellation_event=None,
     ) -> bool:
         """Force one specific compression strategy regardless of thresholds."""
         before_tokens = self.predict_request_tokens(messages)
@@ -515,12 +523,18 @@ class ContextManager:
                 keep_recent_user_turns=self._summarize_keep_recent_turns,
                 checkpoint_kind="partial_prefix",
                 history_events=history_events,
+                cancellation_event=cancellation_event,
             )
         elif strategy == "collapse":
             if len(messages) <= 4:
                 self._emit_compression_skipped(trigger="manual")
                 return False
-            self._hard_collapse(messages, llm, history_events=history_events)
+            self._hard_collapse(
+                messages,
+                llm,
+                history_events=history_events,
+                cancellation_event=cancellation_event,
+            )
             changed = True
         if not changed:
             self._emit_compression_skipped(trigger="manual")
@@ -622,6 +636,7 @@ class ContextManager:
         keep_recent_user_turns: int = 20,
         checkpoint_kind: CheckpointKind = "partial_prefix",
         history_events: tuple | list = (),
+        cancellation_event=None,
     ) -> bool:
         """Layer 2: Summarize old conversation while keeping recent user turns intact."""
         split_index = self._find_recent_user_turn_boundary(
@@ -640,6 +655,7 @@ class ContextManager:
             checkpoint_kind=checkpoint_kind,
             recent_rounds_preserved=len(group_api_rounds(tail)),
             history_events=history_events,
+            cancellation_event=cancellation_event,
         )
 
         replacement = [
@@ -690,6 +706,7 @@ class ContextManager:
         llm: Optional["LLM"],
         *,
         history_events: tuple | list = (),
+        cancellation_event=None,
     ) -> None:
         """Layer 3: Emergency compression."""
         split_index = recent_round_start(messages, 2)
@@ -700,6 +717,7 @@ class ContextManager:
             checkpoint_kind="full_recovery",
             recent_rounds_preserved=len(group_api_rounds(tail)),
             history_events=history_events,
+            cancellation_event=cancellation_event,
         )
 
         messages.clear()
@@ -726,6 +744,7 @@ class ContextManager:
         checkpoint_kind: CheckpointKind,
         recent_rounds_preserved: int,
         history_events: tuple | list = (),
+        cancellation_event=None,
     ) -> str:
         """Generate summary via LLM or fallback to extraction."""
         try:
@@ -736,8 +755,11 @@ class ContextManager:
                 summarized_history_version=self._history_version,
                 recent_rounds_preserved=recent_rounds_preserved,
                 history_events=history_events,
+                cancellation_event=cancellation_event,
             )
         except Exception:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise
             self._consecutive_summary_failures += 1
             return self._extract_key_info(messages)
         self._consecutive_summary_failures = 0
