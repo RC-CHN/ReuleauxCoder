@@ -7,6 +7,7 @@ interaction responses.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -766,6 +767,8 @@ class MiniTUIApplication:
         self.exit_confirm = False
         self._closed = False
         self._worker: threading.Thread | None = None
+        self._deferred_commands: deque[str] = deque()
+        self._deferred_commands_lock = threading.Lock()
         self._animation_stop = threading.Event()
         self._animation_thread: threading.Thread | None = None
         self._width = 100
@@ -936,11 +939,14 @@ class MiniTUIApplication:
         )
         if (
             parsed is not None
-            and parsed.action.during_turn is DuringTurnPolicy.REQUIRE_IDLE
+            and parsed.action.during_turn is DuringTurnPolicy.DEFER_UNTIL_IDLE
         ):
-            self.ui_bus.warning(
-                f"Command '{text}' requires an idle agent. "
-                "Press Ctrl+C to stop the current turn, then run it again.",
+            with self._deferred_commands_lock:
+                self._deferred_commands.append(text)
+            self.ui_bus.info(
+                f"Queued command: {text}\n"
+                "It will run when the current turn becomes idle. "
+                "Press Ctrl+C to interrupt and apply it sooner.",
                 kind=UIEventKind.COMMAND,
             )
             return
@@ -981,11 +987,12 @@ class MiniTUIApplication:
         finally:
             self.invalidate()
 
-    def _handle_input(self, user_input: str) -> None:
+    def _handle_input(self, user_input: str, record_command: bool = True) -> None:
+        drain_deferred = True
         try:
             previous_session_id = self.current_session_id
             previous_generation = self.agent.session_generation
-            if user_input.startswith("/"):
+            if record_command and user_input.startswith("/"):
                 self.events.append_user_command(user_input)
             result = handle_command(
                 user_input,
@@ -1020,6 +1027,8 @@ class MiniTUIApplication:
                     session_id=self.current_session_id,
                 )
             if result["action"] == "exit":
+                drain_deferred = False
+                self._clear_deferred_commands()
                 self.application.exit()
                 return
             if result["action"] == "continue":
@@ -1041,9 +1050,54 @@ class MiniTUIApplication:
             suffix = f"\nDiagnostic saved to: {diagnostic}" if diagnostic else ""
             self.ui_bus.error(f"Error: {error}{suffix}")
         finally:
-            self.running = False
             self.cancelling = False
+            started_deferred = (
+                drain_deferred and self._start_next_deferred_command()
+            )
+            if not started_deferred:
+                self.running = False
             self.invalidate()
+
+    def _start_next_deferred_command(self) -> bool:
+        """Start the next queued local command once the active worker is idle."""
+        with self._deferred_commands_lock:
+            if self._closed or not self._deferred_commands:
+                return False
+            command = self._deferred_commands.popleft()
+
+        self.agent.clear_stop_request()
+        self.ui_bus.info(
+            f"Applying queued command now: {command}",
+            kind=UIEventKind.COMMAND,
+        )
+        self.running = True
+        self._worker = threading.Thread(
+            target=self._handle_input,
+            args=(command, False),
+            name="rcoder-cli-command",
+            daemon=True,
+        )
+        self._worker.start()
+        return True
+
+    def _queued_commands(self) -> tuple[str, ...]:
+        lock = getattr(self, "_deferred_commands_lock", None)
+        commands = getattr(self, "_deferred_commands", ())
+        if lock is None:
+            return tuple(commands)
+        with lock:
+            return tuple(commands)
+
+    def _clear_deferred_commands(self) -> None:
+        lock = getattr(self, "_deferred_commands_lock", None)
+        commands = getattr(self, "_deferred_commands", None)
+        if commands is None:
+            return
+        if lock is None:
+            commands.clear()
+            return
+        with lock:
+            commands.clear()
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
@@ -1066,9 +1120,24 @@ class MiniTUIApplication:
                 else:
                     self.cancelling = True
                     self.agent.request_stop()
-                    self.ui_bus.warning(
-                        "Cancelling at the next protocol-safe boundary…"
-                    )
+                    queued_steering = self._queued_steering()
+                    queued_commands = self._queued_commands()
+                    if queued_commands and queued_steering:
+                        message = (
+                            "Cancelling the current turn. Queued commands will run "
+                            "next; queued steers will be discarded."
+                        )
+                    elif queued_commands:
+                        message = (
+                            "Cancelling the current turn. Queued commands will run next."
+                        )
+                    elif queued_steering:
+                        message = (
+                            "Cancelling the current turn. Queued steers will be discarded."
+                        )
+                    else:
+                        message = "Cancelling the current turn…"
+                    self.ui_bus.warning(message)
                 return
             if self.exit_confirm:
                 self._closed = True
@@ -1183,10 +1252,10 @@ class MiniTUIApplication:
     def _interaction_height(self) -> int:
         request = self.interactor.active_request
         if request is None:
-            queued = self._queued_steering()
-            if not queued:
+            queued_count = len(self._queued_steering()) + len(self._queued_commands())
+            if not queued_count:
                 return 1
-            return 1 + min(3, len(queued)) + int(len(queued) > 3)
+            return 1 + min(3, queued_count) + int(queued_count > 3)
         return min(
             8,
             max(
@@ -1220,15 +1289,34 @@ class MiniTUIApplication:
                 ]
             )
         if self.cancelling:
-            return FormattedText([("class:warning", "Cancelling safely…\n")])
+            return FormattedText(
+                [("class:warning", "Cancelling the current turn…\n")]
+            )
         if self.running:
-            queued = self._queued_steering()
-            lines: list[tuple[str, str]] = [
-                ("class:user", f" ↳ {_clip(text, 60)}\n") for text in queued[:3]
+            queued_steering = self._queued_steering()
+            queued_commands = self._queued_commands()
+            pending = [
+                ("class:user", f" ↳ steer next: {_clip(text, 48)}\n")
+                for text in queued_steering
             ]
-            if len(queued) > 3:
-                lines.append(("class:muted", f" ↳ … {len(queued) - 3} more queued\n"))
-            lines.append(("class:muted", "Agent running · Ctrl+C interrupts\n"))
+            pending.extend(
+                ("class:command", f" ⌛ when idle: {_clip(text, 48)}\n")
+                for text in queued_commands
+            )
+            lines = pending[:3]
+            if len(pending) > 3:
+                lines.append(
+                    ("class:muted", f" … {len(pending) - 3} more queued\n")
+                )
+            if queued_commands and queued_steering:
+                hint = "Ctrl+C cancels: commands run next; steers are discarded\n"
+            elif queued_commands:
+                hint = "Ctrl+C cancels the turn and runs queued commands next\n"
+            elif queued_steering:
+                hint = "Ctrl+C cancels the turn and discards queued steers\n"
+            else:
+                hint = "Agent running · Enter queues a steer · Ctrl+C cancels\n"
+            lines.append(("class:muted", hint))
             return FormattedText(lines)
         return FormattedText(
             [
@@ -1258,15 +1346,6 @@ class MiniTUIApplication:
 
     def _before_render(self, _app) -> None:
         """Clamp scrolling and follow new output only while tail-follow is on."""
-        stop_requested = getattr(getattr(self, "agent", None), "stop_requested", None)
-        if (
-            getattr(self, "cancelling", False)
-            and callable(stop_requested)
-            and not stop_requested()
-        ):
-            # A queued direction pivoted the turn: the stop request was
-            # consumed and the agent kept running.
-            self.cancelling = False
         try:
             size = self.application.output.get_size()
             content_width = max(20, size.columns - 1)
@@ -1341,6 +1420,7 @@ class MiniTUIApplication:
         self.agent.lifecycle.session_saved(sid)
 
     def _prepare_forced_exit(self, reason: str) -> None:
+        self._clear_deferred_commands()
         self.agent.request_stop()
         self.interactor.cancel_active(reason)
         reconcile = getattr(self.agent, "reconcile_pending_tool_calls", None)

@@ -1,5 +1,6 @@
 import threading
 import time
+from collections import deque
 from types import SimpleNamespace
 from dataclasses import replace
 from prompt_toolkit.utils import get_cwidth
@@ -117,9 +118,9 @@ def test_interaction_lane_shows_queued_steering_while_running() -> None:
     )
 
     rendered = "".join(text for _style, text in app._interaction_text())
-    assert " ↳ do this instead" in rendered
-    assert " ↳ and also that" in rendered
-    assert "Agent running" in rendered
+    assert "steer next: do this instead" in rendered
+    assert "steer next: and also that" in rendered
+    assert "Ctrl+C cancels the turn and discards queued steers" in rendered
     assert app._interaction_height() == 3
 
 
@@ -171,25 +172,29 @@ def test_active_turn_immediate_slash_command_executes_locally(monkeypatch) -> No
     assert steering == []
 
 
-def test_active_turn_idle_only_slash_command_is_rejected_locally(monkeypatch) -> None:
-    warnings = []
+def test_active_turn_idle_only_slash_command_is_queued_locally(monkeypatch) -> None:
+    notices = []
     steering = []
     appended = []
     app = object.__new__(MiniTUIApplication)
     app.agent = SimpleNamespace(submit_user_steering=steering.append)
     app.events = SimpleNamespace(append_user_command=appended.append)
     app.ui_bus = SimpleNamespace(
-        warning=lambda message, **kwargs: warnings.append(message)
+        info=lambda message, **kwargs: notices.append(message)
     )
     app.ui_profile = object()
     app.action_registry = object()
     app.current_session_id = "s1"
+    app._deferred_commands = deque()
+    app._deferred_commands_lock = threading.Lock()
 
     monkeypatch.setattr(
         mini_tui_module,
         "parse_command",
         lambda *args, **kwargs: SimpleNamespace(
-            action=SimpleNamespace(during_turn=DuringTurnPolicy.REQUIRE_IDLE)
+            action=SimpleNamespace(
+                during_turn=DuringTurnPolicy.DEFER_UNTIL_IDLE
+            )
         ),
     )
 
@@ -197,7 +202,99 @@ def test_active_turn_idle_only_slash_command_is_rejected_locally(monkeypatch) ->
 
     assert appended == ["/reset"]
     assert steering == []
-    assert warnings and "requires an idle agent" in warnings[0]
+    assert tuple(app._deferred_commands) == ("/reset",)
+    assert notices and "Ctrl+C to interrupt and apply it sooner" in notices[0]
+
+
+def test_queued_command_preview_explains_default_and_accelerated_timing() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app.interactor = SimpleNamespace(active_request=None)
+    app.exit_confirm = False
+    app.cancelling = False
+    app.running = True
+    app.agent = SimpleNamespace(pending_user_steering=lambda: ())
+    app._deferred_commands = deque(["/model fast"])
+    app._deferred_commands_lock = threading.Lock()
+
+    rendered = "".join(text for _style, text in app._interaction_text())
+
+    assert "when idle: /model fast" in rendered
+    assert "Ctrl+C cancels the turn and runs queued commands next" in rendered
+    assert app._interaction_height() == 2
+
+
+def test_next_deferred_command_starts_after_worker_becomes_idle(monkeypatch) -> None:
+    applied = []
+    cleared = []
+    notices = []
+    app = object.__new__(MiniTUIApplication)
+    app._closed = False
+    app._deferred_commands = deque(["/model fast"])
+    app._deferred_commands_lock = threading.Lock()
+    app.agent = SimpleNamespace(clear_stop_request=lambda: cleared.append(True))
+    app.ui_bus = SimpleNamespace(info=lambda message, **kwargs: notices.append(message))
+    app._handle_input = lambda *args: applied.append(args)
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, **kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(mini_tui_module.threading, "Thread", ImmediateThread)
+
+    assert app._start_next_deferred_command() is True
+
+    assert applied == [("/model fast", False)]
+    assert cleared == [True]
+    assert notices == ["Applying queued command now: /model fast"]
+    assert app.running is True
+    assert tuple(app._deferred_commands) == ()
+
+
+def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
+    monkeypatch,
+) -> None:
+    started = []
+    chats = []
+    app = object.__new__(MiniTUIApplication)
+    app.agent = SimpleNamespace(
+        session_generation=1,
+        current_session_id="s1",
+        chat=chats.append,
+    )
+    app.config = SimpleNamespace()
+    app.current_session_id = "s1"
+    app.session_exit_time = None
+    app.ui_bus = SimpleNamespace()
+    app.ui_profile = object()
+    app.action_registry = object()
+    app.sessions_dir = None
+    app.skills_service = None
+    app.cancelling = True
+    app.running = True
+    app.invalidate = lambda: None
+    app._start_next_deferred_command = lambda: started.append(True) or True
+
+    monkeypatch.setattr(
+        mini_tui_module,
+        "handle_command",
+        lambda *args, **kwargs: {
+            "action": "chat",
+            "action_id": None,
+            "session_id": "s1",
+            "session_exit_time": None,
+        },
+    )
+
+    app._handle_input("finish this")
+
+    assert chats == ["finish this"]
+    assert started == [True]
+    assert app.cancelling is False
+    assert app.running is True
 
 
 def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:

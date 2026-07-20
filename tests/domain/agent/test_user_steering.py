@@ -91,36 +91,35 @@ class _PivotLoop:
         return "pivoted answer"
 
 
-def test_interrupt_with_queued_steering_pivots_instead_of_stopping() -> None:
+def test_interrupt_with_queued_steering_stops_and_discards_steering() -> None:
     loop = _PivotLoop()
     agent = Agent(llm=_LLM(), tools=[], loop=loop)
     loop.agent = agent
 
     result = agent.chat("initial goal")
 
-    assert result == "pivoted answer"
-    assert loop.calls == 2
+    assert result == "(stopped by cancellation request)"
+    assert loop.calls == 1
     assert [message["content"] for message in agent.messages] == [
         "initial goal",
-        "do this instead",
     ]
-    assert not agent.stop_requested()
+    assert agent.stop_requested()
     assert agent._pending_user_steering == []
 
 
-def test_interrupt_with_queued_steering_pivots_past_stream_cancellation() -> None:
+def test_stream_cancellation_discards_queued_steering() -> None:
     loop = _PivotLoop(raise_cancelled=True)
     agent = Agent(llm=_LLM(), tools=[], loop=loop)
     loop.agent = agent
 
     result = agent.chat("initial goal")
 
-    assert result == "pivoted answer"
-    assert loop.calls == 2
+    assert result == "(stopped by cancellation request)"
+    assert loop.calls == 1
     assert [message["content"] for message in agent.messages] == [
         "initial goal",
-        "do this instead",
     ]
+    assert agent._pending_user_steering == []
 
 
 class _PlainStopLoop:
