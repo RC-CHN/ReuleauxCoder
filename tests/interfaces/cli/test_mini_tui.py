@@ -697,7 +697,11 @@ def test_mcp_view_opens_toggle_panel_and_confirm_keeps_it_open() -> None:
     assert app._open_interactive_view(
         _mcp_view_payload(action="refresh", focus=False)
     ) is True
-    refreshed = {item.label: item for item in app._selection.items}
+    from reuleauxcoder.interfaces.cli.selection_panel import SelectionPanel
+
+    selection: SelectionPanel | None = app._selection
+    assert selection is not None
+    refreshed = {item.label: item for item in selection.items}
     assert refreshed["github"].current is True  # still enabled in this fake view
 
 
@@ -793,6 +797,65 @@ def test_skills_refresh_updates_items_in_place() -> None:
     )
     assert app._selection is not None
     assert len(app._selection.items) == 2
+
+
+def test_mcp_panel_shows_hint_row_when_no_servers() -> None:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.extensions.mcp.models import MCPServersView
+
+    payload = NS(
+        view_type="mcp_servers",
+        title="MCP Servers",
+        action="open",
+        focus=True,
+        view_model=MCPServersView(servers=[]),
+    )
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(payload) is True
+    assert app._selection.selected.label == "(no MCP servers configured)"
+    # Confirming the hint row is a no-op.
+    app._selection_confirm()
+    assert accepted == []
+
+
+def test_skills_panel_shows_hint_row_when_no_skills() -> None:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.extensions.skills.models import SkillsSummary, SkillsViewModel
+
+    payload = NS(
+        view_type="skills",
+        title="Skills",
+        action="open",
+        focus=True,
+        view_model=SkillsViewModel(
+            skills=(),
+            summary=SkillsSummary(
+                discovered=0,
+                active=0,
+                disabled=0,
+                config_enabled=True,
+                scan_project=True,
+                scan_user=True,
+                catalog_loaded=False,
+            ),
+        ),
+    )
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+
+    assert app._open_interactive_view(payload) is True
+    assert app._selection.selected.label == "(no skills discovered)"
 
 
 def test_approval_panel_includes_dynamic_targets_without_rules() -> None:

@@ -1493,11 +1493,16 @@ class MiniTUIApplication:
                     self._selection.refresh(self._skills_items(model))
                     self.invalidate()
                 return True
-            if not model.skills:
-                return False
+            items = self._skills_items(model) or (
+                SelectionItem(
+                    label="(no skills discovered)",
+                    description="create skills under .agents/skills/ or ~/.agents/skills/",
+                    command="",
+                ),
+            )
             self._selection = SelectionPanel.open(
                 title=payload.title,
-                items=self._skills_items(model),
+                items=items,
                 view_type="skills",
             )
             self.invalidate()
@@ -1513,11 +1518,16 @@ class MiniTUIApplication:
                     self._selection.refresh(self._mcp_items(model))
                     self.invalidate()
                 return True
-            if not model.servers:
-                return False
+            items = self._mcp_items(model) or (
+                SelectionItem(
+                    label="(no MCP servers configured)",
+                    description="add servers under mcp.servers in config.yaml",
+                    command="",
+                ),
+            )
             self._selection = SelectionPanel.open(
                 title=payload.title,
-                items=self._mcp_items(model),
+                items=items,
                 view_type="mcp_servers",
             )
             self.invalidate()
@@ -1780,6 +1790,9 @@ class MiniTUIApplication:
             self.invalidate()
             return
         command = selected.command
+        if not command:
+            # Placeholder/hint rows carry no command.
+            return
         # Toggle panels (mcp) stay open after submitting so consecutive
         # toggles work; the refresh updates items in place.
         keep_open = self._selection.view_type in ("mcp_servers", "skills")
