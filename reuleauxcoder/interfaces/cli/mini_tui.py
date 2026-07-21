@@ -995,6 +995,10 @@ class MiniTUIApplication:
             return True
         self.exit_confirm = False
         self.session_header_expanded = False
+        # A stop request belongs to the turn that just finished.  Local slash
+        # commands do not pass through Agent.chat(), so clear the stale flag at
+        # the same idle-operation boundary before starting either kind of input.
+        self.agent.clear_stop_request()
         self.running = True
         self.cancelling = False
         self._worker = threading.Thread(
@@ -1144,7 +1148,13 @@ class MiniTUIApplication:
             suffix = f"\nDiagnostic saved to: {diagnostic}" if diagnostic else ""
             self.ui_bus.error(f"Error: {error}{suffix}")
         finally:
+            was_cancelling = self.cancelling
             self.cancelling = False
+            if was_cancelling:
+                self.ui_bus.info(
+                    "Current turn cancelled.",
+                    kind=UIEventKind.AGENT,
+                )
             started_deferred = (
                 drain_deferred and self._start_next_deferred_command()
             )

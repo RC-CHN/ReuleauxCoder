@@ -1,7 +1,9 @@
 """Interactive REPL loop."""
 
 import time
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import cast
 
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
@@ -30,7 +32,7 @@ def run_repl(
     ui_bus: UIEventBus,
     ui_profile: UIProfile,
     action_registry: ActionRegistry,
-    current_session_id: str = None,
+    current_session_id: str | None = None,
     sessions_dir: Path | None = None,
     session_exit_time: str | None = None,
     skills_service=None,
@@ -72,7 +74,7 @@ def run_repl(
         try:
             foreground = getattr(interaction_coordinator, "foreground_input", None)
             if callable(foreground):
-                with foreground() as available:
+                with cast(AbstractContextManager[bool], foreground()) as available:
                     if not available:
                         break
                     user_input = pt_prompt(
@@ -114,6 +116,10 @@ def run_repl(
         if not user_input:
             continue
 
+        # Ctrl+C marks the previous turn as stopped.  Agent.chat() resets that
+        # state for normal prompts, but local slash commands bypass chat and may
+        # issue their own LLM request (for example, /compact force summarize).
+        agent.clear_stop_request()
         result = handle_command(
             user_input,
             agent,

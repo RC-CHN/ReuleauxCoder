@@ -296,11 +296,45 @@ def test_next_deferred_command_starts_after_worker_becomes_idle(monkeypatch) -> 
     assert tuple(app._deferred_commands) == ()
 
 
+def test_new_idle_input_clears_previous_stop_before_starting_worker(
+    monkeypatch,
+) -> None:
+    operations = []
+    buffer = SimpleNamespace(text="/compact force summarize", reset=lambda: None)
+    app = object.__new__(MiniTUIApplication)
+    app._popup_candidates = lambda: ()
+    app.interactor = SimpleNamespace(active_request=None)
+    app.running = False
+    app.exit_confirm = True
+    app.session_header_expanded = True
+    app.agent = SimpleNamespace(
+        clear_stop_request=lambda: operations.append("clear")
+    )
+    app.invalidate = lambda: None
+
+    class ImmediateThread:
+        def __init__(self, *, target, args, **kwargs):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            operations.append("start")
+
+    monkeypatch.setattr(mini_tui_module.threading, "Thread", ImmediateThread)
+
+    assert app._accept_buffer(buffer) is True
+
+    assert operations == ["clear", "start"]
+    assert app.running is True
+    assert app.cancelling is False
+
+
 def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
     monkeypatch,
 ) -> None:
     started = []
     chats = []
+    notices = []
     app = object.__new__(MiniTUIApplication)
     app.agent = SimpleNamespace(
         session_generation=1,
@@ -310,7 +344,9 @@ def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
     app.config = SimpleNamespace()
     app.current_session_id = "s1"
     app.session_exit_time = None
-    app.ui_bus = SimpleNamespace()
+    app.ui_bus = SimpleNamespace(
+        info=lambda message, **kwargs: notices.append((message, kwargs))
+    )
     app.ui_profile = object()
     app.action_registry = object()
     app.sessions_dir = None
@@ -335,6 +371,7 @@ def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
 
     assert chats == ["finish this"]
     assert started == [True]
+    assert notices == [("Current turn cancelled.", {"kind": UIEventKind.AGENT})]
     assert app.cancelling is False
     assert app.running is True
 
