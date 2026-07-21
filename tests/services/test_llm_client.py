@@ -734,13 +734,20 @@ def test_llm_debug_trace_persists_trace_and_emits_ui_event(
 
     payload = json.loads(open(trace_path, encoding="utf-8").read())
     assert payload["model"] == "demo-model"
+    assert "api_key_hint" not in payload
     assert payload["request"]["stream"] is True
     assert payload["request"]["reasoning_effort"] is None
     assert payload["request"]["reasoning_replay_mode"] == "none"
     assert payload["request"]["thinking_enabled"] is None
     assert payload["request"]["thinking_type"] is None
+    assert payload["dispatched_request"]["messages"] == [
+        {"role": "user", "content": "Hi"}
+    ]
+    assert "api_key" not in payload["dispatched_request"]
     assert payload["stream"]["event_count"] >= 2
     assert payload["stream"]["events"][0]["type"] == "content"
     assert payload["stream"]["events"][0]["text"] == "Hello"
     assert payload["response"]["usage"]["prompt_tokens"] == 12
     assert payload["response"]["usage"]["completion_tokens"] == 3
+    assert payload["response"]["content"] == "Hello"
+    assert llm.last_debug_trace_path == trace_path

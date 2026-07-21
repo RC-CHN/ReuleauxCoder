@@ -13,12 +13,17 @@ from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
 def test_parse_debug_on_off() -> None:
-    assert _parse_debug("/debug on", None).enabled is True
-    assert _parse_debug("/debug off", None).enabled is False
+    toggle = _parse_debug("/debug", None)
+    enabled = _parse_debug("/debug on", None)
+    disabled = _parse_debug("/debug off", None)
+    assert toggle is not None and toggle.enabled is None
+    assert enabled is not None and enabled.enabled is True
+    assert disabled is not None and disabled.enabled is False
     assert _parse_debug("/debug maybe", None) is None
 
 
-def test_handle_debug_toggles_runtime_flag() -> None:
+def test_handle_debug_toggles_runtime_flag(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     effect = CommandEffect()
     llm = SimpleNamespace(debug_trace=False)
     config = SimpleNamespace(llm_debug_trace=False)
@@ -37,6 +42,13 @@ def test_handle_debug_toggles_runtime_flag() -> None:
     assert ctx.config.llm_debug_trace is False
     assert ctx.agent.llm.debug_trace is False
     assert result.state == {"llm_debug_trace": False}
+
+    result = _handle_debug(SimpleNamespace(enabled=None), ctx)
+    assert ctx.agent.llm.debug_trace is True
+    assert result.state == {"llm_debug_trace": True}
+    assert "session event ledger remains bounded" in (
+        result.notifications[-1].message.lower()
+    )
 
 
 def test_config_command_emits_typed_effective_view() -> None:

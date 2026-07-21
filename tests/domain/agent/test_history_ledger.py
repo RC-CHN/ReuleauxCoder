@@ -1,9 +1,13 @@
+import json
+from pathlib import Path
+
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome, ToolOutcomeStatus
 from reuleauxcoder.domain.context.replay import ReplayEnvelope, content_hash
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.session.models import Session
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
 class _LLM:
@@ -91,6 +95,8 @@ def test_request_audit_keeps_overlay_out_of_replay_items() -> None:
     request_event = agent.history_ledger.events[-1]
     assert request_event.kind == "request_committed"
     assert "<execution_state" in request_event.payload["overlay"]["content"]
+    assert request_event.payload["replay"]["item_count"] == 1
+    assert "items" not in request_event.payload["replay"]
     assert all(
         "<execution_state" not in str(item.get("content")) for item in replay.items
     )
@@ -120,8 +126,10 @@ def test_request_audit_hashes_exact_dispatched_payload() -> None:
         canonical_request_payload=payload,
     )
 
-    assert agent.replay_envelope.request_settings["dispatched"]["temperature"] == 0.25
-    assert "configured" in agent.replay_envelope.request_settings
+    replay = agent.replay_envelope
+    assert replay is not None
+    assert replay.request_settings["dispatched"]["temperature"] == 0.25
+    assert "configured" in replay.request_settings
     assert agent.request_envelopes[-1].canonical_request_hash == content_hash(payload)
 
 
@@ -153,6 +161,68 @@ def test_resume_restores_committed_history_and_cache_watermarks() -> None:
     assert agent.context.history_version == 7
     assert agent.context.cache_epoch == 3
     assert agent._restored_replay_envelope is replay
+
+
+def test_legacy_event_migration_preserves_longest_resume_request_prefix(
+    tmp_path: Path,
+) -> None:
+    original_agent = Agent(llm=_LLM(), tools=[])
+    system = original_agent._loop._full_messages()[0]
+    items = [
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "continue from here"},
+    ]
+    settings = original_agent._loop._wire_settings()
+    replay = ReplayEnvelope.create(
+        session_id="session-prefix",
+        cache_epoch=4,
+        history_version=9,
+        model_profile="test-model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        request_settings={"configured": settings, "dispatched": settings},
+        instructions=[system],
+        tools=[],
+        items=items,
+    )
+    ledger = HistoryLedger()
+    legacy_request = ledger.append(
+        "request_committed",
+        {"request": {}, "replay": replay.to_dict(), "overlay": {}},
+    )
+    store = SessionStore(tmp_path)
+    store.save(
+        messages=items,
+        model="test-model",
+        session_id="session-prefix",
+        history_events=list(ledger.events),
+        replay_envelope=replay,
+    )
+    # Recreate the pre-v2 on-disk event shape; normal writes already compact it.
+    events_path = tmp_path / "session-prefix" / "events.jsonl"
+    events_path.write_text(
+        json.dumps(legacy_request.to_dict(), ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = store.load("session-prefix")
+    assert loaded is not None and loaded.replay_envelope is not None
+    resumed_agent = Agent(llm=_LLM(), tools=[])
+    resumed_agent.restore_history_runtime(loaded)
+    next_request = resumed_agent._loop._full_messages()
+    previous_stable_prefix = [dict(system), *items]
+    matched = 0
+    for previous, current in zip(previous_stable_prefix, next_request):
+        if previous != current:
+            break
+        matched += 1
+
+    assert matched == len(previous_stable_prefix)
+    assert len(next_request) > matched
+    assert loaded.replay_envelope.stable_prefix_hash == replay.stable_prefix_hash
+    assert resumed_agent.context.cache_epoch == 4
+    assert resumed_agent.context.history_version == 9
 
 
 def test_resume_migrates_legacy_system_prefix_once() -> None:

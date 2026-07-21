@@ -6,7 +6,7 @@ from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.replay import ReplayEnvelope
 from reuleauxcoder.domain.history import HistoryLedger
-from reuleauxcoder.domain.session.models import SessionRuntimeState
+from reuleauxcoder.domain.session.models import Session, SessionRuntimeState
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
@@ -193,6 +193,67 @@ def test_events_jsonl_only_appends_new_event_ids(tmp_path: Path) -> None:
     assert len(events_path.read_text(encoding="utf-8").splitlines()) == 4
 
 
+def test_load_compacts_legacy_request_replay_without_changing_current_context(
+    tmp_path: Path,
+) -> None:
+    progress = []
+    store = SessionStore(tmp_path, progress=progress.append)
+    ledger = HistoryLedger()
+    request = ledger.append(
+        "request_committed",
+        {"replay": {"items": ["x" * 300_000]}},
+    )
+    usage = ledger.append(
+        "usage_observed",
+        {
+            "actual_prompt_tokens": 10,
+            "cached_input_tokens": 5,
+            "local_request_estimate": 8,
+            "local_history_estimate": 4,
+            "request_boundary": "turn:1",
+            "model_profile": "model",
+        },
+    )
+    session_id = store.save(
+        messages=[{"role": "user", "content": "hello"}],
+        model="model",
+        history_events=list(ledger.events),
+    )
+    events_path = tmp_path / session_id / "events.jsonl"
+    events_path.write_text(
+        "\n".join(
+            json.dumps(event.to_dict(), ensure_ascii=False)
+            for event in (request, usage)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    replay_path = tmp_path / session_id / "replay.json"
+    replay_before = ReplayEnvelope.from_dict(
+        json.loads(replay_path.read_text(encoding="utf-8"))
+    )
+    size_before = events_path.stat().st_size
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    restored_request = next(
+        event for event in loaded.history_events if event.event_id == request.event_id
+    )
+    assert restored_request.seq == request.seq
+    assert restored_request.payload["replay"]["item_count"] == 1
+    assert "items" not in restored_request.payload["replay"]
+    assert any(event.event_id == usage.event_id for event in loaded.history_events)
+    assert events_path.stat().st_size < size_before / 100
+    assert loaded.messages[0]["content"] == "hello"
+    assert loaded.replay_envelope is not None
+    assert loaded.replay_envelope.validate()
+    assert loaded.replay_envelope.stable_prefix_hash == replay_before.stable_prefix_hash
+    assert loaded.replay_envelope.cache_epoch == replay_before.cache_epoch
+    assert any(message.startswith("Reading history ledger (") for message in progress)
+    assert any(message.startswith("History ledger compacted:") for message in progress)
+
+
 def test_incremental_exit_appends_only_new_exit_events(tmp_path: Path) -> None:
     ledger = HistoryLedger()
     message = {"role": "user", "content": "one"}
@@ -223,7 +284,7 @@ def test_incremental_exit_appends_only_new_exit_events(tmp_path: Path) -> None:
     assert loaded.messages[-1]["content"].startswith("[SESSION_EXIT]")
 
 
-def test_legacy_fallback_keeps_compatibility_snapshot_without_event_ledger(
+def test_new_save_does_not_duplicate_canonical_session_as_legacy_file(
     tmp_path: Path,
 ) -> None:
     ledger = HistoryLedger()
@@ -234,13 +295,24 @@ def test_legacy_fallback_keeps_compatibility_snapshot_without_event_ledger(
         history_events=list(ledger.events),
     )
 
-    payload = json.loads(
-        (tmp_path / f"{session_id}.json").read_text(encoding="utf-8")
-    )
+    assert (tmp_path / session_id / "manifest.json").exists()
+    assert (tmp_path / session_id / "replay.json").exists()
+    assert not (tmp_path / f"{session_id}.json").exists()
 
-    assert payload["messages"][0]["content"] == "one"
-    assert "history_events" not in payload
-    assert payload["replay_envelope"] is not None
+
+def test_valid_canonical_load_removes_stale_legacy_duplicate(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[{"role": "user", "content": "canonical"}], model="model"
+    )
+    duplicate = tmp_path / f"{session_id}.json"
+    duplicate.write_text("{}", encoding="utf-8")
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert loaded.messages[0]["content"] == "canonical"
+    assert not duplicate.exists()
 
 
 def test_tampered_replay_does_not_claim_canonical_directory_restore(
@@ -250,6 +322,12 @@ def test_tampered_replay_does_not_claim_canonical_directory_restore(
     session_id = store.save(
         messages=[{"role": "user", "content": "safe fallback"}], model="model"
     )
+    canonical = store.load(session_id)
+    assert canonical is not None
+    legacy_path = tmp_path / f"{session_id}.json"
+    legacy_path.write_text(
+        json.dumps(canonical.to_dict(), ensure_ascii=False), encoding="utf-8"
+    )
     replay_path = tmp_path / session_id / "replay.json"
     replay_data = json.loads(replay_path.read_text(encoding="utf-8"))
     replay_data["items"][0]["content"] = "tampered"
@@ -258,6 +336,10 @@ def test_tampered_replay_does_not_claim_canonical_directory_restore(
     loaded = store.load(session_id)
     assert loaded is not None
     assert loaded.messages[0]["content"] == "safe fallback"
+    assert not legacy_path.exists()
+    reloaded = store.load(session_id)
+    assert reloaded is not None
+    assert reloaded.messages[0]["content"] == "safe fallback"
 
 
 def test_session_store_save_with_exit_appends_exit_marker(tmp_path: Path) -> None:
@@ -337,43 +419,29 @@ def test_session_store_load_backfills_missing_message_token_counts(
     tmp_path: Path,
 ) -> None:
     store = SessionStore(tmp_path)
-    session_id = store.save(
-        messages=[{"role": "user", "content": "hello"}], model="gpt-4o"
-    )
+    session_id = "legacy_missing_tokens"
     path = tmp_path / f"{session_id}.json"
-    import shutil
-
-    shutil.rmtree(tmp_path / session_id)
-
-    import json
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["messages"][0].pop(MESSAGE_TOKEN_KEY, None)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    legacy = Session(
+        id=session_id,
+        model="gpt-4o",
+        saved_at="2026-01-01T00:00:00",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    path.write_text(json.dumps(legacy.to_dict(), ensure_ascii=False), encoding="utf-8")
 
     loaded = store.load(session_id)
     assert loaded is not None
     assert isinstance(loaded.messages[0].get(MESSAGE_TOKEN_KEY), int)
-
-    persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert isinstance(persisted["messages"][0].get(MESSAGE_TOKEN_KEY), int)
+    assert not path.exists()
+    assert (tmp_path / session_id / "replay.json").exists()
 
 
 def test_session_store_load_repairs_legacy_out_of_order_tool_results(
     tmp_path: Path,
 ) -> None:
     store = SessionStore(tmp_path)
-    session_id = store.save(
-        messages=[{"role": "user", "content": "seed"}], model="gpt-4o"
-    )
+    session_id = "legacy_tool_order"
     path = tmp_path / f"{session_id}.json"
-    import shutil
-
-    shutil.rmtree(tmp_path / session_id)
-
-    import json
-
-    data = json.loads(path.read_text(encoding="utf-8"))
     assistant = {
         "role": "assistant",
         "content": None,
@@ -385,16 +453,21 @@ def test_session_store_load_repairs_legacy_out_of_order_tool_results(
             }
         ],
     }
-    data["messages"] = [
-        assistant,
-        {"role": "user", "content": "[SESSION_EXIT] old"},
-        {
-            "role": "tool",
-            "tool_call_id": "call_legacy",
-            "content": "recovered later",
-        },
-    ]
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    legacy = Session(
+        id=session_id,
+        model="gpt-4o",
+        saved_at="2026-01-01T00:00:00",
+        messages=[
+            assistant,
+            {"role": "user", "content": "[SESSION_EXIT] old"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_legacy",
+                "content": "recovered later",
+            },
+        ],
+    )
+    path.write_text(json.dumps(legacy.to_dict(), ensure_ascii=False), encoding="utf-8")
 
     loaded = store.load(session_id)
 
@@ -404,8 +477,9 @@ def test_session_store_load_repairs_legacy_out_of_order_tool_results(
         "tool",
         "user",
     ]
-    persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert [message["role"] for message in persisted["messages"]] == [
+    persisted = store.load(session_id)
+    assert persisted is not None
+    assert [message["role"] for message in persisted.messages] == [
         "assistant",
         "tool",
         "user",

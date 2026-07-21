@@ -7,7 +7,8 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,12 @@ from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 
 DEFAULT_SESSION_FINGERPRINT = "local"
 
+# Older request_committed events embedded the complete replay on every API
+# round. Since every replay contained all preceding messages, that made the
+# ledger grow quadratically. The latest complete replay remains authoritative
+# in replay.json; request events retain only stable request/replay metadata.
+_SESSION_STORAGE_SCHEMA_VERSION = 2
+
 
 @dataclass(slots=True)
 class _DirectoryWriteCursor:
@@ -45,8 +52,13 @@ class _DirectoryWriteCursor:
 class SessionStore:
     """File-backed store for conversation sessions."""
 
-    def __init__(self, sessions_dir: Path | None = None):
+    def __init__(
+        self,
+        sessions_dir: Path | None = None,
+        progress: Callable[[str], None] | None = None,
+    ):
         self._sessions_dir = sessions_dir or get_sessions_dir()
+        self._progress = progress
         self._lock = threading.RLock()
         self._write_cursors: dict[str, _DirectoryWriteCursor] = {}
 
@@ -54,6 +66,17 @@ class SessionStore:
     def sessions_dir(self) -> Path:
         """Return the underlying session directory."""
         return self._sessions_dir
+
+    def set_progress_callback(self, progress: Callable[[str], None] | None) -> None:
+        self._progress = progress
+
+    def _report_progress(self, message: str) -> None:
+        if self._progress is None:
+            return
+        try:
+            self._progress(message)
+        except Exception:
+            pass
 
     def save(
         self,
@@ -89,6 +112,7 @@ class SessionStore:
             )
             ensure_message_token_counts(saved_messages)
             exit_events: tuple[HistoryEvent, ...] = ()
+            exit_message: dict | None = None
             if is_exit:
                 exit_time = time.strftime("%Y-%m-%d %H:%M:%S %Z")
                 exit_message = {
@@ -103,9 +127,10 @@ class SessionStore:
                 for message in saved_messages:
                     event_count = len(ledger.events)
                     ledger.append_message(message, source="legacy_save_snapshot")
-                    if is_exit and message is exit_message:
+                    if exit_message is not None and message is exit_message:
                         exit_events = ledger.events[event_count:]
             elif is_exit:
+                assert exit_message is not None
                 event_count = len(ledger.events)
                 ledger.append_message(exit_message, source="session_exit")
                 exit_events = ledger.events[event_count:]
@@ -165,7 +190,6 @@ class SessionStore:
                     )
                 ),
             )
-            path = self._get_session_path(session_id)
             self._write_session_directory(
                 session,
                 incremental=incremental,
@@ -174,7 +198,6 @@ class SessionStore:
                     exit_events if events_already_persisted else ()
                 ),
             )
-            self._atomic_write_json(path, self._legacy_session_payload(session))
             return session_id
 
     def append_system_message(
@@ -234,6 +257,7 @@ class SessionStore:
     def load(self, session_id: str) -> Session | None:
         """Load a saved session."""
         with self._lock:
+            self._report_progress(f"Loading session files for {session_id}...")
             path = self._get_session_path(session_id)
             directory = self._get_session_directory(session_id)
             if not path.exists() and not directory.exists():
@@ -246,6 +270,11 @@ class SessionStore:
                     return None
                 data = json.loads(path.read_text())
                 session = Session.from_dict(data)
+            elif path.exists():
+                # A validated canonical directory supersedes the old
+                # compatibility snapshot. Keeping both doubles current-state
+                # storage and makes it unclear which copy is authoritative.
+                path.unlink(missing_ok=True)
             updated_messages, _ = reconcile_tool_call_adjacency(
                 [dict(message) for message in session.messages],
                 missing_content=lambda _tool_call_id, tool_name: (
@@ -258,8 +287,29 @@ class SessionStore:
                 session.runtime_state.model = session.model
             if session.runtime_state.active_mode is None:
                 session.runtime_state.active_mode = session.active_mode
-            if data is not None and updated_messages != data.get("messages"):
-                self._atomic_write_json(path, session.to_dict())
+            if data is not None:
+                # Reading a legacy single-file session upgrades it to the
+                # canonical directory format. Only remove the duplicate after
+                # every canonical artifact has been written successfully.
+                self.save(
+                    messages=session.messages,
+                    model=session.model,
+                    session_id=session.id or session_id,
+                    total_prompt_tokens=session.total_prompt_tokens,
+                    total_completion_tokens=session.total_completion_tokens,
+                    active_mode=session.active_mode,
+                    runtime_state=session.runtime_state,
+                    fingerprint=session.fingerprint,
+                    history_events=session.history_events or None,
+                    replay_envelope=session.replay_envelope,
+                    request_envelopes=session.request_envelopes,
+                    history_completeness=session.history_completeness,
+                    checkpoints=session.checkpoints,
+                )
+                migrated = self._load_session_directory(directory)
+                path.unlink(missing_ok=True)
+                if migrated is not None:
+                    session = migrated
             return session
 
     def list(
@@ -358,11 +408,6 @@ class SessionStore:
         return self._sessions_dir / safe_id
 
     @staticmethod
-    def _legacy_session_payload(session: Session) -> dict:
-        """Keep the existing single-file fallback contract intact."""
-        return session.to_dict()
-
-    @staticmethod
     def _metadata_rank(
         metadata: SessionMetadata, source_path: Path
     ) -> tuple[int, datetime, str]:
@@ -445,11 +490,12 @@ class SessionStore:
         if not events_already_persisted:
             existing_ids: set[str] = set()
             if events_path.exists():
-                for line in events_path.read_text(encoding="utf-8").splitlines():
-                    try:
-                        existing_ids.add(str(json.loads(line).get("event_id")))
-                    except json.JSONDecodeError:
-                        continue
+                with events_path.open("r", encoding="utf-8") as stream:
+                    for line in stream:
+                        try:
+                            existing_ids.add(str(json.loads(line).get("event_id")))
+                        except json.JSONDecodeError:
+                            continue
             new_events = [
                 event
                 for event in sorted(session.history_events, key=lambda item: item.seq)
@@ -458,6 +504,7 @@ class SessionStore:
         if new_events:
             with events_path.open("a", encoding="utf-8") as stream:
                 for event in new_events:
+                    event, _ = self._compact_legacy_request_event(event)
                     stream.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
 
         replay = session.replay_envelope
@@ -488,6 +535,12 @@ class SessionStore:
         manifest["message_token_counts"] = [
             message.get(MESSAGE_TOKEN_KEY) for message in session.messages
         ]
+        manifest["storage_schema_version"] = _SESSION_STORAGE_SCHEMA_VERSION
+        manifest["event_payload_policy"] = "bounded"
+        manifest["event_count"] = len(session.history_events)
+        manifest["last_event_seq"] = max(
+            (event.seq for event in session.history_events), default=0
+        )
         self._atomic_write_json(directory / "manifest.json", manifest)
 
     def _load_session_directory(self, directory: Path) -> Session | None:
@@ -496,6 +549,7 @@ class SessionStore:
         if not manifest_path.exists() or not replay_path.exists():
             return None
         try:
+            self._report_progress("Reading session manifest and replay snapshot...")
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             replay = ReplayEnvelope.from_dict(
                 json.loads(replay_path.read_text(encoding="utf-8"))
@@ -505,18 +559,17 @@ class SessionStore:
         if not replay.validate() or not replay.validate_protocol():
             return None
 
-        events: list[HistoryEvent] = []
         events_path = directory / "events.jsonl"
-        if events_path.exists():
-            for line in events_path.read_text(encoding="utf-8").splitlines():
-                try:
-                    events.append(HistoryEvent.from_dict(json.loads(line)))
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    continue
+        events = self._load_history_events(events_path)
         requests: list[RequestEnvelope] = []
         requests_dir = directory / "requests"
         if requests_dir.exists():
-            for request_path in sorted(requests_dir.glob("*.json")):
+            request_paths = sorted(requests_dir.glob("*.json"))
+            if request_paths:
+                self._report_progress(
+                    f"Reading {len(request_paths)} request record(s)..."
+                )
+            for request_path in request_paths:
                 try:
                     requests.append(
                         RequestEnvelope(
@@ -528,7 +581,12 @@ class SessionStore:
         checkpoints: list[CompactionCheckpoint] = []
         checkpoints_dir = directory / "checkpoints"
         if checkpoints_dir.exists():
-            for checkpoint_path in sorted(checkpoints_dir.glob("*.json")):
+            checkpoint_paths = sorted(checkpoints_dir.glob("*.json"))
+            if checkpoint_paths:
+                self._report_progress(
+                    f"Reading {len(checkpoint_paths)} context checkpoint(s)..."
+                )
+            for checkpoint_path in checkpoint_paths:
                 try:
                     checkpoints.append(
                         CompactionCheckpoint.from_dict(
@@ -559,3 +617,94 @@ class SessionStore:
         session.request_envelopes = requests
         session.checkpoints = checkpoints
         return session
+
+    def _load_history_events(self, events_path: Path) -> list[HistoryEvent]:
+        """Load events and atomically compact legacy full request replays."""
+        events: list[HistoryEvent] = []
+        if not events_path.exists():
+            return events
+        total_bytes = events_path.stat().st_size
+        total_mb = total_bytes / (1024 * 1024)
+        self._report_progress(f"Reading history ledger ({total_mb:.1f} MB)...")
+        started = time.monotonic()
+        next_percent = 10
+        needs_migration = False
+        parse_failed = False
+        try:
+            with events_path.open("rb") as stream:
+                for line in stream:
+                    try:
+                        event = HistoryEvent.from_dict(json.loads(line))
+                    except (json.JSONDecodeError, TypeError, UnicodeError, ValueError):
+                        parse_failed = True
+                        continue
+                    event, compacted = self._compact_legacy_request_event(event)
+                    events.append(event)
+                    needs_migration = needs_migration or compacted
+                    if total_bytes and time.monotonic() - started >= 0.5:
+                        percent = min(100, int(stream.tell() * 100 / total_bytes))
+                        if percent >= next_percent and percent < 100:
+                            self._report_progress(
+                                f"Reading history ledger... {percent}% "
+                                f"({len(events)} event(s))."
+                            )
+                            next_percent = (percent // 10 + 1) * 10
+        except (OSError, UnicodeError):
+            return events
+        if needs_migration and not parse_failed:
+            self._report_progress(
+                "Compacting legacy full-request snapshots in the history ledger..."
+            )
+            try:
+                self._atomic_write_events(events_path, events)
+            except OSError:
+                # Migration is an optimization. A read-only or temporarily
+                # unavailable store must not prevent session restoration.
+                pass
+            else:
+                compacted_mb = events_path.stat().st_size / (1024 * 1024)
+                self._report_progress(
+                    f"History ledger compacted: {total_mb:.1f} MB -> "
+                    f"{compacted_mb:.1f} MB."
+                )
+        self._report_progress(
+            f"History ledger ready ({len(events)} event(s), "
+            f"{time.monotonic() - started:.1f}s)."
+        )
+        return events
+
+    @staticmethod
+    def _compact_legacy_request_event(
+        event: HistoryEvent,
+    ) -> tuple[HistoryEvent, bool]:
+        if event.kind != "request_committed":
+            return event, False
+        replay = event.payload.get("replay")
+        if not isinstance(replay, dict) or "items" not in replay:
+            return event, False
+
+        payload = dict(event.payload)
+        payload["replay"] = {
+            "schema_version": replay.get("schema_version"),
+            "view_id": replay.get("view_id"),
+            "cache_epoch": replay.get("cache_epoch", 0),
+            "history_version": replay.get("history_version", 0),
+            "model_profile": replay.get("model_profile"),
+            "provider_family": replay.get("provider_family"),
+            "request_mode": replay.get("request_mode"),
+            "instruction_count": len(replay.get("instructions") or ()),
+            "tool_count": len(replay.get("tools") or ()),
+            "item_count": len(replay.get("items") or ()),
+            "stable_prefix_hash": replay.get("stable_prefix_hash"),
+            "canonical_payload_hash": replay.get("canonical_payload_hash"),
+            "migrated_from_full_replay": True,
+        }
+        return replace(event, payload=payload), True
+
+    @staticmethod
+    def _atomic_write_events(path: Path, events: list[HistoryEvent]) -> None:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            for event in events:
+                stream.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+        temporary.replace(path)

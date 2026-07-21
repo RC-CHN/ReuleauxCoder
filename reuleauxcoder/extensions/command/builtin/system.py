@@ -27,6 +27,7 @@ from reuleauxcoder.app.runtime.session_state import (
 )
 from reuleauxcoder.app.runtime.effective_config import build_effective_config_view
 from reuleauxcoder.domain.context.manager import estimate_tokens
+from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 _FORCE_COMPACT_STRATEGIES = {"snip", "summarize", "collapse"}
@@ -44,7 +45,7 @@ class CompactContextCommand:
 
 @dataclass(frozen=True, slots=True)
 class DebugCommand:
-    enabled: bool
+    enabled: bool | None
 
 
 def _parse_help(user_input: str, parse_ctx):
@@ -98,6 +99,8 @@ def _parse_config(user_input: str, parse_ctx):
 
 
 def _parse_debug(user_input: str, parse_ctx):
+    if match_template(user_input, "/debug", case_insensitive=True) is not None:
+        return DebugCommand(enabled=None)
     if match_template(user_input, "/debug on", case_insensitive=True) is not None:
         return DebugCommand(enabled=True)
     if match_template(user_input, "/debug off", case_insensitive=True) is not None:
@@ -253,11 +256,21 @@ def _handle_tokens(command, ctx) -> CommandEffect:
 
 
 def _handle_debug(command, ctx) -> CommandEffect:
-    ctx.agent.llm.debug_trace = command.enabled
-    state = "on" if command.enabled else "off"
-    ctx.effect.info(f"LLM debug trace for this session: {state}")
+    enabled = (
+        not bool(getattr(ctx.agent.llm, "debug_trace", False))
+        if command.enabled is None
+        else command.enabled
+    )
+    ctx.agent.llm.debug_trace = enabled
+    if enabled:
+        ctx.effect.info(
+            "Detailed LLM request/response traces enabled for this session: "
+            f"{get_diagnostics_dir()}. The session event ledger remains bounded."
+        )
+    else:
+        ctx.effect.info("Detailed LLM request/response traces disabled for this session.")
     return ctx.effect.finish(
-        control="continue", state_changes={"llm_debug_trace": command.enabled}
+        control="continue", state_changes={"llm_debug_trace": enabled}
     )
 
 
@@ -434,10 +447,13 @@ def register_actions(registry: ActionRegistry) -> None:
             ActionSpec(
                 action_id="system.debug",
                 feature_id="system",
-                description="[session] Toggle LLM debug trace for the current session",
+                description="[session] Toggle detailed LLM request/response traces",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/debug"),),
+                triggers=(
+                    slash_trigger("/debug"),
+                    slash_trigger("/debug <on|off>"),
+                ),
                 parser=_parse_debug,
                 handler=_handle_debug,
                 during_turn=DuringTurnPolicy.IMMEDIATE,

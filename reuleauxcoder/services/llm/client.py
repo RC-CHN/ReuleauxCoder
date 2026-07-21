@@ -201,14 +201,6 @@ def _cancellable_stream_chunks(stream, cancellation_event):
             _close_stream(stream)
 
 
-def _mask_api_key(api_key: str) -> str:
-    if not api_key:
-        return ""
-    if len(api_key) <= 8:
-        return "*" * len(api_key)
-    return f"{api_key[:4]}...{api_key[-4:]}"
-
-
 def _trim_text(value: Any, limit: int = MAX_DEBUG_CONTENT_CHARS) -> str:
     text = str(value)
     return text[:limit] + ("..." if len(text) > limit else "")
@@ -328,6 +320,7 @@ class LLM:
         self.debug_trace = debug_trace
         self.ui_bus = ui_bus
         self.last_dispatched_request: dict[str, Any] | None = None
+        self.last_debug_trace_path: str | None = None
 
     def reconfigure(
         self,
@@ -395,6 +388,7 @@ class LLM:
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
         self.last_dispatched_request = None
+        self.last_debug_trace_path = None
         raw_messages = [dict(msg) for msg in messages]
         messages = sanitize_messages_for_llm(
             messages,
@@ -648,7 +642,6 @@ class LLM:
                     "trace_id": trace_id,
                     "model": self.model,
                     "base_url": self.base_url,
-                    "api_key_hint": _mask_api_key(self.api_key),
                     "request": {
                         "temperature": params.get("temperature"),
                         "max_tokens": params.get("max_tokens"),
@@ -666,6 +659,11 @@ class LLM:
                         ),
                         "preserve_reasoning_content": self.preserve_reasoning_content,
                     },
+                    # Credential-free, hook-transformed request exactly as it
+                    # was handed to the OpenAI-compatible client. This is
+                    # intentionally debug-only and never embedded in the
+                    # append-only session ledger.
+                    "dispatched_request": self.last_dispatched_request,
                     "messages": {
                         "raw_count": len(raw_messages),
                         "sanitized_count": len(messages),
@@ -678,10 +676,8 @@ class LLM:
                         "events": debug_stream_events,
                     },
                     "response": {
-                        "content": _trim_text(response.content or "", 1000),
-                        "reasoning_content": _trim_text(
-                            response.reasoning_content or "", 1000
-                        ),
+                        "content": response.content or "",
+                        "reasoning_content": response.reasoning_content or "",
                         "reasoning_received": reasoning_received,
                         "reasoning_chars": len(response.reasoning_content or ""),
                         "tool_calls": [
@@ -699,6 +695,7 @@ class LLM:
                 trace_path = _persist_debug_trace(
                     trace_payload, session_id=session_id, trace_id=trace_id
                 )
+                self.last_debug_trace_path = str(trace_path)
                 self._emit_debug(
                     f"LLM trace saved: {trace_path}",
                     trace_path=str(trace_path),

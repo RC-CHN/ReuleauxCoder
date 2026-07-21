@@ -221,7 +221,8 @@ class AgentLoop:
         if not callable(render):
             return ""
         try:
-            return render(max_chars=max_chars) or ""
+            rendered = render(max_chars=max_chars)
+            return rendered if isinstance(rendered, str) else ""
         except Exception as exc:
             return f"Notes unavailable: {type(exc).__name__}"
 
@@ -431,13 +432,34 @@ class AgentLoop:
         self.agent.request_envelopes.append(request)
         if len(self.agent.request_envelopes) > 200:
             del self.agent.request_envelopes[:-200]
+        event_payload = {
+            "request": request.to_dict(),
+            # The exact model items already live in message/context events
+            # and the current replay snapshot. Embedding the complete,
+            # ever-growing replay in every request event made the JSONL
+            # ledger grow quadratically with the conversation.
+            "replay": {
+                "schema_version": replay.schema_version,
+                "view_id": replay.view_id,
+                "cache_epoch": replay.cache_epoch,
+                "history_version": replay.history_version,
+                "model_profile": replay.model_profile,
+                "provider_family": replay.provider_family,
+                "request_mode": replay.request_mode,
+                "instruction_count": len(replay.instructions),
+                "tool_count": len(replay.tools),
+                "item_count": len(replay.items),
+                "stable_prefix_hash": replay.stable_prefix_hash,
+                "canonical_payload_hash": replay.canonical_payload_hash,
+            },
+            "overlay": overlay,
+        }
+        debug_trace_path = getattr(self.agent.llm, "last_debug_trace_path", None)
+        if debug_trace_path:
+            event_payload["debug_trace_path"] = str(debug_trace_path)
         self.agent.history_ledger.append(
             "request_committed",
-            {
-                "request": request.to_dict(),
-                "replay": replay.to_dict(),
-                "overlay": overlay,
-            },
+            event_payload,
             agent_id=self.agent.agent_id,
             turn_id=self.agent._current_turn_id,
             api_round_id=(
@@ -568,6 +590,7 @@ class AgentLoop:
                 on_reasoning_token=_on_reasoning,
                 hook_registry=self.agent.hook_registry,
                 session_id=getattr(self.agent, "current_session_id", None),
+                trace_id=f"{self.agent._current_turn_id or 'turn'}_{round_num}",
                 metadata={
                     "agent_id": self.agent.agent_id,
                     "session_generation": self.agent.session_generation,
