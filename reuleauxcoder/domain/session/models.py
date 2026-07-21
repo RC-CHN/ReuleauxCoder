@@ -63,6 +63,7 @@ class SessionRuntimeState:
     remote_binding: dict[str, Any] = field(default_factory=dict)
     plan_state: dict[str, Any] = field(default_factory=dict)
     progress_state: dict[str, Any] = field(default_factory=dict)
+    skills_disabled: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "SessionRuntimeState":
@@ -80,6 +81,9 @@ class SessionRuntimeState:
         progress_state = payload.get("progress_state")
         if not isinstance(progress_state, dict):
             progress_state = {}
+        skills_disabled = payload.get("skills_disabled")
+        if not isinstance(skills_disabled, list):
+            skills_disabled = []
         return cls(
             model=payload.get("model"),
             active_mode=payload.get("active_mode"),
@@ -93,6 +97,7 @@ class SessionRuntimeState:
             remote_binding=dict(remote_binding),
             plan_state=dict(plan_state),
             progress_state=dict(progress_state),
+            skills_disabled=[str(name) for name in skills_disabled],
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -41,6 +41,7 @@ def _profile(name: str) -> SimpleNamespace:
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
         model="base-model",
+        skills=SimpleNamespace(disabled=[]),
         model_profiles={"sonnet": _profile("sonnet")},
         active_main_model_profile=None,
         active_model_profile=None,
@@ -99,3 +100,48 @@ def test_runtime_state_round_trip_restores_switched_profile() -> None:
     assert restored.llm.reconfigured_with is not None
     assert restored.llm.reconfigured_with["api_key"] == "sk-test"
     assert restored.active_main_model_profile == "sonnet"
+
+
+def test_runtime_state_round_trip_restores_skills_disabled() -> None:
+    config = _config()
+
+    class _FakeSkillsService:
+        def __init__(self) -> None:
+            self.disabled_names = ()
+            self.restored_with = None
+
+        def restore_disabled_names(self, names) -> bool:
+            self.restored_with = list(names)
+            self.disabled_names = tuple(sorted(names))
+            return True
+
+        def build_catalog(self) -> str:
+            return "catalog-without-disabled"
+
+    source = _agent()
+    service = _FakeSkillsService()
+    service.disabled_names = ("deep-review",)
+    source.skills_service = service
+
+    state = build_session_runtime_state(config, source)
+    assert state.skills_disabled == ["deep-review"]
+
+    config.skills.disabled = ["other-skill"]
+    restored = _agent()
+    restored_service = _FakeSkillsService()
+    restored.skills_service = restored_service
+    restored.skills_catalog = "stale-catalog"
+    session = SimpleNamespace(
+        runtime_state=state,
+        messages=[],
+        total_prompt_tokens=0,
+        total_completion_tokens=0,
+        active_mode=None,
+        checkpoints=(),
+    )
+    apply_session_runtime_state(session, config, restored)
+
+    assert config.skills.disabled == ["deep-review"]
+    assert restored_service.restored_with == ["deep-review"]
+    assert restored_service.disabled_names == ("deep-review",)
+    assert restored.skills_catalog == "catalog-without-disabled"

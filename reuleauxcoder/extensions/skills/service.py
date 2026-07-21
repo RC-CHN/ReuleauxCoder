@@ -194,6 +194,19 @@ class SkillsService:
     def disabled_names(self) -> tuple[str, ...]:
         return tuple(sorted(self._disabled_names))
 
+    def restore_disabled_names(self, names: list[str] | tuple[str, ...]) -> bool:
+        """Replace the disabled set from a session snapshot without persisting.
+
+        Returns True when the set actually changed; callers rebuild the
+        catalog (system prompt) in that case.
+        """
+        restored = set(names)
+        if restored == self._disabled_names:
+            return False
+        self._disabled_names = restored
+        self.reload()
+        return True
+
     @property
     def last_reload(self) -> SkillReloadResult:
         return self._last_reload

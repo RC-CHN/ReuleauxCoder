@@ -133,6 +133,10 @@ def get_runtime_approval_config(config: Config, agent: Agent) -> ApprovalConfig:
 def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeState:
     """Capture session-scoped runtime overrides from the live host runtime."""
     session_rules = getattr(agent, "session_approval_rules", None) or []
+    skills_service = getattr(agent, "skills_service", None)
+    disabled_names = getattr(skills_service, "disabled_names", None)
+    if disabled_names is None:
+        disabled_names = getattr(getattr(config, "skills", None), "disabled", []) or []
     return SessionRuntimeState(
         model=getattr(agent.llm, "model", None) or getattr(config, "model", None),
         active_mode=getattr(agent, "active_mode", None),
@@ -140,6 +144,7 @@ def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeS
         active_main_model_profile=getattr(agent, "active_main_model_profile", None),
         active_sub_model_profile=getattr(agent, "active_sub_model_profile", None)
         or getattr(config, "active_sub_model_profile", None),
+        skills_disabled=sorted(str(name) for name in disabled_names),
         approval_rules=[
             {
                 "tool_name": rule.tool_name,
@@ -219,6 +224,17 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
     loaded_debug = runtime.llm_debug_trace
     if loaded_debug is not None:
         agent.llm.debug_trace = loaded_debug
+
+    skills_disabled = list(getattr(runtime, "skills_disabled", []) or [])
+    config_skills = getattr(config, "skills", None)
+    if config_skills is not None:
+        config_skills.disabled = list(skills_disabled)
+    skills_service = getattr(agent, "skills_service", None)
+    restore_disabled = getattr(skills_service, "restore_disabled_names", None)
+    if callable(restore_disabled) and restore_disabled(skills_disabled):
+        # Skills feed the system prompt; refresh the cached catalog so the
+        # restored session prompts match what the session was saved with.
+        agent.skills_catalog = skills_service.build_catalog()
 
     if runtime.approval_rules:
         session_rules = [
