@@ -575,6 +575,82 @@ def test_model_panel_escape_returns_to_slot_panel() -> None:
     assert app._selection is None
 
 
+def _approval_view_payload() -> object:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
+
+    return NS(
+        view_type="approval_rules",
+        title="Approval Rules",
+        action="open",
+        focus=True,
+        view_model=ApprovalView(
+            default_mode="warn",
+            rules=[
+                ApprovalRuleView(
+                    scope="tool",
+                    action="require_approval",
+                    tool_name="write_file",
+                    source="session",
+                ),
+                ApprovalRuleView(
+                    scope="mcp_server",
+                    action="allow",
+                    tool_source="mcp",
+                    mcp_server="github",
+                    source="global",
+                ),
+            ],
+        ),
+    )
+
+
+def test_approval_view_opens_targets_then_actions() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app._approval_targets = {}
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(_approval_view_payload()) is True
+    assert app._selection.view_type == "approval_rules"
+    labels = [item.label for item in app._selection.items]
+    assert labels == ["tool:write_file", "mcp:github"]
+
+    # Confirm session-scoped target -> action picker with set (not set-global).
+    app._selection_confirm()
+    assert app._selection.view_type == "approval_actions"
+    assert app._selection.selected.label == "require_approval"  # current preselected
+
+    app._selection.move(1)  # deny
+    app._selection_confirm()
+    assert accepted == ["/approval set tool:write_file deny"]
+    assert app._selection is None
+
+
+def test_approval_global_target_uses_set_global() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app._approval_targets = {}
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    app._open_interactive_view(_approval_view_payload())
+    app._selection.move(1)  # mcp:github (global source)
+    app._selection_confirm()
+    assert app._selection.selected.label == "allow"
+
+    app._selection_confirm()
+    assert accepted == ["/approval set-global mcp:github allow"]
+
+
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
     adapter = MiniTUIEventAdapter()
     view = adapter.panel_view(now=100.0)

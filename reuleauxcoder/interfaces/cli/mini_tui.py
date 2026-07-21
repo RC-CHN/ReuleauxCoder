@@ -58,6 +58,7 @@ from reuleauxcoder.app.commands.view_models import (
     ModesViewModel,
     SessionResumeViewModel,
 )
+from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
@@ -837,6 +838,7 @@ class MiniTUIApplication:
         self._selection: SelectionPanel | None = None
         self._selection_stack: list[SelectionPanel] = []
         self._model_slot_profiles: dict[str, tuple[SelectionItem, ...]] = {}
+        self._approval_targets: dict[str, tuple[SelectionItem, ...]] = {}
         self.events.interactive_view_handler = self._open_interactive_view
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
@@ -1461,9 +1463,30 @@ class MiniTUIApplication:
         ("Defaults · Sub-agent model", "set-sub"),
     )
 
+    _APPROVAL_ACTIONS = ("allow", "warn", "require_approval", "deny")
+
+    @staticmethod
+    def _approval_rule_target(rule: ApprovalRuleView) -> str:
+        if rule.tool_source == "mcp":
+            if rule.mcp_server and rule.tool_name:
+                return f"mcp:{rule.mcp_server}:{rule.tool_name}"
+            if rule.mcp_server:
+                return f"mcp:{rule.mcp_server}"
+            return "mcp"
+        if rule.tool_name:
+            return f"tool:{rule.tool_name}"
+        return rule.scope
+
     def _open_interactive_view(self, payload) -> bool:
         """Claim a view as a modal selection panel, or absorb its refresh."""
         is_refresh = payload.action == "refresh" or not payload.focus
+        if payload.view_type == "approval_rules":
+            model = payload.view_model
+            if not isinstance(model, ApprovalView):
+                return False
+            if is_refresh:
+                return True
+            return self._open_approval_panel(payload, model)
         if payload.view_type == "mode_profiles":
             model = payload.view_model
             if not isinstance(model, ModesViewModel):
@@ -1512,6 +1535,38 @@ class MiniTUIApplication:
                 items=items,
                 view_type=payload.view_type,
             )
+        self.invalidate()
+        return True
+
+    def _open_approval_panel(self, payload, model: ApprovalView) -> bool:
+        if not model.rules:
+            return False
+        self._approval_targets: dict[str, tuple[SelectionItem, ...]] = {}
+        items: list[SelectionItem] = []
+        for rule in model.rules:
+            target = self._approval_rule_target(rule)
+            prefix = "set" if rule.source == "session" else "set-global"
+            self._approval_targets[target] = tuple(
+                SelectionItem(
+                    label=action,
+                    description=f"/approval {prefix} {target} {action}",
+                    command=f"/approval {prefix} {target} {action}",
+                    current=action == rule.action,
+                )
+                for action in self._APPROVAL_ACTIONS
+            )
+            items.append(
+                SelectionItem(
+                    label=target,
+                    description=f"{rule.action} · {rule.source}",
+                    command="",
+                )
+            )
+        self._selection = SelectionPanel.open(
+            title=payload.title,
+            items=tuple(items),
+            view_type="approval_rules",
+        )
         self.invalidate()
         return True
 
@@ -1571,19 +1626,24 @@ class MiniTUIApplication:
         if self._selection is None or self._selection.selected is None:
             return
         selected = self._selection.selected
-        if self._selection.view_type == "model_slots":
-            slot = next(
-                (slot for label, slot in self._MODEL_SLOTS if label == selected.label),
-                None,
-            )
-            profiles = self._model_slot_profiles.get(slot or "", ())
-            if not profiles:
+        if self._selection.view_type in ("model_slots", "approval_rules"):
+            if self._selection.view_type == "model_slots":
+                slot = next(
+                    (slot for label, slot in self._MODEL_SLOTS if label == selected.label),
+                    None,
+                )
+                sub_items = self._model_slot_profiles.get(slot or "", ())
+                sub_view_type = "model_profiles"
+            else:
+                sub_items = self._approval_targets.get(selected.label, ())
+                sub_view_type = "approval_actions"
+            if not sub_items:
                 return
             self._selection_stack.append(self._selection)
             self._selection = SelectionPanel.open(
                 title=f"{self._selection.title} · {selected.label}",
-                items=profiles,
-                view_type="model_profiles",
+                items=sub_items,
+                view_type=sub_view_type,
             )
             self.invalidate()
             return
