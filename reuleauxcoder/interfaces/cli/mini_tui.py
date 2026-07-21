@@ -59,6 +59,7 @@ from reuleauxcoder.app.commands.view_models import (
     SessionResumeViewModel,
 )
 from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
+from reuleauxcoder.extensions.mcp.models import MCPServersView
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
@@ -1480,6 +1481,26 @@ class MiniTUIApplication:
     def _open_interactive_view(self, payload) -> bool:
         """Claim a view as a modal selection panel, or absorb its refresh."""
         is_refresh = payload.action == "refresh" or not payload.focus
+        if payload.view_type == "mcp_servers":
+            model = payload.view_model
+            if not isinstance(model, MCPServersView):
+                return False
+            if is_refresh:
+                if self._selection is not None and (
+                    self._selection.view_type == "mcp_servers"
+                ):
+                    self._selection.refresh(self._mcp_items(model))
+                    self.invalidate()
+                return True
+            if not model.servers:
+                return False
+            self._selection = SelectionPanel.open(
+                title=payload.title,
+                items=self._mcp_items(model),
+                view_type="mcp_servers",
+            )
+            self.invalidate()
+            return True
         if payload.view_type == "approval_rules":
             model = payload.view_model
             if not isinstance(model, ApprovalView):
@@ -1537,6 +1558,23 @@ class MiniTUIApplication:
             )
         self.invalidate()
         return True
+
+    @staticmethod
+    def _mcp_items(model: MCPServersView) -> tuple[SelectionItem, ...]:
+        return tuple(
+            SelectionItem(
+                label=server.name,
+                description=(
+                    f"{'enabled' if server.enabled else 'disabled'}"
+                    f"{' · connected' if server.runtime_connected else ''}"
+                ),
+                command=(
+                    f"/mcp {'disable' if server.enabled else 'enable'} {server.name}"
+                ),
+                current=server.enabled,
+            )
+            for server in model.servers
+        )
 
     def _open_approval_panel(self, payload, model: ApprovalView) -> bool:
         if not model.rules:
@@ -1648,8 +1686,12 @@ class MiniTUIApplication:
             self.invalidate()
             return
         command = selected.command
-        self._selection = None
-        self._selection_stack = []
+        # Toggle panels (mcp) stay open after submitting so consecutive
+        # toggles work; the refresh updates items in place.
+        keep_open = self._selection.view_type == "mcp_servers"
+        if not keep_open:
+            self._selection = None
+            self._selection_stack = []
         self.input_buffer.text = command
         self.input_buffer.cursor_position = len(command)
         self._accept_buffer(self.input_buffer)

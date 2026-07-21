@@ -651,6 +651,68 @@ def test_approval_global_target_uses_set_global() -> None:
     assert accepted == ["/approval set-global mcp:github allow"]
 
 
+def _mcp_view_payload(*, action: str = "open", focus: bool = True) -> object:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.extensions.mcp.models import MCPServerStatus, MCPServersView
+
+    return NS(
+        view_type="mcp_servers",
+        title="MCP Servers",
+        action=action,
+        focus=focus,
+        view_model=MCPServersView(
+            servers=[
+                MCPServerStatus(
+                    name="github", enabled=True, runtime_connected=True
+                ),
+                MCPServerStatus(
+                    name="filesystem", enabled=False, runtime_connected=False
+                ),
+            ]
+        ),
+    )
+
+
+def test_mcp_view_opens_toggle_panel_and_confirm_keeps_it_open() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(_mcp_view_payload()) is True
+    assert app._selection.view_type == "mcp_servers"
+    assert app._selection.selected.label == "github"
+    assert app._selection.selected.command == "/mcp disable github"
+
+    # Toggling submits the command but keeps the panel open.
+    app._selection_confirm()
+    assert accepted == ["/mcp disable github"]
+    assert app._selection is not None
+
+    # A refresh updates items in place (github now disabled).
+    assert app._open_interactive_view(
+        _mcp_view_payload(action="refresh", focus=False)
+    ) is True
+    refreshed = {item.label: item for item in app._selection.items}
+    assert refreshed["github"].current is True  # still enabled in this fake view
+
+
+def test_mcp_refresh_without_panel_is_absorbed() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app.invalidate = lambda: None
+
+    assert (
+        app._open_interactive_view(_mcp_view_payload(action="refresh", focus=False))
+        is True
+    )
+    assert app._selection is None
+
+
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
     adapter = MiniTUIEventAdapter()
     view = adapter.panel_view(now=100.0)
