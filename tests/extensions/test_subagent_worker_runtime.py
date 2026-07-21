@@ -109,6 +109,7 @@ def test_parent_tool_broker_replays_committed_call_without_reexecution() -> None
     assert first.content == replay.content == "stable result"
     assert len(calls) == 1
     assert conflict.success is False
+    assert conflict.content is not None
     assert "reused with a different request" in conflict.content
 
 
@@ -196,8 +197,8 @@ class _StreamingHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def log_message(self, *_args):
-        pass
+    def log_message(self, format: str, *args: object) -> None:
+        _ = format, args
 
 
 class _ToolCallingHandler(BaseHTTPRequestHandler):
@@ -289,8 +290,8 @@ class _ToolCallingHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def log_message(self, *_args):
-        pass
+    def log_message(self, format: str, *args: object) -> None:
+        _ = format, args
 
 
 class _HungRequestHandler(BaseHTTPRequestHandler):
@@ -299,8 +300,8 @@ class _HungRequestHandler(BaseHTTPRequestHandler):
         self.rfile.read(length)
         time.sleep(5)
 
-    def log_message(self, *_args):
-        pass
+    def log_message(self, format: str, *args: object) -> None:
+        _ = format, args
 
 
 class _GuidanceHandler(BaseHTTPRequestHandler):
@@ -364,8 +365,8 @@ class _GuidanceHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def log_message(self, *_args):
-        pass
+    def log_message(self, format: str, *args: object) -> None:
+        _ = format, args
 
 
 def test_isolated_worker_runs_model_loop_in_spawn_process(monkeypatch) -> None:
@@ -409,7 +410,7 @@ def test_isolated_worker_runs_model_loop_in_spawn_process(monkeypatch) -> None:
         max_context_tokens=4096,
         max_rounds=2,
         max_tool_calls=2,
-        max_tokens=1024,
+        max_tokens=4096,
     )
     try:
         result = run_isolated_worker(
@@ -663,6 +664,7 @@ def test_guidance_parks_and_resumes_same_job_with_stable_replay_prefix(
             auto_verify=False,
         )
         deadline = time.monotonic() + 8
+        parked = None
         while time.monotonic() < deadline:
             parked = manager.get_job(job_id)
             if parked is not None and parked.status == "blocked":
@@ -820,6 +822,7 @@ def test_blocked_job_can_be_cancelled_without_reviving(monkeypatch) -> None:
             break
         time.sleep(0.01)
     assert manager.cancel_job(job_id) is True
-    assert manager.get_job(job_id).status == "cancelled"
+    cancelled = manager.get_job(job_id)
+    assert cancelled is not None and cancelled.status == "cancelled"
     assert manager.send_message(job_id, "late guidance") is False
     manager.shutdown()

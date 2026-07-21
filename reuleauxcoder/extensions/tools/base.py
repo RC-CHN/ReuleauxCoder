@@ -207,6 +207,7 @@ class Tool(ABC):
     description: str
     parameters: dict
     _backend_handlers: dict[str, str] = {}
+    _agent_config: Any = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -326,6 +327,6 @@ class Tool(ABC):
                 f"Tool '{self.name}' backend does not support scoped materialization"
             )
         cloned = type(self)(backend=clone_backend(scope))
-        if hasattr(self, "_agent_config"):
+        if self._agent_config is not None:
             cloned._agent_config = self._agent_config
         return cloned
