@@ -195,12 +195,14 @@ class TestHandleEffortShow:
         ctx = _build_ctx(llm=llm)
         result = _handle_effort_show(None, ctx)
         assert result.control == "continue"
-        assert any(
-            e.level == "info"
-            and "medium" in e.message
-            and "high" in e.message  # profile default
-            for e in ctx.effect.notifications
-        )
+        assert len(ctx.effect.views) == 1
+        view = ctx.effect.views[0]
+        assert view.view_type == "thinking_effort"
+        assert view.action == "open"
+        model = view.view_model
+        assert model.current == "medium"
+        assert model.profile_default == "high"
+        assert [level.label for level in model.levels] == ["low", "medium", "high"]
 
     def test_custom_mapping(self):
         llm = FakeLLM()
@@ -210,13 +212,11 @@ class TestHandleEffortShow:
         ctx = _build_ctx(llm=llm)
         result = _handle_effort_show(None, ctx)
         assert result.control == "continue"
-        msg = next(
-            e.message
-            for e in ctx.effect.notifications
-            if e.level == "info" and "thinking_level" in e.message
-        )
-        assert "low → high" in msg
-        assert "high → max ✓" in msg
+        assert len(ctx.effect.views) == 1
+        model = ctx.effect.views[0].view_model
+        assert model.param == "thinking_level"
+        api_values = {level.label: level.api_value for level in model.levels}
+        assert api_values == {"low": "high", "medium": "high", "high": "max"}
 
 
 # ---------------------------------------------------------------------------

@@ -138,6 +138,32 @@ class ModesViewModel:
 
 
 @dataclass(frozen=True, slots=True)
+class ThinkingEffortLevelViewModel:
+    label: str
+    api_value: str
+
+
+@dataclass(frozen=True, slots=True)
+class ThinkingEffortViewModel:
+    current: str
+    param: str
+    profile_default: str
+    levels: tuple[ThinkingEffortLevelViewModel, ...]
+    view_type: str = "thinking_effort"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "current": self.current,
+            "param": self.param,
+            "profile_default": self.profile_default,
+            "levels": [
+                {"label": level.label, "api_value": level.api_value}
+                for level in self.levels
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TokenUsageViewModel:
     prompt_tokens: int
     completion_tokens: int

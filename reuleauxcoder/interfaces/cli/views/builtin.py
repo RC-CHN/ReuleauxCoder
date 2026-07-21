@@ -21,6 +21,7 @@ from reuleauxcoder.app.commands.view_models import (
     SessionsViewModel,
     SubagentJobsViewModel,
     EffectiveConfigViewModel,
+    ThinkingEffortViewModel,
     TokenUsageViewModel,
 )
 from reuleauxcoder.extensions.mcp.models import MCPServersView
@@ -261,6 +262,25 @@ def render_modes_view(renderer, event) -> bool:
     return True
 
 
+def render_thinking_effort_view(renderer, event) -> bool:
+    model = _view_model(event)
+    if not isinstance(model, ThinkingEffortViewModel):
+        return False
+    stop_stream_and_clear(renderer)
+    lines = [
+        f"Reasoning effort: [bold]{model.current}[/bold]",
+        f"Parameter: [dim]{model.param}[/dim]",
+        "",
+        "Available:",
+    ]
+    for level in model.levels:
+        marker = " ✓" if level.label == model.current else ""
+        lines.append(f"  {level.label} → {level.api_value}{marker}")
+    lines.extend(["", f"(profile default: {model.profile_default})"])
+    renderer.console.print("\n".join(lines))
+    return True
+
+
 def render_token_usage_view(renderer, event) -> bool:
     model = _view_model(event)
     if not isinstance(model, TokenUsageViewModel):
@@ -421,6 +441,9 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
                 view_type="model_profiles", render=render_model_profiles_view
             ),
             ViewRendererSpec(view_type="mode_profiles", render=render_modes_view),
+            ViewRendererSpec(
+                view_type="thinking_effort", render=render_thinking_effort_view
+            ),
             ViewRendererSpec(view_type="token_usage", render=render_token_usage_view),
             ViewRendererSpec(
                 view_type="approval_rules", render=render_approval_rules_view

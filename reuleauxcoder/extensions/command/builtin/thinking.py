@@ -16,6 +16,10 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
+from reuleauxcoder.app.commands.view_models import (
+    ThinkingEffortLevelViewModel,
+    ThinkingEffortViewModel,
+)
 from reuleauxcoder.domain.config.models import DEFAULT_REASONING_EFFORT_VALUES
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -129,27 +133,24 @@ def _handle_effort_show(_command, ctx) -> CommandEffect:
     )
     param = getattr(llm, "reasoning_effort_param", "reasoning_effort")
 
-    value_lines: list[str] = []
-    for label in ("low", "medium", "high"):
-        api_val = mapping.get(label, label)
-        marker = " ✓" if label == current else ""
-        value_lines.append(f"  {label} → {api_val}{marker}")
-
-    lines = [
-        f"Reasoning effort: [bold]{current}[/bold]",
-        f"Parameter: [dim]{param}[/dim]",
-        "",
-        "Available:",
-        *value_lines,
-        "",
-        f"(profile default: {profile_default})",
-    ]
-
-    ctx.effect.info(
-        "\n".join(lines),
-        kind=UIEventKind.COMMAND,
+    view = ThinkingEffortViewModel(
+        current=current,
+        param=param,
+        profile_default=profile_default,
+        levels=tuple(
+            ThinkingEffortLevelViewModel(
+                label=label, api_value=str(mapping.get(label, label))
+            )
+            for label in ("low", "medium", "high")
+        ),
     )
-    return ctx.effect.finish(control="continue")
+    ctx.effect.open_view(
+        view.view_type,
+        title="Reasoning Effort",
+        view_model=view,
+        reuse_key="thinking_effort",
+    )
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
 def _handle_effort_set(command, ctx) -> CommandEffect:

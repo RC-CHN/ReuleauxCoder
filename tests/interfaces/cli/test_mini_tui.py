@@ -867,6 +867,48 @@ def test_mcp_panel_shows_hint_row_when_no_servers() -> None:
     assert accepted == []
 
 
+def test_thinking_effort_view_opens_selection_panel() -> None:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.commands.view_models import (
+        ThinkingEffortLevelViewModel,
+        ThinkingEffortViewModel,
+    )
+
+    payload = NS(
+        view_type="thinking_effort",
+        title="Reasoning Effort",
+        action="open",
+        focus=True,
+        view_model=ThinkingEffortViewModel(
+            current="low",
+            param="reasoning_effort",
+            profile_default="medium",
+            levels=(
+                ThinkingEffortLevelViewModel(label="low", api_value="low"),
+                ThinkingEffortLevelViewModel(label="medium", api_value="medium"),
+                ThinkingEffortLevelViewModel(label="high", api_value="high"),
+            ),
+        ),
+    )
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(payload) is True
+    assert app._selection.view_type == "thinking_effort"
+    assert app._selection.selected.label == "low"  # current preselected
+
+    app._selection.move(1)
+    app._selection_confirm()
+    assert accepted == ["/thinking effort medium"]
+    assert app._selection is None
+
+
 def test_skills_panel_shows_hint_row_when_no_skills() -> None:
     from types import SimpleNamespace as NS
 

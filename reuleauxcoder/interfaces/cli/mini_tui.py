@@ -61,6 +61,7 @@ from reuleauxcoder.app.commands.view_models import (
     SessionResumeViewModel,
     SessionsViewModel,
     SubagentJobsViewModel,
+    ThinkingEffortViewModel,
     TokenUsageViewModel,
 )
 from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
@@ -1517,6 +1518,27 @@ class MiniTUIApplication:
     def _open_interactive_view(self, payload) -> bool:
         """Claim a view as a modal selection panel, or absorb its refresh."""
         is_refresh = payload.action == "refresh" or not payload.focus
+        if payload.view_type == "thinking_effort":
+            model = payload.view_model
+            if not isinstance(model, ThinkingEffortViewModel):
+                return False
+            if is_refresh:
+                return True
+            self._selection = SelectionPanel.open(
+                title=payload.title,
+                items=tuple(
+                    SelectionItem(
+                        label=level.label,
+                        description=f"→ {level.api_value} via {model.param}",
+                        command=f"/thinking effort {level.label}",
+                        current=level.label == model.current,
+                    )
+                    for level in model.levels
+                ),
+                view_type="thinking_effort",
+            )
+            self.invalidate()
+            return True
         if payload.view_type == "skills":
             model = payload.view_model
             if not isinstance(model, SkillsViewModel):
@@ -2565,6 +2587,15 @@ def _format_help_view(model: HelpViewModel) -> str:
     return "\n".join(lines) or "(no commands available)"
 
 
+def _format_thinking_effort_view(model: ThinkingEffortViewModel) -> str:
+    lines = [f"Reasoning effort: {model.current}", f"Parameter: {model.param}", "Available:"]
+    for level in model.levels:
+        marker = " ✓" if level.label == model.current else ""
+        lines.append(f"  {level.label} → {level.api_value}{marker}")
+    lines.append(f"(profile default: {model.profile_default})")
+    return "\n".join(lines)
+
+
 def _format_token_usage_view(model: TokenUsageViewModel) -> str:
     lines = [
         "Tokens · "
@@ -2650,6 +2681,10 @@ def _view_text(payload: ViewEventPayload) -> str:
         return "\n".join(lines)
     if payload.view_type == "help" and isinstance(model, HelpViewModel):
         return _format_help_view(model)
+    if payload.view_type == "thinking_effort" and isinstance(
+        model, ThinkingEffortViewModel
+    ):
+        return _format_thinking_effort_view(model)
     if payload.view_type == "token_usage" and isinstance(model, TokenUsageViewModel):
         return _format_token_usage_view(model)
     if payload.view_type == "subagent_jobs" and isinstance(
