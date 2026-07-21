@@ -961,6 +961,135 @@ def test_approval_panel_includes_dynamic_targets_without_rules() -> None:
     assert accepted == ["/approval set mcp:time require_approval"]
 
 
+def test_view_text_formats_help_sessions_jobs_tokens_and_config() -> None:
+    from reuleauxcoder.app.commands.view_models import (
+        EffectiveConfigRowViewModel,
+        EffectiveConfigViewModel,
+        HelpCommandViewModel,
+        HelpSectionViewModel,
+        HelpViewModel,
+        SessionSummaryViewModel,
+        SessionsViewModel,
+        SubagentJobsViewModel,
+        SubagentJobViewModel,
+        TokenUsageViewModel,
+    )
+    from reuleauxcoder.interfaces.cli.mini_tui import _view_text
+
+    def payload(view_model) -> SimpleNamespace:
+        return SimpleNamespace(
+            view_type=view_model.view_type, title="T", view_model=view_model
+        )
+
+    help_text = _view_text(
+        payload(
+            HelpViewModel(
+                sections=(
+                    HelpSectionViewModel(
+                        feature_id="model",
+                        commands=(
+                            HelpCommandViewModel(
+                                usage="/model use-main <p>", description="Set main"
+                            ),
+                        ),
+                    ),
+                )
+            )
+        )
+    )
+    assert "[model]" in help_text and "/model use-main <p>" in help_text
+    assert "{" not in help_text
+
+    tokens_text = _view_text(
+        payload(
+            TokenUsageViewModel(
+                prompt_tokens=12345,
+                completion_tokens=678,
+                lifetime_total=99999,
+                current_context_tokens=54000,
+                max_context_tokens=128000,
+                context_percent=42.0,
+                message_count=35,
+                actual_prompt_tokens=54000,
+                cached_input_tokens=12000,
+                snip_wall=60,
+                semantic_wall=75,
+                snip_min_gain=20,
+                rewrite_target=40,
+                emergency_at=90,
+                cache_epoch=3,
+            )
+        )
+    )
+    assert "12,345" in tokens_text and "42%" in tokens_text
+    assert "{" not in tokens_text
+
+    jobs_text = _view_text(
+        payload(
+            SubagentJobsViewModel(
+                jobs=(
+                    SubagentJobViewModel(
+                        job_id="job1",
+                        parent_agent_id=None,
+                        parent_session_id=None,
+                        status="running",
+                        mode="explore",
+                        task="refactor the auth module",
+                        created_at=0.0,
+                        started_at=None,
+                        finished_at=None,
+                        timeout_seconds=None,
+                        generation=1,
+                        result=None,
+                        error=None,
+                    ),
+                ),
+                runtime_parallel_explore=1,
+                max_parallel_explore=4,
+            )
+        )
+    )
+    assert "job1" in jobs_text and "running" in jobs_text
+    assert "{" not in jobs_text
+
+    sessions_text = _view_text(
+        payload(
+            SessionsViewModel(
+                fingerprint="fp",
+                show_all=False,
+                sessions=(
+                    SessionSummaryViewModel(
+                        session_id="s1",
+                        model="k3",
+                        saved_at="2026-07-21T08:30:00",
+                        preview="fix the panel",
+                        position=1,
+                        active=True,
+                    ),
+                ),
+            )
+        )
+    )
+    assert "#1" in sessions_text and "[active]" in sessions_text
+    assert "{" not in sessions_text
+
+    config_text = _view_text(
+        payload(
+            EffectiveConfigViewModel(
+                rows=(
+                    EffectiveConfigRowViewModel(
+                        path="models.active", value="k3", source="workspace"
+                    ),
+                ),
+                diagnostics=("something odd",),
+            )
+        )
+    )
+    assert "models.active = k3  (workspace)" in config_text
+    assert "! something odd" in config_text
+    assert "{" not in config_text
+
+
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
     adapter = MiniTUIEventAdapter()
     view = adapter.panel_view(now=100.0)
