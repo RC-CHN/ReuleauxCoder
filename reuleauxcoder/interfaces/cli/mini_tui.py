@@ -848,6 +848,7 @@ class MiniTUIApplication:
         self._selection_stack: list[SelectionPanel] = []
         self._model_slot_profiles: dict[str, tuple[SelectionItem, ...]] = {}
         self._approval_targets: dict[str, tuple[SelectionItem, ...]] = {}
+        self._agent_job_actions: dict[str, tuple[SelectionItem, ...]] = {}
         self.events.interactive_view_handler = self._open_interactive_view
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
@@ -1446,7 +1447,10 @@ class MiniTUIApplication:
         # session picker keeps it visible: the buffer doubles as its filter.
         if self.interactor.active_request is not None:
             return 0
-        if self._selection is not None and self._selection.view_type != "sessions":
+        if self._selection is not None and self._selection.view_type not in (
+            "sessions",
+            "subagent_jobs",
+        ):
             return 0
         try:
             columns = self.application.output.get_size().columns
@@ -1535,6 +1539,33 @@ class MiniTUIApplication:
     def _open_interactive_view(self, payload) -> bool:
         """Claim a view as a modal selection panel, or absorb its refresh."""
         is_refresh = payload.action == "refresh" or not payload.focus
+        if payload.view_type == "subagent_jobs":
+            model = payload.view_model
+            if not isinstance(model, SubagentJobsViewModel):
+                return False
+            if is_refresh:
+                if self._selection is not None and (
+                    self._selection.view_type == "subagent_jobs"
+                ):
+                    self._selection.refresh(self._agents_items(model))
+                    self._agent_job_actions = self._agents_action_map(model)
+                    self.invalidate()
+                return True
+            items = self._agents_items(model) or (
+                SelectionItem(
+                    label="(no sub-agent jobs)",
+                    description="spawn one via ask or background delegation",
+                    command="",
+                ),
+            )
+            self._agent_job_actions = self._agents_action_map(model)
+            self._selection = SelectionPanel.open(
+                title=payload.title,
+                items=items,
+                view_type="subagent_jobs",
+            )
+            self.invalidate()
+            return True
         if payload.view_type == "sessions":
             model = payload.view_model
             if not isinstance(model, SessionsViewModel):
@@ -1707,6 +1738,51 @@ class MiniTUIApplication:
         )
 
     @staticmethod
+    def _agents_items(model: SubagentJobsViewModel) -> tuple[SelectionItem, ...]:
+        return tuple(
+            SelectionItem(
+                label=job.job_id,
+                description=f"{job.status} · {job.mode} · {job.task[:40]}",
+                command="",
+                current=job.status == "running",
+            )
+            for job in model.jobs
+        )
+
+    @staticmethod
+    def _agents_action_map(
+        model: SubagentJobsViewModel,
+    ) -> dict[str, tuple[SelectionItem, ...]]:
+        terminal = {"completed", "failed", "cancelled", "timed_out"}
+        mapping: dict[str, tuple[SelectionItem, ...]] = {}
+        for job in model.jobs:
+            actions = [
+                SelectionItem(
+                    label="get details",
+                    description="full job view",
+                    command=f"/agents get {job.job_id}",
+                )
+            ]
+            if job.status not in terminal:
+                actions.append(
+                    SelectionItem(
+                        label="cancel",
+                        description="request cancellation",
+                        command=f"/agents cancel {job.job_id}",
+                    )
+                )
+            else:
+                actions.append(
+                    SelectionItem(
+                        label="cleanup",
+                        description="remove isolated worktree",
+                        command=f"/agents cleanup {job.job_id}",
+                    )
+                )
+            mapping[job.job_id] = tuple(actions)
+        return mapping
+
+    @staticmethod
     def _session_items(model: SessionsViewModel) -> tuple[SelectionItem, ...]:
         items: list[SelectionItem] = []
         for session in model.sessions:
@@ -1728,7 +1804,7 @@ class MiniTUIApplication:
     def _selection_visible_items(self) -> tuple[SelectionItem, ...]:
         """Items after the picker's live text filter (sessions only)."""
         panel = self._selection
-        if panel is None or panel.view_type != "sessions":
+        if panel is None or panel.view_type not in ("sessions", "subagent_jobs"):
             return panel.items if panel is not None else ()
         needle = self.input_buffer.text.strip().lower()
         if not needle:
@@ -1903,7 +1979,7 @@ class MiniTUIApplication:
         if not items:
             return
         selected = items[min(self._selection.index, len(items) - 1)]
-        if self._selection.view_type in ("model_slots", "approval_rules"):
+        if self._selection.view_type in ("model_slots", "approval_rules", "subagent_jobs"):
             if self._selection.view_type == "model_slots":
                 slot = next(
                     (slot for label, slot in self._MODEL_SLOTS if label == selected.label),
@@ -1911,9 +1987,12 @@ class MiniTUIApplication:
                 )
                 sub_items = self._model_slot_profiles.get(slot or "", ())
                 sub_view_type = "model_profiles"
-            else:
+            elif self._selection.view_type == "approval_rules":
                 sub_items = self._approval_targets.get(selected.label, ())
                 sub_view_type = "approval_actions"
+            else:
+                sub_items = self._agent_job_actions.get(selected.label, ())
+                sub_view_type = "agent_job_actions"
             if not sub_items:
                 return
             self._selection_stack.append(self._selection)
@@ -1932,8 +2011,14 @@ class MiniTUIApplication:
         # toggles work; the refresh updates items in place.
         keep_open = self._selection.view_type in ("mcp_servers", "skills")
         if not keep_open:
-            self._selection = None
-            self._selection_stack = []
+            if self._selection.view_type == "agent_job_actions":
+                # Pop back to the jobs browser so its rows refresh in place.
+                self._selection = (
+                    self._selection_stack.pop() if self._selection_stack else None
+                )
+            else:
+                self._selection = None
+                self._selection_stack = []
         self.input_buffer.text = command
         self.input_buffer.cursor_position = len(command)
         self._accept_buffer(self.input_buffer)
@@ -1943,7 +2028,11 @@ class MiniTUIApplication:
         if panel is None:
             return FormattedText([])
         items = self._selection_visible_items()
-        hint = " · type to filter" if panel.view_type == "sessions" else ""
+        hint = (
+            " · type to filter"
+            if panel.view_type in ("sessions", "subagent_jobs")
+            else ""
+        )
         fragments: list[tuple[str, str]] = [
             ("class:popup.cmd", f" {panel.title} "),
             ("class:popup", f"· Enter select{hint} · Esc close\n"),

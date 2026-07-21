@@ -1026,6 +1026,105 @@ def test_sessions_picker_filters_by_buffer_text_and_keeps_input_visible() -> Non
     assert app._selection_confirm() is None  # no-op on empty match
 
 
+def _jobs_view_payload() -> object:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.commands.view_models import (
+        SubagentJobsViewModel,
+        SubagentJobViewModel,
+    )
+
+    return NS(
+        view_type="subagent_jobs",
+        title="Sub-agent Jobs",
+        action="open",
+        focus=True,
+        view_model=SubagentJobsViewModel(
+            runtime_parallel_explore=1,
+            max_parallel_explore=4,
+            jobs=(
+                SubagentJobViewModel(
+                    job_id="job-01",
+                    parent_agent_id=None,
+                    parent_session_id=None,
+                    status="running",
+                    mode="explore",
+                    task="scan the repo for rtk usage",
+                    created_at=0.0,
+                    started_at=0.0,
+                    finished_at=None,
+                    timeout_seconds=None,
+                    generation=1,
+                    result=None,
+                    error=None,
+                ),
+                SubagentJobViewModel(
+                    job_id="job-02",
+                    parent_agent_id=None,
+                    parent_session_id=None,
+                    status="completed",
+                    mode="execute",
+                    task="fix the flaky test",
+                    created_at=0.0,
+                    started_at=0.0,
+                    finished_at=1.0,
+                    timeout_seconds=None,
+                    generation=1,
+                    result="done",
+                    error=None,
+                ),
+            ),
+        ),
+    )
+
+
+def _jobs_browser_app() -> MiniTUIApplication:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app._agent_job_actions = {}
+    app.invalidate = lambda: None
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    return app
+
+
+def test_agents_view_opens_browser_and_job_actions_sub_panel() -> None:
+    app = _jobs_browser_app()
+    accepted = []
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(_jobs_view_payload()) is True
+    assert app._selection.view_type == "subagent_jobs"
+    assert len(app._selection.items) == 2
+
+    # Enter on a running job → actions sub panel with cancel.
+    app._selection_confirm()
+    assert app._selection.view_type == "agent_job_actions"
+    assert [item.label for item in app._selection.items] == ["get details", "cancel"]
+
+    # Cancel resubmits the canonical command and pops back to the browser.
+    app._selection.move(1)
+    app._selection_confirm()
+    assert accepted == ["/agents cancel job-01"]
+    assert app._selection.view_type == "subagent_jobs"
+
+
+def test_agents_browser_terminal_job_offers_cleanup() -> None:
+    app = _jobs_browser_app()
+    app._open_interactive_view(_jobs_view_payload())
+    app._selection.move(1)  # job-02 (completed)
+    app._selection_confirm()
+    assert [item.label for item in app._selection.items] == ["get details", "cleanup"]
+
+
+def test_agents_browser_filters_by_task() -> None:
+    app = _jobs_browser_app()
+    app._open_interactive_view(_jobs_view_payload())
+    app.input_buffer.text = "flaky"
+    visible = app._selection_visible_items()
+    assert [item.label for item in visible] == ["job-02"]
+
+
 def test_skills_panel_shows_hint_row_when_no_skills() -> None:
     from types import SimpleNamespace as NS
 
