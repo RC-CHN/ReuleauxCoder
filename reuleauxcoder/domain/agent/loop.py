@@ -488,6 +488,9 @@ class AgentLoop:
     def run(self) -> str:
         """Run the conversation loop."""
         self.round_limit_reached = False
+        self.agent.seal_startup_capabilities()
+        if self.agent.stop_requested():
+            return "(stopped by cancellation request)"
         # Compress if needed
         self.agent.maybe_compress_context(
             self.agent.llm, reason="pre-request checkpoint"
@@ -504,7 +507,7 @@ class AgentLoop:
             ):
                 return "(sub-agent token budget exhausted)"
 
-            message_source = getattr(self.agent, "_external_message_source", None)
+            message_source = self.agent._external_message_source
             if callable(message_source):
                 for external_message in message_source():
                     content = (

@@ -352,6 +352,47 @@ def test_exit_finalizer_skips_duplicate_save_after_exit_command() -> None:
     assert prepared == ["CLI session closed"]
 
 
+def test_exit_finalizer_records_saved_session_for_terminal_report(monkeypatch) -> None:
+    saved_lifecycle = []
+    app = object.__new__(MiniTUIApplication)
+    app._exit_session_saved = False
+    app._saved_session_id = None
+    app.agent = SimpleNamespace(
+        messages=[{"role": "user", "content": "done"}],
+        state=SimpleNamespace(total_prompt_tokens=1, total_completion_tokens=2),
+        active_mode="coder",
+        lifecycle=SimpleNamespace(session_saved=saved_lifecycle.append),
+    )
+    app.config = SimpleNamespace(
+        session_auto_save=True,
+        model="model",
+    )
+    app.current_session_id = "session"
+    app.sessions_dir = None
+    app._prepare_forced_exit = lambda _reason: None
+
+    class FakeSessionStore:
+        def __init__(self, _sessions_dir) -> None:
+            pass
+
+        def save(self, *args, **kwargs) -> str:
+            return "session"
+
+    monkeypatch.setattr(mini_tui_module, "SessionStore", FakeSessionStore)
+    monkeypatch.setattr(
+        mini_tui_module, "build_session_runtime_state", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        mini_tui_module, "build_session_persistence_kwargs", lambda *_args: {}
+    )
+
+    app._save_exit_session()
+
+    assert app.exit_session_saved is True
+    assert app.saved_session_id == "session"
+    assert saved_lifecycle == ["session"]
+
+
 def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
     assert _wrapped_row_count("", 40) == 1
     assert _wrapped_row_count("short", 40) == 1
@@ -938,6 +979,33 @@ def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
     assert len(expanded) == 7
     assert "RUN" in "".join(text for _style, text in wide[0])
     assert "MODEL" in "".join(text for row in expanded for _style, text in row)
+
+
+def test_mcp_panel_detail_updates_from_connecting_to_ready() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app.config = SimpleNamespace(
+        mcp_servers=[
+            SimpleNamespace(enabled=True),
+            SimpleNamespace(enabled=True),
+            SimpleNamespace(enabled=False),
+        ]
+    )
+    manager = SimpleNamespace(initial_state="connecting", available_tool_count=2)
+    app.agent = SimpleNamespace(mcp_manager=manager)
+
+    assert app._mcp_panel_detail() == "MCP connecting · 2 enabled · 2 tools"
+
+    manager.initial_state = "ready"
+    manager.available_tool_count = 7
+    assert app._mcp_panel_detail() == "MCP 2 enabled · 7 tools"
+
+
+def test_mcp_panel_detail_handles_no_configured_servers() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app.config = SimpleNamespace(mcp_servers=[])
+    app.agent = SimpleNamespace(mcp_manager=None)
+
+    assert app._mcp_panel_detail() == "MCP 0 enabled · 0 tools"
 
 
 def test_alternate_scroll_protocol_keeps_native_selection_and_wheel_keys() -> None:

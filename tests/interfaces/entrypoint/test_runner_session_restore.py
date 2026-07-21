@@ -74,12 +74,13 @@ def _build_config(tmp_path: Path) -> Config:
     )
 
 
-def _build_runner(**options) -> AppRunner:
+def _build_runner(*, startup_progress=None, **options) -> AppRunner:
     return AppRunner(
         options=AppOptions(**options),
         dependencies=AppDependencies(
             create_session_store=lambda sessions_dir: SessionStore(sessions_dir)
         ),
+        startup_progress=startup_progress,
     )
 
 
@@ -103,7 +104,10 @@ def test_restore_session_auto_resume_latest_is_fingerprint_scoped(
             model="remote-model", active_mode="coder", llm_debug_trace=False
         ),
     )
-    runner = _build_runner(auto_resume_latest=True)
+    startup_progress = []
+    runner = _build_runner(
+        auto_resume_latest=True, startup_progress=startup_progress.append
+    )
     config = _build_config(tmp_path)
     agent = FakeAgent(fingerprint="local")
     ui_bus = UIEventBus()
@@ -119,6 +123,15 @@ def test_restore_session_auto_resume_latest_is_fingerprint_scoped(
     assert agent.active_mode == "debugger"
     assert agent.llm.model == "local-model"
     assert agent.llm.debug_trace is True
+    assert "Looking for the latest compatible session..." in startup_progress
+    assert f"Restoring latest session {local_id}..." in startup_progress
+    assert any(
+        message.startswith("Reading history ledger (") for message in startup_progress
+    )
+    assert any(
+        message.startswith("Restored 1 message(s) and ")
+        for message in startup_progress
+    )
     assert any(
         event.level == UIEventLevel.INFO
         and event.kind == UIEventKind.SESSION

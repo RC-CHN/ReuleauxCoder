@@ -58,6 +58,33 @@ def test_merge_dicts_merges_profile_maps_by_name() -> None:
     assert "extra" in merged["models"]["profiles"]
 
 
+def test_merge_dicts_applies_partial_mcp_server_override() -> None:
+    loader = ConfigLoader()
+
+    merged = loader._merge_dicts(
+        {
+            "mcp": {
+                "servers": {
+                    "docs": {
+                        "command": "uvx",
+                        "args": ["docs-server"],
+                        "env": {"TOKEN": "secret"},
+                        "enabled": True,
+                    }
+                }
+            }
+        },
+        {"mcp": {"servers": {"docs": {"enabled": False}}}},
+    )
+
+    assert merged["mcp"]["servers"]["docs"] == {
+        "command": "uvx",
+        "args": ["docs-server"],
+        "env": {"TOKEN": "secret"},
+        "enabled": False,
+    }
+
+
 def test_parse_config_selects_active_profiles_and_modes() -> None:
     loader = ConfigLoader()
     config = loader._parse_config(

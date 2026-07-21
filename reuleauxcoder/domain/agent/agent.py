@@ -1,8 +1,8 @@
 """Core agent - the main agent class."""
 
 from __future__ import annotations
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Optional, List
+from collections.abc import Callable, Iterable
+from typing import Any, TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 import threading
 import uuid
@@ -13,13 +13,26 @@ if TYPE_CHECKING:
     from reuleauxcoder.extensions.tools.base import Tool
     from reuleauxcoder.domain.config.models import Config
     from reuleauxcoder.domain.extensions import ToolExtensionRuntime
+    from reuleauxcoder.domain.extensions import ExtensionManager, ExtensionScopeContainer
+    from reuleauxcoder.extensions.lsp.manager import LspManager
+    from reuleauxcoder.extensions.mcp.manager import MCPManager
+    from reuleauxcoder.extensions.remote_exec.server import RelayServer
+    from reuleauxcoder.extensions.skills.service import SkillsService
+    from reuleauxcoder.extensions.subagent.manager import SubagentManager
+    from reuleauxcoder.infrastructure.persistence.notes_store import NoteStore
+    from reuleauxcoder.interfaces.interactions import UIInteractor
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
-from reuleauxcoder.domain.hooks import HookBase, HookDiagnostic, HookPoint, HookRegistry
+from reuleauxcoder.domain.hooks import (
+    HookBase,
+    HookDiagnostic,
+    HookPoint,
+    HookRegistry,
+)
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.plan import PlanController
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
@@ -52,23 +65,24 @@ class Agent:
 
     def __init__(
         self,
-        llm: "LLM",
-        tools: Optional[List["Tool"]] = None,
-        config: "Config" | None = None,
+        llm: LLM,
+        tools: Optional[List[Tool]] = None,
+        config: Config | None = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
         max_tool_calls: int | None = None,
         max_total_tokens: int | None = None,
         hook_registry: HookRegistry | None = None,
-        approval_provider: "ApprovalProvider" | None = None,
+        approval_provider: ApprovalProvider | None = None,
         available_modes: dict[str, ModeConfig] | None = None,
         active_mode: str | None = None,
         loop: AgentLoop | None = None,
         executor: ToolExecutor | None = None,
-        extension_runtime: "ToolExtensionRuntime" | None = None,
+        extension_runtime: ToolExtensionRuntime | None = None,
         agent_id: str | None = None,
     ):
         self.llm = llm
+        self._tool_registry_lock = threading.RLock()
         self.tools = tools if tools is not None else []
         self.config = config
         self.runtime_config = config
@@ -93,20 +107,20 @@ class Agent:
             config, "active_sub_model_profile", None
         )
         self.runtime_working_directory: str | None = None
-        self.notes_store = None
-        self.mcp_manager = None
-        self.skills_service = None
+        self.notes_store: NoteStore | None = None
+        self.mcp_manager: MCPManager | None = None
+        self.skills_service: SkillsService | None = None
         self.skills_catalog: str = ""
-        self.extension_manager = None
-        self.extension_scope = None
-        self.lsp_manager = None
-        self.relay_server = None
-        self._subagent_manager = None
+        self.extension_manager: ExtensionManager | None = None
+        self.extension_scope: ExtensionScopeContainer | None = None
+        self.lsp_manager: LspManager | None = None
+        self.relay_server: RelayServer | None = None
+        self._subagent_manager: SubagentManager | None = None
         self.subagent_depth = 0
         self.strict_tool_scope = False
-        self.ui_interactor = None
+        self.ui_interactor: UIInteractor | None = None
         self._subagent_approval_lock = None
-        self._external_message_source = None
+        self._external_message_source: Callable[[], Iterable[Any]] | None = None
         self._steering_lock = threading.Lock()
         self._pending_user_steering: list[tuple[str, int, str]] = []
         self._accepting_user_steering = False
@@ -532,7 +546,9 @@ class Agent:
 
     def get_active_tools(self) -> list["Tool"]:
         """Return tools visible to the LLM in current mode."""
-        scoped_tools = [tool for tool in self.tools if self.is_tool_in_scope(tool.name)]
+        with self._tool_registry_lock:
+            tools = list(self.tools)
+        scoped_tools = [tool for tool in tools if self.is_tool_in_scope(tool.name)]
         mode = self.get_active_mode_config()
         if mode is None:
             return scoped_tools
@@ -545,7 +561,9 @@ class Agent:
 
     def get_blocked_tools(self) -> list["Tool"]:
         """Return tools hidden/blocked by current mode."""
-        scoped_tools = [tool for tool in self.tools if self.is_tool_in_scope(tool.name)]
+        with self._tool_registry_lock:
+            tools = list(self.tools)
+        scoped_tools = [tool for tool in tools if self.is_tool_in_scope(tool.name)]
         mode = self.get_active_mode_config()
         if mode is None or not mode.tools or "*" in mode.tools:
             return []
@@ -703,7 +721,7 @@ class Agent:
             )
         )
 
-    def register_hook(self, hook_point: HookPoint, hook: HookBase[object]) -> None:
+    def register_hook(self, hook_point: HookPoint, hook: HookBase[Any]) -> None:
         """Register a hook on the agent-scoped hook registry."""
         self.hook_registry.register(hook_point, hook)
 
@@ -711,15 +729,37 @@ class Agent:
         """List registered hooks from the agent-scoped hook registry."""
         return self.hook_registry.list_hooks(hook_point)
 
-    def add_tools(self, tools: List["Tool"]) -> None:
+    def add_tools(self, tools: Iterable["Tool"]) -> None:
         """Add additional tools."""
-        self.tools.extend(tools)
+        with self._tool_registry_lock:
+            self.tools.extend(tools)
+
+    def replace_mcp_tools(self, tools: Iterable["Tool"]) -> None:
+        """Atomically publish one sealed MCP capability snapshot."""
+        with self._tool_registry_lock:
+            retained = [
+                tool
+                for tool in self.tools
+                if getattr(tool, "tool_source", None) != "mcp"
+            ]
+            self.tools = [*retained, *tools]
+
+    def seal_startup_capabilities(self) -> str:
+        """Wait for and publish initial MCP tools before the first inference."""
+        manager = self.mcp_manager
+        if manager is None:
+            return "ready"
+        tools, outcome = manager.seal_initial_catalog(self._stop_event)
+        self.replace_mcp_tools(tools)
+        return outcome
 
     def get_tool(self, name: str) -> Optional["Tool"]:
         """Look up a tool by name."""
         if not self.is_tool_in_scope(name):
             return None
-        for t in self.tools:
+        with self._tool_registry_lock:
+            tools = list(self.tools)
+        for t in tools:
             if t.name == name:
                 return t
         return None
@@ -972,12 +1012,13 @@ class Agent:
                 if kind == "job"
                 else self.inject_subagent_communication(item)
             )
+            item_id = getattr(item, "item_id", None)
             if accepted:
-                if kind == "communication":
-                    manager.acknowledge_parent_message(item.item_id)
+                if kind == "communication" and isinstance(item_id, str):
+                    manager.acknowledge_parent_message(item_id)
                 injected += 1
-            elif kind == "communication":
-                manager.release_parent_message(item.item_id)
+            elif kind == "communication" and isinstance(item_id, str):
+                manager.release_parent_message(item_id)
         return injected
 
     def _wait_for_subagent_activity(self, timeout: float = 0.1) -> bool:

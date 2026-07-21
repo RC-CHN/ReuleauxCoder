@@ -68,9 +68,11 @@ class AppRunner:
         self,
         options: AppOptions | None = None,
         dependencies: AppDependencies | None = None,
+        startup_progress: Callable[[str], None] | None = None,
     ):
         self.options = options or AppOptions()
         self.dependencies = dependencies or AppDependencies()
+        self._startup_progress = startup_progress
         self._mcp_manager: MCPManager | None = None
         self._relay_server: RelayServer | None = None
         self._relay_http_service: RemoteRelayHTTPService | None = None
@@ -100,10 +102,13 @@ class AppRunner:
 
     def initialize(self) -> AppContext:
         """Initialize all application components and return context."""
+        self._report_startup("Loading configuration...")
         config = self.dependencies.load_config(self.options.config_path)
+        self._report_startup(f"Configuration loaded (model: {config.model}).")
         if self.options.server_mode:
             config.remote_exec.enabled = True
             config.remote_exec.host_mode = True
+        self._report_startup("Initializing command registry and runtime services...")
         ui_bus = self.dependencies.create_ui_bus()
         self._ui_bus = ui_bus
         action_registry = self.dependencies.create_action_registry()
@@ -111,12 +116,26 @@ class AppRunner:
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
         self._agent = agent
         self._bind_remote_chat_handler(agent)
+        self._report_startup("Discovering skills...")
         skills_service = self._init_skills(config, agent, ui_bus)
+        self._report_startup("Skills catalog ready.")
+        enabled_mcp_servers = sum(
+            1 for server in config.mcp_servers if getattr(server, "enabled", True)
+        )
+        if enabled_mcp_servers:
+            self._report_startup(
+                f"Connecting {enabled_mcp_servers} configured MCP server(s)..."
+            )
         mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
+        if enabled_mcp_servers:
+            self._report_startup(
+                "MCP discovery started in the background; continuing startup."
+            )
         sessions_dir = Path(config.session_dir) if config.session_dir else None
         if self.options.server_mode:
             restore_config_runtime_defaults(config, agent)
             current_session_id, session_exit_time = None, None
+            self._report_startup("Session restore skipped in server mode.")
         else:
             current_session_id, session_exit_time, sessions_dir = self._restore_session(
                 config, agent, ui_bus
@@ -146,8 +165,21 @@ class AppRunner:
         )
         agent.extension_manager = self._extension_manager
         agent.extension_scope = extension_scope
-        extension_scope.get("core.hooks").start()
+        hook_participant = extension_scope.get("core.hooks")
+        if hook_participant is None:
+            raise RuntimeError("Core hook lifecycle extension failed to initialize")
+        hook_participant.start()
+        self._report_startup("Runtime initialization complete.")
         return app_ctx
+
+    def _report_startup(self, message: str) -> None:
+        if self._startup_progress is not None:
+            try:
+                self._startup_progress(message)
+            except Exception:
+                # Progress reporting is advisory and must never make startup
+                # fail when an embedding UI callback is unavailable.
+                pass
 
     def _build_core(
         self,
@@ -158,14 +190,17 @@ class AppRunner:
         if self.options.model:
             config.model = self.options.model
 
+        self._report_startup("Initializing model client...")
         llm = self.dependencies.create_llm(config)
         llm.ui_bus = ui_bus
+        self._report_startup("Loading built-in tools...")
         tool_backend = self.dependencies.create_tool_backend(config, ui_bus)
         if self._relay_server is not None:
             tool_backend = RemoteRelayToolBackend(
                 relay_server=self._relay_server, ui_bus=ui_bus
             )
         tools = self.dependencies.load_tools(tool_backend)
+        self._report_startup(f"Loaded {len(tools)} built-in tool(s).")
         agent = self.dependencies.create_agent(llm, tools, config)
         # Custom dependency factories may return an Agent without forwarding
         # config.  Runtime services and tool adapters must still see the exact
@@ -185,8 +220,11 @@ class AppRunner:
         agent.session_fingerprint = get_session_fingerprint(config, agent)
         agent.context._ui_bus = ui_bus
 
+        self._report_startup("Discovering runtime hooks and workspace services...")
         self._register_hooks(agent, config)
         self._init_git_monitor(agent)
+        if LspConfig.from_config(config).enabled:
+            self._report_startup("Checking configured language servers...")
         self._init_lsp(config, agent, ui_bus)
         self._wire_agent_tools(agent)
         self._hint_rtk_install(config, ui_bus)
@@ -380,24 +418,48 @@ class AppRunner:
         agent: Agent,
         ui_bus: UIEventBus,
     ) -> tuple[str | None, str | None, Path | None]:
-        return restore_session(self.options, self.dependencies, config, agent, ui_bus)
+        return restore_session(
+            self.options,
+            self.dependencies,
+            config,
+            agent,
+            ui_bus,
+            progress=self._report_startup,
+        )
 
-    def cleanup(self, agent: Agent | None = None) -> None:
+    def cleanup(
+        self,
+        agent: Agent | None = None,
+        *,
+        progress: Callable[[str], None] | None = None,
+    ) -> None:
         """Clean up resources (MCP connections, remote relay, etc.)."""
+        def report(message: str) -> None:
+            if progress is None:
+                return
+            try:
+                progress(message)
+            except Exception:
+                pass
+
         agent = agent or self._agent
         if agent is not None:
+            report("Closing pending interactions...")
             shutdown_interactions = getattr(
                 getattr(agent, "ui_interactor", None), "shutdown", None
             )
             if callable(shutdown_interactions):
                 shutdown_interactions(reason="application shutdown")
         if self._remote_chat_cleanup is not None:
+            report("Stopping remote chat handler...")
             self._remote_chat_cleanup()
             self._remote_chat_cleanup = None
         if agent is not None:
             subagent_manager = getattr(agent, "_subagent_manager", None)
             if subagent_manager is not None:
+                report("Stopping sub-agent workers...")
                 subagent_manager.shutdown(wait=True)
+        report("Disposing runtime extensions...")
         extension_diagnostics = self._extension_manager.dispose_all()
         if self._ui_bus is not None:
             for diagnostic in extension_diagnostics:
@@ -406,6 +468,7 @@ class AppRunner:
                     f"{diagnostic.message}"
                 )
         if self._relay_http_service is not None:
+            report("Stopping remote relay HTTP service...")
             artifact_provider = getattr(
                 self._relay_http_service, "artifact_provider", None
             )
@@ -419,6 +482,7 @@ class AppRunner:
             if isinstance(build_dir, Path):
                 shutil.rmtree(build_dir, ignore_errors=True)
         if self._relay_server is not None:
+            report("Stopping remote relay peers...")
             for peer in self._relay_server.registry.list_online():
                 try:
                     self._relay_server.request_cleanup(peer.peer_id, timeout_sec=5)
@@ -427,10 +491,12 @@ class AppRunner:
             self._relay_server.stop()
             self._relay_server = None
         if self._mcp_manager:
+            report("Disconnecting MCP servers...")
             self._mcp_manager.disconnect_all()
             self._mcp_manager.stop()
             self._mcp_manager = None
         if self._lsp_manager:
+            report("Stopping language servers...")
             if self._agent is not None:
                 self._agent.hook_registry.bind_runtime_service("lsp_manager", None)
                 for tool in self._agent.tools:
@@ -442,6 +508,7 @@ class AppRunner:
             if self._agent is not None:
                 self._agent.lsp_manager = None
         if self._agent is not None:
+            report("Releasing workspace monitors...")
             self._agent.hook_registry.bind_runtime_service("git_monitor", None)
         self._git_monitor = None
         self._agent = None
@@ -452,23 +519,13 @@ class AppRunner:
     ) -> MCPManager:
         """Initialize MCP manager and connect to servers."""
         manager = self.dependencies.create_mcp_manager(ui_bus)
-        manager.start()
 
         enabled_servers = [s for s in mcp_servers if getattr(s, "enabled", True)]
-        for server_config in enabled_servers:
-            success = manager.connect_server(server_config)
-            if not success:
-                ui_bus.warning(
-                    f"Warning: Failed to connect to MCP server '{server_config.name}'",
-                    kind=UIEventKind.MCP,
-                )
-
-        if manager.tools:
-            agent.add_tools(manager.tools)
-            ui_bus.success(
-                f"Loaded {len(manager.tools)} MCP tools from {len(enabled_servers)} enabled server(s)",
-                kind=UIEventKind.MCP,
-            )
+        manager.connect_servers_async(enabled_servers)
+        ui_bus.info(
+            f"Connecting {len(enabled_servers)} MCP server(s) in the background.",
+            kind=UIEventKind.MCP,
+        )
 
         self._mcp_manager = manager
         return manager

@@ -27,6 +27,10 @@ def refresh_mcp_runtime_tools(agent) -> None:
     """Replace current MCP tools on the agent with manager-provided runtime tools."""
     manager = getattr(agent, "mcp_manager", None)
     manager_tools = list(getattr(manager, "tools", []) or [])
+    replace = getattr(agent, "replace_mcp_tools", None)
+    if callable(replace):
+        replace(manager_tools)
+        return
     non_mcp_tools = [
         tool
         for tool in getattr(agent, "tools", [])
@@ -40,6 +44,8 @@ def build_mcp_servers_view(config, agent=None) -> MCPServersView:
     servers = list(getattr(config, "mcp_servers", []) or [])
     manager = getattr(agent, "mcp_manager", None) if agent is not None else None
     runtime_connected = set(getattr(manager, "connected_servers", set()) or set())
+    runtime_active = set(getattr(manager, "active_servers", set()) or set())
+    initial_state = str(getattr(manager, "initial_state", "idle"))
 
     return MCPServersView(
         servers=[
@@ -47,6 +53,20 @@ def build_mcp_servers_view(config, agent=None) -> MCPServersView:
                 name=server.name,
                 enabled=bool(getattr(server, "enabled", True)),
                 runtime_connected=server.name in runtime_connected,
+                runtime_active=server.name in runtime_active,
+                runtime_state=(
+                    "connecting"
+                    if bool(getattr(server, "enabled", True))
+                    and initial_state == "connecting"
+                    and server.name not in runtime_connected
+                    else "active"
+                    if server.name in runtime_active
+                    else "connected"
+                    if server.name in runtime_connected
+                    else "disabled"
+                    if not bool(getattr(server, "enabled", True))
+                    else "unavailable"
+                ),
             )
             for server in servers
         ]
@@ -79,32 +99,51 @@ def toggle_mcp_server(
             error=f"MCP server '{server_name}' not found in config.",
         )
 
-    if bool(getattr(server, "enabled", True)) == enabled:
+    manager = getattr(agent, "mcp_manager", None)
+    configured_enabled = bool(getattr(server, "enabled", True))
+    configured_changed = configured_enabled != enabled
+    active = set(getattr(manager, "active_servers", set()) or set())
+    initial_state = str(getattr(manager, "initial_state", "idle"))
+
+    if not configured_changed and (
+        not enabled or server_name in active or initial_state == "connecting"
+    ):
         state = "enabled" if enabled else "disabled"
+        suffix = (
+            " and is connecting"
+            if enabled and initial_state == "connecting"
+            else ""
+        )
         return MCPToggleResult(
             server_name=server_name,
             enabled=enabled,
             already_in_desired_state=True,
-            message=f"MCP server '{server_name}' is already {state}.",
+            message=f"MCP server '{server_name}' is already {state}{suffix}.",
         )
 
-    server.enabled = enabled
-    config_store = store or WorkspaceConfigStore()
-    path = config_store.save_mcp_server_config(server)
+    path = None
+    if configured_changed:
+        server.enabled = enabled
+        config_store = store or WorkspaceConfigStore()
+        path = config_store.save_mcp_server_enabled(server.name, enabled)
 
-    manager = getattr(agent, "mcp_manager", None)
     if manager is None:
         if enabled:
             warning = "MCP manager is not initialized; change is saved and will apply on next startup."
         else:
             warning = "MCP manager is not initialized; disable state is saved."
+        message = (
+            f"Saved MCP server '{server_name}' to {path}"
+            if path is not None
+            else f"MCP server '{server_name}' remains {action}d in workspace config."
+        )
         return MCPToggleResult(
             server_name=server_name,
             enabled=enabled,
-            config_saved=True,
+            config_saved=configured_changed,
             manager_initialized=False,
             saved_path=path,
-            message=f"Saved MCP server '{server_name}' to {path}",
+            message=message,
             warning=warning,
         )
 
@@ -117,22 +156,35 @@ def toggle_mcp_server(
 
     state = "enabled" if enabled else "disabled"
     if ok:
+        persisted = f" and saved to {path}" if path is not None else ""
+        cache_warning = (
+            "MCP tool catalog changed; the stable prompt prefix will be rebuilt "
+            "before the next model request."
+            if initial_state == "sealed"
+            else None
+        )
         return MCPToggleResult(
             server_name=server_name,
             enabled=enabled,
-            config_saved=True,
+            config_saved=configured_changed,
             runtime_applied=True,
             manager_initialized=True,
             saved_path=path,
-            message=f"MCP server '{server_name}' {state} and saved to {path}",
+            message=f"MCP server '{server_name}' {state}{persisted}",
+            warning=cache_warning,
         )
 
     return MCPToggleResult(
         server_name=server_name,
         enabled=enabled,
-        config_saved=True,
+        config_saved=configured_changed,
         runtime_applied=False,
         manager_initialized=True,
         saved_path=path,
-        warning=f"MCP server '{server_name}' state saved to {path}, but runtime {state} failed.",
+        warning=(
+            f"MCP server '{server_name}' preference was saved, but runtime "
+            f"{state} failed. It will be retried on the next startup."
+            if path is not None
+            else f"MCP server '{server_name}' runtime {state} retry failed."
+        ),
     )

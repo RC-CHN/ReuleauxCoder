@@ -92,6 +92,23 @@ class WorkspaceConfigStore:
         save_yaml_config(self._path, data)
         return self._path
 
+    def save_mcp_server_enabled(self, server_name: str, enabled: bool) -> Path:
+        """Persist only the workspace-local enabled override for an MCP server."""
+        try:
+            data = load_yaml_config(self._path)
+        except FileNotFoundError:
+            data = {}
+
+        mcp_data = data.setdefault("mcp", {})
+        servers = mcp_data.setdefault("servers", {})
+        server_data = servers.setdefault(server_name, {})
+        if not isinstance(server_data, dict):
+            server_data = {}
+            servers[server_name] = server_data
+        server_data["enabled"] = enabled
+        save_yaml_config(self._path, data)
+        return self._path
+
     @staticmethod
     def approval_rule_to_dict(rule: ApprovalRuleConfig) -> dict:
         """Serialize an approval rule, dropping empty fields."""

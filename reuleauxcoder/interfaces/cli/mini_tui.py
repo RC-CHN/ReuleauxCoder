@@ -802,6 +802,7 @@ class MiniTUIApplication:
         self.cancelling = False
         self.exit_confirm = False
         self._exit_session_saved = False
+        self._saved_session_id: str | None = None
         self._closed = False
         self._worker: threading.Thread | None = None
         self._deferred_commands: deque[str] = deque()
@@ -817,7 +818,7 @@ class MiniTUIApplication:
         self.startup_lines = tuple(
             event.message.splitlines()[0]
             for event in startup_events
-            if event.message.strip()
+            if event.message.strip() and event.kind is not UIEventKind.MCP
         )[:6]
 
         history_path = (
@@ -940,6 +941,15 @@ class MiniTUIApplication:
             if self._animation_thread is not None:
                 self._animation_thread.join(timeout=0.5)
             self._save_exit_session()
+
+    @property
+    def exit_session_saved(self) -> bool:
+        """Whether this TUI exit produced a durable session snapshot."""
+        return self._exit_session_saved
+
+    @property
+    def saved_session_id(self) -> str | None:
+        return self._saved_session_id
 
     def _animation_loop(self) -> None:
         """Redraw leased activity without ever extending the runtime lease."""
@@ -1098,7 +1108,15 @@ class MiniTUIApplication:
             if result["action"] == "exit":
                 drain_deferred = False
                 self._clear_deferred_commands()
-                self._exit_session_saved = result.get("action_id") == "system.exit"
+                self._exit_session_saved = (
+                    result.get("action_id") == "system.exit"
+                    and self.config.session_auto_save
+                    and bool(self.agent.messages)
+                )
+                if self._exit_session_saved:
+                    self._saved_session_id = (
+                        result.get("session_id") or self.current_session_id
+                    )
                 self.application.exit()
                 return
             if result["action"] == "continue":
@@ -1342,6 +1360,7 @@ class MiniTUIApplication:
             # MODEL lives in the always-visible right-side context tail.
             f"ROOT {Path.cwd()}",
             f"SESSION {self.current_session_id or 'new'}",
+            self._mcp_panel_detail(),
             *self.startup_lines,
         )
         rows = _execution_panel_rows(
@@ -1359,6 +1378,17 @@ class MiniTUIApplication:
             padding = " " * max(1, width - used - tail_width)
             rows = (_fit_styled_row([*first, ("", padding), *tail], width), *rows[1:])
         return rows
+
+    def _mcp_panel_detail(self) -> str:
+        """Return a live MCP summary for the session header."""
+        servers = tuple(getattr(self.config, "mcp_servers", ()) or ())
+        enabled = sum(1 for server in servers if getattr(server, "enabled", True))
+        manager = getattr(self.agent, "mcp_manager", None)
+        state = str(getattr(manager, "initial_state", "ready"))
+        tools = int(getattr(manager, "available_tool_count", 0) or 0)
+        if state == "connecting":
+            return f"MCP connecting · {enabled} enabled · {tools} tools"
+        return f"MCP {enabled} enabled · {tools} tools"
 
     def _context_tail(self) -> tuple[tuple[str, str], ...]:
         """Right-side summary: runtime model plus context capacity bar."""
@@ -1597,7 +1627,7 @@ class MiniTUIApplication:
                 label=server.name,
                 description=(
                     f"{'enabled' if server.enabled else 'disabled'}"
-                    f"{' · connected' if server.runtime_connected else ''}"
+                    f" · {server.runtime_state}"
                 ),
                 command=(
                     f"/mcp {'disable' if server.enabled else 'enable'} {server.name}"
@@ -2004,6 +2034,8 @@ class MiniTUIApplication:
             events_already_persisted=True,
             **build_session_persistence_kwargs(self.agent),
         )
+        self._exit_session_saved = True
+        self._saved_session_id = sid
         self.agent.lifecycle.session_saved(sid)
 
     def _prepare_forced_exit(self, reason: str) -> None:

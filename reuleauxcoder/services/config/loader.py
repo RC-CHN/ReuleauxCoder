@@ -1,7 +1,7 @@
 """Configuration loader - loads config.yaml with global + workspace merge."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, cast
 import yaml
 
 from reuleauxcoder.compat import migrate_bash_to_shell, migrate_legacy_config
@@ -122,7 +122,18 @@ class ConfigLoader:
                 # Merge profile maps by name/key, override wins for same key
                 if "servers" in value and isinstance(value.get("servers"), dict):
                     base_servers = result_section.get("servers", {})
-                    result_section["servers"] = {**base_servers, **value["servers"]}
+                    override_servers = value["servers"]
+                    merged_servers = dict(base_servers)
+                    for server_name, server_value in override_servers.items():
+                        if isinstance(server_value, dict) and isinstance(
+                            base_servers.get(server_name), dict
+                        ):
+                            merged_servers[server_name] = self._merge_dicts(
+                                base_servers[server_name], server_value
+                            )
+                        else:
+                            merged_servers[server_name] = server_value
+                    result_section["servers"] = merged_servers
                 if "profiles" in value and isinstance(value.get("profiles"), dict):
                     base_profiles = result_section.get("profiles", {})
                     override_profiles = value["profiles"]
@@ -229,7 +240,8 @@ class ConfigLoader:
         return config
 
     def _migrate_config(self, data: dict) -> tuple[dict, list[ConfigDiagnostic]]:
-        models = data.get("models") if isinstance(data.get("models"), dict) else {}
+        raw_models = data.get("models")
+        models: dict = raw_models if isinstance(raw_models, dict) else {}
         uses_legacy_active = "active" in models and "active_main" not in models
         migrated, _ = migrate_legacy_config(data)
         diagnostics = []
@@ -387,7 +399,10 @@ class ConfigLoader:
                     "default_mode", DEFAULTS["approval_default_mode"]
                 ),
                 rules=approval_rules,
-                reviewer=str(approval_config.get("reviewer", "user")),
+                reviewer=cast(
+                    Literal["user", "auto_review"],
+                    str(approval_config.get("reviewer", "user")),
+                ),
                 auto_review_model_profile=approval_config.get(
                     "auto_review_model_profile"
                 ),

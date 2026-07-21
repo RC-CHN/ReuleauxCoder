@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from reuleauxcoder.app.runtime.session_state import (
@@ -22,6 +23,8 @@ def restore_session(
     config: Config,
     agent: Agent,
     ui_bus: UIEventBus,
+    *,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[str | None, str | None, Path | None]:
     """Restore requested/latest session and return session runtime metadata."""
     current_session_id = None
@@ -30,7 +33,12 @@ def restore_session(
     current_fingerprint = get_session_fingerprint(config, agent)
 
     session_store = dependencies.create_session_store(sessions_dir)
+    set_progress = getattr(session_store, "set_progress_callback", None)
+    if callable(set_progress):
+        set_progress(progress)
     if options.resume_session_id:
+        if progress is not None:
+            progress(f"Restoring requested session {options.resume_session_id}...")
         loaded = session_store.load(options.resume_session_id)
         if loaded:
             if loaded.fingerprint != current_fingerprint:
@@ -47,14 +55,25 @@ def restore_session(
                 f"Resumed session: {options.resume_session_id}",
                 kind=UIEventKind.SESSION,
             )
+            if progress is not None:
+                progress(
+                    f"Restored {len(loaded.messages)} message(s) and "
+                    f"{len(loaded.history_events)} history event(s)."
+                )
         else:
             ui_bus.error(
                 f"Session '{options.resume_session_id}' not found.",
                 kind=UIEventKind.SESSION,
             )
+            if progress is not None:
+                progress("Requested session was not found; starting a new session.")
     elif options.auto_resume_latest:
+        if progress is not None:
+            progress("Looking for the latest compatible session...")
         latest = session_store.get_latest(fingerprint=current_fingerprint)
         if latest:
+            if progress is not None:
+                progress(f"Restoring latest session {latest.id}...")
             loaded = session_store.load(latest.id)
             if loaded:
                 apply_session_runtime_state(loaded, config, agent)
@@ -71,7 +90,18 @@ def restore_session(
                         f"  Preview: {latest.preview}...",
                         kind=UIEventKind.SESSION,
                     )
+                if progress is not None:
+                    progress(
+                        f"Restored {len(loaded.messages)} message(s) and "
+                        f"{len(loaded.history_events)} history event(s)."
+                    )
+            elif progress is not None:
+                progress("Latest session could not be restored; starting a new session.")
+        elif progress is not None:
+            progress("No compatible saved session found; starting a new session.")
     else:
+        if progress is not None:
+            progress("Session restore disabled; starting a new session.")
         restore_config_runtime_defaults(config, agent)
 
     if current_session_id is None:

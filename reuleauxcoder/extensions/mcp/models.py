@@ -24,6 +24,8 @@ class MCPServerStatus:
     name: str
     enabled: bool
     runtime_connected: bool
+    runtime_active: bool = False
+    runtime_state: str = "unavailable"
 
 
 @dataclass(slots=True)
