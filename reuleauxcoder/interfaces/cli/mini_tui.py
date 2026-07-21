@@ -60,6 +60,7 @@ from reuleauxcoder.app.commands.view_models import (
 )
 from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
 from reuleauxcoder.extensions.mcp.models import MCPServersView
+from reuleauxcoder.extensions.skills.models import SkillsViewModel
 from reuleauxcoder.domain.approval import ApprovalSectionKind
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
@@ -1481,6 +1482,26 @@ class MiniTUIApplication:
     def _open_interactive_view(self, payload) -> bool:
         """Claim a view as a modal selection panel, or absorb its refresh."""
         is_refresh = payload.action == "refresh" or not payload.focus
+        if payload.view_type == "skills":
+            model = payload.view_model
+            if not isinstance(model, SkillsViewModel):
+                return False
+            if is_refresh:
+                if self._selection is not None and (
+                    self._selection.view_type == "skills"
+                ):
+                    self._selection.refresh(self._skills_items(model))
+                    self.invalidate()
+                return True
+            if not model.skills:
+                return False
+            self._selection = SelectionPanel.open(
+                title=payload.title,
+                items=self._skills_items(model),
+                view_type="skills",
+            )
+            self.invalidate()
+            return True
         if payload.view_type == "mcp_servers":
             model = payload.view_model
             if not isinstance(model, MCPServersView):
@@ -1574,6 +1595,24 @@ class MiniTUIApplication:
                 current=server.enabled,
             )
             for server in model.servers
+        )
+
+    @staticmethod
+    def _skills_items(model: SkillsViewModel) -> tuple[SelectionItem, ...]:
+        return tuple(
+            SelectionItem(
+                label=skill.name,
+                description=(
+                    f"{'enabled' if skill.enabled else 'disabled'}"
+                    f" · {skill.scope}"
+                    f"{' · ' + skill.description if skill.description else ''}"
+                ),
+                command=(
+                    f"/skills {'disable' if skill.enabled else 'enable'} {skill.name}"
+                ),
+                current=skill.enabled,
+            )
+            for skill in model.skills
         )
 
     def _approval_action_items(
@@ -1743,7 +1782,7 @@ class MiniTUIApplication:
         command = selected.command
         # Toggle panels (mcp) stay open after submitting so consecutive
         # toggles work; the refresh updates items in place.
-        keep_open = self._selection.view_type == "mcp_servers"
+        keep_open = self._selection.view_type in ("mcp_servers", "skills")
         if not keep_open:
             self._selection = None
             self._selection_stack = []

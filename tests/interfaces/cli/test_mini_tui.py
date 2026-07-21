@@ -713,6 +713,88 @@ def test_mcp_refresh_without_panel_is_absorbed() -> None:
     assert app._selection is None
 
 
+def _skills_view_payload(*, action: str = "open", focus: bool = True) -> object:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.extensions.skills.models import (
+        SkillViewItem,
+        SkillsSummary,
+        SkillsViewModel,
+    )
+
+    return NS(
+        view_type="skills",
+        title="Skills",
+        action=action,
+        focus=focus,
+        view_model=SkillsViewModel(
+            skills=(
+                SkillViewItem(
+                    name="commit-helper",
+                    description="Draft commit messages",
+                    scope="project",
+                    enabled=True,
+                    location=".agents/skills/commit-helper",
+                ),
+                SkillViewItem(
+                    name="deep-review",
+                    description="",
+                    scope="user",
+                    enabled=False,
+                    location="~/.agents/skills/deep-review",
+                ),
+            ),
+            summary=SkillsSummary(
+                discovered=2,
+                active=1,
+                disabled=1,
+                config_enabled=True,
+                scan_project=True,
+                scan_user=True,
+                catalog_loaded=True,
+            ),
+        ),
+    )
+
+
+def test_skills_view_opens_toggle_panel_and_confirm_keeps_it_open() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(_skills_view_payload()) is True
+    assert app._selection.view_type == "skills"
+    assert app._selection.selected.label == "commit-helper"
+    assert app._selection.selected.command == "/skills disable commit-helper"
+
+    app._selection_confirm()
+    assert accepted == ["/skills disable commit-helper"]
+    assert app._selection is not None  # toggle panels stay open
+
+    # Disabled skill toggles back with the enable command.
+    app._selection.move(1)
+    assert app._selection.selected.command == "/skills enable deep-review"
+
+
+def test_skills_refresh_updates_items_in_place() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+
+    app._open_interactive_view(_skills_view_payload())
+    assert (
+        app._open_interactive_view(_skills_view_payload(action="refresh", focus=False))
+        is True
+    )
+    assert app._selection is not None
+    assert len(app._selection.items) == 2
+
+
 def test_approval_panel_includes_dynamic_targets_without_rules() -> None:
     from types import SimpleNamespace as NS
 
