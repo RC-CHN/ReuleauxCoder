@@ -116,6 +116,56 @@ def test_yes_no_key_bindings_only_capture_binary_interactions() -> None:
     assert bindings[("n",)].filter() is True
 
 
+def test_enter_accepts_binary_interaction_without_consuming_chat_draft() -> None:
+    submissions = []
+    resets = []
+    app = object.__new__(MiniTUIApplication)
+    app._popup_candidates = lambda: ()
+    app.interactor = SimpleNamespace(
+        active_request=ConfirmRequest(title="Confirm", message="Continue?"),
+        submit=submissions.append,
+    )
+    buffer = SimpleNamespace(
+        text="keep this unfinished prompt",
+        reset=lambda: resets.append(True),
+    )
+
+    assert app._accept_buffer(buffer) is True
+
+    app.interactor.active_request = ReviewRequest(
+        title="Review",
+        summary="Command",
+    )
+    assert app._accept_buffer(buffer) is True
+
+    assert submissions == ["", ""]
+    assert resets == []
+    assert buffer.text == "keep this unfinished prompt"
+
+
+def test_ctrl_c_cancels_interaction_without_consuming_chat_draft() -> None:
+    resets = []
+    app = object.__new__(MiniTUIApplication)
+    app.interactor = SimpleNamespace(
+        active_request=ConfirmRequest(title="Confirm", message="Continue?"),
+        cancel_active=lambda: True,
+    )
+    app.input_buffer = SimpleNamespace(
+        text="keep this unfinished prompt",
+        reset=lambda: resets.append(True),
+    )
+    binding = next(
+        binding
+        for binding in app._key_bindings().bindings
+        if binding.keys == ("c-c",)
+    )
+
+    binding.handler(SimpleNamespace(app=SimpleNamespace(exit=lambda: None)))
+
+    assert resets == []
+    assert app.input_buffer.text == "keep this unfinished prompt"
+
+
 def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
     from types import SimpleNamespace
 

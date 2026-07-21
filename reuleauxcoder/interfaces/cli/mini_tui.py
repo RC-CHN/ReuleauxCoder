@@ -980,10 +980,17 @@ class MiniTUIApplication:
                 self._popup_adopt()
                 return True
         text = buffer.text.strip()
-        if self.interactor.active_request is not None:
-            # Approval is active: the buffer stays *untouched*.  Single-key
-            # Y / N bindings handle the interaction; Enter submits the draft
-            # content when the user intentionally typed a custom response.
+        active_request = self.interactor.active_request
+        if active_request is not None:
+            # Binary approvals borrow the input focus but not its contents.
+            # The buffer may contain a chat draft from before the request
+            # arrived; Enter accepts the advertised default without consuming
+            # that draft, just like the dedicated Y / N bindings below.
+            if isinstance(active_request, (ConfirmRequest, ReviewRequest)):
+                self.interactor.submit("")
+                return True
+            # Choice and text interactions intentionally use the buffer as
+            # their response field, so consume it only for those request kinds.
             buffer.reset()
             self.interactor.submit(text)
             return True
@@ -1217,7 +1224,8 @@ class MiniTUIApplication:
         @bindings.add("c-c")
         def _ctrl_c(event) -> None:
             if self.interactor.cancel_active():
-                self.input_buffer.reset()
+                # Cancelling a modal approval must not discard the chat draft
+                # that was present before the request took over the input lane.
                 return
             if self.input_buffer.text:
                 self.input_buffer.reset()
