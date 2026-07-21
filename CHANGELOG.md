@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-07-21
+
+- Reworked interactive command surfaces into panels: a registry-driven slash command popup, a modal selection panel piloted by /mode, two-level /model and /approval editors with rule deletion, toggle panels for /mcp and /skills, a /thinking effort picker, a /session picker with live text filtering, and an /agents jobs browser with per-job actions.
+- Formatted every command view as aligned text with empty-state hints, retiring raw JSON dumps; the execution panel now shows the active model and context capacity.
+- Added queued user steering above the input lane with a dedicated transcript event, turn pivoting on interrupt, and safe/stateful command policies during active turns.
+- Persisted skills-disabled state and runtime state per session, initialized MCP concurrently, and lazy-loaded the subagent runtime.
+- Improved performance through incremental artifact persistence, prompt/schema/hook caching, bounded stream queues with prompt cancellation abort, and startup/exit session scan avoidance.
+- Fixed approval-time draft preservation with Y/N single-key handling, cancellation resets between operations, provider consumer cleanup, preflight rejection of invalid tool calls, CJK markdown width handling, and defaulted shell output filtering (rtk) to off.
+
 ## 0.4.4 - 2026-07-14
 
 - Reworked automatic context compression into cache-preserving capacity tiers: deterministic snip commits from 60% only when it reclaims at least 20% of total request capacity, semantic summary starts at 75%, and 90% remains emergency-only.

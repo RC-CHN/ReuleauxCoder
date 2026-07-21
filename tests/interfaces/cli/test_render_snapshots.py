@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from rich.console import Console
 
+from reuleauxcoder import __version__
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.runtime.events import agent_event_to_runtime_event
 from reuleauxcoder.domain.runtime.events import (
@@ -329,7 +330,7 @@ def test_startup_banner_is_compact_and_terminal_bounded(width: int) -> None:
     show_banner(
         "demo/model",
         "https://example.invalid/openai-compatible/v1",
-        "0.4.4",
+        __version__,
         console_override=console,
         startup_events=(
             UIEvent.info("LSP: 9/9 language servers ready\n  ✓ python\n  ✓ rust"),
@@ -338,7 +339,7 @@ def test_startup_banner_is_compact_and_terminal_bounded(width: int) -> None:
     )
     output = console.export_text()
 
-    assert "FORGE   REULEAUXCODER  //  V0.4.4" in output
+    assert f"FORGE   REULEAUXCODER  //  V{__version__.upper()}" in output
     assert "SESSION PLATE" in output
     assert "demo/model" in output
     assert "LSP: 9/9 language servers" in output
