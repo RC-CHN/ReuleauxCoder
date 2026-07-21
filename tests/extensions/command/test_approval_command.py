@@ -12,8 +12,12 @@ from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.extensions.command.builtin.approval import (
     SetApprovalRuleCommand,
     SetGlobalApprovalRuleCommand,
+    UnsetApprovalRuleCommand,
+    UnsetGlobalApprovalRuleCommand,
     _handle_set_approval_rule,
     _handle_set_global_approval_rule,
+    _handle_unset_approval_rule,
+    _handle_unset_global_approval_rule,
 )
 from reuleauxcoder.infrastructure.yaml.loader import load_yaml_config
 from reuleauxcoder.services.config.loader import ConfigLoader
@@ -24,7 +28,7 @@ def _build_ctx() -> SimpleNamespace:
     hook_registry = HookRegistry()
     hook_registry.register(
         HookPoint.BEFORE_TOOL_EXECUTE,
-        ToolPolicyGuardHook(approval_config=config.approval),
+        ToolPolicyGuardHook.create_from_config(config),
     )
     agent = SimpleNamespace(hook_registry=hook_registry)
     effect = CommandEffect()
@@ -44,7 +48,9 @@ def test_set_approval_rule_is_session_scoped() -> None:
     assert len(session_rules) == 1
     assert session_rules[0].tool_name == "shell"
     assert session_rules[0].action == "deny"
-    assert result.state["rules"][0]["tool_name"] == "shell"
+    rules = result.state["rules"]
+    assert isinstance(rules, list)
+    assert rules[0]["tool_name"] == "shell"
     assert any(
         event.level == "success" and event.message == "Updated session approval rule"
         for event in ctx.effect.notifications
@@ -103,3 +109,62 @@ def test_set_global_approval_rule_replaces_same_target(tmp_path, monkeypatch) ->
     assert load_yaml_config(workspace_config)["approval"]["rules"] == [
         {"tool_name": "shell", "action": "allow"}
     ]
+
+
+def test_unset_approval_rule_removes_session_rule() -> None:
+    ctx = _build_ctx()
+    _handle_set_approval_rule(
+        SetApprovalRuleCommand(target="tool:shell", action="deny"), ctx
+    )
+    assert len(getattr(ctx.agent, "session_approval_rules")) == 1
+
+    result = _handle_unset_approval_rule(
+        UnsetApprovalRuleCommand(target="tool:shell"), ctx
+    )
+
+    assert getattr(ctx.agent, "session_approval_rules") == []
+    assert any(
+        event.level == "success" and "Removed session approval rule" in event.message
+        for event in ctx.effect.notifications
+    )
+    assert result.state is not None
+
+
+def test_unset_approval_rule_errors_when_rule_missing() -> None:
+    ctx = _build_ctx()
+
+    _handle_unset_approval_rule(UnsetApprovalRuleCommand(target="tool:shell"), ctx)
+
+    assert any(
+        event.level == "error" and "No session approval rule" in event.message
+        for event in ctx.effect.notifications
+    )
+
+
+def test_unset_global_approval_rule_removes_and_saves(monkeypatch) -> None:
+    ctx = _build_ctx()
+    saved = {}
+
+    def fake_save(self, approval):
+        saved["rules"] = [(rule.tool_name, rule.action) for rule in approval.rules]
+        return "/tmp/config.yaml"
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.command.builtin.approval.WorkspaceConfigStore.save_approval_config",
+        fake_save,
+    )
+    _handle_set_global_approval_rule(
+        SetGlobalApprovalRuleCommand(target="tool:shell", action="warn"), ctx
+    )
+    assert saved["rules"] == [("shell", "warn")]
+
+    _handle_unset_global_approval_rule(
+        UnsetGlobalApprovalRuleCommand(target="tool:shell"), ctx
+    )
+
+    assert ctx.config.approval.rules == []
+    assert saved["rules"] == []
+    assert any(
+        event.level == "success" and "Removed global approval rule" in event.message
+        for event in ctx.effect.notifications
+    )

@@ -1576,23 +1576,41 @@ class MiniTUIApplication:
             for server in model.servers
         )
 
+    def _approval_action_items(
+        self, target: str, prefix: str, current_action: str
+    ) -> tuple[SelectionItem, ...]:
+        return tuple(
+            SelectionItem(
+                label=action,
+                description=f"/approval {prefix} {target} {action}",
+                command=f"/approval {prefix} {target} {action}",
+                current=action == current_action,
+            )
+            for action in self._APPROVAL_ACTIONS
+        )
+
     def _open_approval_panel(self, payload, model: ApprovalView) -> bool:
-        if not model.rules:
-            return False
+        """Unified target list: configured rules plus dynamically discovered
+        targets (MCP servers, builtin tools) shown with their effective
+        action. New targets are edited as session-scoped rules."""
         self._approval_targets: dict[str, tuple[SelectionItem, ...]] = {}
         items: list[SelectionItem] = []
+        covered: set[str] = set()
         for rule in model.rules:
             target = self._approval_rule_target(rule)
+            covered.add(target)
             prefix = "set" if rule.source == "session" else "set-global"
-            self._approval_targets[target] = tuple(
-                SelectionItem(
-                    label=action,
-                    description=f"/approval {prefix} {target} {action}",
-                    command=f"/approval {prefix} {target} {action}",
-                    current=action == rule.action,
+            actions = list(self._approval_action_items(target, prefix, rule.action))
+            if rule.source in ("session", "workspace", "global"):
+                unset = "unset" if rule.source == "session" else "unset-global"
+                actions.append(
+                    SelectionItem(
+                        label="delete rule",
+                        description=f"/approval {unset} {target}",
+                        command=f"/approval {unset} {target}",
+                    )
                 )
-                for action in self._APPROVAL_ACTIONS
-            )
+            self._approval_targets[target] = tuple(actions)
             items.append(
                 SelectionItem(
                     label=target,
@@ -1600,6 +1618,43 @@ class MiniTUIApplication:
                     command="",
                 )
             )
+
+        dynamic: list[SelectionItem] = []
+        for policy in model.effective_mcp_policies:
+            target = f"mcp:{policy.server_name}"
+            if target in covered:
+                continue
+            self._approval_targets[target] = self._approval_action_items(
+                target, "set", policy.action
+            )
+            dynamic.append(
+                SelectionItem(
+                    label=target,
+                    description=f"{policy.action} · effective (no rule)",
+                    command="",
+                )
+            )
+        for policy in model.tool_policies:
+            if policy.tool_source != "builtin":
+                continue
+            target = f"tool:{policy.tool_name}"
+            if target in covered:
+                continue
+            self._approval_targets[target] = self._approval_action_items(
+                target, "set", policy.action
+            )
+            dynamic.append(
+                SelectionItem(
+                    label=target,
+                    description=f"{policy.action} · effective (no rule)",
+                    command="",
+                )
+            )
+        dynamic.sort(key=lambda item: item.label)
+        items.extend(dynamic)
+
+        if not items:
+            return False
         self._selection = SelectionPanel.open(
             title=payload.title,
             items=tuple(items),

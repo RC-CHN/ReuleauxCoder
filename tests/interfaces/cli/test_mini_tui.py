@@ -713,6 +713,68 @@ def test_mcp_refresh_without_panel_is_absorbed() -> None:
     assert app._selection is None
 
 
+def test_approval_panel_includes_dynamic_targets_without_rules() -> None:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.runtime.approval import (
+        ApprovalEffectivePolicyView,
+        ApprovalToolPolicyView,
+        ApprovalView,
+    )
+
+    payload = NS(
+        view_type="approval_rules",
+        title="Approval Rules",
+        action="open",
+        focus=True,
+        view_model=ApprovalView(
+            default_mode="warn",
+            rules=[],
+            effective_mcp_policies=[
+                ApprovalEffectivePolicyView(
+                    server_name="time", action="require_approval", source="default"
+                )
+            ],
+            tool_policies=[
+                ApprovalToolPolicyView(
+                    tool_name="shell",
+                    action="warn",
+                    source="session",
+                    tool_source="builtin",
+                    scope="tool=shell",
+                ),
+                ApprovalToolPolicyView(
+                    tool_name="some_mcp_tool",
+                    action="warn",
+                    source="default",
+                    tool_source="mcp",
+                    scope="<default_mode>",
+                ),
+            ],
+        ),
+    )
+
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app._approval_targets = {}
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(payload) is True
+    labels = [item.label for item in app._selection.items]
+    # Dynamic targets only: mcp server + builtin tool (mcp tool skipped).
+    assert labels == ["mcp:time", "tool:shell"]
+
+    # New target edits go through the session-scoped set command.
+    app._selection_confirm()
+    assert app._selection.selected.label == "require_approval"  # effective preselected
+    app._selection_confirm()
+    assert accepted == ["/approval set mcp:time require_approval"]
+
+
 def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
     adapter = MiniTUIEventAdapter()
     view = adapter.panel_view(now=100.0)
