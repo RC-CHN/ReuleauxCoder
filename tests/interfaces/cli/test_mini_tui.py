@@ -909,6 +909,86 @@ def test_thinking_effort_view_opens_selection_panel() -> None:
     assert app._selection is None
 
 
+def _sessions_view_payload() -> object:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.commands.view_models import (
+        SessionsViewModel,
+        SessionSummaryViewModel,
+    )
+
+    return NS(
+        view_type="sessions",
+        title="Sessions",
+        action="open",
+        focus=True,
+        view_model=SessionsViewModel(
+            fingerprint="fp",
+            show_all=False,
+            sessions=(
+                SessionSummaryViewModel(
+                    session_id="sess-aaa",
+                    model="k3",
+                    saved_at="2026-07-21T08:30:00",
+                    preview="fix the approval panel",
+                    position=1,
+                    active=True,
+                ),
+                SessionSummaryViewModel(
+                    session_id="sess-bbb",
+                    model="k2",
+                    saved_at="2026-07-20T18:00:00",
+                    preview="rtk investigation",
+                    position=2,
+                    active=False,
+                ),
+            ),
+        ),
+    )
+
+
+def test_sessions_view_opens_picker_and_confirm_resubmits_restore() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app._open_interactive_view(_sessions_view_payload()) is True
+    assert app._selection.view_type == "sessions"
+    assert app._selection.selected.label.startswith("#1")  # active preselected
+
+    app._selection.move(1)
+    app._selection_confirm()
+    assert accepted == ["/session sess-bbb"]
+    assert app._selection is None
+
+
+def test_sessions_picker_filters_by_buffer_text_and_keeps_input_visible() -> None:
+    app = object.__new__(MiniTUIApplication)
+    app.interactor = SimpleNamespace(active_request=None)
+    app._selection = None
+    app._selection_stack = []
+    app.invalidate = lambda: None
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app.application = SimpleNamespace(
+        output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=80))
+    )
+
+    app._open_interactive_view(_sessions_view_payload())
+    assert app._input_height() > 0  # filter box stays visible
+
+    app.input_buffer.text = "rtk"
+    visible = app._selection_visible_items()
+    assert [item.command for item in visible] == ["/session sess-bbb"]
+
+    app.input_buffer.text = "zzz-no-match"
+    assert app._selection_visible_items() == ()
+    assert app._selection_confirm() is None  # no-op on empty match
+
+
 def test_skills_panel_shows_hint_row_when_no_skills() -> None:
     from types import SimpleNamespace as NS
 

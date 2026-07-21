@@ -1284,13 +1284,17 @@ class MiniTUIApplication:
         @bindings.add("up", filter=selection_active)
         def _selection_up(event) -> None:  # noqa: ARG001
             if self._selection is not None:
-                self._selection.move(-1)
+                visible = len(self._selection_visible_items())
+                if visible:
+                    self._selection.index = (self._selection.index - 1) % visible
                 self.invalidate()
 
         @bindings.add("down", filter=selection_active)
         def _selection_down(event) -> None:  # noqa: ARG001
             if self._selection is not None:
-                self._selection.move(1)
+                visible = len(self._selection_visible_items())
+                if visible:
+                    self._selection.index = (self._selection.index + 1) % visible
                 self.invalidate()
 
         @bindings.add("enter", filter=selection_active)
@@ -1428,8 +1432,11 @@ class MiniTUIApplication:
     def _input_height(self) -> int:
         """Grow the single-line input visually as wrapped rows (capped)."""
         # Hide the input lane while an approval/review is pending so the draft
-        # buffer is preserved and single-key Y / N bindings take over.
-        if self.interactor.active_request is not None or self._selection is not None:
+        # buffer is preserved and single-key Y / N bindings take over. The
+        # session picker keeps it visible: the buffer doubles as its filter.
+        if self.interactor.active_request is not None:
+            return 0
+        if self._selection is not None and self._selection.view_type != "sessions":
             return 0
         try:
             columns = self.application.output.get_size().columns
@@ -1518,6 +1525,31 @@ class MiniTUIApplication:
     def _open_interactive_view(self, payload) -> bool:
         """Claim a view as a modal selection panel, or absorb its refresh."""
         is_refresh = payload.action == "refresh" or not payload.focus
+        if payload.view_type == "sessions":
+            model = payload.view_model
+            if not isinstance(model, SessionsViewModel):
+                return False
+            if is_refresh:
+                if self._selection is not None and (
+                    self._selection.view_type == "sessions"
+                ):
+                    self._selection.refresh(self._session_items(model))
+                    self.invalidate()
+                return True
+            items = self._session_items(model) or (
+                SelectionItem(
+                    label="(no saved sessions)",
+                    description="/save writes a restorable snapshot",
+                    command="",
+                ),
+            )
+            self._selection = SelectionPanel.open(
+                title=payload.title,
+                items=items,
+                view_type="sessions",
+            )
+            self.invalidate()
+            return True
         if payload.view_type == "thinking_effort":
             model = payload.view_model
             if not isinstance(model, ThinkingEffortViewModel):
@@ -1662,6 +1694,39 @@ class MiniTUIApplication:
                 current=server.enabled,
             )
             for server in model.servers
+        )
+
+    @staticmethod
+    def _session_items(model: SessionsViewModel) -> tuple[SelectionItem, ...]:
+        items: list[SelectionItem] = []
+        for session in model.sessions:
+            position = f"#{session.position}" if session.position is not None else "  "
+            active = " [active]" if session.active else ""
+            items.append(
+                SelectionItem(
+                    label=f"{position} {session.saved_at[:19]}",
+                    description=(
+                        f"{session.model} · {session.preview[:40]} · {session.session_id}"
+                        f"{active}"
+                    ),
+                    command=f"/session {session.session_id}",
+                    current=session.active,
+                )
+            )
+        return tuple(items)
+
+    def _selection_visible_items(self) -> tuple[SelectionItem, ...]:
+        """Items after the picker's live text filter (sessions only)."""
+        panel = self._selection
+        if panel is None or panel.view_type != "sessions":
+            return panel.items if panel is not None else ()
+        needle = self.input_buffer.text.strip().lower()
+        if not needle:
+            return panel.items
+        return tuple(
+            item
+            for item in panel.items
+            if needle in f"{item.label} {item.description}".lower()
         )
 
     @staticmethod
@@ -1812,7 +1877,7 @@ class MiniTUIApplication:
     def _selection_height(self) -> int:
         if self._selection is None:
             return 0
-        return min(9, len(self._selection.items) + 1)
+        return min(9, len(self._selection_visible_items()) + 1)
 
     def _selection_close(self) -> None:
         if self._selection_stack:
@@ -1822,9 +1887,12 @@ class MiniTUIApplication:
         self.invalidate()
 
     def _selection_confirm(self) -> None:
-        if self._selection is None or self._selection.selected is None:
+        if self._selection is None:
             return
-        selected = self._selection.selected
+        items = self._selection_visible_items()
+        if not items:
+            return
+        selected = items[min(self._selection.index, len(items) - 1)]
         if self._selection.view_type in ("model_slots", "approval_rules"):
             if self._selection.view_type == "model_slots":
                 slot = next(
@@ -1864,14 +1932,19 @@ class MiniTUIApplication:
         panel = self._selection
         if panel is None:
             return FormattedText([])
+        items = self._selection_visible_items()
+        hint = " · type to filter" if panel.view_type == "sessions" else ""
         fragments: list[tuple[str, str]] = [
             ("class:popup.cmd", f" {panel.title} "),
-            ("class:popup", "· Enter select · Esc close\n"),
+            ("class:popup", f"· Enter select{hint} · Esc close\n"),
         ]
+        if not items:
+            fragments.append(("class:popup", "  (no matches)\n"))
+            return FormattedText(fragments)
         limit = 8
-        index = min(panel.index, max(0, len(panel.items) - 1))
-        start = max(0, min(index - limit // 2, max(0, len(panel.items) - limit)))
-        for offset, item in enumerate(panel.items[start : start + limit]):
+        index = min(panel.index, max(0, len(items) - 1))
+        start = max(0, min(index - limit // 2, max(0, len(items) - limit)))
+        for offset, item in enumerate(items[start : start + limit]):
             i = start + offset
             marker = "›" if i == index else " "
             current = " (current)" if item.current else ""
