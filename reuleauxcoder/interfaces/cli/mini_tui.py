@@ -536,7 +536,7 @@ class MiniTUIEventAdapter:
         now = time.time()
         with self._lock:
             return any(
-                agent.is_animating(now)
+                agent.is_animating(now) or agent.operation_started_at is not None
                 for agent in self.execution.state.agents.values()
             )
 
@@ -792,6 +792,7 @@ class MiniTUIApplication:
         session_exit_time: str | None,
         skills_service=None,
         startup_events: tuple[UIEvent, ...] = (),
+        exit_progress: Callable[[str], None] | None = None,
     ) -> None:
         self.agent = agent
         self.config = config
@@ -804,6 +805,7 @@ class MiniTUIApplication:
         self.sessions_dir = sessions_dir
         self.session_exit_time = session_exit_time
         self.skills_service = skills_service
+        self._exit_progress = exit_progress
         self.running = False
         self.cancelling = False
         self.exit_confirm = False
@@ -2228,22 +2230,85 @@ class MiniTUIApplication:
             or not self.config.session_auto_save
         ):
             return
-        sid = SessionStore(self.sessions_dir).save(
-            self.agent.messages,
-            self.config.model,
-            self.current_session_id,
-            is_exit=True,
-            total_prompt_tokens=self.agent.state.total_prompt_tokens,
-            total_completion_tokens=self.agent.state.total_completion_tokens,
-            active_mode=getattr(self.agent, "active_mode", None),
-            runtime_state=build_session_runtime_state(self.config, self.agent),
-            incremental=True,
-            events_already_persisted=True,
-            **build_session_persistence_kwargs(self.agent),
-        )
+        progress = getattr(self, "_exit_progress", None)
+        operation_id = f"session-save:{self.current_session_id or 'new'}"
+        started = time.monotonic()
+        if progress is not None:
+            progress("Saving session snapshot...")
+        ui_bus = getattr(self, "ui_bus", None)
+        if ui_bus is not None:
+            ui_bus.emit_operation_phase(
+                operation_id=operation_id,
+                operation="shutdown",
+                phase="save_session",
+                started_at=time.time(),
+                cancelable=False,
+                agent_id=getattr(self.agent, "agent_id", None),
+                session_generation=getattr(
+                    self.agent, "session_generation", None
+                ),
+                session_id=self.current_session_id,
+            )
+        store = SessionStore(self.sessions_dir)
+        set_progress = getattr(store, "set_progress_callback", None)
+        if callable(set_progress):
+            set_progress(progress)
+        try:
+            sid = store.save(
+                self.agent.messages,
+                self.config.model,
+                self.current_session_id,
+                is_exit=True,
+                total_prompt_tokens=self.agent.state.total_prompt_tokens,
+                total_completion_tokens=self.agent.state.total_completion_tokens,
+                active_mode=getattr(self.agent, "active_mode", None),
+                runtime_state=build_session_runtime_state(self.config, self.agent),
+                incremental=True,
+                events_already_persisted=True,
+                **build_session_persistence_kwargs(self.agent),
+            )
+        except Exception as error:
+            elapsed = time.monotonic() - started
+            if ui_bus is not None:
+                ui_bus.emit_operation_phase(
+                    operation_id=operation_id,
+                    operation="shutdown",
+                    phase="save_session",
+                    status="failed",
+                    detail=str(error)[:160] or type(error).__name__,
+                    elapsed_ms=int(elapsed * 1000),
+                    error_type=type(error).__name__,
+                    agent_id=getattr(self.agent, "agent_id", None),
+                    session_generation=getattr(
+                        self.agent, "session_generation", None
+                    ),
+                    session_id=self.current_session_id,
+                )
+            if progress is not None:
+                progress(
+                    f"Session snapshot failed after {elapsed:.1f}s: "
+                    f"{type(error).__name__}: {error}"
+                )
+            raise
         self._exit_session_saved = True
         self._saved_session_id = sid
         self.agent.lifecycle.session_saved(sid)
+        elapsed = time.monotonic() - started
+        if ui_bus is not None:
+            ui_bus.emit_operation_phase(
+                operation_id=operation_id,
+                operation="shutdown",
+                phase="save_session",
+                status="completed",
+                elapsed_ms=int(elapsed * 1000),
+                agent_id=getattr(self.agent, "agent_id", None),
+                session_generation=getattr(
+                    self.agent, "session_generation", None
+                ),
+                session_id=sid,
+            )
+        if progress is not None:
+            progress(f"Session snapshot committed in {elapsed:.1f}s.")
 
     def _prepare_forced_exit(self, reason: str) -> None:
         self._clear_deferred_commands()

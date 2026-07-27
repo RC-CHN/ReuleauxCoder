@@ -502,6 +502,9 @@ class SessionStore:
                 if event.event_id not in existing_ids
             ]
         if new_events:
+            self._report_progress(
+                f"Appending {len(new_events)} history event(s)..."
+            )
             with events_path.open("a", encoding="utf-8") as stream:
                 for event in new_events:
                     event, _ = self._compact_legacy_request_event(event)
@@ -509,17 +512,34 @@ class SessionStore:
 
         replay = session.replay_envelope
         if replay is not None:
+            self._report_progress(
+                f"Writing replay snapshot ({len(replay.items)} item(s))..."
+            )
             self._atomic_write_json(directory / "replay.json", replay.to_dict())
-        for request in session.request_envelopes:
-            if incremental and request.request_id in cursor.request_ids:
-                continue
+        pending_requests = [
+            request
+            for request in session.request_envelopes
+            if not incremental or request.request_id not in cursor.request_ids
+        ]
+        if pending_requests:
+            self._report_progress(
+                f"Writing {len(pending_requests)} request record(s)..."
+            )
+        for request in pending_requests:
             self._atomic_write_json(
                 requests_dir / f"{request.request_id}.json", request.to_dict()
             )
             cursor.request_ids.add(request.request_id)
-        for checkpoint in session.checkpoints:
-            if incremental and checkpoint.id in cursor.checkpoint_ids:
-                continue
+        pending_checkpoints = [
+            checkpoint
+            for checkpoint in session.checkpoints
+            if not incremental or checkpoint.id not in cursor.checkpoint_ids
+        ]
+        if pending_checkpoints:
+            self._report_progress(
+                f"Writing {len(pending_checkpoints)} context checkpoint(s)..."
+            )
+        for checkpoint in pending_checkpoints:
             self._atomic_write_json(
                 checkpoints_dir / f"{checkpoint.id}.json", checkpoint.to_dict()
             )
@@ -541,6 +561,7 @@ class SessionStore:
         manifest["last_event_seq"] = max(
             (event.seq for event in session.history_events), default=0
         )
+        self._report_progress("Committing session manifest...")
         self._atomic_write_json(directory / "manifest.json", manifest)
 
     def _load_session_directory(self, directory: Path) -> Session | None:

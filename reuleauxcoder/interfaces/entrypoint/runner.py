@@ -14,6 +14,8 @@ and only need to implement their own UI-specific rendering.
 from __future__ import annotations
 
 import shutil
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -434,7 +436,38 @@ class AppRunner:
         progress: Callable[[str], None] | None = None,
     ) -> None:
         """Clean up resources (MCP connections, remote relay, etc.)."""
+        shutdown_id = f"shutdown-{uuid.uuid4().hex}"
+        shutdown_started_monotonic = time.monotonic()
+        phase_by_message = {
+            "Closing pending interactions...": "stop_interactions",
+            "Stopping remote chat handler...": "stop_remote_chat",
+            "Stopping sub-agent workers...": "stop_subagents",
+            "Disposing runtime extensions...": "dispose_extensions",
+            "Stopping remote relay HTTP service...": "stop_remote_relay",
+            "Stopping remote relay peers...": "stop_remote_relay",
+            "Disconnecting MCP servers...": "disconnect_mcp",
+            "Stopping language servers...": "stop_lsp",
+            "Releasing workspace monitors...": "release_monitors",
+        }
+
         def report(message: str) -> None:
+            if self._ui_bus is not None:
+                phase = phase_by_message.get(message)
+                if phase is not None:
+                    self._ui_bus.emit_operation_phase(
+                        operation_id=shutdown_id,
+                        operation="shutdown",
+                        phase=phase,
+                        started_at=time.time(),
+                        cancelable=True,
+                        agent_id=getattr(agent or self._agent, "agent_id", None),
+                        session_generation=getattr(
+                            agent or self._agent, "session_generation", None
+                        ),
+                        session_id=getattr(
+                            agent or self._agent, "current_session_id", None
+                        ),
+                    )
             if progress is None:
                 return
             try:
@@ -458,7 +491,9 @@ class AppRunner:
             subagent_manager = getattr(agent, "_subagent_manager", None)
             if subagent_manager is not None:
                 report("Stopping sub-agent workers...")
-                subagent_manager.shutdown(wait=True)
+                # Jobs receive their cancellation signal above. Do not let an
+                # uncooperative provider/tool hold the foreground exit path.
+                subagent_manager.shutdown(wait=False)
         report("Disposing runtime extensions...")
         extension_diagnostics = self._extension_manager.dispose_all()
         if self._ui_bus is not None:
@@ -492,7 +527,6 @@ class AppRunner:
             self._relay_server = None
         if self._mcp_manager:
             report("Disconnecting MCP servers...")
-            self._mcp_manager.disconnect_all()
             self._mcp_manager.stop()
             self._mcp_manager = None
         if self._lsp_manager:
@@ -511,6 +545,19 @@ class AppRunner:
             report("Releasing workspace monitors...")
             self._agent.hook_registry.bind_runtime_service("git_monitor", None)
         self._git_monitor = None
+        elapsed = time.monotonic() - shutdown_started_monotonic
+        if self._ui_bus is not None:
+            self._ui_bus.emit_operation_phase(
+                operation_id=shutdown_id,
+                operation="shutdown",
+                phase="completed",
+                status="completed",
+                elapsed_ms=int(elapsed * 1000),
+                agent_id=getattr(agent, "agent_id", None),
+                session_generation=getattr(agent, "session_generation", None),
+                session_id=getattr(agent, "current_session_id", None),
+            )
+        report(f"Background services stopped in {elapsed:.1f}s.")
         self._agent = None
         self._ui_bus = None
 

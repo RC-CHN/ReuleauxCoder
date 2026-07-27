@@ -244,6 +244,9 @@ def main():
             session_exit_time=ctx.session_exit_time,
             skills_service=ctx.skills_service,
             startup_events=startup_events,
+            exit_progress=lambda message: _terminal_status(
+                message, tone=DisplayTone.MUTED
+            ),
         )
         _terminal_status("Starting terminal UI...", tone=DisplayTone.ACCENT)
         try:
@@ -273,9 +276,11 @@ def main():
                         message, tone=DisplayTone.MUTED
                     )
                 )
-            except Exception:
+            except Exception as error:
                 _terminal_status(
-                    "Background service cleanup failed.", tone=DisplayTone.ERROR
+                    "Background service cleanup failed: "
+                    f"{type(error).__name__}: {error}",
+                    tone=DisplayTone.ERROR,
                 )
                 raise
             else:
