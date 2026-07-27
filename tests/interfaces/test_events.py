@@ -48,6 +48,28 @@ def test_ui_event_bus_exposes_immutable_history_snapshot() -> None:
     )
 
 
+def test_ui_event_bus_bounds_replay_history() -> None:
+    bus = UIEventBus(max_history=3)
+
+    for index in range(5):
+        bus.info(f"event-{index}")
+
+    assert tuple(event.message for event in bus.history_snapshot()) == (
+        "event-2",
+        "event-3",
+        "event-4",
+    )
+
+
+def test_ui_event_bus_rejects_non_positive_history_limit() -> None:
+    try:
+        UIEventBus(max_history=0)
+    except ValueError as error:
+        assert str(error) == "max_history must be positive"
+    else:
+        raise AssertionError("non-positive history limit must be rejected")
+
+
 def test_operation_phases_are_delivered_but_not_replayed() -> None:
     bus = UIEventBus()
     seen = []

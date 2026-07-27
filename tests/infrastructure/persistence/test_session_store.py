@@ -4,10 +4,37 @@ from pathlib import Path
 
 from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
-from reuleauxcoder.domain.context.replay import ReplayEnvelope
+from reuleauxcoder.domain.context.replay import ReplayEnvelope, RequestEnvelope
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.session.models import Session, SessionRuntimeState
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+
+
+def _request_envelopes(
+    count: int,
+    *,
+    session_id: str = "session-request-retention",
+) -> list[RequestEnvelope]:
+    replay = ReplayEnvelope.create(
+        session_id=session_id,
+        cache_epoch=0,
+        history_version=0,
+        model_profile="model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        instructions=[],
+        tools=[],
+        items=[],
+    )
+    return [
+        RequestEnvelope.create(
+            replay=replay,
+            overlay={"round": index},
+            overlay_revision=index + 1,
+            overlay_tokens=1,
+        )
+        for index in range(count)
+    ]
 
 
 def test_session_preview_uses_latest_real_user_request(tmp_path: Path) -> None:
@@ -84,6 +111,55 @@ def test_session_store_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert loaded.runtime_state.active_mode == "coder"
     assert loaded.runtime_state.llm_debug_trace is True
     assert loaded.fingerprint == "local"
+
+
+def test_session_store_retains_only_latest_request_records(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    requests = _request_envelopes(205)
+
+    session_id = store.save(
+        messages=[{"role": "user", "content": "bounded requests"}],
+        model="model",
+        session_id="session-request-retention",
+        request_envelopes=requests,
+    )
+
+    requests_dir = tmp_path / session_id / "requests"
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert len(list(requests_dir.glob("*.json"))) == 200
+    assert [item.request_id for item in loaded.request_envelopes] == [
+        item.request_id for item in requests[-200:]
+    ]
+
+
+def test_legacy_session_request_directory_is_bounded_on_load(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[{"role": "user", "content": "legacy requests"}],
+        model="model",
+        session_id="legacy-request-retention",
+    )
+    session_dir = tmp_path / session_id
+    manifest_path = session_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("request_ids")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    requests_dir = session_dir / "requests"
+    for request in _request_envelopes(205, session_id=session_id):
+        (requests_dir / f"{request.request_id}.json").write_text(
+            json.dumps(request.to_dict()),
+            encoding="utf-8",
+        )
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert len(loaded.request_envelopes) == 200
 
 
 def test_load_recovers_messages_committed_after_replay_snapshot(

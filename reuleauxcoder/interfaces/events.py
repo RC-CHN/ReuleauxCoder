@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -201,10 +202,17 @@ class UIEventBus:
     emitting thread when queued.
     """
 
-    def __init__(self, *, event_queue: queue.Queue | None = None):
+    def __init__(
+        self,
+        *,
+        event_queue: queue.Queue | None = None,
+        max_history: int = 256,
+    ):
+        if max_history < 1:
+            raise ValueError("max_history must be positive")
         self._queue = event_queue
         self._handlers: list[Callable[[UIEvent], None]] = []
-        self._history: list[UIEvent] = []
+        self._history: deque[UIEvent] = deque(maxlen=max_history)
 
     @property
     def is_queued(self) -> bool:

@@ -40,6 +40,7 @@ DEFAULT_SESSION_FINGERPRINT = "local"
 # ledger grow quadratically. The latest complete replay remains authoritative
 # in replay.json; request events retain only stable request/replay metadata.
 _SESSION_STORAGE_SCHEMA_VERSION = 2
+_MAX_REQUEST_RECORDS = 200
 
 
 @dataclass(slots=True)
@@ -179,7 +180,7 @@ class SessionStore:
                 runtime_state=effective_runtime,
                 history_events=list(ledger.events),
                 replay_envelope=replay,
-                request_envelopes=list(request_envelopes),
+                request_envelopes=list(request_envelopes)[-_MAX_REQUEST_RECORDS:],
                 checkpoints=list(checkpoints),
                 history_completeness=(
                     history_completeness
@@ -551,6 +552,9 @@ class SessionStore:
         manifest.pop("request_envelopes", None)
         manifest.pop("checkpoints", None)
         manifest["checkpoint_ids"] = [item.id for item in session.checkpoints]
+        manifest["request_ids"] = [
+            item.request_id for item in session.request_envelopes
+        ]
         manifest["preview"] = session.get_preview()
         manifest["message_token_counts"] = [
             message.get(MESSAGE_TOKEN_KEY) for message in session.messages
@@ -563,6 +567,17 @@ class SessionStore:
         )
         self._report_progress("Committing session manifest...")
         self._atomic_write_json(directory / "manifest.json", manifest)
+        retained_request_ids = set(manifest["request_ids"])
+        known_request_ids = set(cursor.request_ids)
+        if not incremental:
+            known_request_ids.update(path.stem for path in requests_dir.glob("*.json"))
+        for request_id in known_request_ids - retained_request_ids:
+            try:
+                (requests_dir / f"{request_id}.json").unlink(missing_ok=True)
+            except OSError:
+                continue
+            else:
+                cursor.request_ids.discard(request_id)
 
     def _load_session_directory(self, directory: Path) -> Session | None:
         manifest_path = directory / "manifest.json"
@@ -585,7 +600,19 @@ class SessionStore:
         requests: list[RequestEnvelope] = []
         requests_dir = directory / "requests"
         if requests_dir.exists():
-            request_paths = sorted(requests_dir.glob("*.json"))
+            request_ids = manifest.get("request_ids")
+            if isinstance(request_ids, list):
+                request_paths = [
+                    requests_dir / f"{request_id}.json"
+                    for request_id in request_ids[-_MAX_REQUEST_RECORDS:]
+                    if isinstance(request_id, str)
+                ]
+                request_paths = [path for path in request_paths if path.exists()]
+            else:
+                request_paths = sorted(
+                    requests_dir.glob("*.json"),
+                    key=lambda path: path.stat().st_mtime_ns,
+                )[-_MAX_REQUEST_RECORDS:]
             if request_paths:
                 self._report_progress(
                     f"Reading {len(request_paths)} request record(s)..."
