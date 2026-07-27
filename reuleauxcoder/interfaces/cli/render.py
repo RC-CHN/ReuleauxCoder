@@ -16,6 +16,7 @@ from reuleauxcoder.domain.runtime.events import (
     DiagnosticsPublished,
     ErrorOccurred,
     NotificationRaised,
+    OperationPhaseChanged,
     ReasoningDelta,
     RuntimeEvent,
     StreamChunk,
@@ -53,6 +54,7 @@ from reuleauxcoder.presentation import (
     ReasoningDisplay,
     Verbosity,
 )
+from reuleauxcoder.presentation.execution import operation_phase_activity
 from reuleauxcoder.presentation.policy import fold_text
 from reuleauxcoder.interfaces.cli.interaction_presenter import (
     render_interaction_request,
@@ -174,6 +176,18 @@ class CLIRenderer:
                 level="success" if payload.approved else "warning",
                 category="approval",
             )
+        elif isinstance(payload, OperationPhaseChanged):
+            if payload.status == "running":
+                detail = operation_phase_activity(payload)
+                if payload.endpoint_host and payload.endpoint_host not in detail:
+                    detail = f"{detail} · {payload.endpoint_host}"
+                self.activity.start(
+                    payload.operation.upper(),
+                    detail,
+                    timed=True,
+                )
+            else:
+                self.activity.stop()
 
     def _render_runtime_notification(self, payload: NotificationRaised) -> None:
         level = payload.severity.lower()

@@ -47,6 +47,7 @@ _PAYLOAD_TYPES = {
         events.UserSteeringApplied,
         events.SessionChanged,
         events.RuntimeStateChanged,
+        events.OperationPhaseChanged,
         events.PlanUpdated,
         events.ProgressReported,
         events.ViewRequested,
@@ -81,6 +82,8 @@ def runtime_event_from_dict(data: dict[str, Any]) -> RuntimeEvent:
     if not isinstance(payload_envelope, dict):
         raise TypeError("runtime event payload must be an object")
     payload_type_name = payload_envelope.get("type")
+    if not isinstance(payload_type_name, str):
+        raise TypeError("runtime payload type must be a string")
     payload_type = _PAYLOAD_TYPES.get(payload_type_name)
     if payload_type is None:
         raise ValueError(f"Unknown runtime payload type: {payload_type_name!r}")

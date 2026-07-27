@@ -16,6 +16,7 @@ from reuleauxcoder.domain.runtime.events import (
     PlanUpdated,
     ProgressReported,
     NotificationRaised,
+    OperationPhaseChanged,
     ReasoningDelta,
     RuntimeEvent,
     RuntimeStateChanged,
@@ -51,6 +52,8 @@ class ExecutionAgentState:
     blocker: str | None = None
     child_agent_id: str | None = None
     is_subagent: bool = False
+    operation_started_at: float | None = None
+    operation_cancelable: bool = False
 
     def is_animating(self, now: float | None = None) -> bool:
         return (now if now is not None else time.time()) < self.animation_lease_until
@@ -173,10 +176,27 @@ class ExecutionViewReducer:
             return True
         if isinstance(payload, (TurnStarted, ChatStarted)):
             self.state.runtime_state = "running"
-            self._touch(event, "thinking", status="thinking")
+            self._touch(event, "preparing request", status="working")
+            return True
+        if isinstance(payload, OperationPhaseChanged):
+            activity = operation_phase_activity(payload)
+            status = {
+                "failed": "failed",
+                "cancelled": "cancelling",
+                "completed": "working",
+            }.get(payload.status, "working")
+            agent = self._touch(event, activity, status=status)
+            agent.operation_started_at = (
+                payload.started_at if payload.status == "running" else None
+            )
+            agent.operation_cancelable = (
+                payload.cancelable and payload.status == "running"
+            )
             return True
         if isinstance(payload, (AssistantContentDelta, ReasoningDelta, StreamChunk)):
-            self._touch(event, "thinking", status="thinking")
+            agent = self._touch(event, "generating response", status="thinking")
+            agent.operation_started_at = None
+            agent.operation_cancelable = False
             return True
         if isinstance(payload, ToolCallStarted):
             self._touch(
@@ -307,6 +327,8 @@ class ExecutionViewReducer:
             self.state.agents[state_key] = agent
         agent.activity = activity
         agent.status = status
+        agent.operation_started_at = None
+        agent.operation_cancelable = False
         agent.last_activity_at = event.timestamp
         agent.animation_lease_until = event.timestamp + self.animation_lease_seconds
         return agent
@@ -476,11 +498,17 @@ def _panel_agent(agent: ExecutionAgentState, *, now: float) -> ExecutionPanelAge
             else "○"
         )
     )
+    activity = agent.activity
+    if agent.operation_started_at is not None:
+        elapsed = max(0.0, now - agent.operation_started_at)
+        activity = f"{activity} · {_format_elapsed(elapsed)}"
+        if agent.operation_cancelable:
+            activity += " · Ctrl+C cancels"
     return ExecutionPanelAgent(
         label=agent.label,
         status=agent.status,
         task=agent.task,
-        activity=agent.activity,
+        activity=activity,
         budget=agent.budget,
         marker=marker,
         is_subagent=agent.is_subagent,
@@ -521,6 +549,44 @@ def _budget_text(payload: SubagentJobChanged) -> str:
     if payload.max_tokens is not None:
         tokens += f"/{payload.max_tokens}"
     return f"{tools} · {tokens}"
+
+
+def operation_phase_activity(payload: OperationPhaseChanged) -> str:
+    """Return the shared human label for an operation lifecycle event."""
+    phase = {
+        "accepted": "request accepted",
+        "mcp_wait": "waiting for MCP",
+        "context_prepare": "preparing context",
+        "context_compact": "compacting context",
+        "request_build": "building request",
+        "connect": "connecting to model",
+        "retry_backoff": "retrying model request",
+        "await_first_chunk": "waiting for first response",
+        "streaming": "generating response",
+        "cancel_active_operation": "cancelling active work",
+        "save_session": "saving session",
+        "stop_interactions": "closing pending interactions",
+        "stop_remote_chat": "stopping remote chat",
+        "stop_subagents": "stopping sub-agent workers",
+        "dispose_extensions": "disposing runtime extensions",
+        "stop_remote_relay": "stopping remote relay",
+        "disconnect_mcp": "disconnecting MCP servers",
+        "stop_lsp": "stopping language servers",
+        "release_monitors": "releasing workspace monitors",
+        "completed": "complete",
+    }.get(payload.phase, payload.phase.replace("_", " "))
+    if payload.detail:
+        phase = f"{phase} · {payload.detail}"
+    if payload.attempt is not None:
+        suffix = f"attempt {payload.attempt}"
+        if payload.max_attempts is not None:
+            suffix += f"/{payload.max_attempts}"
+        phase = f"{phase} · {suffix}"
+    return phase
+
+
+def _format_elapsed(seconds: float) -> str:
+    return f"{seconds:.1f}s" if seconds < 60 else f"{seconds / 60:.1f}m"
 
 
 def _tool_activity(name: str, arguments: dict) -> str:

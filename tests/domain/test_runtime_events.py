@@ -17,6 +17,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.runtime.events import (
     AssistantContentDelta,
     NotificationRaised,
+    OperationPhaseChanged,
     PlanUpdated,
     ProgressReported,
     ReasoningDelta,
@@ -246,4 +247,24 @@ def test_runtime_event_codec_rejects_unknown_version_and_payload() -> None:
 )
 def test_control_plane_runtime_events_round_trip(payload) -> None:
     event = RuntimeEvent(payload=payload, event_id="control-1", timestamp=12.0)
+    assert runtime_event_from_dict(runtime_event_to_dict(event)) == event
+
+
+def test_operation_phase_runtime_event_round_trips() -> None:
+    event = RuntimeEvent(
+        payload=OperationPhaseChanged(
+            operation_id="request-1",
+            operation="model",
+            phase="await_first_chunk",
+            started_at=12.0,
+            attempt=2,
+            max_attempts=3,
+            cancelable=True,
+            endpoint_host="model.internal",
+        ),
+        event_id="operation-1",
+        timestamp=13.0,
+        turn_id="turn-1",
+    )
+
     assert runtime_event_from_dict(runtime_event_to_dict(event)) == event

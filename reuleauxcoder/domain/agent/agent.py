@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 import threading
+import time
 import uuid
 
 if TYPE_CHECKING:
@@ -719,6 +720,32 @@ class Agent:
                 severity=severity,
                 details=details,
             )
+        )
+
+    def report_operation_phase(
+        self,
+        phase: str,
+        *,
+        operation: str = "turn",
+        detail: str | None = None,
+        cancelable: bool = True,
+    ) -> None:
+        """Publish a transient operation phase without entering chat history."""
+        ui_bus = getattr(self.llm, "ui_bus", None)
+        if ui_bus is None:
+            return
+        operation_id = self._current_turn_id or f"{operation}:{self.agent_id}"
+        ui_bus.emit_operation_phase(
+            operation_id=operation_id,
+            operation=operation,
+            phase=phase,
+            started_at=time.time(),
+            cancelable=cancelable,
+            detail=detail,
+            agent_id=self.agent_id,
+            session_generation=self.session_generation,
+            session_id=getattr(self, "current_session_id", None),
+            turn_id=self._current_turn_id,
         )
 
     def register_hook(self, hook_point: HookPoint, hook: HookBase[Any]) -> None:

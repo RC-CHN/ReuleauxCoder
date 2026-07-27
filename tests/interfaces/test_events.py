@@ -1,6 +1,7 @@
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.runtime.events import (
     ErrorOccurred,
+    OperationPhaseChanged,
     ToolCallFinished,
     ToolCallStarted,
 )
@@ -45,6 +46,25 @@ def test_ui_event_bus_exposes_immutable_history_snapshot() -> None:
         "first",
         "second",
     )
+
+
+def test_operation_phases_are_delivered_but_not_replayed() -> None:
+    bus = UIEventBus()
+    seen = []
+    bus.subscribe(lambda event: seen.append(event), replay_history=False)
+
+    bus.emit_operation_phase(
+        operation_id="request-1",
+        operation="model",
+        phase="connect",
+        started_at=10.0,
+        cancelable=True,
+    )
+
+    assert len(seen) == 1
+    assert isinstance(seen[0].payload, RuntimeEventPayload)
+    assert isinstance(seen[0].payload.event.payload, OperationPhaseChanged)
+    assert bus.history_snapshot() == ()
 
 
 def test_ui_event_bus_emit_ignores_handler_exceptions() -> None:

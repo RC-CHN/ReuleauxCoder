@@ -488,10 +488,12 @@ class AgentLoop:
     def run(self) -> str:
         """Run the conversation loop."""
         self.round_limit_reached = False
+        self.agent.report_operation_phase("mcp_wait")
         self.agent.seal_startup_capabilities()
         if self.agent.stop_requested():
             return "(stopped by cancellation request)"
         # Compress if needed
+        self.agent.report_operation_phase("context_prepare")
         self.agent.maybe_compress_context(
             self.agent.llm, reason="pre-request checkpoint"
         )
@@ -557,6 +559,10 @@ class AgentLoop:
                     "Control state persistence is unavailable; refusing to issue "
                     "another model request until ledger recovery can be saved."
                 )
+            self.agent.report_operation_phase(
+                "request_build",
+                detail=f"round {round_num + 1}",
+            )
             request_messages = self._full_messages()
             request_tools = self._tool_schemas()
             restored = getattr(self.agent, "_restored_replay_envelope", None)

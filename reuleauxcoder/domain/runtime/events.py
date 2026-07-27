@@ -41,6 +41,7 @@ class RuntimeEventKind(str, Enum):
     USER_STEERING_APPLIED = "user_steering_applied"
     SESSION_CHANGED = "session_changed"
     RUNTIME_STATE_CHANGED = "runtime_state_changed"
+    OPERATION_PHASE_CHANGED = "operation_phase_changed"
     VIEW_REQUESTED = "view_requested"
     VIEW_REFRESHED = "view_refreshed"
     PLAN_UPDATED = "plan_updated"
@@ -259,6 +260,27 @@ class RuntimeStateChanged:
 
 
 @dataclass(frozen=True)
+class OperationPhaseChanged:
+    """A low-frequency lifecycle transition for a potentially slow operation."""
+
+    operation_id: str
+    operation: str
+    phase: str
+    status: str = "running"
+    detail: str | None = None
+    started_at: float | None = None
+    elapsed_ms: int | None = None
+    attempt: int | None = None
+    max_attempts: int | None = None
+    cancelable: bool = False
+    endpoint_host: str | None = None
+    error_type: str | None = None
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.OPERATION_PHASE_CHANGED, init=False
+    )
+
+
+@dataclass(frozen=True)
 class PlanUpdated:
     revision: int
     items: tuple[dict, ...]
@@ -313,6 +335,7 @@ RuntimePayload: TypeAlias = (
     | UserSteeringApplied
     | SessionChanged
     | RuntimeStateChanged
+    | OperationPhaseChanged
     | PlanUpdated
     | ProgressReported
     | ViewRequested
@@ -325,6 +348,7 @@ _TRANSIENT_PAYLOAD_TYPES = (
     ReasoningDelta,
     StreamChunk,
     ToolOutputDelta,
+    OperationPhaseChanged,
 )
 
 

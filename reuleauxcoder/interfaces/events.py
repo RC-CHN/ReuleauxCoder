@@ -11,6 +11,7 @@ from typing import Any, Protocol, TypeAlias
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.runtime.events import (
+    OperationPhaseChanged,
     RuntimeEvent,
     agent_event_to_runtime_event,
     is_transient_runtime_payload,
@@ -320,6 +321,51 @@ class UIEventBus:
                 message=event.kind.value,
                 kind=UIEventKind.AGENT,
                 payload=RuntimeEventPayload(event),
+            )
+        )
+
+    def emit_operation_phase(
+        self,
+        *,
+        operation_id: str,
+        operation: str,
+        phase: str,
+        status: str = "running",
+        detail: str | None = None,
+        started_at: float | None = None,
+        elapsed_ms: int | None = None,
+        attempt: int | None = None,
+        max_attempts: int | None = None,
+        cancelable: bool = False,
+        endpoint_host: str | None = None,
+        error_type: str | None = None,
+        agent_id: str | None = None,
+        session_generation: int | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        """Publish one non-replayable operation lifecycle transition."""
+        self.emit_runtime(
+            RuntimeEvent(
+                payload=OperationPhaseChanged(
+                    operation_id=operation_id,
+                    operation=operation,
+                    phase=phase,
+                    status=status,
+                    detail=detail,
+                    started_at=started_at,
+                    elapsed_ms=elapsed_ms,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    cancelable=cancelable,
+                    endpoint_host=endpoint_host,
+                    error_type=error_type,
+                ),
+                agent_id=agent_id,
+                session_generation=session_generation,
+                session_id=session_id,
+                turn_id=turn_id,
+                correlation_id=operation_id,
             )
         )
 

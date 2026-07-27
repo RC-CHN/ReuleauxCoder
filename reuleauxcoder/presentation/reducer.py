@@ -15,6 +15,7 @@ from reuleauxcoder.domain.runtime.events import (
     DiagnosticsPublished,
     ErrorOccurred,
     NotificationRaised,
+    OperationPhaseChanged,
     PlanUpdated,
     ProgressReported,
     ReasoningDelta,
@@ -211,6 +212,10 @@ class PresentationReducer:
         if isinstance(payload, RuntimeStateChanged):
             self.state.runtime_state = payload.state
             return ()
+        if isinstance(payload, OperationPhaseChanged):
+            # Operation phases belong to the transient execution projection,
+            # never to the durable conversation transcript.
+            return ()
         if isinstance(payload, (PlanUpdated, ProgressReported)):
             # Execution status is reduced independently from transcript cells.
             return ()
@@ -321,7 +326,7 @@ class PresentationReducer:
         return self._replace(updated)
 
     def _complete_chat(
-        self, event: RuntimeEvent, payload: ChatCompleted
+        self, event: RuntimeEvent, payload: ChatCompleted | TurnFinished
     ) -> tuple[PresentationChange, ...]:
         route = self._assistant_route(event)
         cell_id = self.state.active_assistant_cells.get(route)

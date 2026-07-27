@@ -8,6 +8,8 @@ from reuleauxcoder.domain.llm.models import (
     ToolCall,
 )
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
+from reuleauxcoder.interfaces.events import RuntimeEventPayload
+from reuleauxcoder.domain.runtime.events import OperationPhaseChanged
 from reuleauxcoder.services.llm.client import LLM, LLMRequestCancelled
 from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
 
@@ -443,6 +445,40 @@ class _FakeChunk:
     def __init__(self, *, content: str = "", usage=None):
         self.usage = usage
         self.choices = [_FakeChoice(_FakeDelta(content=content))]
+
+
+def test_llm_emits_non_replayable_request_phases() -> None:
+    bus = UIEventBus()
+    seen: list[OperationPhaseChanged] = []
+
+    def capture(event) -> None:
+        if isinstance(event.payload, RuntimeEventPayload) and isinstance(
+            event.payload.event.payload, OperationPhaseChanged
+        ):
+            seen.append(event.payload.event.payload)
+
+    bus.subscribe(capture, replay_history=False)
+    llm = LLM(model="demo-model", api_key="sk-test-12345678", ui_bus=bus)
+    llm._call_with_retry = lambda _params: iter(  # type: ignore[method-assign]
+        [_FakeChunk(content="hello")]
+    )
+
+    response = llm.chat(
+        [{"role": "user", "content": "Hi"}],
+        trace_id="request-1",
+        metadata={"agent_id": "main", "turn_id": "turn-1"},
+    )
+
+    assert response.content == "hello"
+    assert [event.phase for event in seen] == [
+        "request_build",
+        "connect",
+        "await_first_chunk",
+        "streaming",
+        "completed",
+    ]
+    assert seen[-1].status == "completed"
+    assert bus.history_snapshot() == ()
 
 
 def test_llm_stream_closes_when_agent_scope_is_cancelled() -> None:

@@ -2,6 +2,7 @@ from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
     ApprovalResolved,
+    OperationPhaseChanged,
     PlanUpdated,
     ProgressReported,
     RuntimeEvent,
@@ -92,6 +93,28 @@ def test_execution_view_keeps_five_latest_tool_lines_for_humans() -> None:
         )
     )
     assert reducer.state.agents["main"].status == "working"
+
+
+def test_operation_phase_projects_exact_activity_and_elapsed_time() -> None:
+    reducer = ExecutionViewReducer()
+    reducer.apply(
+        _event(
+            OperationPhaseChanged(
+                operation_id="request-1",
+                operation="model",
+                phase="await_first_chunk",
+                started_at=100.0,
+                cancelable=True,
+            ),
+            event_id="phase",
+        )
+    )
+
+    view = execution_panel_view(reducer.state, now=103.25)
+
+    assert "waiting for first response" in view.main.activity
+    assert "3.2s" in view.main.activity
+    assert "Ctrl+C cancels" in view.main.activity
 
 
 def test_attention_and_width_aware_projection() -> None:

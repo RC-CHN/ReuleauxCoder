@@ -4,9 +4,11 @@ import json
 import queue
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional, cast
+from urllib.parse import urlparse
 
 from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
 
@@ -373,6 +375,50 @@ class LLM:
         if self.ui_bus is not None:
             self.ui_bus.debug(message, kind=UIEventKind.AGENT, **data)
 
+    def _emit_operation_phase(
+        self,
+        *,
+        operation_id: str,
+        phase: str,
+        status: str = "running",
+        detail: str | None = None,
+        started_at: float | None = None,
+        elapsed_ms: int | None = None,
+        attempt: int | None = None,
+        max_attempts: int | None = None,
+        cancelable: bool = False,
+        error_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Publish a credential-free request lifecycle transition."""
+        if self.ui_bus is None:
+            return
+        event_metadata = metadata or {}
+        endpoint_host = None
+        if self.base_url:
+            try:
+                endpoint_host = urlparse(str(self.base_url)).hostname
+            except ValueError:
+                endpoint_host = None
+        self.ui_bus.emit_operation_phase(
+            operation_id=operation_id,
+            operation="model",
+            phase=phase,
+            status=status,
+            detail=detail,
+            started_at=started_at,
+            elapsed_ms=elapsed_ms,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            cancelable=cancelable,
+            endpoint_host=endpoint_host,
+            error_type=error_type,
+            agent_id=event_metadata.get("agent_id"),
+            session_generation=event_metadata.get("session_generation"),
+            session_id=event_metadata.get("session_id"),
+            turn_id=event_metadata.get("turn_id"),
+        )
+
     def chat(
         self,
         messages: list[dict],
@@ -387,6 +433,52 @@ class LLM:
         max_output_tokens: int | None = None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""
+        operation_id = trace_id or f"model-{uuid.uuid4().hex}"
+        operation_started_monotonic = time.monotonic()
+        event_metadata = dict(metadata or {})
+        event_metadata.setdefault("session_id", session_id)
+
+        def report_phase(
+            phase: str,
+            *,
+            status: str = "running",
+            detail: str | None = None,
+            attempt: int | None = None,
+            max_attempts: int | None = None,
+            error_type: str | None = None,
+        ) -> None:
+            self._emit_operation_phase(
+                operation_id=operation_id,
+                phase=phase,
+                status=status,
+                detail=detail,
+                started_at=(time.time() if status == "running" else None),
+                elapsed_ms=(
+                    int((time.monotonic() - operation_started_monotonic) * 1000)
+                    if status != "running"
+                    else None
+                ),
+                attempt=attempt,
+                max_attempts=max_attempts,
+                cancelable=cancellation_event is not None,
+                error_type=error_type,
+                metadata=event_metadata,
+            )
+
+        def retry_observer(
+            attempt: int,
+            maximum: int,
+            wait: float,
+            error: BaseException,
+        ) -> None:
+            report_phase(
+                "retry_backoff",
+                detail=f"{type(error).__name__}; waiting {wait:.0f}s",
+                attempt=attempt,
+                max_attempts=maximum,
+            )
+
+        report_phase("request_build")
         self.last_dispatched_request = None
         self.last_debug_trace_path = None
         raw_messages = [dict(msg) for msg in messages]
@@ -498,17 +590,31 @@ class LLM:
             # stream_options is an OpenAI extension
             try:
                 params["stream_options"] = {"include_usage": True}
+                report_phase("connect", attempt=1, max_attempts=3)
                 stream = _cancellable_stream_open(
-                    lambda: self._call_with_retry(params), cancellation_event
+                    lambda: self._call_with_retry_observed(
+                        params, retry_observer
+                    ),
+                    cancellation_event,
                 )
                 debug_stream_options_enabled = True
             except LLMRequestCancelled:
                 raise
             except Exception:
                 params.pop("stream_options", None)
-                stream = _cancellable_stream_open(
-                    lambda: self._call_with_retry(params), cancellation_event
+                report_phase(
+                    "connect",
+                    detail="retrying without stream usage extension",
+                    attempt=1,
+                    max_attempts=3,
                 )
+                stream = _cancellable_stream_open(
+                    lambda: self._call_with_retry_observed(
+                        params, retry_observer
+                    ),
+                    cancellation_event,
+                )
+            report_phase("await_first_chunk")
             # This is the exact hook-transformed payload accepted by the client,
             # retained without credentials for request-boundary audit/replay.
             self.last_dispatched_request = canonicalize_request_params(params)
@@ -522,9 +628,13 @@ class LLM:
             completion_tok = 0
             cached_input_tok: int | None = None
 
+            received_first_chunk = False
             for chunk in _cancellable_stream_chunks(stream, cancellation_event):
                 if cancellation_event is not None and cancellation_event.is_set():
                     raise LLMRequestCancelled("LLM stream cancelled")
+                if not received_first_chunk:
+                    received_first_chunk = True
+                    report_phase("streaming")
                 if (
                     self.debug_trace
                     and len(debug_stream_events) < MAX_DEBUG_STREAM_EVENTS
@@ -721,10 +831,18 @@ class LLM:
 
             # Narrow back from HookContext (same reasoning as above).
             after_context = cast(AfterLLMResponseContext, after_context)
+            report_phase("completed", status="completed")
             return after_context.response or response
         except LLMRequestCancelled:
+            report_phase("cancelled", status="cancelled")
             raise
         except Exception as e:
+            report_phase(
+                "failed",
+                status="failed",
+                detail=str(e)[:160] or type(e).__name__,
+                error_type=type(e).__name__,
+            )
             diagnostic_path = persist_llm_error_diagnostic(
                 model=self.model,
                 base_url=self.base_url,
@@ -742,13 +860,32 @@ class LLM:
                 )
             raise
 
-    def _call_with_retry(self, params: dict, max_retries: int = 3) -> Any:
+    def _call_with_retry_observed(
+        self,
+        params: dict,
+        on_retry: Callable[[int, int, float, BaseException], None],
+    ) -> Any:
+        """Keep test/provider overrides compatible while observing core retries."""
+        call = self._call_with_retry
+        if getattr(call, "__func__", None) is LLM._call_with_retry:
+            return call(params, on_retry=on_retry)
+        return call(params)
+
+    def _call_with_retry(
+        self,
+        params: dict,
+        max_retries: int = 3,
+        *,
+        on_retry: Callable[[int, int, float, BaseException], None] | None = None,
+    ) -> Any:
         """Retry on transient errors with exponential backoff."""
         for attempt in range(max_retries):
             try:
                 return self.client.chat.completions.create(**params)
-            except (RateLimitError, APITimeoutError, APIConnectionError):
+            except (RateLimitError, APITimeoutError, APIConnectionError) as error:
                 if attempt == max_retries - 1:
                     raise
                 wait = 2**attempt
+                if on_retry is not None:
+                    on_retry(attempt + 2, max_retries, wait, error)
                 time.sleep(wait)
