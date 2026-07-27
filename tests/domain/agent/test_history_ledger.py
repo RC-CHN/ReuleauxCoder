@@ -53,6 +53,28 @@ def test_message_ledger_event_has_top_level_runtime_attribution(tmp_path) -> Non
     assert encoded["timestamp"] == event.created_at
 
 
+def test_one_message_batches_semantic_events_into_one_fsync(
+    tmp_path, monkeypatch
+) -> None:
+    fsync_calls = []
+    monkeypatch.setattr(
+        "reuleauxcoder.domain.history.os.fsync",
+        lambda fd: fsync_calls.append(fd),
+    )
+    ledger = HistoryLedger(sink_path=tmp_path / "events.jsonl")
+
+    ledger.append_message(
+        {"role": "user", "content": "hello"},
+        source="user_input",
+    )
+
+    assert [event.kind for event in ledger.events] == [
+        "message_committed",
+        "user_message",
+    ]
+    assert len(fsync_calls) == 1
+
+
 def test_structured_tool_lifecycle_is_persisted_as_runtime_truth() -> None:
     agent = Agent(llm=_LLM(), tools=[])
     agent._current_turn_id = "turn"

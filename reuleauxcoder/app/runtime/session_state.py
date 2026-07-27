@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+import threading
+
 from reuleauxcoder.app.runtime.approval import (
     refresh_approval_runtime,
     same_rule_target,
@@ -17,6 +20,73 @@ from reuleauxcoder.infrastructure.persistence.session_store import (
     DEFAULT_SESSION_FINGERPRINT,
 )
 from reuleauxcoder.services.llm.factory import reconfigure_llm_from_settings
+
+_LIVE_SNAPSHOT_DELAY_SECONDS = 0.15
+
+
+class _LiveSessionPersistence:
+    """Coalesce full snapshots while the append-only ledger stays durable."""
+
+    def __init__(self, persist, *, delay: float = _LIVE_SNAPSHOT_DELAY_SECONDS):
+        self._persist = persist
+        self._delay = max(0.0, delay)
+        self._lock = threading.RLock()
+        self._write_lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+        self._closed = False
+        self._generation = 0
+
+    def __call__(self, *, deferred: bool = False) -> None:
+        if not deferred:
+            self.flush()
+            return
+        with self._lock:
+            if self._closed:
+                return
+            self._generation += 1
+            generation = self._generation
+            if self._timer is not None:
+                self._timer.cancel()
+            timer = threading.Timer(
+                self._delay,
+                self._run_deferred,
+                args=(generation,),
+            )
+            timer.daemon = True
+            self._timer = timer
+            timer.start()
+
+    def _run_deferred(self, generation: int) -> None:
+        with self._lock:
+            if self._closed or generation != self._generation:
+                return
+            self._timer = None
+        with self._write_lock:
+            with self._lock:
+                if self._closed or generation != self._generation:
+                    return
+            try:
+                self._persist()
+            except Exception:
+                # The event itself was fsync'd before this best-effort snapshot.
+                # A later forced flush or restore-tail reconstruction recovers.
+                return
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._generation += 1
+            timer, self._timer = self._timer, None
+            if timer is not None:
+                timer.cancel()
+        with self._write_lock:
+            self._persist()
+
+    def close(self) -> None:
+        self.flush()
+        with self._lock:
+            self._closed = True
 
 
 def get_session_fingerprint(config: Config, agent: Agent) -> str:
@@ -60,22 +130,31 @@ def bind_session_persistence(
     agent.current_session_id = session_id
 
     def persist() -> None:
+        context_lock = getattr(agent, "_context_revision_lock", None)
+        with context_lock if context_lock is not None else nullcontext():
+            messages = [dict(message) for message in agent.messages]
+            model = getattr(agent.llm, "model", config.model)
+            total_prompt_tokens = agent.state.total_prompt_tokens
+            total_completion_tokens = agent.state.total_completion_tokens
+            active_mode = getattr(agent, "active_mode", None)
+            runtime_state = build_session_runtime_state(config, agent)
+            persistence_kwargs = build_session_persistence_kwargs(agent)
         store.save(
-            agent.messages,
-            getattr(agent.llm, "model", config.model),
+            messages,
+            model,
             session_id,
-            total_prompt_tokens=agent.state.total_prompt_tokens,
-            total_completion_tokens=agent.state.total_completion_tokens,
-            active_mode=getattr(agent, "active_mode", None),
-            runtime_state=build_session_runtime_state(config, agent),
+            total_prompt_tokens=total_prompt_tokens,
+            total_completion_tokens=total_completion_tokens,
+            active_mode=active_mode,
+            runtime_state=runtime_state,
             fingerprint=fingerprint,
             incremental=True,
             events_already_persisted=True,
-            **build_session_persistence_kwargs(agent),
+            **persistence_kwargs,
         )
 
     events_path = store.sessions_dir / session_id / "events.jsonl"
-    bind(events_path=events_path, callback=persist)
+    bind(events_path=events_path, callback=_LiveSessionPersistence(persist))
 
 
 def _clone_approval_rules(rules: list[ApprovalRuleConfig]) -> list[ApprovalRuleConfig]:
@@ -234,7 +313,11 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
     if callable(restore_disabled) and restore_disabled(skills_disabled):
         # Skills feed the system prompt; refresh the cached catalog so the
         # restored session prompts match what the session was saved with.
-        agent.skills_catalog = skills_service.build_catalog()
+        build_catalog = getattr(skills_service, "build_catalog", None)
+        if callable(build_catalog):
+            catalog = build_catalog()
+            if isinstance(catalog, str):
+                agent.skills_catalog = catalog
 
     if runtime.approval_rules:
         session_rules = [

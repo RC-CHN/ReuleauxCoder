@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from contextlib import contextmanager
 import json
 import threading
 import time
@@ -85,6 +86,8 @@ class HistoryLedger:
         self._sink_path = Path(sink_path) if sink_path is not None else None
         self._session_id = session_id
         self._agent_id = agent_id
+        self._sink_batch_depth = 0
+        self._pending_sink_events: list[HistoryEvent] = []
 
     @property
     def events(self) -> tuple[HistoryEvent, ...]:
@@ -145,29 +148,30 @@ class HistoryLedger:
         }
         role = _optional_str(message.get("role"))
         with self._lock:
-            committed = self.append(
-                "message_committed",
-                {"source": source, "message": canonical_message},
-                agent_id=agent_id,
-                turn_id=turn_id,
-                api_round_id=api_round_id,
-                role=role,
-            )
-            semantic_kind = _message_semantic_kind(message, source)
-            if semantic_kind is not None:
-                self.append(
-                    semantic_kind,
-                    {
-                        "message_event_id": committed.event_id,
-                        "source": source,
-                        "tool_call_ids": _message_tool_call_ids(message),
-                        "tool_call_id": message.get("tool_call_id"),
-                    },
+            with self._batch_sink_writes():
+                committed = self.append(
+                    "message_committed",
+                    {"source": source, "message": canonical_message},
                     agent_id=agent_id,
                     turn_id=turn_id,
                     api_round_id=api_round_id,
                     role=role,
                 )
+                semantic_kind = _message_semantic_kind(message, source)
+                if semantic_kind is not None:
+                    self.append(
+                        semantic_kind,
+                        {
+                            "message_event_id": committed.event_id,
+                            "source": source,
+                            "tool_call_ids": _message_tool_call_ids(message),
+                            "tool_call_id": message.get("tool_call_id"),
+                        },
+                        agent_id=agent_id,
+                        turn_id=turn_id,
+                        api_round_id=api_round_id,
+                        role=role,
+                    )
             return committed
 
     def append_context_view(
@@ -179,32 +183,33 @@ class HistoryLedger:
         checkpoint_id: str | None = None,
     ) -> HistoryEvent:
         with self._lock:
-            committed = self.append(
-                "context_view_committed",
-                {
-                    "reason": reason,
-                    "history_version": history_version,
-                    "checkpoint_id": checkpoint_id,
-                    "items": [
-                        {
-                            key: value
-                            for key, value in item.items()
-                            if key != "_rc_token_count"
-                        }
-                        for item in messages
-                    ],
-                },
-            )
-            if checkpoint_id is not None:
-                self.append(
-                    "context_checkpoint",
+            with self._batch_sink_writes():
+                committed = self.append(
+                    "context_view_committed",
                     {
-                        "checkpoint_id": checkpoint_id,
-                        "context_view_event_id": committed.event_id,
+                        "reason": reason,
                         "history_version": history_version,
+                        "checkpoint_id": checkpoint_id,
+                        "items": [
+                            {
+                                key: value
+                                for key, value in item.items()
+                                if key != "_rc_token_count"
+                            }
+                            for item in messages
+                        ],
                     },
-                    supersedes_event_ids=(committed.event_id,),
                 )
+                if checkpoint_id is not None:
+                    self.append(
+                        "context_checkpoint",
+                        {
+                            "checkpoint_id": checkpoint_id,
+                            "context_view_event_id": committed.event_id,
+                            "history_version": history_version,
+                        },
+                        supersedes_event_ids=(committed.event_id,),
+                    )
             return committed
 
     def advance_generation(self, generation: int) -> None:
@@ -215,6 +220,12 @@ class HistoryLedger:
         with self._lock:
             self._sink_path = Path(path)
             self._sink_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def unbind_jsonl(self) -> None:
+        """Stop appending events to the previously bound session ledger."""
+        with self._lock:
+            self._sink_path = None
+            self._pending_sink_events.clear()
 
     def bind_context(
         self, *, session_id: str | None = None, agent_id: str | None = None
@@ -229,12 +240,32 @@ class HistoryLedger:
     def _append_to_sink(self, event: HistoryEvent) -> None:
         if self._sink_path is None:
             return
+        if self._sink_batch_depth:
+            self._pending_sink_events.append(event)
+            return
+        self._write_sink_events((event,))
+
+    def _write_sink_events(self, events: tuple[HistoryEvent, ...]) -> None:
+        if self._sink_path is None or not events:
+            return
         self._sink_path.parent.mkdir(parents=True, exist_ok=True)
-        encoded = json.dumps(event.to_dict(), ensure_ascii=False) + "\n"
         with self._sink_path.open("a", encoding="utf-8") as stream:
-            stream.write(encoded)
+            for event in events:
+                stream.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+
+    @contextmanager
+    def _batch_sink_writes(self):
+        self._sink_batch_depth += 1
+        try:
+            yield
+        finally:
+            self._sink_batch_depth -= 1
+            if self._sink_batch_depth == 0 and self._pending_sink_events:
+                pending = tuple(self._pending_sink_events)
+                self._pending_sink_events.clear()
+                self._write_sink_events(pending)
 
 
 def _optional_str(value: object) -> str | None:

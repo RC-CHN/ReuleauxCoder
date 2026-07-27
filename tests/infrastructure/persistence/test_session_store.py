@@ -86,6 +86,50 @@ def test_session_store_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert loaded.fingerprint == "local"
 
 
+def test_load_recovers_messages_committed_after_replay_snapshot(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    ledger = HistoryLedger()
+    first = {"role": "user", "content": "persisted snapshot"}
+    second = {"role": "assistant", "content": "durable ledger tail"}
+    first_event = ledger.append_message(first, source="user_input")
+    replay = ReplayEnvelope.create(
+        session_id="session-tail",
+        cache_epoch=0,
+        history_version=0,
+        model_profile="model",
+        provider_family="openai-compatible",
+        request_mode="chat-completions",
+        instructions=[],
+        tools=[],
+        items=[first],
+        item_provenance=[
+            {
+                "source_event_ids": [first_event.event_id],
+                "artifact_refs": [],
+                "checkpoint_id": None,
+            }
+        ],
+    )
+    ledger.append_message(second, source="assistant_response")
+    store.save(
+        messages=[first],
+        model="model",
+        session_id="session-tail",
+        history_events=list(ledger.events),
+        replay_envelope=replay,
+    )
+
+    loaded = store.load("session-tail")
+
+    assert loaded is not None
+    assert [message["content"] for message in loaded.messages] == [
+        "persisted snapshot",
+        "durable ledger tail",
+    ]
+
+
 def test_new_session_layout_separates_full_ledger_from_runtime_view(
     tmp_path: Path,
 ) -> None:

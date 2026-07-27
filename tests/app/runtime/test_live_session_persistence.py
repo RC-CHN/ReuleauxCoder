@@ -47,3 +47,36 @@ def test_unbound_reset_does_not_replace_saved_session_view(tmp_path) -> None:
     loaded = store.load(session_id)
     assert loaded is not None
     assert loaded.messages[0]["content"] == "keep me"
+
+
+def test_burst_messages_coalesce_into_one_full_snapshot(tmp_path) -> None:
+    config = Config(api_key="key", session_dir=str(tmp_path))
+    agent = Agent(llm=_LLM(), tools=[], config=config)
+    store = SessionStore(tmp_path)
+    session_id = store.generate_session_id()
+    save_calls = []
+    original_save = store.save
+
+    def counted_save(*args, **kwargs):
+        save_calls.append(True)
+        return original_save(*args, **kwargs)
+
+    store.save = counted_save  # type: ignore[method-assign]
+    bind_session_persistence(config, agent, store, session_id, fingerprint="local")
+
+    for index in range(4):
+        agent._append_message(
+            {"role": "user", "content": f"message-{index}"},
+            source="user",
+        )
+    agent.unbind_session_persistence()
+
+    assert len(save_calls) == 1
+    loaded = store.load(session_id)
+    assert loaded is not None
+    assert [message["content"] for message in loaded.messages] == [
+        "message-0",
+        "message-1",
+        "message-2",
+        "message-3",
+    ]

@@ -275,7 +275,7 @@ class Agent:
             )
             self.state.messages.append(message)
             self._context_revision += 1
-            self.persist_runtime_snapshot()
+            self.persist_runtime_snapshot(deferred=True)
 
     def bind_session_persistence(self, *, events_path, callback) -> None:
         self.history_ledger.bind_context(
@@ -286,12 +286,21 @@ class Agent:
         self._session_persist_callback = callback
 
     def unbind_session_persistence(self) -> None:
+        flush = getattr(self._session_persist_callback, "flush", None)
+        if callable(flush):
+            flush()
         self._session_persist_callback = None
+        self.history_ledger.unbind_jsonl()
 
-    def persist_runtime_snapshot(self) -> None:
+    def persist_runtime_snapshot(self, *, deferred: bool = False) -> None:
         callback = self._session_persist_callback
         if callable(callback):
-            callback()
+            try:
+                callback(deferred=deferred)
+            except TypeError as error:
+                if "deferred" not in str(error):
+                    raise
+                callback()
 
     def recover_control_plane_if_required(self) -> bool:
         """Recover ledger-first control commits before another model request."""

@@ -633,11 +633,66 @@ class SessionStore:
             for message, token_count in zip(session.messages, token_counts):
                 if isinstance(token_count, int):
                     message[MESSAGE_TOKEN_KEY] = token_count
+        session.messages, recovered_count = self._recover_replay_tail(
+            session.messages,
+            replay,
+            events,
+        )
+        if recovered_count:
+            ensure_message_token_counts(session.messages)
+            self._report_progress(
+                f"Recovered {recovered_count} message update(s) from "
+                "the durable history tail."
+            )
         session.replay_envelope = replay
         session.history_events = events
         session.request_envelopes = requests
         session.checkpoints = checkpoints
         return session
+
+    @staticmethod
+    def _recover_replay_tail(
+        snapshot_messages: list[dict],
+        replay: ReplayEnvelope,
+        events: list[HistoryEvent],
+    ) -> tuple[list[dict], int]:
+        """Apply durable message/view events committed after the replay snapshot."""
+        if not events:
+            return snapshot_messages, 0
+        seq_by_id = {event.event_id: event.seq for event in events}
+        snapshot_seq = max(
+            (
+                seq_by_id.get(str(event_id), 0)
+                for provenance in replay.item_provenance
+                for event_id in provenance.get("source_event_ids", ())
+            ),
+            default=0,
+        )
+        if snapshot_seq <= 0 and snapshot_messages:
+            # Legacy replay provenance cannot safely establish a boundary.
+            # Its synchronous snapshots remain authoritative.
+            return snapshot_messages, 0
+
+        recovered = [dict(message) for message in snapshot_messages]
+        applied = 0
+        for event in events:
+            if event.seq <= snapshot_seq:
+                continue
+            if event.kind == "context_view_committed":
+                items = event.payload.get("items")
+                if isinstance(items, list) and all(
+                    isinstance(item, dict) for item in items
+                ):
+                    recovered = [dict(item) for item in items]
+                    applied += 1
+                continue
+            if event.kind != "message_committed":
+                continue
+            message = event.payload.get("message")
+            if isinstance(message, dict):
+                recovered.append(dict(message))
+                applied += 1
+        return recovered, applied
 
     def _load_history_events(self, events_path: Path) -> list[HistoryEvent]:
         """Load events and atomically compact legacy full request replays."""
