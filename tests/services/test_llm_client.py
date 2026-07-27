@@ -2,6 +2,7 @@ import json
 import threading
 import time
 
+import reuleauxcoder.services.llm.client as llm_client_module
 from reuleauxcoder.domain.llm.models import (
     EMPTY_ASSISTANT_CONTENT_PLACEHOLDER,
     LLMResponse,
@@ -445,6 +446,74 @@ class _FakeChunk:
     def __init__(self, *, content: str = "", usage=None):
         self.usage = usage
         self.choices = [_FakeChoice(_FakeDelta(content=content))]
+
+
+def test_llm_disables_sdk_retries_on_create_and_reconfigure(monkeypatch) -> None:
+    client_options: list[dict] = []
+
+    def create_client(**options):
+        client_options.append(options)
+        return object()
+
+    monkeypatch.setattr(llm_client_module, "OpenAI", create_client)
+    llm = LLM(model="first", api_key="key", base_url="https://first.invalid")
+
+    llm.reconfigure(
+        model="second",
+        api_key="new-key",
+        base_url="https://second.invalid",
+        temperature=0.2,
+        max_tokens=100,
+    )
+
+    assert [options["max_retries"] for options in client_options] == [0, 0]
+
+
+def test_llm_does_not_retry_without_stream_options_on_transport_error(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+    attempts: list[bool] = []
+
+    def fail(params):
+        attempts.append("stream_options" in params)
+        raise RuntimeError("connection dropped")
+
+    llm._call_with_retry = fail  # type: ignore[method-assign]
+
+    try:
+        llm.chat([{"role": "user", "content": "Hi"}])
+    except RuntimeError as error:
+        assert str(error) == "connection dropped"
+    else:
+        raise AssertionError("transport error must propagate")
+
+    assert attempts == [True]
+
+
+def test_llm_retries_without_stream_options_only_when_provider_rejects_it() -> None:
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+    attempts: list[bool] = []
+
+    class UnsupportedStreamOptionsError(RuntimeError):
+        status_code = 400
+
+    def open_stream(params):
+        has_stream_options = "stream_options" in params
+        attempts.append(has_stream_options)
+        if has_stream_options:
+            raise UnsupportedStreamOptionsError(
+                "stream_options is an unsupported extra field"
+            )
+        return iter([_FakeChunk(content="fallback")])
+
+    llm._call_with_retry = open_stream  # type: ignore[method-assign]
+
+    response = llm.chat([{"role": "user", "content": "Hi"}])
+
+    assert response.content == "fallback"
+    assert attempts == [True, False]
 
 
 def test_llm_emits_non_replayable_request_phases() -> None:

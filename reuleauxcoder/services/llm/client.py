@@ -34,6 +34,7 @@ from reuleauxcoder.services.llm.sanitizer import (
 
 MAX_DEBUG_CONTENT_CHARS = 400
 MAX_DEBUG_STREAM_EVENTS = 200
+LLM_MAX_ATTEMPTS = 3
 
 
 class LLMRequestCancelled(RuntimeError):
@@ -43,6 +44,27 @@ class LLMRequestCancelled(RuntimeError):
 _STREAM_DONE = object()
 _STREAM_QUEUE_MAXSIZE = 256
 _CANCELLATION_POLL_SECONDS = 0.05
+
+
+def _stream_options_unsupported(error: BaseException) -> bool:
+    """Recognize an explicit provider rejection of the optional usage extension."""
+    status = getattr(error, "status_code", None)
+    if status not in {400, 422}:
+        return False
+    text = str(error).lower()
+    mentions_option = "stream_options" in text or "include_usage" in text
+    rejection = any(
+        marker in text
+        for marker in (
+            "unsupported",
+            "unknown",
+            "unrecognized",
+            "extra field",
+            "not permitted",
+            "invalid",
+        )
+    )
+    return mentions_option and rejection
 
 
 def _close_stream(stream) -> None:
@@ -304,7 +326,13 @@ class LLM:
         ui_bus: UIEventBus | None = None,
     ):
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # Retry ownership lives in _call_with_retry so attempts are observable
+        # and cannot multiply with the SDK's own retry loop.
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=0,
+        )
         self.api_key = api_key
         self.base_url = base_url
         self.temperature = temperature
@@ -348,7 +376,11 @@ class LLM:
         switching model profiles fully resets reasoning/thinking state.
         """
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=0,
+        )
         self.api_key = api_key
         self.base_url = base_url
         self.temperature = temperature
@@ -590,7 +622,9 @@ class LLM:
             # stream_options is an OpenAI extension
             try:
                 params["stream_options"] = {"include_usage": True}
-                report_phase("connect", attempt=1, max_attempts=3)
+                report_phase(
+                    "connect", attempt=1, max_attempts=LLM_MAX_ATTEMPTS
+                )
                 stream = _cancellable_stream_open(
                     lambda: self._call_with_retry_observed(
                         params, retry_observer
@@ -600,13 +634,15 @@ class LLM:
                 debug_stream_options_enabled = True
             except LLMRequestCancelled:
                 raise
-            except Exception:
+            except Exception as error:
+                if not _stream_options_unsupported(error):
+                    raise
                 params.pop("stream_options", None)
                 report_phase(
                     "connect",
                     detail="retrying without stream usage extension",
                     attempt=1,
-                    max_attempts=3,
+                    max_attempts=LLM_MAX_ATTEMPTS,
                 )
                 stream = _cancellable_stream_open(
                     lambda: self._call_with_retry_observed(
@@ -874,7 +910,7 @@ class LLM:
     def _call_with_retry(
         self,
         params: dict,
-        max_retries: int = 3,
+        max_retries: int = LLM_MAX_ATTEMPTS,
         *,
         on_retry: Callable[[int, int, float, BaseException], None] | None = None,
     ) -> Any:
