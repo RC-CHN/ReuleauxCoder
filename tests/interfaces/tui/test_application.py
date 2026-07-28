@@ -6,7 +6,6 @@ from collections import deque
 from types import SimpleNamespace
 from dataclasses import replace
 from prompt_toolkit.utils import get_cwidth
-import pytest
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.app.commands.specs import DuringTurnPolicy
@@ -39,6 +38,7 @@ from reuleauxcoder.interfaces.tui.interaction import (
     interaction_lines as _interaction_lines,
     interaction_response as _interaction_response,
 )
+from reuleauxcoder.interfaces.tui.selection_host import SelectionHost
 from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VirtualTranscriptControl,
     VirtualTranscriptLayout,
@@ -62,14 +62,17 @@ from reuleauxcoder.interfaces.interactions import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _inject_command_panel_registry(monkeypatch) -> None:
-    monkeypatch.setattr(
-        MiniTUIApplication,
-        "panel_registry",
-        create_builtin_command_panel_registry(),
-        raising=False,
+def _bare_app() -> MiniTUIApplication:
+    app = object.__new__(MiniTUIApplication)
+    app.selection_host = SelectionHost(
+        registry=create_builtin_command_panel_registry(),
+        input_text=lambda: getattr(
+            getattr(app, "input_buffer", None), "text", ""
+        ),
+        submit_command=lambda command: app._submit_panel_command(command),
+        invalidate=lambda: getattr(app, "invalidate", lambda: None)(),
     )
+    return app
 
 
 def test_event_adapter_projects_user_and_execution_state() -> None:
@@ -97,7 +100,7 @@ def test_mini_tui_leaves_mouse_to_terminal_native_selection() -> None:
 
 
 def test_yes_no_key_bindings_only_capture_binary_interactions() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.interactor = SimpleNamespace(active_request=None)
 
     bindings = {
@@ -139,7 +142,7 @@ def test_yes_no_key_bindings_only_capture_binary_interactions() -> None:
 def test_enter_accepts_binary_interaction_without_consuming_chat_draft() -> None:
     submissions = []
     resets = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app._popup_candidates = lambda: ()
     app.interactor = SimpleNamespace(
         active_request=ConfirmRequest(title="Confirm", message="Continue?"),
@@ -165,7 +168,7 @@ def test_enter_accepts_binary_interaction_without_consuming_chat_draft() -> None
 
 def test_ctrl_c_cancels_interaction_without_consuming_chat_draft() -> None:
     resets = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.interactor = SimpleNamespace(
         active_request=ConfirmRequest(title="Confirm", message="Continue?"),
         cancel_active=lambda: True,
@@ -218,7 +221,7 @@ def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
 
 
 def test_interaction_lane_shows_queued_steering_while_running() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.interactor = SimpleNamespace(active_request=None)
     app.exit_confirm = False
     app.cancelling = False
@@ -236,7 +239,7 @@ def test_interaction_lane_shows_queued_steering_while_running() -> None:
 
 def test_active_turn_plain_text_is_queued_as_model_steering() -> None:
     queued = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.agent = SimpleNamespace(submit_user_steering=queued.append)
 
     app._submit_during_turn("change direction")
@@ -248,7 +251,7 @@ def test_active_turn_immediate_slash_command_executes_locally(monkeypatch) -> No
     commands = []
     steering = []
     appended = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.agent = SimpleNamespace(submit_user_steering=steering.append)
     app.events = SimpleNamespace(append_user_command=appended.append)
     app.ui_bus = SimpleNamespace(warning=lambda *args, **kwargs: None)
@@ -286,7 +289,7 @@ def test_active_turn_idle_only_slash_command_is_queued_locally(monkeypatch) -> N
     notices = []
     steering = []
     appended = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.agent = SimpleNamespace(submit_user_steering=steering.append)
     app.events = SimpleNamespace(append_user_command=appended.append)
     app.ui_bus = SimpleNamespace(
@@ -317,7 +320,7 @@ def test_active_turn_idle_only_slash_command_is_queued_locally(monkeypatch) -> N
 
 
 def test_queued_command_preview_explains_default_and_accelerated_timing() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.interactor = SimpleNamespace(active_request=None)
     app.exit_confirm = False
     app.cancelling = False
@@ -337,7 +340,7 @@ def test_next_deferred_command_starts_after_worker_becomes_idle(monkeypatch) -> 
     applied = []
     cleared = []
     notices = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app._closed = False
     app._deferred_commands = deque(["/model fast"])
     app._deferred_commands_lock = threading.Lock()
@@ -369,7 +372,7 @@ def test_new_idle_input_clears_previous_stop_before_starting_worker(
 ) -> None:
     operations = []
     buffer = SimpleNamespace(text="/compact force summarize", reset=lambda: None)
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app._popup_candidates = lambda: ()
     app.interactor = SimpleNamespace(active_request=None)
     app.running = False
@@ -403,7 +406,7 @@ def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
     started = []
     chats = []
     notices = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.agent = SimpleNamespace(
         session_generation=1,
         current_session_id="s1",
@@ -446,7 +449,7 @@ def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
 
 def test_exit_finalizer_skips_duplicate_save_after_exit_command() -> None:
     prepared = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app._exit_session_saved = True
     app.agent = SimpleNamespace(messages=[{"role": "user", "content": "done"}])
     app.config = SimpleNamespace(session_auto_save=True)
@@ -459,7 +462,7 @@ def test_exit_finalizer_skips_duplicate_save_after_exit_command() -> None:
 
 def test_exit_finalizer_records_saved_session_for_terminal_report(monkeypatch) -> None:
     saved_lifecycle = []
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app._exit_session_saved = False
     app._saved_session_id = None
     app.agent = SimpleNamespace(
@@ -510,9 +513,9 @@ def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
 def test_command_popup_adopts_candidate_and_hides_on_non_slash() -> None:
     from reuleauxcoder.interfaces.tui.command_popup import PopupEntry
 
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.interactor = SimpleNamespace(active_request=None)
-    app._selection = None
+    app.selection_host.selection = None
     app.input_buffer = SimpleNamespace(text="/mo", cursor_position=3)
     app._popup_entries = (
         PopupEntry("/mode", "Choose the active session mode", False, False),
@@ -540,9 +543,9 @@ def test_command_popup_adopts_candidate_and_hides_on_non_slash() -> None:
 def test_command_popup_dismissed_until_text_changes() -> None:
     from reuleauxcoder.interfaces.tui.command_popup import PopupEntry
 
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.interactor = SimpleNamespace(active_request=None)
-    app._selection = None
+    app.selection_host.selection = None
     app.input_buffer = SimpleNamespace(text="/he", cursor_position=3)
     app._popup_entries = (
         PopupEntry("/help", "Show command help", False, False),
@@ -569,8 +572,8 @@ def test_mode_view_opens_selection_panel_and_confirm_resubmits() -> None:
         ModesViewModel,
     )
 
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
+    app = _bare_app()
+    app.selection_host.selection = None
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = NS(text="", cursor_position=0)
@@ -605,28 +608,28 @@ def test_mode_view_opens_selection_panel_and_confirm_resubmits() -> None:
         ),
     )
 
-    assert app._open_interactive_view(payload) is True
-    assert app._selection is not None
-    assert app._selection.selected.label == "coder"
+    assert app.selection_host.open_view(payload) is True
+    assert app.selection_host.selection is not None
+    assert app.selection_host.selection.selected.label == "coder"
 
-    app._selection.move(1)
-    app._selection_confirm()
+    app.selection_host.selection.move(1)
+    app.selection_host.confirm()
     assert accepted == ["/mode switch plan"]
-    assert app._selection is None
+    assert app.selection_host.selection is None
 
 
 def test_unknown_view_type_is_not_claimed() -> None:
     from types import SimpleNamespace as NS
 
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
+    app = _bare_app()
+    app.selection_host.selection = None
     app.invalidate = lambda: None
 
     payload = NS(
         view_type="token_usage", title="Tokens", action="open", focus=True, view_model=NS()
     )
-    assert app._open_interactive_view(payload) is False
-    assert app._selection is None
+    assert app.selection_host.open_view(payload) is False
+    assert app.selection_host.selection is None
 
 
 def _model_view_payload() -> object:
@@ -676,49 +679,49 @@ def _model_view_payload() -> object:
 
 
 def test_model_view_opens_slot_panel_then_profile_panel() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app._model_slot_profiles = {}
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(_model_view_payload()) is True
-    assert app._selection.view_type == "model_slots"
-    assert len(app._selection.items) == 4
+    assert app.selection_host.open_view(_model_view_payload()) is True
+    assert app.selection_host.selection.view_type == "model_slots"
+    assert len(app.selection_host.selection.items) == 4
 
     # Confirm "Session · Main model" opens the profile panel.
-    app._selection_confirm()
-    assert app._selection.view_type == "model_profiles"
-    assert len(app._selection_stack) == 1
-    assert app._selection.selected.label == "sonnet"  # current main preselected
+    app.selection_host.confirm()
+    assert app.selection_host.selection.view_type == "model_profiles"
+    assert len(app.selection_host.stack) == 1
+    assert app.selection_host.selection.selected.label == "sonnet"  # current main preselected
 
     # Confirm a profile resubmits the canonical command.
-    app._selection_confirm()
+    app.selection_host.confirm()
     assert accepted == ["/model use-main sonnet"]
-    assert app._selection is None
-    assert app._selection_stack == []
+    assert app.selection_host.selection is None
+    assert app.selection_host.stack == []
 
 
 def test_model_panel_escape_returns_to_slot_panel() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app._model_slot_profiles = {}
     app.invalidate = lambda: None
 
-    app._open_interactive_view(_model_view_payload())
-    app._selection.move(1)  # Session · Sub-agent model
-    app._selection_confirm()
-    assert app._selection.view_type == "model_profiles"
-    assert app._selection.selected.label == "haiku"  # current sub preselected
+    app.selection_host.open_view(_model_view_payload())
+    app.selection_host.selection.move(1)  # Session · Sub-agent model
+    app.selection_host.confirm()
+    assert app.selection_host.selection.view_type == "model_profiles"
+    assert app.selection_host.selection.selected.label == "haiku"  # current sub preselected
 
-    app._selection_close()  # back to slots
-    assert app._selection.view_type == "model_slots"
-    app._selection_close()  # close entirely
-    assert app._selection is None
+    app.selection_host.close()  # back to slots
+    assert app.selection_host.selection.view_type == "model_slots"
+    app.selection_host.close()  # close entirely
+    assert app.selection_host.selection is None
 
 
 def _approval_view_payload() -> object:
@@ -753,47 +756,47 @@ def _approval_view_payload() -> object:
 
 
 def test_approval_view_opens_targets_then_actions() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app._approval_targets = {}
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(_approval_view_payload()) is True
-    assert app._selection.view_type == "approval_rules"
-    labels = [item.label for item in app._selection.items]
+    assert app.selection_host.open_view(_approval_view_payload()) is True
+    assert app.selection_host.selection.view_type == "approval_rules"
+    labels = [item.label for item in app.selection_host.selection.items]
     assert labels == ["tool:write_file", "mcp:github"]
 
     # Confirm session-scoped target -> action picker with set (not set-global).
-    app._selection_confirm()
-    assert app._selection.view_type == "approval_actions"
-    assert app._selection.selected.label == "require_approval"  # current preselected
+    app.selection_host.confirm()
+    assert app.selection_host.selection.view_type == "approval_actions"
+    assert app.selection_host.selection.selected.label == "require_approval"  # current preselected
 
-    app._selection.move(1)  # deny
-    app._selection_confirm()
+    app.selection_host.selection.move(1)  # deny
+    app.selection_host.confirm()
     assert accepted == ["/approval set tool:write_file deny"]
-    assert app._selection is None
+    assert app.selection_host.selection is None
 
 
 def test_approval_global_target_uses_set_global() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app._approval_targets = {}
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    app._open_interactive_view(_approval_view_payload())
-    app._selection.move(1)  # mcp:github (global source)
-    app._selection_confirm()
-    assert app._selection.selected.label == "allow"
+    app.selection_host.open_view(_approval_view_payload())
+    app.selection_host.selection.move(1)  # mcp:github (global source)
+    app.selection_host.confirm()
+    assert app.selection_host.selection.selected.label == "allow"
 
-    app._selection_confirm()
+    app.selection_host.confirm()
     assert accepted == ["/approval set-global mcp:github allow"]
 
 
@@ -821,46 +824,46 @@ def _mcp_view_payload(*, action: str = "open", focus: bool = True) -> object:
 
 
 def test_mcp_view_opens_toggle_panel_and_confirm_keeps_it_open() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(_mcp_view_payload()) is True
-    assert app._selection.view_type == "mcp_servers"
-    assert app._selection.selected.label == "github"
-    assert app._selection.selected.command == "/mcp disable github"
+    assert app.selection_host.open_view(_mcp_view_payload()) is True
+    assert app.selection_host.selection.view_type == "mcp_servers"
+    assert app.selection_host.selection.selected.label == "github"
+    assert app.selection_host.selection.selected.command == "/mcp disable github"
 
     # Toggling submits the command but keeps the panel open.
-    app._selection_confirm()
+    app.selection_host.confirm()
     assert accepted == ["/mcp disable github"]
-    assert app._selection is not None
+    assert app.selection_host.selection is not None
 
     # A refresh updates items in place (github now disabled).
-    assert app._open_interactive_view(
+    assert app.selection_host.open_view(
         _mcp_view_payload(action="refresh", focus=False)
     ) is True
     from reuleauxcoder.interfaces.tui.selection_panel import SelectionPanel
 
-    selection: SelectionPanel | None = app._selection
+    selection: SelectionPanel | None = app.selection_host.selection
     assert selection is not None
     refreshed = {item.label: item for item in selection.items}
     assert refreshed["github"].current is True  # still enabled in this fake view
 
 
 def test_mcp_refresh_without_panel_is_absorbed() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
+    app = _bare_app()
+    app.selection_host.selection = None
     app.invalidate = lambda: None
 
     assert (
-        app._open_interactive_view(_mcp_view_payload(action="refresh", focus=False))
+        app.selection_host.open_view(_mcp_view_payload(action="refresh", focus=False))
         is True
     )
-    assert app._selection is None
+    assert app.selection_host.selection is None
 
 
 def _skills_view_payload(*, action: str = "open", focus: bool = True) -> object:
@@ -908,41 +911,41 @@ def _skills_view_payload(*, action: str = "open", focus: bool = True) -> object:
 
 
 def test_skills_view_opens_toggle_panel_and_confirm_keeps_it_open() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(_skills_view_payload()) is True
-    assert app._selection.view_type == "skills"
-    assert app._selection.selected.label == "commit-helper"
-    assert app._selection.selected.command == "/skills disable commit-helper"
+    assert app.selection_host.open_view(_skills_view_payload()) is True
+    assert app.selection_host.selection.view_type == "skills"
+    assert app.selection_host.selection.selected.label == "commit-helper"
+    assert app.selection_host.selection.selected.command == "/skills disable commit-helper"
 
-    app._selection_confirm()
+    app.selection_host.confirm()
     assert accepted == ["/skills disable commit-helper"]
-    assert app._selection is not None  # toggle panels stay open
+    assert app.selection_host.selection is not None  # toggle panels stay open
 
     # Disabled skill toggles back with the enable command.
-    app._selection.move(1)
-    assert app._selection.selected.command == "/skills enable deep-review"
+    app.selection_host.selection.move(1)
+    assert app.selection_host.selection.selected.command == "/skills enable deep-review"
 
 
 def test_skills_refresh_updates_items_in_place() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
 
-    app._open_interactive_view(_skills_view_payload())
+    app.selection_host.open_view(_skills_view_payload())
     assert (
-        app._open_interactive_view(_skills_view_payload(action="refresh", focus=False))
+        app.selection_host.open_view(_skills_view_payload(action="refresh", focus=False))
         is True
     )
-    assert app._selection is not None
-    assert len(app._selection.items) == 2
+    assert app.selection_host.selection is not None
+    assert len(app.selection_host.selection.items) == 2
 
 
 def test_mcp_panel_shows_hint_row_when_no_servers() -> None:
@@ -957,18 +960,18 @@ def test_mcp_panel_shows_hint_row_when_no_servers() -> None:
         focus=True,
         view_model=MCPServersView(servers=[]),
     )
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(payload) is True
-    assert app._selection.selected.label == "(no MCP servers configured)"
+    assert app.selection_host.open_view(payload) is True
+    assert app.selection_host.selection.selected.label == "(no MCP servers configured)"
     # Confirming the hint row is a no-op.
-    app._selection_confirm()
+    app.selection_host.confirm()
     assert accepted == []
 
 
@@ -996,22 +999,22 @@ def test_thinking_effort_view_opens_selection_panel() -> None:
             ),
         ),
     )
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(payload) is True
-    assert app._selection.view_type == "thinking_effort"
-    assert app._selection.selected.label == "low"  # current preselected
+    assert app.selection_host.open_view(payload) is True
+    assert app.selection_host.selection.view_type == "thinking_effort"
+    assert app.selection_host.selection.selected.label == "low"  # current preselected
 
-    app._selection.move(1)
-    app._selection_confirm()
+    app.selection_host.selection.move(1)
+    app.selection_host.confirm()
     assert accepted == ["/thinking effort medium"]
-    assert app._selection is None
+    assert app.selection_host.selection is None
 
 
 def _sessions_view_payload() -> object:
@@ -1053,45 +1056,45 @@ def _sessions_view_payload() -> object:
 
 
 def test_sessions_view_opens_picker_and_confirm_resubmits_restore() -> None:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(_sessions_view_payload()) is True
-    assert app._selection.view_type == "sessions"
-    assert app._selection.selected.label.startswith("#1")  # active preselected
+    assert app.selection_host.open_view(_sessions_view_payload()) is True
+    assert app.selection_host.selection.view_type == "sessions"
+    assert app.selection_host.selection.selected.label.startswith("#1")  # active preselected
 
-    app._selection.move(1)
-    app._selection_confirm()
+    app.selection_host.selection.move(1)
+    app.selection_host.confirm()
     assert accepted == ["/session sess-bbb"]
-    assert app._selection is None
+    assert app.selection_host.selection is None
 
 
 def test_sessions_picker_filters_by_buffer_text_and_keeps_input_visible() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.interactor = SimpleNamespace(active_request=None)
-    app._selection = None
-    app._selection_stack = []
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app.application = SimpleNamespace(
         output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=80))
     )
 
-    app._open_interactive_view(_sessions_view_payload())
+    app.selection_host.open_view(_sessions_view_payload())
     assert app._input_height() > 0  # filter box stays visible
 
     app.input_buffer.text = "rtk"
-    visible = app._selection_visible_items()
+    visible = app.selection_host.visible_items()
     assert [item.command for item in visible] == ["/session sess-bbb"]
 
     app.input_buffer.text = "zzz-no-match"
-    assert app._selection_visible_items() == ()
-    assert app._selection_confirm() is None  # no-op on empty match
+    assert app.selection_host.visible_items() == ()
+    assert app.selection_host.confirm() is None  # no-op on empty match
 
 
 def _jobs_view_payload() -> object:
@@ -1147,9 +1150,9 @@ def _jobs_view_payload() -> object:
 
 
 def _jobs_browser_app() -> MiniTUIApplication:
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app._agent_job_actions = {}
     app.invalidate = lambda: None
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
@@ -1161,35 +1164,35 @@ def test_agents_view_opens_browser_and_job_actions_sub_panel() -> None:
     accepted = []
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(_jobs_view_payload()) is True
-    assert app._selection.view_type == "subagent_jobs"
-    assert len(app._selection.items) == 2
+    assert app.selection_host.open_view(_jobs_view_payload()) is True
+    assert app.selection_host.selection.view_type == "subagent_jobs"
+    assert len(app.selection_host.selection.items) == 2
 
     # Enter on a running job → actions sub panel with cancel.
-    app._selection_confirm()
-    assert app._selection.view_type == "agent_job_actions"
-    assert [item.label for item in app._selection.items] == ["get details", "cancel"]
+    app.selection_host.confirm()
+    assert app.selection_host.selection.view_type == "agent_job_actions"
+    assert [item.label for item in app.selection_host.selection.items] == ["get details", "cancel"]
 
     # Cancel resubmits the canonical command and pops back to the browser.
-    app._selection.move(1)
-    app._selection_confirm()
+    app.selection_host.selection.move(1)
+    app.selection_host.confirm()
     assert accepted == ["/agents cancel job-01"]
-    assert app._selection.view_type == "subagent_jobs"
+    assert app.selection_host.selection.view_type == "subagent_jobs"
 
 
 def test_agents_browser_terminal_job_offers_cleanup() -> None:
     app = _jobs_browser_app()
-    app._open_interactive_view(_jobs_view_payload())
-    app._selection.move(1)  # job-02 (completed)
-    app._selection_confirm()
-    assert [item.label for item in app._selection.items] == ["get details", "cleanup"]
+    app.selection_host.open_view(_jobs_view_payload())
+    app.selection_host.selection.move(1)  # job-02 (completed)
+    app.selection_host.confirm()
+    assert [item.label for item in app.selection_host.selection.items] == ["get details", "cleanup"]
 
 
 def test_agents_browser_filters_by_task() -> None:
     app = _jobs_browser_app()
-    app._open_interactive_view(_jobs_view_payload())
+    app.selection_host.open_view(_jobs_view_payload())
     app.input_buffer.text = "flaky"
-    visible = app._selection_visible_items()
+    visible = app.selection_host.visible_items()
     assert [item.label for item in visible] == ["job-02"]
 
 
@@ -1216,13 +1219,13 @@ def test_skills_panel_shows_hint_row_when_no_skills() -> None:
             ),
         ),
     )
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app.invalidate = lambda: None
 
-    assert app._open_interactive_view(payload) is True
-    assert app._selection.selected.label == "(no skills discovered)"
+    assert app.selection_host.open_view(payload) is True
+    assert app.selection_host.selection.selected.label == "(no skills discovered)"
 
 
 def test_approval_panel_includes_dynamic_targets_without_rules() -> None:
@@ -1266,24 +1269,24 @@ def test_approval_panel_includes_dynamic_targets_without_rules() -> None:
         ),
     )
 
-    app = object.__new__(MiniTUIApplication)
-    app._selection = None
-    app._selection_stack = []
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
     app._approval_targets = {}
     app.invalidate = lambda: None
     accepted = []
     app.input_buffer = SimpleNamespace(text="", cursor_position=0)
     app._accept_buffer = lambda buffer: accepted.append(buffer.text)
 
-    assert app._open_interactive_view(payload) is True
-    labels = [item.label for item in app._selection.items]
+    assert app.selection_host.open_view(payload) is True
+    labels = [item.label for item in app.selection_host.selection.items]
     # Dynamic targets only: mcp server + builtin tool (mcp tool skipped).
     assert labels == ["mcp:time", "tool:shell"]
 
     # New target edits go through the session-scoped set command.
-    app._selection_confirm()
-    assert app._selection.selected.label == "require_approval"  # effective preselected
-    app._selection_confirm()
+    app.selection_host.confirm()
+    assert app.selection_host.selection.selected.label == "require_approval"  # effective preselected
+    app.selection_host.confirm()
     assert accepted == ["/approval set mcp:time require_approval"]
 
 
@@ -1437,7 +1440,7 @@ def test_structured_panel_is_fixed_height_until_details_are_expanded() -> None:
 
 
 def test_mcp_panel_detail_updates_from_connecting_to_ready() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.config = SimpleNamespace(
         mcp_servers=[
             SimpleNamespace(enabled=True),
@@ -1456,7 +1459,7 @@ def test_mcp_panel_detail_updates_from_connecting_to_ready() -> None:
 
 
 def test_mcp_panel_detail_handles_no_configured_servers() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.config = SimpleNamespace(mcp_servers=[])
     app.agent = SimpleNamespace(mcp_manager=None)
 
@@ -1469,7 +1472,7 @@ def test_alternate_scroll_protocol_keeps_native_selection_and_wheel_keys() -> No
         write_raw=writes.append,
         flush=lambda: writes.append("flush"),
     )
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.application = SimpleNamespace(output=output)
 
     app._set_alternate_scroll(enabled=True)
@@ -1484,7 +1487,7 @@ def test_alternate_scroll_protocol_keeps_native_selection_and_wheel_keys() -> No
 
 
 def test_alternate_scroll_routes_approval_wheel_to_transcript() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app.input_buffer = SimpleNamespace(text="")
     app.interactor = SimpleNamespace(active_request=None)
 
@@ -1805,7 +1808,7 @@ def test_interaction_parser_uses_kiss_defaults() -> None:
 
 
 def test_transcript_scroll_reenables_tail_follow_at_bottom() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     app._transcript_max_scroll = 30
     app._transcript_scroll = 30
     app._follow_transcript = True
@@ -1824,7 +1827,7 @@ def test_transcript_scroll_reenables_tail_follow_at_bottom() -> None:
 
 
 def test_before_render_keeps_scrolled_view_stable_and_tail_sticky() -> None:
-    app = object.__new__(MiniTUIApplication)
+    app = _bare_app()
     line_count = [100]
     app.events = SimpleNamespace(
         transcript_layout_rebased=lambda _width, scroll: (

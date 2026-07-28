@@ -29,11 +29,7 @@ from prompt_toolkit.widgets import Frame
 
 from reuleauxcoder import __version__
 from reuleauxcoder.app.commands import parse_command
-from reuleauxcoder.app.commands.panels import (
-    CommandPanelRegistry,
-    PanelItem,
-    PanelRefreshPolicy,
-)
+from reuleauxcoder.app.commands.panels import CommandPanelRegistry
 from reuleauxcoder.app.commands.specs import DuringTurnPolicy
 from reuleauxcoder.app.runtime.session_state import (
     build_session_persistence_kwargs,
@@ -46,7 +42,7 @@ from reuleauxcoder.interfaces.tui.command_popup import (
     build_popup_entries,
     filter_entries,
 )
-from reuleauxcoder.interfaces.tui.selection_panel import SelectionPanel
+from reuleauxcoder.interfaces.tui.selection_host import SelectionHost
 from reuleauxcoder.interfaces.tui.virtual_transcript import VirtualTranscriptControl
 from reuleauxcoder.interfaces.events import (
     UIEvent,
@@ -198,9 +194,13 @@ class MiniTUIApplication:
         self._popup_index = 0
         self._popup_last_text = ""
         self._popup_dismissed = False
-        self._selection: SelectionPanel | None = None
-        self._selection_stack: list[SelectionPanel] = []
-        self.events.interactive_view_handler = self._open_interactive_view
+        self.selection_host = SelectionHost(
+            registry=panel_registry,
+            input_text=lambda: self.input_buffer.text,
+            submit_command=self._submit_panel_command,
+            invalidate=self.invalidate,
+        )
+        self.events.interactive_view_handler = self.selection_host.open_view
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
             self._transcript_cursor_position,
@@ -229,10 +229,10 @@ class MiniTUIApplication:
             height=self._popup_height,
             style="class:popup",
         )
-        self.selection_control = FormattedTextControl(self._selection_text)
+        self.selection_control = FormattedTextControl(self.selection_host.text)
         self.selection_window = Window(
             self.selection_control,
-            height=self._selection_height,
+            height=self.selection_host.height,
             style="class:popup",
         )
         self.input_window = Window(
@@ -369,6 +369,11 @@ class MiniTUIApplication:
         self._worker.start()
         self.invalidate()
         return True
+
+    def _submit_panel_command(self, command: str) -> None:
+        self.input_buffer.text = command
+        self.input_buffer.cursor_position = len(command)
+        self._accept_buffer(self.input_buffer)
 
     def _submit_during_turn(self, text: str) -> None:
         """Route active-turn input without leaking slash commands to the model."""
@@ -649,31 +654,23 @@ class MiniTUIApplication:
             self._follow_transcript = True
             self.invalidate()
 
-        selection_active = Condition(lambda: self._selection is not None)
+        selection_active = Condition(lambda: self.selection_host.active)
 
         @bindings.add("up", filter=selection_active)
         def _selection_up(event) -> None:  # noqa: ARG001
-            if self._selection is not None:
-                visible = len(self._selection_visible_items())
-                if visible:
-                    self._selection.index = (self._selection.index - 1) % visible
-                self.invalidate()
+            self.selection_host.move(-1)
 
         @bindings.add("down", filter=selection_active)
         def _selection_down(event) -> None:  # noqa: ARG001
-            if self._selection is not None:
-                visible = len(self._selection_visible_items())
-                if visible:
-                    self._selection.index = (self._selection.index + 1) % visible
-                self.invalidate()
+            self.selection_host.move(1)
 
         @bindings.add("enter", filter=selection_active)
         def _selection_enter(event) -> None:  # noqa: ARG001
-            self._selection_confirm()
+            self.selection_host.confirm()
 
         @bindings.add("escape", filter=selection_active)
         def _selection_escape(event) -> None:  # noqa: ARG001
-            self._selection_close()
+            self.selection_host.close()
 
         popup_visible = Condition(lambda: bool(self._popup_candidates()))
 
@@ -806,10 +803,7 @@ class MiniTUIApplication:
         # session picker keeps it visible: the buffer doubles as its filter.
         if self.interactor.active_request is not None:
             return 0
-        if self._selection is not None and self._selection.view_type not in (
-            "sessions",
-            "subagent_jobs",
-        ):
+        if self.selection_host.active and not self.selection_host.filterable:
             return 0
         try:
             columns = self.application.output.get_size().columns
@@ -828,7 +822,7 @@ class MiniTUIApplication:
         return tuple(str(item) for item in result)
 
     def _popup_candidates(self) -> tuple[PopupEntry, ...]:
-        if self.interactor.active_request is not None or self._selection is not None:
+        if self.interactor.active_request is not None or self.selection_host.active:
             return ()
         text = self.input_buffer.text
         if text != self._popup_last_text:
@@ -872,126 +866,6 @@ class MiniTUIApplication:
             else:
                 fragments.append(("class:popup.cmd", cmd))
                 fragments.append(("class:popup", pad + entry.description + "\n"))
-        return FormattedText(fragments)
-
-    def _open_interactive_view(self, payload) -> bool:
-        """Claim a command-owned view as a modal panel or absorb its refresh."""
-        spec = self.panel_registry.get(payload.view_type)
-        if spec is None:
-            return False
-        definition = spec.build_for(payload.view_model, payload.title)
-        if definition is None:
-            return False
-
-        is_refresh = payload.action == "refresh" or not payload.focus
-        if is_refresh:
-            if (
-                spec.refresh is PanelRefreshPolicy.UPDATE
-                and self._selection is not None
-                and self._selection.view_type == definition.view_type
-            ):
-                self._selection.refresh(definition)
-                self.invalidate()
-            return True
-
-        self._selection = SelectionPanel.from_definition(definition)
-        self._selection_stack = []
-        self.invalidate()
-        return True
-
-    def _selection_visible_items(self) -> tuple[PanelItem, ...]:
-        """Return panel rows after applying an optional live text filter."""
-        panel = self._selection
-        if panel is None:
-            return ()
-        definition = panel.definition
-        if definition is None or not definition.filterable:
-            return panel.items
-        needle = self.input_buffer.text.strip().lower()
-        if not needle:
-            return panel.items
-        return tuple(
-            item
-            for item in panel.items
-            if needle in f"{item.label} {item.description}".lower()
-        )
-
-    def _selection_height(self) -> int:
-        if self._selection is None:
-            return 0
-        return min(9, len(self._selection_visible_items()) + 1)
-
-    def _selection_close(self) -> None:
-        if self._selection_stack:
-            self._selection = self._selection_stack.pop()
-        else:
-            self._selection = None
-        self.invalidate()
-
-    def _selection_confirm(self) -> None:
-        panel = self._selection
-        if panel is None or panel.definition is None:
-            return
-        items = self._selection_visible_items()
-        if not items:
-            return
-        selected = items[min(panel.index, len(items) - 1)]
-        child = panel.definition.child_for(selected.label)
-        if child is not None:
-            self._selection_stack.append(panel)
-            self._selection = SelectionPanel.from_definition(child)
-            self.invalidate()
-            return
-        command = selected.command
-        if not command:
-            # Placeholder/hint rows carry no command.
-            return
-        if not panel.definition.keep_open_on_submit:
-            if panel.definition.return_to_parent_on_submit:
-                self._selection = (
-                    self._selection_stack.pop() if self._selection_stack else None
-                )
-            else:
-                self._selection = None
-                self._selection_stack = []
-        self.input_buffer.text = command
-        self.input_buffer.cursor_position = len(command)
-        self._accept_buffer(self.input_buffer)
-
-    def _selection_text(self) -> FormattedText:
-        panel = self._selection
-        if panel is None:
-            return FormattedText([])
-        items = self._selection_visible_items()
-        definition = panel.definition
-        hint = (
-            " · type to filter"
-            if definition is not None and definition.filterable
-            else ""
-        )
-        fragments: list[tuple[str, str]] = [
-            ("class:popup.cmd", f" {panel.title} "),
-            ("class:popup", f"· Enter select{hint} · Esc close\n"),
-        ]
-        if not items:
-            fragments.append(("class:popup", "  (no matches)\n"))
-            return FormattedText(fragments)
-        limit = 8
-        index = min(panel.index, max(0, len(items) - 1))
-        start = max(0, min(index - limit // 2, max(0, len(items) - limit)))
-        for offset, item in enumerate(items[start : start + limit]):
-            i = start + offset
-            marker = "›" if i == index else " "
-            current = " (current)" if item.current else ""
-            row = f" {marker} {item.label}{current}"
-            pad = " " * max(1, 24 - len(row))
-            if i == index:
-                fragments.append(
-                    ("class:popup.selected", row + pad + item.description + "\n")
-                )
-            else:
-                fragments.append(("class:popup.cmd", row))
-                fragments.append(("class:popup", pad + item.description + "\n"))
         return FormattedText(fragments)
 
     def _interaction_height(self) -> int:
