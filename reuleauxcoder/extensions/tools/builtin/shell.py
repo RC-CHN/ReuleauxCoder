@@ -277,7 +277,19 @@ class ShellTool(_BoundProcessTool):
         persist_cwd: bool = False,
         tty: bool = False,
     ) -> ToolOutcome | None:
-        del command, timeout, yield_ms, persist_cwd, tty
+        del command, timeout, yield_ms, persist_cwd
+        if tty and self.backend_id == "remote_relay":
+            return _boundary_failure(
+                "The connected remote process backend does not support PTY "
+                "sessions; the command was not started.",
+                code="remote_tty_unsupported",
+            )
+        if tty and self._manager is None:
+            return _boundary_failure(
+                "No process session manager is bound, so a resumable TTY "
+                "cannot be created; the command was not started.",
+                code="process_manager_unavailable",
+            )
         if (
             cwd is not None
             and self.backend_id == "local"

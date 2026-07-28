@@ -128,6 +128,10 @@ class TestRemoteBackendDispatch:
 
             result = tool.execute(command="echo ok", timeout=0)
             assert "positive integer" in result.model_text.lower()
+
+            result = tool.execute(command="echo ok", tty=True)
+            assert "does not support pty" in result.model_text.lower()
+            assert '"executed": false' in result.model_text.lower()
         finally:
             srv.stop()
 
