@@ -1,6 +1,6 @@
 from reuleauxcoder.interfaces.cli.interactor import CLIUIInteractor
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind, UIEventLevel
-from reuleauxcoder.interfaces.interactions import ReviewRequest
+from reuleauxcoder.interfaces.interactions import InputTextRequest, ReviewRequest
 
 
 def test_ctrl_c_review_cancels_and_breaks_the_partial_prompt_line(capsys) -> None:
@@ -32,3 +32,23 @@ def test_review_accepts_codex_style_numbered_choices() -> None:
 
     assert interactor.review(request).approved is True
     assert interactor.review(request).approved is False
+
+
+def test_secret_text_uses_dedicated_masked_prompt() -> None:
+    prompts = []
+    interactor = CLIUIInteractor(
+        UIEventBus(),
+        prompt_fn=lambda _prompt: "ordinary",
+        secret_prompt_fn=lambda prompt: prompts.append(prompt) or "  hidden value  ",
+    )
+
+    response = interactor.input_text(
+        InputTextRequest(
+            title="Secure input",
+            prompt="Enter hidden text",
+            secret=True,
+        )
+    )
+
+    assert response.value == "  hidden value  "
+    assert prompts == ["Enter hidden text: "]

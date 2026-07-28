@@ -10,6 +10,7 @@ from typing import Callable
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.layout import (
@@ -20,6 +21,7 @@ from prompt_toolkit.layout import (
     Window,
 )
 from prompt_toolkit.layout.margins import ScrollbarMargin
+from prompt_toolkit.layout.processors import ConditionalProcessor, PasswordProcessor
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame
@@ -53,6 +55,7 @@ from reuleauxcoder.interfaces.events import (
 )
 from reuleauxcoder.interfaces.interactions import (
     ConfirmRequest,
+    InputTextRequest,
     ReviewRequest,
 )
 from reuleauxcoder.interfaces.tui.interaction import (
@@ -187,7 +190,15 @@ class MiniTUIApplication:
             style="class:popup",
         )
         self.input_window = Window(
-            BufferControl(buffer=self.input_buffer),
+            BufferControl(
+                buffer=self.input_buffer,
+                input_processors=[
+                    ConditionalProcessor(
+                        PasswordProcessor(char="•"),
+                        Condition(self._secret_input_active),
+                    )
+                ],
+            ),
             height=self._input_height,
             wrap_lines=True,
             style="class:input",
@@ -281,7 +292,8 @@ class MiniTUIApplication:
                 # Adopt the highlighted candidate without submitting.
                 self._popup_adopt()
                 return True
-        text = buffer.text.strip()
+        raw_text = buffer.text
+        text = raw_text.strip()
         active_request = self.interactor.active_request
         if active_request is not None:
             # Binary approvals borrow the input focus but not its contents.
@@ -294,7 +306,9 @@ class MiniTUIApplication:
             # Choice and text interactions intentionally use the buffer as
             # their response field, so consume it only for those request kinds.
             buffer.reset()
-            self.interactor.submit(text)
+            self.interactor.submit(
+                raw_text if isinstance(active_request, InputTextRequest) else text
+            )
             return True
         buffer.reset()
         if not text:
@@ -320,6 +334,10 @@ class MiniTUIApplication:
         self._worker.start()
         self.invalidate()
         return True
+
+    def _secret_input_active(self) -> bool:
+        request = self.interactor.active_request
+        return isinstance(request, InputTextRequest) and request.secret
 
     def _submit_panel_command(self, command: str) -> None:
         self.input_buffer.text = command

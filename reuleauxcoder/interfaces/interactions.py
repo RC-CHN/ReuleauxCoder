@@ -70,8 +70,13 @@ class InputTextRequest:
     initial_value: str = ""
     placeholder: str | None = None
     allow_empty: bool = False
+    secret: bool = False
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.secret and self.initial_value:
+            raise ValueError("secret text input cannot expose an initial value")
 
 
 @dataclass(slots=True)
@@ -125,15 +130,20 @@ class UIInteractor(Protocol):
 
     def notify(self, event: "UIEvent") -> None:
         """Optional direct notification hook for interfaces that need it."""
+        ...
 
     def confirm(self, request: ConfirmRequest) -> ConfirmResponse:
         """Ask the user to confirm a yes/no decision."""
+        ...
 
     def choose_one(self, request: ChooseOneRequest) -> ChooseOneResponse:
         """Ask the user to choose one option."""
+        ...
 
     def input_text(self, request: InputTextRequest) -> InputTextResponse:
         """Ask the user to input free-form text."""
+        ...
 
     def review(self, request: ReviewRequest) -> ReviewResponse:
         """Ask the user to review structured content and approve/reject it."""
+        ...

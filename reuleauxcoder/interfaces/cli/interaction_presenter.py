@@ -108,6 +108,7 @@ def interaction_constraints(request: InteractionRequest) -> dict[str, object]:
         return {
             "value_type": "string",
             "allow_empty": request.allow_empty,
+            "secret": request.secret,
         }
     return {
         "value_type": "boolean",

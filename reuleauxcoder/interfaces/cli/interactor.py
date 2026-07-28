@@ -29,9 +29,13 @@ class CLIUIInteractor:
         ui_bus: UIEventBus,
         *,
         prompt_fn: Callable[[str], str] = pt_prompt,
+        secret_prompt_fn: Callable[[str], str] | None = None,
     ):
         self.ui_bus = ui_bus
         self._prompt = prompt_fn
+        self._secret_prompt = secret_prompt_fn or (
+            lambda message: pt_prompt(message, is_password=True)
+        )
         self._interaction_lock = threading.Lock()
 
     @staticmethod
@@ -105,7 +109,11 @@ class CLIUIInteractor:
 
             while True:
                 try:
-                    answer = self._prompt(prompt)
+                    answer = (
+                        self._secret_prompt(prompt)
+                        if request.secret
+                        else self._prompt(prompt)
+                    )
                 except (KeyboardInterrupt, EOFError):
                     self._interrupted()
                     return InputTextResponse(value=None, cancelled=True)

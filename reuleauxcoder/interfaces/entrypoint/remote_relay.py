@@ -27,7 +27,7 @@ from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.skills.service import SkillsService
 from reuleauxcoder.extensions.tools.backend import ExecutionContext
 from reuleauxcoder.interfaces.cli.commands import handle_command
-from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
+from reuleauxcoder.interfaces.cli.registration import REMOTE_CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.interaction_presenter import (
     interaction_constraints,
@@ -364,7 +364,7 @@ def bind_remote_chat_handler(
                 config,
                 getattr(peer_agent, "current_session_id", None),
                 presentation.ui_bus,
-                CLI_PROFILE,
+                REMOTE_CLI_PROFILE,
                 action_registry,
                 sessions_dir,
                 skills_service,

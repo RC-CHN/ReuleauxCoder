@@ -18,8 +18,15 @@ CLI_PROFILE = UIProfile(
             UICapability.STREAM_OUTPUT,
             UICapability.TEXT_SELECT,
             UICapability.DIFF_REVIEW,
+            UICapability.SECURE_TEXT_INPUT,
         }
     ),
+)
+
+REMOTE_CLI_PROFILE = UIProfile(
+    ui_id="cli",
+    display_name="Remote Command Line Interface",
+    capabilities=CLI_PROFILE.capabilities - {UICapability.SECURE_TEXT_INPUT},
 )
 
 

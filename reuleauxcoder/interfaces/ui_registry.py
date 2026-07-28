@@ -24,6 +24,7 @@ class UICapability(str, Enum):
     DIFF_REVIEW = "diff_review"
     TEXT_SELECT = "text_select"
     TEXT_EDIT = "text_edit"
+    SECURE_TEXT_INPUT = "secure_text_input"
 
 
 @dataclass(frozen=True, slots=True)

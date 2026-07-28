@@ -169,6 +169,31 @@ def test_enter_accepts_binary_interaction_without_consuming_chat_draft() -> None
     assert buffer.text == "keep this unfinished prompt"
 
 
+def test_secret_text_input_is_masked_and_preserves_exact_value() -> None:
+    submissions = []
+    resets = []
+    request = InputTextRequest(
+        title="Secure input",
+        prompt="Enter hidden text",
+        secret=True,
+    )
+    app = _bare_app()
+    app._popup_candidates = lambda: ()
+    app.interactor = SimpleNamespace(
+        active_request=request,
+        submit=submissions.append,
+    )
+    buffer = SimpleNamespace(
+        text="  hidden value  ",
+        reset=lambda: resets.append(True),
+    )
+
+    assert app._secret_input_active() is True
+    assert app._accept_buffer(buffer) is True
+    assert submissions == ["  hidden value  "]
+    assert resets == [True]
+
+
 def test_ctrl_c_cancels_interaction_without_consuming_chat_draft() -> None:
     resets = []
     app = _bare_app()

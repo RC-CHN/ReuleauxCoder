@@ -16,7 +16,7 @@ from reuleauxcoder.interfaces.entrypoint.remote_relay import (
     create_remote_console,
     export_remote_console,
 )
-from reuleauxcoder.interfaces.interactions import ReviewRequest
+from reuleauxcoder.interfaces.interactions import InputTextRequest, ReviewRequest
 
 
 @pytest.mark.parametrize("width", [80, 120])
@@ -56,6 +56,16 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
         "value_type": "boolean",
         "approve_label": "Approve",
         "reject_label": "Reject",
+    }
+
+
+def test_secret_text_constraint_is_explicit_on_the_wire() -> None:
+    request = InputTextRequest("Secure input", "Enter hidden text", secret=True)
+
+    assert interaction_constraints(request) == {
+        "value_type": "string",
+        "allow_empty": False,
+        "secret": True,
     }
 
 
