@@ -576,6 +576,48 @@ class ProcessManager:
                 for entry in self._entries.values()
             )
 
+    def resize_tty_sessions(
+        self,
+        *,
+        rows: int,
+        columns: int,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+    ) -> int:
+        """Synchronize visible live PTYs without adding a model-facing action."""
+        if rows < 1 or columns < 1:
+            raise ValueError("terminal rows and columns must be positive")
+        with self._lock:
+            entries = [
+                entry
+                for entry in self._entries.values()
+                if entry.published
+                and entry.handle.stream_mode is ProcessStreamMode.PTY
+                and entry.last_snapshot.state is ProcessState.RUNNING
+                and self._can_access(
+                    entry,
+                    agent_id=agent_id,
+                    owner_session_id=owner_session_id,
+                    session_generation=session_generation,
+                )
+            ]
+        resized = 0
+        for entry in entries:
+            try:
+                entry.port.resize(
+                    entry.handle.session_id,
+                    rows=rows,
+                    columns=columns,
+                )
+            except Exception:
+                # Resize is a best-effort UI synchronization. A concurrent
+                # process exit or one backend failure must not block rendering
+                # or prevent the remaining PTYs from being updated.
+                continue
+            resized += 1
+        return resized
+
     def rebind_generation(
         self,
         *,

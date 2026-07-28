@@ -124,6 +124,7 @@ class MiniTUIApplication:
         self._transcript_scroll = 0
         self._transcript_max_scroll = 0
         self._last_terminal_rows = 0
+        self._last_terminal_columns = 0
         self.session_header_expanded = True
         self.startup_lines = tuple(
             event.message.splitlines()[0]
@@ -809,7 +810,13 @@ class MiniTUIApplication:
                 self._transcript_scroll,
             )
             content_height = layout.line_count
-            resized = size.rows != self._last_terminal_rows
+            resized = (
+                size.rows != self._last_terminal_rows
+                or size.columns
+                != getattr(self, "_last_terminal_columns", size.columns)
+            )
+            if resized:
+                self._sync_process_terminal_size(size.rows, size.columns)
             viewport = max(
                 1,
                 (
@@ -819,6 +826,7 @@ class MiniTUIApplication:
                 ),
             )
             self._last_terminal_rows = size.rows
+            self._last_terminal_columns = size.columns
             maximum = max(0, content_height - viewport)
             self._transcript_max_scroll = maximum
             if self._follow_transcript:
@@ -831,6 +839,19 @@ class MiniTUIApplication:
         except Exception:
             # Rendering must stay available on minimal/dumb terminal outputs.
             return
+
+    def _sync_process_terminal_size(self, rows: int, columns: int) -> None:
+        manager = getattr(self.agent, "process_manager", None)
+        resize = getattr(manager, "resize_tty_sessions", None)
+        if not callable(resize):
+            return
+        resize(
+            rows=max(1, rows),
+            columns=max(1, columns),
+            agent_id=str(self.agent.agent_id),
+            owner_session_id=self.current_session_id,
+            session_generation=int(self.agent.session_generation),
+        )
 
     def _transcript_page_size(self) -> int:
         try:

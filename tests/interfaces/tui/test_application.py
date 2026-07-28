@@ -1893,6 +1893,32 @@ def test_before_render_keeps_scrolled_view_stable_and_tail_sticky() -> None:
     assert app._follow_transcript is True
 
 
+def test_terminal_resize_is_forwarded_to_visible_process_sessions() -> None:
+    calls = []
+    manager = SimpleNamespace(
+        resize_tty_sessions=lambda **kwargs: calls.append(kwargs)
+    )
+    app = _bare_app()
+    app.agent = SimpleNamespace(
+        process_manager=manager,
+        agent_id="agent",
+        session_generation=3,
+    )
+    app.current_session_id = "session"
+
+    app._sync_process_terminal_size(41, 101)
+
+    assert calls == [
+        {
+            "rows": 41,
+            "columns": 101,
+            "agent_id": "agent",
+            "owner_session_id": "session",
+            "session_generation": 3,
+        }
+    ]
+
+
 def test_virtual_layout_rebases_scroll_to_same_cell_after_markdown_reflow() -> None:
     old = VirtualTranscriptLayout(
         (

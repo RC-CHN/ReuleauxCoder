@@ -571,6 +571,57 @@ def test_pty_session_accepts_incremental_input(tmp_path) -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY integration")
+def test_pty_session_tracks_terminal_resize(tmp_path) -> None:
+    manager = ProcessManager()
+    port = LocalProcessPort()
+    handle = manager.start(
+        port,
+        "stty size; read value; stty size",
+        cwd=str(tmp_path),
+        runtime_timeout=5,
+        tty=True,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    initial = manager.poll(
+        handle.session_id,
+        consumer="model",
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        wait_ms=1000,
+    )
+    assert "24 80" in initial.stdout
+
+    assert (
+        manager.resize_tty_sessions(
+            rows=40,
+            columns=100,
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+        == 1
+    )
+    after_write = manager.write(
+        handle.session_id,
+        "\n",
+        consumer="model",
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+    )
+    output, _, state = _poll_until_terminal(manager, handle.session_id)
+
+    assert state is ProcessState.EXITED
+    assert "40 100" in after_write.stdout + output
+    manager.shutdown()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY integration")
 def test_sensitive_pty_line_is_redacted_for_pollers_and_events(tmp_path) -> None:
     events = []
     manager = ProcessManager(event_sink=events.append)

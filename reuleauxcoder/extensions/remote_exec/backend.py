@@ -625,6 +625,13 @@ class RemoteProcessPort:
         )
         return int(result.get("bytes_written", 0))
 
+    def resize(self, session_id: str, *, rows: int, columns: int) -> None:
+        del rows, columns
+        entry = self._lookup(session_id)
+        raise ProcessOperationUnsupported(
+            f"session '{entry.session_id}' does not support remote terminal resize"
+        )
+
     def interrupt(self, session_id: str) -> ProcessSnapshot:
         entry = self._lookup(session_id)
         if entry.state is ProcessState.EXITED:

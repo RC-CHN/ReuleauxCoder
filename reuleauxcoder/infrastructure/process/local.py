@@ -58,6 +58,8 @@ class _PtyTransport(Protocol):
 
     def write(self, data: bytes) -> int: ...
 
+    def resize(self, rows: int, columns: int) -> None: ...
+
     def interrupt(self) -> None: ...
 
     def close(self) -> None: ...
@@ -91,6 +93,21 @@ class _FdPtyTransport:
 
     def interrupt(self) -> None:
         self.write(b"\x03")
+
+    def resize(self, rows: int, columns: int) -> None:
+        import fcntl
+        import struct
+        import termios
+
+        with self._write_lock:
+            fd = self._fd
+            if fd is None:
+                raise OSError(errno.EBADF, "PTY is closed")
+            fcntl.ioctl(
+                fd,
+                termios.TIOCSWINSZ,
+                struct.pack("HHHH", rows, columns, 0, 0),
+            )
 
     def close(self) -> None:
         with self._write_lock:
@@ -148,6 +165,12 @@ class _WinPtyTransport:
             if self._closed:
                 return
             self._process.sendcontrol("c")
+
+    def resize(self, rows: int, columns: int) -> None:
+        with self._lock:
+            if self._closed:
+                raise OSError(errno.EBADF, "ConPTY is closed")
+            self._process.setwinsize(rows, columns)
 
     def close(self) -> None:
         with self._lock:
@@ -861,6 +884,22 @@ class LocalProcessPort:
         if transport is None:
             raise ProcessOperationUnsupported(f"session '{session_id}' has exited")
         return transport.write(encoded)
+
+    def resize(self, session_id: str, *, rows: int, columns: int) -> None:
+        if rows < 1 or columns < 1:
+            raise ValueError("terminal rows and columns must be positive")
+        entry = self._lookup(session_id)
+        if entry.stream_mode is not ProcessStreamMode.PTY:
+            raise ProcessOperationUnsupported(
+                f"session '{session_id}' uses pipe mode; terminal size is unavailable"
+            )
+        with entry.condition:
+            transport = entry.pty_transport
+            if entry.state is not ProcessState.RUNNING or transport is None:
+                raise ProcessOperationUnsupported(
+                    f"session '{session_id}' has exited"
+                )
+        transport.resize(rows, columns)
 
     def interrupt(self, session_id: str) -> ProcessSnapshot:
         entry = self._lookup(session_id)
