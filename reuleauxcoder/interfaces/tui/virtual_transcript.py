@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.formatted_text.base import StyleAndTextTuples
 from prompt_toolkit.layout.controls import UIContent, UIControl
 from prompt_toolkit.mouse_events import MouseEvent
 
@@ -76,7 +77,7 @@ class VirtualTranscriptLayout:
         bounded_local = max(0, min(local_line, max(0, len(cell.lines) - 1)))
         return self._starts[cell_index] + bounded_local
 
-    def get_line(self, line_number: int) -> list[tuple[str, str]]:
+    def get_line(self, line_number: int) -> StyleAndTextTuples:
         if not self.cells or line_number < 0 or line_number >= self.line_count:
             return [("class:muted", "No activity yet.")] if not self.cells else []
         cell_index = bisect_right(self._starts, line_number) - 1
@@ -84,8 +85,8 @@ class VirtualTranscriptLayout:
         local_line = line_number - self._starts[cell_index]
         return list(cell.lines[local_line])
 
-    def flatten(self) -> list[tuple[str, str]]:
-        fragments: list[tuple[str, str]] = []
+    def flatten(self) -> StyleAndTextTuples:
+        fragments: StyleAndTextTuples = []
         for line_number in range(self.line_count):
             fragments.extend(self.get_line(line_number))
             if line_number + 1 < self.line_count:
