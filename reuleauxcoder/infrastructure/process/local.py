@@ -442,9 +442,15 @@ class LocalProcessPort:
                 pending = self._starting.get(key)
                 if pending is None:
                     if len(self._entries) + len(self._starting) >= self._max_sessions:
+                        running = sum(
+                            entry.state is not ProcessState.EXITED
+                            for entry in self._entries.values()
+                        )
                         raise ProcessCapacityError(
                             "local process capacity reached "
-                            f"({self._max_sessions} sessions)"
+                            f"(limit={self._max_sessions}, running={running}, "
+                            f"retained={len(self._entries) - running}, "
+                            f"starting={len(self._starting)})"
                         )
                     reservation = _LocalStartReservation(threading.Event())
                     self._starting[key] = reservation

@@ -245,8 +245,23 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 		return failure("not_unique", "process_id is already starting")
 	}
 	if len(m.states)+len(m.starting) >= maxProcessSessions {
+		running := 0
+		for _, processState := range m.states {
+			if !isDone(processState.done) {
+				running++
+			}
+		}
 		m.mu.Unlock()
-		return failure("resource_exhausted", fmt.Sprintf("process session capacity reached (%d)", maxProcessSessions))
+		return failure(
+			"resource_exhausted",
+			fmt.Sprintf(
+				"process session capacity reached (limit=%d, running=%d, retained=%d, starting=%d)",
+				maxProcessSessions,
+				running,
+				len(m.states)-running,
+				len(m.starting),
+			),
+		)
 	}
 	reservation := &startReservation{done: make(chan struct{})}
 	m.starting[idempotencyKey] = reservation

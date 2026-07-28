@@ -187,9 +187,15 @@ class ProcessManager:
                 raise RuntimeError("process manager is shutting down")
             expired = self._cleanup_expired_locked()
             if len(self._entries) + self._starting >= self._max_sessions:
+                running = sum(
+                    entry.last_snapshot.state is not ProcessState.EXITED
+                    for entry in self._entries.values()
+                )
                 capacity_error = ProcessCapacityError(
                     "process session capacity reached "
-                    f"({self._max_sessions} retained/running sessions)"
+                    f"(limit={self._max_sessions}, running={running}, "
+                    f"retained={len(self._entries) - running}, "
+                    f"starting={self._starting})"
                 )
             else:
                 self._ports[port_id] = port

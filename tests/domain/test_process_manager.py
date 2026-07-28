@@ -351,7 +351,7 @@ def test_capacity_does_not_discard_fresh_unobserved_terminal_result() -> None:
     )
     _start_immediate_exit(manager, _ImmediateExitPort("first-terminal"))
 
-    with pytest.raises(ProcessCapacityError, match="capacity reached"):
+    with pytest.raises(ProcessCapacityError, match="capacity reached") as rejected:
         manager.start(
             _ImmediateExitPort("second-terminal"),  # type: ignore[arg-type]
             "second-command",
@@ -364,6 +364,10 @@ def test_capacity_does_not_discard_fresh_unobserved_terminal_result() -> None:
             origin_turn_id="turn",
         )
 
+    assert "limit=1" in str(rejected.value)
+    assert "running=0" in str(rejected.value)
+    assert "retained=1" in str(rejected.value)
+    assert "starting=0" in str(rejected.value)
     assert "first-terminal" in manager._entries
     manager.shutdown()
 

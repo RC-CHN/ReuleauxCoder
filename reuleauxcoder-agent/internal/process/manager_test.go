@@ -502,6 +502,38 @@ func TestConcurrentIdempotentStartExecutesCommandOnce(t *testing.T) {
 	}
 }
 
+func TestCapacityFailureReportsCurrentProcessFacts(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	for index := 0; index < maxProcessSessions; index++ {
+		done := make(chan struct{})
+		close(done)
+		processID := fmt.Sprintf("retained-capacity-%d", index)
+		manager.states[processID] = &state{
+			id: processID, idempotencyKey: processID, done: done,
+		}
+	}
+
+	result := manager.Execute(request("process.start", map[string]any{
+		"process_id": "over-capacity", "idempotency_key": "over-capacity",
+		"command": "printf unreachable", "cwd": root, "tty": false,
+	}))
+
+	if result.OK || result.ErrorCode != "resource_exhausted" {
+		t.Fatalf("capacity request was not rejected: %#v", result)
+	}
+	for _, fact := range []string{
+		"limit=64",
+		"running=0",
+		"retained=64",
+		"starting=0",
+	} {
+		if !strings.Contains(result.ErrorMessage, fact) {
+			t.Fatalf("capacity fact %q missing from %q", fact, result.ErrorMessage)
+		}
+	}
+}
+
 func TestCloseReapsProcessStartedBeforeRegistration(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, root)
