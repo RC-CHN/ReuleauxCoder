@@ -194,7 +194,11 @@ class RemoteRelayToolBackend(ToolBackend):
         )
 
     def _build_stream_handler(self, tool_name: str):
-        remote_stream_handler = getattr(self.context, "remote_stream_handler", None)
+        remote_stream_handler = self.current_stream_handler() or getattr(
+            self.context,
+            "remote_stream_handler",
+            None,
+        )
         if tool_name != "shell" and remote_stream_handler is None:
             return None
         if (

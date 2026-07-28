@@ -84,6 +84,29 @@ def _workspace_access_scope(workspace, external_target: str | None) -> Iterator[
         yield
 
 
+@contextmanager
+def _stream_handler_scope(
+    backend,
+    execution_context,
+    handler,
+) -> Iterator[None]:
+    """Prefer backend-local execution state; preserve custom backend compatibility."""
+    bind = getattr(backend, "stream_handler_scope", None)
+    if callable(bind):
+        scope = cast(AbstractContextManager[object], bind(handler))
+        with scope:
+            yield
+        return
+    previous = getattr(execution_context, "remote_stream_handler", None)
+    if execution_context is not None:
+        execution_context.remote_stream_handler = handler
+    try:
+        yield
+    finally:
+        if execution_context is not None:
+            execution_context.remote_stream_handler = previous
+
+
 class ToolExecutor:
     """Handles tool execution for the agent."""
 
@@ -423,7 +446,7 @@ class ToolExecutor:
         try:
             backend = getattr(tool, "backend", None)
             execution_context = getattr(backend, "context", None)
-            previous_stream_handler = getattr(
+            outer_stream_handler = getattr(
                 execution_context, "remote_stream_handler", None
             )
 
@@ -442,24 +465,23 @@ class ToolExecutor:
                         tool_call_id=tc.id,
                     )
                 )
-                if callable(previous_stream_handler):
-                    previous_stream_handler(tool_name, chunk)
+                if callable(outer_stream_handler):
+                    outer_stream_handler(tool_name, chunk)
 
-            if execution_context is not None:
-                execution_context.remote_stream_handler = stream_handler
-            bind_execution = getattr(tool, "bind_execution", None)
-            if callable(bind_execution):
-                bind_execution(
-                    tool_call_id=tc.id,
-                    session_generation=self.agent.session_generation,
-                )
-            try:
+            with _stream_handler_scope(
+                backend,
+                execution_context,
+                stream_handler,
+            ):
+                bind_execution = getattr(tool, "bind_execution", None)
+                if callable(bind_execution):
+                    bind_execution(
+                        tool_call_id=tc.id,
+                        session_generation=self.agent.session_generation,
+                    )
                 execution_workspace = getattr(backend, "workspace", None)
                 with _workspace_access_scope(execution_workspace, external_target):
                     raw_result = tool.execute(**tool_call.arguments)
-            finally:
-                if execution_context is not None:
-                    execution_context.remote_stream_handler = previous_stream_handler
             outcome = (
                 raw_result
                 if isinstance(raw_result, ToolOutcome)

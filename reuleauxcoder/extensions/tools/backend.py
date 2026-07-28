@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
@@ -39,6 +41,24 @@ class ToolBackend:
         self.context = context or ExecutionContext()
         self.workspace = workspace
         self.process = process
+        self._stream_handler_local = threading.local()
+
+    @contextmanager
+    def stream_handler_scope(self, handler: object | None) -> Iterator[None]:
+        """Bind one tool-call stream sink without mutating shared context."""
+        missing = object()
+        previous = getattr(self._stream_handler_local, "handler", missing)
+        self._stream_handler_local.handler = handler
+        try:
+            yield
+        finally:
+            if previous is missing:
+                del self._stream_handler_local.handler
+            else:
+                self._stream_handler_local.handler = previous
+
+    def current_stream_handler(self) -> object | None:
+        return getattr(self._stream_handler_local, "handler", None)
 
     def clone_for_scope(self, scope: str) -> "ToolBackend":
         """Materialize a backend adapter for an independent Agent scope."""

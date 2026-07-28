@@ -575,6 +575,15 @@ class ShellTool(_BoundProcessTool):
         build = getattr(self.backend, "_build_stream_handler", None)
         remote_handler = build("shell") if callable(build) else None
         if remote_handler is None:
+            current = getattr(self.backend, "current_stream_handler", None)
+            scoped_handler = current() if callable(current) else None
+            if callable(scoped_handler):
+
+                def forward_scoped_chunk(chunk) -> None:
+                    scoped_handler("shell", chunk)
+
+                remote_handler = forward_scoped_chunk
+        if remote_handler is None:
             context_handler = getattr(
                 self.backend.context, "remote_stream_handler", None
             )

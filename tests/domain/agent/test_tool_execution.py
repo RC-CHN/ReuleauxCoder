@@ -1,5 +1,7 @@
 """Tests for ToolExecutor, including CWD sync behaviour."""
 
+import concurrent.futures
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -569,3 +571,56 @@ def test_shell_process_chunks_are_published_without_changing_full_outcome(
     ]
     assert chunks == ["first\n", "last\n"]
     assert agent.events[-1].tool_outcome.model_text == "first\nlast"
+
+
+def test_parallel_tool_stream_handlers_do_not_cross_or_leak(tmp_path) -> None:
+    barrier = threading.Barrier(2)
+    first_finished = threading.Event()
+    outer_chunks = []
+
+    class ParallelStreamingProcess:
+        def run(self, command, *, stream_handler, **kwargs):  # noqa: ARG002
+            barrier.wait()
+            if command == "second":
+                assert first_finished.wait(2)
+            stream_handler(ProcessChunk("stdout", command + "\n"))
+            if command == "first":
+                first_finished.set()
+            return ProcessResult(stdout=command + "\n", exit_code=0)
+
+    def outer_handler(tool_name, chunk) -> None:
+        outer_chunks.append((tool_name, chunk.data))
+
+    context = ExecutionContext(
+        cwd=str(tmp_path),
+        workspace_root=str(tmp_path),
+        remote_stream_handler=outer_handler,
+    )
+    tool = ShellTool(
+        LocalToolBackend(context, process=ParallelStreamingProcess())
+    )
+    agent = _AgentStub(tool)
+    executor = ToolExecutor(agent)
+    calls = (
+        ToolCall(id="call-first", name="shell", arguments={"command": "first"}),
+        ToolCall(id="call-second", name="shell", arguments={"command": "second"}),
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(executor.execute, calls))
+
+    deltas = [
+        (event.correlation_id, event.data["text"])
+        for event in agent.events
+        if event.event_type.value == "tool_output_delta"
+    ]
+    assert sorted(results) == ["first", "second"]
+    assert sorted(deltas) == [
+        ("call-first", "first\n"),
+        ("call-second", "second\n"),
+    ]
+    assert sorted(outer_chunks) == [
+        ("shell", "first\n"),
+        ("shell", "second\n"),
+    ]
+    assert context.remote_stream_handler is outer_handler
