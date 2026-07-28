@@ -93,3 +93,33 @@ def test_process_inventory_does_not_mutate_plain_history() -> None:
         process_manager=manager
     ).run(context) is context
     assert manager.calls == []
+
+
+def test_process_inventory_keeps_every_capacity_bounded_session_addressable() -> None:
+    sessions = [
+        SimpleNamespace(
+            session_id=f"process-{index}",
+            state=ProcessState.RUNNING,
+            stream_mode="pipe",
+            elapsed_seconds=float(index),
+            command="x" * 1_000,
+        )
+        for index in range(32)
+    ]
+    context = BeforeLLMRequestContext(
+        hook_point=HookPoint.BEFORE_LLM_REQUEST,
+        messages=[_tail()],
+        agent_id="agent",
+        session_id="session",
+        session_generation=0,
+    )
+
+    ProcessSessionInjectorHook(  # type: ignore[arg-type]
+        process_manager=_Manager(sessions)
+    ).run(context)
+    content = context.messages[-1]["content"]
+
+    assert content.count("<session ") == 32
+    assert 'id="process-0"' in content
+    assert 'id="process-31"' in content
+    assert "x" * 160 not in content

@@ -18,7 +18,6 @@ from reuleauxcoder.domain.hooks.runtime_overlay import (
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext
 
 
-_MAX_INVENTORY_ITEMS = 16
 _MAX_COMMAND_CHARS = 160
 
 
@@ -79,7 +78,10 @@ class ProcessSessionInjectorHook(TransformHook[BeforeLLMRequestContext]):
             return context
 
         lines = ['<active_shell_sessions trust="runtime_state">']
-        for session in sessions[:_MAX_INVENTORY_ITEMS]:
+        # ProcessManager already bounds the number of sessions. Project every
+        # accessible ID so context compaction cannot make a live process
+        # impossible for the model to address.
+        for session in sessions:
             command = " ".join(session.command.split())
             if len(command) > _MAX_COMMAND_CHARS:
                 command = command[: _MAX_COMMAND_CHARS - 1] + "…"
@@ -95,10 +97,6 @@ class ProcessSessionInjectorHook(TransformHook[BeforeLLMRequestContext]):
                     f"{escape(command, quote=False)}</command>",
                     "  </session>",
                 )
-            )
-        if len(sessions) > _MAX_INVENTORY_ITEMS:
-            lines.append(
-                f'  <omitted count="{len(sessions) - _MAX_INVENTORY_ITEMS}" />'
             )
         lines.append("</active_shell_sessions>")
         region = "[SHELL SESSIONS]\n" + "\n".join(lines) + "\n"
