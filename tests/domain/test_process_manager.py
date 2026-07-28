@@ -152,6 +152,7 @@ def test_unpublished_cancel_is_cleaned_without_completion_event(tmp_path) -> Non
         origin_turn_id="turn",
     )
 
+    assert manager.active_count(owner_session_id="session") == 0
     manager.abandon(handle.session_id, reason="cancelled")
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:

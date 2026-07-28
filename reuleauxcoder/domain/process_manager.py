@@ -570,7 +570,8 @@ class ProcessManager:
     ) -> int:
         with self._lock:
             return sum(
-                entry.last_snapshot.state is not ProcessState.EXITED
+                entry.published
+                and entry.last_snapshot.state is not ProcessState.EXITED
                 and (
                     owner_session_id is None
                     or entry.owner_session_id == owner_session_id
