@@ -1,0 +1,711 @@
+"""Session-level ownership and observation for process ports."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from enum import Enum
+import threading
+import time
+import uuid
+
+from reuleauxcoder.domain.process import (
+    ProcessCapacityError,
+    ProcessCursor,
+    ProcessHandle,
+    ProcessPort,
+    ProcessSessionNotFound,
+    ProcessShutdownReport,
+    ProcessSnapshot,
+    ProcessState,
+    ProcessStreamHandler,
+)
+
+
+class ProcessEventKind(str, Enum):
+    OUTPUT = "output"
+    COMPLETED = "completed"
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessEvent:
+    kind: ProcessEventKind
+    snapshot: ProcessSnapshot
+    command: str
+    cwd: str
+    owner_agent_id: str
+    owner_session_id: str | None
+    session_generation: int
+    origin_turn_id: str | None
+
+
+ProcessEventSink = Callable[[ProcessEvent], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedProcessView:
+    session_id: str
+    command: str
+    cwd: str
+    state: ProcessState
+    stream_mode: str
+    backend: str
+    elapsed_seconds: float
+    exit_code: int | None
+    termination_reason: str | None
+    output_truncated: bool
+    published: bool
+    observed: bool
+
+
+@dataclass(slots=True)
+class _ManagedEntry:
+    handle: ProcessHandle
+    port: ProcessPort
+    command: str
+    cwd: str
+    owner_agent_id: str
+    owner_session_id: str | None
+    session_generation: int
+    origin_turn_id: str | None
+    created_monotonic: float
+    last_snapshot: ProcessSnapshot
+    published: bool = False
+    observed: bool = False
+    abandoned: bool = False
+    observed_at: float | None = None
+    terminal_at: float | None = None
+    cursors: dict[str, ProcessCursor] = field(default_factory=dict)
+    consumer_locks: dict[str, threading.Lock] = field(default_factory=dict)
+    watcher_cursor: ProcessCursor = field(default_factory=ProcessCursor)
+    watcher: threading.Thread | None = None
+    completion_emitted: bool = False
+
+
+class ProcessManager:
+    """Own process sessions across tool calls and user turns."""
+
+    def __init__(
+        self,
+        *,
+        event_sink: ProcessEventSink | None = None,
+        max_sessions: int = 32,
+        observed_retention_seconds: float = 30.0,
+        terminal_ttl_seconds: float = 600.0,
+    ) -> None:
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be positive")
+        if observed_retention_seconds < 0 or terminal_ttl_seconds < 0:
+            raise ValueError("retention periods must be non-negative")
+        self._event_sink = event_sink
+        self._max_sessions = max_sessions
+        self._observed_retention_seconds = observed_retention_seconds
+        self._terminal_ttl_seconds = terminal_ttl_seconds
+        self._entries: dict[str, _ManagedEntry] = {}
+        self._lock = threading.RLock()
+        self._closing = False
+        self._starting = 0
+
+    def start(
+        self,
+        port: ProcessPort,
+        command: str,
+        *,
+        cwd: str,
+        runtime_timeout: int,
+        tty: bool,
+        owner_agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+        origin_turn_id: str | None,
+        env: Mapping[str, str] | None = None,
+        stream_handler: ProcessStreamHandler | None = None,
+    ) -> ProcessHandle:
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("process manager is shutting down")
+            self._cleanup_expired_locked()
+            self._reclaim_terminal_for_capacity_locked()
+            if len(self._entries) + self._starting >= self._max_sessions:
+                raise ProcessCapacityError(
+                    "process session capacity reached "
+                    f"({self._max_sessions} retained/running sessions)"
+                )
+            self._starting += 1
+
+        idempotency_key = f"rcoder-{uuid.uuid4().hex}"
+        handle: ProcessHandle | None = None
+        try:
+            handle = port.start(
+                command,
+                cwd=cwd,
+                runtime_timeout=runtime_timeout,
+                tty=tty,
+                env=env,
+                idempotency_key=idempotency_key,
+                stream_handler=stream_handler,
+            )
+            initial = port.poll(handle.session_id)
+        except BaseException:
+            if handle is not None:
+                try:
+                    port.terminate(handle.session_id, reason="start_failed")
+                except Exception:
+                    pass
+            raise
+        finally:
+            with self._lock:
+                self._starting -= 1
+        assert handle is not None
+
+        entry = _ManagedEntry(
+            handle=handle,
+            port=port,
+            command=command,
+            cwd=cwd,
+            owner_agent_id=owner_agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+            origin_turn_id=origin_turn_id,
+            created_monotonic=time.monotonic(),
+            last_snapshot=initial,
+        )
+        with self._lock:
+            if self._closing:
+                try:
+                    port.terminate(handle.session_id, reason="shutdown")
+                finally:
+                    raise RuntimeError("process manager is shutting down")
+            if handle.session_id in self._entries:
+                port.terminate(handle.session_id, reason="duplicate_session")
+                raise RuntimeError(
+                    f"duplicate process session id '{handle.session_id}'"
+                )
+            self._entries[handle.session_id] = entry
+
+        watcher = threading.Thread(
+            target=self._watch,
+            args=(entry,),
+            name=f"rcoder-managed-process-{handle.session_id[-8:]}",
+            daemon=True,
+        )
+        entry.watcher = watcher
+        watcher.start()
+        return handle
+
+    def publish(self, session_id: str, *, observed: bool = False) -> None:
+        emit_completion = False
+        with self._lock:
+            entry = self._require_entry_locked(session_id)
+            entry.published = True
+            if observed and entry.last_snapshot.state is ProcessState.EXITED:
+                entry.observed = True
+                entry.observed_at = time.monotonic()
+            if (
+                entry.last_snapshot.state is not ProcessState.RUNNING
+                and not entry.completion_emitted
+            ):
+                entry.completion_emitted = True
+                emit_completion = True
+        if emit_completion:
+            self._emit(ProcessEventKind.COMPLETED, entry, entry.last_snapshot)
+
+    def abandon(self, session_id: str, *, reason: str = "cancelled") -> None:
+        with self._lock:
+            entry = self._require_entry_locked(session_id)
+            if entry.published:
+                return
+            entry.abandoned = True
+            terminal = entry.last_snapshot.state is not ProcessState.RUNNING
+            if terminal:
+                self._entries.pop(session_id, None)
+        if terminal:
+            try:
+                entry.port.release(session_id)
+            except Exception:
+                pass
+            return
+        try:
+            entry.port.terminate(session_id, reason=reason)
+        except ProcessSessionNotFound:
+            pass
+
+    def poll(
+        self,
+        session_id: str,
+        *,
+        consumer: str,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+        wait_ms: int = 0,
+        mark_observed: bool = True,
+    ) -> ProcessSnapshot:
+        entry, cursor, consumer_lock = self._entry_and_cursor(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+        )
+        with consumer_lock:
+            with self._lock:
+                current = self._entries.get(session_id)
+                if current is not entry:
+                    raise ProcessSessionNotFound(
+                        f"process session '{session_id}' was not found"
+                    )
+                cursor = entry.cursors.get(consumer, cursor)
+            snapshot = entry.port.poll(
+                session_id,
+                cursor=cursor,
+                wait_ms=wait_ms,
+            )
+            with self._lock:
+                current = self._entries.get(session_id)
+                if current is entry:
+                    entry.cursors[consumer] = snapshot.cursor
+                    entry.last_snapshot = snapshot
+                    if snapshot.state is ProcessState.EXITED:
+                        entry.terminal_at = entry.terminal_at or time.monotonic()
+                        if mark_observed:
+                            entry.observed = True
+                            entry.observed_at = time.monotonic()
+        return snapshot
+
+    def write(
+        self,
+        session_id: str,
+        chars: str,
+        *,
+        consumer: str,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+    ) -> ProcessSnapshot:
+        entry, _, _ = self._entry_and_cursor(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+        )
+        entry.port.write_input(session_id, chars)
+        return self.poll(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+            wait_ms=0,
+        )
+
+    def interrupt(
+        self,
+        session_id: str,
+        *,
+        consumer: str,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+    ) -> ProcessSnapshot:
+        entry, _, _ = self._entry_and_cursor(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+        )
+        entry.port.interrupt(session_id)
+        return self.poll(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+            wait_ms=0,
+        )
+
+    def terminate(
+        self,
+        session_id: str,
+        *,
+        consumer: str,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+        reason: str = "terminated",
+    ) -> ProcessSnapshot:
+        entry, _, _ = self._entry_and_cursor(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+        )
+        entry.port.terminate(session_id, reason=reason)
+        return self.poll(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+            wait_ms=0,
+        )
+
+    def get_view(
+        self,
+        session_id: str,
+        *,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+    ) -> ManagedProcessView:
+        """Return non-consuming process facts for validation and UI."""
+        with self._lock:
+            entry = self._require_entry_locked(session_id)
+            if not entry.published or not self._can_access(
+                entry,
+                agent_id=agent_id,
+                owner_session_id=owner_session_id,
+                session_generation=session_generation,
+            ):
+                raise ProcessSessionNotFound(
+                    f"process session '{session_id}' is not available in this session"
+                )
+            return self._view(entry)
+
+    def list(
+        self,
+        *,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+        include_observed: bool = False,
+    ) -> tuple[ManagedProcessView, ...]:
+        with self._lock:
+            self._cleanup_expired_locked()
+            entries = [
+                entry
+                for entry in self._entries.values()
+                if self._can_access(
+                    entry,
+                    agent_id=agent_id,
+                    owner_session_id=owner_session_id,
+                    session_generation=session_generation,
+                )
+                and (include_observed or not entry.observed)
+                and entry.published
+            ]
+            entries.sort(key=lambda item: item.created_monotonic)
+            return tuple(self._view(entry) for entry in entries)
+
+    def active_count(
+        self,
+        *,
+        owner_session_id: str | None = None,
+    ) -> int:
+        with self._lock:
+            return sum(
+                entry.last_snapshot.state is ProcessState.RUNNING
+                and (
+                    owner_session_id is None
+                    or entry.owner_session_id == owner_session_id
+                )
+                for entry in self._entries.values()
+            )
+
+    def rebind_generation(
+        self,
+        *,
+        owner_session_id: str | None,
+        previous_generation: int,
+        next_generation: int,
+    ) -> int:
+        rebound = 0
+        with self._lock:
+            for entry in self._entries.values():
+                if (
+                    entry.owner_session_id == owner_session_id
+                    and entry.session_generation == previous_generation
+                    and entry.published
+                ):
+                    entry.session_generation = next_generation
+                    rebound += 1
+        return rebound
+
+    def stop_all(
+        self,
+        *,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+        reason: str = "terminated",
+    ) -> int:
+        with self._lock:
+            entries = [
+                entry
+                for entry in self._entries.values()
+                if self._can_access(
+                    entry,
+                    agent_id=agent_id,
+                    owner_session_id=owner_session_id,
+                    session_generation=session_generation,
+                )
+                and entry.last_snapshot.state is ProcessState.RUNNING
+            ]
+        for entry in entries:
+            try:
+                entry.port.terminate(entry.handle.session_id, reason=reason)
+            except ProcessSessionNotFound:
+                pass
+        return len(entries)
+
+    def shutdown(self, *, grace_seconds: float = 0.5) -> ProcessShutdownReport:
+        with self._lock:
+            if self._closing:
+                entries = tuple(self._entries.values())
+            else:
+                self._closing = True
+                entries = tuple(self._entries.values())
+        terminal = [
+            entry
+            for entry in entries
+            if entry.last_snapshot.state is ProcessState.EXITED
+        ]
+        live = [
+            entry
+            for entry in entries
+            if entry.last_snapshot.state is ProcessState.RUNNING
+        ]
+        unknown = [
+            entry
+            for entry in entries
+            if entry.last_snapshot.state is ProcessState.UNKNOWN
+        ]
+        for entry in live:
+            try:
+                entry.port.interrupt(entry.handle.session_id)
+            except Exception:
+                pass
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        for entry in live:
+            watcher = entry.watcher
+            if watcher is not None:
+                watcher.join(timeout=max(0.0, deadline - time.monotonic()))
+        remaining = [
+            entry
+            for entry in live
+            if entry.last_snapshot.state is ProcessState.RUNNING
+        ]
+        for entry in remaining:
+            try:
+                entry.port.terminate(entry.handle.session_id, reason="shutdown")
+            except Exception:
+                pass
+        reap_timeouts = 0
+        for entry in remaining:
+            watcher = entry.watcher
+            if watcher is not None:
+                watcher.join(timeout=2.0)
+                if watcher.is_alive():
+                    reap_timeouts += 1
+        with self._lock:
+            for entry in tuple(self._entries.values()):
+                if entry.last_snapshot.state is ProcessState.EXITED:
+                    try:
+                        entry.port.release(entry.handle.session_id)
+                    except Exception:
+                        pass
+            self._entries.clear()
+        return ProcessShutdownReport(
+            total=len(entries),
+            already_exited=len(terminal),
+            interrupted=len(live),
+            terminated=len(remaining),
+            unknown=len(unknown),
+            reap_timeouts=reap_timeouts,
+        )
+
+    def _watch(self, entry: _ManagedEntry) -> None:
+        cursor = ProcessCursor()
+        while True:
+            try:
+                snapshot = entry.port.poll(
+                    entry.handle.session_id,
+                    cursor=cursor,
+                    wait_ms=250,
+                )
+            except ProcessSessionNotFound:
+                return
+            has_output = bool(snapshot.stdout or snapshot.stderr)
+            cursor = snapshot.cursor
+            with self._lock:
+                current = self._entries.get(entry.handle.session_id)
+                if current is not entry:
+                    return
+                entry.watcher_cursor = cursor
+                entry.last_snapshot = snapshot
+                if snapshot.state is ProcessState.EXITED:
+                    entry.terminal_at = entry.terminal_at or time.monotonic()
+                published = entry.published
+                abandoned = entry.abandoned
+                emit_completion = (
+                    published
+                    and snapshot.state is not ProcessState.RUNNING
+                    and not entry.completion_emitted
+                )
+                if emit_completion:
+                    entry.completion_emitted = True
+                if abandoned and snapshot.state is not ProcessState.RUNNING:
+                    self._entries.pop(entry.handle.session_id, None)
+            if abandoned and snapshot.state is not ProcessState.RUNNING:
+                try:
+                    entry.port.release(entry.handle.session_id)
+                except Exception:
+                    pass
+                return
+            if has_output and published:
+                self._emit(ProcessEventKind.OUTPUT, entry, snapshot)
+            if emit_completion:
+                self._emit(ProcessEventKind.COMPLETED, entry, snapshot)
+                return
+            if snapshot.state is not ProcessState.RUNNING:
+                return
+
+    def _emit(
+        self,
+        kind: ProcessEventKind,
+        entry: _ManagedEntry,
+        snapshot: ProcessSnapshot,
+    ) -> None:
+        sink = self._event_sink
+        if sink is None:
+            return
+        try:
+            sink(
+                ProcessEvent(
+                    kind=kind,
+                    snapshot=snapshot,
+                    command=entry.command,
+                    cwd=entry.cwd,
+                    owner_agent_id=entry.owner_agent_id,
+                    owner_session_id=entry.owner_session_id,
+                    session_generation=entry.session_generation,
+                    origin_turn_id=entry.origin_turn_id,
+                )
+            )
+        except Exception:
+            pass
+
+    def _entry_and_cursor(
+        self,
+        session_id: str,
+        *,
+        consumer: str,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+    ) -> tuple[_ManagedEntry, ProcessCursor, threading.Lock]:
+        with self._lock:
+            entry = self._require_entry_locked(session_id)
+            if not self._can_access(
+                entry,
+                agent_id=agent_id,
+                owner_session_id=owner_session_id,
+                session_generation=session_generation,
+            ):
+                raise ProcessSessionNotFound(
+                    f"process session '{session_id}' is not available in this session"
+                )
+            consumer_lock = entry.consumer_locks.setdefault(
+                consumer, threading.Lock()
+            )
+            return (
+                entry,
+                entry.cursors.get(consumer, ProcessCursor()),
+                consumer_lock,
+            )
+
+    def _require_entry_locked(self, session_id: str) -> _ManagedEntry:
+        entry = self._entries.get(session_id)
+        if entry is None:
+            raise ProcessSessionNotFound(
+                f"process session '{session_id}' was not found"
+            )
+        return entry
+
+    @staticmethod
+    def _can_access(
+        entry: _ManagedEntry,
+        *,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+    ) -> bool:
+        if entry.session_generation != session_generation:
+            return False
+        if owner_session_id is not None and entry.owner_session_id == owner_session_id:
+            return True
+        return entry.owner_agent_id == agent_id
+
+    @staticmethod
+    def _view(entry: _ManagedEntry) -> ManagedProcessView:
+        snapshot = entry.last_snapshot
+        return ManagedProcessView(
+            session_id=entry.handle.session_id,
+            command=entry.command,
+            cwd=entry.cwd,
+            state=snapshot.state,
+            stream_mode=snapshot.stream_mode.value,
+            backend=snapshot.backend,
+            elapsed_seconds=snapshot.elapsed_seconds,
+            exit_code=snapshot.exit_code,
+            termination_reason=snapshot.termination_reason,
+            output_truncated=snapshot.output_truncated,
+            published=entry.published,
+            observed=entry.observed,
+        )
+
+    def _cleanup_expired_locked(self) -> None:
+        now = time.monotonic()
+        expired: list[_ManagedEntry] = []
+        for entry in self._entries.values():
+            if entry.last_snapshot.state is ProcessState.RUNNING:
+                continue
+            terminal_at = entry.terminal_at or entry.created_monotonic
+            age = now - terminal_at
+            if entry.observed:
+                if age >= self._observed_retention_seconds:
+                    expired.append(entry)
+            elif age >= self._terminal_ttl_seconds:
+                expired.append(entry)
+        for entry in expired:
+            self._entries.pop(entry.handle.session_id, None)
+            try:
+                entry.port.release(entry.handle.session_id)
+            except Exception:
+                pass
+
+    def _reclaim_terminal_for_capacity_locked(self) -> None:
+        """Prefer dropping old terminal entries before rejecting a new start."""
+        excess = len(self._entries) + self._starting - self._max_sessions + 1
+        if excess <= 0:
+            return
+        terminal = sorted(
+            (
+                entry
+                for entry in self._entries.values()
+                if entry.last_snapshot.state is not ProcessState.RUNNING
+            ),
+            key=lambda entry: (
+                not entry.observed,
+                entry.terminal_at or entry.created_monotonic,
+            ),
+        )
+        for entry in terminal[:excess]:
+            self._entries.pop(entry.handle.session_id, None)
+            try:
+                entry.port.release(entry.handle.session_id)
+            except Exception:
+                pass
