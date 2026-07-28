@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -124,15 +125,19 @@ func interruptProcessTree(cmd *exec.Cmd) error {
 	return nil
 }
 
-func terminateProcessTree(cmd *exec.Cmd, processTree *processTreeHandle) {
+func terminateProcessTree(cmd *exec.Cmd, processTree *processTreeHandle) error {
 	if processTree != nil && processTree.terminate() == nil {
-		return
+		return nil
 	}
 	if cmd.Process == nil {
-		return
+		return nil
 	}
 	kill := exec.Command("taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F")
-	_ = kill.Run()
+	output, err := kill.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("taskkill failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func reapProcessTreeAfterRootExit(

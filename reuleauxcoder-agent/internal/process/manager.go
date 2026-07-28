@@ -136,6 +136,7 @@ type state struct {
 	changed            chan struct{}
 	mu                 sync.Mutex
 	inputMu            sync.Mutex
+	terminateMu        sync.Mutex
 	inputBytes         int
 	exitCode           int
 	terminationReason  string
@@ -380,23 +381,33 @@ func (s *state) wait() {
 	s.signalChange()
 }
 
-func (s *state) terminate(reason string) {
+func (s *state) terminate(reason string) error {
+	s.terminateMu.Lock()
+	defer s.terminateMu.Unlock()
 	select {
 	case <-s.done:
-		return
+		return nil
 	default:
 	}
 	s.mu.Lock()
 	if s.terminated {
 		s.mu.Unlock()
-		return
+		return nil
 	}
+	previousReason := s.terminationReason
 	s.terminated = true
 	if s.terminationReason == "" || reason == "timeout" || reason == "shutdown" {
 		s.terminationReason = reason
 	}
 	s.mu.Unlock()
-	terminateProcessTree(s.cmd, s.processTree)
+	if err := terminateProcessTree(s.cmd, s.processTree); err != nil {
+		s.mu.Lock()
+		s.terminated = false
+		s.terminationReason = previousReason
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) poll(args map[string]any) protocol.WorkspaceResult {
@@ -536,7 +547,9 @@ func (m *Manager) terminate(args map[string]any) protocol.WorkspaceResult {
 	if reason == "" {
 		reason = "terminated"
 	}
-	processState.terminate(reason)
+	if err := processState.terminate(reason); err != nil {
+		return failure("io_error", fmt.Sprintf("process termination was not delivered: %v", err))
+	}
 	return success(m.controlSnapshot(processState))
 }
 
@@ -546,7 +559,9 @@ func (m *Manager) cancel(args map[string]any) protocol.WorkspaceResult {
 	if processState == nil {
 		return failure("not_found", "process not found")
 	}
-	processState.terminate("cancelled")
+	if err := processState.terminate("cancelled"); err != nil {
+		return failure("io_error", fmt.Sprintf("process cancellation was not delivered: %v", err))
+	}
 	<-processState.done
 	data := m.controlSnapshot(processState)
 	data["cancelled"] = true
@@ -628,7 +643,7 @@ func (m *Manager) Close() {
 		<-reservation.done
 	}
 	for _, processState := range states {
-		processState.terminate("shutdown")
+		_ = processState.terminate("shutdown")
 	}
 	for _, processState := range states {
 		<-processState.done
@@ -636,7 +651,7 @@ func (m *Manager) Close() {
 }
 
 func terminateAndWait(cmd *exec.Cmd, processTree *processTreeHandle) {
-	terminateProcessTree(cmd, processTree)
+	_ = terminateProcessTree(cmd, processTree)
 	_ = cmd.Wait()
 	reapProcessTreeAfterRootExit(cmd, processTree)
 }

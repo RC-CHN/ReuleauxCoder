@@ -30,16 +30,21 @@ func interruptProcessTree(cmd *exec.Cmd) error {
 	return err
 }
 
-func terminateProcessTree(cmd *exec.Cmd, processTree *processTreeHandle) {
+func terminateProcessTree(cmd *exec.Cmd, processTree *processTreeHandle) error {
 	_ = processTree
 	if cmd.Process == nil {
-		return
+		return nil
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		return err
+	}
 	time.Sleep(100 * time.Millisecond)
 	if syscall.Kill(-cmd.Process.Pid, 0) == nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return err
+		}
 	}
+	return nil
 }
 
 func reapProcessTreeAfterRootExit(
