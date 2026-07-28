@@ -314,6 +314,77 @@ func TestInterruptIsDistinctFromTerminate(t *testing.T) {
 	}
 }
 
+func TestRepeatedProcessControlsAreIdempotent(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	marker := filepath.Join(root, "interrupt-count")
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "idempotent-control", "idempotency_key": "control-key",
+		"command": fmt.Sprintf(
+			"trap 'printf x >> %q' INT; trap '' TERM; printf ready; while :; do sleep 0.05; done",
+			marker,
+		),
+		"cwd": root, "tty": false,
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	readyDeadline := time.Now().Add(time.Second)
+	for {
+		polled := manager.Execute(request("process.poll", map[string]any{
+			"process_id": "idempotent-control", "stdout_offset": 0,
+		}))
+		if polled.OK && polled.Data["stdout"] == "ready" {
+			break
+		}
+		if time.Now().After(readyDeadline) {
+			t.Fatalf("process did not become ready: %#v", polled)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	first := manager.Execute(request("process.interrupt", map[string]any{
+		"process_id": "idempotent-control",
+	}))
+	deadline := time.Now().Add(time.Second)
+	for {
+		content, _ := os.ReadFile(marker)
+		if string(content) == "x" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("first interrupt was not observed: %q", content)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	second := manager.Execute(request("process.interrupt", map[string]any{
+		"process_id": "idempotent-control",
+	}))
+	if !first.OK || !second.OK {
+		t.Fatalf("repeated interrupt was not idempotent: first=%#v second=%#v", first, second)
+	}
+	time.Sleep(150 * time.Millisecond)
+	content, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "x" {
+		t.Fatalf("repeated interrupt produced another signal effect: %q", content)
+	}
+	processState := manager.lookup("idempotent-control")
+	if processState == nil {
+		t.Fatal("process state disappeared")
+	}
+	processState.terminate("test_cleanup")
+	processState.terminate("test_cleanup")
+	processState.mu.Lock()
+	terminated := processState.terminated
+	processState.mu.Unlock()
+	if !terminated {
+		t.Fatal("repeated terminate did not retain the terminal request")
+	}
+}
+
 func TestConcurrentIdempotentStartExecutesCommandOnce(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, root)

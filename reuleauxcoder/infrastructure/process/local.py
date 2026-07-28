@@ -187,6 +187,7 @@ class _LocalProcessEntry:
         self.termination_reason: str | None = None
         self.output_decode_replaced = False
         self.interrupt_requested = False
+        self.termination_requested = False
         self.condition = threading.Condition(threading.RLock())
         self.done = threading.Event()
         self.reader_threads: list[threading.Thread] = []
@@ -725,6 +726,8 @@ class LocalProcessPort:
         with entry.condition:
             if entry.state is ProcessState.EXITED:
                 return self._snapshot(entry, ProcessCursor())
+            if entry.interrupt_requested:
+                return self._snapshot(entry, ProcessCursor())
             entry.interrupt_requested = True
         if entry.stream_mode is ProcessStreamMode.PTY:
             try:
@@ -760,6 +763,9 @@ class LocalProcessPort:
                 return
             if entry.termination_reason is None or reason in {"timeout", "shutdown"}:
                 entry.termination_reason = reason
+            if entry.termination_requested:
+                return
+            entry.termination_requested = True
         self._signal_tree(entry, force=False)
 
         def escalate() -> None:

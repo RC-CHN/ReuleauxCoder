@@ -1,4 +1,6 @@
+import os
 import shlex
+import signal
 import sys
 import threading
 import time
@@ -187,6 +189,34 @@ def test_root_exit_bounds_descendant_pipe_drain(tmp_path) -> None:
     assert retained.exit_code == 0
     assert retained.stdout == "done"
     port.release(handle.session_id)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal assertion")
+def test_repeated_process_controls_are_idempotent(monkeypatch, tmp_path) -> None:
+    port = LocalProcessPort()
+    handle = port.start(
+        "trap '' INT TERM; while :; do sleep 1; done",
+        cwd=str(tmp_path),
+        runtime_timeout=30,
+    )
+    entry = port._lookup(handle.session_id)
+    original_killpg = os.killpg
+    signals: list[int] = []
+
+    def recording_killpg(process_group: int, selected_signal: int) -> None:
+        signals.append(selected_signal)
+        original_killpg(process_group, selected_signal)
+
+    monkeypatch.setattr(os, "killpg", recording_killpg)
+    port.interrupt(handle.session_id)
+    port.interrupt(handle.session_id)
+    assert signals.count(signal.SIGINT) == 1
+
+    baseline_threads = len(entry.control_threads)
+    port.terminate(handle.session_id, reason="test_cleanup")
+    port.terminate(handle.session_id, reason="test_cleanup")
+    assert len(entry.control_threads) == baseline_threads + 1
+    port.shutdown(grace_seconds=0)
 
 
 def test_start_failure_after_spawn_is_reaped(monkeypatch, tmp_path) -> None:

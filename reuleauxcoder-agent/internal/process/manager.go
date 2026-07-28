@@ -499,10 +499,15 @@ func (m *Manager) interrupt(args map[string]any) protocol.WorkspaceResult {
 	if isDone(processState.done) {
 		return success(m.controlSnapshot(processState))
 	}
+	processState.mu.Lock()
+	if processState.interruptRequested {
+		processState.mu.Unlock()
+		return success(m.controlSnapshot(processState))
+	}
 	if err := interruptProcessTree(processState.cmd); err != nil {
+		processState.mu.Unlock()
 		return failure("io_error", err.Error())
 	}
-	processState.mu.Lock()
 	processState.interruptRequested = true
 	processState.mu.Unlock()
 	return success(m.controlSnapshot(processState))
