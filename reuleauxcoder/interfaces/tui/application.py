@@ -792,7 +792,10 @@ class MiniTUIApplication:
         if request is not None:
             return FormattedText(
                 [
-                    ("class:interaction", line + "\n")
+                    (
+                        "class:warning" if "⚠" in line else "class:interaction",
+                        line + "\n",
+                    )
                     for line in _interaction_lines(
                         request,
                         self.interactor.review_state,

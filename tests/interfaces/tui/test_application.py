@@ -910,6 +910,41 @@ def test_approval_panel_can_remove_exact_scoped_shell_grant() -> None:
     ]
 
 
+def test_approval_panel_marks_cross_tool_scope_as_broad() -> None:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
+
+    payload = NS(
+        view_type="approval_rules",
+        title="Approval Rules",
+        action="open",
+        focus=True,
+        view_model=ApprovalView(
+            default_mode="require_approval",
+            rules=[
+                ApprovalRuleView(
+                    scope="effect=filesystem_mutation, pattern=src/**",
+                    action="allow",
+                    effect_class="filesystem_mutation",
+                    pattern="src/**",
+                    source="workspace",
+                )
+            ],
+        ),
+    )
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
+    app.invalidate = lambda: None
+
+    assert app.selection_host.open_view(payload) is True
+    assert "⚠ broad scope" in app.selection_host.selection.selected.description
+    app.selection_host.confirm()
+    app.selection_host.confirm()
+    assert "⚠ BROAD SCOPE" in app.selection_host.selection.selected.description
+
+
 def _mcp_view_payload(*, action: str = "open", focus: bool = True) -> object:
     from types import SimpleNamespace as NS
 
@@ -1909,6 +1944,9 @@ def test_review_session_scope_is_a_single_interaction_state_machine() -> None:
     assert interactor.active_request is request
     assert interactor.review_state.stage == "scope"
     assert "src/app.py" in "\n".join(
+        _interaction_lines(request, interactor.review_state)
+    )
+    assert "⚠ broader scope" in "\n".join(
         _interaction_lines(request, interactor.review_state)
     )
     assert interactor.move_review_selection(1) is True

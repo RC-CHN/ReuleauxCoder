@@ -43,7 +43,7 @@ def interaction_lines(
             ]
             for index, option in enumerate(request.grant_options):
                 marker = "›" if index == state.selected_index else " "
-                warning = " · broader scope" if option.broad else ""
+                warning = " · ⚠ broader scope" if option.broad else ""
                 lines.append(
                     f"{marker} [{index + 1}] {option.label} · "
                     f"{option.description}{warning}"

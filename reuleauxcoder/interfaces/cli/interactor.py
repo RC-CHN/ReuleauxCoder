@@ -182,6 +182,7 @@ class CLIUIInteractor:
         self.ui_bus.info(
             "\n".join(
                 f"[{index}] {option.label} — {option.description}"
+                f"{' — broader scope' if option.broad else ''}"
                 for index, option in enumerate(request.grant_options, 1)
             ),
             kind=UIEventKind.APPROVAL,

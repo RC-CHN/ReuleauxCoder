@@ -441,6 +441,7 @@ def _approval_action_items(
     unset_verb: str,
     current_action: str | None,
     can_remove: bool,
+    broad: bool,
 ) -> tuple[PanelItem, ...]:
     labels = {
         "allow": ("Allow automatically", "Matching calls run without asking"),
@@ -451,7 +452,11 @@ def _approval_action_items(
     items = [
         PanelItem(
             label=labels[action][0],
-            description=labels[action][1],
+            description=(
+                f"⚠ BROAD SCOPE · {labels[action][1]}"
+                if broad
+                else labels[action][1]
+            ),
             command=_approval_command(
                 verb,
                 selector,
@@ -483,6 +488,7 @@ def _approval_lifetime_panel(
     selector: str,
     pattern: str | None,
     rules: list[ApprovalRuleView],
+    broad: bool,
 ) -> PanelDefinition:
     session_rules = [rule for rule in rules if rule.source == "session"]
     workspace_rules = [rule for rule in rules if rule.source == "workspace"]
@@ -520,6 +526,7 @@ def _approval_lifetime_panel(
             unset_verb="unset",
             current_action=session_action,
             can_remove=bool(session_rules),
+            broad=broad,
         ),
     )
     workspace_panel = PanelDefinition(
@@ -532,6 +539,7 @@ def _approval_lifetime_panel(
             unset_verb="unset-workspace",
             current_action=workspace_action,
             can_remove=bool(workspace_rules),
+            broad=broad,
         ),
     )
     inherited = (
@@ -568,6 +576,17 @@ def _approval_lifetime_panel(
             (workspace_label, workspace_panel),
         ),
     )
+
+
+def _approval_scope_is_broad(selector: str, pattern: str | None) -> bool:
+    if pattern == "*" or (pattern is not None and pattern.endswith("/**")):
+        return True
+    dimensions = {
+        segment.partition("=")[0]
+        for segment in selector.split(",")
+        if "=" in segment
+    }
+    return "effect" in dimensions or "tool" not in dimensions
 
 
 def command_panel_spec() -> CommandPanelSpec:
@@ -634,12 +653,15 @@ def command_panel_spec() -> CommandPanelSpec:
                 label = f"{label} · {selector}"
             used_labels.add(label)
             configured = [rule for rule in rules if rule.source != "effective"]
+            broad = _approval_scope_is_broad(selector, pattern)
             if configured:
                 description = " · ".join(
                     f"{rule.source}: {rule.action}" for rule in configured
                 )
             else:
                 description = f"effective: {rules[0].action} · no override"
+            if broad:
+                description = f"⚠ broad scope · {description}"
             items.append(PanelItem(label=label, description=description, command=""))
             children.append(
                 (
@@ -649,6 +671,7 @@ def command_panel_spec() -> CommandPanelSpec:
                         selector=selector,
                         pattern=pattern,
                         rules=rules,
+                        broad=broad,
                     ),
                 )
             )
