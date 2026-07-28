@@ -22,6 +22,7 @@ from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 
 class WriteFileTool(Tool):
     name = "write_file"
+    effect_class = "filesystem_mutation"
     description = (
         "Create a new file or completely overwrite an existing one. "
         "For small edits to existing files, prefer edit_file instead."

@@ -468,6 +468,7 @@ def test_internal_write_review_offers_exact_and_directory_session_grants(
 
     request = provider.requests[0]
     assert request.tool_source == "builtin"
+    assert request.effect_class == "filesystem_mutation"
     assert request.subjects == ("src/demo.py",)
     assert request.scope_key is not None
     assert [candidate.id for candidate in request.grant_candidates] == [
@@ -477,6 +478,11 @@ def test_internal_write_review_offers_exact_and_directory_session_grants(
     exact, directory = request.grant_candidates
     assert [rule.pattern for rule in exact.proposed_rules] == ["src/demo.py"]
     assert [rule.pattern for rule in directory.proposed_rules] == ["src/**"]
+    assert all(
+        rule.tool_name == "write_file" and rule.effect_class is None
+        for candidate in request.grant_candidates
+        for rule in candidate.proposed_rules
+    )
     assert all(
         rule.scope_key == request.scope_key
         for candidate in request.grant_candidates

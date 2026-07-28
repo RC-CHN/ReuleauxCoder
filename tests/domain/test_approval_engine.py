@@ -276,3 +276,28 @@ def test_exact_pattern_is_more_specific_than_wildcard_for_same_tool() -> None:
     assert exact.rule is not None
     assert exact.rule.pattern == "src/app.py"
     assert other.action == "deny"
+
+
+def test_explicit_filesystem_effect_rule_covers_edit_and_write_tools() -> None:
+    engine = ApprovalPolicyEngine(
+        ApprovalConfig(
+            default_mode="require_approval",
+            rules=[
+                ApprovalRuleConfig(
+                    effect_class="filesystem_mutation",
+                    pattern="src/**",
+                    action="allow",
+                )
+            ],
+        )
+    )
+
+    for tool_name in ("edit_file", "write_file"):
+        match = engine.evaluate(
+            _ctx(
+                tool_name=tool_name,
+                effect_class="filesystem_mutation",
+                subjects=("src/app.py",),
+            )
+        )
+        assert match.action == "allow"
