@@ -95,6 +95,40 @@ def test_invalid_utf8_is_replaced_and_reported_as_a_fact(tmp_path) -> None:
     port.release(handle.session_id)
 
 
+def test_output_truncation_fact_never_regresses(tmp_path) -> None:
+    port = LocalProcessPort(
+        retained_bytes_per_stream=16 * 1024,
+        poll_bytes_per_stream=1024,
+    )
+    handle = port.start(
+        _python_command("import sys; sys.stdout.write('x' * 5000)"),
+        cwd=str(tmp_path),
+        runtime_timeout=5,
+    )
+    deadline = time.monotonic() + 3
+    cursor = ProcessCursor()
+    snapshots = []
+    while time.monotonic() < deadline:
+        snapshot = port.poll(handle.session_id, cursor=cursor, wait_ms=100)
+        snapshots.append(snapshot)
+        cursor = snapshot.cursor
+        if snapshot.state is ProcessState.EXITED and not snapshot.stdout:
+            break
+    else:
+        raise AssertionError("process output did not drain")
+
+    first_truncated = next(
+        index
+        for index, snapshot in enumerate(snapshots)
+        if snapshot.output_truncated
+    )
+    assert all(
+        snapshot.output_truncated for snapshot in snapshots[first_truncated:]
+    )
+    assert sum(len(snapshot.stdout) for snapshot in snapshots) == 5000
+    port.release(handle.session_id)
+
+
 def test_concurrent_idempotent_start_spawns_once(tmp_path) -> None:
     port = LocalProcessPort()
     output_path = tmp_path / "starts.txt"

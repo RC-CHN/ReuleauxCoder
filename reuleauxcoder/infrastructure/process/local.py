@@ -342,6 +342,7 @@ class _LocalProcessEntry:
         self.state = ProcessState.RUNNING
         self.exit_code: int | None = None
         self.termination_reason: str | None = None
+        self.output_truncated = False
         self.output_decode_replaced = False
         self.interrupt_requested = False
         self.termination_requested = False
@@ -837,6 +838,13 @@ class LocalProcessPort:
             max_bytes=self._poll_bytes_per_stream,
         )
         with entry.condition:
+            entry.output_truncated = (
+                entry.output_truncated
+                or stdout.truncated
+                or stderr.truncated
+                or entry.stdout.truncated
+                or entry.stderr.truncated
+            )
             return ProcessSnapshot(
                 session_id=entry.session_id,
                 state=entry.state,
@@ -854,12 +862,7 @@ class LocalProcessPort:
                 started_at=entry.started_at,
                 finished_at=entry.finished_at,
                 runtime_timeout_seconds=entry.runtime_timeout,
-                output_truncated=(
-                    stdout.truncated
-                    or stderr.truncated
-                    or entry.stdout.truncated
-                    or entry.stderr.truncated
-                ),
+                output_truncated=entry.output_truncated,
                 output_decode_replaced=entry.output_decode_replaced,
                 total_stdout_bytes=entry.stdout.total_bytes,
                 total_stderr_bytes=entry.stderr.total_bytes,
