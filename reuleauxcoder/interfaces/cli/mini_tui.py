@@ -15,7 +15,6 @@ from reuleauxcoder.interfaces.tui.application import (
     MiniTUIInteractor,
     MiniTUIApplication,
     _approval_fragments,
-    _cancelled_response,
     _cell_fragments,
     _clip,
     _coalesce_stream_events,
@@ -33,7 +32,6 @@ from reuleauxcoder.interfaces.tui.application import (
     _format_token_usage_view,
     _fragments_to_visual_lines,
     _interaction_lines,
-    _interaction_response,
     _labeled_panel_row,
     _panel_agent_text,
     _rstrip_fragment_newlines,
@@ -41,6 +39,10 @@ from reuleauxcoder.interfaces.tui.application import (
     _view_text,
     _wrap_fragments,
     _wrapped_row_count,
+)
+from reuleauxcoder.interfaces.tui.interaction import (
+    cancelled_response as _cancelled_response,
+    interaction_response as _interaction_response,
 )
 
 __all__ = [
