@@ -61,6 +61,7 @@ from reuleauxcoder.interfaces.interactions import (
     ChooseOneRequest,
     ConfirmRequest,
     InputTextRequest,
+    ReviewGrantOption,
     ReviewRequest,
 )
 
@@ -169,7 +170,7 @@ def test_enter_accepts_binary_interaction_without_consuming_chat_draft() -> None
     assert buffer.text == "keep this unfinished prompt"
 
 
-def test_secret_text_input_is_masked_and_preserves_exact_value() -> None:
+def test_secret_text_uses_transient_buffer_and_preserves_exact_value() -> None:
     submissions = []
     resets = []
     request = InputTextRequest(
@@ -179,17 +180,21 @@ def test_secret_text_input_is_masked_and_preserves_exact_value() -> None:
     )
     app = _bare_app()
     app._popup_candidates = lambda: ()
-    app.interactor = SimpleNamespace(
-        active_request=request,
-        submit=submissions.append,
-    )
+    interactor = SimpleNamespace(active_request=request)
+
+    def submit(value) -> None:
+        submissions.append(value)
+        interactor.active_request = None
+
+    interactor.submit = submit
+    app.interactor = interactor
     buffer = SimpleNamespace(
         text="  hidden value  ",
         reset=lambda: resets.append(True),
     )
 
     assert app._secret_input_active() is True
-    assert app._accept_buffer(buffer) is True
+    assert app._accept_interaction_buffer(buffer) is True
     assert submissions == ["  hidden value  "]
     assert resets == [True]
 
@@ -1795,6 +1800,66 @@ def test_unknown_review_input_does_not_resolve_request() -> None:
     assert result[0].approved is False
 
 
+def test_review_session_scope_is_a_single_interaction_state_machine() -> None:
+    interactor = MiniTUIInteractor(UIEventBus())
+    result = []
+    request = ReviewRequest(
+        "Edit",
+        "Review diff",
+        grant_options=(
+            ReviewGrantOption("exact", "This file", "src/app.py"),
+            ReviewGrantOption(
+                "directory",
+                "This directory",
+                "src/**",
+                broad=True,
+            ),
+        ),
+    )
+    worker = threading.Thread(target=lambda: result.append(interactor.review(request)))
+    worker.start()
+    deadline = time.monotonic() + 1
+    while interactor.active_request is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert interactor.submit("s") is True
+    assert interactor.active_request is request
+    assert interactor.review_state.stage == "scope"
+    assert "src/app.py" in "\n".join(
+        _interaction_lines(request, interactor.review_state)
+    )
+    assert interactor.move_review_selection(1) is True
+    assert interactor.submit("") is True
+    worker.join(timeout=1)
+
+    assert result[0].approved is True
+    assert result[0].action == "allow_session"
+    assert result[0].selected_id == "directory"
+
+
+def test_review_feedback_returns_user_text_without_rewriting() -> None:
+    interactor = MiniTUIInteractor(UIEventBus())
+    result = []
+    request = ReviewRequest("Edit", "Review diff")
+    worker = threading.Thread(target=lambda: result.append(interactor.review(request)))
+    worker.start()
+    deadline = time.monotonic() + 1
+    while interactor.active_request is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert interactor.submit("f") is True
+    assert interactor.review_state.stage == "feedback"
+    assert interactor.submit("") is True
+    assert worker.is_alive()
+    feedback = "Keep the public API; change the adapter."
+    assert interactor.submit(feedback) is True
+    worker.join(timeout=1)
+
+    assert result[0].approved is False
+    assert result[0].action == "deny"
+    assert result[0].reason == feedback
+
+
 def test_review_diff_is_projected_into_main_transcript_and_bottom_is_compact() -> None:
     adapter = MiniTUIEventAdapter()
     request = ReviewRequest(
@@ -1823,7 +1888,9 @@ def test_review_diff_is_projected_into_main_transcript_and_bottom_is_compact() -
 
     assert "PROPOSED EDIT DIFF" in rendered
     assert "+new" in rendered
-    assert controls == ["[Enter/Y] Approve   [N] Reject"]
+    assert controls == [
+        "[Enter/Y] Approve   [N] Reject   [F] Deny with feedback"
+    ]
     assert "+new" not in "\n".join(controls)
 
 

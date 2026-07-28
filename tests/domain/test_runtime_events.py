@@ -15,6 +15,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolTruncation,
 )
 from reuleauxcoder.domain.runtime.events import (
+    ApprovalResolved,
     AssistantContentDelta,
     NotificationRaised,
     OperationPhaseChanged,
@@ -88,6 +89,31 @@ def test_runtime_worker_event_round_trips_back_to_legacy_emitter() -> None:
     assert restored.session_generation == 3
     assert restored.correlation_id == "call-worker"
     assert restored.tool_outcome == original.tool_outcome
+
+
+def test_approval_resolution_round_trip_preserves_decision_provenance() -> None:
+    original = AgentEvent.approval_resolved(
+        request_id="approval-1",
+        approved=True,
+        reason="approved for matching calls",
+        mode="allow_session",
+        grant_label="This directory",
+        released_count=2,
+        resolution_source="user",
+    )
+
+    runtime = agent_event_to_runtime_event(original)
+    assert isinstance(runtime.payload, ApprovalResolved)
+    assert runtime.payload.mode == "allow_session"
+    assert runtime.payload.grant_label == "This directory"
+    assert runtime.payload.released_count == 2
+    assert runtime.payload.resolution_source == "user"
+
+    restored = runtime_event_to_agent_event(runtime)
+    assert restored.data["mode"] == "allow_session"
+    assert restored.data["grant_label"] == "This directory"
+    assert restored.data["released_count"] == 2
+    assert restored.data["resolution_source"] == "user"
 
 
 def test_legacy_turn_and_stream_events_map_to_canonical_payloads() -> None:

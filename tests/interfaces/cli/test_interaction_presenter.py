@@ -16,7 +16,11 @@ from reuleauxcoder.interfaces.entrypoint.remote_relay import (
     create_remote_console,
     export_remote_console,
 )
-from reuleauxcoder.interfaces.interactions import InputTextRequest, ReviewRequest
+from reuleauxcoder.interfaces.interactions import (
+    InputTextRequest,
+    ReviewGrantOption,
+    ReviewRequest,
+)
 
 
 @pytest.mark.parametrize("width", [80, 120])
@@ -31,6 +35,9 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
                 kind=ApprovalSectionKind.DIFF,
                 content="--- a/demo.py\n+++ b/demo.py\n-old\n+new\n",
             ),
+        ),
+        grant_options=(
+            ReviewGrantOption("exact", "This file", "demo.py"),
         ),
     )
     local = Console(
@@ -50,12 +57,23 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
     local_frame = local.export_text()
     assert local_frame == export_remote_console(remote)
     assert "[1/Y] Approve" in local_frame
+    assert "[S] Allow for session" in local_frame
     assert "[2/N] Reject" in local_frame
     assert set("┏┓┗┛┃━┌┐└┘│─").intersection(local_frame)
     assert interaction_constraints(request) == {
-        "value_type": "boolean",
+        "value_type": "review_decision",
         "approve_label": "Approve",
         "reject_label": "Reject",
+        "actions": ("allow_once", "allow_session", "deny"),
+        "supports_feedback": True,
+        "grant_options": (
+            {
+                "id": "exact",
+                "label": "This file",
+                "description": "demo.py",
+                "broad": False,
+            },
+        ),
     }
 
 

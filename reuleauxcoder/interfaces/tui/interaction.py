@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 
 from reuleauxcoder.interfaces.events import UIEvent
 from reuleauxcoder.interfaces.interactions import (
@@ -19,11 +20,52 @@ from reuleauxcoder.interfaces.interactions import (
 )
 
 
-def interaction_lines(request) -> list[str]:
+ReviewStage = Literal["review", "scope", "feedback"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewInteractionState:
+    stage: ReviewStage = "review"
+    selected_index: int = 0
+
+
+def interaction_lines(
+    request,
+    review_state: ReviewInteractionState | None = None,
+) -> list[str]:
     """Render a shared interaction request as compact bottom-pane lines."""
     lines = [request.title]
     if isinstance(request, ReviewRequest):
-        lines = [f"[Enter/Y] {request.approve_label}   [N] {request.reject_label}"]
+        state = review_state or ReviewInteractionState()
+        if state.stage == "scope":
+            lines = [
+                "Grant for this session (also applies when this session is resumed)"
+            ]
+            for index, option in enumerate(request.grant_options):
+                marker = "›" if index == state.selected_index else " "
+                warning = " · broader scope" if option.broad else ""
+                lines.append(
+                    f"{marker} [{index + 1}] {option.label} · "
+                    f"{option.description}{warning}"
+                )
+            lines.append(
+                "Future matching calls run without another approval. "
+                "[Enter] Grant   [Esc] Back"
+            )
+        elif state.stage == "feedback":
+            lines = [
+                f"Deny {request.context.tool_name if request.context else 'tool call'} "
+                "and tell the model what to do differently",
+                "[Enter] Deny and send feedback   [Esc] Back",
+            ]
+        else:
+            session = (
+                "   [S] Allow for session…" if request.grant_options else ""
+            )
+            lines = [
+                f"[Enter/Y] {request.approve_label}{session}   "
+                f"[N] {request.reject_label}   [F] Deny with feedback"
+            ]
     elif isinstance(request, ConfirmRequest):
         lines.extend([request.message, "[Enter/Y] Confirm   [N] Cancel"])
     elif isinstance(request, ChooseOneRequest):
@@ -37,14 +79,43 @@ def interaction_lines(request) -> list[str]:
     return lines
 
 
-def interaction_response(request, text: str):
+def interaction_response(
+    request,
+    text: str,
+    review_state: ReviewInteractionState | None = None,
+):
     """Translate bottom-pane text into the matching typed response."""
     answer = text.strip().lower()
     if isinstance(request, ReviewRequest):
+        state = review_state or ReviewInteractionState()
+        if state.stage == "scope":
+            if not request.grant_options:
+                return None
+            selected_index = state.selected_index
+            if answer.isdigit():
+                selected_index = int(answer) - 1
+            if answer and not answer.isdigit():
+                return None
+            if 0 <= selected_index < len(request.grant_options):
+                return ReviewResponse(
+                    True,
+                    action="allow_session",
+                    selected_id=request.grant_options[selected_index].id,
+                )
+            return None
+        if state.stage == "feedback":
+            feedback = text.strip()
+            if not feedback:
+                return None
+            return ReviewResponse(
+                False,
+                reason=feedback,
+                action="deny",
+            )
         if answer in {"", "1", "y", "yes"}:
-            return ReviewResponse(True)
+            return ReviewResponse(True, action="allow_once")
         if answer in {"2", "n", "no"}:
-            return ReviewResponse(False)
+            return ReviewResponse(False, action="deny")
         return None
     if isinstance(request, ConfirmRequest):
         if answer in {"", "y", "yes"}:
@@ -86,11 +157,17 @@ class MiniTUIInteractor:
         self._active: Any | None = None
         self._response: Any = None
         self._invalidate = lambda: None
+        self._review_state = ReviewInteractionState()
 
     @property
     def active_request(self):
         with self._condition:
             return self._active
+
+    @property
+    def review_state(self) -> ReviewInteractionState:
+        with self._condition:
+            return self._review_state
 
     def bind_invalidator(self, callback) -> None:
         self._invalidate = callback
@@ -113,16 +190,68 @@ class MiniTUIInteractor:
         return self._ask(request)
 
     def submit(self, text: str) -> bool:
+        transitioned = False
+        resolved = False
         with self._condition:
             request = self._active
             if request is None:
                 return False
-            response = interaction_response(request, text)
+            answer = text.strip().lower()
+            if isinstance(request, ReviewRequest):
+                if (
+                    self._review_state.stage == "review"
+                    and answer == "s"
+                    and request.grant_options
+                ):
+                    self._review_state = ReviewInteractionState("scope", 0)
+                    transitioned = True
+                elif self._review_state.stage == "review" and answer == "f":
+                    self._review_state = ReviewInteractionState("feedback", 0)
+                    transitioned = True
+            if transitioned:
+                response = None
+            else:
+                response = interaction_response(
+                    request,
+                    text,
+                    self._review_state,
+                )
             if response is None:
-                return True
-            self._response = response
-            self._active = None
-            self._condition.notify_all()
+                pass
+            else:
+                self._response = response
+                self._active = None
+                self._review_state = ReviewInteractionState()
+                self._condition.notify_all()
+                resolved = True
+        if transitioned or resolved:
+            self._invalidate()
+        return True
+
+    def move_review_selection(self, delta: int) -> bool:
+        with self._condition:
+            request = self._active
+            if (
+                not isinstance(request, ReviewRequest)
+                or self._review_state.stage != "scope"
+                or not request.grant_options
+            ):
+                return False
+            index = (
+                self._review_state.selected_index + delta
+            ) % len(request.grant_options)
+            self._review_state = ReviewInteractionState("scope", index)
+        self._invalidate()
+        return True
+
+    def back_review(self) -> bool:
+        with self._condition:
+            if (
+                not isinstance(self._active, ReviewRequest)
+                or self._review_state.stage == "review"
+            ):
+                return False
+            self._review_state = ReviewInteractionState()
         self._invalidate()
         return True
 
@@ -133,6 +262,7 @@ class MiniTUIInteractor:
                 return
             self._response = cancelled_response(request, "interaction cancelled")
             self._active = None
+            self._review_state = ReviewInteractionState()
             self._condition.notify_all()
         self._invalidate()
 
@@ -143,6 +273,7 @@ class MiniTUIInteractor:
                 return False
             self._response = cancelled_response(request, reason)
             self._active = None
+            self._review_state = ReviewInteractionState()
             self._condition.notify_all()
         self._invalidate()
         return True
@@ -153,6 +284,7 @@ class MiniTUIInteractor:
                 raise RuntimeError("mini-TUI interaction slot is already occupied")
             self._active = request
             self._response = None
+            self._review_state = ReviewInteractionState()
         self.ui_bus.emit_interaction_prompt(request)
         self._invalidate()
         with self._condition:
@@ -162,6 +294,7 @@ class MiniTUIInteractor:
                     remaining = request.deadline - time.monotonic()
                     if remaining <= 0:
                         self._active = None
+                        self._review_state = ReviewInteractionState()
                         self._response = cancelled_response(
                             request, "interaction deadline exceeded"
                         )

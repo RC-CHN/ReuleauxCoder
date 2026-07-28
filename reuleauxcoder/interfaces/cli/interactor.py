@@ -131,7 +131,10 @@ class CLIUIInteractor:
 
             while True:
                 try:
-                    answer = self._prompt("Select [1/2, y/n]: ").strip().lower()
+                    session_hint = ", s=session" if request.grant_options else ""
+                    answer = self._prompt(
+                        f"Select [1/2, y/n{session_hint}, f=feedback]: "
+                    ).strip().lower()
                 except (KeyboardInterrupt, EOFError):
                     self._interrupted()
                     return ReviewResponse(
@@ -139,9 +142,64 @@ class CLIUIInteractor:
                     )
 
                 if answer in {"1", "y", "yes"}:
-                    return ReviewResponse(approved=True)
+                    return ReviewResponse(approved=True, action="allow_once")
                 if answer in {"2", "n", "no"}:
-                    return ReviewResponse(approved=False)
+                    return ReviewResponse(approved=False, action="deny")
+                if answer == "s" and request.grant_options:
+                    selected = self._choose_review_grant(request)
+                    if selected is not None:
+                        return ReviewResponse(
+                            approved=True,
+                            action="allow_session",
+                            selected_id=selected,
+                        )
+                    continue
+                if answer == "f":
+                    try:
+                        feedback = self._prompt(
+                            "Feedback for the model (blank returns): "
+                        ).strip()
+                    except (KeyboardInterrupt, EOFError):
+                        self._interrupted()
+                        return ReviewResponse(
+                            approved=False,
+                            cancelled=True,
+                            reason="approval interrupted",
+                        )
+                    if feedback:
+                        return ReviewResponse(
+                            approved=False,
+                            action="deny",
+                            reason=feedback,
+                        )
+                    continue
                 self.ui_bus.warning(
-                    "Please enter 1/2 or y/n.", kind=UIEventKind.APPROVAL
+                    "Please select one of the advertised actions.",
+                    kind=UIEventKind.APPROVAL,
                 )
+
+    def _choose_review_grant(self, request: ReviewRequest) -> str | None:
+        self.ui_bus.info(
+            "\n".join(
+                f"[{index}] {option.label} — {option.description}"
+                for index, option in enumerate(request.grant_options, 1)
+            ),
+            kind=UIEventKind.APPROVAL,
+        )
+        while True:
+            try:
+                answer = self._prompt(
+                    "Grant scope (blank returns to review): "
+                ).strip()
+            except (KeyboardInterrupt, EOFError):
+                return None
+            if not answer:
+                return None
+            if answer.isdigit():
+                index = int(answer)
+                if 1 <= index <= len(request.grant_options):
+                    return request.grant_options[index - 1].id
+            self.ui_bus.warning(
+                "Please enter a valid scope number.",
+                kind=UIEventKind.APPROVAL,
+            )

@@ -578,6 +578,18 @@ def _record_approval_decision(
         request_id=request.request_id,
         approved=decision.approved,
         reason=decision.reason,
+        mode=decision.mode,
+        grant_label=decision.grant.label if decision.grant is not None else None,
+        released_count=len(decision.released_request_ids),
+        resolution_source=(
+            "user"
+            if decision.reviewed
+            else (
+                "auto_review"
+                if request.metadata.get("reviewer") == "auto_review"
+                else "policy"
+            )
+        ),
     )
     event.agent_id = identity["agent_id"]
     event.session_generation = identity["session_generation"]

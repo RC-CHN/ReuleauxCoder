@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import uuid
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 from reuleauxcoder.domain.approval import ApprovalSection
 
@@ -91,10 +91,25 @@ class InputTextResponse:
 class ReviewContext:
     tool_name: str
     tool_source: str
+    operation: str | None = None
+    subjects: tuple[str, ...] = ()
     reason: str | None = None
     is_subagent: bool = False
     subagent_mode: str | None = None
     subagent_task: str | None = None
+
+
+ReviewAction = Literal["allow_once", "allow_session", "deny"]
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewGrantOption:
+    """One opaque, domain-validated session scope shown by a review UI."""
+
+    id: str
+    label: str
+    description: str
+    broad: bool = False
 
 
 @dataclass(slots=True)
@@ -107,6 +122,7 @@ class ReviewRequest:
     reject_label: str = "Reject"
     sections: tuple[ApprovalSection, ...] = ()
     context: ReviewContext | None = None
+    grant_options: tuple[ReviewGrantOption, ...] = ()
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float | None = None
 
@@ -118,6 +134,12 @@ class ReviewResponse:
     approved: bool
     cancelled: bool = False
     reason: str | None = None
+    action: ReviewAction | None = None
+    selected_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.action is None:
+            self.action = "allow_once" if self.approved else "deny"
 
 
 InteractionRequest: TypeAlias = (

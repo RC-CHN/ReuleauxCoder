@@ -9,6 +9,7 @@ from reuleauxcoder.domain.approval import (
 )
 from reuleauxcoder.interfaces.interactions import (
     ReviewContext,
+    ReviewGrantOption,
     ReviewRequest,
     UIInteractor,
 )
@@ -39,6 +40,12 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
                 f"'{request.tool_source}' requires approval."
             )
         approval_summary += subagent_summary
+        operation = request.metadata.get("approval_operation")
+        if isinstance(operation, str) and operation:
+            approval_summary = f"Operation: {operation}\n" + approval_summary
+        if request.subjects:
+            label = "Target" if len(request.subjects) == 1 else "Targets"
+            approval_summary += f"\n{label}: {', '.join(request.subjects)}"
         if request.metadata.get("workspace_changed_during_approval"):
             approval_summary = (
                 "Workspace changed while approval was pending. "
@@ -55,16 +62,52 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
                 context=ReviewContext(
                     tool_name=request.tool_name,
                     tool_source=request.tool_source,
+                    operation=(
+                        operation if isinstance(operation, str) else None
+                    ),
+                    subjects=request.subjects,
                     reason=request.reason,
                     is_subagent=bool(request.metadata.get("is_subagent")),
                     subagent_mode=request.metadata.get("subagent_mode"),
                     subagent_task=request.metadata.get("subagent_task"),
                 ),
+                grant_options=tuple(
+                    ReviewGrantOption(
+                        id=candidate.id,
+                        label=candidate.label,
+                        description=candidate.description,
+                        broad=candidate.broad,
+                    )
+                    for candidate in request.grant_candidates
+                ),
                 request_id=request.request_id,
             )
         )
 
-        if response.approved:
+        if response.action == "allow_session":
+            selected = next(
+                (
+                    candidate
+                    for candidate in request.grant_candidates
+                    if candidate.id == response.selected_id
+                ),
+                None,
+            )
+            if selected is None:
+                pending.resolve(
+                    ApprovalDecision.deny_once(
+                        "invalid session approval scope returned by interaction"
+                    )
+                )
+                return
+            pending.resolve(
+                ApprovalDecision.allow_session(
+                    selected,
+                    response.reason or f"approved for session: {selected.label}",
+                    reviewed=True,
+                )
+            )
+        elif response.action == "allow_once":
             pending.resolve(
                 ApprovalDecision.allow_once(
                     response.reason or "approved via interaction",
@@ -73,7 +116,10 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
             )
         else:
             pending.resolve(
-                ApprovalDecision.deny_once(response.reason or "denied via interaction")
+                ApprovalDecision.deny_once(
+                    response.reason or "denied via interaction",
+                    reviewed=not response.cancelled,
+                )
             )
 
     return handle

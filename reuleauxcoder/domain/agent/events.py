@@ -271,6 +271,10 @@ class AgentEvent:
         request_id: str,
         approved: bool,
         reason: str | None = None,
+        mode: str | None = None,
+        grant_label: str | None = None,
+        released_count: int = 0,
+        resolution_source: str | None = None,
     ) -> "AgentEvent":
         return cls(
             event_type=AgentEventType.APPROVAL_RESOLVED,
@@ -279,5 +283,9 @@ class AgentEvent:
                 "request_id": request_id,
                 "approved": approved,
                 "reason": reason,
+                "mode": mode,
+                "grant_label": grant_label,
+                "released_count": released_count,
+                "resolution_source": resolution_source,
             },
         )

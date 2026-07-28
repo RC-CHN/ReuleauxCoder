@@ -57,11 +57,18 @@ def render_interaction_request(
         choices = Text("\n")
         choices.append("[1/Y] ", style=theme.style(DisplayTone.SUCCESS))
         choices.append(request.approve_label, style="bold")
+        if request.grant_options:
+            choices.append("    ")
+            choices.append("[S] ", style=theme.style(DisplayTone.WARNING))
+            choices.append("Allow for session…", style="bold")
         choices.append("    ")
         choices.append("[2/N] ", style=theme.style(DisplayTone.ERROR))
         choices.append(request.reject_label, style="bold")
+        choices.append("    ")
+        choices.append("[F] ", style=theme.style(DisplayTone.ERROR))
+        choices.append("Deny with feedback", style="bold")
         choices.append(
-            "\nSELECT 1/2 OR Y/N // CTRL+C CANCELS",
+            "\nSELECT AN ACTION // CTRL+C CANCELS",
             style=theme.style(DisplayTone.MUTED),
         )
         console.print(
@@ -110,8 +117,21 @@ def interaction_constraints(request: InteractionRequest) -> dict[str, object]:
             "allow_empty": request.allow_empty,
             "secret": request.secret,
         }
-    return {
-        "value_type": "boolean",
+    constraints: dict[str, object] = {
+        "value_type": "review_decision",
         "approve_label": request.approve_label,
         "reject_label": request.reject_label,
+        "actions": ("allow_once", "allow_session", "deny"),
+        "supports_feedback": True,
     }
+    if request.grant_options:
+        constraints["grant_options"] = tuple(
+            {
+                "id": option.id,
+                "label": option.label,
+                "description": option.description,
+                "broad": option.broad,
+            }
+            for option in request.grant_options
+        )
+    return constraints

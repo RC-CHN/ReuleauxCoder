@@ -1,6 +1,10 @@
 from reuleauxcoder.interfaces.cli.interactor import CLIUIInteractor
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind, UIEventLevel
-from reuleauxcoder.interfaces.interactions import InputTextRequest, ReviewRequest
+from reuleauxcoder.interfaces.interactions import (
+    InputTextRequest,
+    ReviewGrantOption,
+    ReviewRequest,
+)
 
 
 def test_ctrl_c_review_cancels_and_breaks_the_partial_prompt_line(capsys) -> None:
@@ -32,6 +36,33 @@ def test_review_accepts_codex_style_numbered_choices() -> None:
 
     assert interactor.review(request).approved is True
     assert interactor.review(request).approved is False
+
+
+def test_review_can_select_session_scope_or_deny_with_feedback() -> None:
+    answers = iter(("s", "2", "f", "Use the adapter instead."))
+    interactor = CLIUIInteractor(UIEventBus(), prompt_fn=lambda _prompt: next(answers))
+    request = ReviewRequest(
+        title="Approval",
+        summary="Review this change",
+        grant_options=(
+            ReviewGrantOption("exact", "This file", "src/app.py"),
+            ReviewGrantOption(
+                "directory",
+                "This directory",
+                "src/**",
+                broad=True,
+            ),
+        ),
+    )
+
+    granted = interactor.review(request)
+    denied = interactor.review(request)
+
+    assert granted.action == "allow_session"
+    assert granted.selected_id == "directory"
+    assert granted.approved is True
+    assert denied.action == "deny"
+    assert denied.reason == "Use the adapter instead."
 
 
 def test_secret_text_uses_dedicated_masked_prompt() -> None:

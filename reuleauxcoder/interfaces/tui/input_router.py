@@ -11,11 +11,34 @@ from reuleauxcoder.interfaces.interactions import ConfirmRequest, ReviewRequest
 def build_key_bindings(host) -> KeyBindings:
     bindings = KeyBindings()
     transcript_arrow_scroll = Condition(host._should_route_arrows_to_transcript)
-    binary_interaction_active = Condition(
-        lambda: isinstance(
-            host.interactor.active_request,
-            (ConfirmRequest, ReviewRequest),
+
+    def review_stage() -> str:
+        return str(
+            getattr(
+                getattr(host.interactor, "review_state", None),
+                "stage",
+                "review",
+            )
         )
+
+    binary_interaction_active = Condition(
+        lambda: isinstance(host.interactor.active_request, ConfirmRequest)
+        or (
+            isinstance(host.interactor.active_request, ReviewRequest)
+            and review_stage() == "review"
+        )
+    )
+    review_default_active = Condition(
+        lambda: isinstance(host.interactor.active_request, ReviewRequest)
+        and review_stage() == "review"
+    )
+    review_scope_active = Condition(
+        lambda: isinstance(host.interactor.active_request, ReviewRequest)
+        and review_stage() == "scope"
+    )
+    review_subpage_active = Condition(
+        lambda: isinstance(host.interactor.active_request, ReviewRequest)
+        and review_stage() != "review"
     )
 
     @bindings.add("c-c")
@@ -147,6 +170,35 @@ def build_key_bindings(host) -> KeyBindings:
     def _interaction_no(event) -> None:  # noqa: ARG001
         host.interactor.submit("n")
         host.invalidate()
+
+    @bindings.add("s", filter=review_default_active)
+    def _interaction_session(event) -> None:  # noqa: ARG001
+        host.interactor.submit("s")
+        host.invalidate()
+
+    @bindings.add("f", filter=review_default_active)
+    def _interaction_feedback(event) -> None:  # noqa: ARG001
+        host.interactor.submit("f")
+        host.invalidate()
+
+    @bindings.add("up", filter=review_scope_active)
+    def _review_scope_up(event) -> None:  # noqa: ARG001
+        host.interactor.move_review_selection(-1)
+
+    @bindings.add("down", filter=review_scope_active)
+    def _review_scope_down(event) -> None:  # noqa: ARG001
+        host.interactor.move_review_selection(1)
+
+    @bindings.add("escape", filter=review_subpage_active)
+    def _review_scope_back(event) -> None:  # noqa: ARG001
+        host.interactor.back_review()
+
+    for number in "123456789":
+
+        @bindings.add(number, filter=review_scope_active)
+        def _review_scope_number(event, value=number) -> None:  # noqa: B023
+            host.interactor.submit(value)
+            host.invalidate()
 
     @bindings.add("f2")
     def _toggle_header(event) -> None:  # noqa: ARG001

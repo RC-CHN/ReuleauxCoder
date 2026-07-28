@@ -561,7 +561,15 @@ class PresentationReducer:
         status = "approved" if payload.approved else "denied"
         if isinstance(existing, ApprovalCell):
             return self._replace(
-                next_revision(existing, status=status, reason=payload.reason)
+                next_revision(
+                    existing,
+                    status=status,
+                    reason=payload.reason,
+                    mode=payload.mode,
+                    grant_label=payload.grant_label,
+                    released_count=payload.released_count,
+                    resolution_source=payload.resolution_source,
+                )
             )
         return self._append(
             ApprovalCell(
@@ -570,6 +578,10 @@ class PresentationReducer:
                 title="Approval",
                 status=status,
                 reason=payload.reason,
+                mode=payload.mode,
+                grant_label=payload.grant_label,
+                released_count=payload.released_count,
+                resolution_source=payload.resolution_source,
                 group_id=self._event_group(event),
             )
         )

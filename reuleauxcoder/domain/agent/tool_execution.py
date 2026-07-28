@@ -447,6 +447,18 @@ class ToolExecutor:
                         before_approval = capture_approval_document(
                             approval_request, workspace=workspace
                         )
+                        if tc.name == "write_file" and before_approval is not None:
+                            approval_request.metadata["approval_operation"] = (
+                                "Create file"
+                                if before_approval.content is None
+                                else "Overwrite file"
+                            )
+                        elif tc.name == "edit_file":
+                            approval_request.metadata["approval_operation"] = "Edit file"
+                        elif tc.name == "shell":
+                            approval_request.metadata["approval_operation"] = (
+                                "Run command"
+                            )
                         approval_request.preview = build_approval_preview(
                             approval_request, workspace=workspace
                         )

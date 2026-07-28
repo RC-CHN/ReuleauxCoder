@@ -102,6 +102,10 @@ class ApprovalCell:
     summary: str = ""
     sections: tuple[ApprovalSection, ...] = ()
     reason: str | None = None
+    mode: str | None = None
+    grant_label: str | None = None
+    released_count: int = 0
+    resolution_source: str | None = None
     revision: int = 0
     group_id: str | None = None
 

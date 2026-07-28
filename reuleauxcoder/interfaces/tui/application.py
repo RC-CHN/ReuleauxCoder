@@ -54,6 +54,7 @@ from reuleauxcoder.interfaces.events import (
     UIEventKind,
 )
 from reuleauxcoder.interfaces.interactions import (
+    ChooseOneRequest,
     ConfirmRequest,
     InputTextRequest,
     ReviewRequest,
@@ -142,6 +143,11 @@ class MiniTUIApplication:
             multiline=False,
             accept_handler=self._accept_buffer,
         )
+        self.interaction_input_buffer = Buffer(
+            multiline=False,
+            accept_handler=self._accept_interaction_buffer,
+        )
+        self._interaction_input_owner: tuple[str, str] | None = None
         self.panel_control = FormattedTextControl(self._panel_text)
         self._popup_entries: tuple[PopupEntry, ...] = build_popup_entries(
             action_registry, ui_profile
@@ -193,6 +199,14 @@ class MiniTUIApplication:
         self.input_window = Window(
             BufferControl(
                 buffer=self.input_buffer,
+            ),
+            height=self._input_height,
+            wrap_lines=True,
+            style="class:input",
+        )
+        self.interaction_input_window = Window(
+            BufferControl(
+                buffer=self.interaction_input_buffer,
                 input_processors=[
                     ConditionalProcessor(
                         PasswordProcessor(char="•"),
@@ -200,7 +214,7 @@ class MiniTUIApplication:
                     )
                 ],
             ),
-            height=self._input_height,
+            height=self._interaction_input_height,
             wrap_lines=True,
             style="class:input",
         )
@@ -222,6 +236,7 @@ class MiniTUIApplication:
                                 height=self._interaction_height,
                                 wrap_lines=True,
                             ),
+                            self.interaction_input_window,
                             self.input_window,
                         ]
                     ),
@@ -241,7 +256,7 @@ class MiniTUIApplication:
             before_render=self._before_render,
         )
         self.events.bind_invalidator(self.invalidate)
-        self.interactor.bind_invalidator(self.invalidate)
+        self.interactor.bind_invalidator(self._interaction_changed)
 
     def run(self) -> None:
         self.agent.current_session_id = self.current_session_id
@@ -304,12 +319,8 @@ class MiniTUIApplication:
             if isinstance(active_request, (ConfirmRequest, ReviewRequest)):
                 self.interactor.submit("")
                 return True
-            # Choice and text interactions intentionally use the buffer as
-            # their response field, so consume it only for those request kinds.
-            buffer.reset()
-            self.interactor.submit(
-                raw_text if isinstance(active_request, InputTextRequest) else text
-            )
+            # Choice/text prompts own a separate transient interaction buffer;
+            # never consume a chat draft if focus briefly lags a state change.
             return True
         buffer.reset()
         if not text:
@@ -336,9 +347,60 @@ class MiniTUIApplication:
         self.invalidate()
         return True
 
+    def _accept_interaction_buffer(self, buffer: Buffer) -> bool:
+        request = self.interactor.active_request
+        if request is None:
+            buffer.reset()
+            return True
+        raw_text = buffer.text
+        self.interactor.submit(
+            raw_text if isinstance(request, InputTextRequest) else raw_text.strip()
+        )
+        if self.interactor.active_request is not request:
+            buffer.reset()
+        return True
+
     def _secret_input_active(self) -> bool:
         request = self.interactor.active_request
         return isinstance(request, InputTextRequest) and request.secret
+
+    def _interaction_input_active(self) -> bool:
+        request = self.interactor.active_request
+        if isinstance(request, (ChooseOneRequest, InputTextRequest)):
+            return True
+        return (
+            isinstance(request, ReviewRequest)
+            and self.interactor.review_state.stage == "feedback"
+        )
+
+    def _interaction_input_height(self) -> int:
+        return 1 if self._interaction_input_active() else 0
+
+    def _interaction_changed(self) -> None:
+        request = self.interactor.active_request
+        stage = (
+            self.interactor.review_state.stage
+            if isinstance(request, ReviewRequest)
+            else "input"
+        )
+        owner = (
+            (request.request_id, stage)
+            if request is not None and self._interaction_input_active()
+            else None
+        )
+        if owner != self._interaction_input_owner:
+            self.interaction_input_buffer.reset()
+            self._interaction_input_owner = owner
+        try:
+            target = (
+                self.interaction_input_window
+                if owner is not None
+                else self.input_window
+            )
+            self.application.layout.focus(target)
+        except (RuntimeError, ValueError):
+            pass
+        self.invalidate()
 
     def _submit_panel_command(self, command: str) -> None:
         self.input_buffer.text = command
@@ -719,6 +781,7 @@ class MiniTUIApplication:
                 len(
                     _interaction_lines(
                         request,
+                        self.interactor.review_state,
                     )
                 ),
             ),
@@ -732,6 +795,7 @@ class MiniTUIApplication:
                     ("class:interaction", line + "\n")
                     for line in _interaction_lines(
                         request,
+                        self.interactor.review_state,
                     )
                 ]
             )

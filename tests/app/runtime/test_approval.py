@@ -189,6 +189,9 @@ def test_runtime_approval_is_ledgered_and_emitted_before_resolution() -> None:
         if event.kind == "approval_resolved"
     )
     assert resolved.payload["reason"] == "approved"
+    emitted = events[-1]
+    assert emitted.data["mode"] == "allow_once"
+    assert emitted.data["resolution_source"] == "user"
 
 
 def test_apply_session_grant_updates_live_policy_and_session_state() -> None:

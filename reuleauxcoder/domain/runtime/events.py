@@ -212,6 +212,10 @@ class ApprovalResolved:
     request_id: str
     approved: bool
     reason: str | None = None
+    mode: str | None = None
+    grant_label: str | None = None
+    released_count: int = 0
+    resolution_source: str | None = None
     kind: RuntimeEventKind = field(
         default=RuntimeEventKind.APPROVAL_RESOLVED, init=False
     )
@@ -502,6 +506,10 @@ def agent_event_to_runtime_event(
             request_id=str(event.data.get("request_id") or event.event_id),
             approved=bool(event.data.get("approved")),
             reason=event.data.get("reason"),
+            mode=event.data.get("mode"),
+            grant_label=event.data.get("grant_label"),
+            released_count=int(event.data.get("released_count") or 0),
+            resolution_source=event.data.get("resolution_source"),
         )
     else:
         raise ValueError(f"Unsupported legacy agent event: {event.event_type.value}")
@@ -616,6 +624,10 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
             request_id=payload.request_id,
             approved=payload.approved,
             reason=payload.reason,
+            mode=payload.mode,
+            grant_label=payload.grant_label,
+            released_count=payload.released_count,
+            resolution_source=payload.resolution_source,
         )
     else:
         raise ValueError(

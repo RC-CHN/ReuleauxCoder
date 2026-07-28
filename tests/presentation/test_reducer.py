@@ -341,15 +341,25 @@ def test_approval_request_and_resolution_correlate_by_request_id() -> None:
     reducer.apply(
         RuntimeEvent(
             payload=ApprovalResolved(
-                request_id="approval-1", approved=False, reason="user denied"
+                request_id="approval-1",
+                approved=True,
+                reason="approved",
+                mode="allow_session",
+                grant_label="This directory",
+                released_count=2,
+                resolution_source="user",
             )
         )
     )
 
     cell = reducer.state.transcript.get("approval:approval-1")
     assert isinstance(cell, ApprovalCell)
-    assert cell.status == "denied"
-    assert cell.reason == "user denied"
+    assert cell.status == "approved"
+    assert cell.reason == "approved"
+    assert cell.mode == "allow_session"
+    assert cell.grant_label == "This directory"
+    assert cell.released_count == 2
+    assert cell.resolution_source == "user"
 
 
 def test_session_runtime_and_view_events_update_typed_view_state() -> None:

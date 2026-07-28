@@ -99,8 +99,10 @@ class ApprovalDecision:
         return cls(mode="allow_once", reason=reason, reviewed=reviewed)
 
     @classmethod
-    def deny_once(cls, reason: str | None = None) -> "ApprovalDecision":
-        return cls(mode="deny_once", reason=reason)
+    def deny_once(
+        cls, reason: str | None = None, *, reviewed: bool = False
+    ) -> "ApprovalDecision":
+        return cls(mode="deny_once", reason=reason, reviewed=reviewed)
 
     @classmethod
     def allow_session(

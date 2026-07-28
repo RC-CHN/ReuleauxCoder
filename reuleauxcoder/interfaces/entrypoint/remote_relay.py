@@ -454,6 +454,27 @@ def bind_remote_chat_handler(
 
             def review(self, request: ReviewRequest) -> ReviewResponse:
                 value, cancelled, reason = self._request(request)
+                if isinstance(value, dict):
+                    action = value.get("action")
+                    selected_id = value.get("selected_id")
+                    feedback = value.get("reason")
+                    if action in {"allow_once", "allow_session", "deny"}:
+                        return ReviewResponse(
+                            approved=action in {"allow_once", "allow_session"}
+                            and not cancelled,
+                            cancelled=cancelled,
+                            reason=(
+                                str(feedback)
+                                if isinstance(feedback, str)
+                                else reason
+                            ),
+                            action=action,
+                            selected_id=(
+                                str(selected_id)
+                                if isinstance(selected_id, str)
+                                else None
+                            ),
+                        )
                 return ReviewResponse(
                     approved=value is True and not cancelled,
                     cancelled=cancelled,
