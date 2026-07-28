@@ -160,6 +160,7 @@ class ProcessManager:
         self._lock = threading.RLock()
         self._start_condition = threading.Condition(self._lock)
         self._ports: dict[int, ProcessPort] = {}
+        self._starting_ports: dict[int, int] = {}
         self._closing = False
         self._starting = 0
 
@@ -178,17 +179,27 @@ class ProcessManager:
         env: Mapping[str, str] | None = None,
         stream_handler: ProcessStreamHandler | None = None,
     ) -> ProcessHandle:
+        expired: tuple[_ManagedEntry, ...]
+        capacity_error: ProcessCapacityError | None = None
+        port_id = id(port)
         with self._lock:
             if self._closing:
                 raise RuntimeError("process manager is shutting down")
-            self._cleanup_expired_locked()
+            expired = self._cleanup_expired_locked()
             if len(self._entries) + self._starting >= self._max_sessions:
-                raise ProcessCapacityError(
+                capacity_error = ProcessCapacityError(
                     "process session capacity reached "
                     f"({self._max_sessions} retained/running sessions)"
                 )
-            self._ports[id(port)] = port
-            self._starting += 1
+            else:
+                self._ports[port_id] = port
+                self._starting_ports[port_id] = (
+                    self._starting_ports.get(port_id, 0) + 1
+                )
+                self._starting += 1
+        self._release_expired(expired)
+        if capacity_error is not None:
+            raise capacity_error
 
         idempotency_key = f"rcoder-{uuid.uuid4().hex}"
         handle: ProcessHandle | None = None
@@ -251,6 +262,13 @@ class ProcessManager:
         finally:
             with self._start_condition:
                 self._starting -= 1
+                remaining_starts = self._starting_ports.get(port_id, 0) - 1
+                if remaining_starts > 0:
+                    self._starting_ports[port_id] = remaining_starts
+                else:
+                    self._starting_ports.pop(port_id, None)
+                    if handle is None or registered:
+                        self._drop_idle_port_locked(port)
                 self._start_condition.notify_all()
 
     def publish(self, session_id: str, *, observed: bool = False) -> None:
@@ -284,10 +302,15 @@ class ProcessManager:
             else:
                 self._ensure_watcher_started_locked(entry)
         if terminal:
+            released = False
             try:
                 entry.port.release(session_id)
+                released = True
             except Exception:
                 pass
+            if released:
+                with self._lock:
+                    self._drop_idle_port_locked(entry.port)
             return
         try:
             entry.port.terminate(session_id, reason=reason)
@@ -546,8 +569,9 @@ class ProcessManager:
         session_generation: int,
         include_observed: bool = False,
     ) -> tuple[ManagedProcessView, ...]:
+        expired: tuple[_ManagedEntry, ...]
         with self._lock:
-            self._cleanup_expired_locked()
+            expired = self._cleanup_expired_locked()
             entries = [
                 entry
                 for entry in self._entries.values()
@@ -561,7 +585,9 @@ class ProcessManager:
                 and entry.published
             ]
             entries.sort(key=lambda item: item.created_monotonic)
-            return tuple(self._view(entry) for entry in entries)
+            views = tuple(self._view(entry) for entry in entries)
+        self._release_expired(expired)
+        return views
 
     def active_count(
         self,
@@ -866,10 +892,15 @@ class ProcessManager:
                 if abandoned and snapshot.state is ProcessState.EXITED:
                     self._entries.pop(entry.handle.session_id, None)
             if abandoned and snapshot.state is ProcessState.EXITED:
+                released = False
                 try:
                     entry.port.release(entry.handle.session_id)
+                    released = True
                 except Exception:
                     pass
+                if released:
+                    with self._lock:
+                        self._drop_idle_port_locked(entry.port)
                 return
             if has_output and published:
                 self._emit(ProcessEventKind.OUTPUT, entry, snapshot)
@@ -1011,7 +1042,7 @@ class ProcessManager:
             observed=entry.observed,
         )
 
-    def _cleanup_expired_locked(self) -> None:
+    def _cleanup_expired_locked(self) -> tuple[_ManagedEntry, ...]:
         now = time.monotonic()
         expired: list[_ManagedEntry] = []
         for entry in self._entries.values():
@@ -1026,7 +1057,37 @@ class ProcessManager:
                 expired.append(entry)
         for entry in expired:
             self._entries.pop(entry.handle.session_id, None)
+        return tuple(expired)
+
+    def _release_expired(self, entries: tuple[_ManagedEntry, ...]) -> None:
+        if not entries:
+            return
+
+        def release_entry(entry: _ManagedEntry) -> bool:
             try:
                 entry.port.release(entry.handle.session_id)
             except Exception:
-                pass
+                return False
+            return True
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(self._max_sessions, len(entries))
+        ) as pool:
+            released_entries = tuple(pool.map(release_entry, entries))
+        for entry, released in zip(
+            entries,
+            released_entries,
+            strict=True,
+        ):
+            if released:
+                with self._lock:
+                    self._drop_idle_port_locked(entry.port)
+
+    def _drop_idle_port_locked(self, port: ProcessPort) -> None:
+        port_id = id(port)
+        if self._starting_ports.get(port_id, 0) > 0:
+            return
+        if any(entry.port is port for entry in self._entries.values()):
+            return
+        if self._ports.get(port_id) is port:
+            self._ports.pop(port_id, None)

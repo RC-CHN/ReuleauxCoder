@@ -399,6 +399,108 @@ def test_observed_retention_starts_when_result_is_observed() -> None:
     manager.shutdown()
 
 
+def test_expired_release_does_not_hold_manager_lock_or_retain_idle_port() -> None:
+    release_entered = threading.Event()
+    release_continue = threading.Event()
+
+    class _BlockingReleasePort(_ImmediateExitPort):
+        def release(self, session_id):
+            del session_id
+            release_entered.set()
+            assert release_continue.wait(2)
+
+    manager = ProcessManager(
+        max_sessions=1,
+        observed_retention_seconds=0,
+        terminal_ttl_seconds=600,
+    )
+    port = _BlockingReleasePort("expired-terminal")
+    handle = _start_immediate_exit(manager, port)
+    manager.poll(
+        handle.session_id,
+        consumer="model",
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+    )
+    listed = []
+    cleaner = threading.Thread(
+        target=lambda: listed.append(
+            manager.list(
+                agent_id="agent",
+                owner_session_id="session",
+                session_generation=0,
+                include_observed=True,
+            )
+        )
+    )
+    cleaner.start()
+    assert release_entered.wait(2)
+
+    started = time.monotonic()
+    assert manager.active_count(owner_session_id="session") == 0
+    assert time.monotonic() - started < 0.1
+    release_continue.set()
+    cleaner.join(timeout=2)
+
+    assert listed == [()]
+    assert not cleaner.is_alive()
+    assert manager._ports == {}
+    manager.shutdown()
+
+
+def test_independent_expired_releases_run_concurrently() -> None:
+    active = 0
+    max_active = 0
+    activity_lock = threading.Lock()
+
+    class _SlowReleasePort(_ImmediateExitPort):
+        def release(self, session_id):
+            nonlocal active, max_active
+            del session_id
+            with activity_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.2)
+            with activity_lock:
+                active -= 1
+
+    manager = ProcessManager(
+        max_sessions=4,
+        observed_retention_seconds=0,
+        terminal_ttl_seconds=600,
+    )
+    handles = [
+        _start_immediate_exit(
+            manager,
+            _SlowReleasePort(f"expired-{index}"),
+        )
+        for index in range(4)
+    ]
+    for handle in handles:
+        manager.poll(
+            handle.session_id,
+            consumer="model",
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+
+    started = time.monotonic()
+    views = manager.list(
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        include_observed=True,
+    )
+
+    assert time.monotonic() - started < 0.6
+    assert max_active == 4
+    assert views == ()
+    assert manager._ports == {}
+    manager.shutdown()
+
+
 def test_manager_shutdown_barrier_covers_inflight_start() -> None:
     entered = threading.Event()
     release = threading.Event()
