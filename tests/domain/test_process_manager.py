@@ -262,6 +262,109 @@ def test_unknown_is_unresolved_not_a_synthetic_completion() -> None:
     assert port.shutdown_calls == 1
 
 
+class _ImmediateExitPort(_UnknownPort):
+    def __init__(self, session_id: str) -> None:
+        super().__init__()
+        self.session_id = session_id
+        self.state = ProcessState.EXITED
+
+    def start(self, command, **_kwargs):
+        del command
+        return ProcessHandle(self.session_id, ProcessStreamMode.PIPE)
+
+    def poll(self, session_id, *, cursor=None, wait_ms=0):
+        del wait_ms
+        return ProcessSnapshot(
+            session_id=session_id,
+            state=ProcessState.EXITED,
+            stream_mode=ProcessStreamMode.PIPE,
+            backend="local",
+            cursor=cursor or ProcessCursor(),
+            exit_code=0,
+            started_at=time.time(),
+            finished_at=time.time(),
+            runtime_timeout_seconds=60,
+        )
+
+
+def _start_immediate_exit(
+    manager: ProcessManager,
+    port: _ImmediateExitPort,
+) -> ProcessHandle:
+    handle = manager.start(
+        port,  # type: ignore[arg-type]
+        "finished-command",
+        cwd=".",
+        runtime_timeout=60,
+        tty=False,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    entry = manager._entries[handle.session_id]
+    assert entry.watcher is not None
+    entry.watcher.join(timeout=2)
+    return handle
+
+
+def test_capacity_does_not_discard_fresh_unobserved_terminal_result() -> None:
+    manager = ProcessManager(
+        max_sessions=1,
+        observed_retention_seconds=0,
+        terminal_ttl_seconds=600,
+    )
+    _start_immediate_exit(manager, _ImmediateExitPort("first-terminal"))
+
+    with pytest.raises(ProcessCapacityError, match="capacity reached"):
+        manager.start(
+            _ImmediateExitPort("second-terminal"),  # type: ignore[arg-type]
+            "second-command",
+            cwd=".",
+            runtime_timeout=60,
+            tty=False,
+            owner_agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+            origin_turn_id="turn",
+        )
+
+    assert "first-terminal" in manager._entries
+    manager.shutdown()
+
+
+def test_observed_retention_starts_when_result_is_observed() -> None:
+    manager = ProcessManager(
+        max_sessions=1,
+        observed_retention_seconds=30,
+        terminal_ttl_seconds=600,
+    )
+    handle = _start_immediate_exit(
+        manager,
+        _ImmediateExitPort("observed-terminal"),
+    )
+    entry = manager._entries[handle.session_id]
+    entry.terminal_at = time.monotonic() - 300
+
+    manager.poll(
+        handle.session_id,
+        consumer="model",
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+    )
+
+    views = manager.list(
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        include_observed=True,
+    )
+    assert [view.session_id for view in views] == [handle.session_id]
+    manager.shutdown()
+
+
 def test_manager_shutdown_barrier_covers_inflight_start() -> None:
     entered = threading.Event()
     release = threading.Event()

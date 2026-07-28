@@ -180,7 +180,6 @@ class ProcessManager:
             if self._closing:
                 raise RuntimeError("process manager is shutting down")
             self._cleanup_expired_locked()
-            self._reclaim_terminal_for_capacity_locked()
             if len(self._entries) + self._starting >= self._max_sessions:
                 raise ProcessCapacityError(
                     "process session capacity reached "
@@ -907,37 +906,13 @@ class ProcessManager:
             if entry.last_snapshot.state is not ProcessState.EXITED:
                 continue
             terminal_at = entry.terminal_at or entry.created_monotonic
-            age = now - terminal_at
             if entry.observed:
-                if age >= self._observed_retention_seconds:
+                observed_at = entry.observed_at or terminal_at
+                if now - observed_at >= self._observed_retention_seconds:
                     expired.append(entry)
-            elif age >= self._terminal_ttl_seconds:
+            elif now - terminal_at >= self._terminal_ttl_seconds:
                 expired.append(entry)
         for entry in expired:
-            self._entries.pop(entry.handle.session_id, None)
-            try:
-                entry.port.release(entry.handle.session_id)
-            except Exception:
-                pass
-
-    def _reclaim_terminal_for_capacity_locked(self) -> None:
-        """Prefer dropping old terminal entries before rejecting a new start."""
-        excess = len(self._entries) + self._starting - self._max_sessions + 1
-        if excess <= 0:
-            return
-        terminal = sorted(
-            (
-                entry
-                for entry in self._entries.values()
-                if entry.last_snapshot.state is ProcessState.EXITED
-                and (entry.published or entry.abandoned)
-            ),
-            key=lambda entry: (
-                not entry.observed,
-                entry.terminal_at or entry.created_monotonic,
-            ),
-        )
-        for entry in terminal[:excess]:
             self._entries.pop(entry.handle.session_id, None)
             try:
                 entry.port.release(entry.handle.session_id)
