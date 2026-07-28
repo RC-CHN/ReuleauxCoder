@@ -318,6 +318,43 @@ def test_runtime_provider_rechecks_live_session_grants_before_human_prompt() -> 
     assert presented[0].subjects == ("src/other.py",)
 
 
+def test_changed_approval_snapshot_is_not_bypassed_by_session_grant() -> None:
+    agent = _approval_agent()
+    agent.session_approval_rules = [
+        ApprovalRuleConfig(
+            tool_name="edit_file",
+            tool_source="builtin",
+            pattern="src/app.py",
+            scope_key="scope-1",
+            action="allow",
+        )
+    ]
+    presented = []
+    provider = build_runtime_approval_provider(
+        agent,
+        lambda pending: (
+            presented.append(pending.request)
+            or pending.resolve(
+                ApprovalDecision.deny_once("review changed diff", reviewed=True)
+            )
+        ),
+    )
+
+    decision = provider.request_approval(
+        ApprovalRequest(
+            tool_name="edit_file",
+            tool_source="builtin",
+            subjects=("src/app.py",),
+            scope_key="scope-1",
+            metadata={"workspace_changed_during_approval": True},
+        )
+    )
+
+    assert decision.approved is False
+    assert decision.reason == "review changed diff"
+    assert len(presented) == 1
+
+
 def test_bubbled_approval_keeps_child_attribution_in_root_ledger() -> None:
     agent = _approval_agent()
     provider = build_runtime_approval_provider(

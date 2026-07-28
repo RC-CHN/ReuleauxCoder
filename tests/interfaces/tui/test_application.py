@@ -253,6 +253,26 @@ def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
     assert get_cwidth(header) <= 50
 
 
+def test_approval_card_labels_policy_resolution_as_automatic() -> None:
+    from reuleauxcoder.interfaces.tui.transcript import cell_fragments
+    from reuleauxcoder.presentation.models import ApprovalCell
+
+    cell = ApprovalCell(
+        id="approval:1",
+        request_id="1",
+        title="Approval required: shell",
+        status="approved",
+        mode="allow_once",
+        reason="matched session approval grant",
+        resolution_source="policy",
+    )
+
+    rendered = "".join(text for _style, text in cell_fragments(cell, width=90))
+
+    assert "Auto-approved by policy" in rendered
+    assert "Allowed once" not in rendered
+
+
 def test_interaction_lane_shows_queued_steering_while_running() -> None:
     app = _bare_app()
     app.interactor = SimpleNamespace(active_request=None)

@@ -196,18 +196,22 @@ def approval_fragments(cell: ApprovalCell, *, width: int) -> list[tuple[str, str
     if cell.reason:
         reason_style = "class:success" if cell.status == "approved" else "class:error"
         add_line(reason_style, cell.reason)
-    if cell.mode == "allow_session":
+    automatic = bool(
+        cell.resolution_source and cell.resolution_source != "user"
+    )
+    if automatic and cell.status == "approved":
+        resolver = cell.resolution_source.replace("_", " ")
+        add_line("class:success", f"Decision  Auto-approved by {resolver}")
+    elif automatic and cell.status == "denied":
+        resolver = cell.resolution_source.replace("_", " ")
+        add_line("class:error", f"Decision  Automatically denied by {resolver}")
+    elif cell.mode == "allow_session":
         scope = f" · {cell.grant_label}" if cell.grant_label else ""
         add_line("class:success", f"Decision  Approved for this session{scope}")
     elif cell.mode == "allow_once":
         add_line("class:success", "Decision  Allowed once")
     elif cell.mode == "deny_once":
         add_line("class:error", "Decision  Denied")
-    if cell.resolution_source and cell.resolution_source != "user":
-        add_line(
-            "class:muted",
-            f"Resolved by {cell.resolution_source.replace('_', ' ')}",
-        )
     if cell.released_count:
         add_line(
             "class:success",

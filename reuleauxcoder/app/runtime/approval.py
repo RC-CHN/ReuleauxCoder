@@ -451,6 +451,10 @@ def _judge_session_approval_rules(
     again; it evaluates session rules only and does not replace the ordinary
     authorization hook.
     """
+    if request.metadata.get("workspace_changed_during_approval"):
+        # A session rule may authorize this resource generally, but it cannot
+        # approve a diff that changed while the user was reviewing it.
+        return None
     lock = getattr(agent, "_session_approval_lock", None)
     if lock is None:
         return None
