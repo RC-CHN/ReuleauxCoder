@@ -124,6 +124,10 @@ class ProcessOperationUnsupported(ProcessSessionError):
     """The requested operation is not available for this process session."""
 
 
+class ProcessOperationUnconfirmed(ProcessSessionError):
+    """The operation may have been delivered, but its result is ambiguous."""
+
+
 class ProcessCapacityError(ProcessSessionError):
     """The process session capacity is exhausted."""
 

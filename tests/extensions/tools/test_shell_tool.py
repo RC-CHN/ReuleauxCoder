@@ -323,6 +323,11 @@ def test_ambiguous_session_operation_is_attempted_but_not_confirmed() -> None:
     assert '"confirmed": false' in result.model_text
     assert "write response was lost" in result.model_text
 
+    port.state = ProcessState.UNKNOWN
+    unknown = session.execute(handle.session_id, "poll", wait_ms=0)
+    assert '"executed": true' in unknown.model_text
+    assert '"confirmed": false' in unknown.model_text
+
     manager._entries[handle.session_id].input_bytes = 1024 * 1024
     rejected = session.execute(handle.session_id, "write", chars="bounded\n")
     assert '"executed": false' in rejected.model_text

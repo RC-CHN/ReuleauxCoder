@@ -990,9 +990,14 @@ def _outcome_from_snapshot(
     call_cancelled: bool = False,
     operation_succeeded: bool = False,
     operation_executed: bool = True,
-    operation_confirmed: bool = True,
+    operation_confirmed: bool | None = None,
 ) -> ToolOutcome:
     facts = _snapshot_dict(snapshot)
+    if operation_confirmed is None:
+        operation_confirmed = (
+            not operation_executed
+            or snapshot.state is not ProcessState.UNKNOWN
+        )
     if call_cancelled:
         status = ToolOutcomeStatus.CANCELLED
         error_kind = ToolErrorKind.INTERRUPTED

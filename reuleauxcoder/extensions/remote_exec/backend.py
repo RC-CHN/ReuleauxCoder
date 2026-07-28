@@ -17,6 +17,7 @@ from reuleauxcoder.domain.process import (
     ProcessChunk,
     ProcessCursor,
     ProcessHandle,
+    ProcessOperationUnconfirmed,
     ProcessOperationUnsupported,
     ProcessResult,
     ProcessSessionNotFound,
@@ -655,11 +656,15 @@ class RemoteProcessPort:
                 "process.interrupt",
                 {"process_id": entry.process_id},
             )
-        except (PeerNotFoundError, RemoteExecError):
+        except (PeerNotFoundError, RemoteExecError) as error:
             with entry.lock:
                 if entry.state is not ProcessState.EXITED:
                     entry.state = ProcessState.UNKNOWN
                     entry.termination_reason = "transport_unknown"
+            raise ProcessOperationUnconfirmed(
+                "remote soft-interrupt delivery could not be confirmed: "
+                f"{error}"
+            ) from error
         return self._snapshot(entry, ProcessCursor())
 
     def terminate(
@@ -669,12 +674,16 @@ class RemoteProcessPort:
         reason: str = "terminated",
     ) -> ProcessSnapshot:
         entry = self._lookup(session_id)
-        self._terminate_entry(entry, reason=reason)
+        confirmed = self._terminate_entry(entry, reason=reason)
+        if not confirmed:
+            raise ProcessOperationUnconfirmed(
+                "remote process termination delivery could not be confirmed"
+            )
         return self._snapshot(entry, ProcessCursor())
 
-    def _terminate_entry(self, entry: "_RemoteProcessEntry", *, reason: str) -> None:
+    def _terminate_entry(self, entry: "_RemoteProcessEntry", *, reason: str) -> bool:
         if entry.state is ProcessState.EXITED:
-            return
+            return True
         operation = (
             "process.terminate"
             if self._peer_supports(entry.peer_id, "process.terminate")
@@ -694,11 +703,13 @@ class RemoteProcessPort:
                         data.get("termination_reason") or reason
                     )
                     entry.finished_at = time.time()
+            return True
         except (PeerNotFoundError, RemoteExecError):
             with entry.lock:
                 if entry.state is not ProcessState.EXITED:
                     entry.state = ProcessState.UNKNOWN
                     entry.termination_reason = "transport_unknown"
+            return False
 
     def release(self, session_id: str) -> None:
         entry = self._lookup(session_id)
@@ -771,15 +782,25 @@ class RemoteProcessPort:
         unknown_deadline = time.monotonic() + timeout + 5
         while True:
             if cancellation_event is not None and cancellation_event.is_set():
-                terminated = self.terminate(
-                    handle.session_id,
-                    reason="cancelled",
-                )
+                termination_unconfirmed = False
+                try:
+                    terminated = self.terminate(
+                        handle.session_id,
+                        reason="cancelled",
+                    )
+                except ProcessOperationUnconfirmed:
+                    termination_unconfirmed = True
+                    terminated = self._snapshot(
+                        self._lookup(handle.session_id),
+                        cursor,
+                    )
                 return ProcessResult(
                     stdout="".join(stdout),
                     stderr="".join(stderr),
                     cancelled=True,
+                    output_truncated=terminated.output_truncated,
                     output_decode_replaced=terminated.output_decode_replaced,
+                    state_unknown=termination_unconfirmed,
                 )
             snapshot = self.poll(handle.session_id, cursor=cursor, wait_ms=50)
             cursor = snapshot.cursor
@@ -791,7 +812,13 @@ class RemoteProcessPort:
                 if time.monotonic() < unknown_deadline:
                     time.sleep(0.05)
                     continue
-                self.terminate(handle.session_id, reason="transport_unknown")
+                try:
+                    self.terminate(
+                        handle.session_id,
+                        reason="transport_unknown",
+                    )
+                except ProcessOperationUnconfirmed:
+                    pass
                 return ProcessResult(
                     stdout="".join(stdout),
                     stderr="".join(stderr),

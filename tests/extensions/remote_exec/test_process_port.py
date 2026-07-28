@@ -4,7 +4,13 @@ from collections import deque
 import threading
 import time
 
-from reuleauxcoder.domain.process import ProcessCursor, ProcessState
+import pytest
+
+from reuleauxcoder.domain.process import (
+    ProcessCursor,
+    ProcessOperationUnconfirmed,
+    ProcessState,
+)
 from reuleauxcoder.extensions.remote_exec.backend import (
     RemoteProcessPort,
     RemoteRelayToolBackend,
@@ -186,6 +192,28 @@ def test_shutdown_attempts_to_terminate_unknown_remote_process() -> None:
     assert report.unknown == 1
     assert report.terminated == 1
     assert relay.requests[-1][0].operation == "process.terminate"
+
+
+def test_remote_control_transport_failures_remain_unconfirmed() -> None:
+    port, _relay = _port(
+        [
+            WorkspaceResult(
+                ok=True,
+                data={"process_id": "ambiguous-control", "reused": False},
+            ),
+            RemoteTimeoutError(2),
+            RemoteTimeoutError(2),
+        ]
+    )
+    handle = port.start("long-running", cwd="/workspace", runtime_timeout=60)
+
+    with pytest.raises(ProcessOperationUnconfirmed, match="interrupt"):
+        port.interrupt(handle.session_id)
+    assert port._lookup(handle.session_id).state is ProcessState.UNKNOWN
+
+    with pytest.raises(ProcessOperationUnconfirmed, match="termination"):
+        port.terminate(handle.session_id)
+    assert port._lookup(handle.session_id).state is ProcessState.UNKNOWN
 
 
 def test_shutdown_terminates_independent_remote_processes_concurrently() -> None:
