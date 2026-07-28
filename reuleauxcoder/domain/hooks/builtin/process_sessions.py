@@ -85,14 +85,29 @@ class ProcessSessionInjectorHook(TransformHook[BeforeLLMRequestContext]):
             command = " ".join(session.command.split())
             if len(command) > _MAX_COMMAND_CHARS:
                 command = command[: _MAX_COMMAND_CHARS - 1] + "…"
+            attributes = [
+                f'id="{escape(session.session_id, quote=True)}"',
+                f'state="{escape(session.state.value, quote=True)}"',
+                f'tty="{"true" if session.stream_mode == "pty" else "false"}"',
+                f'elapsed_seconds="{session.elapsed_seconds:.1f}"',
+            ]
+            backend = getattr(session, "backend", None)
+            if backend:
+                attributes.append(f'backend="{escape(str(backend), quote=True)}"')
+            exit_code = getattr(session, "exit_code", None)
+            if exit_code is not None:
+                attributes.append(f'exit_code="{int(exit_code)}"')
+            termination_reason = getattr(session, "termination_reason", None)
+            if termination_reason:
+                attributes.append(
+                    "termination_reason="
+                    f'"{escape(str(termination_reason), quote=True)}"'
+                )
+            if getattr(session, "output_truncated", False):
+                attributes.append('output_truncated="true"')
             lines.extend(
                 (
-                    "  <session"
-                    f' id="{escape(session.session_id, quote=True)}"'
-                    f' state="{escape(session.state.value, quote=True)}"'
-                    f' tty="{"true" if session.stream_mode == "pty" else "false"}"'
-                    f' elapsed_seconds="{session.elapsed_seconds:.1f}"'
-                    ">",
+                    f"  <session {' '.join(attributes)}>",
                     '    <command trust="untrusted_data">'
                     f"{escape(command, quote=False)}</command>",
                     "  </session>",

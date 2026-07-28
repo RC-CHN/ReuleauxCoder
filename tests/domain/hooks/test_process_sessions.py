@@ -123,3 +123,35 @@ def test_process_inventory_keeps_every_capacity_bounded_session_addressable() ->
     assert 'id="process-0"' in content
     assert 'id="process-31"' in content
     assert "x" * 160 not in content
+
+
+def test_unobserved_completion_projects_bounded_exit_facts() -> None:
+    session = SimpleNamespace(
+        session_id="process-complete",
+        state=ProcessState.EXITED,
+        stream_mode="pipe",
+        backend="remote<&>",
+        elapsed_seconds=3.5,
+        command="build --all",
+        exit_code=2,
+        termination_reason="runtime_timeout",
+        output_truncated=True,
+    )
+    context = BeforeLLMRequestContext(
+        hook_point=HookPoint.BEFORE_LLM_REQUEST,
+        messages=[_tail()],
+        agent_id="agent",
+        session_id="session",
+        session_generation=0,
+    )
+
+    ProcessSessionInjectorHook(  # type: ignore[arg-type]
+        process_manager=_Manager([session])
+    ).run(context)
+    content = context.messages[-1]["content"]
+
+    assert 'state="exited"' in content
+    assert 'backend="remote&lt;&amp;&gt;"' in content
+    assert 'exit_code="2"' in content
+    assert 'termination_reason="runtime_timeout"' in content
+    assert 'output_truncated="true"' in content
