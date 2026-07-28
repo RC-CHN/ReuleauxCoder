@@ -311,10 +311,16 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 	m.mu.Unlock()
 
 	go processState.wait()
+	runtimeTimeoutMillis := int64Arg(args["runtime_timeout_ms"])
 	deadlineMillis := int64Arg(args["deadline_unix_ms"])
-	if deadlineMillis > 0 {
+	if runtimeTimeoutMillis > 0 || deadlineMillis > 0 {
 		go func() {
-			delay := time.Until(time.UnixMilli(deadlineMillis))
+			delay := time.Duration(runtimeTimeoutMillis) * time.Millisecond
+			if runtimeTimeoutMillis <= 0 {
+				// Absolute deadlines are retained for protocol-v2 hosts that
+				// predate duration-based deadlines.
+				delay = time.Until(time.UnixMilli(deadlineMillis))
+			}
 			if delay <= 0 {
 				processState.terminate("timeout")
 				return

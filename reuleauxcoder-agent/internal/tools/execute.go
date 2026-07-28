@@ -49,11 +49,12 @@ func Execute(
 	start := manager.Execute(protocol.WorkspaceRequest{
 		Operation: "process.start",
 		Args: map[string]any{
-			"process_id":       processID,
-			"idempotency_key":  processID,
-			"command":          command,
-			"cwd":              cwd,
-			"deadline_unix_ms": time.Now().Add(time.Duration(timeoutSec) * time.Second).UnixMilli(),
+			"process_id":         processID,
+			"idempotency_key":    processID,
+			"command":            command,
+			"cwd":                cwd,
+			"runtime_timeout_ms": int64(timeoutSec) * 1000,
+			"deadline_unix_ms":   time.Now().Add(time.Duration(timeoutSec) * time.Second).UnixMilli(),
 		},
 	})
 	if !start.OK {

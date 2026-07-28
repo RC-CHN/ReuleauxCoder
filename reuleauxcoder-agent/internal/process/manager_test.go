@@ -181,6 +181,31 @@ func TestProcessCancelAndDeadline(t *testing.T) {
 	}
 }
 
+func TestProcessRuntimeDurationDoesNotDependOnHostClock(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	start := manager.Execute(request("process.start", map[string]any{
+		"process_id": "duration-timeout", "idempotency_key": "duration-key",
+		"command": "sleep 30", "cwd": root,
+		"runtime_timeout_ms": 50,
+		// Simulate a host clock far in the future. The duration supplied by a
+		// current host is authoritative for a newly started process.
+		"deadline_unix_ms": time.Now().Add(time.Hour).UnixMilli(),
+	}))
+	if !start.OK {
+		t.Fatal(start)
+	}
+	startedAt := time.Now()
+	result := waitDone(t, manager, "duration-timeout")
+	if result.Data["timed_out"] != true {
+		t.Fatalf("expected duration timeout: %#v", result)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("peer used the skewed absolute deadline: %s", elapsed)
+	}
+}
+
 func TestProcessRejectsCWDOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, root)

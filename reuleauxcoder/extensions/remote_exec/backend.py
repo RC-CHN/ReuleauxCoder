@@ -466,6 +466,7 @@ class RemoteProcessPort:
                 "command": command,
                 "cwd": cwd,
                 "tty": False,
+                "runtime_timeout_ms": runtime_timeout * 1000,
                 "deadline_unix_ms": int(
                     (time.time() + runtime_timeout) * 1000
                 ),

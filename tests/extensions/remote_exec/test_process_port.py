@@ -97,6 +97,7 @@ def test_remote_process_preserves_command_and_retains_terminal_until_release() -
     start_request = relay.requests[0][0]
     assert start_request.operation == "process.start"
     assert start_request.args["command"] == command
+    assert start_request.args["runtime_timeout_ms"] == 60_000
     assert snapshot.state is ProcessState.EXITED
     assert snapshot.exit_code == 7
     assert snapshot.stdout == "actual output\n"
