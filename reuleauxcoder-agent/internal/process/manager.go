@@ -18,6 +18,8 @@ import (
 const (
 	maxRetainedBytesPerStream = 512 * 1024
 	maxPollBytesPerStream     = 64 * 1024
+	maxInputBytes             = 64 * 1024
+	maxSessionInputBytes      = 1024 * 1024
 	maxProcessSessions        = 64
 	terminalRetention         = 10 * time.Minute
 )
@@ -131,6 +133,8 @@ type state struct {
 	done               chan struct{}
 	changed            chan struct{}
 	mu                 sync.Mutex
+	inputMu            sync.Mutex
+	inputBytes         int
 	exitCode           int
 	terminationReason  string
 	interruptRequested bool
@@ -443,9 +447,22 @@ func (m *Manager) input(args map[string]any) protocol.WorkspaceResult {
 	if !ok {
 		return failure("invalid_path", "data must be a string")
 	}
+	if len(data) > maxInputBytes {
+		return failure("resource_exhausted", "process input exceeds the 64 KiB per-write limit")
+	}
+	processState.inputMu.Lock()
+	defer processState.inputMu.Unlock()
+	if processState.inputBytes+len(data) > maxSessionInputBytes {
+		return failure("resource_exhausted", "process input exceeds the 1 MiB session limit")
+	}
 	if data != "" {
-		if _, err := io.WriteString(processState.stdin, data); err != nil {
+		written, err := io.WriteString(processState.stdin, data)
+		processState.inputBytes += written
+		if err != nil {
 			return failure("io_error", err.Error())
+		}
+		if written != len(data) {
+			return failure("io_error", fmt.Sprintf("process input write confirmed %d of %d bytes", written, len(data)))
 		}
 	}
 	closed, _ := args["close"].(bool)

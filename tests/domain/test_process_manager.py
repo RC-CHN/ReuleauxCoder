@@ -8,6 +8,9 @@ import time
 import pytest
 
 from reuleauxcoder.domain.process import (
+    MAX_PROCESS_INPUT_BYTES,
+    MAX_PROCESS_SESSION_INPUT_BYTES,
+    ProcessCapacityError,
     ProcessCursor,
     ProcessHandle,
     ProcessSessionNotFound,
@@ -308,6 +311,116 @@ def test_manager_shutdown_barrier_covers_inflight_start() -> None:
     assert reports[0].reap_timeouts == 0
     assert port.terminate_calls == 1
     assert port.shutdown_calls == 1
+
+
+def test_process_input_is_serialized_and_bounded_per_session() -> None:
+    class _WritingPort(_UnknownPort):
+        def __init__(self) -> None:
+            super().__init__()
+            self.state = ProcessState.RUNNING
+            self.active_write = False
+            self.overlapped = False
+            self.writes = []
+            self.write_state_lock = threading.Lock()
+
+        def start(self, command, **_kwargs):
+            del command
+            return ProcessHandle("writing-session", ProcessStreamMode.PTY)
+
+        def poll(self, session_id, *, cursor=None, wait_ms=0):
+            del wait_ms
+            return ProcessSnapshot(
+                session_id=session_id,
+                state=self.state,
+                stream_mode=ProcessStreamMode.PTY,
+                backend="local",
+                cursor=cursor or ProcessCursor(),
+                started_at=time.time(),
+                runtime_timeout_seconds=60,
+            )
+
+        def write_input(self, session_id, data):
+            del session_id
+            with self.write_state_lock:
+                if self.active_write:
+                    self.overlapped = True
+                self.active_write = True
+            time.sleep(0.01)
+            self.writes.append(data)
+            with self.write_state_lock:
+                self.active_write = False
+            return len(data.encode("utf-8"))
+
+    port = _WritingPort()
+    manager = ProcessManager()
+    handle = manager.start(
+        port,  # type: ignore[arg-type]
+        "interactive",
+        cwd=".",
+        runtime_timeout=60,
+        tty=True,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    barrier = threading.Barrier(2)
+
+    def write(consumer: str, chars: str) -> None:
+        barrier.wait()
+        manager.write(
+            handle.session_id,
+            chars,
+            consumer=consumer,
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+
+    writers = [
+        threading.Thread(target=write, args=("first", "alpha")),
+        threading.Thread(target=write, args=("second", "beta")),
+    ]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(timeout=2)
+
+    assert port.overlapped is False
+    assert sorted(port.writes) == ["alpha", "beta"]
+    with pytest.raises(ProcessCapacityError, match="64 KiB"):
+        manager.write(
+            handle.session_id,
+            "x" * (MAX_PROCESS_INPUT_BYTES + 1),
+            consumer="oversized",
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+    remaining = MAX_PROCESS_SESSION_INPUT_BYTES - sum(
+        len(value.encode("utf-8")) for value in port.writes
+    )
+    for index in range(0, remaining, MAX_PROCESS_INPUT_BYTES):
+        chunk = "z" * min(MAX_PROCESS_INPUT_BYTES, remaining - index)
+        manager.write(
+            handle.session_id,
+            chunk,
+            consumer=f"fill-{index}",
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+    with pytest.raises(ProcessCapacityError, match="1 MiB"):
+        manager.write(
+            handle.session_id,
+            "overflow",
+            consumer="cumulative",
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+    manager.shutdown(grace_seconds=0)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY integration")

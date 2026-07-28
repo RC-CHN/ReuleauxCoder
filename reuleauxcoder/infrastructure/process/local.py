@@ -15,6 +15,7 @@ from typing import Any, Protocol
 import uuid
 
 from reuleauxcoder.domain.process import (
+    MAX_PROCESS_INPUT_BYTES,
     ProcessCapacityError,
     ProcessChunk,
     ProcessCursor,
@@ -80,7 +81,13 @@ class _FdPtyTransport:
             fd = self._fd
             if fd is None:
                 raise OSError(errno.EBADF, "PTY is closed")
-            return os.write(fd, data)
+            written = 0
+            while written < len(data):
+                count = os.write(fd, data[written:])
+                if count <= 0:
+                    raise OSError(errno.EIO, "PTY write made no progress")
+                written += count
+            return written
 
     def interrupt(self) -> None:
         self.write(b"\x03")
@@ -704,6 +711,10 @@ class LocalProcessPort:
         if entry.state is not ProcessState.RUNNING or entry.pty_transport is None:
             raise ProcessOperationUnsupported(f"session '{session_id}' has exited")
         encoded = data.encode("utf-8")
+        if len(encoded) > MAX_PROCESS_INPUT_BYTES:
+            raise ProcessCapacityError(
+                "process input exceeds the 64 KiB per-write limit"
+            )
         transport = entry.pty_transport
         if transport is None:
             raise ProcessOperationUnsupported(f"session '{session_id}' has exited")

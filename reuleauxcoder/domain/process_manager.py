@@ -10,6 +10,8 @@ import time
 import uuid
 
 from reuleauxcoder.domain.process import (
+    MAX_PROCESS_INPUT_BYTES,
+    MAX_PROCESS_SESSION_INPUT_BYTES,
     ProcessCapacityError,
     ProcessCursor,
     ProcessHandle,
@@ -87,6 +89,8 @@ class _ManagedEntry:
     watcher: threading.Thread | None = None
     watcher_started: bool = False
     completion_emitted: bool = False
+    input_bytes: int = 0
+    input_lock: threading.Lock = field(default_factory=threading.Lock)
     sensitive_values: list[str] = field(default_factory=list)
     output_filters: dict[tuple[str, str], "_SensitiveOutputFilter"] = field(
         default_factory=dict
@@ -357,7 +361,8 @@ class ProcessManager:
             owner_session_id=owner_session_id,
             session_generation=session_generation,
         )
-        entry.port.write_input(session_id, chars)
+        with entry.input_lock:
+            self._write_input_bounded(entry, chars)
         return self.poll(
             session_id,
             consumer=consumer,
@@ -389,21 +394,28 @@ class ProcessManager:
             owner_session_id=owner_session_id,
             session_generation=session_generation,
         )
-        with self._lock:
-            if entry.handle.stream_mode is not ProcessStreamMode.PTY:
-                raise ProcessOperationUnsupported(
-                    f"session '{session_id}' uses pipe mode; hidden input was not sent"
-                )
-            if entry.last_snapshot.state is not ProcessState.RUNNING:
-                raise ProcessOperationUnsupported(
-                    f"session '{session_id}' is {entry.last_snapshot.state.value}; "
-                    "hidden input was not sent"
-                )
-            if value not in entry.sensitive_values:
-                entry.sensitive_values.append(value)
-        # Retain the redaction even if the transport reports an ambiguous
-        # failure: the peer may have received the write before the error.
-        entry.port.write_input(session_id, value + "\n")
+        with entry.input_lock:
+            byte_count = self._validated_input_byte_count(entry, value + "\n")
+            with self._lock:
+                if entry.handle.stream_mode is not ProcessStreamMode.PTY:
+                    raise ProcessOperationUnsupported(
+                        f"session '{session_id}' uses pipe mode; "
+                        "hidden input was not sent"
+                    )
+                if entry.last_snapshot.state is not ProcessState.RUNNING:
+                    raise ProcessOperationUnsupported(
+                        f"session '{session_id}' is "
+                        f"{entry.last_snapshot.state.value}; hidden input was not sent"
+                    )
+                if value not in entry.sensitive_values:
+                    entry.sensitive_values.append(value)
+            # Retain the redaction even if the transport reports an ambiguous
+            # failure: the peer may have received the write before the error.
+            self._write_input_bounded(
+                entry,
+                value + "\n",
+                byte_count=byte_count,
+            )
         return self.poll(
             session_id,
             consumer=consumer,
@@ -412,6 +424,43 @@ class ProcessManager:
             session_generation=session_generation,
             wait_ms=0,
         )
+
+    def _validated_input_byte_count(
+        self,
+        entry: _ManagedEntry,
+        chars: str,
+    ) -> int:
+        byte_count = len(chars.encode("utf-8"))
+        if byte_count > MAX_PROCESS_INPUT_BYTES:
+            raise ProcessCapacityError(
+                "process input exceeds the 64 KiB per-write limit; no input was sent"
+            )
+        with self._lock:
+            if entry.input_bytes + byte_count > MAX_PROCESS_SESSION_INPUT_BYTES:
+                raise ProcessCapacityError(
+                    "process input exceeds the 1 MiB session limit; no input was sent"
+                )
+        return byte_count
+
+    def _write_input_bounded(
+        self,
+        entry: _ManagedEntry,
+        chars: str,
+        *,
+        byte_count: int | None = None,
+    ) -> None:
+        byte_count = (
+            self._validated_input_byte_count(entry, chars)
+            if byte_count is None
+            else byte_count
+        )
+        confirmed = entry.port.write_input(entry.handle.session_id, chars)
+        with self._lock:
+            entry.input_bytes += max(0, confirmed)
+        if confirmed != byte_count:
+            raise RuntimeError(
+                f"process input write confirmed {confirmed} of {byte_count} bytes"
+            )
 
     def interrupt(
         self,

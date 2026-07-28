@@ -17,6 +17,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolRetentionStrategy,
 )
 from reuleauxcoder.domain.process import (
+    MAX_PROCESS_INPUT_BYTES,
     ProcessCapacityError,
     ProcessOperationUnsupported,
     ProcessSessionNotFound,
@@ -625,6 +626,7 @@ class ShellSessionTool(_BoundProcessTool):
             "chars": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": MAX_PROCESS_INPUT_BYTES,
                 "description": (
                     "Characters to write. Required only for action=write, which "
                     "is valid only for tty=true sessions."
@@ -823,6 +825,16 @@ class ShellSessionTool(_BoundProcessTool):
             return _boundary_failure(
                 "action=write requires non-empty chars; no input was sent.",
                 code="write_chars_required",
+                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+            )
+        if (
+            action == "write"
+            and chars is not None
+            and len(chars.encode("utf-8")) > MAX_PROCESS_INPUT_BYTES
+        ):
+            return _boundary_failure(
+                "chars exceeds the 64 KiB per-write limit; no input was sent.",
+                code="write_chars_too_large",
                 error_kind=ToolErrorKind.INVALID_ARGUMENTS,
             )
         if action != "write" and chars is not None:

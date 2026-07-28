@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -97,6 +98,29 @@ func TestProcessInputWritesAndClosesStdin(t *testing.T) {
 	if result.Data["stdout_all"] != "hello" {
 		t.Fatalf("unexpected process output: %#v", result)
 	}
+}
+
+func TestProcessInputRejectsOversizedWrite(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "stdin-limit", "idempotency_key": "stdin-limit-key",
+		"command": "cat", "cwd": root,
+		"deadline_unix_ms": time.Now().Add(5 * time.Second).UnixMilli(),
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	rejected := manager.Execute(request("process.input", map[string]any{
+		"process_id": "stdin-limit", "data": strings.Repeat("x", maxInputBytes+1),
+	}))
+	if rejected.OK || rejected.ErrorCode != "resource_exhausted" {
+		t.Fatalf("oversized input was not rejected: %#v", rejected)
+	}
+	manager.Execute(request("process.terminate", map[string]any{
+		"process_id": "stdin-limit", "reason": "test_cleanup",
+	}))
 }
 
 func TestProcessCancelAndDeadline(t *testing.T) {

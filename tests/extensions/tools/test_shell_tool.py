@@ -163,6 +163,21 @@ def test_invalid_inputs_are_rejected_before_process_port() -> None:
     assert process.calls == []
 
 
+def test_shell_session_schema_bounds_model_supplied_input() -> None:
+    tool = ShellSessionTool()
+    schema = tool.parameters
+
+    assert schema["properties"]["chars"]["maxLength"] == 64 * 1024
+    rejected = tool._preflight_validate(
+        "session",
+        "write",
+        "密" * (64 * 1024),
+    )
+    assert rejected is not None
+    assert "64 KiB" in rejected.model_text
+    assert '"executed": false' in rejected.model_text
+
+
 def test_rtk_configuration_never_rewrites_the_command(tmp_path: Path) -> None:
     process = RecordingProcessPort()
     tool = _tool(process, cwd=str(tmp_path))

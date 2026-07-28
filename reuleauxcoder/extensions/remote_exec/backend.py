@@ -11,6 +11,8 @@ from typing import Any
 import uuid
 
 from reuleauxcoder.domain.process import (
+    MAX_PROCESS_INPUT_BYTES,
+    ProcessCapacityError,
     ProcessChunk,
     ProcessCursor,
     ProcessHandle,
@@ -604,6 +606,10 @@ class RemoteProcessPort:
         )
 
     def write_input(self, session_id: str, data: str) -> int:
+        if len(data.encode("utf-8")) > MAX_PROCESS_INPUT_BYTES:
+            raise ProcessCapacityError(
+                "process input exceeds the 64 KiB per-write limit"
+            )
         entry = self._lookup(session_id)
         if entry.stream_mode is not ProcessStreamMode.PTY:
             raise ProcessOperationUnsupported(

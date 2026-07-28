@@ -9,6 +9,10 @@ import threading
 from typing import Protocol
 
 
+MAX_PROCESS_INPUT_BYTES = 64 * 1024
+MAX_PROCESS_SESSION_INPUT_BYTES = 1024 * 1024
+
+
 class ProcessState(str, Enum):
     """Small model-facing process state space."""
 
