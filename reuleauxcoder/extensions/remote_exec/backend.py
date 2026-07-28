@@ -525,8 +525,9 @@ class RemoteProcessPort:
                 with entry.lock:
                     entry.process_id = confirmed_id
                     entry.start_confirmed = True
-                    entry.state = ProcessState.RUNNING
-                    entry.termination_reason = None
+                    if entry.state is not ProcessState.EXITED:
+                        entry.state = ProcessState.RUNNING
+                        entry.termination_reason = None
             except (PeerNotFoundError, RemoteExecError):
                 return self._snapshot(entry, current)
         try:
@@ -550,43 +551,44 @@ class RemoteProcessPort:
 
         stdout = str(data.get("stdout", ""))
         stderr = str(data.get("stderr", ""))
+        response_stdout_offset = int(
+            data.get("stdout_offset", current.stdout_offset + len(stdout))
+        )
+        response_stderr_offset = int(
+            data.get("stderr_offset", current.stderr_offset + len(stderr))
+        )
         with entry.lock:
-            entry.stdout_offset = int(
-                data.get("stdout_offset", current.stdout_offset + len(stdout))
+            entry.stdout_offset = max(entry.stdout_offset, response_stdout_offset)
+            entry.stderr_offset = max(entry.stderr_offset, response_stderr_offset)
+            entry.total_stdout_bytes = max(
+                entry.total_stdout_bytes,
+                int(data.get("total_stdout_bytes", response_stdout_offset)),
             )
-            entry.stderr_offset = int(
-                data.get("stderr_offset", current.stderr_offset + len(stderr))
+            entry.total_stderr_bytes = max(
+                entry.total_stderr_bytes,
+                int(data.get("total_stderr_bytes", response_stderr_offset)),
             )
-            entry.total_stdout_bytes = int(
-                data.get("total_stdout_bytes", entry.stdout_offset)
+            entry.output_truncated = entry.output_truncated or bool(
+                data.get("output_truncated", False)
             )
-            entry.total_stderr_bytes = int(
-                data.get("total_stderr_bytes", entry.stderr_offset)
-            )
-            entry.output_truncated = bool(
-                data.get("output_truncated", entry.output_truncated)
-            )
-            entry.output_decode_replaced = bool(
-                data.get(
-                    "output_decode_replaced",
-                    entry.output_decode_replaced,
-                )
+            entry.output_decode_replaced = entry.output_decode_replaced or bool(
+                data.get("output_decode_replaced", False)
             )
             state_value = data.get("state")
             done = bool(data.get("done"))
-            if state_value == "unknown":
-                entry.state = ProcessState.UNKNOWN
-            elif state_value == "exited" or done:
-                entry.state = ProcessState.EXITED
-            else:
-                entry.state = ProcessState.RUNNING
-            if entry.state is ProcessState.EXITED:
-                entry.exit_code = _optional_int(data.get("exit_code"))
-                entry.termination_reason = _remote_termination_reason(data)
-                entry.finished_at = _milliseconds_to_seconds(
-                    data.get("finished_unix_ms")
-                ) or time.time()
-            else:
+            if entry.state is not ProcessState.EXITED:
+                if state_value == "unknown":
+                    entry.state = ProcessState.UNKNOWN
+                elif state_value == "exited" or done:
+                    entry.state = ProcessState.EXITED
+                    entry.exit_code = _optional_int(data.get("exit_code"))
+                    entry.termination_reason = _remote_termination_reason(data)
+                    entry.finished_at = _milliseconds_to_seconds(
+                        data.get("finished_unix_ms")
+                    ) or time.time()
+                else:
+                    entry.state = ProcessState.RUNNING
+            if entry.state is not ProcessState.EXITED:
                 entry.exit_code = None
                 entry.finished_at = None
                 if entry.state is ProcessState.RUNNING:
@@ -600,7 +602,7 @@ class RemoteProcessPort:
             entry.stream_handler(ProcessChunk("stderr", stderr))
         return self._snapshot(
             entry,
-            ProcessCursor(entry.stdout_offset, entry.stderr_offset),
+            ProcessCursor(response_stdout_offset, response_stderr_offset),
             stdout=stdout,
             stderr=stderr,
         )
@@ -638,8 +640,9 @@ class RemoteProcessPort:
             )
         except (PeerNotFoundError, RemoteExecError):
             with entry.lock:
-                entry.state = ProcessState.UNKNOWN
-                entry.termination_reason = "transport_unknown"
+                if entry.state is not ProcessState.EXITED:
+                    entry.state = ProcessState.UNKNOWN
+                    entry.termination_reason = "transport_unknown"
         return self._snapshot(entry, ProcessCursor())
 
     def terminate(
@@ -676,8 +679,9 @@ class RemoteProcessPort:
                     entry.finished_at = time.time()
         except (PeerNotFoundError, RemoteExecError):
             with entry.lock:
-                entry.state = ProcessState.UNKNOWN
-                entry.termination_reason = "transport_unknown"
+                if entry.state is not ProcessState.EXITED:
+                    entry.state = ProcessState.UNKNOWN
+                    entry.termination_reason = "transport_unknown"
 
     def release(self, session_id: str) -> None:
         entry = self._lookup(session_id)

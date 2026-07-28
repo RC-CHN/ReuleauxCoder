@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import threading
 
 from reuleauxcoder.domain.process import ProcessCursor, ProcessState
 from reuleauxcoder.extensions.remote_exec.backend import (
@@ -170,3 +171,87 @@ def test_shutdown_attempts_to_terminate_unknown_remote_process() -> None:
     assert report.unknown == 1
     assert report.terminated == 1
     assert relay.requests[-1][0].operation == "process.terminate"
+
+
+def test_out_of_order_remote_polls_cannot_regress_terminal_state_or_cursor() -> None:
+    slow_poll_entered = threading.Event()
+    terminal_sent = threading.Event()
+
+    class _OutOfOrderRelay(_Relay):
+        def __init__(self) -> None:
+            super().__init__([])
+
+        def send_workspace_request(self, peer_id, request, *, timeout_sec=30):
+            del timeout_sec
+            assert peer_id == self.peer_id
+            self.requests.append((request, 30))
+            if request.operation == "process.start":
+                return WorkspaceResult(
+                    ok=True,
+                    data={"process_id": "out-of-order", "reused": False},
+                )
+            assert request.operation == "process.poll"
+            if request.args["stdout_offset"] == 0:
+                slow_poll_entered.set()
+                assert terminal_sent.wait(2)
+                return WorkspaceResult(
+                    ok=True,
+                    data={
+                        "state": "running",
+                        "done": False,
+                        "stdout": "old",
+                        "stdout_offset": 3,
+                        "stderr_offset": 0,
+                        "output_truncated": False,
+                        "output_decode_replaced": False,
+                    },
+                )
+            terminal_sent.set()
+            return WorkspaceResult(
+                ok=True,
+                data={
+                    "state": "exited",
+                    "done": True,
+                    "stdout": "terminal",
+                    "stdout_offset": 20,
+                    "stderr_offset": 0,
+                    "exit_code": 0,
+                    "termination_reason": "exit",
+                    "output_truncated": True,
+                    "output_decode_replaced": True,
+                },
+            )
+
+    relay = _OutOfOrderRelay()
+    backend = RemoteRelayToolBackend(
+        relay,  # type: ignore[arg-type]
+        context=ExecutionContext(peer_id=relay.peer_id, cwd="/workspace"),
+    )
+    port = RemoteProcessPort(backend)
+    handle = port.start("command", cwd="/workspace", runtime_timeout=60)
+    slow_results = []
+    slow = threading.Thread(
+        target=lambda: slow_results.append(
+            port.poll(handle.session_id, cursor=ProcessCursor())
+        )
+    )
+    slow.start()
+    assert slow_poll_entered.wait(2)
+
+    terminal = port.poll(
+        handle.session_id,
+        cursor=ProcessCursor(stdout_offset=10),
+    )
+    slow.join(timeout=2)
+    entry = port._lookup(handle.session_id)
+    latest = port._snapshot(entry, ProcessCursor(entry.stdout_offset))
+
+    assert not slow.is_alive()
+    assert terminal.state is ProcessState.EXITED
+    assert terminal.cursor.stdout_offset == 20
+    assert slow_results[0].state is ProcessState.EXITED
+    assert slow_results[0].cursor.stdout_offset == 3
+    assert latest.state is ProcessState.EXITED
+    assert latest.cursor.stdout_offset == 20
+    assert latest.output_truncated is True
+    assert latest.output_decode_replaced is True
