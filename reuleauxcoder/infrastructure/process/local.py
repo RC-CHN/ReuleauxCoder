@@ -346,6 +346,7 @@ class _LocalProcessEntry:
         self.output_decode_replaced = False
         self.interrupt_requested = False
         self.termination_requested = False
+        self.termination_lock = threading.Lock()
         self.condition = threading.Condition(threading.RLock())
         self.done = threading.Event()
         self.reader_threads: list[threading.Thread] = []
@@ -955,42 +956,46 @@ class LocalProcessPort:
         reason: str,
         report_delivery_failure: bool = False,
     ) -> None:
-        with entry.condition:
-            if entry.state is ProcessState.EXITED:
-                return
-            previous_reason = entry.termination_reason
-            if entry.termination_reason is None or reason in {"timeout", "shutdown"}:
-                entry.termination_reason = reason
-            if entry.termination_requested:
-                return
-            entry.termination_requested = True
-        try:
-            self._signal_tree(entry, force=False)
-        except OSError as error:
-            if report_delivery_failure:
-                with entry.condition:
-                    entry.termination_requested = False
-                    entry.termination_reason = previous_reason
-                raise ProcessOperationUnsupported(
-                    "termination was not delivered to session "
-                    f"'{entry.session_id}': {error}"
-                ) from error
-
-        def escalate() -> None:
-            if entry.done.wait(_TERMINATE_GRACE_SECONDS):
-                return
+        with entry.termination_lock:
+            with entry.condition:
+                if entry.state is ProcessState.EXITED:
+                    return
+                previous_reason = entry.termination_reason
+                if entry.termination_reason is None or reason in {
+                    "timeout",
+                    "shutdown",
+                }:
+                    entry.termination_reason = reason
+                if entry.termination_requested:
+                    return
+                entry.termination_requested = True
             try:
-                self._signal_tree(entry, force=True)
-            except OSError:
-                return
+                self._signal_tree(entry, force=False)
+            except OSError as error:
+                if report_delivery_failure:
+                    with entry.condition:
+                        entry.termination_requested = False
+                        entry.termination_reason = previous_reason
+                    raise ProcessOperationUnsupported(
+                        "termination was not delivered to session "
+                        f"'{entry.session_id}': {error}"
+                    ) from error
 
-        reaper = threading.Thread(
-            target=escalate,
-            name=f"rcoder-process-reaper-{entry.session_id[-8:]}",
-            daemon=True,
-        )
-        entry.control_threads.append(reaper)
-        reaper.start()
+            def escalate() -> None:
+                if entry.done.wait(_TERMINATE_GRACE_SECONDS):
+                    return
+                try:
+                    self._signal_tree(entry, force=True)
+                except OSError:
+                    return
+
+            reaper = threading.Thread(
+                target=escalate,
+                name=f"rcoder-process-reaper-{entry.session_id[-8:]}",
+                daemon=True,
+            )
+            entry.control_threads.append(reaper)
+            reaper.start()
 
     @staticmethod
     def _signal_tree(

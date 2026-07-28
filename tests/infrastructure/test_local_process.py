@@ -370,6 +370,61 @@ def test_failed_termination_is_reported_and_can_be_retried(
     port.shutdown(grace_seconds=0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal assertion")
+def test_concurrent_termination_waits_for_delivery_confirmation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    port = LocalProcessPort()
+    handle = port.start(
+        "trap '' TERM; while :; do sleep 1; done",
+        cwd=str(tmp_path),
+        runtime_timeout=30,
+    )
+    original_killpg = os.killpg
+    first_delivery_entered = threading.Event()
+    release_first_delivery = threading.Event()
+    calls = 0
+
+    def fail_first_delivery(process_group: int, selected_signal: int) -> None:
+        nonlocal calls
+        if selected_signal == signal.SIGTERM:
+            calls += 1
+            if calls == 1:
+                first_delivery_entered.set()
+                assert release_first_delivery.wait(2)
+                raise PermissionError("signal denied")
+        original_killpg(process_group, selected_signal)
+
+    monkeypatch.setattr(os, "killpg", fail_first_delivery)
+    errors: list[BaseException] = []
+
+    def terminate() -> None:
+        try:
+            port.terminate(handle.session_id)
+        except BaseException as error:
+            errors.append(error)
+
+    first = threading.Thread(target=terminate)
+    second = threading.Thread(target=terminate)
+    first.start()
+    assert first_delivery_entered.wait(2)
+    second.start()
+    time.sleep(0.05)
+    assert second.is_alive()
+    release_first_delivery.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ProcessOperationUnsupported)
+    assert calls == 2
+    assert port._lookup(handle.session_id).termination_requested is True
+    port.shutdown(grace_seconds=0)
+
+
 def test_start_failure_after_spawn_is_reaped(monkeypatch, tmp_path) -> None:
     port = LocalProcessPort()
     spawned = []
