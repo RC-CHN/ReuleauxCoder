@@ -96,6 +96,7 @@ def test_remote_process_preserves_command_and_retains_terminal_until_release() -
 
     start_request = relay.requests[0][0]
     assert start_request.operation == "process.start"
+    assert relay.requests[0][1] == 2
     assert start_request.args["command"] == command
     assert start_request.args["runtime_timeout_ms"] == 60_000
     assert snapshot.state is ProcessState.EXITED
@@ -147,6 +148,18 @@ def test_ambiguous_remote_start_retries_same_intent_with_same_idempotency_key() 
     assert len(starts) == 2
     assert starts[0].args["command"] == starts[1].args["command"]
     assert starts[0].args["idempotency_key"] == starts[1].args["idempotency_key"]
+    start_timeouts = [
+        timeout
+        for request, timeout in relay.requests
+        if request.operation == "process.start"
+    ]
+    assert start_timeouts == [2, 2]
+    poll_timeout = next(
+        timeout
+        for request, timeout in relay.requests
+        if request.operation == "process.poll"
+    )
+    assert poll_timeout == 1
     assert reconciled.state is ProcessState.RUNNING
 
 

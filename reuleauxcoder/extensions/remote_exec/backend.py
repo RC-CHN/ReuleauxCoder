@@ -57,6 +57,10 @@ from reuleauxcoder.extensions.tools.backend import ExecutionContext, ToolBackend
 from reuleauxcoder.interfaces.events import UIEventBus
 
 
+_REMOTE_PROCESS_START_ACK_SECONDS = 2
+_REMOTE_PROCESS_CONTROL_ACK_SECONDS = 2
+
+
 class RemoteRelayToolBackend(ToolBackend):
     """Backend that forwards tool execution to a remote peer via the relay server."""
 
@@ -481,7 +485,7 @@ class RemoteProcessPort:
                 entry,
                 "process.start",
                 entry.start_args,
-                timeout_sec=30,
+                timeout_sec=_REMOTE_PROCESS_START_ACK_SECONDS,
             )
             entry.process_id = str(data.get("process_id", process_id))
             entry.start_confirmed = True
@@ -524,7 +528,7 @@ class RemoteProcessPort:
                     entry,
                     "process.start",
                     entry.start_args,
-                    timeout_sec=30,
+                    timeout_sec=_REMOTE_PROCESS_START_ACK_SECONDS,
                 )
                 confirmed_id = str(data.get("process_id", entry.process_id))
                 with entry.lock:
@@ -545,7 +549,7 @@ class RemoteProcessPort:
                     "stderr_offset": current.stderr_offset,
                     "wait_ms": wait_ms,
                 },
-                timeout_sec=max(5, int(wait_ms / 1000) + 2),
+                timeout_sec=max(1, int(wait_ms / 1000) + 1),
             )
         except (PeerNotFoundError, RemoteExecError):
             with entry.lock:
@@ -801,7 +805,7 @@ class RemoteProcessPort:
         operation: str,
         args: dict[str, Any],
         *,
-        timeout_sec: int = 30,
+        timeout_sec: int = _REMOTE_PROCESS_CONTROL_ACK_SECONDS,
     ) -> dict[str, Any]:
         result = self.backend.relay_server.send_workspace_request(
             entry.peer_id,
