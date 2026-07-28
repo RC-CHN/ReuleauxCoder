@@ -6,6 +6,7 @@ from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
     build_session_runtime_state,
 )
+from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
 
 
 class _FakeLLM:
@@ -145,3 +146,33 @@ def test_runtime_state_round_trip_restores_skills_disabled() -> None:
     assert restored_service.restored_with == ["deep-review"]
     assert restored_service.disabled_names == ("deep-review",)
     assert restored.skills_catalog == "catalog-without-disabled"
+
+
+def test_runtime_state_round_trip_preserves_approval_pattern() -> None:
+    config = _config()
+    config.approval = ApprovalConfig(default_mode="require_approval")
+    source = _agent()
+    source.session_approval_rules = [
+        ApprovalRuleConfig(
+            tool_name="edit_file",
+            pattern="src/app.py",
+            action="allow",
+        )
+    ]
+
+    state = build_session_runtime_state(config, source)
+    restored = _agent()
+    session = SimpleNamespace(
+        runtime_state=state,
+        messages=[],
+        total_prompt_tokens=0,
+        total_completion_tokens=0,
+        active_mode=None,
+        checkpoints=(),
+    )
+
+    apply_session_runtime_state(session, config, restored)
+
+    assert len(restored.session_approval_rules) == 1
+    assert restored.session_approval_rules[0].tool_name == "edit_file"
+    assert restored.session_approval_rules[0].pattern == "src/app.py"

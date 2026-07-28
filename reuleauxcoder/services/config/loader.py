@@ -366,6 +366,7 @@ class ConfigLoader:
                 mcp_server=rule.get("mcp_server"),
                 effect_class=rule.get("effect_class"),
                 profile=rule.get("profile"),
+                pattern=rule.get("pattern"),
                 action=rule.get("action", "require_approval"),
             )
             for rule in approval_config.get("rules", DEFAULTS["approval_rules"])

@@ -165,6 +165,7 @@ def _clone_approval_rules(rules: list[ApprovalRuleConfig]) -> list[ApprovalRuleC
             mcp_server=rule.mcp_server,
             effect_class=rule.effect_class,
             profile=rule.profile,
+            pattern=rule.pattern,
             action=rule.action,
         )
         for rule in rules
@@ -190,6 +191,7 @@ def merge_approval_config(
                 mcp_server=rule.mcp_server,
                 effect_class=rule.effect_class,
                 profile=rule.profile,
+                pattern=rule.pattern,
                 action=rule.action,
             )
         )
@@ -231,6 +233,7 @@ def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeS
                 "mcp_server": rule.mcp_server,
                 "effect_class": rule.effect_class,
                 "profile": rule.profile,
+                "pattern": rule.pattern,
                 "action": rule.action,
             }
             for rule in session_rules
@@ -327,6 +330,7 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
                 mcp_server=rule.get("mcp_server"),
                 effect_class=rule.get("effect_class"),
                 profile=rule.get("profile"),
+                pattern=rule.get("pattern"),
                 action=rule.get("action", config.approval.default_mode),
             )
             for rule in runtime.approval_rules

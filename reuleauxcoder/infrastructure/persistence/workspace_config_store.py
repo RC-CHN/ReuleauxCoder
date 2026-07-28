@@ -118,6 +118,7 @@ class WorkspaceConfigStore:
             "mcp_server": rule.mcp_server,
             "effect_class": rule.effect_class,
             "profile": rule.profile,
+            "pattern": rule.pattern,
             "action": rule.action,
         }
         return {k: v for k, v in data.items() if v is not None}

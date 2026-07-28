@@ -48,6 +48,7 @@ class ApprovalRuleView:
     tool_name: str | None = None
     effect_class: str | None = None
     profile: str | None = None
+    pattern: str | None = None
     source: str = "builtin"
 
 
@@ -116,6 +117,7 @@ class ApprovalView:
                     "tool_name": rule.tool_name,
                     "effect_class": rule.effect_class,
                     "profile": rule.profile,
+                    "pattern": rule.pattern,
                     "source": rule.source,
                 }
                 for rule in self.rules
@@ -192,6 +194,7 @@ def same_rule_target(left: ApprovalRuleConfig, right: ApprovalRuleConfig) -> boo
         and left.mcp_server == right.mcp_server
         and left.effect_class == right.effect_class
         and left.profile == right.profile
+        and left.pattern == right.pattern
     )
 
 
@@ -430,6 +433,7 @@ def _raw_rule_to_config(rule_dict: dict) -> ApprovalRuleConfig:
         mcp_server=rule_dict.get("mcp_server"),
         effect_class=rule_dict.get("effect_class"),
         profile=rule_dict.get("profile"),
+        pattern=rule_dict.get("pattern"),
         action=rule_dict.get("action", "require_approval"),
     )
 
@@ -537,6 +541,8 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
             parts.append(f"effect={rule.effect_class}")
         if rule.profile:
             parts.append(f"profile={rule.profile}")
+        if rule.pattern:
+            parts.append(f"pattern={rule.pattern}")
         visible_rules.append(
             ApprovalRuleView(
                 scope=", ".join(parts) if parts else "<default match>",
@@ -546,6 +552,7 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
                 tool_name=rule.tool_name,
                 effect_class=rule.effect_class,
                 profile=rule.profile,
+                pattern=rule.pattern,
                 source=source,
             )
         )

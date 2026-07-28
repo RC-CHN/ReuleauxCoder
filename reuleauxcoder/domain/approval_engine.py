@@ -27,6 +27,7 @@ class ToolApprovalContext:
     profile: str | None = None
     tool_description: str | None = None
     tool_schema: dict[str, Any] | None = None
+    subjects: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -48,12 +49,48 @@ class ApprovalPolicyEngine:
         ranked_rules = sorted(
             self.config.rules, key=lambda rule: self._specificity(rule), reverse=True
         )
-        for rule in ranked_rules:
-            if self._matches(rule, context):
-                return ApprovalPolicyMatch(action=rule.action, rule=rule)
+        if not context.subjects:
+            for rule in ranked_rules:
+                if self._matches_dimensions(rule, context) and rule.pattern is None:
+                    return ApprovalPolicyMatch(action=rule.action, rule=rule)
+            return ApprovalPolicyMatch(
+                action=self._fallback_action(context),
+                rule=None,
+            )
+
+        # Resolve the most specific policy independently for every stable
+        # resource identity. A multi-resource call is then governed by the
+        # strictest resulting action. This lets several exact session grants
+        # collectively cover a later multi-file call without letting one exact
+        # grant authorize unrelated subjects from the same invocation.
+        matches: list[ApprovalPolicyMatch] = []
+        for subject in context.subjects:
+            match = next(
+                (
+                    ApprovalPolicyMatch(action=rule.action, rule=rule)
+                    for rule in ranked_rules
+                    if self._matches_dimensions(rule, context)
+                    and self._matches_subject(rule.pattern, subject)
+                ),
+                ApprovalPolicyMatch(
+                    action=self._fallback_action(context),
+                    rule=None,
+                ),
+            )
+            matches.append(match)
+
+        action_priority = {
+            "allow": 0,
+            "warn": 1,
+            "require_approval": 2,
+            "deny": 3,
+        }
+        return max(matches, key=lambda match: action_priority[match.action])
+
+    def _fallback_action(self, context: ToolApprovalContext) -> ApprovalAction:
         if context.effect_class in {"read_only_internal", "control_plane_internal"}:
-            return ApprovalPolicyMatch(action="allow", rule=None)
-        return ApprovalPolicyMatch(action=self.config.default_mode, rule=None)
+            return "allow"
+        return self.config.default_mode
 
     @staticmethod
     def _specificity(rule: ApprovalRuleConfig) -> int:
@@ -74,10 +111,19 @@ class ApprovalPolicyEngine:
             score += 1
         if rule.profile is not None:
             score += 1
+        if rule.pattern is not None:
+            if rule.pattern == "*":
+                score += 1
+            elif rule.pattern.endswith("/**"):
+                score += 2
+            else:
+                score += 3
         return score
 
     @staticmethod
-    def _matches(rule: ApprovalRuleConfig, context: ToolApprovalContext) -> bool:
+    def _matches_dimensions(
+        rule: ApprovalRuleConfig, context: ToolApprovalContext
+    ) -> bool:
         if rule.tool_name is not None and rule.tool_name != context.tool_name:
             return False
         if rule.tool_source is not None and rule.tool_source != context.tool_source:
@@ -89,3 +135,12 @@ class ApprovalPolicyEngine:
         if rule.profile is not None and rule.profile != context.profile:
             return False
         return True
+
+    @staticmethod
+    def _matches_subject(pattern: str | None, subject: str) -> bool:
+        if pattern is None or pattern == "*":
+            return True
+        if pattern.endswith("/**"):
+            base = pattern[:-3].rstrip("/")
+            return subject == base or subject.startswith(base + "/")
+        return subject == pattern

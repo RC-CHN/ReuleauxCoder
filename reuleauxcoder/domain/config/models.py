@@ -157,6 +157,7 @@ class ApprovalRuleConfig:
     mcp_server: Optional[str] = None
     effect_class: Optional[str] = None
     profile: Optional[str] = None
+    pattern: Optional[str] = None
     action: ApprovalAction = "require_approval"
 
 

@@ -78,6 +78,27 @@ def test_same_rule_target_and_find_matching_rule() -> None:
     assert find_matching_rule([other, right], left) is right
 
 
+def test_rule_pattern_is_part_of_the_rule_target_identity() -> None:
+    exact = ApprovalRuleConfig(
+        tool_name="edit_file",
+        pattern="src/app.py",
+        action="allow",
+    )
+    subtree = ApprovalRuleConfig(
+        tool_name="edit_file",
+        pattern="src/**",
+        action="allow",
+    )
+    changed_action = ApprovalRuleConfig(
+        tool_name="edit_file",
+        pattern="src/app.py",
+        action="deny",
+    )
+
+    assert same_rule_target(exact, changed_action) is True
+    assert same_rule_target(exact, subtree) is False
+
+
 def test_resolve_mcp_server_action_prefers_server_rule_then_generic_then_default() -> (
     None
 ):

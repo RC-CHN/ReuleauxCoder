@@ -118,7 +118,13 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
             },
             "approval": {
                 "default_mode": "warn",
-                "rules": [{"tool_name": "shell", "action": "deny"}],
+                "rules": [
+                    {
+                        "tool_name": "shell",
+                        "pattern": "pytest -q",
+                        "action": "deny",
+                    }
+                ],
             },
             "skills": {"enabled": True, "scan_project": False, "disabled": ["demo"]},
             "prompt": {"system_append": "Always answer in Chinese."},
@@ -143,6 +149,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.modes["coder"].tools == ["shell", "read_file"]
     assert config.approval.default_mode == "warn"
     assert config.approval.rules[0].tool_name == "shell"
+    assert config.approval.rules[0].pattern == "pytest -q"
     assert config.skills.scan_project is False
     assert config.skills.disabled == ["demo"]
     assert config.prompt.system_append == "Always answer in Chinese."
