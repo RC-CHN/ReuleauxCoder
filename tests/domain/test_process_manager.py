@@ -263,6 +263,38 @@ def test_unknown_is_unresolved_not_a_synthetic_completion() -> None:
     assert port.shutdown_calls == 1
 
 
+def test_unknown_watcher_respects_its_poll_window() -> None:
+    class _ImmediateUnknownPort(_UnknownPort):
+        def __init__(self) -> None:
+            super().__init__()
+            self.poll_calls = 0
+
+        def poll(self, session_id, *, cursor=None, wait_ms=0):
+            del wait_ms
+            self.poll_calls += 1
+            return super().poll(session_id, cursor=cursor, wait_ms=0)
+
+    port = _ImmediateUnknownPort()
+    manager = ProcessManager()
+    handle = manager.start(
+        port,  # type: ignore[arg-type]
+        "ambiguous-command",
+        cwd=".",
+        runtime_timeout=60,
+        tty=False,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+
+    time.sleep(0.3)
+
+    assert port.poll_calls <= 4
+    manager.shutdown(grace_seconds=0)
+
+
 class _ImmediateExitPort(_UnknownPort):
     def __init__(self, session_id: str) -> None:
         super().__init__()

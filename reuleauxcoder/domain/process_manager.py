@@ -828,6 +828,7 @@ class ProcessManager:
     def _watch(self, entry: _ManagedEntry) -> None:
         cursor = ProcessCursor()
         while True:
+            poll_started = time.monotonic()
             try:
                 raw_snapshot = entry.port.poll(
                     entry.handle.session_id,
@@ -878,6 +879,10 @@ class ProcessManager:
                 return
             if snapshot.state is ProcessState.EXITED:
                 return
+            if snapshot.state is ProcessState.UNKNOWN:
+                remaining = 0.25 - (time.monotonic() - poll_started)
+                if remaining > 0:
+                    time.sleep(remaining)
 
     def _emit(
         self,
