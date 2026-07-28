@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -260,6 +261,7 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 	shell, shellArgs := shellCommand(command)
 	cmd := exec.Command(shell, shellArgs...)
 	cmd.Dir = resolvedCWD
+	cmd.WaitDelay = 200 * time.Millisecond
 	configureProcessGroup(cmd)
 
 	processState := &state{
@@ -335,7 +337,15 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 func (s *state) wait() {
 	err := s.cmd.Wait()
 	exitCode := 0
-	if err != nil {
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The root exited but a descendant retained a copied stdout/stderr
+		// handle. Permanent detach is unsupported, so bound trailing drain and
+		// reclaim the original process group without changing the root result.
+		terminateProcessTree(s.cmd)
+		if s.cmd.ProcessState != nil {
+			exitCode = s.cmd.ProcessState.ExitCode()
+		}
+	} else if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode = exitError.ExitCode()
 		} else {

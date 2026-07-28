@@ -59,6 +59,28 @@ func TestProcessCapturesOutputFromImmediatelyExitingCommands(t *testing.T) {
 	}
 }
 
+func TestRootExitDoesNotWaitIndefinitelyForDescendantPipe(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	startedAt := time.Now()
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "descendant-pipe", "idempotency_key": "descendant-pipe-key",
+		"command": "sleep 30 & printf done", "cwd": root,
+		"deadline_unix_ms": time.Now().Add(10 * time.Second).UnixMilli(),
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	result := waitDone(t, manager, "descendant-pipe")
+	if elapsed := time.Since(startedAt); elapsed > 2*time.Second {
+		t.Fatalf("root exit waited for descendant pipe: %s", elapsed)
+	}
+	if result.Data["exit_code"] != 0 || result.Data["stdout_all"] != "done" {
+		t.Fatalf("root process result was not preserved: %#v", result)
+	}
+}
+
 func TestProcessPassesShellOperatorsAndQuotingUnchanged(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root, root)

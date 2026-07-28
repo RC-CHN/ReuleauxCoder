@@ -163,6 +163,32 @@ def test_terminal_session_remains_queryable_until_release(tmp_path) -> None:
     port.shutdown(grace_seconds=0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group assertion")
+def test_root_exit_bounds_descendant_pipe_drain(tmp_path) -> None:
+    port = LocalProcessPort()
+    started = time.monotonic()
+    handle = port.start(
+        "sleep 30 & printf done",
+        cwd=str(tmp_path),
+        runtime_timeout=10,
+    )
+    deadline = time.monotonic() + 3
+    snapshot = port.poll(handle.session_id, wait_ms=100)
+    while snapshot.state is ProcessState.RUNNING:
+        assert time.monotonic() < deadline
+        snapshot = port.poll(
+            handle.session_id,
+            cursor=snapshot.cursor,
+            wait_ms=100,
+        )
+
+    assert time.monotonic() - started < 2
+    retained = port.poll(handle.session_id)
+    assert retained.exit_code == 0
+    assert retained.stdout == "done"
+    port.release(handle.session_id)
+
+
 def test_start_failure_after_spawn_is_reaped(monkeypatch, tmp_path) -> None:
     port = LocalProcessPort()
     spawned = []
