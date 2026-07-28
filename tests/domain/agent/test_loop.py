@@ -201,3 +201,41 @@ def test_subagent_round_limit_returns_tool_free_partial_handoff() -> None:
     assert llm.calls[1]["metadata"]["summary_phase"] is True
     assert "Do not discard partial results" in llm.calls[1]["messages"][-2]["content"]
     assert agent._loop.round_limit_reached is True
+
+
+def test_configured_approval_provider_does_not_serialize_unreviewed_tools() -> None:
+    class _ParallelLLM(_BudgetLLM):
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return LLMResponse(
+                    tool_calls=[
+                        ToolCall(id="first", name="one", arguments={}),
+                        ToolCall(id="second", name="two", arguments={}),
+                    ]
+                )
+            return LLMResponse(content="done")
+
+    class _Executor:
+        def __init__(self) -> None:
+            self.parallel_calls = []
+
+        def execute(self, _tool_call):
+            raise AssertionError("multi-tool rounds must not use serial execution")
+
+        def execute_parallel(self, tool_calls):
+            self.parallel_calls.append(tuple(call.id for call in tool_calls))
+            return ["one-result", "two-result"]
+
+    llm = _ParallelLLM()
+    executor = _Executor()
+    agent = Agent(llm=llm, tools=[], executor=executor)
+    agent.approval_provider = SimpleNamespace()
+
+    assert agent._loop.run() == "done"
+    assert executor.parallel_calls == [("first", "second")]
+    assert [
+        message["content"]
+        for message in agent.messages
+        if message.get("role") == "tool"
+    ] == ["one-result", "two-result"]

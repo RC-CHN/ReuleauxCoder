@@ -731,45 +731,27 @@ class AgentLoop:
                     source="tool_result",
                 )
             else:
-                # If approval is interactive, run sequentially to keep terminal UX stable.
-                if self.agent.approval_provider is not None:
-                    for tc in resp.tool_calls:
-                        if self.agent.stop_requested():
-                            return "(stopped by cancellation request)"
-                        self.agent._emit_event(
-                            AgentEvent.tool_call_start(
-                                tc.name, tc.arguments, tool_call_id=tc.id
-                            )
+                # Tool execution stays concurrent. The root-scoped approval
+                # coordinator serializes only calls that actually reach a
+                # human review prompt.
+                if self.agent.stop_requested():
+                    return "(stopped by cancellation request)"
+                for tc in resp.tool_calls:
+                    self.agent._emit_event(
+                        AgentEvent.tool_call_start(
+                            tc.name, tc.arguments, tool_call_id=tc.id
                         )
-                        result = self.agent._executor.execute(tc)
-                        self.agent._append_message(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": result,
-                            },
-                            source="tool_result",
-                        )
-                else:
-                    # No interactive approval needed: keep parallel execution.
-                    if self.agent.stop_requested():
-                        return "(stopped by cancellation request)"
-                    for tc in resp.tool_calls:
-                        self.agent._emit_event(
-                            AgentEvent.tool_call_start(
-                                tc.name, tc.arguments, tool_call_id=tc.id
-                            )
-                        )
-                    results = self.agent._executor.execute_parallel(resp.tool_calls)
-                    for tc, result in zip(resp.tool_calls, results):
-                        self.agent._append_message(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": result,
-                            },
-                            source="tool_result",
-                        )
+                    )
+                results = self.agent._executor.execute_parallel(resp.tool_calls)
+                for tc, result in zip(resp.tool_calls, results):
+                    self.agent._append_message(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        },
+                        source="tool_result",
+                    )
 
             if self.agent._park_request is not None:
                 request_id = self.agent._park_request.get("guidance_request_id", "-")
