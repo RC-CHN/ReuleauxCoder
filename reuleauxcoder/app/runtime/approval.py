@@ -160,15 +160,91 @@ class ApprovalView:
         }
 
 
-def parse_approval_target(target: str, action: str) -> ApprovalRuleConfig | None:
-    """Parse an approval target spec into a rule config."""
+def parse_approval_target(
+    target: str,
+    action: str,
+    *,
+    pattern: str | None = None,
+) -> ApprovalRuleConfig | None:
+    """Parse a compact approval selector into a rule config.
+
+    Legacy targets such as ``tool:shell`` and ``mcp:github:search`` remain
+    supported.  The key/value form preserves compound policy dimensions for
+    panel-generated commands, for example
+    ``source=mcp,mcp_server=github,tool=search``.
+    """
     if action not in VALID_APPROVAL_ACTIONS:
         return None
     normalized_action = cast(ApprovalAction, action)
+    if pattern == "":
+        return None
+    if "=" in target:
+        dimensions: dict[str, str] = {}
+        aliases = {
+            "tool": "tool_name",
+            "source": "tool_source",
+            "mcp_server": "mcp_server",
+            "effect": "effect_class",
+            "profile": "profile",
+        }
+        for segment in target.split(","):
+            key, separator, value = segment.partition("=")
+            field_name = aliases.get(key)
+            if not separator or field_name is None or not value:
+                return None
+            if field_name in dimensions:
+                return None
+            dimensions[field_name] = value
+        tool_source = dimensions.get("tool_source")
+        mcp_server = dimensions.get("mcp_server")
+        if tool_source not in {None, "builtin", "mcp", "unknown"}:
+            return None
+        if mcp_server is not None:
+            if tool_source not in {None, "mcp"}:
+                return None
+            dimensions["tool_source"] = "mcp"
+        return ApprovalRuleConfig(
+            tool_name=dimensions.get("tool_name"),
+            tool_source=dimensions.get("tool_source"),
+            mcp_server=mcp_server,
+            effect_class=dimensions.get("effect_class"),
+            profile=dimensions.get("profile"),
+            pattern=pattern,
+            action=normalized_action,
+        )
     if target == "mcp":
-        return ApprovalRuleConfig(tool_source="mcp", action=normalized_action)
+        return ApprovalRuleConfig(
+            tool_source="mcp",
+            pattern=pattern,
+            action=normalized_action,
+        )
     if target.startswith("tool:"):
-        return ApprovalRuleConfig(tool_name=target[5:], action=normalized_action)
+        tool_name = target[5:]
+        if not tool_name:
+            return None
+        return ApprovalRuleConfig(
+            tool_name=tool_name,
+            pattern=pattern,
+            action=normalized_action,
+        )
+    if target.startswith("effect:"):
+        effect_class = target[7:]
+        if not effect_class:
+            return None
+        return ApprovalRuleConfig(
+            effect_class=effect_class,
+            pattern=pattern,
+            action=normalized_action,
+        )
+    if target.startswith("profile:"):
+        profile = target[8:]
+        if not profile:
+            return None
+        return ApprovalRuleConfig(
+            profile=profile,
+            pattern=pattern,
+            action=normalized_action,
+        )
     if target.startswith("mcp:"):
         rest = target[4:]
         if not rest:
@@ -181,10 +257,14 @@ def parse_approval_target(target: str, action: str) -> ApprovalRuleConfig | None
                 tool_source="mcp",
                 mcp_server=server,
                 tool_name=tool_name,
+                pattern=pattern,
                 action=normalized_action,
             )
         return ApprovalRuleConfig(
-            tool_source="mcp", mcp_server=rest, action=normalized_action
+            tool_source="mcp",
+            mcp_server=rest,
+            pattern=pattern,
+            action=normalized_action,
         )
     return None
 
@@ -199,6 +279,21 @@ def same_rule_target(left: ApprovalRuleConfig, right: ApprovalRuleConfig) -> boo
         and left.profile == right.profile
         and left.pattern == right.pattern
         and left.scope_key == right.scope_key
+    )
+
+
+def same_rule_policy_target(
+    left: ApprovalRuleConfig,
+    right: ApprovalRuleConfig,
+) -> bool:
+    """Compare user-editable policy dimensions while ignoring runtime binding."""
+    return (
+        left.tool_name == right.tool_name
+        and left.tool_source == right.tool_source
+        and left.mcp_server == right.mcp_server
+        and left.effect_class == right.effect_class
+        and left.profile == right.profile
+        and left.pattern == right.pattern
     )
 
 
@@ -874,10 +969,18 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
         editor_hint=ApprovalEditorHint(
             supports_text_command=True,
             set_command_format=(
-                "/approval set <target> <allow|warn|require_approval|deny>"
+                "/approval set <target> [pattern] "
+                "<allow|warn|require_approval|deny>"
             ),
-            future_ui_editor=True,
-            targets=("tool:<name>", "mcp", "mcp:<server>", "mcp:<server>:<tool>"),
+            future_ui_editor=False,
+            targets=(
+                "tool:<name>",
+                "mcp",
+                "mcp:<server>",
+                "mcp:<server>:<tool>",
+                "effect:<class>",
+                "profile:<name>",
+            ),
         ),
     )
 

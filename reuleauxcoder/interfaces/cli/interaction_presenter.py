@@ -121,7 +121,11 @@ def interaction_constraints(request: InteractionRequest) -> dict[str, object]:
         "value_type": "review_decision",
         "approve_label": request.approve_label,
         "reject_label": request.reject_label,
-        "actions": ("allow_once", "allow_session", "deny"),
+        "actions": (
+            ("allow_once", "allow_session", "deny")
+            if request.grant_options
+            else ("allow_once", "deny")
+        ),
         "supports_feedback": True,
     }
     if request.grant_options:

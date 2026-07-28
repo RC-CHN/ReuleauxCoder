@@ -801,16 +801,19 @@ def test_approval_view_opens_targets_then_actions() -> None:
     assert app.selection_host.open_view(_approval_view_payload()) is True
     assert app.selection_host.selection.view_type == "approval_rules"
     labels = [item.label for item in app.selection_host.selection.items]
-    assert labels == ["tool:write_file", "mcp:github"]
+    assert labels == ["write_file", "MCP · github"]
 
-    # Confirm session-scoped target -> action picker with set (not set-global).
+    # Confirm session-scoped target -> lifetime -> action.
+    app.selection_host.confirm()
+    assert app.selection_host.selection.view_type == "approval_lifetime"
+    assert app.selection_host.selection.selected.label == "This session"
     app.selection_host.confirm()
     assert app.selection_host.selection.view_type == "approval_actions"
-    assert app.selection_host.selection.selected.label == "require_approval"  # current preselected
+    assert app.selection_host.selection.selected.label == "Ask every time"
 
     app.selection_host.selection.move(1)  # deny
     app.selection_host.confirm()
-    assert accepted == ["/approval set tool:write_file deny"]
+    assert accepted == ["/approval set tool=write_file deny"]
     assert app.selection_host.selection is None
 
 
@@ -827,10 +830,63 @@ def test_approval_global_target_uses_set_global() -> None:
     app.selection_host.open_view(_approval_view_payload())
     app.selection_host.selection.move(1)  # mcp:github (global source)
     app.selection_host.confirm()
-    assert app.selection_host.selection.selected.label == "allow"
+    assert app.selection_host.selection.view_type == "approval_lifetime"
+    assert app.selection_host.selection.selected.label == "This workspace"
+    app.selection_host.confirm()
+    assert app.selection_host.selection.selected.label == "Allow automatically"
 
     app.selection_host.confirm()
-    assert accepted == ["/approval set-global mcp:github allow"]
+    assert accepted == [
+        "/approval set-workspace source=mcp,mcp_server=github allow"
+    ]
+
+
+def test_approval_panel_can_remove_exact_scoped_shell_grant() -> None:
+    from types import SimpleNamespace as NS
+
+    from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
+
+    signature = '{"command":"echo hello","cwd":"C:/work tree"}'
+    payload = NS(
+        view_type="approval_rules",
+        title="Approval Rules",
+        action="open",
+        focus=True,
+        view_model=ApprovalView(
+            default_mode="require_approval",
+            rules=[
+                ApprovalRuleView(
+                    scope="source=builtin, tool=shell",
+                    action="allow",
+                    tool_source="builtin",
+                    tool_name="shell",
+                    pattern=signature,
+                    scope_key='{"session_id":"session-1"}',
+                    source="session",
+                )
+            ],
+        ),
+    )
+    app = _bare_app()
+    app.selection_host.selection = None
+    app.selection_host.stack = []
+    app.invalidate = lambda: None
+    accepted = []
+    app.input_buffer = SimpleNamespace(text="", cursor_position=0)
+    app._accept_buffer = lambda buffer: accepted.append(buffer.text)
+
+    assert app.selection_host.open_view(payload) is True
+    assert signature in app.selection_host.selection.selected.label
+    app.selection_host.confirm()  # lifetime
+    app.selection_host.confirm()  # session actions
+    app.selection_host.selection.move(-1)
+    assert app.selection_host.selection.selected.label == "Remove this override"
+    app.selection_host.confirm()
+
+    assert accepted == [
+        "/approval unset source=builtin,tool=shell "
+        """'{"command":"echo hello","cwd":"C:/work tree"}'"""
+    ]
 
 
 def _mcp_view_payload(*, action: str = "open", focus: bool = True) -> object:
@@ -1314,13 +1370,19 @@ def test_approval_panel_includes_dynamic_targets_without_rules() -> None:
     assert app.selection_host.open_view(payload) is True
     labels = [item.label for item in app.selection_host.selection.items]
     # Dynamic targets only: mcp server + builtin tool (mcp tool skipped).
-    assert labels == ["mcp:time", "tool:shell"]
+    assert labels == ["MCP · time", "shell"]
 
     # New target edits go through the session-scoped set command.
     app.selection_host.confirm()
-    assert app.selection_host.selection.selected.label == "require_approval"  # effective preselected
+    assert app.selection_host.selection.selected.label == "This session"
     app.selection_host.confirm()
-    assert accepted == ["/approval set mcp:time require_approval"]
+    assert app.selection_host.selection.selected.label == "Allow automatically"
+    app.selection_host.selection.move(2)
+    assert app.selection_host.selection.selected.label == "Ask every time"
+    app.selection_host.confirm()
+    assert accepted == [
+        "/approval set source=mcp,mcp_server=time require_approval"
+    ]
 
 
 def test_view_text_formats_help_sessions_jobs_tokens_and_config() -> None:

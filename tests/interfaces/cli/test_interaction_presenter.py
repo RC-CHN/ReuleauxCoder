@@ -87,6 +87,15 @@ def test_secret_text_constraint_is_explicit_on_the_wire() -> None:
     }
 
 
+def test_review_without_grants_does_not_advertise_session_action() -> None:
+    request = ReviewRequest("Approval required", "Review this operation.")
+
+    assert interaction_constraints(request)["actions"] == (
+        "allow_once",
+        "deny",
+    )
+
+
 def test_large_write_review_is_head_tail_folded_inside_bounded_frame() -> None:
     diff = "\n".join(
         ["--- a/demo.py", "+++ b/demo.py", "@@ -0,0 +1,80 @@"]

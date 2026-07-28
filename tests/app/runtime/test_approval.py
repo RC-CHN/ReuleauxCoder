@@ -61,11 +61,29 @@ def test_parse_approval_target_supports_tool_and_mcp_targets() -> None:
     assert generic_mcp_rule.tool_source == "mcp"
     assert generic_mcp_rule.tool_name is None
 
+    compound = parse_approval_target(
+        "source=builtin,tool=edit_file,effect=filesystem",
+        "allow",
+        pattern="src/**",
+    )
+    assert compound == ApprovalRuleConfig(
+        tool_name="edit_file",
+        tool_source="builtin",
+        effect_class="filesystem",
+        pattern="src/**",
+        action="allow",
+    )
+    effect = parse_approval_target("effect=network", "deny")
+    assert effect == ApprovalRuleConfig(effect_class="network", action="deny")
+
 
 def test_parse_approval_target_rejects_invalid_target_or_action() -> None:
     assert parse_approval_target("unknown", "allow") is None
     assert parse_approval_target("mcp:", "allow") is None
+    assert parse_approval_target("tool:", "allow") is None
     assert parse_approval_target("mcp:server:", "allow") is None
+    assert parse_approval_target("source=invalid,tool=shell", "allow") is None
+    assert parse_approval_target("source=builtin,mcp_server=github", "allow") is None
     assert parse_approval_target("tool:shell", "invalid") is None
 
 

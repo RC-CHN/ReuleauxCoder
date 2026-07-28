@@ -18,6 +18,9 @@ from reuleauxcoder.extensions.command.builtin.approval import (
     _handle_set_global_approval_rule,
     _handle_unset_approval_rule,
     _handle_unset_global_approval_rule,
+    _parse_set_approval,
+    _parse_set_global_approval,
+    _parse_unset_approval,
 )
 from reuleauxcoder.infrastructure.yaml.loader import load_yaml_config
 from reuleauxcoder.services.config.loader import ConfigLoader
@@ -83,7 +86,8 @@ def test_set_global_approval_rule_updates_config_and_runtime(monkeypatch) -> Non
     assert getattr(ctx.agent, "session_approval_rules", []) == []
     assert result.state["saved_path"] == "/tmp/config.yaml"
     assert any(
-        event.level == "success" and "Updated global approval rule" in event.message
+        event.level == "success"
+        and "Updated workspace approval rule" in event.message
         for event in ctx.effect.notifications
     )
 
@@ -165,6 +169,78 @@ def test_unset_global_approval_rule_removes_and_saves(monkeypatch) -> None:
     assert ctx.config.approval.rules == []
     assert saved["rules"] == []
     assert any(
-        event.level == "success" and "Removed global approval rule" in event.message
+        event.level == "success"
+        and "Removed workspace approval rule" in event.message
         for event in ctx.effect.notifications
     )
+
+
+def test_pattern_command_parser_preserves_quoted_shell_signature() -> None:
+    signature = '{"command":"echo hello","cwd":"C:/work tree"}'
+
+    parsed = _parse_set_approval(
+        f"/approval set source=builtin,tool=shell '{signature}' allow",
+        None,
+    )
+    unset = _parse_unset_approval(
+        f"/approval unset source=builtin,tool=shell '{signature}'",
+        None,
+    )
+    workspace = _parse_set_global_approval(
+        "/approval set-workspace source=builtin,tool=edit_file src/** deny",
+        None,
+    )
+
+    assert parsed == SetApprovalRuleCommand(
+        target="source=builtin,tool=shell",
+        action="allow",
+        pattern=signature,
+    )
+    assert unset == UnsetApprovalRuleCommand(
+        target="source=builtin,tool=shell",
+        pattern=signature,
+    )
+    assert workspace == SetGlobalApprovalRuleCommand(
+        target="source=builtin,tool=edit_file",
+        action="deny",
+        pattern="src/**",
+    )
+
+
+def test_session_rule_edit_keeps_runtime_scope_binding() -> None:
+    ctx = _build_ctx()
+    persisted = []
+    ctx.agent.persist_runtime_snapshot = lambda: persisted.append(True)
+    ctx.agent.session_approval_rules = [
+        ApprovalRuleConfig(
+            tool_name="edit_file",
+            tool_source="builtin",
+            pattern="src/**",
+            scope_key='{"session_id":"session-1"}',
+            action="deny",
+        )
+    ]
+
+    _handle_set_approval_rule(
+        SetApprovalRuleCommand(
+            target="source=builtin,tool=edit_file",
+            pattern="src/**",
+            action="allow",
+        ),
+        ctx,
+    )
+
+    [updated] = ctx.agent.session_approval_rules
+    assert updated.action == "allow"
+    assert updated.scope_key == '{"session_id":"session-1"}'
+    assert persisted == [True]
+
+    _handle_unset_approval_rule(
+        UnsetApprovalRuleCommand(
+            target="source=builtin,tool=edit_file",
+            pattern="src/**",
+        ),
+        ctx,
+    )
+    assert ctx.agent.session_approval_rules == []
+    assert persisted == [True, True]
