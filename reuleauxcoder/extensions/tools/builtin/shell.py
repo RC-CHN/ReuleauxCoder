@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from collections.abc import Mapping
 import json
 import os
 import threading
@@ -180,6 +181,35 @@ class ShellTool(_BoundProcessTool):
         },
         "required": ["command"],
     }
+
+    def approval_subjects(self, arguments: Mapping[str, Any]) -> tuple[str, ...]:
+        """Describe the exact execution intent without rewriting the command."""
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command:
+            return ()
+        cwd = arguments.get("cwd")
+        actual_cwd = self._actual_cwd(cwd if isinstance(cwd, str) else None)
+        context = self.backend.context
+        signature = {
+            "backend": self.backend_id,
+            "command": command,
+            "cwd": str(actual_cwd).replace("\\", "/"),
+            "execution_target": context.execution_target,
+            "peer_id": context.peer_id,
+            "persist_cwd": bool(arguments.get("persist_cwd", False)),
+            "runtime_timeout": int(
+                arguments.get("timeout", _DEFAULT_RUNTIME_TIMEOUT_SECONDS)
+            ),
+            "tty": bool(arguments.get("tty", False)),
+        }
+        return (
+            json.dumps(
+                signature,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
 
     def __init__(self, backend: ToolBackend | None = None) -> None:
         super().__init__(backend)

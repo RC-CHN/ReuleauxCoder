@@ -189,6 +189,55 @@ def test_missing_required_arguments_are_rejected_before_execution(tmp_path) -> N
     assert outcome.display_text != outcome.model_text
 
 
+def test_schema_rejection_happens_before_authorization() -> None:
+    tool = WriteFileTool()
+    agent = _AgentStub(tool)
+    authorization_contexts = []
+    agent.extension_runtime.authorize_tool = lambda ctx: (
+        authorization_contexts.append(ctx) or ()
+    )
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="missing-content-before-auth",
+            name="write_file",
+            arguments={"file_path": "demo.txt"},
+        )
+    )
+
+    assert "Tool call rejected [invalid_arguments]" in result
+    assert authorization_contexts == []
+
+
+def test_authorization_receives_canonical_approval_subjects(tmp_path) -> None:
+    backend = LocalToolBackend(
+        ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+    )
+    tool = WriteFileTool(backend)
+    agent = _AgentStub(tool)
+    authorization_contexts = []
+
+    def authorize(context):
+        authorization_contexts.append(context)
+        return (GuardDecision.deny("stop after observing context"),)
+
+    agent.extension_runtime.authorize_tool = authorize
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="subject-before-auth",
+            name="write_file",
+            arguments={"file_path": "src/demo.py", "content": "value\n"},
+        )
+    )
+
+    assert result == "stop after observing context"
+    assert authorization_contexts[0].metadata["approval_subjects"] == (
+        "src/demo.py",
+    )
+    assert not (tmp_path / "src").exists()
+
+
 def test_unknown_tool_returns_active_name_suggestion() -> None:
     agent = _AgentStub(ReadFileTool())
     agent.strict_tool_scope = True

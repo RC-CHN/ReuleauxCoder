@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any, cast
+
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.diff import build_tool_diff
+from reuleauxcoder.domain.approval_subjects import canonical_workspace_subject
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -37,8 +41,25 @@ class WriteFileTool(Tool):
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
 
-    def execute(self, file_path: str, content: str) -> ToolOutcome:
-        return self.run_backend(file_path=file_path, content=content)
+    def approval_subjects(
+        self, arguments: Mapping[str, Any]
+    ) -> tuple[str, ...]:
+        file_path = arguments.get("file_path")
+        if not isinstance(file_path, str):
+            return ()
+        subject = canonical_workspace_subject(
+            self.backend.workspace,
+            file_path,
+        )
+        return (subject,) if subject is not None else ()
+
+    def execute(  # type: ignore[override]
+        self, file_path: str, content: str
+    ) -> ToolOutcome:
+        return cast(
+            ToolOutcome,
+            self.run_backend(file_path=file_path, content=content),
+        )
 
     @backend_handler("remote_relay")
     def _execute_remote(self, file_path: str, content: str) -> ToolOutcome:
@@ -46,16 +67,18 @@ class WriteFileTool(Tool):
             return _invalid("Error: file_path must be a non-empty string")
         if not isinstance(content, str):
             return _invalid("Error: content must be a string")
-        return self._execute_local(file_path, content)
+        return cast(ToolOutcome, self._execute_local(file_path, content))
 
     @backend_handler("local")
     def _execute_local(self, file_path: str, content: str) -> ToolOutcome:
+        workspace = self.backend.workspace
+        assert workspace is not None
         try:
-            old_content = self.backend.workspace.write_text_atomic(file_path, content)
+            old_content = workspace.write_text_atomic(file_path, content)
             n_lines = content.count("\n") + (
                 1 if content and not content.endswith("\n") else 0
             )
-            resolved = self.backend.workspace.resolve(file_path)
+            resolved = workspace.resolve(file_path)
             diff = build_tool_diff(old_content, content, str(resolved))
             summary = f"Wrote {n_lines} lines to {file_path}"
             return ToolOutcome(

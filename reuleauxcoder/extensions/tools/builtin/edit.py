@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any, cast
+
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.diff import build_tool_diff
-from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
+from reuleauxcoder.domain.approval_subjects import canonical_workspace_subject
+from reuleauxcoder.domain.workspace import (
+    WorkspaceError,
+    WorkspaceErrorCode,
+    WorkspacePort,
+)
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 
@@ -42,7 +50,19 @@ class EditFileTool(Tool):
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
 
-    def _preflight_validate(
+    def approval_subjects(
+        self, arguments: Mapping[str, Any]
+    ) -> tuple[str, ...]:
+        file_path = arguments.get("file_path")
+        if not isinstance(file_path, str):
+            return ()
+        subject = canonical_workspace_subject(
+            self.backend.workspace,
+            file_path,
+        )
+        return (subject,) if subject is not None else ()
+
+    def _preflight_validate(  # type: ignore[override]
         self, file_path: str, old_string: str, new_string: str
     ) -> str | None:
         """Fast validation so invalid edit requests can be rejected before approval."""
@@ -50,7 +70,9 @@ class EditFileTool(Tool):
             file_path, old_string, new_string, workspace=self.backend.workspace
         )
 
-    def execute(self, file_path: str, old_string: str, new_string: str) -> ToolOutcome:
+    def execute(  # type: ignore[override]
+        self, file_path: str, old_string: str, new_string: str
+    ) -> ToolOutcome:
         validation_error = self.preflight_validate(
             {
                 "file_path": file_path,
@@ -60,27 +82,35 @@ class EditFileTool(Tool):
         )
         if validation_error:
             return validation_error
-        return self.run_backend(
-            file_path=file_path,
-            old_string=old_string,
-            new_string=new_string,
+        return cast(
+            ToolOutcome,
+            self.run_backend(
+                file_path=file_path,
+                old_string=old_string,
+                new_string=new_string,
+            ),
         )
 
     @backend_handler("remote_relay")
     def _execute_remote(
         self, file_path: str, old_string: str, new_string: str
     ) -> ToolOutcome:
-        return self._execute_local(file_path, old_string, new_string)
+        return cast(
+            ToolOutcome,
+            self._execute_local(file_path, old_string, new_string),
+        )
 
     @backend_handler("local")
     def _execute_local(
         self, file_path: str, old_string: str, new_string: str
     ) -> ToolOutcome:
+        workspace = self.backend.workspace
+        assert workspace is not None
         try:
-            content, new_content = self.backend.workspace.replace_exact_atomic(
+            content, new_content = workspace.replace_exact_atomic(
                 file_path, old_string, new_string
             )
-            resolved = self.backend.workspace.resolve(file_path)
+            resolved = workspace.resolve(file_path)
             diff = build_tool_diff(content, new_content, str(resolved))
             summary = f"Edited {file_path}"
             return ToolOutcome(
@@ -105,7 +135,11 @@ class EditFileTool(Tool):
 
 
 def _validate_edit_request(
-    file_path: str, old_string: str, new_string: str, *, workspace=None
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    *,
+    workspace: WorkspacePort | None = None,
 ) -> str | None:
     if not isinstance(file_path, str) or not file_path:
         return "Error: edit_file requires a valid string file_path"
@@ -116,6 +150,7 @@ def _validate_edit_request(
 
     if workspace is None:
         workspace = LocalToolBackend().workspace
+    assert workspace is not None
     try:
         content = workspace.read_text(file_path)
     except WorkspaceError as error:

@@ -169,6 +169,46 @@ class ToolExecutor:
         ):
             return self._finish_rejected_call(tc, self._unknown_tool_outcome(tc.name))
 
+        if not self.agent.is_tool_allowed_in_mode(tc.name):
+            mode_name = self.agent.active_mode or "default"
+            suggested_modes = self.agent.suggest_modes_for_tool(tc.name)
+            if suggested_modes:
+                suggestions = ", ".join(
+                    f"/mode switch {name}" for name in suggested_modes
+                )
+                message = (
+                    f"Tool '{tc.name}' is not available in current mode '{mode_name}'. "
+                    f"Ask user to switch mode first: {suggestions}"
+                )
+            else:
+                message = (
+                    f"Tool '{tc.name}' is not available in current mode '{mode_name}'"
+                )
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(
+                    tc.name, message, success=False, tool_call_id=tc.id
+                )
+            )
+            return message
+
+        approval_subjects: tuple[str, ...] = ()
+        if tool is not None:
+            schema_failure = tool.preflight_validate(
+                tc.arguments,
+                schema_only=True,
+            )
+            if schema_failure is not None:
+                return self._finish_rejected_call(tc, schema_failure)
+            build_subjects = getattr(tool, "approval_subjects", None)
+            if callable(build_subjects):
+                built_subjects = build_subjects(tc.arguments)
+                if isinstance(built_subjects, (tuple, list)):
+                    approval_subjects = tuple(
+                        subject
+                        for subject in built_subjects
+                        if isinstance(subject, str) and subject
+                    )
+
         before_context = BeforeToolExecuteContext(
             hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
             agent_id=self.agent.agent_id,
@@ -186,12 +226,14 @@ class ToolExecutor:
                 "tool_schema": getattr(tool, "parameters", None),
                 "effect_class": getattr(tool, "effect_class", None),
                 "profile": getattr(tool, "approval_profile", None),
+                "approval_subjects": approval_subjects,
             },
         )
 
-        # Fixed core pipeline: authorize -> validate -> approve -> contribute
-        # -> execute -> process outcome -> observe -> publish. Extension code
-        # cannot reorder or bypass the core validation and approval stages.
+        # Fixed core pipeline: lookup -> schema validation -> approval subjects
+        # -> authorize -> environment validation -> approve -> contribute ->
+        # execute -> process outcome -> observe -> publish. Extension code
+        # cannot reorder or bypass the core stages.
         guard_decisions = self.agent.extension_runtime.authorize_tool(before_context)
         denied = next((d for d in guard_decisions if not d.allowed), None)
         if denied is not None:
@@ -219,28 +261,6 @@ class ToolExecutor:
                     )
                 )
 
-        if not self.agent.is_tool_allowed_in_mode(tc.name):
-            mode_name = self.agent.active_mode or "default"
-            suggested_modes = self.agent.suggest_modes_for_tool(tc.name)
-            if suggested_modes:
-                suggestions = ", ".join(
-                    f"/mode switch {name}" for name in suggested_modes
-                )
-                message = (
-                    f"Tool '{tc.name}' is not available in current mode '{mode_name}'. "
-                    f"Ask user to switch mode first: {suggestions}"
-                )
-            else:
-                message = (
-                    f"Tool '{tc.name}' is not available in current mode '{mode_name}'"
-                )
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tc.name, message, success=False, tool_call_id=tc.id
-                )
-            )
-            return message
-
         external_target = _external_workspace_target(tool, tc.arguments)
         external_mutation = (
             external_target is not None and tc.name in _EXTERNAL_MUTATION_TOOLS
@@ -248,14 +268,11 @@ class ToolExecutor:
         backend = getattr(tool, "backend", None)
         workspace = getattr(backend, "workspace", None)
         if tool is not None:
-            preflight_target = None if external_mutation else external_target
-            with _workspace_access_scope(workspace, preflight_target):
-                preflight_failure = tool.preflight_validate(
-                    tc.arguments,
-                    schema_only=external_mutation,
-                )
-            if preflight_failure is not None:
-                return self._finish_rejected_call(tc, preflight_failure)
+            if not external_mutation:
+                with _workspace_access_scope(workspace, external_target):
+                    preflight_failure = tool.preflight_validate(tc.arguments)
+                if preflight_failure is not None:
+                    return self._finish_rejected_call(tc, preflight_failure)
 
         if external_mutation:
             approval_required = GuardDecision.require_approval(
@@ -292,6 +309,7 @@ class ToolExecutor:
                         reason=approval_required.reason,
                         effect_class=before_context.metadata.get("effect_class"),
                         profile=before_context.metadata.get("profile"),
+                        subjects=approval_subjects,
                         metadata={
                             "agent_id": self.agent.agent_id,
                             "session_generation": self.agent.session_generation,
@@ -318,6 +336,7 @@ class ToolExecutor:
                                 else None
                             ),
                             "force_human_review": external_mutation,
+                            "approval_subjects": approval_subjects,
                         },
                     )
                     if not external_mutation and isinstance(

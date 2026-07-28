@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import shlex
 import threading
@@ -198,6 +199,31 @@ def test_rtk_configuration_never_rewrites_the_command(tmp_path: Path) -> None:
     tool.execute("printf 'a && b'")
 
     assert process.calls[0][0] == "printf 'a && b'"
+
+
+def test_shell_approval_subject_is_an_exact_unmodified_execution_signature(
+    tmp_path: Path,
+) -> None:
+    process = RecordingProcessPort()
+    tool = _tool(process, cwd=str(tmp_path))
+
+    (subject,) = tool.approval_subjects(
+        {
+            "command": "printf 'a && b'",
+            "tty": True,
+            "timeout": 45,
+        }
+    )
+    signature = json.loads(subject)
+
+    assert signature["command"] == "printf 'a && b'"
+    assert signature["cwd"] == tmp_path.as_posix()
+    assert signature["tty"] is True
+    assert signature["runtime_timeout"] == 45
+    assert signature["backend"] == "local"
+    assert tool.approval_subjects(
+        {"command": "printf 'a && b'", "tty": False, "timeout": 45}
+    ) != (subject,)
 
 
 def test_managed_shell_yields_and_session_can_terminate(tmp_path: Path) -> None:

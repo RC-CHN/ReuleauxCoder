@@ -275,6 +275,19 @@ class Tool(ABC):
         """Optionally perform environment-aware, tool-specific validation."""
         return None
 
+    def approval_subjects(
+        self,
+        arguments: Mapping[str, Any],
+    ) -> tuple[str, ...]:
+        """Return stable resources affected by one schema-valid invocation.
+
+        The default deliberately returns no resources, preserving tool-wide
+        policy behavior. Implementations must only derive identities here:
+        they must not read, mutate, or silently rewrite invocation arguments.
+        """
+        del arguments
+        return ()
+
     def _argument_failure(self, issue: _ArgumentIssue) -> ToolOutcome:
         missing = f" Missing: {list(issue.missing)!r}." if issue.missing else ""
         return ToolOutcome(

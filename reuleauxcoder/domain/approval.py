@@ -43,6 +43,7 @@ class ApprovalRequest:
     effect_class: str | None = None
     reason: str | None = None
     profile: str | None = None
+    subjects: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     preview: ApprovalPreview | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -115,6 +116,7 @@ class ApprovalProvider(Protocol):
 
     def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
         """Block until the user approves or denies execution."""
+        ...
 
 
 ApprovalHandler = Callable[[PendingApproval], None]

@@ -72,3 +72,38 @@ def test_invalid_edit_has_explicit_failed_status(tmp_path: Path) -> None:
 
     assert outcome.status is ToolOutcomeStatus.FAILED
     assert "must differ" in outcome.model_text
+
+
+def test_file_tools_build_canonical_approval_subjects_without_reading_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    backend = _backend(root)
+    write = WriteFileTool(backend)
+    edit = EditFileTool(backend)
+
+    assert write.approval_subjects({"file_path": "src/new.py"}) == (
+        "src/new.py",
+    )
+    assert edit.approval_subjects(
+        {
+            "file_path": str(root / "src" / "existing.py"),
+            "old_string": "old",
+            "new_string": "new",
+        }
+    ) == ("src/existing.py",)
+    assert not (root / "src").exists()
+
+
+def test_external_file_approval_subject_remains_an_absolute_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = tmp_path / "external" / "new.py"
+    write = WriteFileTool(_backend(root))
+
+    assert write.approval_subjects({"file_path": str(target)}) == (
+        target.resolve().as_posix(),
+    )

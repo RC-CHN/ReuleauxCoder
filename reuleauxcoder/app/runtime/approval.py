@@ -313,6 +313,7 @@ def _record_approval_request(agent, request: ApprovalRequest) -> None:
             "tool_source": request.tool_source,
             "effect_class": request.effect_class,
             "profile": request.profile,
+            "subjects": list(request.subjects),
             "reason": request.reason,
             "reviewer": request.metadata.get("reviewer"),
             "approval_attempt": request.metadata.get("approval_attempt"),
