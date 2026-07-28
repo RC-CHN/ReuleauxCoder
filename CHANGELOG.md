@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-07-28
+
+- Added session-owned resumable shell processes with independent initial-yield and hard-runtime deadlines, plus `shell_session` polling, TTY input, soft interrupt and process-tree termination.
+- Added bounded local PTY/ConPTY and remote process primitives, secure direct terminal input, request-time session inventory, live process UI events and `/ps` controls across user turns and context compaction.
+- Preserved shell commands unchanged through structured shell argv while reporting schema, capability, policy and resource rejections before dispatch and ambiguous post-dispatch operations as explicit execution facts.
+- Hardened process lifecycle behavior with bounded output and input, idempotent controls, monotonic remote state, concurrent approval-aware tool dispatch, capacity accounting and bounded shutdown/reap reporting.
+
 ## 0.5.1 - 2026-07-28
 
 - Reorganized the production prompt_toolkit TUI into focused interface modules and moved TUI-only code out of the plain CLI package without changing user-facing behavior.
