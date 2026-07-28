@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import queue
 import time
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -212,7 +211,8 @@ class UIEventBus:
             raise ValueError("max_history must be positive")
         self._queue = event_queue
         self._handlers: list[Callable[[UIEvent], None]] = []
-        self._history: deque[UIEvent] = deque(maxlen=max_history)
+        self._history: list[UIEvent] = []
+        self._max_history = max_history
 
     @property
     def is_queued(self) -> bool:
@@ -244,6 +244,8 @@ class UIEventBus:
             and is_transient_runtime_payload(payload.event.payload)
         ):
             self._history.append(event)
+            if len(self._history) > self._max_history:
+                del self._history[: -self._max_history]
         if self._queue is not None:
             self._queue.put(event)
         else:
