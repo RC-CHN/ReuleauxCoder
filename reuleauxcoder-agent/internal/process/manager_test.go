@@ -5,6 +5,7 @@ package process
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -324,6 +325,55 @@ func TestConcurrentIdempotentStartExecutesCommandOnce(t *testing.T) {
 	}
 	if string(content) != "x" {
 		t.Fatalf("command executed more than once: %q", content)
+	}
+}
+
+func TestCloseReapsProcessStartedBeforeRegistration(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var startedCmd *exec.Cmd
+	manager.afterStart = func(cmd *exec.Cmd) {
+		startedCmd = cmd
+		close(entered)
+		<-release
+	}
+	results := make(chan protocol.WorkspaceResult, 1)
+	go func() {
+		results <- manager.Execute(request("process.start", map[string]any{
+			"process_id": "closing-start", "idempotency_key": "closing-start-key",
+			"command": "sleep 30", "cwd": root,
+		}))
+	}()
+	<-entered
+	closed := make(chan struct{})
+	go func() {
+		manager.Close()
+		close(closed)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		closing := manager.closing
+		manager.mu.Unlock()
+		if closing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("manager did not enter closing state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+
+	result := <-results
+	<-closed
+	if result.OK || result.ErrorCode != "invalid_state" {
+		t.Fatalf("start crossed closing boundary: %#v", result)
+	}
+	if startedCmd == nil || startedCmd.ProcessState == nil {
+		t.Fatalf("unregistered process was not waited: %#v", startedCmd)
 	}
 }
 

@@ -159,6 +159,7 @@ type Manager struct {
 	starting    map[string]*startReservation
 	startingIDs map[string]struct{}
 	closing     bool
+	afterStart  func(*exec.Cmd)
 }
 
 type startReservation struct {
@@ -283,21 +284,24 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 	if err := cmd.Start(); err != nil {
 		return failure("io_error", err.Error())
 	}
+	if m.afterStart != nil {
+		m.afterStart(cmd)
+	}
 
 	m.mu.Lock()
 	if m.closing {
 		m.mu.Unlock()
-		terminateProcessTree(cmd)
+		terminateAndWait(cmd)
 		return failure("invalid_state", "process manager is shutting down")
 	}
 	if _, duplicate := m.states[processID]; duplicate {
 		m.mu.Unlock()
-		terminateProcessTree(cmd)
+		terminateAndWait(cmd)
 		return failure("not_unique", "process_id already exists")
 	}
 	if existingID := m.idempotent[idempotencyKey]; existingID != "" {
 		m.mu.Unlock()
-		terminateProcessTree(cmd)
+		terminateAndWait(cmd)
 		return success(map[string]any{"process_id": existingID, "reused": true})
 	}
 	m.states[processID] = processState
@@ -583,14 +587,29 @@ func (m *Manager) cleanupTerminalLocked() {
 func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closing = true
+	reservations := make([]*startReservation, 0, len(m.starting))
+	for _, reservation := range m.starting {
+		reservations = append(reservations, reservation)
+	}
 	states := make([]*state, 0, len(m.states))
 	for _, processState := range m.states {
 		states = append(states, processState)
 	}
 	m.mu.Unlock()
+	for _, reservation := range reservations {
+		<-reservation.done
+	}
 	for _, processState := range states {
 		processState.terminate("shutdown")
 	}
+	for _, processState := range states {
+		<-processState.done
+	}
+}
+
+func terminateAndWait(cmd *exec.Cmd) {
+	terminateProcessTree(cmd)
+	_ = cmd.Wait()
 }
 
 func confinedDirectory(root, value string) (string, error) {
