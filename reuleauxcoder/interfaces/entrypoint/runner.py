@@ -538,9 +538,12 @@ class AppRunner:
             process_report = self._process_manager.shutdown()
             if progress is not None and process_report.total:
                 report(
-                    "Shell processes stopped "
+                    "Shell process cleanup finished "
                     f"({process_report.total} tracked, "
-                    f"{process_report.terminated} force-terminated, "
+                    f"{process_report.already_exited} already exited, "
+                    f"{process_report.interrupted} soft-interrupt request(s), "
+                    f"{process_report.terminated} force-termination request(s), "
+                    f"{process_report.unknown} unknown, "
                     f"{process_report.reap_timeouts} reap timeout(s))."
                 )
             if agent is not None:

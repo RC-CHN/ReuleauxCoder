@@ -98,7 +98,11 @@ class ProcessResult:
 
 @dataclass(frozen=True, slots=True)
 class ProcessShutdownReport:
-    """Bounded cleanup result for one process port or manager."""
+    """Bounded cleanup facts for one process port or manager.
+
+    interrupted and terminated count control requests sent during cleanup;
+    they do not claim that an unresolved remote process acknowledged the action.
+    """
 
     total: int = 0
     already_exited: int = 0
