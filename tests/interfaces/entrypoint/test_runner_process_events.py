@@ -56,3 +56,21 @@ def test_background_process_output_is_forwarded_as_safe_runtime_data() -> None:
     )
     assert payload.stderr == "warning\n"
     assert runtime_events[0].correlation_id == "proc-output"
+
+    AppRunner._emit_process_event(  # type: ignore[arg-type]
+        _Bus(),
+        ProcessEvent(
+            kind=ProcessEventKind.COMPLETED,
+            snapshot=snapshot,
+            command=event.command,
+            cwd=event.cwd,
+            owner_agent_id=event.owner_agent_id,
+            owner_session_id=event.owner_session_id,
+            session_generation=event.session_generation,
+            origin_turn_id=event.origin_turn_id,
+        ),
+    )
+    completed = runtime_events[1].payload
+    assert isinstance(completed, ProcessSessionChanged)
+    assert completed.stdout == ""
+    assert completed.stderr == ""

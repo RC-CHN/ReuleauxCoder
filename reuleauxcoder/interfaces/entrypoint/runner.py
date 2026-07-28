@@ -27,7 +27,11 @@ from reuleauxcoder.app.runtime.session_state import (
 from reuleauxcoder.app.runtime.extension_bridge import LegacyHookLifecycleParticipant
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
-from reuleauxcoder.domain.process_manager import ProcessEvent, ProcessManager
+from reuleauxcoder.domain.process_manager import (
+    ProcessEvent,
+    ProcessEventKind,
+    ProcessManager,
+)
 from reuleauxcoder.domain.process_output import terminal_safe_display
 from reuleauxcoder.domain.runtime.events import (
     ProcessSessionChanged,
@@ -376,6 +380,7 @@ class AppRunner:
     @staticmethod
     def _emit_process_event(ui_bus: UIEventBus, event: ProcessEvent) -> None:
         snapshot = event.snapshot
+        carries_output = event.kind is ProcessEventKind.OUTPUT
         ui_bus.emit_runtime(
             RuntimeEvent(
                 payload=ProcessSessionChanged(
@@ -387,8 +392,16 @@ class AppRunner:
                     command=event.command,
                     cwd=event.cwd,
                     elapsed_seconds=snapshot.elapsed_seconds,
-                    stdout=terminal_safe_display(snapshot.stdout),
-                    stderr=terminal_safe_display(snapshot.stderr),
+                    stdout=(
+                        terminal_safe_display(snapshot.stdout)
+                        if carries_output
+                        else ""
+                    ),
+                    stderr=(
+                        terminal_safe_display(snapshot.stderr)
+                        if carries_output
+                        else ""
+                    ),
                     exit_code=snapshot.exit_code,
                     termination_reason=snapshot.termination_reason,
                     output_truncated=snapshot.output_truncated,
