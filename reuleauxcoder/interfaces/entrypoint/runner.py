@@ -28,6 +28,7 @@ from reuleauxcoder.app.runtime.extension_bridge import LegacyHookLifecyclePartic
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.process_manager import ProcessEvent, ProcessManager
+from reuleauxcoder.domain.process_output import terminal_safe_display
 from reuleauxcoder.domain.runtime.events import (
     ProcessSessionChanged,
     RuntimeEvent,
@@ -386,6 +387,8 @@ class AppRunner:
                     command=event.command,
                     cwd=event.cwd,
                     elapsed_seconds=snapshot.elapsed_seconds,
+                    stdout=terminal_safe_display(snapshot.stdout),
+                    stderr=terminal_safe_display(snapshot.stderr),
                     exit_code=snapshot.exit_code,
                     termination_reason=snapshot.termination_reason,
                     output_truncated=snapshot.output_truncated,

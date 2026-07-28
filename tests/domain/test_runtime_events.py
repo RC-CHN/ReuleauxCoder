@@ -253,6 +253,8 @@ def test_runtime_event_codec_rejects_unknown_version_and_payload() -> None:
             command="sleep 30",
             cwd="/workspace",
             elapsed_seconds=1.5,
+            stdout="ready\n",
+            stderr="warning\n",
         ),
     ],
 )

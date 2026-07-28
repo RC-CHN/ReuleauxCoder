@@ -312,6 +312,8 @@ class ProcessSessionChanged:
     command: str
     cwd: str
     elapsed_seconds: float
+    stdout: str = ""
+    stderr: str = ""
     exit_code: int | None = None
     termination_reason: str | None = None
     output_truncated: bool = False

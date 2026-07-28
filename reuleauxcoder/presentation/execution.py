@@ -110,6 +110,7 @@ class ExecutionProcessState:
     termination_reason: str | None
     output_truncated: bool
     output_decode_replaced: bool
+    output_tail: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -234,6 +235,17 @@ class ExecutionViewReducer:
             )
             return True
         if isinstance(payload, ProcessSessionChanged):
+            previous = self.state.processes.get(payload.process_session_id)
+            output_tail = list(previous.output_tail if previous is not None else ())
+            for stream, value in (
+                ("stdout", payload.stdout),
+                ("stderr", payload.stderr),
+            ):
+                for line in value.splitlines():
+                    rendered = f"{stream}: {line}"
+                    if len(rendered) > 240:
+                        rendered = rendered[:239] + "…"
+                    output_tail.append(rendered)
             self.state.processes[payload.process_session_id] = ExecutionProcessState(
                 session_id=payload.process_session_id,
                 state=payload.state,
@@ -242,6 +254,7 @@ class ExecutionViewReducer:
                 termination_reason=payload.termination_reason,
                 output_truncated=payload.output_truncated,
                 output_decode_replaced=payload.output_decode_replaced,
+                output_tail=tuple(output_tail[-5:]),
             )
             return True
         if isinstance(payload, SubagentJobChanged):

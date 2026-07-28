@@ -167,6 +167,7 @@ def test_process_events_project_running_and_unknown_without_guessing_completion(
                 command="sleep 30",
                 cwd="/workspace",
                 elapsed_seconds=1.0,
+                stdout="ready\n",
             ),
             event_id="process-running",
         )
@@ -196,6 +197,9 @@ def test_process_events_project_running_and_unknown_without_guessing_completion(
     assert view.process_running == 1
     assert view.process_unknown == 1
     assert "PROCESSES 1 + 1 unknown" in rendered
+    assert reducer.state.processes["proc_running"].output_tail == (
+        "stdout: ready",
+    )
 
 
 def test_stale_generation_and_duplicate_events_are_ignored() -> None:
