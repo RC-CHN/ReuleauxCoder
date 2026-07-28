@@ -3,9 +3,9 @@
 from reuleauxcoder.interfaces.tui.application import (
     MINI_TUI_MOUSE_SUPPORT,
     MINI_TUI_STYLE,
-    MiniTUIEventAdapter,
     MiniTUIApplication,
 )
+from reuleauxcoder.interfaces.tui.event_adapter import MiniTUIEventAdapter
 from reuleauxcoder.interfaces.tui.interaction import MiniTUIInteractor
 
 __all__ = [

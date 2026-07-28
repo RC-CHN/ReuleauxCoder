@@ -26,9 +26,9 @@ from reuleauxcoder.interfaces.tui.application import (
     ALTERNATE_SCROLL_DISABLE,
     ALTERNATE_SCROLL_ENABLE,
     MINI_TUI_MOUSE_SUPPORT,
-    MiniTUIEventAdapter,
     MiniTUIApplication,
 )
+from reuleauxcoder.interfaces.tui.event_adapter import MiniTUIEventAdapter
 from reuleauxcoder.interfaces.tui.execution_panel import _execution_panel_rows
 from reuleauxcoder.interfaces.tui.formatting import (
     wrap_fragments as _wrap_fragments,
@@ -45,6 +45,7 @@ from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VisualCell,
 )
 import reuleauxcoder.interfaces.tui.application as mini_tui_module
+import reuleauxcoder.interfaces.tui.event_adapter as event_adapter_module
 from reuleauxcoder.interfaces.events import (
     InteractionPromptPayload,
     RuntimeEventPayload,
@@ -189,10 +190,8 @@ def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
     from types import SimpleNamespace
 
     from reuleauxcoder.presentation.models import ToolCell, ToolCellStatus
-    from reuleauxcoder.interfaces.tui.application import (
-        _cell_fragments,
-        _fragments_to_visual_lines,
-    )
+    from reuleauxcoder.interfaces.tui.formatting import fragments_to_visual_lines
+    from reuleauxcoder.interfaces.tui.transcript import cell_fragments
 
     outcome = SimpleNamespace(
         summary="npm run build",
@@ -208,8 +207,8 @@ def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
         output="✓ built in 4.21s",
     )
 
-    lines = _fragments_to_visual_lines(
-        _wrap_fragments(_cell_fragments(cell, width=50), width=50)
+    lines = fragments_to_visual_lines(
+        _wrap_fragments(cell_fragments(cell, width=50), width=50)
     )
     header = "".join(text for _style, text in lines[0])
 
@@ -1503,7 +1502,7 @@ def test_static_transcript_cells_reuse_width_revision_fragment_cache(
     adapter.append_restored_conversation(
         [{"role": "assistant", "content": "**stable**"}]
     )
-    original = mini_tui_module._cell_fragments
+    original = event_adapter_module._cell_fragments
     calls = 0
 
     def counted(*args, **kwargs):
@@ -1511,7 +1510,7 @@ def test_static_transcript_cells_reuse_width_revision_fragment_cache(
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(mini_tui_module, "_cell_fragments", counted)
+    monkeypatch.setattr(event_adapter_module, "_cell_fragments", counted)
     adapter.transcript_fragments()
     adapter.transcript_fragments()
     assert calls == 1
@@ -1552,7 +1551,9 @@ def test_unchanged_transcript_layout_uses_model_revision_fast_path(
     def unexpected_compose(_cells):
         raise AssertionError("unchanged transcript should not be recomposed")
 
-    monkeypatch.setattr(mini_tui_module, "compose_transcript", unexpected_compose)
+    monkeypatch.setattr(
+        event_adapter_module, "compose_transcript", unexpected_compose
+    )
 
     assert adapter.transcript_layout(80) is first
 
@@ -1592,14 +1593,14 @@ def test_stream_revision_reformats_only_changed_cell(monkeypatch) -> None:
         [{"role": "assistant", "content": f"stable {index}"} for index in range(100)]
     )
     adapter.transcript_layout(80)
-    original = mini_tui_module._cell_fragments
+    original = event_adapter_module._cell_fragments
     calls = []
 
     def counted(cell, **kwargs):
         calls.append(cell.id)
         return original(cell, **kwargs)
 
-    monkeypatch.setattr(mini_tui_module, "_cell_fragments", counted)
+    monkeypatch.setattr(event_adapter_module, "_cell_fragments", counted)
     last = adapter.transcript.state.transcript.cells[-1]
     adapter.transcript.state.transcript.replace(
         replace(last, text=last.text + " next chunk", revision=last.revision + 1)
