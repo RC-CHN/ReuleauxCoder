@@ -909,25 +909,29 @@ class LocalProcessPort:
         with entry.condition:
             if entry.state is ProcessState.EXITED:
                 return self._snapshot(entry, ProcessCursor())
-            if entry.interrupt_requested:
+            if entry.interrupt_requested or entry.termination_requested:
                 return self._snapshot(entry, ProcessCursor())
+            try:
+                if entry.stream_mode is ProcessStreamMode.PTY:
+                    if entry.pty_transport is None:
+                        raise OSError(errno.EBADF, "PTY is closed")
+                    entry.pty_transport.interrupt()
+                elif os.name == "nt":
+                    entry.process.send_signal(signal.CTRL_BREAK_EVENT)
+                else:
+                    os.killpg(entry.process.pid, signal.SIGINT)
+            except ProcessLookupError as error:
+                if entry.process.poll() is not None:
+                    entry.done.wait(0.1)
+                    return self._snapshot(entry, ProcessCursor())
+                raise ProcessOperationUnsupported(
+                    f"interrupt was not delivered to session '{session_id}': {error}"
+                ) from error
+            except (OSError, ValueError, EOFError) as error:
+                raise ProcessOperationUnsupported(
+                    f"interrupt was not delivered to session '{session_id}': {error}"
+                ) from error
             entry.interrupt_requested = True
-        if entry.stream_mode is ProcessStreamMode.PTY:
-            try:
-                assert entry.pty_transport is not None
-                entry.pty_transport.interrupt()
-            except (OSError, ValueError, EOFError):
-                pass
-        elif os.name == "nt":
-            try:
-                entry.process.send_signal(signal.CTRL_BREAK_EVENT)
-            except (OSError, ValueError):
-                pass
-        else:
-            try:
-                os.killpg(entry.process.pid, signal.SIGINT)
-            except ProcessLookupError:
-                pass
         return self._snapshot(entry, ProcessCursor())
 
     def terminate(

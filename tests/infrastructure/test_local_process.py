@@ -7,7 +7,11 @@ import time
 
 import pytest
 
-from reuleauxcoder.domain.process import ProcessCursor, ProcessState
+from reuleauxcoder.domain.process import (
+    ProcessCursor,
+    ProcessOperationUnsupported,
+    ProcessState,
+)
 from reuleauxcoder.infrastructure.process.local import LocalProcessPort
 from reuleauxcoder.infrastructure.platform import ShellType, get_platform_info
 
@@ -286,6 +290,44 @@ def test_repeated_process_controls_are_idempotent(monkeypatch, tmp_path) -> None
     port.terminate(handle.session_id, reason="test_cleanup")
     port.terminate(handle.session_id, reason="test_cleanup")
     assert len(entry.control_threads) == baseline_threads + 1
+    port.shutdown(grace_seconds=0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal assertion")
+def test_failed_interrupt_is_reported_and_can_be_retried(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    port = LocalProcessPort()
+    handle = port.start(
+        "trap '' INT; while :; do sleep 1; done",
+        cwd=str(tmp_path),
+        runtime_timeout=30,
+    )
+    original_killpg = os.killpg
+    calls = 0
+
+    def fail_once(process_group: int, selected_signal: int) -> None:
+        nonlocal calls
+        if selected_signal == signal.SIGINT:
+            calls += 1
+            if calls == 1:
+                raise PermissionError("signal denied")
+        original_killpg(process_group, selected_signal)
+
+    monkeypatch.setattr(os, "killpg", fail_once)
+    with pytest.raises(
+        ProcessOperationUnsupported,
+        match="interrupt was not delivered",
+    ):
+        port.interrupt(handle.session_id)
+
+    entry = port._lookup(handle.session_id)
+    assert entry.interrupt_requested is False
+    port.interrupt(handle.session_id)
+    assert entry.interrupt_requested is True
+    assert calls == 2
+    port.terminate(handle.session_id, reason="test_cleanup")
     port.shutdown(grace_seconds=0)
 
 
