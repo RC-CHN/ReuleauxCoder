@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-07-28
+
+- Reorganized the production prompt_toolkit TUI into focused interface modules and moved TUI-only code out of the plain CLI package without changing user-facing behavior.
+- Colocated typed interactive panel contributions with their command features while keeping selection, focus, refresh and canonical slash-command execution in a generic TUI host.
+- Replaced import-time command, tool and hook registration with explicit ordered contributions and tightened runtime dependency injection and tool scope enforcement.
+- Improved session persistence bounds, request retry behavior, cancellation recovery, remote action-registry reuse and retained transcript compatibility.
+
 ## 0.5.0 - 2026-07-21
 
 - Reworked interactive command surfaces into panels: a registry-driven slash command popup, a modal selection panel piloted by /mode, two-level /model and /approval editors with rule deletion, toggle panels for /mcp and /skills, a /thinking effort picker, a /session picker with live text filtering, and an /agents jobs browser with per-job actions.
