@@ -8,8 +8,15 @@ import (
 	"time"
 )
 
+type processTreeHandle struct{}
+
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+func attachProcessTree(cmd *exec.Cmd) (*processTreeHandle, error) {
+	_ = cmd
+	return &processTreeHandle{}, nil
 }
 
 func interruptProcessTree(cmd *exec.Cmd) error {
@@ -23,7 +30,8 @@ func interruptProcessTree(cmd *exec.Cmd) error {
 	return err
 }
 
-func terminateProcessTree(cmd *exec.Cmd) {
+func terminateProcessTree(cmd *exec.Cmd, processTree *processTreeHandle) {
+	_ = processTree
 	if cmd.Process == nil {
 		return
 	}
@@ -34,7 +42,11 @@ func terminateProcessTree(cmd *exec.Cmd) {
 	}
 }
 
-func reapProcessTreeAfterRootExit(cmd *exec.Cmd) {
+func reapProcessTreeAfterRootExit(
+	cmd *exec.Cmd,
+	processTree *processTreeHandle,
+) {
+	_ = processTree
 	if cmd.Process == nil {
 		return
 	}

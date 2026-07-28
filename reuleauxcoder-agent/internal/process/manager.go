@@ -128,6 +128,7 @@ type state struct {
 	id                 string
 	idempotencyKey     string
 	cmd                *exec.Cmd
+	processTree        *processTreeHandle
 	stdin              io.WriteCloser
 	stdout             boundedBuffer
 	stderr             boundedBuffer
@@ -286,6 +287,12 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 	if err := cmd.Start(); err != nil {
 		return failure("io_error", err.Error())
 	}
+	processTree, err := attachProcessTree(cmd)
+	if err != nil {
+		terminateAndWait(cmd, nil)
+		return failure("io_error", fmt.Sprintf("could not own process tree: %v", err))
+	}
+	processState.processTree = processTree
 	if m.afterStart != nil {
 		m.afterStart(cmd)
 	}
@@ -293,17 +300,17 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 	m.mu.Lock()
 	if m.closing {
 		m.mu.Unlock()
-		terminateAndWait(cmd)
+		terminateAndWait(cmd, processTree)
 		return failure("invalid_state", "process manager is shutting down")
 	}
 	if _, duplicate := m.states[processID]; duplicate {
 		m.mu.Unlock()
-		terminateAndWait(cmd)
+		terminateAndWait(cmd, processTree)
 		return failure("not_unique", "process_id already exists")
 	}
 	if existingID := m.idempotent[idempotencyKey]; existingID != "" {
 		m.mu.Unlock()
-		terminateAndWait(cmd)
+		terminateAndWait(cmd, processTree)
 		return success(map[string]any{"process_id": existingID, "reused": true})
 	}
 	m.states[processID] = processState
@@ -342,7 +349,7 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 
 func (s *state) wait() {
 	err := s.cmd.Wait()
-	reapProcessTreeAfterRootExit(s.cmd)
+	reapProcessTreeAfterRootExit(s.cmd, s.processTree)
 	exitCode := 0
 	if errors.Is(err, exec.ErrWaitDelay) {
 		// The root exited but a descendant retained a copied stdout/stderr
@@ -389,7 +396,7 @@ func (s *state) terminate(reason string) {
 		s.terminationReason = reason
 	}
 	s.mu.Unlock()
-	terminateProcessTree(s.cmd)
+	terminateProcessTree(s.cmd, s.processTree)
 }
 
 func (m *Manager) poll(args map[string]any) protocol.WorkspaceResult {
@@ -628,9 +635,10 @@ func (m *Manager) Close() {
 	}
 }
 
-func terminateAndWait(cmd *exec.Cmd) {
-	terminateProcessTree(cmd)
+func terminateAndWait(cmd *exec.Cmd, processTree *processTreeHandle) {
+	terminateProcessTree(cmd, processTree)
 	_ = cmd.Wait()
+	reapProcessTreeAfterRootExit(cmd, processTree)
 }
 
 func confinedDirectory(root, value string) (string, error) {

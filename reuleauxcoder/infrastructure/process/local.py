@@ -160,6 +160,139 @@ class _WinPtyTransport:
             pass
 
 
+class _WindowsJob:
+    """Own one Windows process tree until the process session is reaped."""
+
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _PROCESS_TERMINATE = 0x0001
+    _PROCESS_SET_QUOTA = 0x0100
+
+    def __init__(self, pid: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        def windows_error() -> OSError:
+            error_code = getattr(ctypes, "get_last_error")()
+            return getattr(ctypes, "WinError")(error_code)
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class _BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimitInformation),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = getattr(ctypes, "WinDLL")(
+            "kernel32",
+            use_last_error=True,
+        )
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.AssignProcessToJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        ]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise windows_error()
+        process_handle = None
+        try:
+            limits = _ExtendedLimitInformation()
+            limits.BasicLimitInformation.LimitFlags = (
+                self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            )
+            if not kernel32.SetInformationJobObject(
+                job,
+                self._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(limits),
+                ctypes.sizeof(limits),
+            ):
+                raise windows_error()
+            process_handle = kernel32.OpenProcess(
+                self._PROCESS_TERMINATE | self._PROCESS_SET_QUOTA,
+                False,
+                pid,
+            )
+            if not process_handle:
+                raise windows_error()
+            if not kernel32.AssignProcessToJobObject(job, process_handle):
+                raise windows_error()
+        except BaseException:
+            kernel32.CloseHandle(job)
+            raise
+        finally:
+            if process_handle:
+                kernel32.CloseHandle(process_handle)
+
+        self._kernel32 = kernel32
+        self._handle: int | None = int(job)
+        self._lock = threading.Lock()
+
+    def terminate(self) -> None:
+        with self._lock:
+            handle = self._handle
+            if handle is None:
+                return
+            if not self._kernel32.TerminateJobObject(handle, 1):
+                import ctypes
+
+                error_code = getattr(ctypes, "get_last_error")()
+                raise getattr(ctypes, "WinError")(error_code)
+
+    def close(self) -> None:
+        with self._lock:
+            handle = self._handle
+            self._handle = None
+        if handle is not None:
+            self._kernel32.CloseHandle(handle)
+
+
 class _LocalProcessEntry:
     def __init__(
         self,
@@ -178,6 +311,7 @@ class _LocalProcessEntry:
         self.runtime_timeout = runtime_timeout
         self.stream_handler = stream_handler
         self.pty_transport = pty_transport
+        self.process_tree_owner: _WindowsJob | None = None
         self.stdout = BoundedTextBuffer(retained_bytes_per_stream)
         self.stderr = BoundedTextBuffer(retained_bytes_per_stream)
         self.started_at = time.time()
@@ -327,6 +461,8 @@ class LocalProcessPort:
                 retained_bytes_per_stream=self._retained_bytes_per_stream,
                 pty_transport=pty_transport,
             )
+            if os.name == "nt":
+                entry.process_tree_owner = _WindowsJob(int(process.pid))
             with self._lock:
                 if self._closing:
                     reject_start = True
@@ -598,6 +734,9 @@ class LocalProcessPort:
 
     @staticmethod
     def _close_entry_streams(entry: _LocalProcessEntry) -> None:
+        if entry.process_tree_owner is not None:
+            entry.process_tree_owner.close()
+            entry.process_tree_owner = None
         if entry.pty_transport is not None:
             entry.pty_transport.close()
             entry.pty_transport = None
@@ -794,6 +933,13 @@ class LocalProcessPort:
         if process.poll() is not None and not include_exited_group:
             return
         if os.name == "nt":
+            owner = entry.process_tree_owner
+            if owner is not None:
+                try:
+                    owner.terminate()
+                    return
+                except OSError:
+                    pass
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
