@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandEffect
-from reuleauxcoder.app.commands.module_registry import register_command_module
 from reuleauxcoder.app.commands.params import EnumParam, ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
@@ -189,7 +188,6 @@ def _handle_effort_set(command, ctx) -> CommandEffect:
 # ---------------------------------------------------------------------------
 
 
-@register_command_module
 def register_actions(registry: ActionRegistry) -> None:
     registry.register_many(
         [
