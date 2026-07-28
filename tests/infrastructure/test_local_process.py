@@ -3,6 +3,7 @@ import sys
 import threading
 import time
 
+from reuleauxcoder.domain.process import ProcessCursor, ProcessState
 from reuleauxcoder.infrastructure.process.local import LocalProcessPort
 from reuleauxcoder.infrastructure.platform import ShellType, get_platform_info
 
@@ -57,3 +58,30 @@ def test_cancellation_returns_promptly_without_reaping(tmp_path) -> None:
     # Termination signals fire and the caller unwinds without waiting for the
     # process group to actually die (reaped asynchronously).
     assert elapsed < 1.5
+
+
+def test_invalid_utf8_is_replaced_and_reported_as_a_fact(tmp_path) -> None:
+    port = LocalProcessPort()
+    command = f"{shlex.quote(sys.executable)} -u -c " + shlex.quote(
+        "import sys; sys.stdout.buffer.write(b'valid\\xffbytes')"
+    )
+    handle = port.start(
+        command,
+        cwd=str(tmp_path),
+        runtime_timeout=5,
+    )
+    cursor = ProcessCursor()
+    output = []
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        snapshot = port.poll(handle.session_id, cursor=cursor, wait_ms=100)
+        cursor = snapshot.cursor
+        output.append(snapshot.stdout)
+        if snapshot.state is ProcessState.EXITED:
+            break
+    else:
+        raise AssertionError("process did not exit")
+
+    assert "".join(output) == "valid\ufffdbytes"
+    assert snapshot.output_decode_replaced is True
+    port.release(handle.session_id)

@@ -389,6 +389,7 @@ class AppRunner:
                     exit_code=snapshot.exit_code,
                     termination_reason=snapshot.termination_reason,
                     output_truncated=snapshot.output_truncated,
+                    output_decode_replaced=snapshot.output_decode_replaced,
                 ),
                 agent_id=event.owner_agent_id,
                 session_generation=event.session_generation,

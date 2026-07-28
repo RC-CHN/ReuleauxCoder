@@ -37,6 +37,20 @@ _TRAILING_OUTPUT_GRACE_SECONDS = 0.2
 _TERMINATE_GRACE_SECONDS = 0.5
 
 
+def _replace_surrogate_bytes(text: str) -> tuple[str, bool]:
+    """Replace only bytes rejected by UTF-8, preserving a real U+FFFD."""
+    replaced = any("\udc80" <= character <= "\udcff" for character in text)
+    if not replaced:
+        return text, False
+    return (
+        "".join(
+            "\ufffd" if "\udc80" <= character <= "\udcff" else character
+            for character in text
+        ),
+        True,
+    )
+
+
 class _PtyTransport(Protocol):
     def read(self, size: int) -> bytes: ...
 
@@ -163,6 +177,7 @@ class _LocalProcessEntry:
         self.state = ProcessState.RUNNING
         self.exit_code: int | None = None
         self.termination_reason: str | None = None
+        self.output_decode_replaced = False
         self.interrupt_requested = False
         self.condition = threading.Condition(threading.RLock())
         self.done = threading.Event()
@@ -170,10 +185,20 @@ class _LocalProcessEntry:
         self.control_threads: list[threading.Thread] = []
         self.auto_release = False
 
-    def append(self, stream: str, text: str, byte_count: int) -> None:
+    def append(
+        self,
+        stream: str,
+        text: str,
+        byte_count: int,
+        *,
+        decode_replaced: bool = False,
+    ) -> None:
         target = self.stdout if stream == "stdout" else self.stderr
         target.append(text, byte_count=byte_count)
         with self.condition:
+            self.output_decode_replaced = (
+                self.output_decode_replaced or decode_replaced
+            )
             self.condition.notify_all()
         handler = self.stream_handler
         if handler is not None and text:
@@ -398,17 +423,31 @@ class LocalProcessPort:
 
     @staticmethod
     def _read_pipe(entry: _LocalProcessEntry, pipe, stream: str) -> None:
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogateescape")
         try:
             while True:
                 data = pipe.read(8192)
                 if not data:
                     break
-                text = decoder.decode(data, final=False)
-                entry.append(stream, text, len(data))
-            tail = decoder.decode(b"", final=True)
+                text, replaced = _replace_surrogate_bytes(
+                    decoder.decode(data, final=False)
+                )
+                entry.append(
+                    stream,
+                    text,
+                    len(data),
+                    decode_replaced=replaced,
+                )
+            tail, replaced = _replace_surrogate_bytes(
+                decoder.decode(b"", final=True)
+            )
             if tail:
-                entry.append(stream, tail, 0)
+                entry.append(
+                    stream,
+                    tail,
+                    0,
+                    decode_replaced=replaced,
+                )
         except (OSError, ValueError):
             pass
         finally:
@@ -423,7 +462,7 @@ class LocalProcessPort:
         transport: _PtyTransport,
         stream: str,
     ) -> None:
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogateescape")
         try:
             while True:
                 try:
@@ -434,11 +473,25 @@ class LocalProcessPort:
                     raise
                 if not data:
                     break
-                text = decoder.decode(data, final=False)
-                entry.append(stream, text, len(data))
-            tail = decoder.decode(b"", final=True)
+                text, replaced = _replace_surrogate_bytes(
+                    decoder.decode(data, final=False)
+                )
+                entry.append(
+                    stream,
+                    text,
+                    len(data),
+                    decode_replaced=replaced,
+                )
+            tail, replaced = _replace_surrogate_bytes(
+                decoder.decode(b"", final=True)
+            )
             if tail:
-                entry.append(stream, tail, 0)
+                entry.append(
+                    stream,
+                    tail,
+                    0,
+                    decode_replaced=replaced,
+                )
         except OSError:
             pass
 
@@ -556,6 +609,7 @@ class LocalProcessPort:
                     or entry.stdout.truncated
                     or entry.stderr.truncated
                 ),
+                output_decode_replaced=entry.output_decode_replaced,
                 total_stdout_bytes=entry.stdout.total_bytes,
                 total_stderr_bytes=entry.stderr.total_bytes,
             )
@@ -770,6 +824,7 @@ class LocalProcessPort:
                     exit_code=entry.process.poll(),
                     cancelled=True,
                     output_truncated=stdout.truncated or stderr.truncated,
+                    output_decode_replaced=entry.output_decode_replaced,
                 )
             snapshot = self.poll(
                 handle.session_id,
@@ -788,6 +843,7 @@ class LocalProcessPort:
                 timed_out=snapshot.termination_reason == "timeout",
                 cancelled=snapshot.termination_reason == "cancelled",
                 output_truncated=stdout.truncated or stderr.truncated,
+                output_decode_replaced=snapshot.output_decode_replaced,
             )
             self.release(handle.session_id)
             return result

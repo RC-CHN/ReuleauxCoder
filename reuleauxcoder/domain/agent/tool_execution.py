@@ -428,10 +428,16 @@ class ToolExecutor:
             )
 
             def stream_handler(tool_name, chunk) -> None:
+                from reuleauxcoder.domain.process_output import (
+                    terminal_safe_display,
+                )
+
                 self.agent._emit_event(
                     AgentEvent.tool_output_delta(
                         tool_name,
-                        str(getattr(chunk, "data", "")),
+                        terminal_safe_display(
+                            str(getattr(chunk, "data", ""))
+                        ),
                         stream=str(getattr(chunk, "chunk_type", "stdout")),
                         tool_call_id=tc.id,
                     )

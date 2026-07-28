@@ -12,6 +12,17 @@ func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+func interruptProcessTree(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
+	if err == syscall.ESRCH {
+		return nil
+	}
+	return err
+}
+
 func terminateProcessTree(cmd *exec.Cmd) {
 	if cmd.Process == nil {
 		return

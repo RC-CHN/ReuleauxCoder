@@ -49,6 +49,7 @@ class ProcessRowViewModel:
     exit_code: int | None
     termination_reason: str | None
     output_truncated: bool
+    output_decode_replaced: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +71,7 @@ class ProcessSessionsViewModel:
                     "exit_code": session.exit_code,
                     "termination_reason": session.termination_reason,
                     "output_truncated": session.output_truncated,
+                    "output_decode_replaced": session.output_decode_replaced,
                 }
                 for session in self.sessions
             ]
@@ -147,6 +149,7 @@ def _row(session: ManagedProcessView) -> ProcessRowViewModel:
         exit_code=session.exit_code,
         termination_reason=session.termination_reason,
         output_truncated=session.output_truncated,
+        output_decode_replaced=session.output_decode_replaced,
     )
 
 
@@ -288,7 +291,8 @@ def _snapshot_text(snapshot: ProcessSnapshot) -> str:
         (
             f"exit_code={snapshot.exit_code!r} "
             f"termination_reason={snapshot.termination_reason!r} "
-            f"output_truncated={snapshot.output_truncated}"
+            f"output_truncated={snapshot.output_truncated} "
+            f"output_decode_replaced={snapshot.output_decode_replaced}"
         ),
     ]
     if snapshot.stdout:

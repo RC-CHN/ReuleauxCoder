@@ -4,7 +4,9 @@ package process
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +54,24 @@ func TestProcessCapturesOutputFromImmediatelyExitingCommands(t *testing.T) {
 		if result.Data["stdout_all"] != "quick-output" {
 			t.Fatalf("output %d was lost: %#v", index, result)
 		}
+	}
+}
+
+func TestProcessPassesShellOperatorsAndQuotingUnchanged(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "syntax", "idempotency_key": "syntax-key",
+		"command": "printf '%s' 'left && right'; printf '\\nsecond line\\n'",
+		"cwd":     root, "tty": false,
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	result := waitDone(t, manager, "syntax")
+	if result.Data["stdout_all"] != "left && right\nsecond line\n" {
+		t.Fatalf("shell command semantics changed: %#v", result)
 	}
 }
 
@@ -124,6 +144,162 @@ func TestProcessRejectsCWDOutsideWorkspace(t *testing.T) {
 	}))
 	if result.OK || result.ErrorCode != "path_outside_workspace" {
 		t.Fatalf("expected confinement failure: %#v", result)
+	}
+}
+
+func TestBoundedBufferUsesMonotonicOffsetsAndUTF8Boundaries(t *testing.T) {
+	var buffer boundedBuffer
+	if _, err := buffer.Write([]byte{0xe4, 0xbd}); err != nil {
+		t.Fatal(err)
+	}
+	partial := buffer.snapshot(0, maxPollBytesPerStream, false)
+	if len(partial.data) != 0 || partial.nextOffset != 0 {
+		t.Fatalf("incomplete rune should be withheld: %#v", partial)
+	}
+	if _, err := buffer.Write([]byte{0xa0}); err != nil {
+		t.Fatal(err)
+	}
+	complete := buffer.snapshot(0, maxPollBytesPerStream, false)
+	if string(complete.data) != "你" || complete.nextOffset != 3 {
+		t.Fatalf("unexpected UTF-8 snapshot: %#v", complete)
+	}
+	if _, err := buffer.Write([]byte{0xff}); err != nil {
+		t.Fatal(err)
+	}
+	invalid := buffer.snapshot(3, maxPollBytesPerStream, true)
+	if !invalid.decodeReplaced || invalid.nextOffset != 4 {
+		t.Fatalf("invalid output replacement must be reported: %#v", invalid)
+	}
+
+	large := make([]byte, maxRetainedBytesPerStream+1024)
+	for index := range large {
+		large[index] = 'x'
+	}
+	if _, err := buffer.Write(large); err != nil {
+		t.Fatal(err)
+	}
+	bounded := buffer.snapshot(0, maxPollBytesPerStream, true)
+	if len(bounded.data) > maxPollBytesPerStream || !bounded.truncated {
+		t.Fatalf("large output was not bounded: %#v", bounded)
+	}
+	if bounded.totalBytes != int64(len(large)+4) {
+		t.Fatalf("unexpected total bytes: %d", bounded.totalBytes)
+	}
+}
+
+func TestTerminalProcessIsRetainedUntilExplicitRelease(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "retained", "idempotency_key": "retained-key",
+		"command": "printf retained", "cwd": root, "tty": false,
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	first := waitDone(t, manager, "retained")
+	second := manager.Execute(request("process.poll", map[string]any{
+		"process_id": "retained", "stdout_offset": 0,
+	}))
+	if !second.OK || first.Data["stdout_all"] != second.Data["stdout_all"] {
+		t.Fatalf("terminal process was not retained: first=%#v second=%#v", first, second)
+	}
+	released := manager.Execute(request("process.release", map[string]any{
+		"process_id": "retained",
+	}))
+	if !released.OK {
+		t.Fatal(released)
+	}
+	missing := manager.Execute(request("process.poll", map[string]any{
+		"process_id": "retained",
+	}))
+	if missing.OK || missing.ErrorCode != "not_found" {
+		t.Fatalf("released process remained queryable: %#v", missing)
+	}
+}
+
+func TestExplicitPipeModeRejectsInput(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "pipe", "idempotency_key": "pipe-key",
+		"command": "sleep 30", "cwd": root, "tty": false,
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	written := manager.Execute(request("process.input", map[string]any{
+		"process_id": "pipe", "data": "secret\n",
+	}))
+	if written.OK || written.ErrorCode != "capability_unavailable" {
+		t.Fatalf("pipe input should be rejected: %#v", written)
+	}
+	manager.Execute(request("process.cancel", map[string]any{"process_id": "pipe"}))
+}
+
+func TestInterruptIsDistinctFromTerminate(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id": "interrupt", "idempotency_key": "interrupt-key",
+		"command": "trap 'printf interrupted; exit 0' INT; while :; do sleep 1; done",
+		"cwd":     root, "tty": false,
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	time.Sleep(50 * time.Millisecond)
+	interrupted := manager.Execute(request("process.interrupt", map[string]any{
+		"process_id": "interrupt",
+	}))
+	if !interrupted.OK {
+		t.Fatal(interrupted)
+	}
+	result := waitDone(t, manager, "interrupt")
+	if result.Data["termination_reason"] != "interrupted" {
+		t.Fatalf("soft interrupt was not preserved as a distinct reason: %#v", result)
+	}
+	if result.Data["stdout_all"] != "interrupted" {
+		t.Fatalf("process did not handle SIGINT: %#v", result)
+	}
+}
+
+func TestConcurrentIdempotentStartExecutesCommandOnce(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	marker := filepath.Join(root, "marker")
+	args := map[string]any{
+		"process_id": "once", "idempotency_key": "once-key",
+		"command": fmt.Sprintf("printf x >> %q", marker), "cwd": root, "tty": false,
+	}
+	const callers = 16
+	results := make(chan protocol.WorkspaceResult, callers)
+	var group sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			results <- manager.Execute(request("process.start", args))
+		}()
+	}
+	group.Wait()
+	close(results)
+	for result := range results {
+		if !result.OK || result.Data["process_id"] != "once" {
+			t.Fatalf("unexpected idempotent start result: %#v", result)
+		}
+	}
+	waitDone(t, manager, "once")
+	content, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "x" {
+		t.Fatalf("command executed more than once: %q", content)
 	}
 }
 

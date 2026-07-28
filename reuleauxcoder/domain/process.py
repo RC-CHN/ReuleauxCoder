@@ -66,6 +66,7 @@ class ProcessSnapshot:
     finished_at: float | None = None
     runtime_timeout_seconds: int = 0
     output_truncated: bool = False
+    output_decode_replaced: bool = False
     total_stdout_bytes: int = 0
     total_stderr_bytes: int = 0
 
@@ -87,6 +88,8 @@ class ProcessResult:
     timed_out: bool = False
     cancelled: bool = False
     output_truncated: bool = False
+    output_decode_replaced: bool = False
+    state_unknown: bool = False
 
 
 @dataclass(frozen=True, slots=True)

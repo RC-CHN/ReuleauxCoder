@@ -1,7 +1,6 @@
 package process
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -11,54 +10,165 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 )
 
-type safeBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
+const (
+	maxRetainedBytesPerStream = 512 * 1024
+	maxPollBytesPerStream     = 64 * 1024
+	maxProcessSessions        = 64
+	terminalRetention         = 10 * time.Minute
+)
+
+type bufferSnapshot struct {
+	data           []byte
+	nextOffset     int64
+	truncated      bool
+	totalBytes     int64
+	decodeReplaced bool
 }
 
-func (b *safeBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.b.Write(p)
+type boundedBuffer struct {
+	mu          sync.Mutex
+	data        []byte
+	startOffset int64
+	nextOffset  int64
+	totalBytes  int64
+	truncated   bool
+	onChange    func()
 }
 
-func (b *safeBuffer) snapshot() []byte {
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	b.data = append(b.data, p...)
+	b.nextOffset += int64(len(p))
+	b.totalBytes += int64(len(p))
+	if len(b.data) > maxRetainedBytesPerStream {
+		drop := len(b.data) - maxRetainedBytesPerStream
+		retained := make([]byte, maxRetainedBytesPerStream)
+		copy(retained, b.data[drop:])
+		b.data = retained
+		b.startOffset += int64(drop)
+		b.truncated = true
+	}
+	notify := b.onChange
+	b.mu.Unlock()
+	if notify != nil {
+		notify()
+	}
+	return len(p), nil
+}
+
+func (b *boundedBuffer) snapshot(offset int64, limit int, final bool) bufferSnapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return append([]byte(nil), b.b.Bytes()...)
+	requested := offset
+	if requested < b.startOffset {
+		requested = b.startOffset
+	}
+	if requested > b.nextOffset {
+		requested = b.nextOffset
+	}
+	start := int(requested - b.startOffset)
+	truncated := offset < b.startOffset
+	if truncated {
+		for start < len(b.data) && !utf8.RuneStart(b.data[start]) {
+			start++
+			requested++
+		}
+	}
+	available := b.data[start:]
+	if len(available) > limit {
+		available = available[:limit]
+		truncated = true
+	}
+	consumable := consumableUTF8Prefix(available, final)
+	available = available[:consumable]
+	return bufferSnapshot{
+		data:           append([]byte(nil), available...),
+		nextOffset:     requested + int64(len(available)),
+		truncated:      truncated,
+		totalBytes:     b.totalBytes,
+		decodeReplaced: !utf8.Valid(available),
+	}
+}
+
+func consumableUTF8Prefix(data []byte, final bool) int {
+	for index := 0; index < len(data); {
+		if !utf8.FullRune(data[index:]) {
+			if final {
+				return len(data)
+			}
+			return index
+		}
+		_, size := utf8.DecodeRune(data[index:])
+		index += size
+	}
+	return len(data)
+}
+
+func (b *boundedBuffer) endOffset() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.nextOffset
+}
+
+func (b *boundedBuffer) retained() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.data...)
 }
 
 type state struct {
-	id             string
-	idempotencyKey string
-	cmd            *exec.Cmd
-	stdin          io.WriteCloser
-	stdout         safeBuffer
-	stderr         safeBuffer
-	done           chan struct{}
-	mu             sync.Mutex
-	exitCode       int
-	timedOut       bool
-	cancelled      bool
-	terminated     bool
+	id                 string
+	idempotencyKey     string
+	cmd                *exec.Cmd
+	stdin              io.WriteCloser
+	stdout             boundedBuffer
+	stderr             boundedBuffer
+	done               chan struct{}
+	changed            chan struct{}
+	mu                 sync.Mutex
+	exitCode           int
+	terminationReason  string
+	interruptRequested bool
+	terminated         bool
+	startedAt          time.Time
+	finishedAt         time.Time
+}
+
+func (s *state) signalChange() {
+	select {
+	case s.changed <- struct{}{}:
+	default:
+	}
 }
 
 type Manager struct {
-	root       string
-	defaultCWD string
-	mu         sync.Mutex
-	states     map[string]*state
-	idempotent map[string]string
+	root        string
+	defaultCWD  string
+	mu          sync.Mutex
+	states      map[string]*state
+	idempotent  map[string]string
+	starting    map[string]*startReservation
+	startingIDs map[string]struct{}
+	closing     bool
+}
+
+type startReservation struct {
+	done   chan struct{}
+	result protocol.WorkspaceResult
 }
 
 func NewManager(root, defaultCWD string) *Manager {
 	return &Manager{
 		root: root, defaultCWD: defaultCWD,
-		states: make(map[string]*state), idempotent: make(map[string]string),
+		states:      make(map[string]*state),
+		idempotent:  make(map[string]string),
+		starting:    make(map[string]*startReservation),
+		startingIDs: make(map[string]struct{}),
 	}
 }
 
@@ -70,6 +180,12 @@ func (m *Manager) Execute(req protocol.WorkspaceRequest) protocol.WorkspaceResul
 		return m.poll(req.Args)
 	case "process.input":
 		return m.input(req.Args)
+	case "process.interrupt":
+		return m.interrupt(req.Args)
+	case "process.terminate":
+		return m.terminate(req.Args)
+	case "process.release":
+		return m.release(req.Args)
 	case "process.cancel":
 		return m.cancel(req.Args)
 	default:
@@ -77,19 +193,56 @@ func (m *Manager) Execute(req protocol.WorkspaceRequest) protocol.WorkspaceResul
 	}
 }
 
-func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
+func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 	processID, _ := args["process_id"].(string)
 	idempotencyKey, _ := args["idempotency_key"].(string)
 	command, _ := args["command"].(string)
-	if processID == "" || idempotencyKey == "" || strings.TrimSpace(command) == "" {
+	if processID == "" || idempotencyKey == "" || command == "" {
 		return failure("invalid_path", "process_id, idempotency_key and command are required")
 	}
+	if tty, _ := args["tty"].(bool); tty {
+		return failure("capability_unavailable", "this peer does not advertise PTY process support")
+	}
+
 	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		return failure("invalid_state", "process manager is shutting down")
+	}
+	m.cleanupTerminalLocked()
 	if existingID := m.idempotent[idempotencyKey]; existingID != "" {
 		m.mu.Unlock()
 		return success(map[string]any{"process_id": existingID, "reused": true})
 	}
+	if reservation := m.starting[idempotencyKey]; reservation != nil {
+		m.mu.Unlock()
+		<-reservation.done
+		return replayStartResult(reservation.result)
+	}
+	if _, duplicate := m.states[processID]; duplicate {
+		m.mu.Unlock()
+		return failure("not_unique", "process_id already exists")
+	}
+	if _, duplicate := m.startingIDs[processID]; duplicate {
+		m.mu.Unlock()
+		return failure("not_unique", "process_id is already starting")
+	}
+	if len(m.states)+len(m.starting) >= maxProcessSessions {
+		m.mu.Unlock()
+		return failure("resource_exhausted", fmt.Sprintf("process session capacity reached (%d)", maxProcessSessions))
+	}
+	reservation := &startReservation{done: make(chan struct{})}
+	m.starting[idempotencyKey] = reservation
+	m.startingIDs[processID] = struct{}{}
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		reservation.result = result
+		delete(m.starting, idempotencyKey)
+		delete(m.startingIDs, processID)
+		close(reservation.done)
+		m.mu.Unlock()
+	}()
 
 	cwd, _ := args["cwd"].(string)
 	if cwd == "" {
@@ -103,27 +256,45 @@ func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
 	cmd := exec.Command(shell, shellArgs...)
 	cmd.Dir = resolvedCWD
 	configureProcessGroup(cmd)
-	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		return failure("io_error", err.Error())
-	}
+
 	processState := &state{
 		id: processID, idempotencyKey: idempotencyKey,
-		cmd: cmd, stdin: stdinPipe, done: make(chan struct{}),
+		cmd: cmd, done: make(chan struct{}), changed: make(chan struct{}, 1),
+		startedAt: time.Now(),
 	}
-	// Let os/exec own the copy goroutines. Wait does not return until these
-	// writers have consumed the pipes, which prevents a fast command from
-	// exiting and closing StdoutPipe before our reader goroutine is scheduled.
+	processState.stdout.onChange = processState.signalChange
+	processState.stderr.onChange = processState.signalChange
+
+	// Missing tty is the protocol-v2 compatibility path used by older hosts.
+	// New hosts always send tty=false, which deliberately closes stdin.
+	if _, modeDeclared := args["tty"]; !modeDeclared {
+		stdinPipe, pipeErr := cmd.StdinPipe()
+		if pipeErr != nil {
+			return failure("io_error", pipeErr.Error())
+		}
+		processState.stdin = stdinPipe
+	}
 	cmd.Stdout = &processState.stdout
 	cmd.Stderr = &processState.stderr
 	if err := cmd.Start(); err != nil {
 		return failure("io_error", err.Error())
 	}
+
 	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		terminateProcessTree(cmd)
+		return failure("invalid_state", "process manager is shutting down")
+	}
 	if _, duplicate := m.states[processID]; duplicate {
 		m.mu.Unlock()
 		terminateProcessTree(cmd)
 		return failure("not_unique", "process_id already exists")
+	}
+	if existingID := m.idempotent[idempotencyKey]; existingID != "" {
+		m.mu.Unlock()
+		terminateProcessTree(cmd)
+		return success(map[string]any{"process_id": existingID, "reused": true})
 	}
 	m.states[processID] = processState
 	m.idempotent[idempotencyKey] = processID
@@ -134,20 +305,23 @@ func (m *Manager) start(args map[string]any) protocol.WorkspaceResult {
 	if deadlineMillis > 0 {
 		go func() {
 			delay := time.Until(time.UnixMilli(deadlineMillis))
-			if delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					processState.terminate(true, false)
-				case <-processState.done:
-				}
-			} else {
-				processState.terminate(true, false)
+			if delay <= 0 {
+				processState.terminate("timeout")
+				return
+			}
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				processState.terminate("timeout")
+			case <-processState.done:
 			}
 		}()
 	}
-	return success(map[string]any{"process_id": processID, "reused": false})
+	return success(map[string]any{
+		"process_id": processID, "reused": false,
+		"started_unix_ms": processState.startedAt.UnixMilli(),
+	})
 }
 
 func (s *state) wait() {
@@ -162,11 +336,20 @@ func (s *state) wait() {
 	}
 	s.mu.Lock()
 	s.exitCode = exitCode
+	if s.terminationReason == "" {
+		if s.interruptRequested {
+			s.terminationReason = "interrupted"
+		} else {
+			s.terminationReason = "exit"
+		}
+	}
+	s.finishedAt = time.Now()
 	s.mu.Unlock()
 	close(s.done)
+	s.signalChange()
 }
 
-func (s *state) terminate(timedOut, cancelled bool) {
+func (s *state) terminate(reason string) {
 	select {
 	case <-s.done:
 		return
@@ -178,8 +361,9 @@ func (s *state) terminate(timedOut, cancelled bool) {
 		return
 	}
 	s.terminated = true
-	s.timedOut = timedOut
-	s.cancelled = cancelled
+	if s.terminationReason == "" || reason == "timeout" || reason == "shutdown" {
+		s.terminationReason = reason
+	}
 	s.mu.Unlock()
 	terminateProcessTree(s.cmd)
 }
@@ -190,46 +374,60 @@ func (m *Manager) poll(args map[string]any) protocol.WorkspaceResult {
 	if processState == nil {
 		return failure("not_found", "process not found")
 	}
-	done := false
-	select {
-	case <-processState.done:
-		done = true
-	default:
+	stdoutOffset := int64Arg(args["stdout_offset"])
+	stderrOffset := int64Arg(args["stderr_offset"])
+	waitMillis := int64Arg(args["wait_ms"])
+	if waitMillis > 0 &&
+		stdoutOffset >= processState.stdout.endOffset() &&
+		stderrOffset >= processState.stderr.endOffset() &&
+		!isDone(processState.done) {
+		timer := time.NewTimer(time.Duration(waitMillis) * time.Millisecond)
+		select {
+		case <-processState.changed:
+		case <-processState.done:
+		case <-timer.C:
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
 	}
-	// Observe completion before snapshotting output. Closing done happens only
-	// after both pipe-copy goroutines finish, so a received close establishes
-	// the happens-before edge needed for a complete terminal snapshot.
-	stdout := processState.stdout.snapshot()
-	stderr := processState.stderr.snapshot()
-	stdoutOffset := boundedOffset(intArg(args["stdout_offset"]), len(stdout))
-	stderrOffset := boundedOffset(intArg(args["stderr_offset"]), len(stderr))
+
+	done := isDone(processState.done)
+	stdout := processState.stdout.snapshot(stdoutOffset, maxPollBytesPerStream, done)
+	stderr := processState.stderr.snapshot(stderrOffset, maxPollBytesPerStream, done)
 	processState.mu.Lock()
+	stateName := "running"
+	if done {
+		stateName = "exited"
+	}
 	data := map[string]any{
 		"process_id": processID,
-		"stdout":     string(stdout[stdoutOffset:]), "stderr": string(stderr[stderrOffset:]),
-		"stdout_offset": len(stdout), "stderr_offset": len(stderr), "done": done,
-		"exit_code": processState.exitCode, "timed_out": processState.timedOut,
-		"cancelled": processState.cancelled,
+		"state":      stateName,
+		"stdout":     string(stdout.data), "stderr": string(stderr.data),
+		"stdout_offset": stdout.nextOffset, "stderr_offset": stderr.nextOffset,
+		"total_stdout_bytes": stdout.totalBytes, "total_stderr_bytes": stderr.totalBytes,
+		"output_truncated":       stdout.truncated || stderr.truncated,
+		"output_decode_replaced": stdout.decodeReplaced || stderr.decodeReplaced,
+		"done":                   done, "exit_code": processState.exitCode,
+		"termination_reason": processState.terminationReason,
+		"timed_out":          processState.terminationReason == "timeout",
+		"cancelled":          processState.terminationReason == "cancelled",
+		"started_unix_ms":    processState.startedAt.UnixMilli(),
+	}
+	if !processState.finishedAt.IsZero() {
+		data["finished_unix_ms"] = processState.finishedAt.UnixMilli()
 	}
 	processState.mu.Unlock()
 	if done {
-		data["stdout_all"] = string(stdout)
-		data["stderr_all"] = string(stderr)
-		m.remove(processState)
+		// Retained for explicit process.release so a lost terminal response can
+		// be polled again after transport recovery.
+		data["stdout_all"] = string(processState.stdout.retained())
+		data["stderr_all"] = string(processState.stderr.retained())
 	}
 	return success(data)
-}
-
-func (m *Manager) cancel(args map[string]any) protocol.WorkspaceResult {
-	processID, _ := args["process_id"].(string)
-	processState := m.lookup(processID)
-	if processState == nil {
-		return failure("not_found", "process not found")
-	}
-	processState.terminate(false, true)
-	<-processState.done
-	m.remove(processState)
-	return success(map[string]any{"process_id": processID, "cancelled": true})
 }
 
 func (m *Manager) input(args map[string]any) protocol.WorkspaceResult {
@@ -237,6 +435,9 @@ func (m *Manager) input(args map[string]any) protocol.WorkspaceResult {
 	processState := m.lookup(processID)
 	if processState == nil {
 		return failure("not_found", "process not found")
+	}
+	if processState.stdin == nil {
+		return failure("capability_unavailable", "stdin is closed for this pipe-mode process")
 	}
 	data, ok := args["data"].(string)
 	if !ok {
@@ -258,6 +459,82 @@ func (m *Manager) input(args map[string]any) protocol.WorkspaceResult {
 	})
 }
 
+func (m *Manager) interrupt(args map[string]any) protocol.WorkspaceResult {
+	processID, _ := args["process_id"].(string)
+	processState := m.lookup(processID)
+	if processState == nil {
+		return failure("not_found", "process not found")
+	}
+	if isDone(processState.done) {
+		return success(m.controlSnapshot(processState))
+	}
+	if err := interruptProcessTree(processState.cmd); err != nil {
+		return failure("io_error", err.Error())
+	}
+	processState.mu.Lock()
+	processState.interruptRequested = true
+	processState.mu.Unlock()
+	return success(m.controlSnapshot(processState))
+}
+
+func (m *Manager) terminate(args map[string]any) protocol.WorkspaceResult {
+	processID, _ := args["process_id"].(string)
+	processState := m.lookup(processID)
+	if processState == nil {
+		return failure("not_found", "process not found")
+	}
+	reason, _ := args["reason"].(string)
+	if reason == "" {
+		reason = "terminated"
+	}
+	processState.terminate(reason)
+	return success(m.controlSnapshot(processState))
+}
+
+func (m *Manager) cancel(args map[string]any) protocol.WorkspaceResult {
+	processID, _ := args["process_id"].(string)
+	processState := m.lookup(processID)
+	if processState == nil {
+		return failure("not_found", "process not found")
+	}
+	processState.terminate("cancelled")
+	<-processState.done
+	data := m.controlSnapshot(processState)
+	data["cancelled"] = true
+	m.remove(processState)
+	return success(data)
+}
+
+func (m *Manager) release(args map[string]any) protocol.WorkspaceResult {
+	processID, _ := args["process_id"].(string)
+	processState := m.lookup(processID)
+	if processState == nil {
+		return failure("not_found", "process not found")
+	}
+	if !isDone(processState.done) {
+		return failure("invalid_state", "cannot release a running process")
+	}
+	m.remove(processState)
+	return success(map[string]any{"process_id": processID, "released": true})
+}
+
+func (m *Manager) controlSnapshot(processState *state) map[string]any {
+	done := isDone(processState.done)
+	processState.mu.Lock()
+	defer processState.mu.Unlock()
+	stateName := "running"
+	if done {
+		stateName = "exited"
+	}
+	return map[string]any{
+		"process_id":         processState.id,
+		"state":              stateName,
+		"done":               done,
+		"exit_code":          processState.exitCode,
+		"termination_reason": processState.terminationReason,
+	}
+}
+
 func (m *Manager) lookup(processID string) *state {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -273,15 +550,29 @@ func (m *Manager) remove(processState *state) {
 	}
 }
 
+func (m *Manager) cleanupTerminalLocked() {
+	now := time.Now()
+	for _, processState := range m.states {
+		processState.mu.Lock()
+		finishedAt := processState.finishedAt
+		processState.mu.Unlock()
+		if !finishedAt.IsZero() && now.Sub(finishedAt) >= terminalRetention {
+			delete(m.states, processState.id)
+			delete(m.idempotent, processState.idempotencyKey)
+		}
+	}
+}
+
 func (m *Manager) Close() {
 	m.mu.Lock()
+	m.closing = true
 	states := make([]*state, 0, len(m.states))
 	for _, processState := range m.states {
 		states = append(states, processState)
 	}
 	m.mu.Unlock()
 	for _, processState := range states {
-		processState.terminate(false, true)
+		processState.terminate("shutdown")
 	}
 }
 
@@ -312,23 +603,18 @@ func confinedDirectory(root, value string) (string, error) {
 
 func shellCommand(command string) (string, []string) {
 	if runtime.GOOS == "windows" {
-		return "powershell", []string{"-Command", command}
+		return "powershell", []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command}
 	}
-	return "sh", []string{"-lc", command}
+	return "sh", []string{"-c", command}
 }
 
-func boundedOffset(value, length int) int {
-	if value < 0 {
-		return 0
+func isDone(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
-	if value > length {
-		return length
-	}
-	return value
-}
-
-func intArg(value any) int {
-	return int(int64Arg(value))
 }
 
 func int64Arg(value any) int64 {
@@ -342,6 +628,18 @@ func int64Arg(value any) int64 {
 	default:
 		return 0
 	}
+}
+
+func replayStartResult(result protocol.WorkspaceResult) protocol.WorkspaceResult {
+	if !result.OK {
+		return result
+	}
+	data := make(map[string]any, len(result.Data)+1)
+	for key, value := range result.Data {
+		data[key] = value
+	}
+	data["reused"] = true
+	return success(data)
 }
 
 func success(data map[string]any) protocol.WorkspaceResult {

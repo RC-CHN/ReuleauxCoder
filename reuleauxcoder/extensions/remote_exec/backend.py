@@ -210,7 +210,7 @@ class RemoteRelayToolBackend(ToolBackend):
                     remote_stream_handler(tool_name, chunk)
                 except Exception:
                     pass
-            if tool_name == "shell" and self.ui_bus is not None:
+            elif tool_name == "shell" and self.ui_bus is not None:
                 self.ui_bus.emit_remote_stream(
                     tool_name=tool_name,
                     stream=chunk.chunk_type,
@@ -564,6 +564,12 @@ class RemoteProcessPort:
             entry.output_truncated = bool(
                 data.get("output_truncated", entry.output_truncated)
             )
+            entry.output_decode_replaced = bool(
+                data.get(
+                    "output_decode_replaced",
+                    entry.output_decode_replaced,
+                )
+            )
             state_value = data.get("state")
             done = bool(data.get("done"))
             if state_value == "unknown":
@@ -693,14 +699,15 @@ class RemoteProcessPort:
         live = [entry for entry in entries if entry.state is ProcessState.RUNNING]
         unknown = [entry for entry in entries if entry.state is ProcessState.UNKNOWN]
         terminal = [entry for entry in entries if entry.state is ProcessState.EXITED]
-        for entry in live:
+        unresolved = [*live, *unknown]
+        for entry in unresolved:
             self._terminate_entry(entry, reason="shutdown")
         with self._lock:
             self._entries.clear()
         return ProcessShutdownReport(
             total=len(entries),
             already_exited=len(terminal),
-            terminated=len(live),
+            terminated=len(unresolved),
             unknown=len(unknown),
         )
 
@@ -723,13 +730,18 @@ class RemoteProcessPort:
         cursor = ProcessCursor()
         stdout: list[str] = []
         stderr: list[str] = []
+        unknown_deadline = time.monotonic() + timeout + 5
         while True:
             if cancellation_event is not None and cancellation_event.is_set():
-                self.terminate(handle.session_id, reason="cancelled")
+                terminated = self.terminate(
+                    handle.session_id,
+                    reason="cancelled",
+                )
                 return ProcessResult(
                     stdout="".join(stdout),
                     stderr="".join(stderr),
                     cancelled=True,
+                    output_decode_replaced=terminated.output_decode_replaced,
                 )
             snapshot = self.poll(handle.session_id, cursor=cursor, wait_ms=50)
             cursor = snapshot.cursor
@@ -737,6 +749,18 @@ class RemoteProcessPort:
             stderr.append(snapshot.stderr)
             if snapshot.state is ProcessState.RUNNING:
                 continue
+            if snapshot.state is ProcessState.UNKNOWN:
+                if time.monotonic() < unknown_deadline:
+                    time.sleep(0.05)
+                    continue
+                self.terminate(handle.session_id, reason="transport_unknown")
+                return ProcessResult(
+                    stdout="".join(stdout),
+                    stderr="".join(stderr),
+                    output_truncated=snapshot.output_truncated,
+                    output_decode_replaced=snapshot.output_decode_replaced,
+                    state_unknown=True,
+                )
             result = ProcessResult(
                 stdout="".join(stdout),
                 stderr="".join(stderr),
@@ -744,6 +768,7 @@ class RemoteProcessPort:
                 timed_out=snapshot.termination_reason == "timeout",
                 cancelled=snapshot.termination_reason == "cancelled",
                 output_truncated=snapshot.output_truncated,
+                output_decode_replaced=snapshot.output_decode_replaced,
             )
             self.release(handle.session_id)
             return result
@@ -812,6 +837,7 @@ class RemoteProcessPort:
                 finished_at=entry.finished_at,
                 runtime_timeout_seconds=entry.runtime_timeout,
                 output_truncated=entry.output_truncated,
+                output_decode_replaced=entry.output_decode_replaced,
                 total_stdout_bytes=entry.total_stdout_bytes,
                 total_stderr_bytes=entry.total_stderr_bytes,
             )
@@ -837,6 +863,7 @@ class _RemoteProcessEntry:
     termination_reason: str | None = None
     finished_at: float | None = None
     output_truncated: bool = False
+    output_decode_replaced: bool = False
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 

@@ -15,11 +15,15 @@ import threading
 import time
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 from urllib import request
 from urllib.error import HTTPError
 
 import pytest
+from reuleauxcoder.domain.process import ProcessCursor, ProcessState
+from reuleauxcoder.domain.process_manager import ProcessManager
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.protocol import (
     ChatResponse,
@@ -300,10 +304,9 @@ class TestRemoteRelayHTTPService:
             )
             assert status == 200
             assert heartbeat_body["peer_id"] == peer_id
-            assert (
-                service.relay_server.registry.get(peer_id).meta["terminal"]["width"]
-                == 111
-            )
+            updated_peer = service.relay_server.registry.get(peer_id)
+            assert updated_peer is not None
+            assert updated_peer.meta["terminal"]["width"] == 111
 
             status, poll_body = _json_request(
                 "POST",
@@ -1287,20 +1290,88 @@ class TestRemoteRelayHTTPService:
                 "unicode": True,
                 "interactive": False,
             }
+            assert {
+                "process.interrupt",
+                "process.terminate",
+                "process.release",
+            }.issubset(peer.capabilities)
 
             backend = RemoteRelayToolBackend(relay_server=relay)
             backend.context.peer_id = peer_id
-
-            shell_result = ShellTool(backend=backend).execute(
-                command="printf 'hi-from-agent'"
+            process_manager = ProcessManager()
+            shell = ShellTool(backend=backend)
+            shell.bind_agent(
+                SimpleNamespace(
+                    process_manager=process_manager,
+                    agent_id="agent",
+                    current_session_id="session",
+                    session_generation=0,
+                    _current_turn_id="turn",
+                )
             )
+            shell.bind_execution(tool_call_id="call", session_generation=0)
+
+            process = backend.process
+            process_handle = process.start(
+                "printf '%s' 'left && right'",
+                cwd=str(work_dir),
+                runtime_timeout=10,
+            )
+            cursor = ProcessCursor()
+            output = []
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                snapshot = process.poll(
+                    process_handle.session_id,
+                    cursor=cursor,
+                    wait_ms=100,
+                )
+                cursor = snapshot.cursor
+                output.append(snapshot.stdout)
+                if snapshot.state is ProcessState.EXITED:
+                    break
+            else:
+                raise AssertionError("resumable remote process did not exit")
+            assert "".join(output) == "left && right"
+            assert snapshot.exit_code == 0
+            process.release(process_handle.session_id)
+
+            running_handle = process.start(
+                "sleep 30",
+                cwd=str(work_dir),
+                runtime_timeout=60,
+            )
+            running = process.poll(running_handle.session_id)
+            assert running.state is ProcessState.RUNNING
+            process.terminate(
+                running_handle.session_id,
+                reason="test_terminated",
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                stopped = process.poll(
+                    running_handle.session_id,
+                    wait_ms=100,
+                )
+                if stopped.state is ProcessState.EXITED:
+                    break
+            else:
+                raise AssertionError("remote terminate did not stop the process")
+            assert stopped.termination_reason == "test_terminated"
+            process.release(running_handle.session_id)
+
+            shell_result = shell.execute(command="printf 'hi-from-agent'")
             assert "hi-from-agent" in shell_result.model_text
 
             timeout_started = time.monotonic()
-            timeout_result = ShellTool(backend=backend).execute(
-                command="sleep 10", timeout=1
+            timeout_result = shell.execute(command="sleep 10", timeout=1)
+            timeout_snapshot = cast(
+                dict[str, Any],
+                timeout_result.metadata["process_snapshot"],
             )
-            assert "timed out" in timeout_result.model_text.lower()
+            assert (
+                timeout_snapshot["termination_reason"] == "timeout"
+            )
             assert time.monotonic() - timeout_started < 3
 
             cancellation = threading.Event()
@@ -1309,14 +1380,13 @@ class TestRemoteRelayHTTPService:
             cancel_started = time.monotonic()
             timer.start()
             try:
-                cancel_result = ShellTool(backend=backend).execute(
-                    command="sleep 30", timeout=20
-                )
+                cancel_result = shell.execute(command="sleep 30", timeout=20)
             finally:
                 timer.cancel()
                 cancellation.clear()
             assert "cancelled" in cancel_result.model_text.lower()
             assert time.monotonic() - cancel_started < 3
+            process_manager.shutdown()
             assert (
                 "still-alive"
                 in ShellTool(backend=backend)

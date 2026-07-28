@@ -103,6 +103,10 @@ func Execute(
 			return errorResult("REMOTE_TOOL_ERROR", "shell command cancelled")
 		}
 		exitCode := asIntDefault(poll.Data["exit_code"])
+		manager.Execute(protocol.WorkspaceRequest{
+			Operation: "process.release",
+			Args:      map[string]any{"process_id": processID},
+		})
 		return legacyShellResult(stdout.String(), stderr.String(), exitCode)
 	}
 }

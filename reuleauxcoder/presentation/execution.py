@@ -109,6 +109,7 @@ class ExecutionProcessState:
     exit_code: int | None
     termination_reason: str | None
     output_truncated: bool
+    output_decode_replaced: bool
 
 
 @dataclass(slots=True)
@@ -240,6 +241,7 @@ class ExecutionViewReducer:
                 exit_code=payload.exit_code,
                 termination_reason=payload.termination_reason,
                 output_truncated=payload.output_truncated,
+                output_decode_replaced=payload.output_decode_replaced,
             )
             return True
         if isinstance(payload, SubagentJobChanged):

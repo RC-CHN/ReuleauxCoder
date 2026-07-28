@@ -160,6 +160,7 @@ class _UnknownPort:
     def __init__(self) -> None:
         self.state = ProcessState.UNKNOWN
         self.terminate_calls = 0
+        self.shutdown_calls = 0
         self._lock = threading.Lock()
 
     def start(self, command, **_kwargs):
@@ -200,6 +201,7 @@ class _UnknownPort:
 
     def shutdown(self, *, grace_seconds=0.5):
         del grace_seconds
+        self.shutdown_calls += 1
         return ProcessShutdownReport()
 
 
@@ -239,6 +241,7 @@ def test_unknown_is_unresolved_not_a_synthetic_completion() -> None:
     )
     manager.shutdown()
     assert port.terminate_calls == 1
+    assert port.shutdown_calls == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY integration")

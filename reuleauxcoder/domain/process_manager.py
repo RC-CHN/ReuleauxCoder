@@ -56,6 +56,7 @@ class ManagedProcessView:
     exit_code: int | None
     termination_reason: str | None
     output_truncated: bool
+    output_decode_replaced: bool
     published: bool
     observed: bool
 
@@ -529,6 +530,7 @@ class ProcessManager:
                 watcher.join(timeout=2.0)
                 if watcher.is_alive():
                     reap_timeouts += 1
+        ports = tuple({id(entry.port): entry.port for entry in entries}.values())
         with self._lock:
             for entry in tuple(self._entries.values()):
                 if entry.last_snapshot.state is ProcessState.EXITED:
@@ -537,6 +539,12 @@ class ProcessManager:
                     except Exception:
                         pass
             self._entries.clear()
+        for port in ports:
+            try:
+                report = port.shutdown(grace_seconds=0)
+                reap_timeouts += report.reap_timeouts
+            except Exception:
+                reap_timeouts += 1
         return ProcessShutdownReport(
             total=len(entries),
             already_exited=len(terminal),
@@ -693,6 +701,7 @@ class ProcessManager:
             exit_code=snapshot.exit_code,
             termination_reason=snapshot.termination_reason,
             output_truncated=snapshot.output_truncated,
+            output_decode_replaced=snapshot.output_decode_replaced,
             published=entry.published,
             observed=entry.observed,
         )

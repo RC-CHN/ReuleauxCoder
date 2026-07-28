@@ -315,6 +315,7 @@ class ProcessSessionChanged:
     exit_code: int | None = None
     termination_reason: str | None = None
     output_truncated: bool = False
+    output_decode_replaced: bool = False
     kind: RuntimeEventKind = field(
         default=RuntimeEventKind.PROCESS_SESSION_CHANGED, init=False
     )

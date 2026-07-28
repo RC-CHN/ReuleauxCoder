@@ -69,6 +69,7 @@ def test_remote_process_preserves_command_and_retains_terminal_until_release() -
                     "stderr_offset": 13,
                     "exit_code": 7,
                     "termination_reason": "exit",
+                    "output_decode_replaced": True,
                 },
             ),
             WorkspaceResult(
@@ -99,6 +100,7 @@ def test_remote_process_preserves_command_and_retains_terminal_until_release() -
     assert snapshot.exit_code == 7
     assert snapshot.stdout == "actual output\n"
     assert snapshot.stderr == "actual error\n"
+    assert snapshot.output_decode_replaced is True
 
     # A terminal result remains queryable until the owner explicitly releases it.
     assert port.poll(handle.session_id).state is ProcessState.EXITED
@@ -144,3 +146,27 @@ def test_ambiguous_remote_start_retries_same_intent_with_same_idempotency_key() 
     assert starts[0].args["command"] == starts[1].args["command"]
     assert starts[0].args["idempotency_key"] == starts[1].args["idempotency_key"]
     assert reconciled.state is ProcessState.RUNNING
+
+
+def test_shutdown_attempts_to_terminate_unknown_remote_process() -> None:
+    port, relay = _port(
+        [
+            RemoteTimeoutError(30),
+            WorkspaceResult(
+                ok=True,
+                data={
+                    "process_id": "ambiguous-process",
+                    "done": True,
+                    "exit_code": -1,
+                    "termination_reason": "shutdown",
+                },
+            ),
+        ]
+    )
+    port.start("possibly-started", cwd="/workspace", runtime_timeout=60)
+
+    report = port.shutdown()
+
+    assert report.unknown == 1
+    assert report.terminated == 1
+    assert relay.requests[-1][0].operation == "process.terminate"

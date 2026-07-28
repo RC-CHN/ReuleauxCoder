@@ -498,7 +498,14 @@ class ShellTool(_BoundProcessTool):
             )
         self._persist_cwd_after_start(cwd, persist_cwd)
         duration = time.monotonic() - started
-        if result.timed_out:
+        if result.state_unknown:
+            status = ToolOutcomeStatus.FAILED
+            error_kind = ToolErrorKind.EXECUTION
+            content = (
+                "[system] Process state could not be confirmed after a transport "
+                "failure; shutdown cleanup will retry termination."
+            )
+        elif result.timed_out:
             status = ToolOutcomeStatus.TIMED_OUT
             error_kind = ToolErrorKind.INTERRUPTED
             content = (
@@ -532,6 +539,8 @@ class ShellTool(_BoundProcessTool):
             metadata={
                 "cwd": actual_cwd,
                 "compatibility_mode": "blocking_process_run",
+                "output_truncated": result.output_truncated,
+                "output_decode_replaced": result.output_decode_replaced,
             },
             retention_hint=retention_hint,
         )
@@ -943,6 +952,7 @@ def _snapshot_dict(snapshot: ProcessSnapshot) -> dict[str, object]:
         "elapsed_seconds": round(snapshot.elapsed_seconds, 3),
         "runtime_timeout_seconds": snapshot.runtime_timeout_seconds,
         "output_truncated": snapshot.output_truncated,
+        "output_decode_replaced": snapshot.output_decode_replaced,
     }
 
 

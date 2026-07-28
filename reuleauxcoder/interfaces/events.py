@@ -433,11 +433,17 @@ class UIEventBus:
         )
 
     def emit_remote_stream(self, *, tool_name: str, stream: str, chunk: str) -> None:
+        from reuleauxcoder.domain.process_output import terminal_safe_display
+
         self.emit(
             UIEvent.info(
                 "",
                 kind=UIEventKind.REMOTE,
-                payload=RemoteStreamPayload(tool_name, stream, chunk),
+                payload=RemoteStreamPayload(
+                    tool_name,
+                    stream,
+                    terminal_safe_display(chunk),
+                ),
             )
         )
 
