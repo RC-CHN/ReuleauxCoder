@@ -792,6 +792,7 @@ class ShellSessionTool(_BoundProcessTool):
                 snapshot,
                 duration=time.monotonic() - started,
                 operation_error=str(error),
+                operation_executed=False,
             )
         except Exception as error:
             snapshot = self._latest_snapshot_after_error(
@@ -859,7 +860,7 @@ class ShellSessionTool(_BoundProcessTool):
             )
         agent_id, owner_session_id, generation, _ = self._identity()
         try:
-            view = manager.get_view(
+            manager.get_view(
                 session_id,
                 agent_id=agent_id,
                 owner_session_id=owner_session_id,
@@ -870,17 +871,6 @@ class ShellSessionTool(_BoundProcessTool):
                 str(error),
                 code="process_session_not_found",
                 error_kind=ToolErrorKind.NOT_FOUND,
-            )
-        if action == "write" and view.stream_mode != "pty":
-            return _boundary_failure(
-                f"Session '{session_id}' uses pipe mode, so stdin is closed; "
-                "no input was sent.",
-                code="write_requires_tty",
-            )
-        if action == "write" and view.state is not ProcessState.RUNNING:
-            return _boundary_failure(
-                f"Session '{session_id}' is {view.state.value}; no input was sent.",
-                code="process_not_running",
             )
         return None
 
@@ -975,6 +965,7 @@ def _outcome_from_snapshot(
     operation_error: str | None = None,
     call_cancelled: bool = False,
     operation_succeeded: bool = False,
+    operation_executed: bool = True,
 ) -> ToolOutcome:
     facts = _snapshot_dict(snapshot)
     if call_cancelled:
@@ -1003,7 +994,7 @@ def _outcome_from_snapshot(
         error_kind = None
 
     projection: dict[str, object] = {
-        "executed": True,
+        "executed": operation_executed,
         "process_snapshot": facts,
         "output_trust": {
             "stdout": "untrusted_process_output",

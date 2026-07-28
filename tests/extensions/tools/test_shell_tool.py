@@ -210,11 +210,15 @@ def test_managed_shell_yields_and_session_can_terminate(tmp_path: Path) -> None:
     assert time.monotonic() - started < 2
     session_id = str(facts["session_id"])
 
-    rejected_write = session.preflight_validate(
-        {"session_id": session_id, "action": "write", "chars": "hello\n"}
+    rejected_write = session.execute(session_id, "write", chars="hello\n")
+    rejected_facts = cast(
+        dict[str, Any],
+        rejected_write.metadata["process_snapshot"],
     )
-    assert rejected_write is not None
-    assert rejected_write.metadata["preflight_code"] == "write_requires_tty"
+    assert rejected_facts["state"] == "running"
+    assert rejected_facts["stream_mode"] == "pipe"
+    assert '"executed": false' in rejected_write.model_text
+    assert "stdin is closed" in rejected_write.model_text
 
     stopped = session.execute(session_id, "terminate")
     stopped_facts = cast(dict[str, Any], stopped.metadata["process_snapshot"])
