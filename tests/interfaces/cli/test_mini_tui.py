@@ -35,7 +35,7 @@ from reuleauxcoder.interfaces.cli.virtual_transcript import (
     VirtualTranscriptLayout,
     VisualCell,
 )
-import reuleauxcoder.interfaces.cli.mini_tui as mini_tui_module
+import reuleauxcoder.interfaces.tui.application as mini_tui_module
 from reuleauxcoder.interfaces.events import (
     InteractionPromptPayload,
     RuntimeEventPayload,

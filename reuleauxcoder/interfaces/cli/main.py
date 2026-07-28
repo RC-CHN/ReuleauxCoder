@@ -137,7 +137,7 @@ def main():
             build_runtime_approval_provider,
         )
         from reuleauxcoder.app.runtime.interactions import InteractionCoordinator
-        from reuleauxcoder.interfaces.cli.mini_tui import (
+        from reuleauxcoder.interfaces.tui import (
             MiniTUIApplication,
             MiniTUIEventAdapter,
             MiniTUIInteractor,

@@ -8,7 +8,7 @@ import time
 from prompt_toolkit.data_structures import Point
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
-from reuleauxcoder.interfaces.cli.mini_tui import MiniTUIEventAdapter
+from reuleauxcoder.interfaces.tui import MiniTUIEventAdapter
 from reuleauxcoder.interfaces.cli.virtual_transcript import VirtualTranscriptControl
 from reuleauxcoder.presentation import AssistantCell, DiffCell, ToolCell, UserCell
 from reuleauxcoder.presentation.models import ToolCellStatus
