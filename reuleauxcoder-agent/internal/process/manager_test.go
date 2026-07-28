@@ -309,6 +309,10 @@ func TestBoundedBufferUsesMonotonicOffsetsAndUTF8Boundaries(t *testing.T) {
 	if bounded.totalBytes != int64(len(large)+4) {
 		t.Fatalf("unexpected total bytes: %d", bounded.totalBytes)
 	}
+	caughtUp := buffer.snapshot(buffer.endOffset(), maxPollBytesPerStream, true)
+	if !caughtUp.truncated {
+		t.Fatalf("truncation fact regressed after the cursor caught up: %#v", caughtUp)
+	}
 }
 
 func TestTerminalProcessIsRetainedUntilExplicitRelease(t *testing.T) {

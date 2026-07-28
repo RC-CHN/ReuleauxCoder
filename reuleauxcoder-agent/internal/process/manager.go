@@ -76,7 +76,7 @@ func (b *boundedBuffer) snapshot(offset int64, limit int, final bool) bufferSnap
 		requested = b.nextOffset
 	}
 	start := int(requested - b.startOffset)
-	truncated := offset < b.startOffset
+	truncated := b.truncated || offset < b.startOffset
 	if truncated {
 		for start < len(b.data) && !utf8.RuneStart(b.data[start]) {
 			start++
