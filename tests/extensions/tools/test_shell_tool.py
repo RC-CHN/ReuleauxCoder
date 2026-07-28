@@ -11,7 +11,15 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from reuleauxcoder.domain.process_manager import ProcessManager
-from reuleauxcoder.domain.process import ProcessResult
+from reuleauxcoder.domain.process import (
+    ProcessCursor,
+    ProcessHandle,
+    ProcessResult,
+    ProcessShutdownReport,
+    ProcessSnapshot,
+    ProcessState,
+    ProcessStreamMode,
+)
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
     ToolRetentionStrategy,
@@ -243,4 +251,80 @@ def test_managed_shell_reports_nonzero_exit_as_process_fact(tmp_path: Path) -> N
     assert facts["stdout"] == "bad command\n"
     assert '"executed": false' not in result.model_text.lower()
     assert '"executed": true' in result.model_text.lower()
+    manager.shutdown()
+
+
+def test_ambiguous_session_operation_is_attempted_but_not_confirmed() -> None:
+    class AmbiguousWritePort:
+        backend_name = "remote"
+
+        def __init__(self) -> None:
+            self.state = ProcessState.RUNNING
+
+        def start(self, command, **_kwargs):
+            del command
+            return ProcessHandle("ambiguous-write", ProcessStreamMode.PTY)
+
+        def poll(self, session_id, *, cursor=None, wait_ms=0):
+            del wait_ms
+            return ProcessSnapshot(
+                session_id=session_id,
+                state=self.state,
+                stream_mode=ProcessStreamMode.PTY,
+                backend="remote",
+                cursor=cursor or ProcessCursor(),
+                started_at=time.time(),
+                runtime_timeout_seconds=60,
+            )
+
+        def write_input(self, session_id, data):
+            del session_id, data
+            raise RuntimeError("write response was lost")
+
+        def resize(self, session_id, *, rows, columns):
+            del session_id, rows, columns
+
+        def interrupt(self, session_id):
+            return self.poll(session_id)
+
+        def terminate(self, session_id, *, reason="terminated"):
+            del reason
+            self.state = ProcessState.EXITED
+            return self.poll(session_id)
+
+        def release(self, session_id):
+            del session_id
+
+        def shutdown(self, *, grace_seconds=0.5):
+            del grace_seconds
+            return ProcessShutdownReport()
+
+    manager = ProcessManager()
+    port = AmbiguousWritePort()
+    handle = manager.start(
+        port,  # type: ignore[arg-type]
+        "interactive",
+        cwd=".",
+        runtime_timeout=60,
+        tty=True,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    backend = LocalToolBackend(ExecutionContext())
+    session = _bind(ShellSessionTool(backend), manager)
+
+    result = session.execute(handle.session_id, "write", chars="maybe-once\n")
+
+    assert '"executed": true' in result.model_text
+    assert '"confirmed": false' in result.model_text
+    assert "write response was lost" in result.model_text
+
+    manager._entries[handle.session_id].input_bytes = 1024 * 1024
+    rejected = session.execute(handle.session_id, "write", chars="bounded\n")
+    assert '"executed": false' in rejected.model_text
+    assert '"confirmed": true' in rejected.model_text
+    assert "1 MiB session limit" in rejected.model_text
     manager.shutdown()
