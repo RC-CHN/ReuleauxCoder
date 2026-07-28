@@ -259,6 +259,57 @@ def test_unknown_is_unresolved_not_a_synthetic_completion() -> None:
     assert port.shutdown_calls == 1
 
 
+def test_manager_shutdown_barrier_covers_inflight_start() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingPort(_UnknownPort):
+        def start(self, command, **_kwargs):
+            del command
+            entered.set()
+            assert release.wait(2)
+            self.state = ProcessState.RUNNING
+            return ProcessHandle("inflight-session", ProcessStreamMode.PIPE)
+
+    port = _BlockingPort()
+    manager = ProcessManager()
+    start_errors = []
+    reports = []
+
+    def start() -> None:
+        try:
+            manager.start(
+                port,  # type: ignore[arg-type]
+                "slow-start",
+                cwd=".",
+                runtime_timeout=60,
+                tty=False,
+                owner_agent_id="agent",
+                owner_session_id="session",
+                session_generation=0,
+                origin_turn_id="turn",
+            )
+        except BaseException as error:
+            start_errors.append(error)
+
+    starter = threading.Thread(target=start)
+    starter.start()
+    assert entered.wait(2)
+    closer = threading.Thread(target=lambda: reports.append(manager.shutdown()))
+    closer.start()
+    release.set()
+    starter.join(timeout=5)
+    closer.join(timeout=5)
+
+    assert not starter.is_alive()
+    assert not closer.is_alive()
+    assert len(start_errors) == 1
+    assert "shutting down" in str(start_errors[0])
+    assert reports[0].reap_timeouts == 0
+    assert port.terminate_calls == 1
+    assert port.shutdown_calls == 1
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY integration")
 def test_pty_session_accepts_incremental_input(tmp_path) -> None:
     manager = ProcessManager()

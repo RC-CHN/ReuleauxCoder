@@ -152,6 +152,8 @@ class ProcessManager:
         self._terminal_ttl_seconds = terminal_ttl_seconds
         self._entries: dict[str, _ManagedEntry] = {}
         self._lock = threading.RLock()
+        self._start_condition = threading.Condition(self._lock)
+        self._ports: dict[int, ProcessPort] = {}
         self._closing = False
         self._starting = 0
 
@@ -180,10 +182,12 @@ class ProcessManager:
                     "process session capacity reached "
                     f"({self._max_sessions} retained/running sessions)"
                 )
+            self._ports[id(port)] = port
             self._starting += 1
 
         idempotency_key = f"rcoder-{uuid.uuid4().hex}"
         handle: ProcessHandle | None = None
+        registered = False
         try:
             handle = port.start(
                 command,
@@ -195,51 +199,54 @@ class ProcessManager:
                 stream_handler=stream_handler,
             )
             initial = port.poll(handle.session_id)
+            entry = _ManagedEntry(
+                handle=handle,
+                port=port,
+                command=command,
+                cwd=cwd,
+                owner_agent_id=owner_agent_id,
+                owner_session_id=owner_session_id,
+                session_generation=session_generation,
+                origin_turn_id=origin_turn_id,
+                created_monotonic=time.monotonic(),
+                last_snapshot=initial,
+            )
+            with self._lock:
+                if self._closing:
+                    raise RuntimeError("process manager is shutting down")
+                if handle.session_id in self._entries:
+                    raise RuntimeError(
+                        f"duplicate process session id '{handle.session_id}'"
+                    )
+                self._entries[handle.session_id] = entry
+                registered = True
+
+            watcher = threading.Thread(
+                target=self._watch,
+                args=(entry,),
+                name=f"rcoder-managed-process-{handle.session_id[-8:]}",
+                daemon=True,
+            )
+            entry.watcher = watcher
+            return handle
         except BaseException:
             if handle is not None:
+                if registered:
+                    with self._lock:
+                        self._entries.pop(handle.session_id, None)
+                    registered = False
                 try:
-                    port.terminate(handle.session_id, reason="start_failed")
+                    port.terminate(
+                        handle.session_id,
+                        reason=("shutdown" if self._closing else "start_failed"),
+                    )
                 except Exception:
                     pass
             raise
         finally:
-            with self._lock:
+            with self._start_condition:
                 self._starting -= 1
-        assert handle is not None
-
-        entry = _ManagedEntry(
-            handle=handle,
-            port=port,
-            command=command,
-            cwd=cwd,
-            owner_agent_id=owner_agent_id,
-            owner_session_id=owner_session_id,
-            session_generation=session_generation,
-            origin_turn_id=origin_turn_id,
-            created_monotonic=time.monotonic(),
-            last_snapshot=initial,
-        )
-        with self._lock:
-            if self._closing:
-                try:
-                    port.terminate(handle.session_id, reason="shutdown")
-                finally:
-                    raise RuntimeError("process manager is shutting down")
-            if handle.session_id in self._entries:
-                port.terminate(handle.session_id, reason="duplicate_session")
-                raise RuntimeError(
-                    f"duplicate process session id '{handle.session_id}'"
-                )
-            self._entries[handle.session_id] = entry
-
-        watcher = threading.Thread(
-            target=self._watch,
-            args=(entry,),
-            name=f"rcoder-managed-process-{handle.session_id[-8:]}",
-            daemon=True,
-        )
-        entry.watcher = watcher
-        return handle
+                self._start_condition.notify_all()
 
     def publish(self, session_id: str, *, observed: bool = False) -> None:
         emit_completion = False
@@ -583,12 +590,18 @@ class ProcessManager:
         return len(entries)
 
     def shutdown(self, *, grace_seconds: float = 0.5) -> ProcessShutdownReport:
-        with self._lock:
-            if self._closing:
-                entries = tuple(self._entries.values())
-            else:
-                self._closing = True
-                entries = tuple(self._entries.values())
+        start_reap_timeouts = 0
+        with self._start_condition:
+            self._closing = True
+            start_deadline = time.monotonic() + 2.0
+            while self._starting:
+                remaining = start_deadline - time.monotonic()
+                if remaining <= 0:
+                    start_reap_timeouts = self._starting
+                    break
+                self._start_condition.wait(timeout=remaining)
+            entries = tuple(self._entries.values())
+            ports = tuple(self._ports.values())
             for entry in entries:
                 self._ensure_watcher_started_locked(entry)
         terminal = [
@@ -627,14 +640,13 @@ class ProcessManager:
                 entry.port.terminate(entry.handle.session_id, reason="shutdown")
             except Exception:
                 pass
-        reap_timeouts = 0
+        reap_timeouts = start_reap_timeouts
         for entry in force_targets:
             watcher = entry.watcher
             if watcher is not None:
                 watcher.join(timeout=2.0)
                 if watcher.is_alive():
                     reap_timeouts += 1
-        ports = tuple({id(entry.port): entry.port for entry in entries}.values())
         with self._lock:
             for entry in tuple(self._entries.values()):
                 if entry.last_snapshot.state is ProcessState.EXITED:
@@ -643,6 +655,7 @@ class ProcessManager:
                     except Exception:
                         pass
             self._entries.clear()
+            self._ports.clear()
         for port in ports:
             try:
                 report = port.shutdown(grace_seconds=0)

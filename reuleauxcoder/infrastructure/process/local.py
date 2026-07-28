@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import codecs
+from dataclasses import dataclass
 import errno
 import os
 import signal
@@ -208,6 +209,13 @@ class _LocalProcessEntry:
                 pass
 
 
+@dataclass(slots=True)
+class _LocalStartReservation:
+    done: threading.Event
+    handle: ProcessHandle | None = None
+    error: BaseException | None = None
+
+
 class LocalProcessPort:
     """Own local subprocesses independently from individual tool calls."""
 
@@ -231,6 +239,7 @@ class LocalProcessPort:
         self._max_sessions = max_sessions
         self._entries: dict[str, _LocalProcessEntry] = {}
         self._idempotency: dict[str, str] = {}
+        self._starting: dict[str, _LocalStartReservation] = {}
         self._lock = threading.RLock()
         self._closing = False
 
@@ -255,67 +264,109 @@ class LocalProcessPort:
             raise FileNotFoundError(f"working directory does not exist ({cwd})")
 
         key = idempotency_key or uuid.uuid4().hex
-        with self._lock:
-            if self._closing:
-                raise RuntimeError("process port is shutting down")
-            existing_id = self._idempotency.get(key)
-            if existing_id is not None and existing_id in self._entries:
-                existing = self._entries[existing_id]
-                return ProcessHandle(existing.session_id, existing.stream_mode)
-            self._reclaim_terminal_locked()
-            if len(self._entries) >= self._max_sessions:
-                raise ProcessCapacityError(
-                    f"local process capacity reached ({self._max_sessions} sessions)"
+        while True:
+            with self._lock:
+                if self._closing:
+                    raise RuntimeError("process port is shutting down")
+                existing_id = self._idempotency.get(key)
+                if existing_id is not None and existing_id in self._entries:
+                    existing = self._entries[existing_id]
+                    return ProcessHandle(existing.session_id, existing.stream_mode)
+                pending = self._starting.get(key)
+                if pending is None:
+                    if len(self._entries) + len(self._starting) >= self._max_sessions:
+                        raise ProcessCapacityError(
+                            "local process capacity reached "
+                            f"({self._max_sessions} sessions)"
+                        )
+                    reservation = _LocalStartReservation(threading.Event())
+                    self._starting[key] = reservation
+                    break
+            pending.done.wait()
+            if pending.handle is not None:
+                return pending.handle
+            if pending.error is not None:
+                raise RuntimeError(
+                    f"idempotent process start failed: {pending.error}"
+                ) from pending.error
+
+        entry: _LocalProcessEntry | None = None
+        registered = False
+        watcher_started = False
+        result_handle: ProcessHandle | None = None
+        start_error: BaseException | None = None
+        try:
+            invocation = get_platform_info().resolve_shell_invocation(command, tty=tty)
+            session_id = f"proc_{uuid.uuid4().hex}"
+            if tty:
+                process, pty_transport = self._spawn_pty(
+                    invocation.argv,
+                    cwd=cwd,
+                    env=env,
                 )
+                mode = ProcessStreamMode.PTY
+            else:
+                process = self._spawn_pipe(invocation.argv, cwd=cwd, env=env)
+                pty_transport = None
+                mode = ProcessStreamMode.PIPE
 
-        invocation = get_platform_info().resolve_shell_invocation(command, tty=tty)
-        session_id = f"proc_{uuid.uuid4().hex}"
-        if tty:
-            process, pty_transport = self._spawn_pty(
-                invocation.argv,
-                cwd=cwd,
-                env=env,
+            entry = _LocalProcessEntry(
+                session_id=session_id,
+                process=process,
+                stream_mode=mode,
+                runtime_timeout=runtime_timeout,
+                stream_handler=stream_handler,
+                retained_bytes_per_stream=self._retained_bytes_per_stream,
+                pty_transport=pty_transport,
             )
-            mode = ProcessStreamMode.PTY
-        else:
-            process = self._spawn_pipe(invocation.argv, cwd=cwd, env=env)
-            pty_transport = None
-            mode = ProcessStreamMode.PIPE
-
-        entry = _LocalProcessEntry(
-            session_id=session_id,
-            process=process,
-            stream_mode=mode,
-            runtime_timeout=runtime_timeout,
-            stream_handler=stream_handler,
-            retained_bytes_per_stream=self._retained_bytes_per_stream,
-            pty_transport=pty_transport,
-        )
-        with self._lock:
-            if self._closing:
-                self._signal_tree(entry, force=True)
+            with self._lock:
+                if self._closing:
+                    reject_start = True
+                else:
+                    reject_start = False
+                    self._entries[session_id] = entry
+                    self._idempotency[key] = session_id
+                    registered = True
+            if reject_start:
                 raise RuntimeError("process port is shutting down")
-            self._entries[session_id] = entry
-            self._idempotency[key] = session_id
 
-        self._start_readers(entry)
-        watcher = threading.Thread(
-            target=self._watch_process,
-            args=(entry, key),
-            name=f"rcoder-process-watch-{session_id[-8:]}",
-            daemon=True,
-        )
-        entry.control_threads.append(watcher)
-        watcher.start()
-        deadline = threading.Thread(
-            target=self._watch_deadline,
-            args=(entry,),
-            name=f"rcoder-process-deadline-{session_id[-8:]}",
-            daemon=True,
-        )
-        entry.control_threads.append(deadline)
-        deadline.start()
-        return ProcessHandle(session_id, mode)
+            self._start_readers(entry)
+            watcher = threading.Thread(
+                target=self._watch_process,
+                args=(entry, key),
+                name=f"rcoder-process-watch-{session_id[-8:]}",
+                daemon=True,
+            )
+            entry.control_threads.append(watcher)
+            watcher.start()
+            watcher_started = True
+            deadline = threading.Thread(
+                target=self._watch_deadline,
+                args=(entry,),
+                name=f"rcoder-process-deadline-{session_id[-8:]}",
+                daemon=True,
+            )
+            entry.control_threads.append(deadline)
+            deadline.start()
+            result_handle = ProcessHandle(session_id, mode)
+            return result_handle
+        except BaseException as error:
+            start_error = error
+            if registered and entry is not None:
+                self._remove_entry(entry.session_id, idempotency_key=key)
+            if entry is not None:
+                self._cleanup_failed_start(
+                    entry,
+                    watcher_started=watcher_started,
+                )
+            raise
+        finally:
+            with self._lock:
+                if self._starting.get(key) is reservation:
+                    self._starting.pop(key, None)
+                    reservation.handle = result_handle
+                    reservation.error = start_error
+                    reservation.done.set()
 
     @staticmethod
     def _spawn_pipe(
@@ -547,6 +598,34 @@ class LocalProcessPort:
                 except (OSError, ValueError):
                     pass
 
+    def _cleanup_failed_start(
+        self,
+        entry: _LocalProcessEntry,
+        *,
+        watcher_started: bool,
+    ) -> None:
+        """Synchronously reclaim a process that was never exposed to callers."""
+        self._signal_tree(entry, force=True)
+        if watcher_started:
+            entry.done.wait(2.0)
+        else:
+            self._close_entry_streams(entry)
+            try:
+                entry.process.wait(timeout=2.0)
+            except TypeError:
+                entry.process.wait()
+            except (OSError, subprocess.TimeoutExpired):
+                self._signal_tree(entry, force=True, include_exited_group=True)
+                try:
+                    entry.process.wait(timeout=1.0)
+                except TypeError:
+                    entry.process.wait()
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        self._close_entry_streams(entry)
+        for reader in entry.reader_threads:
+            reader.join(timeout=0.2)
+
     def poll(
         self,
         session_id: str,
@@ -738,28 +817,18 @@ class LocalProcessPort:
                 for key in stale:
                     self._idempotency.pop(key, None)
 
-    def _reclaim_terminal_locked(self) -> None:
-        terminal = [
-            session_id
-            for session_id, entry in self._entries.items()
-            if entry.state is ProcessState.EXITED
-        ]
-        for session_id in terminal:
-            self._entries.pop(session_id, None)
-        if terminal:
-            terminal_ids = set(terminal)
-            stale = [
-                key
-                for key, session_id in self._idempotency.items()
-                if session_id in terminal_ids
-            ]
-            for key in stale:
-                self._idempotency.pop(key, None)
-
     def shutdown(self, *, grace_seconds: float = 0.5) -> ProcessShutdownReport:
         with self._lock:
             self._closing = True
             entries = tuple(self._entries.values())
+            starting = tuple(
+                reservation.done for reservation in self._starting.values()
+            )
+        start_deadline = time.monotonic() + 2.0
+        start_reap_timeouts = 0
+        for reservation in starting:
+            if not reservation.wait(max(0.0, start_deadline - time.monotonic())):
+                start_reap_timeouts += 1
         already_exited = sum(
             entry.state is ProcessState.EXITED for entry in entries
         )
@@ -775,7 +844,7 @@ class LocalProcessPort:
         remaining = [entry for entry in live if not entry.done.is_set()]
         for entry in remaining:
             self._request_termination(entry, reason="shutdown")
-        reap_timeouts = 0
+        reap_timeouts = start_reap_timeouts
         for entry in remaining:
             if not entry.done.wait(2.0):
                 reap_timeouts += 1
