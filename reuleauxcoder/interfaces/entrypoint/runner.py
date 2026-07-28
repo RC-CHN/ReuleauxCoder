@@ -552,7 +552,16 @@ class AppRunner:
         if self._process_manager is not None:
             report("Stopping shell process sessions...")
             process_report = self._process_manager.shutdown()
-            if progress is not None and process_report.total:
+            if progress is not None and any(
+                (
+                    process_report.total,
+                    process_report.already_exited,
+                    process_report.interrupted,
+                    process_report.terminated,
+                    process_report.unknown,
+                    process_report.reap_timeouts,
+                )
+            ):
                 report(
                     "Shell process cleanup finished "
                     f"({process_report.total} tracked, "

@@ -824,20 +824,37 @@ class ProcessManager:
                 )
                 if watcher.is_alive():
                     reap_timeouts += 1
+        remaining_manager_entries_by_port: dict[int, int] = {}
         with self._lock:
             for entry in tuple(self._entries.values()):
+                released = False
                 if entry.last_snapshot.state is ProcessState.EXITED:
                     try:
                         entry.port.release(entry.handle.session_id)
+                        released = True
                     except Exception:
                         pass
+                if not released:
+                    port_id = id(entry.port)
+                    remaining_manager_entries_by_port[port_id] = (
+                        remaining_manager_entries_by_port.get(port_id, 0) + 1
+                    )
             self._entries.clear()
             self._ports.clear()
         unknown_after_cleanup = 0
+        orphan_total = 0
+        orphan_terminated = 0
         for port in ports:
             try:
                 report = port.shutdown(grace_seconds=0)
                 reap_timeouts += report.reap_timeouts
+                extra_sessions = max(
+                    0,
+                    report.total
+                    - remaining_manager_entries_by_port.get(id(port), 0),
+                )
+                orphan_total += extra_sessions
+                orphan_terminated += min(extra_sessions, report.terminated)
                 unknown_after_cleanup += (
                     report.unknown
                     if report.total > 0
@@ -850,10 +867,10 @@ class ProcessManager:
                     0,
                 )
         return ProcessShutdownReport(
-            total=len(entries),
+            total=len(entries) + orphan_total,
             already_exited=len(terminal),
             interrupted=len(live),
-            terminated=len(force_targets),
+            terminated=len(force_targets) + orphan_terminated,
             unknown=unknown_after_cleanup,
             reap_timeouts=reap_timeouts,
         )

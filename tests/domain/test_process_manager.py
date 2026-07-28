@@ -556,6 +556,59 @@ def test_manager_shutdown_barrier_covers_inflight_start() -> None:
     assert port.shutdown_calls == 1
 
 
+def test_manager_shutdown_reports_port_session_not_registered_after_start() -> None:
+    class _OrphanedStartPort(_UnknownPort):
+        def __init__(self) -> None:
+            super().__init__()
+            self.poll_calls = 0
+
+        def poll(self, session_id, *, cursor=None, wait_ms=0):
+            self.poll_calls += 1
+            if self.poll_calls == 1:
+                raise RuntimeError("initial process observation failed")
+            return super().poll(session_id, cursor=cursor, wait_ms=wait_ms)
+
+        def terminate(self, session_id, *, reason="terminated"):
+            del session_id, reason
+            self.terminate_calls += 1
+            raise RuntimeError("termination delivery was not confirmed")
+
+        def shutdown(self, *, grace_seconds=0.5):
+            del grace_seconds
+            self.shutdown_calls += 1
+            return ProcessShutdownReport(
+                total=1,
+                terminated=1,
+                unknown=1,
+                reap_timeouts=1,
+            )
+
+    port = _OrphanedStartPort()
+    manager = ProcessManager()
+
+    with pytest.raises(RuntimeError, match="initial process observation failed"):
+        manager.start(
+            port,  # type: ignore[arg-type]
+            "started-but-not-registered",
+            cwd=".",
+            runtime_timeout=60,
+            tty=False,
+            owner_agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+            origin_turn_id="turn",
+        )
+
+    report = manager.shutdown(grace_seconds=0)
+
+    assert report.total == 1
+    assert report.terminated == 1
+    assert report.unknown == 1
+    assert report.reap_timeouts == 1
+    assert port.terminate_calls == 1
+    assert port.shutdown_calls == 1
+
+
 def test_manager_shutdown_controls_independent_sessions_concurrently() -> None:
     active = 0
     max_active = 0
