@@ -331,6 +331,45 @@ def test_failed_interrupt_is_reported_and_can_be_retried(
     port.shutdown(grace_seconds=0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal assertion")
+def test_failed_termination_is_reported_and_can_be_retried(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    port = LocalProcessPort()
+    handle = port.start(
+        "trap '' TERM; while :; do sleep 1; done",
+        cwd=str(tmp_path),
+        runtime_timeout=30,
+    )
+    original_killpg = os.killpg
+    calls = 0
+
+    def fail_once(process_group: int, selected_signal: int) -> None:
+        nonlocal calls
+        if selected_signal == signal.SIGTERM:
+            calls += 1
+            if calls == 1:
+                raise PermissionError("signal denied")
+        original_killpg(process_group, selected_signal)
+
+    monkeypatch.setattr(os, "killpg", fail_once)
+    with pytest.raises(
+        ProcessOperationUnsupported,
+        match="termination was not delivered",
+    ):
+        port.terminate(handle.session_id)
+
+    entry = port._lookup(handle.session_id)
+    assert entry.termination_requested is False
+    assert entry.termination_reason is None
+    port.terminate(handle.session_id)
+    assert entry.termination_requested is True
+    assert entry.termination_reason == "terminated"
+    assert calls == 2
+    port.shutdown(grace_seconds=0)
+
+
 def test_start_failure_after_spawn_is_reaped(monkeypatch, tmp_path) -> None:
     port = LocalProcessPort()
     spawned = []

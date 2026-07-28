@@ -941,24 +941,48 @@ class LocalProcessPort:
         reason: str = "terminated",
     ) -> ProcessSnapshot:
         entry = self._lookup(session_id)
-        self._request_termination(entry, reason=reason)
+        self._request_termination(
+            entry,
+            reason=reason,
+            report_delivery_failure=True,
+        )
         return self._snapshot(entry, ProcessCursor())
 
-    def _request_termination(self, entry: _LocalProcessEntry, *, reason: str) -> None:
+    def _request_termination(
+        self,
+        entry: _LocalProcessEntry,
+        *,
+        reason: str,
+        report_delivery_failure: bool = False,
+    ) -> None:
         with entry.condition:
             if entry.state is ProcessState.EXITED:
                 return
+            previous_reason = entry.termination_reason
             if entry.termination_reason is None or reason in {"timeout", "shutdown"}:
                 entry.termination_reason = reason
             if entry.termination_requested:
                 return
             entry.termination_requested = True
-        self._signal_tree(entry, force=False)
+        try:
+            self._signal_tree(entry, force=False)
+        except OSError as error:
+            if report_delivery_failure:
+                with entry.condition:
+                    entry.termination_requested = False
+                    entry.termination_reason = previous_reason
+                raise ProcessOperationUnsupported(
+                    "termination was not delivered to session "
+                    f"'{entry.session_id}': {error}"
+                ) from error
 
         def escalate() -> None:
             if entry.done.wait(_TERMINATE_GRACE_SECONDS):
                 return
-            self._signal_tree(entry, force=True)
+            try:
+                self._signal_tree(entry, force=True)
+            except OSError:
+                return
 
         reaper = threading.Thread(
             target=escalate,
@@ -986,11 +1010,14 @@ class LocalProcessPort:
                     return
                 except OSError:
                     pass
-            subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
                 capture_output=True,
                 check=False,
             )
+            if completed.returncode != 0 and process.poll() is None:
+                detail = completed.stderr.decode(errors="replace").strip()
+                raise OSError(detail or "taskkill did not confirm process termination")
             return
         selected = signal.SIGKILL if force else signal.SIGTERM
         try:
