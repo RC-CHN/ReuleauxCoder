@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import concurrent.futures
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from difflib import get_close_matches
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, cast
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.agent.agent import Agent
@@ -31,7 +31,6 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
 )
 from reuleauxcoder.domain.workspace import WorkspaceError
-from reuleauxcoder.extensions.tools.registry import get_tool
 
 
 _EXTERNAL_PATH_ARGUMENTS = {
@@ -49,7 +48,11 @@ _EXTERNAL_MUTATION_TOOLS = frozenset({"edit_file", "write_file"})
 def _external_workspace_target(tool, arguments: dict) -> str | None:
     """Detect an exact local file target outside the configured workspace."""
     tool_name = getattr(tool, "name", None)
-    path_argument = _EXTERNAL_PATH_ARGUMENTS.get(tool_name)
+    path_argument = (
+        _EXTERNAL_PATH_ARGUMENTS.get(tool_name)
+        if isinstance(tool_name, str)
+        else None
+    )
     if tool is None or path_argument is None:
         return None
     workspace = getattr(getattr(tool, "backend", None), "workspace", None)
@@ -74,7 +77,10 @@ def _workspace_access_scope(workspace, external_target: str | None) -> Iterator[
     if external_target is None or not callable(grant_external):
         yield
         return
-    with grant_external(external_target):
+    access_scope = cast(
+        AbstractContextManager[object], grant_external(external_target)
+    )
+    with access_scope:
         yield
 
 
@@ -97,17 +103,12 @@ class ToolExecutor:
         return outcome.model_text
 
     def _unknown_tool_outcome(self, tool_name: str) -> ToolOutcome:
-        active_tools = getattr(self.agent, "get_active_tools", None)
-        available_names = (
-            sorted(
-                {
-                    str(getattr(tool, "name", ""))
-                    for tool in active_tools()
-                    if getattr(tool, "name", None)
-                }
-            )
-            if callable(active_tools)
-            else []
+        available_names = sorted(
+            {
+                str(getattr(tool, "name", ""))
+                for tool in self.agent.get_active_tools()
+                if getattr(tool, "name", None)
+            }
         )
         matches = get_close_matches(tool_name, available_names, n=3, cutoff=0.5)
         suggestion = (
@@ -139,12 +140,6 @@ class ToolExecutor:
         reviewed_diff: str | None = None
         approval_workspace_changes: list[str] = []
         tool = self.agent.get_tool(tc.name)
-        if (
-            tool is None
-            and not getattr(self.agent, "strict_tool_scope", False)
-            and self.agent.is_tool_in_scope(tc.name)
-        ):
-            tool = get_tool(tc.name)
         if tool is None and (
             getattr(self.agent, "strict_tool_scope", False)
             or self.agent.is_tool_in_scope(tc.name)
@@ -398,23 +393,14 @@ class ToolExecutor:
 
         tool_call = before_context.tool_call or tc
 
-        # First check agent's tools, then fall back to global registry
+        # Tool availability is scoped by composition. Never reconstruct a
+        # builtin with a different backend after authorization.
         tool = self.agent.get_tool(tool_call.name)
-        if (
-            tool is None
-            and not getattr(self.agent, "strict_tool_scope", False)
-            and self.agent.is_tool_in_scope(tool_call.name)
-        ):
-            tool = get_tool(tool_call.name)
 
         if tool is None:
-            message = f"Error: unknown tool '{tool_call.name}'"
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tool_call.name, message, success=False, tool_call_id=tc.id
-                )
+            return self._finish_rejected_call(
+                tc, self._unknown_tool_outcome(tool_call.name)
             )
-            return message
 
         stop_requested = getattr(self.agent, "stop_requested", None)
         if callable(stop_requested) and stop_requested():

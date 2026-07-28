@@ -80,6 +80,9 @@ class _AgentStub:
     def is_tool_allowed_in_mode(self, name: str) -> bool:  # noqa: ARG002
         return True
 
+    def is_tool_in_scope(self, name: str) -> bool:  # noqa: ARG002
+        return True
+
     def suggest_modes_for_tool(self, name: str) -> list[str]:  # noqa: ARG002
         return []
 
@@ -201,6 +204,19 @@ def test_unknown_tool_returns_active_name_suggestion() -> None:
     assert outcome.metadata["suggested_tools"] == ("read_file",)
 
 
+def test_missing_scoped_tool_does_not_fall_back_to_global_builtin_catalog() -> None:
+    agent = _AgentStub(None)
+    agent.strict_tool_scope = False
+    agent.get_active_tools = lambda: []
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="missing-read", name="read_file", arguments={"file_path": "x"})
+    )
+
+    assert "Tool call rejected [unknown_tool]" in result
+    assert agent.events[-1].tool_outcome.error_kind is ToolErrorKind.NOT_FOUND
+
+
 def test_guard_warning_is_emitted_as_structured_diagnostic() -> None:
     tool = _ShellToolStub()
     agent = _AgentStub(tool)
@@ -288,6 +304,7 @@ def test_external_readonly_workspace_tools_are_allowed_by_default(
 
     assert expected in result
     assert agent.events[-1].tool_success is True
+    assert backend.workspace is not None
     with pytest.raises(WorkspaceError) as revoked:
         backend.workspace.stat_entry(granted_target)
     assert revoked.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
