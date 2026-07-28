@@ -158,6 +158,7 @@ class ApprovalRuleConfig:
     effect_class: Optional[str] = None
     profile: Optional[str] = None
     pattern: Optional[str] = None
+    scope_key: Optional[str] = None
     action: ApprovalAction = "require_approval"
 
 

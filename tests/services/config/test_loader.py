@@ -122,6 +122,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
                     {
                         "tool_name": "shell",
                         "pattern": "pytest -q",
+                        "scope_key": "session-workspace",
                         "action": "deny",
                     }
                 ],
@@ -150,6 +151,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.approval.default_mode == "warn"
     assert config.approval.rules[0].tool_name == "shell"
     assert config.approval.rules[0].pattern == "pytest -q"
+    assert config.approval.rules[0].scope_key == "session-workspace"
     assert config.skills.scan_project is False
     assert config.skills.disabled == ["demo"]
     assert config.prompt.system_append == "Always answer in Chinese."

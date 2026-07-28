@@ -17,6 +17,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolRetentionHint,
     ToolRetentionStrategy,
 )
+from reuleauxcoder.domain.approval import ApprovalGrantScope
 from reuleauxcoder.domain.process import (
     MAX_PROCESS_INPUT_BYTES,
     ProcessCapacityError,
@@ -208,6 +209,23 @@ class ShellTool(_BoundProcessTool):
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
+            ),
+        )
+
+    def approval_grant_scopes(
+        self,
+        arguments: Mapping[str, Any],
+        subjects: tuple[str, ...],
+    ) -> tuple[ApprovalGrantScope, ...]:
+        command = arguments.get("command")
+        if not subjects or not isinstance(command, str):
+            return ()
+        return (
+            ApprovalGrantScope(
+                id="exact",
+                label="This command signature",
+                description=command,
+                patterns=subjects,
             ),
         )
 

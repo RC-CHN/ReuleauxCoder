@@ -28,6 +28,7 @@ class ToolApprovalContext:
     tool_description: str | None = None
     tool_schema: dict[str, Any] | None = None
     subjects: tuple[str, ...] = ()
+    scope_key: str | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +119,8 @@ class ApprovalPolicyEngine:
                 score += 2
             else:
                 score += 3
+        if rule.scope_key is not None:
+            score += 2
         return score
 
     @staticmethod
@@ -134,6 +137,8 @@ class ApprovalPolicyEngine:
             return False
         if rule.profile is not None and rule.profile != context.profile:
             return False
+        if rule.scope_key is not None and rule.scope_key != context.scope_key:
+            return False
         return True
 
     @staticmethod
@@ -144,3 +149,17 @@ class ApprovalPolicyEngine:
             base = pattern[:-3].rstrip("/")
             return subject == base or subject.startswith(base + "/")
         return subject == pattern
+
+
+def approval_pattern_matches(pattern: str | None, subject: str) -> bool:
+    """Public matcher shared by policy evaluation and grant queue coverage."""
+    return ApprovalPolicyEngine._matches_subject(pattern, subject)
+
+
+__all__ = [
+    "ApprovalPolicyEngine",
+    "ApprovalPolicyMatch",
+    "ToolApprovalContext",
+    "ToolSource",
+    "approval_pattern_matches",
+]

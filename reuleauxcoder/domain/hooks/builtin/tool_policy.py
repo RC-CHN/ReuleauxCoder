@@ -102,6 +102,7 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
                 tool_description=metadata.get("tool_description"),
                 tool_schema=metadata.get("tool_schema"),
                 subjects=tuple(metadata.get("approval_subjects") or ()),
+                scope_key=metadata.get("approval_scope_key"),
             )
             match = self.approval_engine.evaluate(approval_context)
             if match.action == "deny":

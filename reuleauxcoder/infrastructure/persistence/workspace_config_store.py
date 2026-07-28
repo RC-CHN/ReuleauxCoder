@@ -119,6 +119,7 @@ class WorkspaceConfigStore:
             "effect_class": rule.effect_class,
             "profile": rule.profile,
             "pattern": rule.pattern,
+            "scope_key": rule.scope_key,
             "action": rule.action,
         }
         return {k: v for k, v in data.items() if v is not None}

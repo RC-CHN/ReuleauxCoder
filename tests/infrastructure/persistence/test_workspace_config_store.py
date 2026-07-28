@@ -49,6 +49,7 @@ def test_save_approval_config_preserves_pattern_rules(tmp_path: Path) -> None:
                 ApprovalRuleConfig(
                     tool_name="edit_file",
                     pattern="src/**",
+                    scope_key="workspace-session",
                     action="allow",
                 )
             ]
@@ -59,6 +60,7 @@ def test_save_approval_config_preserves_pattern_rules(tmp_path: Path) -> None:
         {
             "tool_name": "edit_file",
             "pattern": "src/**",
+            "scope_key": "workspace-session",
             "action": "allow",
         }
     ]

@@ -56,6 +56,7 @@ CONFIG_SCHEMA = {
                 "effect_class": "string (optional)",
                 "profile": "string (optional)",
                 "pattern": "string (optional; exact subject, directory/**, or *)",
+                "scope_key": "string (optional; runtime environment identity)",
                 "action": "string (required, one of allow/warn/require_approval/deny)",
             }
         ],

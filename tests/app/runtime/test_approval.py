@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from reuleauxcoder.app.runtime.approval import (
+    apply_session_approval_grant,
     build_runtime_approval_provider,
     find_matching_rule,
     is_disabled_mcp_rule,
@@ -11,7 +12,12 @@ from reuleauxcoder.app.runtime.approval import (
 )
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEventType
-from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalRequest
+from reuleauxcoder.domain.approval_engine import ToolApprovalContext
+from reuleauxcoder.domain.approval import (
+    ApprovalDecision,
+    ApprovalGrantCandidate,
+    ApprovalRequest,
+)
 from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
@@ -19,6 +25,7 @@ from reuleauxcoder.domain.config.models import (
 )
 from reuleauxcoder.domain.hooks import HookPoint, HookRegistry
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
+from reuleauxcoder.domain.llm.models import ToolCall
 
 
 class _LLM:
@@ -182,6 +189,112 @@ def test_runtime_approval_is_ledgered_and_emitted_before_resolution() -> None:
         if event.kind == "approval_resolved"
     )
     assert resolved.payload["reason"] == "approved"
+
+
+def test_apply_session_grant_updates_live_policy_and_session_state() -> None:
+    agent = _approval_agent()
+    hook = ToolPolicyGuardHook(
+        approval_config=ApprovalConfig(default_mode="require_approval")
+    )
+    agent.hook_registry.register(HookPoint.BEFORE_TOOL_EXECUTE, hook)
+    rule = ApprovalRuleConfig(
+        tool_name="edit_file",
+        tool_source="builtin",
+        pattern="src/app.py",
+        scope_key="scope-1",
+        action="allow",
+    )
+    grant = ApprovalGrantCandidate(
+        id="exact",
+        label="This file",
+        description="src/app.py",
+        proposed_rules=(rule,),
+        scope_key="scope-1",
+    )
+    request = ApprovalRequest(
+        tool_name="edit_file",
+        tool_source="builtin",
+        subjects=("src/app.py",),
+        scope_key="scope-1",
+        grant_candidates=(grant,),
+    )
+
+    apply_session_approval_grant(agent, request, grant)
+
+    assert agent.session_approval_rules == [rule]
+    assert hook.approval_engine is not None
+    matched = hook.approval_engine.evaluate(
+        ToolApprovalContext(
+            tool_call=ToolCall(
+                id="next",
+                name="edit_file",
+                arguments={"file_path": "src/app.py"},
+            ),
+            tool_name="edit_file",
+            tool_source="builtin",
+            subjects=("src/app.py",),
+            scope_key="scope-1",
+        )
+    )
+    wrong_environment = hook.approval_engine.evaluate(
+        ToolApprovalContext(
+            tool_call=ToolCall(
+                id="other",
+                name="edit_file",
+                arguments={"file_path": "src/app.py"},
+            ),
+            tool_name="edit_file",
+            tool_source="builtin",
+            subjects=("src/app.py",),
+            scope_key="scope-2",
+        )
+    )
+    assert matched.action == "allow"
+    assert wrong_environment.action == "require_approval"
+
+
+def test_runtime_provider_rechecks_live_session_grants_before_human_prompt() -> None:
+    agent = _approval_agent()
+    agent.session_approval_rules = [
+        ApprovalRuleConfig(
+            tool_name="edit_file",
+            tool_source="builtin",
+            pattern="src/app.py",
+            scope_key="scope-1",
+            action="allow",
+        )
+    ]
+    presented = []
+    provider = build_runtime_approval_provider(
+        agent,
+        lambda pending: (
+            presented.append(pending.request)
+            or pending.resolve(ApprovalDecision.deny_once("human prompt"))
+        ),
+    )
+
+    matched = provider.request_approval(
+        ApprovalRequest(
+            tool_name="edit_file",
+            tool_source="builtin",
+            subjects=("src/app.py",),
+            scope_key="scope-1",
+        )
+    )
+    other = provider.request_approval(
+        ApprovalRequest(
+            tool_name="edit_file",
+            tool_source="builtin",
+            subjects=("src/other.py",),
+            scope_key="scope-1",
+        )
+    )
+
+    assert matched.approved is True
+    assert matched.reason == "matched session approval grant"
+    assert other.approved is False
+    assert len(presented) == 1
+    assert presented[0].subjects == ("src/other.py",)
 
 
 def test_bubbled_approval_keeps_child_attribution_in_root_ledger() -> None:

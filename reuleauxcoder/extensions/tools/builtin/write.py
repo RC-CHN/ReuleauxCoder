@@ -11,7 +11,10 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.diff import build_tool_diff
-from reuleauxcoder.domain.approval_subjects import canonical_workspace_subject
+from reuleauxcoder.domain.approval_subjects import (
+    canonical_workspace_subject,
+    file_approval_grant_scopes,
+)
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
@@ -52,6 +55,10 @@ class WriteFileTool(Tool):
             file_path,
         )
         return (subject,) if subject is not None else ()
+
+    def approval_grant_scopes(self, arguments, subjects):
+        del arguments
+        return file_approval_grant_scopes(subjects)
 
     def execute(  # type: ignore[override]
         self, file_path: str, content: str

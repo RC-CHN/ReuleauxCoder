@@ -102,6 +102,7 @@ class Agent:
             config, "session_fingerprint", None
         )
         self.session_approval_rules: list = []
+        self._session_approval_lock = threading.RLock()
         self.active_main_model_profile: str | None = getattr(
             config, "active_main_model_profile", None
         )

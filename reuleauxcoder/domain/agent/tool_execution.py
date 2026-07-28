@@ -18,7 +18,14 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
-from reuleauxcoder.domain.approval import ApprovalRequest, ApprovalSectionKind
+from reuleauxcoder.domain.approval import (
+    ApprovalGrantCandidate,
+    ApprovalGrantScope,
+    ApprovalRequest,
+    ApprovalSectionKind,
+)
+from reuleauxcoder.domain.approval_subjects import approval_scope_key
+from reuleauxcoder.domain.config.models import ApprovalRuleConfig
 from reuleauxcoder.domain.approval_preview import (
     build_approval_preview,
     capture_approval_document,
@@ -43,6 +50,71 @@ _EXTERNAL_PATH_ARGUMENTS = {
     "write_file": "file_path",
 }
 _EXTERNAL_MUTATION_TOOLS = frozenset({"edit_file", "write_file"})
+
+
+def _approval_grant_candidates(
+    tool,
+    tc: "ToolCall",
+    *,
+    tool_source: str,
+    mcp_server: str | None,
+    profile: str | None,
+    subjects: tuple[str, ...],
+    scope_key: str,
+) -> tuple[ApprovalGrantCandidate, ...]:
+    build_scopes = getattr(tool, "approval_grant_scopes", None)
+    raw_scopes = build_scopes(tc.arguments, subjects) if callable(build_scopes) else ()
+    scope_items = raw_scopes if isinstance(raw_scopes, (tuple, list)) else ()
+    scopes = tuple(
+        scope
+        for scope in scope_items
+        if isinstance(scope, ApprovalGrantScope)
+    )
+    if not scopes and tool_source == "mcp":
+        scopes = (
+            ApprovalGrantScope(
+                id="exact_tool",
+                label="This MCP tool",
+                description=(
+                    f"{mcp_server} · {tc.name}" if mcp_server else tc.name
+                ),
+            ),
+        )
+
+    candidates: list[ApprovalGrantCandidate] = []
+    seen_ids: set[str] = set()
+    for scope in scopes:
+        if not scope.id or scope.id in seen_ids:
+            continue
+        seen_ids.add(scope.id)
+        patterns: tuple[str | None, ...] = (
+            tuple(scope.patterns) if scope.patterns else (None,)
+        )
+        rules = tuple(
+            ApprovalRuleConfig(
+                tool_name=tc.name,
+                tool_source=tool_source,
+                mcp_server=mcp_server,
+                profile=profile,
+                pattern=pattern,
+                scope_key=scope_key,
+                action="allow",
+            )
+            for pattern in patterns
+        )
+        if not rules:
+            continue
+        candidates.append(
+            ApprovalGrantCandidate(
+                id=scope.id,
+                label=scope.label,
+                description=scope.description,
+                proposed_rules=rules,
+                scope_key=scope_key,
+                broad=scope.broad,
+            )
+        )
+    return tuple(candidates)
 
 
 def _external_workspace_target(tool, arguments: dict) -> str | None:
@@ -209,6 +281,10 @@ class ToolExecutor:
                         if isinstance(subject, str) and subject
                     )
 
+        current_scope_key = approval_scope_key(
+            tool,
+            session_id=self.agent.current_session_id,
+        )
         before_context = BeforeToolExecuteContext(
             hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
             agent_id=self.agent.agent_id,
@@ -227,6 +303,7 @@ class ToolExecutor:
                 "effect_class": getattr(tool, "effect_class", None),
                 "profile": getattr(tool, "approval_profile", None),
                 "approval_subjects": approval_subjects,
+                "approval_scope_key": current_scope_key,
             },
         )
 
@@ -298,18 +375,41 @@ class ToolExecutor:
                 return message
             try:
                 for approval_attempt in range(3):
+                    tool_source = str(
+                        before_context.metadata.get("tool_source") or "unknown"
+                    )
+                    mcp_server = before_context.metadata.get("mcp_server")
+                    profile = before_context.metadata.get("profile")
+                    grant_candidates = _approval_grant_candidates(
+                        tool,
+                        tc,
+                        tool_source=tool_source,
+                        mcp_server=(
+                            str(mcp_server) if mcp_server is not None else None
+                        ),
+                        profile=str(profile) if profile is not None else None,
+                        subjects=approval_subjects,
+                        scope_key=current_scope_key,
+                    )
+                    if external_mutation:
+                        grant_candidates = tuple(
+                            candidate
+                            for candidate in grant_candidates
+                            if not candidate.broad
+                        )
                     approval_request = ApprovalRequest(
                         tool_name=tc.name,
                         tool_args=dict(tc.arguments),
-                        tool_source=(
-                            getattr(tool, "tool_source", "builtin_tool")
-                            if tool is not None
-                            else "unknown"
+                        tool_source=tool_source,
+                        mcp_server=(
+                            str(mcp_server) if mcp_server is not None else None
                         ),
                         reason=approval_required.reason,
                         effect_class=before_context.metadata.get("effect_class"),
-                        profile=before_context.metadata.get("profile"),
+                        profile=str(profile) if profile is not None else None,
                         subjects=approval_subjects,
+                        scope_key=current_scope_key,
+                        grant_candidates=grant_candidates,
                         metadata={
                             "agent_id": self.agent.agent_id,
                             "session_generation": self.agent.session_generation,

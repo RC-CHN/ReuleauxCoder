@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import posixpath
 from typing import Any
 
+from reuleauxcoder.domain.approval import ApprovalGrantScope
 from reuleauxcoder.domain.workspace import WorkspaceError
 
 
@@ -42,4 +45,76 @@ def _portable_path(path: Path) -> str:
     return str(path).replace("\\", "/")
 
 
-__all__ = ["canonical_workspace_subject"]
+def approval_scope_key(tool: Any, *, session_id: str | None) -> str:
+    """Bind reusable grants to one rcoder session and execution environment."""
+    backend = getattr(tool, "backend", None)
+    context = getattr(backend, "context", None)
+    workspace = getattr(backend, "workspace", None)
+    root = getattr(workspace, "root", None)
+    payload = {
+        "backend": getattr(tool, "backend_id", "unknown"),
+        "execution_target": getattr(context, "execution_target", None),
+        "peer_id": getattr(context, "peer_id", None),
+        "session_id": session_id,
+        "workspace_root": (
+            str(root).replace("\\", "/") if root is not None else None
+        ),
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def file_approval_grant_scopes(
+    subjects: tuple[str, ...],
+) -> tuple[ApprovalGrantScope, ...]:
+    """Offer exact file grants and one safe common workspace subtree."""
+    if not subjects:
+        return ()
+    noun = "file" if len(subjects) == 1 else f"{len(subjects)} files"
+    scopes = [
+        ApprovalGrantScope(
+            id="exact",
+            label=f"This {noun}",
+            description=", ".join(subjects),
+            patterns=subjects,
+        )
+    ]
+    if any(_is_absolute_subject(subject) for subject in subjects):
+        return tuple(scopes)
+    parents = tuple(posixpath.dirname(subject) or "." for subject in subjects)
+    try:
+        common = posixpath.commonpath(parents)
+    except ValueError:
+        return tuple(scopes)
+    if common in {"", "."}:
+        return tuple(scopes)
+    pattern = common.rstrip("/") + "/**"
+    scopes.append(
+        ApprovalGrantScope(
+            id="directory",
+            label="This directory",
+            description=pattern,
+            patterns=(pattern,),
+            broad=True,
+        )
+    )
+    return tuple(scopes)
+
+
+def _is_absolute_subject(subject: str) -> bool:
+    return (
+        subject.startswith("/")
+        or (len(subject) >= 3 and subject[1] == ":" and subject[2] == "/")
+        or subject.startswith("//")
+    )
+
+
+__all__ = [
+    "approval_scope_key",
+    "canonical_workspace_subject",
+    "file_approval_grant_scopes",
+]

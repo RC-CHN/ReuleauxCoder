@@ -367,6 +367,7 @@ class ConfigLoader:
                 effect_class=rule.get("effect_class"),
                 profile=rule.get("profile"),
                 pattern=rule.get("pattern"),
+                scope_key=rule.get("scope_key"),
                 action=rule.get("action", "require_approval"),
             )
             for rule in approval_config.get("rules", DEFAULTS["approval_rules"])

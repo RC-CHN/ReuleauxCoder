@@ -13,6 +13,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
+from reuleauxcoder.domain.approval import ApprovalGrantScope
 
 
 ToolResult = str | ToolOutcome
@@ -287,6 +288,25 @@ class Tool(ABC):
         """
         del arguments
         return ()
+
+    def approval_grant_scopes(
+        self,
+        arguments: Mapping[str, Any],
+        subjects: tuple[str, ...],
+    ) -> tuple[ApprovalGrantScope, ...]:
+        """Return conservative session scopes for a schema-valid invocation."""
+        del arguments
+        if not subjects:
+            return ()
+        noun = "resource" if len(subjects) == 1 else f"{len(subjects)} resources"
+        return (
+            ApprovalGrantScope(
+                id="exact",
+                label=f"This {noun}",
+                description=", ".join(subjects),
+                patterns=subjects,
+            ),
+        )
 
     def _argument_failure(self, issue: _ArgumentIssue) -> ToolOutcome:
         missing = f" Missing: {list(issue.missing)!r}." if issue.missing else ""

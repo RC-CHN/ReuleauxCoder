@@ -13,6 +13,7 @@ from reuleauxcoder.domain.approval_engine import (
 )
 from reuleauxcoder.domain.approval import (
     ApprovalDecision,
+    ApprovalGrantCandidate,
     ApprovalRequest,
     SharedApprovalProvider,
 )
@@ -49,6 +50,7 @@ class ApprovalRuleView:
     effect_class: str | None = None
     profile: str | None = None
     pattern: str | None = None
+    scope_key: str | None = None
     source: str = "builtin"
 
 
@@ -118,6 +120,7 @@ class ApprovalView:
                     "effect_class": rule.effect_class,
                     "profile": rule.profile,
                     "pattern": rule.pattern,
+                    "scope_key": rule.scope_key,
                     "source": rule.source,
                 }
                 for rule in self.rules
@@ -195,6 +198,7 @@ def same_rule_target(left: ApprovalRuleConfig, right: ApprovalRuleConfig) -> boo
         and left.effect_class == right.effect_class
         and left.profile == right.profile
         and left.pattern == right.pattern
+        and left.scope_key == right.scope_key
     )
 
 
@@ -236,11 +240,68 @@ def refresh_approval_runtime(agent, approval_config: ApprovalConfig) -> None:
             hook.update_approval_config(approval_config)
 
 
+def clone_approval_rules(
+    rules: Sequence[ApprovalRuleConfig],
+) -> list[ApprovalRuleConfig]:
+    """Detach mutable config rules before composing runtime policy."""
+    return [
+        ApprovalRuleConfig(
+            tool_name=rule.tool_name,
+            tool_source=rule.tool_source,
+            mcp_server=rule.mcp_server,
+            effect_class=rule.effect_class,
+            profile=rule.profile,
+            pattern=rule.pattern,
+            scope_key=rule.scope_key,
+            action=rule.action,
+        )
+        for rule in rules
+    ]
+
+
+def approval_rule_payload(rule: ApprovalRuleConfig) -> dict[str, Any]:
+    """Serialize one rule for runtime events without coupling to YAML storage."""
+    values = {
+        "tool_name": rule.tool_name,
+        "tool_source": rule.tool_source,
+        "mcp_server": rule.mcp_server,
+        "effect_class": rule.effect_class,
+        "profile": rule.profile,
+        "pattern": rule.pattern,
+        "scope_key": rule.scope_key,
+        "action": rule.action,
+    }
+    return {key: value for key, value in values.items() if value is not None}
+
+
+def merge_approval_config(
+    baseline: ApprovalConfig,
+    session_rules: Sequence[ApprovalRuleConfig] | None,
+) -> ApprovalConfig:
+    """Layer session-scoped rule targets over baseline approval config."""
+    merged_rules = clone_approval_rules(baseline.rules)
+    for rule in session_rules or ():
+        merged_rules = [
+            existing
+            for existing in merged_rules
+            if not same_rule_target(existing, rule)
+        ]
+        merged_rules.extend(clone_approval_rules((rule,)))
+    return ApprovalConfig(
+        default_mode=baseline.default_mode,
+        rules=merged_rules,
+        reviewer=baseline.reviewer,
+        auto_review_model_profile=baseline.auto_review_model_profile,
+        auto_review_policy=baseline.auto_review_policy,
+        auto_review_timeout_seconds=baseline.auto_review_timeout_seconds,
+    )
+
+
 def build_runtime_approval_provider(agent, handler) -> SharedApprovalProvider:
     """Build user or fail-closed auto-review routing from effective config."""
 
     approval = getattr(getattr(agent, "runtime_config", None), "approval", None)
-    judges = []
+    judges = [lambda request: _judge_session_approval_rules(agent, request)]
     reviewer = (
         "auto_review"
         if approval is not None
@@ -276,7 +337,107 @@ def build_runtime_approval_provider(agent, handler) -> SharedApprovalProvider:
         on_decision=lambda request, decision: _record_approval_decision(
             agent, request, decision
         ),
+        on_session_grant=lambda request, grant: apply_session_approval_grant(
+            agent,
+            request,
+            grant,
+        ),
     )
+
+
+def _judge_session_approval_rules(
+    agent,
+    request: ApprovalRequest,
+) -> ApprovalDecision | None:
+    """Recheck live session rules at the provider boundary.
+
+    Child agents may hold a cloned policy hook while a root-scoped approval is
+    being granted. This narrow judge prevents a stale clone from prompting
+    again; it evaluates session rules only and does not replace the ordinary
+    authorization hook.
+    """
+    lock = getattr(agent, "_session_approval_lock", None)
+    if lock is None:
+        return None
+    with lock:
+        session_rules = clone_approval_rules(
+            getattr(agent, "session_approval_rules", ()) or ()
+        )
+    if not session_rules:
+        return None
+    engine = ApprovalPolicyEngine(
+        ApprovalConfig(
+            default_mode="require_approval",
+            rules=session_rules,
+        )
+    )
+    tool_source = (
+        cast(ToolSource, request.tool_source)
+        if request.tool_source in {"builtin", "mcp", "unknown"}
+        else "unknown"
+    )
+    match = engine.evaluate(
+        ToolApprovalContext(
+            tool_call=ToolCall(
+                id=request.request_id,
+                name=request.tool_name,
+                arguments=dict(request.tool_args),
+            ),
+            tool_name=request.tool_name,
+            tool_source=tool_source,
+            mcp_server=request.mcp_server,
+            effect_class=request.effect_class,
+            profile=request.profile,
+            subjects=request.subjects,
+            scope_key=request.scope_key,
+        )
+    )
+    if match.rule is None:
+        return None
+    if match.action == "allow":
+        return ApprovalDecision.allow_once("matched session approval grant")
+    if match.action == "deny":
+        return ApprovalDecision.deny_once("blocked by session approval rule")
+    return None
+
+
+def apply_session_approval_grant(
+    agent,
+    request: ApprovalRequest,
+    grant: ApprovalGrantCandidate,
+) -> None:
+    """Atomically install a validated in-memory grant and refresh policy hooks."""
+    if grant.scope_key != request.scope_key:
+        raise ValueError("approval grant environment does not match the request")
+    if not grant.proposed_rules:
+        raise ValueError("approval grant contains no rules")
+    if any(rule.action != "allow" for rule in grant.proposed_rules):
+        raise ValueError("session approval grants may only contain allow rules")
+    if any(rule.scope_key != request.scope_key for rule in grant.proposed_rules):
+        raise ValueError("approval grant rule environment does not match the request")
+
+    lock = getattr(agent, "_session_approval_lock", None)
+    if lock is None:
+        raise RuntimeError("agent has no session approval rule lock")
+    with lock:
+        rules = list(getattr(agent, "session_approval_rules", []) or [])
+        for proposed in grant.proposed_rules:
+            rules = [
+                existing
+                for existing in rules
+                if not same_rule_target(existing, proposed)
+            ]
+            rules.append(proposed)
+        agent.session_approval_rules = rules
+        approval = merge_approval_config(
+            agent.runtime_config.approval,
+            agent.session_approval_rules,
+        )
+        refresh_approval_runtime(agent, approval)
+
+    persist = getattr(agent, "persist_runtime_snapshot", None)
+    if callable(persist):
+        persist()
 
 
 def _approval_identity(agent, request: ApprovalRequest) -> dict:
@@ -311,9 +472,24 @@ def _record_approval_request(agent, request: ApprovalRequest) -> None:
             "tool_name": request.tool_name,
             "tool_args": request.tool_args,
             "tool_source": request.tool_source,
+            "mcp_server": request.mcp_server,
             "effect_class": request.effect_class,
             "profile": request.profile,
             "subjects": list(request.subjects),
+            "scope_key": request.scope_key,
+            "grant_candidates": [
+                {
+                    "id": candidate.id,
+                    "label": candidate.label,
+                    "description": candidate.description,
+                    "broad": candidate.broad,
+                    "rules": [
+                        approval_rule_payload(rule)
+                        for rule in candidate.proposed_rules
+                    ],
+                }
+                for candidate in request.grant_candidates
+            ],
             "reason": request.reason,
             "reviewer": request.metadata.get("reviewer"),
             "approval_attempt": request.metadata.get("approval_attempt"),
@@ -369,6 +545,11 @@ def _record_approval_decision(
             "reviewed": decision.reviewed,
             "reviewer": request.metadata.get("reviewer"),
             "approval_attempt": request.metadata.get("approval_attempt"),
+            "grant_id": decision.grant.id if decision.grant is not None else None,
+            "grant_label": (
+                decision.grant.label if decision.grant is not None else None
+            ),
+            "released_request_ids": list(decision.released_request_ids),
         },
         agent_id=identity["agent_id"],
         parent_agent_id=identity["parent_agent_id"],
@@ -435,6 +616,7 @@ def _raw_rule_to_config(rule_dict: dict) -> ApprovalRuleConfig:
         effect_class=rule_dict.get("effect_class"),
         profile=rule_dict.get("profile"),
         pattern=rule_dict.get("pattern"),
+        scope_key=rule_dict.get("scope_key"),
         action=rule_dict.get("action", "require_approval"),
     )
 
@@ -544,6 +726,8 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
             parts.append(f"profile={rule.profile}")
         if rule.pattern:
             parts.append(f"pattern={rule.pattern}")
+        if rule.scope_key:
+            parts.append("runtime=session")
         visible_rules.append(
             ApprovalRuleView(
                 scope=", ".join(parts) if parts else "<default match>",
@@ -554,6 +738,7 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
                 effect_class=rule.effect_class,
                 profile=rule.profile,
                 pattern=rule.pattern,
+                scope_key=rule.scope_key,
                 source=source,
             )
         )

@@ -156,6 +156,7 @@ def test_runtime_state_round_trip_preserves_approval_pattern() -> None:
         ApprovalRuleConfig(
             tool_name="edit_file",
             pattern="src/app.py",
+            scope_key="session-workspace",
             action="allow",
         )
     ]
@@ -176,3 +177,4 @@ def test_runtime_state_round_trip_preserves_approval_pattern() -> None:
     assert len(restored.session_approval_rules) == 1
     assert restored.session_approval_rules[0].tool_name == "edit_file"
     assert restored.session_approval_rules[0].pattern == "src/app.py"
+    assert restored.session_approval_rules[0].scope_key == "session-workspace"

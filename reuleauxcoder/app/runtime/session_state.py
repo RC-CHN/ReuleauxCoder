@@ -6,8 +6,8 @@ from contextlib import nullcontext
 import threading
 
 from reuleauxcoder.app.runtime.approval import (
+    merge_approval_config,
     refresh_approval_runtime,
-    same_rule_target,
 )
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import (
@@ -157,54 +157,6 @@ def bind_session_persistence(
     bind(events_path=events_path, callback=_LiveSessionPersistence(persist))
 
 
-def _clone_approval_rules(rules: list[ApprovalRuleConfig]) -> list[ApprovalRuleConfig]:
-    return [
-        ApprovalRuleConfig(
-            tool_name=rule.tool_name,
-            tool_source=rule.tool_source,
-            mcp_server=rule.mcp_server,
-            effect_class=rule.effect_class,
-            profile=rule.profile,
-            pattern=rule.pattern,
-            action=rule.action,
-        )
-        for rule in rules
-    ]
-
-
-def merge_approval_config(
-    baseline: ApprovalConfig,
-    session_rules: list[ApprovalRuleConfig] | None,
-) -> ApprovalConfig:
-    """Merge baseline approval config with session-scoped rule overrides."""
-    merged_rules = _clone_approval_rules(baseline.rules)
-    for rule in session_rules or []:
-        merged_rules = [
-            existing
-            for existing in merged_rules
-            if not same_rule_target(existing, rule)
-        ]
-        merged_rules.append(
-            ApprovalRuleConfig(
-                tool_name=rule.tool_name,
-                tool_source=rule.tool_source,
-                mcp_server=rule.mcp_server,
-                effect_class=rule.effect_class,
-                profile=rule.profile,
-                pattern=rule.pattern,
-                action=rule.action,
-            )
-        )
-    return ApprovalConfig(
-        default_mode=baseline.default_mode,
-        rules=merged_rules,
-        reviewer=baseline.reviewer,
-        auto_review_model_profile=baseline.auto_review_model_profile,
-        auto_review_policy=baseline.auto_review_policy,
-        auto_review_timeout_seconds=baseline.auto_review_timeout_seconds,
-    )
-
-
 def get_runtime_approval_config(config: Config, agent: Agent) -> ApprovalConfig:
     """Return the effective approval config from baseline + session rule overrides."""
     session_rules = getattr(agent, "session_approval_rules", None)
@@ -234,6 +186,7 @@ def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeS
                 "effect_class": rule.effect_class,
                 "profile": rule.profile,
                 "pattern": rule.pattern,
+                "scope_key": rule.scope_key,
                 "action": rule.action,
             }
             for rule in session_rules
@@ -331,6 +284,7 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
                 effect_class=rule.get("effect_class"),
                 profile=rule.get("profile"),
                 pattern=rule.get("pattern"),
+                scope_key=rule.get("scope_key"),
                 action=rule.get("action", config.approval.default_mode),
             )
             for rule in runtime.approval_rules

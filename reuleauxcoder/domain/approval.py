@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Literal, Mapping, Protocol
 
-ApprovalDecisionMode = Literal["allow_once", "deny_once"]
+from reuleauxcoder.domain.approval_engine import approval_pattern_matches
+from reuleauxcoder.domain.config.models import ApprovalRuleConfig
+
+ApprovalDecisionMode = Literal["allow_once", "allow_session", "deny_once"]
 
 
 class ApprovalSectionKind(str, Enum):
@@ -33,6 +36,29 @@ class ApprovalPreview:
     sections: tuple[ApprovalSection, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalGrantScope:
+    """Tool-owned candidate scope before policy dimensions are attached."""
+
+    id: str
+    label: str
+    description: str
+    patterns: tuple[str, ...] = ()
+    broad: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalGrantCandidate:
+    """Validated session grant offered as one atomic user choice."""
+
+    id: str
+    label: str
+    description: str
+    proposed_rules: tuple[ApprovalRuleConfig, ...]
+    scope_key: str | None = None
+    broad: bool = False
+
+
 @dataclass(slots=True)
 class ApprovalRequest:
     """A request asking the interface layer whether a tool may proceed."""
@@ -40,10 +66,13 @@ class ApprovalRequest:
     tool_name: str
     tool_args: dict[str, Any] = field(default_factory=dict)
     tool_source: str = "unknown"
+    mcp_server: str | None = None
     effect_class: str | None = None
     reason: str | None = None
     profile: str | None = None
     subjects: tuple[str, ...] = ()
+    scope_key: str | None = None
+    grant_candidates: tuple[ApprovalGrantCandidate, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     preview: ApprovalPreview | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -56,10 +85,12 @@ class ApprovalDecision:
     mode: ApprovalDecisionMode
     reason: str | None = None
     reviewed: bool = False
+    grant: ApprovalGrantCandidate | None = None
+    released_request_ids: tuple[str, ...] = ()
 
     @property
     def approved(self) -> bool:
-        return self.mode == "allow_once"
+        return self.mode in {"allow_once", "allow_session"}
 
     @classmethod
     def allow_once(
@@ -70,6 +101,56 @@ class ApprovalDecision:
     @classmethod
     def deny_once(cls, reason: str | None = None) -> "ApprovalDecision":
         return cls(mode="deny_once", reason=reason)
+
+    @classmethod
+    def allow_session(
+        cls,
+        grant: ApprovalGrantCandidate,
+        reason: str | None = None,
+        *,
+        reviewed: bool = False,
+    ) -> "ApprovalDecision":
+        return cls(
+            mode="allow_session",
+            reason=reason,
+            reviewed=reviewed,
+            grant=grant,
+        )
+
+
+def approval_grant_covers_request(
+    grant: ApprovalGrantCandidate,
+    request: ApprovalRequest,
+) -> bool:
+    """Return whether every resource in a request is covered by one grant."""
+    if grant.scope_key != request.scope_key:
+        return False
+    rules = tuple(rule for rule in grant.proposed_rules if rule.action == "allow")
+    if not rules:
+        return False
+
+    def dimensions_match(rule: ApprovalRuleConfig) -> bool:
+        return (
+            (rule.tool_name is None or rule.tool_name == request.tool_name)
+            and (rule.tool_source is None or rule.tool_source == request.tool_source)
+            and (rule.mcp_server is None or rule.mcp_server == request.mcp_server)
+            and (
+                rule.effect_class is None
+                or rule.effect_class == request.effect_class
+            )
+            and (rule.profile is None or rule.profile == request.profile)
+            and (rule.scope_key is None or rule.scope_key == request.scope_key)
+        )
+
+    matching = tuple(rule for rule in rules if dimensions_match(rule))
+    if not matching:
+        return False
+    if not request.subjects:
+        return any(rule.pattern is None for rule in matching)
+    return all(
+        any(approval_pattern_matches(rule.pattern, subject) for rule in matching)
+        for subject in request.subjects
+    )
 
 
 # ── PendingApproval: unified bridge between tool request and UI resolution ──
@@ -138,6 +219,10 @@ sub-agents do not use a parent model as an authorization source.
 
 ApprovalRequestObserver = Callable[["ApprovalRequest"], None]
 ApprovalDecisionObserver = Callable[["ApprovalRequest", "ApprovalDecision"], None]
+SessionGrantHandler = Callable[
+    ["ApprovalRequest", "ApprovalGrantCandidate"],
+    None,
+]
 
 
 class SharedApprovalProvider(ApprovalProvider):
@@ -157,8 +242,12 @@ class SharedApprovalProvider(ApprovalProvider):
         reviewer: Literal["user", "auto_review"] = "user",
         on_request: ApprovalRequestObserver | None = None,
         on_decision: ApprovalDecisionObserver | None = None,
+        on_session_grant: SessionGrantHandler | None = None,
     ):
-        self._coordinator = coordinator or ApprovalCoordinator(handler)
+        self._coordinator = coordinator or ApprovalCoordinator(
+            handler,
+            on_session_grant=on_session_grant,
+        )
         self._judges: list[ApprovalJudge] = judges or []
         self._reviewer = reviewer
         self._on_request = on_request
@@ -208,9 +297,16 @@ class ApprovalCoordinator(ApprovalProvider):
     reviewing a request.
     """
 
-    def __init__(self, handler: ApprovalHandler, *, timeout: float = 60.0):
+    def __init__(
+        self,
+        handler: ApprovalHandler,
+        *,
+        timeout: float = 60.0,
+        on_session_grant: SessionGrantHandler | None = None,
+    ):
         self._handler = handler
         self._timeout = max(0.01, float(timeout))
+        self._on_session_grant = on_session_grant
         self._condition = threading.Condition()
         self._queue: deque[PendingApproval] = deque()
 
@@ -229,7 +325,11 @@ class ApprovalCoordinator(ApprovalProvider):
         with self._condition:
             self._queue.append(pending)
             self._condition.notify_all()
-            while self._queue and self._queue[0] is not pending:
+            while (
+                self._queue
+                and self._queue[0] is not pending
+                and not pending.event.is_set()
+            ):
                 self._condition.wait()
             if pending.event.is_set():
                 return pending.decision or ApprovalDecision.deny_once(
@@ -247,10 +347,14 @@ class ApprovalCoordinator(ApprovalProvider):
                 )
 
             if pending.wait():
-                return pending.decision or ApprovalDecision.deny_once("no decision")
-            return ApprovalDecision.deny_once(
-                f"approval timed out after {pending.timeout}s"
-            )
+                decision = pending.decision or ApprovalDecision.deny_once("no decision")
+            else:
+                decision = ApprovalDecision.deny_once(
+                    f"approval timed out after {pending.timeout}s"
+                )
+            if decision.mode == "allow_session":
+                decision = self._apply_session_grant(request, decision)
+            return decision
         finally:
             with self._condition:
                 if self._queue and self._queue[0] is pending:
@@ -261,6 +365,56 @@ class ApprovalCoordinator(ApprovalProvider):
                     except ValueError:
                         pass
                 self._condition.notify_all()
+
+    def _apply_session_grant(
+        self,
+        request: ApprovalRequest,
+        decision: ApprovalDecision,
+    ) -> ApprovalDecision:
+        grant = decision.grant
+        if grant is None:
+            return ApprovalDecision.deny_once(
+                "session approval did not include a validated grant"
+            )
+        if self._on_session_grant is None:
+            return ApprovalDecision.deny_once(
+                "session approval is unavailable in this runtime"
+            )
+        try:
+            self._on_session_grant(request, grant)
+        except Exception as error:
+            return ApprovalDecision.deny_once(
+                f"session approval failed closed: {error}"
+            )
+
+        covered_ids: list[str] = []
+        with self._condition:
+            for pending in tuple(self._queue):
+                if pending.request.request_id == request.request_id:
+                    continue
+                if pending.event.is_set():
+                    continue
+                if not approval_grant_covers_request(grant, pending.request):
+                    continue
+                try:
+                    self._queue.remove(pending)
+                except ValueError:  # pragma: no cover - protected by condition
+                    continue
+                pending.resolve(
+                    ApprovalDecision.allow_session(
+                        grant,
+                        (
+                            "approved by a matching session grant from "
+                            f"request {request.request_id}"
+                        ),
+                        reviewed=False,
+                    )
+                )
+                covered_ids.append(pending.request.request_id)
+            if covered_ids:
+                self._condition.notify_all()
+        decision.released_request_ids = tuple(covered_ids)
+        return decision
 
     def cancel_matching(
         self,

@@ -427,6 +427,9 @@ def test_external_write_forces_exact_path_review_and_revokes_access(tmp_path) ->
     assert request.metadata["force_human_review"] is True
     assert request.metadata["external_workspace_path"] == str(target.resolve())
     assert request.metadata["workspace_root"] == str(root.resolve())
+    assert request.subjects == (target.resolve().as_posix(),)
+    assert [candidate.id for candidate in request.grant_candidates] == ["exact"]
+    assert all(not candidate.broad for candidate in request.grant_candidates)
     assert [section.kind for section in request.preview.sections] == [
         ApprovalSectionKind.TEXT,
         ApprovalSectionKind.DIFF,
@@ -436,6 +439,80 @@ def test_external_write_forces_exact_path_review_and_revokes_access(tmp_path) ->
     with pytest.raises(WorkspaceError) as revoked:
         tool.backend.workspace.read_text(target)
     assert revoked.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
+
+
+def test_internal_write_review_offers_exact_and_directory_session_grants(
+    tmp_path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    tool = WriteFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(root), workspace_root=str(root))
+        )
+    )
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.require_approval("review write")
+    ]
+    provider = _ReviewingProvider()
+    agent.approval_provider = provider
+
+    ToolExecutor(agent).execute(
+        ToolCall(
+            id="internal-grants",
+            name="write_file",
+            arguments={"file_path": "src/demo.py", "content": "value\n"},
+        )
+    )
+
+    request = provider.requests[0]
+    assert request.tool_source == "builtin"
+    assert request.subjects == ("src/demo.py",)
+    assert request.scope_key is not None
+    assert [candidate.id for candidate in request.grant_candidates] == [
+        "exact",
+        "directory",
+    ]
+    exact, directory = request.grant_candidates
+    assert [rule.pattern for rule in exact.proposed_rules] == ["src/demo.py"]
+    assert [rule.pattern for rule in directory.proposed_rules] == ["src/**"]
+    assert all(
+        rule.scope_key == request.scope_key
+        for candidate in request.grant_candidates
+        for rule in candidate.proposed_rules
+    )
+    assert directory.broad is True
+
+
+def test_shell_review_offers_only_an_exact_signature_grant(tmp_path) -> None:
+    tool = ShellTool(
+        LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+        )
+    )
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.require_approval("review command")
+    ]
+    provider = _ReviewingProvider()
+    agent.approval_provider = provider
+
+    ToolExecutor(agent).execute(
+        ToolCall(
+            id="shell-grant",
+            name="shell",
+            arguments={"command": "echo approval"},
+        )
+    )
+
+    request = provider.requests[0]
+    assert len(request.subjects) == 1
+    assert [candidate.id for candidate in request.grant_candidates] == ["exact"]
+    candidate = request.grant_candidates[0]
+    assert candidate.label == "This command signature"
+    assert candidate.broad is False
+    assert candidate.proposed_rules[0].pattern == request.subjects[0]
 
 
 def test_external_edit_is_preflighted_after_review_under_exact_path_grant(
