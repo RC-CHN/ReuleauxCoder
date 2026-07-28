@@ -17,6 +17,7 @@ from reuleauxcoder.domain.runtime.events import (
     SubagentJobChanged,
     agent_event_to_runtime_event,
 )
+from reuleauxcoder.presentation import AssistantCell, DiffCell
 from reuleauxcoder.interfaces.cli.mini_tui import (
     ALTERNATE_SCROLL_DISABLE,
     ALTERNATE_SCROLL_ENABLE,
@@ -1879,7 +1880,7 @@ def test_mixed_transcript_repeated_resize_never_reuses_old_width_rows() -> None:
     adapter = MiniTUIEventAdapter()
     transcript = adapter.transcript.state.transcript
     transcript.append(
-        mini_tui_module.AssistantCell(
+        AssistantCell(
             id="mixed:markdown",
             text=(
                 "**粗体中文 🚀**\n\n| 项目 | 状态 |\n| --- | --- |\n| parser | ready |"
@@ -1888,7 +1889,7 @@ def test_mixed_transcript_repeated_resize_never_reuses_old_width_rows() -> None:
         )
     )
     transcript.append(
-        mini_tui_module.DiffCell(
+        DiffCell(
             id="mixed:diff",
             path="demo.py",
             diff="--- a/demo.py\n+++ b/demo.py\n-old 中文\n+new 🚀",
