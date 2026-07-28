@@ -60,6 +60,14 @@ class ApprovalGrantCandidate:
 
 
 @dataclass(slots=True)
+class ApprovalQueueStatus:
+    """Live queue facts shared with the currently focused review UI."""
+
+    position: int = 1
+    waiting: int = 0
+
+
+@dataclass(slots=True)
 class ApprovalRequest:
     """A request asking the interface layer whether a tool may proceed."""
 
@@ -73,6 +81,7 @@ class ApprovalRequest:
     subjects: tuple[str, ...] = ()
     scope_key: str | None = None
     grant_candidates: tuple[ApprovalGrantCandidate, ...] = ()
+    queue_status: ApprovalQueueStatus = field(default_factory=ApprovalQueueStatus)
     metadata: dict[str, Any] = field(default_factory=dict)
     preview: ApprovalPreview | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -326,6 +335,7 @@ class ApprovalCoordinator(ApprovalProvider):
         pending = PendingApproval(request=request, timeout=self._timeout)
         with self._condition:
             self._queue.append(pending)
+            self._refresh_queue_status_locked()
             self._condition.notify_all()
             while (
                 self._queue
@@ -366,6 +376,7 @@ class ApprovalCoordinator(ApprovalProvider):
                         self._queue.remove(pending)
                     except ValueError:
                         pass
+                self._refresh_queue_status_locked()
                 self._condition.notify_all()
 
     def _apply_session_grant(
@@ -414,6 +425,7 @@ class ApprovalCoordinator(ApprovalProvider):
                 )
                 covered_ids.append(pending.request.request_id)
             if covered_ids:
+                self._refresh_queue_status_locked()
                 self._condition.notify_all()
         decision.released_request_ids = tuple(covered_ids)
         return decision
@@ -434,5 +446,12 @@ class ApprovalCoordinator(ApprovalProvider):
                     continue
                 pending.resolve(ApprovalDecision.deny_once(reason))
             if matches:
+                self._refresh_queue_status_locked()
                 self._condition.notify_all()
             return tuple(pending.request.request_id for pending in matches)
+
+    def _refresh_queue_status_locked(self) -> None:
+        total = len(self._queue)
+        for index, pending in enumerate(self._queue):
+            pending.request.queue_status.position = index + 1
+            pending.request.queue_status.waiting = max(0, total - index - 1)

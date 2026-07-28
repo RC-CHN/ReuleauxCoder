@@ -10,6 +10,7 @@ from prompt_toolkit.utils import get_cwidth
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.app.commands.specs import DuringTurnPolicy
 from reuleauxcoder.domain.approval import ApprovalSection, ApprovalSectionKind
+from reuleauxcoder.domain.approval import ApprovalQueueStatus
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
     AssistantContentDelta,
@@ -1917,6 +1918,20 @@ def test_review_session_scope_is_a_single_interaction_state_machine() -> None:
     assert result[0].approved is True
     assert result[0].action == "allow_session"
     assert result[0].selected_id == "directory"
+
+
+def test_review_footer_shows_live_waiting_approval_count() -> None:
+    status = ApprovalQueueStatus(waiting=2)
+    request = ReviewRequest(
+        "Edit",
+        "Review diff",
+        queue_status=status,
+    )
+
+    assert "1 active · 2 waiting" in _interaction_lines(request)
+
+    status.waiting = 1
+    assert "1 active · 1 waiting" in _interaction_lines(request)
 
 
 def test_review_feedback_returns_user_text_without_rewriting() -> None:

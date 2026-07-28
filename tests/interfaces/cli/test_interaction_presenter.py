@@ -74,6 +74,7 @@ def test_local_and_remote_cli_render_identical_review_frames(width: int) -> None
                 "broad": False,
             },
         ),
+        "queue": {"position": 1, "waiting": 0},
     }
 
 
@@ -94,6 +95,10 @@ def test_review_without_grants_does_not_advertise_session_action() -> None:
         "allow_once",
         "deny",
     )
+    assert interaction_constraints(request)["queue"] == {
+        "position": 1,
+        "waiting": 0,
+    }
 
 
 def test_large_write_review_is_head_tail_folded_inside_bounded_frame() -> None:

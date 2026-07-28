@@ -80,6 +80,7 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
                     )
                     for candidate in request.grant_candidates
                 ),
+                queue_status=request.queue_status,
                 request_id=request.request_id,
             )
         )

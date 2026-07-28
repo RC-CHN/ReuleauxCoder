@@ -66,6 +66,10 @@ def interaction_lines(
                 f"[Enter/Y] {request.approve_label}{session}   "
                 f"[N] {request.reject_label}   [F] Deny with feedback"
             ]
+        if request.queue_status.waiting:
+            lines.append(
+                f"1 active · {request.queue_status.waiting} waiting"
+            )
     elif isinstance(request, ConfirmRequest):
         lines.extend([request.message, "[Enter/Y] Confirm   [N] Cancel"])
     elif isinstance(request, ChooseOneRequest):

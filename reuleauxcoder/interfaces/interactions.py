@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import uuid
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
-from reuleauxcoder.domain.approval import ApprovalSection
+from reuleauxcoder.domain.approval import ApprovalQueueStatus, ApprovalSection
 
 if TYPE_CHECKING:
     from reuleauxcoder.interfaces.events import UIEvent
@@ -123,6 +123,7 @@ class ReviewRequest:
     sections: tuple[ApprovalSection, ...] = ()
     context: ReviewContext | None = None
     grant_options: tuple[ReviewGrantOption, ...] = ()
+    queue_status: ApprovalQueueStatus = field(default_factory=ApprovalQueueStatus)
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     deadline: float | None = None
 

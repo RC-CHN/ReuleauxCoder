@@ -71,6 +71,11 @@ def render_interaction_request(
             "\nSELECT AN ACTION // CTRL+C CANCELS",
             style=theme.style(DisplayTone.MUTED),
         )
+        if request.queue_status.waiting:
+            choices.append(
+                f"\n1 ACTIVE // {request.queue_status.waiting} WAITING",
+                style=theme.style(DisplayTone.MUTED),
+            )
         console.print(
             build_review_frame(
                 title=request.title,
@@ -138,4 +143,8 @@ def interaction_constraints(request: InteractionRequest) -> dict[str, object]:
             }
             for option in request.grant_options
         )
+    constraints["queue"] = {
+        "position": request.queue_status.position,
+        "waiting": request.queue_status.waiting,
+    }
     return constraints

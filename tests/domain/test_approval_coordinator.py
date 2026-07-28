@@ -42,6 +42,8 @@ def test_concurrent_requests_register_but_only_head_gets_ui_focus() -> None:
         threading.Event().wait(0.005)
     assert coordinator.pending_count == 2
     assert [item.request.tool_name for item in presented] == ["first"]
+    assert presented[0].request.queue_status.position == 1
+    assert presented[0].request.queue_status.waiting == 1
 
     presented[0].resolve(ApprovalDecision.allow_once())
     first.join(1)
@@ -50,6 +52,8 @@ def test_concurrent_requests_register_but_only_head_gets_ui_focus() -> None:
             break
         threading.Event().wait(0.005)
     assert [item.request.tool_name for item in presented] == ["first", "second"]
+    assert presented[1].request.queue_status.position == 1
+    assert presented[1].request.queue_status.waiting == 0
     presented[1].resolve(ApprovalDecision.deny_once())
     second.join(1)
 
