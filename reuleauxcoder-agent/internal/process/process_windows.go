@@ -37,3 +37,10 @@ func terminateProcessTree(cmd *exec.Cmd) {
 	kill := exec.Command("taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F")
 	_ = kill.Run()
 }
+
+func reapProcessTreeAfterRootExit(cmd *exec.Cmd) {
+	// taskkill cannot reliably discover descendants once the root has exited.
+	// Avoid spawning taskkill after every normally completed command; live-root
+	// termination still uses terminateProcessTree.
+	_ = cmd
+}

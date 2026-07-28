@@ -567,11 +567,13 @@ class LocalProcessPort:
 
         for reader in entry.reader_threads:
             reader.join(timeout=_TRAILING_OUTPUT_GRACE_SECONDS)
-        if any(reader.is_alive() for reader in entry.reader_threads):
-            # A descendant inherited the stream. Permanent detach is not part
-            # of the process-session contract, so close the known process tree
-            # and bound the EOF wait.
+        readers_alive = any(reader.is_alive() for reader in entry.reader_threads)
+        if os.name != "nt" or readers_alive:
+            # Permanent detach is not part of the process-session contract. On
+            # POSIX the original process group catches descendants whether they
+            # inherited a stream or redirected every stream away from rcoder.
             self._signal_tree(entry, force=True, include_exited_group=True)
+        if readers_alive:
             self._close_entry_streams(entry)
             for reader in entry.reader_threads:
                 reader.join(timeout=0.1)

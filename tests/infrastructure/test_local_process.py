@@ -191,6 +191,42 @@ def test_root_exit_bounds_descendant_pipe_drain(tmp_path) -> None:
     port.release(handle.session_id)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group assertion")
+def test_root_exit_reaps_descendant_with_redirected_streams(tmp_path) -> None:
+    marker = tmp_path / "descendant-output"
+    pid_file = tmp_path / "descendant-pid"
+    command = (
+        "(trap '' HUP TERM; while :; do printf x >> "
+        f"{shlex.quote(str(marker))}; sleep 0.05; done) "
+        f">/dev/null 2>&1 & printf '%s' \"$!\" > {shlex.quote(str(pid_file))}"
+    )
+    port = LocalProcessPort()
+    handle = port.start(command, cwd=str(tmp_path), runtime_timeout=10)
+    deadline = time.monotonic() + 3
+    snapshot = port.poll(handle.session_id, wait_ms=100)
+    while snapshot.state is ProcessState.RUNNING:
+        assert time.monotonic() < deadline
+        snapshot = port.poll(
+            handle.session_id,
+            cursor=snapshot.cursor,
+            wait_ms=100,
+        )
+
+    descendant_pid = int(pid_file.read_text())
+    try:
+        time.sleep(0.15)
+        first_size = marker.stat().st_size if marker.exists() else 0
+        time.sleep(0.2)
+        second_size = marker.stat().st_size if marker.exists() else 0
+        assert second_size == first_size
+    finally:
+        try:
+            os.kill(descendant_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    port.release(handle.session_id)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal assertion")
 def test_repeated_process_controls_are_idempotent(monkeypatch, tmp_path) -> None:
     port = LocalProcessPort()

@@ -33,3 +33,18 @@ func terminateProcessTree(cmd *exec.Cmd) {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+func reapProcessTreeAfterRootExit(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	processGroup := -cmd.Process.Pid
+	if syscall.Kill(processGroup, 0) != nil {
+		return
+	}
+	_ = syscall.Kill(processGroup, syscall.SIGTERM)
+	time.Sleep(100 * time.Millisecond)
+	if syscall.Kill(processGroup, 0) == nil {
+		_ = syscall.Kill(processGroup, syscall.SIGKILL)
+	}
+}

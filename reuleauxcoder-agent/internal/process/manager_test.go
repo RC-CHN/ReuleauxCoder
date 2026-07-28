@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -78,6 +80,56 @@ func TestRootExitDoesNotWaitIndefinitelyForDescendantPipe(t *testing.T) {
 	}
 	if result.Data["exit_code"] != 0 || result.Data["stdout_all"] != "done" {
 		t.Fatalf("root process result was not preserved: %#v", result)
+	}
+}
+
+func TestRootExitReapsDescendantWithRedirectedStreams(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	defer manager.Close()
+	marker := filepath.Join(root, "descendant-output")
+	pidFile := filepath.Join(root, "descendant-pid")
+	command := fmt.Sprintf(
+		"(trap '' HUP TERM; while :; do printf x >> %q; sleep 0.05; done) "+
+			">/dev/null 2>&1 & printf '%%s' \"$!\" > %q",
+		marker,
+		pidFile,
+	)
+	started := manager.Execute(request("process.start", map[string]any{
+		"process_id":      "redirected-descendant",
+		"idempotency_key": "redirected-descendant-key",
+		"command":         command, "cwd": root,
+	}))
+	if !started.OK {
+		t.Fatal(started)
+	}
+	result := waitDone(t, manager, "redirected-descendant")
+	if result.Data["exit_code"] != 0 {
+		t.Fatalf("root process result changed: %#v", result)
+	}
+	pidText, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descendantPID, err := strconv.Atoi(string(pidText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = syscall.Kill(descendantPID, syscall.SIGKILL) }()
+	time.Sleep(150 * time.Millisecond)
+	first, _ := os.Stat(marker)
+	time.Sleep(200 * time.Millisecond)
+	second, _ := os.Stat(marker)
+	firstSize := int64(0)
+	secondSize := int64(0)
+	if first != nil {
+		firstSize = first.Size()
+	}
+	if second != nil {
+		secondSize = second.Size()
+	}
+	if secondSize != firstSize {
+		t.Fatalf("redirected descendant remained active: %d -> %d", firstSize, secondSize)
 	}
 }
 
