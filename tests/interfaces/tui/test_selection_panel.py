@@ -1,4 +1,4 @@
-from reuleauxcoder.interfaces.cli.selection_panel import (
+from reuleauxcoder.interfaces.tui.selection_panel import (
     SelectionItem,
     SelectionPanel,
 )

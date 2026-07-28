@@ -1,4 +1,4 @@
-"""Virtual visual-line index for the prompt_toolkit transcript viewport."""
+"""Virtual visual-line index for the Prompt Toolkit transcript viewport."""
 
 from __future__ import annotations
 

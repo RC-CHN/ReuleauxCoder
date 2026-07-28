@@ -1,4 +1,4 @@
-from reuleauxcoder.interfaces.cli.transcript_benchmark import benchmark_transcript
+from reuleauxcoder.interfaces.tui.transcript_benchmark import benchmark_transcript
 
 
 def test_transcript_benchmark_reports_required_metrics() -> None:

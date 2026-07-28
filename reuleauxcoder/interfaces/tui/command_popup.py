@@ -1,4 +1,4 @@
-"""Registry-driven slash command popup entries (UI-neutral, testable)."""
+"""Registry-driven slash command popup entries for the terminal UI."""
 
 from __future__ import annotations
 

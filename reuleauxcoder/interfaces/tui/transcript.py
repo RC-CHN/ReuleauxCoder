@@ -7,7 +7,7 @@ import json
 from prompt_toolkit.utils import get_cwidth
 
 from reuleauxcoder.domain.approval import ApprovalSectionKind
-from reuleauxcoder.interfaces.cli.markdown_fragments import RetainedMarkdownRenderer
+from reuleauxcoder.interfaces.tui.markdown_fragments import RetainedMarkdownRenderer
 from reuleauxcoder.interfaces.tui.formatting import (
     clip,
     first_meaningful_line,

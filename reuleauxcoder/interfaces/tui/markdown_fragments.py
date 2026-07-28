@@ -1,4 +1,4 @@
-"""Retained Rich Markdown rendering for prompt_toolkit transcript cells."""
+"""Retained Rich Markdown rendering for Prompt Toolkit transcript cells."""
 
 from __future__ import annotations
 

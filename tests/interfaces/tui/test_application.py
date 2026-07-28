@@ -18,20 +18,24 @@ from reuleauxcoder.domain.runtime.events import (
     agent_event_to_runtime_event,
 )
 from reuleauxcoder.presentation import AssistantCell, DiffCell
-from reuleauxcoder.interfaces.cli.mini_tui import (
+from reuleauxcoder.interfaces.tui.application import (
     ALTERNATE_SCROLL_DISABLE,
     ALTERNATE_SCROLL_ENABLE,
     MINI_TUI_MOUSE_SUPPORT,
     MiniTUIEventAdapter,
-    MiniTUIInteractor,
     MiniTUIApplication,
     _execution_panel_rows,
-    _interaction_lines,
-    _interaction_response,
-    _wrap_fragments,
-    _wrapped_row_count,
 )
-from reuleauxcoder.interfaces.cli.virtual_transcript import (
+from reuleauxcoder.interfaces.tui.formatting import (
+    wrap_fragments as _wrap_fragments,
+    wrapped_row_count as _wrapped_row_count,
+)
+from reuleauxcoder.interfaces.tui.interaction import (
+    MiniTUIInteractor,
+    interaction_lines as _interaction_lines,
+    interaction_response as _interaction_response,
+)
+from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VirtualTranscriptControl,
     VirtualTranscriptLayout,
     VisualCell,
@@ -171,7 +175,7 @@ def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
     from types import SimpleNamespace
 
     from reuleauxcoder.presentation.models import ToolCell, ToolCellStatus
-    from reuleauxcoder.interfaces.cli.mini_tui import (
+    from reuleauxcoder.interfaces.tui.application import (
         _cell_fragments,
         _fragments_to_visual_lines,
     )
@@ -491,7 +495,7 @@ def test_wrapped_row_count_grows_input_height_with_cjk_awareness() -> None:
 
 
 def test_command_popup_adopts_candidate_and_hides_on_non_slash() -> None:
-    from reuleauxcoder.interfaces.cli.command_popup import PopupEntry
+    from reuleauxcoder.interfaces.tui.command_popup import PopupEntry
 
     app = object.__new__(MiniTUIApplication)
     app.interactor = SimpleNamespace(active_request=None)
@@ -521,7 +525,7 @@ def test_command_popup_adopts_candidate_and_hides_on_non_slash() -> None:
 
 
 def test_command_popup_dismissed_until_text_changes() -> None:
-    from reuleauxcoder.interfaces.cli.command_popup import PopupEntry
+    from reuleauxcoder.interfaces.tui.command_popup import PopupEntry
 
     app = object.__new__(MiniTUIApplication)
     app.interactor = SimpleNamespace(active_request=None)
@@ -826,7 +830,7 @@ def test_mcp_view_opens_toggle_panel_and_confirm_keeps_it_open() -> None:
     assert app._open_interactive_view(
         _mcp_view_payload(action="refresh", focus=False)
     ) is True
-    from reuleauxcoder.interfaces.cli.selection_panel import SelectionPanel
+    from reuleauxcoder.interfaces.tui.selection_panel import SelectionPanel
 
     selection: SelectionPanel | None = app._selection
     assert selection is not None
@@ -1283,7 +1287,7 @@ def test_view_text_formats_help_sessions_jobs_tokens_and_config() -> None:
         SubagentJobViewModel,
         TokenUsageViewModel,
     )
-    from reuleauxcoder.interfaces.cli.mini_tui import _view_text
+    from reuleauxcoder.interfaces.tui.view_text import view_text as _view_text
 
     def payload(view_model) -> SimpleNamespace:
         return SimpleNamespace(

@@ -65,17 +65,17 @@ from reuleauxcoder.extensions.mcp.models import MCPServersView
 from reuleauxcoder.extensions.skills.models import SkillsViewModel
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
-from reuleauxcoder.interfaces.cli.command_popup import (
+from reuleauxcoder.interfaces.tui.command_popup import (
     PopupEntry,
     build_popup_entries,
     filter_entries,
 )
-from reuleauxcoder.interfaces.cli.markdown_fragments import RetainedMarkdownRenderer
-from reuleauxcoder.interfaces.cli.selection_panel import (
+from reuleauxcoder.interfaces.tui.markdown_fragments import RetainedMarkdownRenderer
+from reuleauxcoder.interfaces.tui.selection_panel import (
     SelectionItem,
     SelectionPanel,
 )
-from reuleauxcoder.interfaces.cli.virtual_transcript import (
+from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VirtualTranscriptControl,
     VirtualTranscriptLayout,
     VisualCell,

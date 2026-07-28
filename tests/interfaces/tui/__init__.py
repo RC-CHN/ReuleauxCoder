@@ -1,0 +1,1 @@
+"""Terminal UI interface tests."""

@@ -1,4 +1,4 @@
-"""Non-blocking selection panel state for the mini-TUI (UI-neutral)."""
+"""Non-blocking selection panel state for the terminal UI."""
 
 from __future__ import annotations
 

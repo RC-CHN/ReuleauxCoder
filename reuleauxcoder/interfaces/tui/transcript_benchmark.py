@@ -1,4 +1,4 @@
-"""Repeatable virtual-transcript layout benchmark used by CLI acceptance."""
+"""Repeatable virtual-transcript layout benchmark used by TUI acceptance."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from prompt_toolkit.data_structures import Point
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.interfaces.tui import MiniTUIEventAdapter
-from reuleauxcoder.interfaces.cli.virtual_transcript import VirtualTranscriptControl
+from reuleauxcoder.interfaces.tui.virtual_transcript import VirtualTranscriptControl
 from reuleauxcoder.presentation import AssistantCell, DiffCell, ToolCell, UserCell
 from reuleauxcoder.presentation.models import ToolCellStatus
 

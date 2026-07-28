@@ -1,6 +1,6 @@
 import pytest
 
-from reuleauxcoder.interfaces.cli.markdown_fragments import (
+from reuleauxcoder.interfaces.tui.markdown_fragments import (
     RetainedMarkdownRenderer,
     _plain_markdown_fragments,
     _rich_markdown_fragments,

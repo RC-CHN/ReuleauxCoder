@@ -3,7 +3,7 @@
 
 import json
 
-from reuleauxcoder.interfaces.cli.transcript_benchmark import benchmark_transcript
+from reuleauxcoder.interfaces.tui.transcript_benchmark import benchmark_transcript
 
 
 if __name__ == "__main__":

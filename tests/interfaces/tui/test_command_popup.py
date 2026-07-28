@@ -1,7 +1,7 @@
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import slash_trigger
 from reuleauxcoder.app.commands.specs import ActionSpec
-from reuleauxcoder.interfaces.cli.command_popup import (
+from reuleauxcoder.interfaces.tui.command_popup import (
     build_popup_entries,
     filter_entries,
 )
