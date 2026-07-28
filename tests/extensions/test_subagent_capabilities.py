@@ -10,7 +10,9 @@ from reuleauxcoder.domain.hooks.builtin.tool_policy import ToolPolicyGuardHook
 from reuleauxcoder.domain.hooks.types import BeforeToolExecuteContext, HookPoint
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.subagent.manager import _filter_subagent_tools
+from reuleauxcoder.extensions.subagent.manager import run_subagent_task
 from reuleauxcoder.extensions.subagent.scoped_tools import materialize_subagent_tool
+from reuleauxcoder.extensions.subagent.worker_runtime import WorkerExecutionResult
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend
 from reuleauxcoder.extensions.tools.base import Tool
 from reuleauxcoder.extensions.tools.builtin.control import (
@@ -25,7 +27,7 @@ from reuleauxcoder.extensions.tools.builtin.grep import GrepTool
 from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
 from reuleauxcoder.extensions.tools.builtin.lsp import LspTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
-from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
+from reuleauxcoder.extensions.tools.builtin.shell import ShellSessionTool, ShellTool
 from reuleauxcoder.extensions.tools.builtin.subagent_control import (
     ListAgentsTool,
     SpawnAgentTool,
@@ -66,6 +68,7 @@ def _parent_with_all_tools():
             WriteFileTool(),
             EditFileTool(),
             ShellTool(),
+            ShellSessionTool(),
             UpdatePlanTool(),
             ReportProgressTool(),
             ReportToParentTool(),
@@ -87,11 +90,54 @@ def test_child_capability_matrix_has_read_baseline_without_recursion_or_plan() -
         "write_file",
         "edit_file",
         "shell",
+        "shell_session",
         *controls,
     }
-    assert verify == baseline | {"shell", *controls}
+    assert verify == baseline | {"shell", "shell_session", *controls}
     assert "agent" not in execute
     assert "update_plan" not in execute
+
+
+def test_subagent_broker_inherits_session_process_manager(monkeypatch) -> None:
+    parent = Agent(llm=_LLM(), tools=[ShellTool(), ShellSessionTool()])
+    parent.current_session_id = "session-process-owner"
+    process_manager = object()
+    parent.process_manager = process_manager
+    captured: dict[str, object] = {}
+
+    def run_worker(_spec, broker, **_kwargs):
+        captured["process_manager"] = broker.agent.process_manager
+        return WorkerExecutionResult(
+            status="ok",
+            summary=(
+                "Conclusion\nDone.\n"
+                "Evidence\nNone.\n"
+                "Changes and artifacts\nNone.\n"
+                "Unresolved issues\nNone.\n"
+                "Confidence\nhigh"
+            ),
+            messages=[],
+        )
+
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager._subagent_llm_kwargs",
+        lambda _parent, _route: {},
+    )
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.subagent.manager.run_isolated_worker",
+        run_worker,
+    )
+
+    result = run_subagent_task(
+        parent_agent=parent,
+        task="start a resumable process",
+        mode="execute",
+    )
+
+    assert result.status == "ok"
+    assert captured["process_manager"] is process_manager
+    assert parent._subagent_manager is not None
+    parent._subagent_manager.shutdown()
 
 
 def test_child_control_trio_does_not_depend_on_root_mode_tool_list() -> None:

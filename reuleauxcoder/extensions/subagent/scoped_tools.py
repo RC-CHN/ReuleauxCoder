@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Any, cast
 
 from reuleauxcoder.extensions.tools.base import Tool, ToolResult
 
@@ -13,6 +14,7 @@ EFFECT_CLASSES = {
     "write_file": "workspace_write",
     "edit_file": "workspace_write",
     "shell": "process_execution",
+    "shell_session": "control_plane_internal",
 }
 
 
@@ -37,13 +39,19 @@ class ScopedSubagentTool(Tool):
         self.effect_class = effect_class or getattr(inner, "effect_class", None)
         self._require_reason = require_reason
         if require_reason:
-            properties = self.parameters.setdefault("properties", {})
+            properties = cast(
+                dict[str, Any],
+                self.parameters.setdefault("properties", {}),
+            )
             properties["reason"] = {
                 "type": "string",
                 "description": "Why this delegated side effect is required.",
                 "minLength": 1,
             }
-            required = list(self.parameters.get("required") or ())
+            required = cast(
+                list[str],
+                list(self.parameters.get("required") or ()),
+            )
             if "reason" not in required:
                 required.append("reason")
             self.parameters["required"] = required
@@ -84,7 +92,7 @@ def materialize_subagent_tool(tool: Tool) -> ScopedSubagentTool:
     clone = getattr(tool, "clone_for_scope", None)
     if not callable(clone):
         raise TypeError(f"Tool '{tool.name}' does not support scoped materialization")
-    inner = clone("subagent")
+    inner = cast(Tool, clone("subagent"))
     read_only = tool.name in READ_ONLY_BASELINE
     return ScopedSubagentTool(
         inner,

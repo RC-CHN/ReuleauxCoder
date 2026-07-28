@@ -6,6 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
 import hashlib
 import json
@@ -13,7 +14,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Callable, Literal
+from typing import Callable, Literal, TypedDict, cast
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.services.llm.factory import llm_runtime_kwargs
@@ -494,7 +495,7 @@ class SubagentManager:
         max_tokens: int | None = None,
         auto_verify: bool = True,
         working_directory: str | None = None,
-    ) -> str | SubagentResult:
+    ) -> str:
         if depth > self._max_depth:
             raise ValueError(f"Sub-agent depth limit reached ({self._max_depth})")
 
@@ -562,7 +563,7 @@ class SubagentManager:
         )
         cancel_event = threading.Event()
 
-        def _runner() -> str:
+        def _runner() -> str | SubagentResult:
             with self._slot_cv:
                 while self._active_explore >= self._runtime_parallel_explore:
                     if cancel_event.is_set() or self._shutdown:
@@ -1818,10 +1819,17 @@ class SubagentManager:
         cancel_matching = getattr(coordinator, "cancel_matching", None)
         if not callable(cancel_matching):
             return 0
-        request_ids = cancel_matching(
-            lambda request: request.metadata.get("subagent_job_id") == job_id,
-            reason=f"sub-agent {job_id} cancelled",
-        )
+        request_ids = [
+            str(request_id)
+            for request_id in cast(
+                Iterable[object],
+                cancel_matching(
+                    lambda request: request.metadata.get("subagent_job_id") == job_id,
+                    reason=f"sub-agent {job_id} cancelled",
+                )
+                or (),
+            )
+        ]
         interactor = getattr(root, "ui_interactor", None)
         cancel_interaction = getattr(interactor, "cancel", None)
         if callable(cancel_interaction):
@@ -2110,8 +2118,17 @@ def _filter_subagent_tools(parent_agent, mode: str):
             "edit_file",
             "write_file",
             "shell",
+            "shell_session",
         },
-        "verify": {"read_file", "list_file", "glob", "grep", "lsp", "shell"},
+        "verify": {
+            "read_file",
+            "list_file",
+            "glob",
+            "grep",
+            "lsp",
+            "shell",
+            "shell_session",
+        },
     }
     allowed = mode_allowlist[mode]
     allowed.update({"report_progress", "report_to_parent", "request_guidance"})
@@ -2120,7 +2137,12 @@ def _filter_subagent_tools(parent_agent, mode: str):
     for control_type in (ReportProgressTool, ReportToParentTool, RequestGuidanceTool):
         if control_type.name not in present:
             selected.append(control_type())
-    return [materialize_subagent_tool(tool) for tool in selected]
+    from reuleauxcoder.extensions.tools.base import Tool
+
+    scoped: list[Tool] = [
+        materialize_subagent_tool(tool) for tool in selected
+    ]
+    return scoped
 
 
 def run_subagent_task(
@@ -2197,6 +2219,7 @@ def run_subagent_task(
         or getattr(parent_agent, "runtime_working_directory", None)
     )
     sub.current_session_id = getattr(parent_agent, "current_session_id", None)
+    sub.process_manager = getattr(parent_agent, "process_manager", None)
     sub.history_ledger.bind_context(
         session_id=sub.current_session_id,
         agent_id=sub.agent_id,
@@ -2209,7 +2232,12 @@ def run_subagent_task(
     sub.subagent_task = task
     sub.strict_tool_scope = True
     sub._subagent_manager = manager
-    parent_event_sink = getattr(parent_agent, "_emit_event", None)
+    parent_event_sink_raw = getattr(parent_agent, "_emit_event", None)
+    parent_event_sink = (
+        cast(Callable[[AgentEvent], None], parent_event_sink_raw)
+        if callable(parent_event_sink_raw)
+        else None
+    )
     manager.register_child_agent(
         sub.agent_id,
         depth,
@@ -2268,7 +2296,7 @@ def run_subagent_task(
     broker = ParentToolBroker(
         sub,
         cancellation_event=cancellation,
-        event_sink=parent_event_sink if callable(parent_event_sink) else None,
+        event_sink=parent_event_sink,
     )
     started_at = time.monotonic()
     execution = run_isolated_worker(
@@ -2277,7 +2305,7 @@ def run_subagent_task(
         cancel_event=cancellation,
         timeout_seconds=effective_timeout_seconds,
         directive_source=((lambda: manager.drain_messages(job_id)) if job_id else None),
-        event_sink=parent_event_sink if callable(parent_event_sink) else None,
+        event_sink=parent_event_sink,
         checkpoint_sink=(
             (
                 lambda reference, checkpoint, payload: manager.commit_worker_checkpoint(
@@ -2500,7 +2528,16 @@ _FINAL_SECTION_PATTERN = re.compile(
 )
 
 
-def _parse_delegated_final_response(text: str) -> dict[str, object]:
+class _DelegatedFinalSections(TypedDict):
+    conclusion: str
+    evidence: list[str]
+    artifacts: list[str]
+    unresolved: list[str]
+    confidence: str | None
+    missing: list[str]
+
+
+def _parse_delegated_final_response(text: str) -> _DelegatedFinalSections:
     """Parse the child contract while keeping runtime facts authoritative."""
     matches = list(_FINAL_SECTION_PATTERN.finditer(text))
     sections: dict[str, str] = {}
@@ -2545,6 +2582,8 @@ def _retarget_tools(tools: list, cwd: Path) -> None:
 
     for tool in tools:
         backend = getattr(tool, "backend", None)
+        if backend is None:
+            continue
         context = getattr(backend, "context", None)
         if context is None:
             continue
