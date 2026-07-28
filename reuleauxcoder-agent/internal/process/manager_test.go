@@ -547,6 +547,66 @@ func TestCloseReapsProcessStartedBeforeRegistration(t *testing.T) {
 	}
 }
 
+func TestCloseTerminatesIndependentSessionsConcurrently(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	for index := 0; index < 4; index++ {
+		processID := fmt.Sprintf("close-concurrent-%d", index)
+		started := manager.Execute(request("process.start", map[string]any{
+			"process_id": processID, "idempotency_key": processID,
+			"command": "sleep 30", "cwd": root, "tty": false,
+		}))
+		if !started.OK {
+			t.Fatal(started)
+		}
+	}
+
+	started := time.Now()
+	report := manager.Close()
+
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("independent process cleanup was serialized: %s", elapsed)
+	}
+	if report.Total != 4 || report.TerminationErrors != 0 ||
+		report.ControlTimeouts != 0 || report.ReapTimeouts != 0 {
+		t.Fatalf("unexpected close report: %#v", report)
+	}
+}
+
+func TestCloseBoundsStalledStartReservation(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root, root)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	manager.afterStart = func(cmd *exec.Cmd) {
+		close(entered)
+		<-release
+	}
+	result := make(chan protocol.WorkspaceResult, 1)
+	go func() {
+		result <- manager.Execute(request("process.start", map[string]any{
+			"process_id": "stalled-close", "idempotency_key": "stalled-close-key",
+			"command": "sleep 30", "cwd": root, "tty": false,
+		}))
+	}()
+	<-entered
+
+	started := time.Now()
+	report := manager.Close()
+
+	if elapsed := time.Since(started); elapsed >= 3*time.Second {
+		t.Fatalf("close exceeded its start-reservation budget: %s", elapsed)
+	}
+	if report.StartTimeouts != 1 {
+		t.Fatalf("stalled start was not reported: %#v", report)
+	}
+	close(release)
+	startResult := <-result
+	if startResult.OK || startResult.ErrorCode != "invalid_state" {
+		t.Fatalf("stalled start crossed close barrier: %#v", startResult)
+	}
+}
+
 func waitDone(t *testing.T, manager *Manager, processID string) protocol.WorkspaceResult {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

@@ -65,7 +65,22 @@ func (r *Runner) Run(ctx context.Context) error {
 		workspaceRoot = cwd
 	}
 	processManager := processops.NewManager(workspaceRoot, cwd)
-	defer processManager.Close()
+	defer func() {
+		report := processManager.Close()
+		if report.StartTimeouts > 0 ||
+			report.TerminationErrors > 0 ||
+			report.ControlTimeouts > 0 ||
+			report.ReapTimeouts > 0 {
+			log.Printf(
+				"process cleanup incomplete: total=%d start_timeouts=%d termination_errors=%d control_timeouts=%d reap_timeouts=%d",
+				report.Total,
+				report.StartTimeouts,
+				report.TerminationErrors,
+				report.ControlTimeouts,
+				report.ReapTimeouts,
+			)
+		}
+	}()
 
 	registerResp, err := r.client.Register(ctx, protocol.RegisterRequest{
 		BootstrapToken: r.cfg.BootstrapToken,

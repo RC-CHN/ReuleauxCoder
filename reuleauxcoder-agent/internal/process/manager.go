@@ -23,6 +23,7 @@ const (
 	maxSessionInputBytes      = 1024 * 1024
 	maxProcessSessions        = 64
 	terminalRetention         = 10 * time.Minute
+	closePhaseTimeout         = 2 * time.Second
 )
 
 type bufferSnapshot struct {
@@ -168,6 +169,14 @@ type Manager struct {
 type startReservation struct {
 	done   chan struct{}
 	result protocol.WorkspaceResult
+}
+
+type CloseReport struct {
+	Total             int
+	StartTimeouts     int
+	TerminationErrors int
+	ControlTimeouts   int
+	ReapTimeouts      int
 }
 
 func NewManager(root, defaultCWD string) *Manager {
@@ -627,7 +636,7 @@ func (m *Manager) cleanupTerminalLocked() {
 	}
 }
 
-func (m *Manager) Close() {
+func (m *Manager) Close() CloseReport {
 	m.mu.Lock()
 	m.closing = true
 	reservations := make([]*startReservation, 0, len(m.starting))
@@ -639,15 +648,78 @@ func (m *Manager) Close() {
 		states = append(states, processState)
 	}
 	m.mu.Unlock()
+	report := CloseReport{Total: len(states) + len(reservations)}
+	startDeadline := time.Now().Add(closePhaseTimeout)
 	for _, reservation := range reservations {
-		<-reservation.done
+		remaining := time.Until(startDeadline)
+		if remaining <= 0 {
+			report.StartTimeouts++
+			continue
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-reservation.done:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-timer.C:
+			report.StartTimeouts++
+		}
 	}
+
+	terminationResults := make(chan error, len(states))
 	for _, processState := range states {
-		_ = processState.terminate("shutdown")
+		go func(processState *state) {
+			terminationResults <- processState.terminate("shutdown")
+		}(processState)
 	}
+	controlTimer := time.NewTimer(closePhaseTimeout)
+	controlsReceived := 0
+	for controlsReceived < len(states) {
+		select {
+		case err := <-terminationResults:
+			controlsReceived++
+			if err != nil {
+				report.TerminationErrors++
+			}
+		case <-controlTimer.C:
+			report.ControlTimeouts = len(states) - controlsReceived
+			controlsReceived = len(states)
+		}
+	}
+	if !controlTimer.Stop() {
+		select {
+		case <-controlTimer.C:
+		default:
+		}
+	}
+
+	reapDeadline := time.Now().Add(closePhaseTimeout)
 	for _, processState := range states {
-		<-processState.done
+		remaining := time.Until(reapDeadline)
+		if remaining <= 0 {
+			if !isDone(processState.done) {
+				report.ReapTimeouts++
+			}
+			continue
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-processState.done:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-timer.C:
+			report.ReapTimeouts++
+		}
 	}
+	return report
 }
 
 func terminateAndWait(cmd *exec.Cmd, processTree *processTreeHandle) {
