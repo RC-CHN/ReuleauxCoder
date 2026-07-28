@@ -663,7 +663,8 @@ class RemoteProcessPort:
                     entry.termination_reason = "transport_unknown"
             raise ProcessOperationUnconfirmed(
                 "remote soft-interrupt delivery could not be confirmed: "
-                f"{error}"
+                f"{error}",
+                snapshot=self._snapshot(entry, ProcessCursor()),
             ) from error
         return self._snapshot(entry, ProcessCursor())
 
@@ -677,7 +678,8 @@ class RemoteProcessPort:
         confirmed = self._terminate_entry(entry, reason=reason)
         if not confirmed:
             raise ProcessOperationUnconfirmed(
-                "remote process termination delivery could not be confirmed"
+                "remote process termination delivery could not be confirmed",
+                snapshot=self._snapshot(entry, ProcessCursor()),
             )
         return self._snapshot(entry, ProcessCursor())
 
@@ -738,11 +740,12 @@ class RemoteProcessPort:
         unknown = [entry for entry in entries if entry.state is ProcessState.UNKNOWN]
         terminal = [entry for entry in entries if entry.state is ProcessState.EXITED]
         unresolved = [*live, *unknown]
+        confirmations: tuple[bool, ...] = ()
         if unresolved:
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(32, len(unresolved))
             ) as pool:
-                tuple(
+                confirmations = tuple(
                     pool.map(
                         lambda entry: self._terminate_entry(
                             entry,
@@ -751,13 +754,21 @@ class RemoteProcessPort:
                         unresolved,
                     )
                 )
+        unconfirmed = sum(
+            not confirmed or entry.state is ProcessState.UNKNOWN
+            for entry, confirmed in zip(
+                unresolved,
+                confirmations,
+                strict=True,
+            )
+        )
         with self._lock:
             self._entries.clear()
         return ProcessShutdownReport(
             total=len(entries),
             already_exited=len(terminal),
             terminated=len(unresolved),
-            unknown=len(unknown),
+            unknown=unconfirmed,
         )
 
     def run(

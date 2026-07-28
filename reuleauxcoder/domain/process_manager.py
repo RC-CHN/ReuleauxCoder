@@ -16,6 +16,7 @@ from reuleauxcoder.domain.process import (
     ProcessCapacityError,
     ProcessCursor,
     ProcessHandle,
+    ProcessOperationUnconfirmed,
     ProcessOperationUnsupported,
     ProcessPort,
     ProcessSessionNotFound,
@@ -740,17 +741,46 @@ class ProcessManager:
         ]
         force_targets = [*remaining, *unknown]
 
-        def terminate_entry(entry: _ManagedEntry) -> None:
+        def terminate_entry(entry: _ManagedEntry) -> bool:
             try:
-                entry.port.terminate(entry.handle.session_id, reason="shutdown")
+                snapshot = entry.port.terminate(
+                    entry.handle.session_id,
+                    reason="shutdown",
+                )
+            except ProcessOperationUnconfirmed as error:
+                if error.snapshot is not None:
+                    with self._lock:
+                        if self._entries.get(entry.handle.session_id) is entry:
+                            entry.last_snapshot = error.snapshot
+                return False
             except Exception:
-                return
+                return False
+            with self._lock:
+                if self._entries.get(entry.handle.session_id) is entry:
+                    entry.last_snapshot = snapshot
+                    if snapshot.state is ProcessState.EXITED:
+                        entry.terminal_at = (
+                            entry.terminal_at or time.monotonic()
+                        )
+            return True
 
+        confirmations: tuple[bool, ...] = ()
         if force_targets:
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(self._max_sessions, len(force_targets))
             ) as pool:
-                tuple(pool.map(terminate_entry, force_targets))
+                confirmations = tuple(pool.map(terminate_entry, force_targets))
+        fallback_unknown_by_port: dict[int, int] = {}
+        for entry, confirmed in zip(
+            force_targets,
+            confirmations,
+            strict=True,
+        ):
+            if not confirmed or entry.last_snapshot.state is ProcessState.UNKNOWN:
+                port_id = id(entry.port)
+                fallback_unknown_by_port[port_id] = (
+                    fallback_unknown_by_port.get(port_id, 0) + 1
+                )
         reap_timeouts = start_reap_timeouts
         reap_deadline = time.monotonic() + 2.0
         for entry in force_targets:
@@ -770,18 +800,28 @@ class ProcessManager:
                         pass
             self._entries.clear()
             self._ports.clear()
+        unknown_after_cleanup = 0
         for port in ports:
             try:
                 report = port.shutdown(grace_seconds=0)
                 reap_timeouts += report.reap_timeouts
+                unknown_after_cleanup += (
+                    report.unknown
+                    if report.total > 0
+                    else fallback_unknown_by_port.get(id(port), 0)
+                )
             except Exception:
                 reap_timeouts += 1
+                unknown_after_cleanup += fallback_unknown_by_port.get(
+                    id(port),
+                    0,
+                )
         return ProcessShutdownReport(
             total=len(entries),
             already_exited=len(terminal),
             interrupted=len(live),
             terminated=len(force_targets),
-            unknown=len(unknown),
+            unknown=unknown_after_cleanup,
             reap_timeouts=reap_timeouts,
         )
 

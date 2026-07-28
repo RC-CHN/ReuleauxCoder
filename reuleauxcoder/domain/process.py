@@ -127,6 +127,15 @@ class ProcessOperationUnsupported(ProcessSessionError):
 class ProcessOperationUnconfirmed(ProcessSessionError):
     """The operation may have been delivered, but its result is ambiguous."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        snapshot: ProcessSnapshot | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.snapshot = snapshot
+
 
 class ProcessCapacityError(ProcessSessionError):
     """The process session capacity is exhausted."""

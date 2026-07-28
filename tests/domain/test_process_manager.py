@@ -257,7 +257,8 @@ def test_unknown_is_unresolved_not_a_synthetic_completion() -> None:
         )
         == 1
     )
-    manager.shutdown()
+    report = manager.shutdown()
+    assert report.unknown == 0
     assert port.terminate_calls == 1
     assert port.shutdown_calls == 1
 

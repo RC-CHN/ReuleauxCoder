@@ -189,9 +189,27 @@ def test_shutdown_attempts_to_terminate_unknown_remote_process() -> None:
 
     report = port.shutdown()
 
-    assert report.unknown == 1
+    assert report.unknown == 0
     assert report.terminated == 1
     assert relay.requests[-1][0].operation == "process.terminate"
+
+
+def test_shutdown_reports_remote_termination_that_remains_unconfirmed() -> None:
+    port, _relay = _port(
+        [
+            WorkspaceResult(
+                ok=True,
+                data={"process_id": "unconfirmed-shutdown", "reused": False},
+            ),
+            RemoteTimeoutError(2),
+        ]
+    )
+    port.start("long-running", cwd="/workspace", runtime_timeout=60)
+
+    report = port.shutdown()
+
+    assert report.terminated == 1
+    assert report.unknown == 1
 
 
 def test_remote_control_transport_failures_remain_unconfirmed() -> None:
@@ -207,12 +225,22 @@ def test_remote_control_transport_failures_remain_unconfirmed() -> None:
     )
     handle = port.start("long-running", cwd="/workspace", runtime_timeout=60)
 
-    with pytest.raises(ProcessOperationUnconfirmed, match="interrupt"):
+    with pytest.raises(
+        ProcessOperationUnconfirmed,
+        match="interrupt",
+    ) as interrupted:
         port.interrupt(handle.session_id)
+    assert interrupted.value.snapshot is not None
+    assert interrupted.value.snapshot.state is ProcessState.UNKNOWN
     assert port._lookup(handle.session_id).state is ProcessState.UNKNOWN
 
-    with pytest.raises(ProcessOperationUnconfirmed, match="termination"):
+    with pytest.raises(
+        ProcessOperationUnconfirmed,
+        match="termination",
+    ) as terminated:
         port.terminate(handle.session_id)
+    assert terminated.value.snapshot is not None
+    assert terminated.value.snapshot.state is ProcessState.UNKNOWN
     assert port._lookup(handle.session_id).state is ProcessState.UNKNOWN
 
 
