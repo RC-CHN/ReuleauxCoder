@@ -79,6 +79,7 @@ class _ManagedEntry:
     consumer_locks: dict[str, threading.Lock] = field(default_factory=dict)
     watcher_cursor: ProcessCursor = field(default_factory=ProcessCursor)
     watcher: threading.Thread | None = None
+    watcher_started: bool = False
     completion_emitted: bool = False
 
 
@@ -190,7 +191,6 @@ class ProcessManager:
             daemon=True,
         )
         entry.watcher = watcher
-        watcher.start()
         return handle
 
     def publish(self, session_id: str, *, observed: bool = False) -> None:
@@ -198,11 +198,12 @@ class ProcessManager:
         with self._lock:
             entry = self._require_entry_locked(session_id)
             entry.published = True
+            self._ensure_watcher_started_locked(entry)
             if observed and entry.last_snapshot.state is ProcessState.EXITED:
                 entry.observed = True
                 entry.observed_at = time.monotonic()
             if (
-                entry.last_snapshot.state is not ProcessState.RUNNING
+                entry.last_snapshot.state is ProcessState.EXITED
                 and not entry.completion_emitted
             ):
                 entry.completion_emitted = True
@@ -216,9 +217,11 @@ class ProcessManager:
             if entry.published:
                 return
             entry.abandoned = True
-            terminal = entry.last_snapshot.state is not ProcessState.RUNNING
+            terminal = entry.last_snapshot.state is ProcessState.EXITED
             if terminal:
                 self._entries.pop(session_id, None)
+            else:
+                self._ensure_watcher_started_locked(entry)
         if terminal:
             try:
                 entry.port.release(session_id)
@@ -407,7 +410,7 @@ class ProcessManager:
     ) -> int:
         with self._lock:
             return sum(
-                entry.last_snapshot.state is ProcessState.RUNNING
+                entry.last_snapshot.state is not ProcessState.EXITED
                 and (
                     owner_session_id is None
                     or entry.owner_session_id == owner_session_id
@@ -452,11 +455,21 @@ class ProcessManager:
                     owner_session_id=owner_session_id,
                     session_generation=session_generation,
                 )
-                and entry.last_snapshot.state is ProcessState.RUNNING
+                and entry.last_snapshot.state is not ProcessState.EXITED
             ]
         for entry in entries:
             try:
-                entry.port.terminate(entry.handle.session_id, reason=reason)
+                snapshot = entry.port.terminate(
+                    entry.handle.session_id,
+                    reason=reason,
+                )
+                with self._lock:
+                    if self._entries.get(entry.handle.session_id) is entry:
+                        entry.last_snapshot = snapshot
+                        if snapshot.state is ProcessState.EXITED:
+                            entry.terminal_at = (
+                                entry.terminal_at or time.monotonic()
+                            )
             except ProcessSessionNotFound:
                 pass
         return len(entries)
@@ -468,6 +481,8 @@ class ProcessManager:
             else:
                 self._closing = True
                 entries = tuple(self._entries.values())
+            for entry in entries:
+                self._ensure_watcher_started_locked(entry)
         terminal = [
             entry
             for entry in entries
@@ -498,13 +513,14 @@ class ProcessManager:
             for entry in live
             if entry.last_snapshot.state is ProcessState.RUNNING
         ]
-        for entry in remaining:
+        force_targets = [*remaining, *unknown]
+        for entry in force_targets:
             try:
                 entry.port.terminate(entry.handle.session_id, reason="shutdown")
             except Exception:
                 pass
         reap_timeouts = 0
-        for entry in remaining:
+        for entry in force_targets:
             watcher = entry.watcher
             if watcher is not None:
                 watcher.join(timeout=2.0)
@@ -522,7 +538,7 @@ class ProcessManager:
             total=len(entries),
             already_exited=len(terminal),
             interrupted=len(live),
-            terminated=len(remaining),
+            terminated=len(force_targets),
             unknown=len(unknown),
             reap_timeouts=reap_timeouts,
         )
@@ -552,14 +568,14 @@ class ProcessManager:
                 abandoned = entry.abandoned
                 emit_completion = (
                     published
-                    and snapshot.state is not ProcessState.RUNNING
+                    and snapshot.state is ProcessState.EXITED
                     and not entry.completion_emitted
                 )
                 if emit_completion:
                     entry.completion_emitted = True
-                if abandoned and snapshot.state is not ProcessState.RUNNING:
+                if abandoned and snapshot.state is ProcessState.EXITED:
                     self._entries.pop(entry.handle.session_id, None)
-            if abandoned and snapshot.state is not ProcessState.RUNNING:
+            if abandoned and snapshot.state is ProcessState.EXITED:
                 try:
                     entry.port.release(entry.handle.session_id)
                 except Exception:
@@ -570,7 +586,7 @@ class ProcessManager:
             if emit_completion:
                 self._emit(ProcessEventKind.COMPLETED, entry, snapshot)
                 return
-            if snapshot.state is not ProcessState.RUNNING:
+            if snapshot.state is ProcessState.EXITED:
                 return
 
     def _emit(
@@ -597,6 +613,14 @@ class ProcessManager:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _ensure_watcher_started_locked(entry: _ManagedEntry) -> None:
+        watcher = entry.watcher
+        if watcher is None or entry.watcher_started:
+            return
+        entry.watcher_started = True
+        watcher.start()
 
     def _entry_and_cursor(
         self,
@@ -671,7 +695,7 @@ class ProcessManager:
         now = time.monotonic()
         expired: list[_ManagedEntry] = []
         for entry in self._entries.values():
-            if entry.last_snapshot.state is ProcessState.RUNNING:
+            if entry.last_snapshot.state is not ProcessState.EXITED:
                 continue
             terminal_at = entry.terminal_at or entry.created_monotonic
             age = now - terminal_at
@@ -696,7 +720,8 @@ class ProcessManager:
             (
                 entry
                 for entry in self._entries.values()
-                if entry.last_snapshot.state is not ProcessState.RUNNING
+                if entry.last_snapshot.state is ProcessState.EXITED
+                and (entry.published or entry.abandoned)
             ),
             key=lambda entry: (
                 not entry.observed,

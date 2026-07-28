@@ -25,7 +25,7 @@ from reuleauxcoder.extensions.tools.builtin.notes import (
     WriteNoteTool,
 )
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
-from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
+from reuleauxcoder.extensions.tools.builtin.shell import ShellSessionTool, ShellTool
 from reuleauxcoder.extensions.tools.builtin.subagent_control import (
     InterruptAgentTool,
     ListAgentsTool,
@@ -53,6 +53,7 @@ _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
     DeleteNoteTool,
     ReadFileTool,
     ShellTool,
+    ShellSessionTool,
     SpawnAgentTool,
     SendMessageTool,
     ListAgentsTool,

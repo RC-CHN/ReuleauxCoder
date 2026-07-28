@@ -27,6 +27,7 @@ from reuleauxcoder.app.runtime.session_state import (
 from reuleauxcoder.app.runtime.extension_bridge import LegacyHookLifecycleParticipant
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
+from reuleauxcoder.domain.process_manager import ProcessManager
 from reuleauxcoder.domain.hooks import (
     discover_hook_specs,
     instantiate_hooks,
@@ -81,6 +82,7 @@ class AppRunner:
         self._relay_http_service: RemoteRelayHTTPService | None = None
         self._lsp_manager: LspManager | None = None
         self._git_monitor: GitMonitor | None = None
+        self._process_manager: ProcessManager | None = None
         self._agent: Agent | None = None
         self._ui_bus: UIEventBus | None = None
         self._remote_chat_cleanup: Callable[[], None] | None = None
@@ -153,6 +155,7 @@ class AppRunner:
             mcp_manager=mcp_manager,
             skills_service=skills_service,
             action_registry=action_registry,
+            process_manager=self._process_manager,
             current_session_id=current_session_id,
             session_exit_time=session_exit_time,
             sessions_dir=sessions_dir,
@@ -223,9 +226,15 @@ class AppRunner:
         agent.current_session_id = None
         agent.session_fingerprint = get_session_fingerprint(config, agent)
         agent.context._ui_bus = ui_bus
+        process_manager = self.dependencies.create_process_manager(lambda _event: None)
+        self._process_manager = process_manager
+        agent.process_manager = process_manager
 
         self._report_startup("Discovering runtime hooks and workspace services...")
         self._register_hooks(agent, config)
+        agent.hook_registry.bind_runtime_service(
+            "process_manager", process_manager
+        )
         self._init_git_monitor(agent)
         if LspConfig.from_config(config).enabled:
             self._report_startup("Checking configured language servers...")
@@ -236,34 +245,26 @@ class AppRunner:
 
     @staticmethod
     def _hint_rtk_install(config: Config, ui_bus: UIEventBus) -> None:
-        """Emit a startup notice for rtk availability."""
+        """Explain the explicit-only RTK boundary without rewriting commands."""
         rtk_mode = getattr(config, "shell_rtk", "off")
         if rtk_mode == "off":
-            return  # explicitly silenced
+            return
         import shutil
 
         installed = shutil.which("rtk") is not None
         if installed:
-            if rtk_mode == "auto":
-                ui_bus.info(
-                    "[rtk] rtk is installed but disabled — set shell.rtk: on in "
-                    "~/.rcoder/config.yaml to enable (60-90% token savings on "
-                    "shell output).",
-                    kind=UIEventKind.SYSTEM,
-                )
-            else:
-                ui_bus.info(
-                    "[rtk] shell output filtering enabled (60-90% token savings).",
-                    kind=UIEventKind.SYSTEM,
-                )
+            ui_bus.info(
+                "[rtk] available for explicit use. Automatic command rewriting "
+                "is disabled, so shell commands execute unchanged.",
+                kind=UIEventKind.SYSTEM,
+            )
             return
-        ui_bus.info(
-            "[rtk] not detected — install with:\n"
-            "  curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh\n"
-            "  → 60-90% token savings on shell command output\n"
-            "  Set shell.rtk: off in config to suppress this hint.",
-            kind=UIEventKind.SYSTEM,
-        )
+        if rtk_mode == "on":
+            ui_bus.warning(
+                "[rtk] shell.rtk=on no longer rewrites commands automatically, "
+                "and rtk is not installed. Shell commands still execute unchanged.",
+                kind=UIEventKind.SYSTEM,
+            )
 
     def _init_remote_relay(self, config: Config, ui_bus: UIEventBus) -> None:
         init_remote_relay(self, config, ui_bus)
@@ -446,6 +447,7 @@ class AppRunner:
             "Closing pending interactions...": "stop_interactions",
             "Stopping remote chat handler...": "stop_remote_chat",
             "Stopping sub-agent workers...": "stop_subagents",
+            "Stopping shell process sessions...": "stop_processes",
             "Disposing runtime extensions...": "dispose_extensions",
             "Stopping remote relay HTTP service...": "stop_remote_relay",
             "Stopping remote relay peers...": "stop_remote_relay",
@@ -498,6 +500,20 @@ class AppRunner:
                 # Jobs receive their cancellation signal above. Do not let an
                 # uncooperative provider/tool hold the foreground exit path.
                 subagent_manager.shutdown(wait=False)
+        if self._process_manager is not None:
+            report("Stopping shell process sessions...")
+            process_report = self._process_manager.shutdown()
+            if progress is not None and process_report.total:
+                report(
+                    "Shell processes stopped "
+                    f"({process_report.total} tracked, "
+                    f"{process_report.terminated} force-terminated, "
+                    f"{process_report.reap_timeouts} reap timeout(s))."
+                )
+            if agent is not None:
+                agent.process_manager = None
+                agent.hook_registry.bind_runtime_service("process_manager", None)
+            self._process_manager = None
         report("Disposing runtime extensions...")
         extension_diagnostics = self._extension_manager.dispose_all()
         if self._ui_bus is not None:

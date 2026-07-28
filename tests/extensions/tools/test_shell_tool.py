@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shlex
 import threading
 import time
+from types import SimpleNamespace
+from typing import Any, cast
 
+from reuleauxcoder.domain.process_manager import ProcessManager
 from reuleauxcoder.domain.process import ProcessResult
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
     ToolRetentionStrategy,
 )
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
-from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
+from reuleauxcoder.extensions.tools.builtin.shell import ShellSessionTool, ShellTool
 
 
 class RecordingProcessPort:
@@ -33,6 +37,26 @@ def _tool(process: RecordingProcessPort, *, cwd: str | None = None) -> ShellTool
             process=process,
         )
     )
+
+
+def _python_command(source: str) -> str:
+    import sys
+
+    return f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"
+
+
+def _bind(tool, manager: ProcessManager):
+    tool.bind_agent(
+        SimpleNamespace(
+            process_manager=manager,
+            agent_id="agent",
+            current_session_id="session",
+            session_generation=0,
+            _current_turn_id="turn",
+        )
+    )
+    tool.bind_execution(tool_call_id="call", session_generation=0)
+    return tool
 
 
 def test_explicit_cwd_overrides_and_can_be_persisted(tmp_path: Path) -> None:
@@ -137,3 +161,67 @@ def test_invalid_inputs_are_rejected_before_process_port() -> None:
         ).model_text
     )
     assert process.calls == []
+
+
+def test_rtk_configuration_never_rewrites_the_command(tmp_path: Path) -> None:
+    process = RecordingProcessPort()
+    tool = _tool(process, cwd=str(tmp_path))
+    tool._agent_config = SimpleNamespace(shell_rtk="on")
+
+    tool.execute("printf 'a && b'")
+
+    assert process.calls[0][0] == "printf 'a && b'"
+
+
+def test_managed_shell_yields_and_session_can_terminate(tmp_path: Path) -> None:
+    manager = ProcessManager()
+    backend = LocalToolBackend(
+        ExecutionContext(cwd=str(tmp_path)),
+    )
+    shell = _bind(ShellTool(backend), manager)
+    session = _bind(ShellSessionTool(backend), manager)
+    started = time.monotonic()
+
+    running = shell.execute(
+        _python_command("import time; print('ready', flush=True); time.sleep(30)"),
+        timeout=60,
+        yield_ms=250,
+    )
+    facts = cast(dict[str, Any], running.metadata["process_snapshot"])
+
+    assert facts["state"] == "running"
+    assert facts["stream_mode"] == "pipe"
+    assert "ready" in facts["stdout"]
+    assert time.monotonic() - started < 2
+    session_id = str(facts["session_id"])
+
+    rejected_write = session.preflight_validate(
+        {"session_id": session_id, "action": "write", "chars": "hello\n"}
+    )
+    assert rejected_write is not None
+    assert rejected_write.metadata["preflight_code"] == "write_requires_tty"
+
+    stopped = session.execute(session_id, "terminate")
+    stopped_facts = cast(dict[str, Any], stopped.metadata["process_snapshot"])
+    assert stopped_facts["state"] in {"running", "exited"}
+    manager.shutdown(grace_seconds=0)
+
+
+def test_managed_shell_reports_nonzero_exit_as_process_fact(tmp_path: Path) -> None:
+    manager = ProcessManager()
+    backend = LocalToolBackend(ExecutionContext(cwd=str(tmp_path)))
+    shell = _bind(ShellTool(backend), manager)
+
+    result = shell.execute(
+        _python_command("import sys; print('bad command'); sys.exit(7)"),
+        yield_ms=1_000,
+    )
+    facts = cast(dict[str, Any], result.metadata["process_snapshot"])
+
+    assert result.status is ToolOutcomeStatus.FAILED
+    assert facts["state"] == "exited"
+    assert facts["exit_code"] == 7
+    assert facts["stdout"] == "bad command\n"
+    assert '"executed": false' not in result.model_text.lower()
+    assert '"executed": true' in result.model_text.lower()
+    manager.shutdown()

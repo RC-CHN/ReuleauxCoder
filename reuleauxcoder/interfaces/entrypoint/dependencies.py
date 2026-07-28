@@ -16,6 +16,10 @@ from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.process_manager import (
+    ProcessEventSink,
+    ProcessManager,
+)
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.remote_exec.artifacts import (
     MAX_PEER_ARTIFACT_BYTES,
@@ -86,6 +90,10 @@ def _default_create_mcp_manager(ui_bus: UIEventBus) -> MCPManager:
 
 def _default_create_action_registry() -> ActionRegistry:
     return create_builtin_action_registry()
+
+
+def _default_create_process_manager(event_sink: ProcessEventSink) -> ProcessManager:
+    return ProcessManager(event_sink=event_sink)
 
 
 def _default_create_remote_relay_server(config: Config) -> RelayServer | None:
@@ -244,6 +252,9 @@ class AppDependencies:
     create_action_registry: Callable[[], ActionRegistry] = (
         _default_create_action_registry
     )
+    create_process_manager: Callable[[ProcessEventSink], ProcessManager] = (
+        _default_create_process_manager
+    )
     create_remote_relay_server: Callable[[Config], RelayServer | None] = (
         _default_create_remote_relay_server
     )
@@ -264,6 +275,7 @@ class AppContext:
     mcp_manager: MCPManager | None = None
     skills_service: SkillsService | None = None
     action_registry: ActionRegistry | None = None
+    process_manager: ProcessManager | None = None
     current_session_id: str | None = None
     session_exit_time: str | None = None
     sessions_dir: Path | None = None

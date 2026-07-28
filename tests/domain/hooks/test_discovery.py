@@ -14,6 +14,7 @@ EXPECTED_BUILTIN_HOOKS = (
     ("LspEditObserverHook", "after_tool_execute", 200),
     ("LspDiagnosticsInjectorHook", "before_llm_request", 100),
     ("GitStateInjectorHook", "before_llm_request", 90),
+    ("ProcessSessionInjectorHook", "before_llm_request", 80),
 )
 
 

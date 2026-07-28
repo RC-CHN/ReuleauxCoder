@@ -148,9 +148,13 @@ def _schema_issue(schema: Any, value: Any, *, path: str) -> _ArgumentIssue | Non
         minimum = schema.get("minLength")
         maximum = schema.get("maxLength")
         if isinstance(minimum, int) and len(value) < minimum:
+            if minimum == 1:
+                message = f"{path} must be a non-empty string"
+            else:
+                message = f"{path} must contain at least {minimum} characters"
             return _ArgumentIssue(
                 "string_too_short",
-                f"{path} must contain at least {minimum} characters",
+                message,
                 path,
             )
         if isinstance(maximum, int) and len(value) > maximum:
@@ -176,9 +180,13 @@ def _schema_issue(schema: Any, value: Any, *, path: str) -> _ArgumentIssue | Non
         minimum = schema.get("minimum")
         maximum = schema.get("maximum")
         if isinstance(minimum, (int, float)) and value < minimum:
+            if minimum == 1 and "integer" in expected_types:
+                message = f"{path} must be a positive integer"
+            else:
+                message = f"{path} must be at least {minimum}"
             return _ArgumentIssue(
                 "number_too_small",
-                f"{path} must be at least {minimum}",
+                message,
                 path,
             )
         if isinstance(maximum, (int, float)) and value > maximum:

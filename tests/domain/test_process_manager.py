@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import shlex
 import sys
+import threading
 import time
 
 import pytest
 
 from reuleauxcoder.domain.process import (
+    ProcessCursor,
+    ProcessHandle,
     ProcessSessionNotFound,
+    ProcessShutdownReport,
+    ProcessSnapshot,
     ProcessState,
+    ProcessStreamMode,
 )
 from reuleauxcoder.domain.process_manager import ProcessEventKind, ProcessManager
 from reuleauxcoder.infrastructure.process.local import LocalProcessPort
@@ -146,6 +152,93 @@ def test_unpublished_cancel_is_cleaned_without_completion_event(tmp_path) -> Non
 
     assert all(event.kind is not ProcessEventKind.COMPLETED for event in events)
     manager.shutdown()
+
+
+class _UnknownPort:
+    backend_name = "remote"
+
+    def __init__(self) -> None:
+        self.state = ProcessState.UNKNOWN
+        self.terminate_calls = 0
+        self._lock = threading.Lock()
+
+    def start(self, command, **_kwargs):
+        del command
+        return ProcessHandle("unknown-session", ProcessStreamMode.PIPE)
+
+    def poll(self, session_id, *, cursor=None, wait_ms=0):
+        if wait_ms:
+            time.sleep(min(wait_ms / 1000, 0.01))
+        with self._lock:
+            state = self.state
+        return ProcessSnapshot(
+            session_id=session_id,
+            state=state,
+            stream_mode=ProcessStreamMode.PIPE,
+            backend="remote",
+            cursor=cursor or ProcessCursor(),
+            started_at=time.time(),
+            runtime_timeout_seconds=60,
+        )
+
+    def terminate(self, session_id, *, reason="terminated"):
+        del reason
+        with self._lock:
+            self.terminate_calls += 1
+            self.state = ProcessState.EXITED
+        return self.poll(session_id)
+
+    def interrupt(self, session_id):
+        return self.poll(session_id)
+
+    def write_input(self, session_id, data):
+        del session_id
+        return len(data)
+
+    def release(self, session_id):
+        del session_id
+
+    def shutdown(self, *, grace_seconds=0.5):
+        del grace_seconds
+        return ProcessShutdownReport()
+
+
+def test_unknown_is_unresolved_not_a_synthetic_completion() -> None:
+    events = []
+    port = _UnknownPort()
+    manager = ProcessManager(event_sink=events.append)
+    handle = manager.start(
+        port,  # type: ignore[arg-type]
+        "ambiguous-command",
+        cwd=".",
+        runtime_timeout=60,
+        tty=False,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    time.sleep(0.03)
+
+    assert manager.active_count(owner_session_id="session") == 1
+    assert manager.list(
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+    )[0].state is ProcessState.UNKNOWN
+    assert all(event.kind is not ProcessEventKind.COMPLETED for event in events)
+
+    assert (
+        manager.stop_all(
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+        == 1
+    )
+    manager.shutdown()
+    assert port.terminate_calls == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY integration")

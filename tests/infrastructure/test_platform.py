@@ -75,3 +75,14 @@ def test_platform_info_is_singleton():
     a = get_platform_info()
     b = get_platform_info()
     assert a is b
+
+
+def test_shell_invocation_preserves_command_text_verbatim():
+    info = PlatformInfo()
+    info._shell = ShellType.BASH
+    info._shell_path = "/bin/bash"
+    command = "first && second\nprintf '$HOME'"
+
+    invocation = info.resolve_shell_invocation(command)
+
+    assert invocation.argv == ("/bin/bash", "-c", command)

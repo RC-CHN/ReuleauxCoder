@@ -11,6 +11,9 @@ from reuleauxcoder.domain.hooks.builtin.project_context import (
 from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
 from reuleauxcoder.domain.hooks.builtin.lsp_injector import LspDiagnosticsInjectorHook
 from reuleauxcoder.domain.hooks.builtin.git_state import GitStateInjectorHook
+from reuleauxcoder.domain.hooks.builtin.process_sessions import (
+    ProcessSessionInjectorHook,
+)
 
 _BUILTIN_HOOK_SPECS: tuple[HookSpec, ...] = (
     HookSpec(
@@ -48,6 +51,11 @@ _BUILTIN_HOOK_SPECS: tuple[HookSpec, ...] = (
         hook_point=HookPoint.BEFORE_LLM_REQUEST,
         priority=90,
     ),
+    HookSpec(
+        hook_class=ProcessSessionInjectorHook,
+        hook_point=HookPoint.BEFORE_LLM_REQUEST,
+        priority=80,
+    ),
 )
 
 
@@ -65,4 +73,5 @@ __all__ = [
     "LspEditObserverHook",
     "LspDiagnosticsInjectorHook",
     "GitStateInjectorHook",
+    "ProcessSessionInjectorHook",
 ]

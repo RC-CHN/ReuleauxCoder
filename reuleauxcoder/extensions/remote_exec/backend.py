@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+import threading
 import time
 from typing import Any
 import uuid
 
-from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
+from reuleauxcoder.domain.process import (
+    ProcessChunk,
+    ProcessCursor,
+    ProcessHandle,
+    ProcessOperationUnsupported,
+    ProcessResult,
+    ProcessSessionNotFound,
+    ProcessShutdownReport,
+    ProcessSnapshot,
+    ProcessState,
+    ProcessStreamHandler,
+    ProcessStreamMode,
+)
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
@@ -401,10 +416,293 @@ def _peer_glob_safe(pattern: str) -> bool:
 
 
 class RemoteProcessPort:
-    """ProcessPort using start/poll/cancel peer primitives."""
+    """ProcessPort over one exact peer's resumable process primitives."""
+
+    backend_name = "remote"
 
     def __init__(self, backend: RemoteRelayToolBackend):
         self.backend = backend
+        self._entries: dict[str, _RemoteProcessEntry] = {}
+        self._lock = threading.RLock()
+        self._closing = False
+
+    def start(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        runtime_timeout: int,
+        tty: bool = False,
+        env: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        stream_handler: ProcessStreamHandler | None = None,
+    ) -> ProcessHandle:
+        if env:
+            raise ProcessOperationUnsupported(
+                "the connected remote peer does not accept process environment overrides"
+            )
+        if tty:
+            raise ProcessOperationUnsupported(
+                "the connected remote peer does not advertise PTY support"
+            )
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("remote process port is shutting down")
+        peer_id = self.backend.resolve_peer_id()
+        process_id = f"proc_{uuid.uuid4().hex}"
+        entry = _RemoteProcessEntry(
+            session_id=process_id,
+            process_id=process_id,
+            peer_id=peer_id,
+            stream_mode=ProcessStreamMode.PIPE,
+            runtime_timeout=runtime_timeout,
+            started_at=time.time(),
+            stream_handler=stream_handler,
+            start_args={
+                "process_id": process_id,
+                "idempotency_key": idempotency_key or process_id,
+                "command": command,
+                "cwd": cwd,
+                "tty": False,
+                "deadline_unix_ms": int(
+                    (time.time() + runtime_timeout) * 1000
+                ),
+            },
+        )
+        try:
+            data = self._request(
+                entry,
+                "process.start",
+                entry.start_args,
+                timeout_sec=30,
+            )
+            entry.process_id = str(data.get("process_id", process_id))
+            entry.start_confirmed = True
+        except RemoteExecError as error:
+            if not _ambiguous_remote_start_error(error):
+                if error.code in {
+                    "path_outside_workspace",
+                    "invalid_path",
+                    "not_found",
+                }:
+                    raise FileNotFoundError(error.message) from error
+                if error.code == "REMOTE_CAPABILITY_UNAVAILABLE":
+                    raise ProcessOperationUnsupported(error.message) from error
+                raise RuntimeError(str(error)) from error
+            # Delivery may have happened before the transport failed. Keep the
+            # reservation and expose unknown rather than losing a real process.
+            entry.state = ProcessState.UNKNOWN
+            entry.termination_reason = "transport_unknown"
+        with self._lock:
+            if self._closing:
+                try:
+                    self._terminate_entry(entry, reason="shutdown")
+                finally:
+                    raise RuntimeError("remote process port is shutting down")
+            self._entries[entry.session_id] = entry
+        return ProcessHandle(entry.session_id, entry.stream_mode)
+
+    def poll(
+        self,
+        session_id: str,
+        *,
+        cursor: ProcessCursor | None = None,
+        wait_ms: int = 0,
+    ) -> ProcessSnapshot:
+        entry = self._lookup(session_id)
+        current = cursor or ProcessCursor()
+        if not entry.start_confirmed:
+            try:
+                data = self._request(
+                    entry,
+                    "process.start",
+                    entry.start_args,
+                    timeout_sec=30,
+                )
+                confirmed_id = str(data.get("process_id", entry.process_id))
+                with entry.lock:
+                    entry.process_id = confirmed_id
+                    entry.start_confirmed = True
+                    entry.state = ProcessState.RUNNING
+                    entry.termination_reason = None
+            except (PeerNotFoundError, RemoteExecError):
+                return self._snapshot(entry, current)
+        try:
+            data = self._request(
+                entry,
+                "process.poll",
+                {
+                    "process_id": entry.process_id,
+                    "stdout_offset": current.stdout_offset,
+                    "stderr_offset": current.stderr_offset,
+                    "wait_ms": wait_ms,
+                },
+                timeout_sec=max(5, int(wait_ms / 1000) + 2),
+            )
+        except (PeerNotFoundError, RemoteExecError):
+            with entry.lock:
+                if entry.state is not ProcessState.EXITED:
+                    entry.state = ProcessState.UNKNOWN
+                    entry.termination_reason = "transport_unknown"
+            return self._snapshot(entry, current)
+
+        stdout = str(data.get("stdout", ""))
+        stderr = str(data.get("stderr", ""))
+        with entry.lock:
+            entry.stdout_offset = int(
+                data.get("stdout_offset", current.stdout_offset + len(stdout))
+            )
+            entry.stderr_offset = int(
+                data.get("stderr_offset", current.stderr_offset + len(stderr))
+            )
+            entry.total_stdout_bytes = int(
+                data.get("total_stdout_bytes", entry.stdout_offset)
+            )
+            entry.total_stderr_bytes = int(
+                data.get("total_stderr_bytes", entry.stderr_offset)
+            )
+            entry.output_truncated = bool(
+                data.get("output_truncated", entry.output_truncated)
+            )
+            state_value = data.get("state")
+            done = bool(data.get("done"))
+            if state_value == "unknown":
+                entry.state = ProcessState.UNKNOWN
+            elif state_value == "exited" or done:
+                entry.state = ProcessState.EXITED
+            else:
+                entry.state = ProcessState.RUNNING
+            if entry.state is ProcessState.EXITED:
+                entry.exit_code = _optional_int(data.get("exit_code"))
+                entry.termination_reason = _remote_termination_reason(data)
+                entry.finished_at = _milliseconds_to_seconds(
+                    data.get("finished_unix_ms")
+                ) or time.time()
+            else:
+                entry.exit_code = None
+                entry.finished_at = None
+                if entry.state is ProcessState.RUNNING:
+                    entry.termination_reason = None
+            started_at = _milliseconds_to_seconds(data.get("started_unix_ms"))
+            if started_at is not None:
+                entry.started_at = started_at
+        if stdout and entry.stream_handler is not None:
+            entry.stream_handler(ProcessChunk("stdout", stdout))
+        if stderr and entry.stream_handler is not None:
+            entry.stream_handler(ProcessChunk("stderr", stderr))
+        return self._snapshot(
+            entry,
+            ProcessCursor(entry.stdout_offset, entry.stderr_offset),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def write_input(self, session_id: str, data: str) -> int:
+        entry = self._lookup(session_id)
+        if entry.stream_mode is not ProcessStreamMode.PTY:
+            raise ProcessOperationUnsupported(
+                f"session '{session_id}' uses pipe mode; stdin is closed"
+            )
+        result = self._request(
+            entry,
+            "process.input",
+            {"process_id": entry.process_id, "data": data, "close": False},
+        )
+        return int(result.get("bytes_written", 0))
+
+    def interrupt(self, session_id: str) -> ProcessSnapshot:
+        entry = self._lookup(session_id)
+        if entry.state is ProcessState.EXITED:
+            return self._snapshot(entry, ProcessCursor())
+        if not self._peer_supports(entry.peer_id, "process.interrupt"):
+            raise ProcessOperationUnsupported(
+                "the connected remote peer does not support soft process interrupts"
+            )
+        try:
+            self._request(
+                entry,
+                "process.interrupt",
+                {"process_id": entry.process_id},
+            )
+        except (PeerNotFoundError, RemoteExecError):
+            with entry.lock:
+                entry.state = ProcessState.UNKNOWN
+                entry.termination_reason = "transport_unknown"
+        return self._snapshot(entry, ProcessCursor())
+
+    def terminate(
+        self,
+        session_id: str,
+        *,
+        reason: str = "terminated",
+    ) -> ProcessSnapshot:
+        entry = self._lookup(session_id)
+        self._terminate_entry(entry, reason=reason)
+        return self._snapshot(entry, ProcessCursor())
+
+    def _terminate_entry(self, entry: "_RemoteProcessEntry", *, reason: str) -> None:
+        if entry.state is ProcessState.EXITED:
+            return
+        operation = (
+            "process.terminate"
+            if self._peer_supports(entry.peer_id, "process.terminate")
+            else "process.cancel"
+        )
+        try:
+            data = self._request(
+                entry,
+                operation,
+                {"process_id": entry.process_id, "reason": reason},
+            )
+            if bool(data.get("done", operation == "process.cancel")):
+                with entry.lock:
+                    entry.state = ProcessState.EXITED
+                    entry.exit_code = _optional_int(data.get("exit_code"))
+                    entry.termination_reason = str(
+                        data.get("termination_reason") or reason
+                    )
+                    entry.finished_at = time.time()
+        except (PeerNotFoundError, RemoteExecError):
+            with entry.lock:
+                entry.state = ProcessState.UNKNOWN
+                entry.termination_reason = "transport_unknown"
+
+    def release(self, session_id: str) -> None:
+        entry = self._lookup(session_id)
+        if entry.state is not ProcessState.EXITED:
+            raise RuntimeError(
+                f"cannot release unresolved process session '{session_id}'"
+            )
+        if self._peer_supports(entry.peer_id, "process.release"):
+            try:
+                self._request(
+                    entry,
+                    "process.release",
+                    {"process_id": entry.process_id},
+                )
+            except (PeerNotFoundError, RemoteExecError):
+                pass
+        with self._lock:
+            self._entries.pop(session_id, None)
+
+    def shutdown(self, *, grace_seconds: float = 0.5) -> ProcessShutdownReport:
+        del grace_seconds
+        with self._lock:
+            self._closing = True
+            entries = tuple(self._entries.values())
+        live = [entry for entry in entries if entry.state is ProcessState.RUNNING]
+        unknown = [entry for entry in entries if entry.state is ProcessState.UNKNOWN]
+        terminal = [entry for entry in entries if entry.state is ProcessState.EXITED]
+        for entry in live:
+            self._terminate_entry(entry, reason="shutdown")
+        with self._lock:
+            self._entries.clear()
+        return ProcessShutdownReport(
+            total=len(entries),
+            already_exited=len(terminal),
+            terminated=len(live),
+            unknown=len(unknown),
+        )
 
     def run(
         self,
@@ -415,55 +713,168 @@ class RemoteProcessPort:
         cancellation_event=None,
         stream_handler=None,
     ) -> ProcessResult:
-        process_id = uuid.uuid4().hex
-        deadline_ms = int((time.time() + timeout) * 1000)
-        data = self.backend.workspace._request(
-            "process.start",
-            process_id=process_id,
-            idempotency_key=process_id,
-            command=command,
+        handle = self.start(
+            command,
             cwd=cwd,
-            deadline_unix_ms=deadline_ms,
+            runtime_timeout=timeout,
+            tty=False,
+            stream_handler=stream_handler,
         )
-        process_id = str(data.get("process_id", process_id))
-        stdout_offset = 0
-        stderr_offset = 0
+        cursor = ProcessCursor()
+        stdout: list[str] = []
+        stderr: list[str] = []
         while True:
             if cancellation_event is not None and cancellation_event.is_set():
-                self.cancel(process_id)
-                return ProcessResult(cancelled=True)
-            state = self.backend.workspace._request(
-                "process.poll",
-                process_id=process_id,
-                stdout_offset=stdout_offset,
-                stderr_offset=stderr_offset,
-            )
-            stdout = str(state.get("stdout", ""))
-            stderr = str(state.get("stderr", ""))
-            stdout_offset = int(state.get("stdout_offset", stdout_offset))
-            stderr_offset = int(state.get("stderr_offset", stderr_offset))
-            if stdout and stream_handler is not None:
-                stream_handler(ProcessChunk("stdout", stdout))
-            if stderr and stream_handler is not None:
-                stream_handler(ProcessChunk("stderr", stderr))
-            if state.get("done"):
+                self.terminate(handle.session_id, reason="cancelled")
                 return ProcessResult(
-                    stdout=str(state.get("stdout_all", "")),
-                    stderr=str(state.get("stderr_all", "")),
-                    exit_code=int(state.get("exit_code", 0)),
-                    timed_out=bool(state.get("timed_out")),
-                    cancelled=bool(state.get("cancelled")),
+                    stdout="".join(stdout),
+                    stderr="".join(stderr),
+                    cancelled=True,
                 )
-            time.sleep(0.05)
+            snapshot = self.poll(handle.session_id, cursor=cursor, wait_ms=50)
+            cursor = snapshot.cursor
+            stdout.append(snapshot.stdout)
+            stderr.append(snapshot.stderr)
+            if snapshot.state is ProcessState.RUNNING:
+                continue
+            result = ProcessResult(
+                stdout="".join(stdout),
+                stderr="".join(stderr),
+                exit_code=snapshot.exit_code,
+                timed_out=snapshot.termination_reason == "timeout",
+                cancelled=snapshot.termination_reason == "cancelled",
+                output_truncated=snapshot.output_truncated,
+            )
+            self.release(handle.session_id)
+            return result
 
-    def write_input(self, process_id: str, data: str, *, close: bool = False) -> int:
-        result = self.backend.workspace._request(
-            "process.input",
-            process_id=process_id,
-            data=data,
-            close=close,
+    def _request(
+        self,
+        entry: "_RemoteProcessEntry",
+        operation: str,
+        args: dict[str, Any],
+        *,
+        timeout_sec: int = 30,
+    ) -> dict[str, Any]:
+        result = self.backend.relay_server.send_workspace_request(
+            entry.peer_id,
+            WorkspaceRequest(
+                operation=operation,
+                args=args,
+                cwd=self.backend.context.cwd,
+                timeout_sec=timeout_sec,
+            ),
+            timeout_sec=timeout_sec,
         )
-        return int(result.get("bytes_written", 0))
+        if not result.ok:
+            raise RemoteExecError(
+                result.error_code or "REMOTE_PROCESS_ERROR",
+                result.error_message or "remote process operation failed",
+            )
+        return result.data
 
-    def cancel(self, process_id: str) -> None:
-        self.backend.workspace._request("process.cancel", process_id=process_id)
+    def _peer_supports(self, peer_id: str, capability: str) -> bool:
+        peer = self.backend.relay_server.registry.get(peer_id)
+        if peer is None:
+            return False
+        version = int(peer.meta.get("protocol_version", 1))
+        return version >= 2 and capability in peer.capabilities
+
+    def _lookup(self, session_id: str) -> "_RemoteProcessEntry":
+        with self._lock:
+            entry = self._entries.get(session_id)
+        if entry is None:
+            raise ProcessSessionNotFound(
+                f"process session '{session_id}' was not found"
+            )
+        return entry
+
+    def _snapshot(
+        self,
+        entry: "_RemoteProcessEntry",
+        cursor: ProcessCursor,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> ProcessSnapshot:
+        with entry.lock:
+            return ProcessSnapshot(
+                session_id=entry.session_id,
+                state=entry.state,
+                stream_mode=entry.stream_mode,
+                backend=self.backend_name,
+                stdout=stdout,
+                stderr=stderr,
+                cursor=cursor,
+                exit_code=entry.exit_code,
+                termination_reason=entry.termination_reason,
+                started_at=entry.started_at,
+                finished_at=entry.finished_at,
+                runtime_timeout_seconds=entry.runtime_timeout,
+                output_truncated=entry.output_truncated,
+                total_stdout_bytes=entry.total_stdout_bytes,
+                total_stderr_bytes=entry.total_stderr_bytes,
+            )
+
+
+@dataclass(slots=True)
+class _RemoteProcessEntry:
+    session_id: str
+    process_id: str
+    peer_id: str
+    stream_mode: ProcessStreamMode
+    runtime_timeout: int
+    started_at: float
+    stream_handler: ProcessStreamHandler | None = None
+    start_args: dict[str, Any] = field(default_factory=dict)
+    start_confirmed: bool = False
+    state: ProcessState = ProcessState.RUNNING
+    stdout_offset: int = 0
+    stderr_offset: int = 0
+    total_stdout_bytes: int = 0
+    total_stderr_bytes: int = 0
+    exit_code: int | None = None
+    termination_reason: str | None = None
+    finished_at: float | None = None
+    output_truncated: bool = False
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _milliseconds_to_seconds(value: object) -> float | None:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return None
+    try:
+        milliseconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return milliseconds / 1000
+
+
+def _remote_termination_reason(data: dict[str, Any]) -> str:
+    reason = data.get("termination_reason")
+    if isinstance(reason, str) and reason:
+        return reason
+    if bool(data.get("timed_out")):
+        return "timeout"
+    if bool(data.get("cancelled")):
+        return "cancelled"
+    return "exit"
+
+
+def _ambiguous_remote_start_error(error: RemoteExecError) -> bool:
+    return error.code in {
+        "PEER_DISCONNECTED",
+        "PEER_NOT_FOUND",
+        "REMOTE_TIMEOUT",
+    }

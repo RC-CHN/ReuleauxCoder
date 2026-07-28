@@ -123,6 +123,7 @@ class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
 
 BUILTIN_TOOL_NAMES = {
     "shell",
+    "shell_session",
     "read_file",
     "write_file",
     "edit_file",

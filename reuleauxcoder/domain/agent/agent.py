@@ -10,6 +10,7 @@ import uuid
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.approval import ApprovalProvider
+    from reuleauxcoder.domain.process_manager import ProcessManager
     from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.extensions.tools.base import Tool
     from reuleauxcoder.domain.config.models import Config
@@ -109,6 +110,7 @@ class Agent:
         )
         self.runtime_working_directory: str | None = None
         self.notes_store: NoteStore | None = None
+        self.process_manager: ProcessManager | None = None
         self.mcp_manager: MCPManager | None = None
         self.skills_service: SkillsService | None = None
         self.skills_catalog: str = ""
@@ -1156,7 +1158,16 @@ class Agent:
         cancel_interactions = getattr(self.ui_interactor, "cancel_all", None)
         if callable(cancel_interactions):
             cancel_interactions(reason="session reset")
+        previous_generation = self.session_generation
         self.session_generation += 1
+        process_manager = self.process_manager
+        rebind_processes = getattr(process_manager, "rebind_generation", None)
+        if callable(rebind_processes):
+            rebind_processes(
+                owner_session_id=self.current_session_id,
+                previous_generation=previous_generation,
+                next_generation=self.session_generation,
+            )
         self.history_ledger.append(
             "runtime_reset", {"next_generation": self.session_generation}
         )
