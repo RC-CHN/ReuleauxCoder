@@ -50,6 +50,7 @@ def test_builtin_action_registry_preserves_the_complete_action_order() -> None:
         "model.switch",
         "processes.list",
         "processes.control",
+        "processes.secure_input",
         "sessions.list",
         "sessions.resume",
         "sessions.save",

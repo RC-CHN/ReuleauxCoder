@@ -23,6 +23,7 @@ EXPECTED_BUILTIN_TOOL_NAMES = (
     "delete_note",
     "read_file",
     "shell",
+    "shell_session",
     "spawn_agent",
     "send_message",
     "list_agents",
