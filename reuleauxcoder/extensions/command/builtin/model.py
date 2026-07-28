@@ -11,6 +11,12 @@ from reuleauxcoder.app.commands.view_models import (
     ModelProfileViewModel,
 )
 from reuleauxcoder.app.commands.params import ParamParseError
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+    PanelRefreshPolicy,
+)
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     EmptyCommand,
@@ -343,6 +349,70 @@ def _build_model_profiles_view(config, runtime_state=None) -> ModelListViewModel
 def _build_model_profiles_payload(config, runtime_state=None) -> dict:
     """Serializable compatibility projection for callers outside presentation."""
     return _build_model_profiles_view(config, runtime_state).to_payload()
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the two-level model routing picker with canonical commands."""
+    slots = (
+        ("Session · Main model", "use-main"),
+        ("Session · Sub-agent model", "use-sub"),
+        ("Defaults · Main model", "set-main"),
+        ("Defaults · Sub-agent model", "set-sub"),
+    )
+
+    def build(model: object, title: str) -> PanelDefinition:
+        assert isinstance(model, ModelListViewModel)
+        active_by_slot = {
+            "use-main": model.active_main,
+            "use-sub": model.active_sub,
+            "set-main": model.active_main,
+            "set-sub": model.active_sub,
+        }
+        children = tuple(
+            (
+                label,
+                PanelDefinition(
+                    view_type="model_profiles",
+                    title=f"{title} · {label}",
+                    items=tuple(
+                        PanelItem(
+                            label=profile.name,
+                            description=(
+                                f"{profile.model} · ctx {profile.max_context_tokens}"
+                            ),
+                            command=f"/model {slot} {profile.name}",
+                            current=(
+                                profile.active_main
+                                if slot.endswith("main")
+                                else profile.active_sub
+                            ),
+                        )
+                        for profile in model.profiles
+                    ),
+                ),
+            )
+            for label, slot in slots
+        )
+        return PanelDefinition(
+            view_type="model_slots",
+            title=title,
+            items=tuple(
+                PanelItem(
+                    label=label,
+                    description=active_by_slot[slot] or "(none)",
+                    command="",
+                )
+                for label, slot in slots
+            ),
+            children=children,
+        )
+
+    return CommandPanelSpec(
+        "model_profiles",
+        ModelListViewModel,
+        build,
+        refresh=PanelRefreshPolicy.ABSORB,
+    )
 
 
 def register_actions(registry: ActionRegistry) -> None:

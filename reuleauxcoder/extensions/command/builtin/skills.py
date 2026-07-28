@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.params import ParamParseError
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+)
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     EmptyCommand,
@@ -171,6 +176,42 @@ def _handle_toggle_skill(command: object, ctx) -> CommandEffect:
         reuse_key="skills",
     )
     return ctx.effect.finish(control="continue", state_changes=view.to_payload())
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the skill toggle picker alongside skill commands."""
+
+    def build(model: object, title: str) -> PanelDefinition:
+        assert isinstance(model, SkillsViewModel)
+        items = tuple(
+            PanelItem(
+                label=skill.name,
+                description=(
+                    f"{'enabled' if skill.enabled else 'disabled'}"
+                    f" · {skill.scope}"
+                    f"{' · ' + skill.description if skill.description else ''}"
+                ),
+                command=(
+                    f"/skills {'disable' if skill.enabled else 'enable'} {skill.name}"
+                ),
+                current=skill.enabled,
+            )
+            for skill in model.skills
+        ) or (
+            PanelItem(
+                label="(no skills discovered)",
+                description="create skills under .agents/skills/ or ~/.agents/skills/",
+                command="",
+            ),
+        )
+        return PanelDefinition(
+            view_type=model.view_type,
+            title=title,
+            items=items,
+            keep_open_on_submit=True,
+        )
+
+    return CommandPanelSpec("skills", SkillsViewModel, build)
 
 
 def register_actions(registry: ActionRegistry) -> None:

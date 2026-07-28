@@ -8,6 +8,12 @@ from types import SimpleNamespace
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.params import ParamParseError
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+    PanelRefreshPolicy,
+)
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     EmptyCommand,
@@ -18,6 +24,8 @@ from reuleauxcoder.app.commands.shared import (
 )
 from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.app.runtime.approval import (
+    ApprovalRuleView,
+    ApprovalView,
     VALID_APPROVAL_ACTIONS,
     build_approval_view,
     parse_approval_target,
@@ -307,6 +315,131 @@ def _handle_set_global_approval_rule(command, ctx) -> CommandEffect:
 
     return ctx.effect.finish(
         control="continue", state_changes={"saved_path": str(path), **view.to_payload()}
+    )
+
+
+def _approval_rule_target(rule: ApprovalRuleView) -> str:
+    if rule.tool_source == "mcp":
+        if rule.mcp_server and rule.tool_name:
+            return f"mcp:{rule.mcp_server}:{rule.tool_name}"
+        if rule.mcp_server:
+            return f"mcp:{rule.mcp_server}"
+        return "mcp"
+    if rule.tool_name:
+        return f"tool:{rule.tool_name}"
+    return rule.scope
+
+
+def _approval_action_items(
+    target: str, prefix: str, current_action: str
+) -> tuple[PanelItem, ...]:
+    return tuple(
+        PanelItem(
+            label=action,
+            description=f"/approval {prefix} {target} {action}",
+            command=f"/approval {prefix} {target} {action}",
+            current=action == current_action,
+        )
+        for action in ("allow", "warn", "require_approval", "deny")
+    )
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the approval target browser and action sub-panels."""
+
+    def build(model: object, title: str) -> PanelDefinition | None:
+        assert isinstance(model, ApprovalView)
+        items: list[PanelItem] = []
+        children: list[tuple[str, PanelDefinition]] = []
+        covered: set[str] = set()
+        for rule in model.rules:
+            target = _approval_rule_target(rule)
+            covered.add(target)
+            prefix = "set" if rule.source == "session" else "set-global"
+            actions = list(_approval_action_items(target, prefix, rule.action))
+            if rule.source in ("session", "workspace", "global"):
+                unset = "unset" if rule.source == "session" else "unset-global"
+                actions.append(
+                    PanelItem(
+                        label="delete rule",
+                        description=f"/approval {unset} {target}",
+                        command=f"/approval {unset} {target}",
+                    )
+                )
+            children.append(
+                (
+                    target,
+                    PanelDefinition(
+                        view_type="approval_actions",
+                        title=f"{title} · {target}",
+                        items=tuple(actions),
+                    ),
+                )
+            )
+            items.append(
+                PanelItem(
+                    label=target,
+                    description=f"{rule.action} · {rule.source}",
+                    command="",
+                )
+            )
+
+        dynamic: list[tuple[PanelItem, PanelDefinition]] = []
+        for policy in model.effective_mcp_policies:
+            target = f"mcp:{policy.server_name}"
+            if target in covered:
+                continue
+            dynamic.append(
+                (
+                    PanelItem(
+                        label=target,
+                        description=f"{policy.action} · effective (no rule)",
+                        command="",
+                    ),
+                    PanelDefinition(
+                        view_type="approval_actions",
+                        title=f"{title} · {target}",
+                        items=_approval_action_items(target, "set", policy.action),
+                    ),
+                )
+            )
+        for policy in model.tool_policies:
+            if policy.tool_source != "builtin":
+                continue
+            target = f"tool:{policy.tool_name}"
+            if target in covered:
+                continue
+            dynamic.append(
+                (
+                    PanelItem(
+                        label=target,
+                        description=f"{policy.action} · effective (no rule)",
+                        command="",
+                    ),
+                    PanelDefinition(
+                        view_type="approval_actions",
+                        title=f"{title} · {target}",
+                        items=_approval_action_items(target, "set", policy.action),
+                    ),
+                )
+            )
+        dynamic.sort(key=lambda entry: entry[0].label)
+        items.extend(item for item, _child in dynamic)
+        children.extend((item.label, child) for item, child in dynamic)
+        if not items:
+            return None
+        return PanelDefinition(
+            view_type=model.view_type,
+            title=title,
+            items=tuple(items),
+            children=tuple(children),
+        )
+
+    return CommandPanelSpec(
+        "approval_rules",
+        ApprovalView,
+        build,
+        refresh=PanelRefreshPolicy.ABSORB,
     )
 
 

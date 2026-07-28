@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from reuleauxcoder.app.commands.matchers import match_template
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.params import ParamParseError
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+)
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     TEXT_REQUIRED,
@@ -326,6 +331,44 @@ def _handle_new_session(command, ctx) -> CommandEffect:
     return ctx.effect.finish(
         control="continue", session_id=new_session_id, session_exit_time=None
     )
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the restorable-session picker with canonical resume commands."""
+
+    def build(model: object, title: str) -> PanelDefinition:
+        assert isinstance(model, SessionsViewModel)
+        items = tuple(
+            PanelItem(
+                label=(
+                    f"#{session.position}"
+                    if session.position is not None
+                    else "  "
+                )
+                + f" {session.saved_at[:19]}",
+                description=(
+                    f"{session.model} · {session.preview[:40]} · {session.session_id}"
+                    f"{' [active]' if session.active else ''}"
+                ),
+                command=f"/session {session.session_id}",
+                current=session.active,
+            )
+            for session in model.sessions
+        ) or (
+            PanelItem(
+                label="(no saved sessions)",
+                description="/save writes a restorable snapshot",
+                command="",
+            ),
+        )
+        return PanelDefinition(
+            view_type=model.view_type,
+            title=title,
+            items=items,
+            filterable=True,
+        )
+
+    return CommandPanelSpec("sessions", SessionsViewModel, build)
 
 
 def register_actions(registry: ActionRegistry) -> None:

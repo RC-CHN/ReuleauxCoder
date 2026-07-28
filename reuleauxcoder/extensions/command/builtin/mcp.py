@@ -6,6 +6,11 @@ from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandEffect
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+)
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
@@ -20,6 +25,7 @@ from reuleauxcoder.extensions.mcp.runtime import (
     build_mcp_servers_view,
     toggle_mcp_server,
 )
+from reuleauxcoder.extensions.mcp.models import MCPServersView
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
@@ -136,6 +142,41 @@ def _handle_toggle_mcp_server(command, ctx) -> CommandEffect:
         reuse_key="mcp_servers",
     )
     return ctx.effect.finish(control="continue", state_changes=view.to_payload())
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the MCP toggle picker alongside the MCP commands."""
+
+    def build(model: object, title: str) -> PanelDefinition:
+        assert isinstance(model, MCPServersView)
+        items = tuple(
+            PanelItem(
+                label=server.name,
+                description=(
+                    f"{'enabled' if server.enabled else 'disabled'}"
+                    f" · {server.runtime_state}"
+                ),
+                command=(
+                    f"/mcp {'disable' if server.enabled else 'enable'} {server.name}"
+                ),
+                current=server.enabled,
+            )
+            for server in model.servers
+        ) or (
+            PanelItem(
+                label="(no MCP servers configured)",
+                description="add servers under mcp.servers in config.yaml",
+                command="",
+            ),
+        )
+        return PanelDefinition(
+            view_type=model.view_type,
+            title=title,
+            items=items,
+            keep_open_on_submit=True,
+        )
+
+    return CommandPanelSpec("mcp_servers", MCPServersView, build)
 
 
 def register_actions(registry: ActionRegistry) -> None:

@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from reuleauxcoder.app.commands.matchers import match_template
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.params import ParamParseError
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+)
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     TEXT_REQUIRED,
@@ -249,6 +254,74 @@ def _handle_control_job(command, ctx) -> CommandEffect:
             f"Sub-agent {command.action} failed: {message}", kind=UIEventKind.COMMAND
         )
     return ctx.effect.finish(control="continue")
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the jobs browser and per-job action sub-panels."""
+    terminal = {"completed", "failed", "cancelled", "timed_out"}
+
+    def build(model: object, title: str) -> PanelDefinition:
+        assert isinstance(model, SubagentJobsViewModel)
+        items = tuple(
+            PanelItem(
+                label=job.job_id,
+                description=f"{job.status} · {job.mode} · {job.task[:40]}",
+                command="",
+                current=job.status == "running",
+            )
+            for job in model.jobs
+        ) or (
+            PanelItem(
+                label="(no sub-agent jobs)",
+                description="spawn one via ask or background delegation",
+                command="",
+            ),
+        )
+        children: list[tuple[str, PanelDefinition]] = []
+        for job in model.jobs:
+            actions = [
+                PanelItem(
+                    label="get details",
+                    description="full job view",
+                    command=f"/agents get {job.job_id}",
+                )
+            ]
+            if job.status not in terminal:
+                actions.append(
+                    PanelItem(
+                        label="cancel",
+                        description="request cancellation",
+                        command=f"/agents cancel {job.job_id}",
+                    )
+                )
+            else:
+                actions.append(
+                    PanelItem(
+                        label="cleanup",
+                        description="remove isolated worktree",
+                        command=f"/agents cleanup {job.job_id}",
+                    )
+                )
+            children.append(
+                (
+                    job.job_id,
+                    PanelDefinition(
+                        view_type="agent_job_actions",
+                        title=f"{title} · {job.job_id}",
+                        items=tuple(actions),
+                        return_to_parent_on_submit=True,
+                    ),
+                )
+            )
+        return PanelDefinition(
+            view_type=model.view_type,
+            title=title,
+            items=items,
+            children=tuple(children),
+            filterable=True,
+        )
+
+    return CommandPanelSpec("subagent_jobs", SubagentJobsViewModel, build)
 
 
 def register_actions(registry: ActionRegistry) -> None:

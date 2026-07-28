@@ -8,6 +8,11 @@ from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.view_models import ModeProfileViewModel, ModesViewModel
 from reuleauxcoder.app.commands.params import ParamParseError
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+)
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     EmptyCommand,
@@ -154,6 +159,28 @@ def _build_mode_profiles_view(config, active_mode: str | None) -> ModesViewModel
 
 def _build_mode_profiles_payload(config, active_mode: str | None) -> dict:
     return _build_mode_profiles_view(config, active_mode).to_payload()
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the mode picker alongside the mode command feature."""
+
+    def build(model: object, title: str) -> PanelDefinition:
+        assert isinstance(model, ModesViewModel)
+        return PanelDefinition(
+            view_type=model.view_type,
+            title=title,
+            items=tuple(
+                PanelItem(
+                    label=mode.name,
+                    description=mode.description,
+                    command=f"/mode switch {mode.name}",
+                    current=mode.active,
+                )
+                for mode in model.modes
+            ),
+        )
+
+    return CommandPanelSpec("mode_profiles", ModesViewModel, build)
 
 
 def register_actions(registry: ActionRegistry) -> None:

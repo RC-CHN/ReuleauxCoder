@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.params import EnumParam, ParamParseError
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelSpec,
+    PanelDefinition,
+    PanelItem,
+    PanelRefreshPolicy,
+)
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     EmptyCommand,
@@ -186,6 +192,33 @@ def _handle_effort_set(command, ctx) -> CommandEffect:
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+
+
+def command_panel_spec() -> CommandPanelSpec:
+    """Contribute the reasoning-effort picker alongside thinking commands."""
+
+    def build(model: object, title: str) -> PanelDefinition:
+        assert isinstance(model, ThinkingEffortViewModel)
+        return PanelDefinition(
+            view_type=model.view_type,
+            title=title,
+            items=tuple(
+                PanelItem(
+                    label=level.label,
+                    description=f"→ {level.api_value} via {model.param}",
+                    command=f"/thinking effort {level.label}",
+                    current=level.label == model.current,
+                )
+                for level in model.levels
+            ),
+        )
+
+    return CommandPanelSpec(
+        "thinking_effort",
+        ThinkingEffortViewModel,
+        build,
+        refresh=PanelRefreshPolicy.ABSORB,
+    )
 
 
 def register_actions(registry: ActionRegistry) -> None:
