@@ -658,7 +658,8 @@ class ProcessManager:
                 )
                 and entry.last_snapshot.state is not ProcessState.EXITED
             ]
-        for entry in entries:
+
+        def terminate_entry(entry: _ManagedEntry) -> None:
             try:
                 snapshot = entry.port.terminate(
                     entry.handle.session_id,
@@ -676,8 +677,14 @@ class ProcessManager:
                             entry.terminal_at = (
                                 entry.terminal_at or time.monotonic()
                             )
-            except ProcessSessionNotFound:
-                pass
+            except Exception:
+                return
+
+        if entries:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(self._max_sessions, len(entries))
+            ) as pool:
+                tuple(pool.map(terminate_entry, entries))
         return len(entries)
 
     def shutdown(self, *, grace_seconds: float = 0.5) -> ProcessShutdownReport:

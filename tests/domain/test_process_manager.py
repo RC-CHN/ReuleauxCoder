@@ -468,6 +468,72 @@ def test_manager_shutdown_controls_independent_sessions_concurrently() -> None:
     assert report.terminated == 4
 
 
+def test_stop_all_controls_independent_sessions_concurrently() -> None:
+    active = 0
+    max_active = 0
+    activity_lock = threading.Lock()
+
+    class _SlowPort(_UnknownPort):
+        def __init__(self, session_id: str, *, fail: bool = False) -> None:
+            super().__init__()
+            self.session_id = session_id
+            self.state = ProcessState.RUNNING
+            self.fail = fail
+
+        def start(self, command, **_kwargs):
+            del command
+            return ProcessHandle(self.session_id, ProcessStreamMode.PIPE)
+
+        def terminate(self, session_id, *, reason="terminated"):
+            nonlocal active, max_active
+            del reason
+            with activity_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.2)
+            with activity_lock:
+                active -= 1
+            if self.fail:
+                raise RuntimeError("termination transport failed")
+            with self._lock:
+                self.terminate_calls += 1
+                self.state = ProcessState.EXITED
+            return self.poll(session_id)
+
+    manager = ProcessManager(max_sessions=4)
+    ports = [
+        _SlowPort(f"stop-{index}", fail=index == 0)
+        for index in range(4)
+    ]
+    for port in ports:
+        handle = manager.start(
+            port,  # type: ignore[arg-type]
+            "long-running",
+            cwd=".",
+            runtime_timeout=60,
+            tty=False,
+            owner_agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+            origin_turn_id="turn",
+        )
+        manager.publish(handle.session_id)
+
+    started = time.monotonic()
+    requested = manager.stop_all(
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+    )
+
+    assert time.monotonic() - started < 0.6
+    assert max_active == 4
+    assert requested == 4
+    assert ports[0].state is ProcessState.RUNNING
+    assert all(port.state is ProcessState.EXITED for port in ports[1:])
+    manager.shutdown(grace_seconds=0)
+
+
 def test_process_input_is_serialized_and_bounded_per_session() -> None:
     class _WritingPort(_UnknownPort):
         def __init__(self) -> None:
