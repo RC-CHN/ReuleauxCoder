@@ -28,8 +28,8 @@ from reuleauxcoder.interfaces.tui.application import (
     MINI_TUI_MOUSE_SUPPORT,
     MiniTUIEventAdapter,
     MiniTUIApplication,
-    _execution_panel_rows,
 )
+from reuleauxcoder.interfaces.tui.execution_panel import _execution_panel_rows
 from reuleauxcoder.interfaces.tui.formatting import (
     wrap_fragments as _wrap_fragments,
     wrapped_row_count as _wrapped_row_count,
