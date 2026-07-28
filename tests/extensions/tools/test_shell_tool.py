@@ -168,7 +168,10 @@ def test_invalid_inputs_are_rejected_before_process_port() -> None:
             "echo", cwd=123
         ).model_text
     )
-    assert "session manager" in tool.execute("echo", tty=True).model_text
+    rejected_tty = tool.execute("echo", tty=True)
+    assert "session manager" in rejected_tty.model_text
+    assert '"executed": false' in rejected_tty.model_text
+    assert '"confirmed": true' in rejected_tty.model_text
     assert process.calls == []
 
 

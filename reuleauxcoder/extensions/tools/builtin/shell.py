@@ -1079,6 +1079,7 @@ def _boundary_failure(
         model_content=json.dumps(
             {
                 "executed": False,
+                "confirmed": True,
                 "rejection": {
                     "code": code,
                     "message": message,
