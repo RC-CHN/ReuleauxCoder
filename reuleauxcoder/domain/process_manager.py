@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import concurrent.futures
 from dataclasses import dataclass, field, replace
 from enum import Enum
 import threading
@@ -709,11 +710,17 @@ class ProcessManager:
             for entry in entries
             if entry.last_snapshot.state is ProcessState.UNKNOWN
         ]
-        for entry in live:
+        def interrupt_entry(entry: _ManagedEntry) -> None:
             try:
                 entry.port.interrupt(entry.handle.session_id)
             except Exception:
-                pass
+                return
+
+        if live:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(self._max_sessions, len(live))
+            ) as pool:
+                tuple(pool.map(interrupt_entry, live))
         deadline = time.monotonic() + max(0.0, grace_seconds)
         for entry in live:
             watcher = entry.watcher
@@ -725,16 +732,26 @@ class ProcessManager:
             if entry.last_snapshot.state is ProcessState.RUNNING
         ]
         force_targets = [*remaining, *unknown]
-        for entry in force_targets:
+
+        def terminate_entry(entry: _ManagedEntry) -> None:
             try:
                 entry.port.terminate(entry.handle.session_id, reason="shutdown")
             except Exception:
-                pass
+                return
+
+        if force_targets:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(self._max_sessions, len(force_targets))
+            ) as pool:
+                tuple(pool.map(terminate_entry, force_targets))
         reap_timeouts = start_reap_timeouts
+        reap_deadline = time.monotonic() + 2.0
         for entry in force_targets:
             watcher = entry.watcher
             if watcher is not None:
-                watcher.join(timeout=2.0)
+                watcher.join(
+                    timeout=max(0.0, reap_deadline - time.monotonic())
+                )
                 if watcher.is_alive():
                     reap_timeouts += 1
         with self._lock:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import threading
+import time
 
 from reuleauxcoder.domain.process import ProcessCursor, ProcessState
 from reuleauxcoder.extensions.remote_exec.backend import (
@@ -185,6 +186,56 @@ def test_shutdown_attempts_to_terminate_unknown_remote_process() -> None:
     assert report.unknown == 1
     assert report.terminated == 1
     assert relay.requests[-1][0].operation == "process.terminate"
+
+
+def test_shutdown_terminates_independent_remote_processes_concurrently() -> None:
+    class _SlowTerminationRelay(_Relay):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.active = 0
+            self.max_active = 0
+            self.activity_lock = threading.Lock()
+
+        def send_workspace_request(self, peer_id, request, *, timeout_sec=30):
+            del timeout_sec
+            assert peer_id == self.peer_id
+            self.requests.append((request, 30))
+            if request.operation == "process.start":
+                return WorkspaceResult(
+                    ok=True,
+                    data={"process_id": request.args["process_id"]},
+                )
+            assert request.operation == "process.terminate"
+            with self.activity_lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            time.sleep(0.2)
+            with self.activity_lock:
+                self.active -= 1
+            return WorkspaceResult(
+                ok=True,
+                data={
+                    "done": True,
+                    "exit_code": -1,
+                    "termination_reason": "shutdown",
+                },
+            )
+
+    relay = _SlowTerminationRelay()
+    backend = RemoteRelayToolBackend(
+        relay,  # type: ignore[arg-type]
+        context=ExecutionContext(peer_id=relay.peer_id, cwd="/workspace"),
+    )
+    port = RemoteProcessPort(backend)
+    for _ in range(4):
+        port.start("long-running-command", cwd="/workspace", runtime_timeout=60)
+
+    started = time.monotonic()
+    report = port.shutdown()
+
+    assert time.monotonic() - started < 0.6
+    assert relay.max_active == 4
+    assert report.terminated == 4
 
 
 def test_out_of_order_remote_polls_cannot_regress_terminal_state_or_cursor() -> None:

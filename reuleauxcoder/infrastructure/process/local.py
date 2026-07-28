@@ -1083,8 +1083,11 @@ class LocalProcessPort:
         for entry in remaining:
             self._request_termination(entry, reason="shutdown")
         reap_timeouts = start_reap_timeouts
+        reap_deadline = time.monotonic() + 2.0
         for entry in remaining:
-            if not entry.done.wait(2.0):
+            if not entry.done.wait(
+                max(0.0, reap_deadline - time.monotonic())
+            ):
                 reap_timeouts += 1
         with self._lock:
             self._entries.clear()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from collections.abc import Mapping
+import concurrent.futures
 from dataclasses import dataclass, field
 import threading
 import time
@@ -726,8 +727,19 @@ class RemoteProcessPort:
         unknown = [entry for entry in entries if entry.state is ProcessState.UNKNOWN]
         terminal = [entry for entry in entries if entry.state is ProcessState.EXITED]
         unresolved = [*live, *unknown]
-        for entry in unresolved:
-            self._terminate_entry(entry, reason="shutdown")
+        if unresolved:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(32, len(unresolved))
+            ) as pool:
+                tuple(
+                    pool.map(
+                        lambda entry: self._terminate_entry(
+                            entry,
+                            reason="shutdown",
+                        ),
+                        unresolved,
+                    )
+                )
         with self._lock:
             self._entries.clear()
         return ProcessShutdownReport(
