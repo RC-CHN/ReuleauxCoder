@@ -44,3 +44,35 @@ def test_builtin_loaders_do_not_scan_packages_to_trigger_registration() -> None:
 
 def test_obsolete_decorator_view_registry_is_removed() -> None:
     assert not (ROOT / "reuleauxcoder/interfaces/view_registration.py").exists()
+
+
+def test_tui_application_does_not_own_command_panel_business_types() -> None:
+    source = (ROOT / "reuleauxcoder/interfaces/tui/application.py").read_text(
+        encoding="utf-8"
+    )
+
+    forbidden = (
+        "ApprovalView",
+        "MCPServersView",
+        "ModelListViewModel",
+        "ModesViewModel",
+        "SessionsViewModel",
+        "SkillsViewModel",
+        "SubagentJobsViewModel",
+        "ThinkingEffortViewModel",
+    )
+    assert all(name not in source for name in forbidden)
+
+
+def test_cli_package_contains_no_tui_specific_modules() -> None:
+    cli_root = ROOT / "reuleauxcoder/interfaces/cli"
+    forbidden = (
+        "mini_tui.py",
+        "command_popup.py",
+        "markdown_fragments.py",
+        "selection_panel.py",
+        "transcript_benchmark.py",
+        "virtual_transcript.py",
+    )
+
+    assert all(not (cli_root / filename).exists() for filename in forbidden)

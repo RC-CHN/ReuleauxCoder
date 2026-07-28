@@ -1,14 +1,12 @@
-from reuleauxcoder.interfaces.tui.selection_panel import (
-    SelectionItem,
-    SelectionPanel,
-)
+from reuleauxcoder.app.commands.panels import PanelDefinition, PanelItem
+from reuleauxcoder.interfaces.tui.selection_panel import SelectionPanel
 
 
-def _items() -> tuple[SelectionItem, ...]:
+def _items() -> tuple[PanelItem, ...]:
     return (
-        SelectionItem("coder", "Default coding mode", "/mode switch coder", True),
-        SelectionItem("plan", "Planning first", "/mode switch plan"),
-        SelectionItem("debug", "Debugging", "/mode switch debug"),
+        PanelItem("coder", "Default coding mode", "/mode switch coder", True),
+        PanelItem("plan", "Planning first", "/mode switch plan"),
+        PanelItem("debug", "Debugging", "/mode switch debug"),
     )
 
 
@@ -35,11 +33,11 @@ def test_refresh_keeps_highlight_on_same_label() -> None:
     assert panel.selected.label == "plan"
 
     refreshed = (
-        SelectionItem("coder", "Default coding mode", "/mode switch coder"),
-        SelectionItem("debug", "Debugging", "/mode switch debug"),
-        SelectionItem("plan", "Planning first", "/mode switch plan", True),
+        PanelItem("coder", "Default coding mode", "/mode switch coder"),
+        PanelItem("debug", "Debugging", "/mode switch debug"),
+        PanelItem("plan", "Planning first", "/mode switch plan", True),
     )
-    panel.refresh(refreshed)
+    panel.refresh(PanelDefinition("mode_profiles", "Modes", refreshed))
 
     assert panel.selected.label == "plan"
 
@@ -49,7 +47,13 @@ def test_refresh_falls_back_when_label_disappears() -> None:
     panel.move(2)
     assert panel.selected.label == "debug"
 
-    panel.refresh((SelectionItem("coder", "only", "/mode switch coder"),))
+    panel.refresh(
+        PanelDefinition(
+            "mode_profiles",
+            "Modes",
+            (PanelItem("coder", "only", "/mode switch coder"),),
+        )
+    )
 
     assert panel.selected.label == "coder"
     assert panel.index == 0

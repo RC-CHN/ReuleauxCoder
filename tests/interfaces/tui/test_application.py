@@ -6,6 +6,7 @@ from collections import deque
 from types import SimpleNamespace
 from dataclasses import replace
 from prompt_toolkit.utils import get_cwidth
+import pytest
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.app.commands.specs import DuringTurnPolicy
@@ -18,6 +19,9 @@ from reuleauxcoder.domain.runtime.events import (
     agent_event_to_runtime_event,
 )
 from reuleauxcoder.presentation import AssistantCell, DiffCell
+from reuleauxcoder.extensions.command.builtin import (
+    create_builtin_command_panel_registry,
+)
 from reuleauxcoder.interfaces.tui.application import (
     ALTERNATE_SCROLL_DISABLE,
     ALTERNATE_SCROLL_ENABLE,
@@ -55,6 +59,16 @@ from reuleauxcoder.interfaces.interactions import (
     InputTextRequest,
     ReviewRequest,
 )
+
+
+@pytest.fixture(autouse=True)
+def _inject_command_panel_registry(monkeypatch) -> None:
+    monkeypatch.setattr(
+        MiniTUIApplication,
+        "panel_registry",
+        create_builtin_command_panel_registry(),
+        raising=False,
+    )
 
 
 def test_event_adapter_projects_user_and_execution_state() -> None:

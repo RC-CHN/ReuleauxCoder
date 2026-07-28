@@ -36,6 +36,11 @@ from prompt_toolkit.widgets import Frame
 
 from reuleauxcoder import __version__
 from reuleauxcoder.app.commands import parse_command
+from reuleauxcoder.app.commands.panels import (
+    CommandPanelRegistry,
+    PanelItem,
+    PanelRefreshPolicy,
+)
 from reuleauxcoder.app.commands.specs import DuringTurnPolicy
 from reuleauxcoder.app.runtime.session_state import (
     build_session_persistence_kwargs,
@@ -53,16 +58,8 @@ from reuleauxcoder.domain.runtime.events import (
     SubagentJobChanged,
 )
 from reuleauxcoder.app.commands.view_models import (
-    ModelListViewModel,
-    ModesViewModel,
     SessionResumeViewModel,
-    SessionsViewModel,
-    SubagentJobsViewModel,
-    ThinkingEffortViewModel,
 )
-from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
-from reuleauxcoder.extensions.mcp.models import MCPServersView
-from reuleauxcoder.extensions.skills.models import SkillsViewModel
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.tui.command_popup import (
@@ -71,10 +68,7 @@ from reuleauxcoder.interfaces.tui.command_popup import (
     filter_entries,
 )
 from reuleauxcoder.interfaces.tui.markdown_fragments import RetainedMarkdownRenderer
-from reuleauxcoder.interfaces.tui.selection_panel import (
-    SelectionItem,
-    SelectionPanel,
-)
+from reuleauxcoder.interfaces.tui.selection_panel import SelectionPanel
 from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VirtualTranscriptControl,
     VirtualTranscriptLayout,
@@ -688,6 +682,7 @@ class MiniTUIApplication:
         ui_bus,
         ui_profile,
         action_registry,
+        panel_registry: CommandPanelRegistry,
         interactor: MiniTUIInteractor,
         event_adapter: MiniTUIEventAdapter,
         current_session_id: str | None,
@@ -702,6 +697,7 @@ class MiniTUIApplication:
         self.ui_bus = ui_bus
         self.ui_profile = ui_profile
         self.action_registry = action_registry
+        self.panel_registry = panel_registry
         self.interactor = interactor
         self.events = event_adapter
         self.current_session_id = current_session_id
@@ -751,9 +747,6 @@ class MiniTUIApplication:
         self._popup_dismissed = False
         self._selection: SelectionPanel | None = None
         self._selection_stack: list[SelectionPanel] = []
-        self._model_slot_profiles: dict[str, tuple[SelectionItem, ...]] = {}
-        self._approval_targets: dict[str, tuple[SelectionItem, ...]] = {}
-        self._agent_job_actions: dict[str, tuple[SelectionItem, ...]] = {}
         self.events.interactive_view_handler = self._open_interactive_view
         self.transcript_control = VirtualTranscriptControl(
             self.events.transcript_layout,
@@ -1428,297 +1421,39 @@ class MiniTUIApplication:
                 fragments.append(("class:popup", pad + entry.description + "\n"))
         return FormattedText(fragments)
 
-    _MODEL_SLOTS = (
-        ("Session · Main model", "use-main"),
-        ("Session · Sub-agent model", "use-sub"),
-        ("Defaults · Main model", "set-main"),
-        ("Defaults · Sub-agent model", "set-sub"),
-    )
-
-    _APPROVAL_ACTIONS = ("allow", "warn", "require_approval", "deny")
-
-    @staticmethod
-    def _approval_rule_target(rule: ApprovalRuleView) -> str:
-        if rule.tool_source == "mcp":
-            if rule.mcp_server and rule.tool_name:
-                return f"mcp:{rule.mcp_server}:{rule.tool_name}"
-            if rule.mcp_server:
-                return f"mcp:{rule.mcp_server}"
-            return "mcp"
-        if rule.tool_name:
-            return f"tool:{rule.tool_name}"
-        return rule.scope
-
     def _open_interactive_view(self, payload) -> bool:
-        """Claim a view as a modal selection panel, or absorb its refresh."""
-        is_refresh = payload.action == "refresh" or not payload.focus
-        if payload.view_type == "subagent_jobs":
-            model = payload.view_model
-            if not isinstance(model, SubagentJobsViewModel):
-                return False
-            if is_refresh:
-                if self._selection is not None and (
-                    self._selection.view_type == "subagent_jobs"
-                ):
-                    self._selection.refresh(self._agents_items(model))
-                    self._agent_job_actions = self._agents_action_map(model)
-                    self.invalidate()
-                return True
-            items = self._agents_items(model) or (
-                SelectionItem(
-                    label="(no sub-agent jobs)",
-                    description="spawn one via ask or background delegation",
-                    command="",
-                ),
-            )
-            self._agent_job_actions = self._agents_action_map(model)
-            self._selection = SelectionPanel.open(
-                title=payload.title,
-                items=items,
-                view_type="subagent_jobs",
-            )
-            self.invalidate()
-            return True
-        if payload.view_type == "sessions":
-            model = payload.view_model
-            if not isinstance(model, SessionsViewModel):
-                return False
-            if is_refresh:
-                if self._selection is not None and (
-                    self._selection.view_type == "sessions"
-                ):
-                    self._selection.refresh(self._session_items(model))
-                    self.invalidate()
-                return True
-            items = self._session_items(model) or (
-                SelectionItem(
-                    label="(no saved sessions)",
-                    description="/save writes a restorable snapshot",
-                    command="",
-                ),
-            )
-            self._selection = SelectionPanel.open(
-                title=payload.title,
-                items=items,
-                view_type="sessions",
-            )
-            self.invalidate()
-            return True
-        if payload.view_type == "thinking_effort":
-            model = payload.view_model
-            if not isinstance(model, ThinkingEffortViewModel):
-                return False
-            if is_refresh:
-                return True
-            self._selection = SelectionPanel.open(
-                title=payload.title,
-                items=tuple(
-                    SelectionItem(
-                        label=level.label,
-                        description=f"→ {level.api_value} via {model.param}",
-                        command=f"/thinking effort {level.label}",
-                        current=level.label == model.current,
-                    )
-                    for level in model.levels
-                ),
-                view_type="thinking_effort",
-            )
-            self.invalidate()
-            return True
-        if payload.view_type == "skills":
-            model = payload.view_model
-            if not isinstance(model, SkillsViewModel):
-                return False
-            if is_refresh:
-                if self._selection is not None and (
-                    self._selection.view_type == "skills"
-                ):
-                    self._selection.refresh(self._skills_items(model))
-                    self.invalidate()
-                return True
-            items = self._skills_items(model) or (
-                SelectionItem(
-                    label="(no skills discovered)",
-                    description="create skills under .agents/skills/ or ~/.agents/skills/",
-                    command="",
-                ),
-            )
-            self._selection = SelectionPanel.open(
-                title=payload.title,
-                items=items,
-                view_type="skills",
-            )
-            self.invalidate()
-            return True
-        if payload.view_type == "mcp_servers":
-            model = payload.view_model
-            if not isinstance(model, MCPServersView):
-                return False
-            if is_refresh:
-                if self._selection is not None and (
-                    self._selection.view_type == "mcp_servers"
-                ):
-                    self._selection.refresh(self._mcp_items(model))
-                    self.invalidate()
-                return True
-            items = self._mcp_items(model) or (
-                SelectionItem(
-                    label="(no MCP servers configured)",
-                    description="add servers under mcp.servers in config.yaml",
-                    command="",
-                ),
-            )
-            self._selection = SelectionPanel.open(
-                title=payload.title,
-                items=items,
-                view_type="mcp_servers",
-            )
-            self.invalidate()
-            return True
-        if payload.view_type == "approval_rules":
-            model = payload.view_model
-            if not isinstance(model, ApprovalView):
-                return False
-            if is_refresh:
-                return True
-            return self._open_approval_panel(payload, model)
-        if payload.view_type == "mode_profiles":
-            model = payload.view_model
-            if not isinstance(model, ModesViewModel):
-                return False
-            if is_refresh:
-                if self._selection is not None and (
-                    self._selection.view_type == "mode_profiles"
-                ):
-                    self._selection.refresh(self._mode_items(model))
-                    self.invalidate()
-                return True
-            return self._open_mode_panel(payload)
-        if payload.view_type == "model_profiles":
-            model = payload.view_model
-            if not isinstance(model, ModelListViewModel):
-                return False
-            if is_refresh:
-                # The success notice already says what changed; suppress the
-                # passive JSON dump.
-                return True
-            return self._open_model_panel(payload)
-        return False
-
-    @staticmethod
-    def _mode_items(model: ModesViewModel) -> tuple[SelectionItem, ...]:
-        return tuple(
-            SelectionItem(
-                label=mode.name,
-                description=mode.description,
-                command=f"/mode switch {mode.name}",
-                current=mode.active,
-            )
-            for mode in model.modes
-        )
-
-    def _open_mode_panel(self, payload) -> bool:
-        model = payload.view_model
-        if not isinstance(model, ModesViewModel):
+        """Claim a command-owned view as a modal panel or absorb its refresh."""
+        spec = self.panel_registry.get(payload.view_type)
+        if spec is None:
             return False
-        items = self._mode_items(model)
-        if self._selection is not None and self._selection.view_type == payload.view_type:
-            self._selection.refresh(items)
-        else:
-            self._selection = SelectionPanel.open(
-                title=payload.title,
-                items=items,
-                view_type=payload.view_type,
-            )
+        definition = spec.build_for(payload.view_model, payload.title)
+        if definition is None:
+            return False
+
+        is_refresh = payload.action == "refresh" or not payload.focus
+        if is_refresh:
+            if (
+                spec.refresh is PanelRefreshPolicy.UPDATE
+                and self._selection is not None
+                and self._selection.view_type == definition.view_type
+            ):
+                self._selection.refresh(definition)
+                self.invalidate()
+            return True
+
+        self._selection = SelectionPanel.from_definition(definition)
+        self._selection_stack = []
         self.invalidate()
         return True
 
-    @staticmethod
-    def _mcp_items(model: MCPServersView) -> tuple[SelectionItem, ...]:
-        return tuple(
-            SelectionItem(
-                label=server.name,
-                description=(
-                    f"{'enabled' if server.enabled else 'disabled'}"
-                    f" · {server.runtime_state}"
-                ),
-                command=(
-                    f"/mcp {'disable' if server.enabled else 'enable'} {server.name}"
-                ),
-                current=server.enabled,
-            )
-            for server in model.servers
-        )
-
-    @staticmethod
-    def _agents_items(model: SubagentJobsViewModel) -> tuple[SelectionItem, ...]:
-        return tuple(
-            SelectionItem(
-                label=job.job_id,
-                description=f"{job.status} · {job.mode} · {job.task[:40]}",
-                command="",
-                current=job.status == "running",
-            )
-            for job in model.jobs
-        )
-
-    @staticmethod
-    def _agents_action_map(
-        model: SubagentJobsViewModel,
-    ) -> dict[str, tuple[SelectionItem, ...]]:
-        terminal = {"completed", "failed", "cancelled", "timed_out"}
-        mapping: dict[str, tuple[SelectionItem, ...]] = {}
-        for job in model.jobs:
-            actions = [
-                SelectionItem(
-                    label="get details",
-                    description="full job view",
-                    command=f"/agents get {job.job_id}",
-                )
-            ]
-            if job.status not in terminal:
-                actions.append(
-                    SelectionItem(
-                        label="cancel",
-                        description="request cancellation",
-                        command=f"/agents cancel {job.job_id}",
-                    )
-                )
-            else:
-                actions.append(
-                    SelectionItem(
-                        label="cleanup",
-                        description="remove isolated worktree",
-                        command=f"/agents cleanup {job.job_id}",
-                    )
-                )
-            mapping[job.job_id] = tuple(actions)
-        return mapping
-
-    @staticmethod
-    def _session_items(model: SessionsViewModel) -> tuple[SelectionItem, ...]:
-        items: list[SelectionItem] = []
-        for session in model.sessions:
-            position = f"#{session.position}" if session.position is not None else "  "
-            active = " [active]" if session.active else ""
-            items.append(
-                SelectionItem(
-                    label=f"{position} {session.saved_at[:19]}",
-                    description=(
-                        f"{session.model} · {session.preview[:40]} · {session.session_id}"
-                        f"{active}"
-                    ),
-                    command=f"/session {session.session_id}",
-                    current=session.active,
-                )
-            )
-        return tuple(items)
-
-    def _selection_visible_items(self) -> tuple[SelectionItem, ...]:
-        """Items after the picker's live text filter (sessions only)."""
+    def _selection_visible_items(self) -> tuple[PanelItem, ...]:
+        """Return panel rows after applying an optional live text filter."""
         panel = self._selection
-        if panel is None or panel.view_type not in ("sessions", "subagent_jobs"):
-            return panel.items if panel is not None else ()
+        if panel is None:
+            return ()
+        definition = panel.definition
+        if definition is None or not definition.filterable:
+            return panel.items
         needle = self.input_buffer.text.strip().lower()
         if not needle:
             return panel.items
@@ -1727,151 +1462,6 @@ class MiniTUIApplication:
             for item in panel.items
             if needle in f"{item.label} {item.description}".lower()
         )
-
-    @staticmethod
-    def _skills_items(model: SkillsViewModel) -> tuple[SelectionItem, ...]:
-        return tuple(
-            SelectionItem(
-                label=skill.name,
-                description=(
-                    f"{'enabled' if skill.enabled else 'disabled'}"
-                    f" · {skill.scope}"
-                    f"{' · ' + skill.description if skill.description else ''}"
-                ),
-                command=(
-                    f"/skills {'disable' if skill.enabled else 'enable'} {skill.name}"
-                ),
-                current=skill.enabled,
-            )
-            for skill in model.skills
-        )
-
-    def _approval_action_items(
-        self, target: str, prefix: str, current_action: str
-    ) -> tuple[SelectionItem, ...]:
-        return tuple(
-            SelectionItem(
-                label=action,
-                description=f"/approval {prefix} {target} {action}",
-                command=f"/approval {prefix} {target} {action}",
-                current=action == current_action,
-            )
-            for action in self._APPROVAL_ACTIONS
-        )
-
-    def _open_approval_panel(self, payload, model: ApprovalView) -> bool:
-        """Unified target list: configured rules plus dynamically discovered
-        targets (MCP servers, builtin tools) shown with their effective
-        action. New targets are edited as session-scoped rules."""
-        self._approval_targets: dict[str, tuple[SelectionItem, ...]] = {}
-        items: list[SelectionItem] = []
-        covered: set[str] = set()
-        for rule in model.rules:
-            target = self._approval_rule_target(rule)
-            covered.add(target)
-            prefix = "set" if rule.source == "session" else "set-global"
-            actions = list(self._approval_action_items(target, prefix, rule.action))
-            if rule.source in ("session", "workspace", "global"):
-                unset = "unset" if rule.source == "session" else "unset-global"
-                actions.append(
-                    SelectionItem(
-                        label="delete rule",
-                        description=f"/approval {unset} {target}",
-                        command=f"/approval {unset} {target}",
-                    )
-                )
-            self._approval_targets[target] = tuple(actions)
-            items.append(
-                SelectionItem(
-                    label=target,
-                    description=f"{rule.action} · {rule.source}",
-                    command="",
-                )
-            )
-
-        dynamic: list[SelectionItem] = []
-        for policy in model.effective_mcp_policies:
-            target = f"mcp:{policy.server_name}"
-            if target in covered:
-                continue
-            self._approval_targets[target] = self._approval_action_items(
-                target, "set", policy.action
-            )
-            dynamic.append(
-                SelectionItem(
-                    label=target,
-                    description=f"{policy.action} · effective (no rule)",
-                    command="",
-                )
-            )
-        for policy in model.tool_policies:
-            if policy.tool_source != "builtin":
-                continue
-            target = f"tool:{policy.tool_name}"
-            if target in covered:
-                continue
-            self._approval_targets[target] = self._approval_action_items(
-                target, "set", policy.action
-            )
-            dynamic.append(
-                SelectionItem(
-                    label=target,
-                    description=f"{policy.action} · effective (no rule)",
-                    command="",
-                )
-            )
-        dynamic.sort(key=lambda item: item.label)
-        items.extend(dynamic)
-
-        if not items:
-            return False
-        self._selection = SelectionPanel.open(
-            title=payload.title,
-            items=tuple(items),
-            view_type="approval_rules",
-        )
-        self.invalidate()
-        return True
-
-    def _open_model_panel(self, payload) -> bool:
-        model = payload.view_model
-        if not isinstance(model, ModelListViewModel):
-            return False
-        active_by_slot = {
-            "use-main": model.active_main,
-            "use-sub": model.active_sub,
-            "set-main": model.active_main,
-            "set-sub": model.active_sub,
-        }
-        self._model_slot_profiles = {
-            slot: tuple(
-                SelectionItem(
-                    label=profile.name,
-                    description=f"{profile.model} · ctx {profile.max_context_tokens}",
-                    command=f"/model {slot} {profile.name}",
-                    current=(
-                        profile.active_main if slot.endswith("main") else profile.active_sub
-                    ),
-                )
-                for profile in model.profiles
-            )
-            for _label, slot in self._MODEL_SLOTS
-        }
-        items = tuple(
-            SelectionItem(
-                label=label,
-                description=active_by_slot[slot] or "(none)",
-                command="",
-            )
-            for label, slot in self._MODEL_SLOTS
-        )
-        self._selection = SelectionPanel.open(
-            title=payload.title,
-            items=items,
-            view_type="model_slots",
-        )
-        self.invalidate()
-        return True
 
     def _selection_height(self) -> int:
         if self._selection is None:
@@ -1886,46 +1476,25 @@ class MiniTUIApplication:
         self.invalidate()
 
     def _selection_confirm(self) -> None:
-        if self._selection is None:
+        panel = self._selection
+        if panel is None or panel.definition is None:
             return
         items = self._selection_visible_items()
         if not items:
             return
-        selected = items[min(self._selection.index, len(items) - 1)]
-        if self._selection.view_type in ("model_slots", "approval_rules", "subagent_jobs"):
-            if self._selection.view_type == "model_slots":
-                slot = next(
-                    (slot for label, slot in self._MODEL_SLOTS if label == selected.label),
-                    None,
-                )
-                sub_items = self._model_slot_profiles.get(slot or "", ())
-                sub_view_type = "model_profiles"
-            elif self._selection.view_type == "approval_rules":
-                sub_items = self._approval_targets.get(selected.label, ())
-                sub_view_type = "approval_actions"
-            else:
-                sub_items = self._agent_job_actions.get(selected.label, ())
-                sub_view_type = "agent_job_actions"
-            if not sub_items:
-                return
-            self._selection_stack.append(self._selection)
-            self._selection = SelectionPanel.open(
-                title=f"{self._selection.title} · {selected.label}",
-                items=sub_items,
-                view_type=sub_view_type,
-            )
+        selected = items[min(panel.index, len(items) - 1)]
+        child = panel.definition.child_for(selected.label)
+        if child is not None:
+            self._selection_stack.append(panel)
+            self._selection = SelectionPanel.from_definition(child)
             self.invalidate()
             return
         command = selected.command
         if not command:
             # Placeholder/hint rows carry no command.
             return
-        # Toggle panels (mcp) stay open after submitting so consecutive
-        # toggles work; the refresh updates items in place.
-        keep_open = self._selection.view_type in ("mcp_servers", "skills")
-        if not keep_open:
-            if self._selection.view_type == "agent_job_actions":
-                # Pop back to the jobs browser so its rows refresh in place.
+        if not panel.definition.keep_open_on_submit:
+            if panel.definition.return_to_parent_on_submit:
                 self._selection = (
                     self._selection_stack.pop() if self._selection_stack else None
                 )
@@ -1941,9 +1510,10 @@ class MiniTUIApplication:
         if panel is None:
             return FormattedText([])
         items = self._selection_visible_items()
+        definition = panel.definition
         hint = (
             " · type to filter"
-            if panel.view_type in ("sessions", "subagent_jobs")
+            if definition is not None and definition.filterable
             else ""
         )
         fragments: list[tuple[str, str]] = [

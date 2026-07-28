@@ -137,6 +137,9 @@ def main():
             build_runtime_approval_provider,
         )
         from reuleauxcoder.app.runtime.interactions import InteractionCoordinator
+        from reuleauxcoder.extensions.command.builtin import (
+            create_builtin_command_panel_registry,
+        )
         from reuleauxcoder.interfaces.tui import (
             MiniTUIApplication,
             MiniTUIEventAdapter,
@@ -237,6 +240,7 @@ def main():
             ui_bus=ctx.ui_bus,
             ui_profile=cli_ui.profile,
             action_registry=ctx.action_registry,
+            panel_registry=create_builtin_command_panel_registry(),
             interactor=mini_interactor,
             event_adapter=event_adapter,
             current_session_id=ctx.current_session_id,
