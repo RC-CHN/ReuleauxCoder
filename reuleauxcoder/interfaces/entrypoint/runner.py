@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.runtime.session_state import (
     get_session_fingerprint,
     restore_config_runtime_defaults,
@@ -117,7 +118,7 @@ class AppRunner:
         self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
         self._agent = agent
-        self._bind_remote_chat_handler(agent)
+        self._bind_remote_chat_handler(agent, action_registry)
         self._report_startup("Discovering skills...")
         skills_service = self._init_skills(config, agent, ui_bus)
         self._report_startup("Skills catalog ready.")
@@ -267,8 +268,10 @@ class AppRunner:
     def _init_remote_relay(self, config: Config, ui_bus: UIEventBus) -> None:
         init_remote_relay(self, config, ui_bus)
 
-    def _bind_remote_chat_handler(self, agent: Agent) -> None:
-        bind_remote_chat_handler(self, agent)
+    def _bind_remote_chat_handler(
+        self, agent: Agent, action_registry: ActionRegistry
+    ) -> None:
+        bind_remote_chat_handler(self, agent, action_registry)
 
     def _register_hooks(self, agent: Agent, config: Config) -> None:
         """Register hooks discovered via decorator mechanism."""

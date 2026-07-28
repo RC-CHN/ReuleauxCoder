@@ -461,13 +461,14 @@ class TestRunnerRemoteExec:
         try:
             assert runner._relay_server is not None
             assert runner._relay_http_service is not None
+            base_url = runner._relay_http_service.base_url
             _peer_a, token_a = _register_peer(
-                runner._relay_http_service.base_url,
+                base_url,
                 runner._relay_server.issue_bootstrap_token(ttl_sec=60),
                 str(tmp_path / "peer-a"),
             )
             _peer_b, token_b = _register_peer(
-                runner._relay_http_service.base_url,
+                base_url,
                 runner._relay_server.issue_bootstrap_token(ttl_sec=60),
                 str(tmp_path / "peer-b"),
             )
@@ -477,7 +478,7 @@ class TestRunnerRemoteExec:
             def start_chat(label: str, token: str) -> None:
                 _, body = _json_request(
                     "POST",
-                    f"{runner._relay_http_service.base_url}/remote/chat/start",
+                    f"{base_url}/remote/chat/start",
                     {"peer_token": token, "prompt": label},
                 )
                 starts[label] = body
@@ -547,6 +548,15 @@ class TestRunnerRemoteExec:
         runner = _build_runner_with_fake_agent(
             f"127.0.0.1:{port}", session_dir=tmp_path / "sessions"
         )
+        created_registries = []
+        create_action_registry = runner.dependencies.create_action_registry
+
+        def tracked_create_action_registry():
+            registry = create_action_registry()
+            created_registries.append(registry)
+            return registry
+
+        runner.dependencies.create_action_registry = tracked_create_action_registry
         ctx = runner.initialize()
         try:
             assert runner._relay_server is not None
@@ -573,6 +583,7 @@ class TestRunnerRemoteExec:
             merged = "\n".join(terminal_outputs)
             assert "REMOTE PEER READY" not in merged
             assert "Available commands" in merged or "/help" in merged
+            assert len(created_registries) == 1
             assert not any(
                 event["type"] == "output"
                 and event["payload"].get("format") == "plain"

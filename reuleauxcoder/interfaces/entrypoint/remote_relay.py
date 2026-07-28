@@ -16,6 +16,7 @@ from reuleauxcoder.app.runtime.session_state import (
     build_session_runtime_state,
     restore_config_runtime_defaults,
 )
+from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.config.models import Config
@@ -144,7 +145,9 @@ def init_remote_relay(runner, config: Config, ui_bus: UIEventBus) -> None:
     )
 
 
-def bind_remote_chat_handler(runner, agent: Agent) -> None:
+def bind_remote_chat_handler(
+    runner, agent: Agent, action_registry: ActionRegistry
+) -> None:
     """Bind remote chat handlers for interactive peers."""
     if runner._relay_http_service is None or runner._relay_server is None:
         return
@@ -362,7 +365,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
                 getattr(peer_agent, "current_session_id", None),
                 presentation.ui_bus,
                 CLI_PROFILE,
-                runner.dependencies.create_action_registry(),
+                action_registry,
                 sessions_dir,
                 skills_service,
             )
