@@ -9,11 +9,9 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
 
 from reuleauxcoder.domain.hooks.base import ObserverHook, TransformHook
-from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import (
     BeforeLLMRequestContext,
     HookContextSnapshot,
-    HookPoint,
     RunnerStartupContext,
 )
 from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
@@ -31,7 +29,6 @@ DEFAULT_CONTEXT_FILES = [
 ]
 
 
-@register_hook(HookPoint.BEFORE_LLM_REQUEST, priority=50)
 class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
     """Inject project-level context files (AGENT.md, etc.) into messages.
 
@@ -116,7 +113,6 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
         return "\n".join(sections)
 
 
-@register_hook(HookPoint.RUNNER_STARTUP, priority=0)
 class ProjectContextStartupNotifier(ObserverHook[RunnerStartupContext]):
     """Notify the UI when project context files are found at startup."""
 

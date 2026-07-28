@@ -19,13 +19,11 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolRetentionStrategy,
     ToolTruncation,
 )
-from reuleauxcoder.domain.hooks.discovery import register_hook
-from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
+from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext
 from reuleauxcoder.infrastructure.fs.paths import get_tool_outputs_dir
 from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 
 
-@register_hook(HookPoint.AFTER_TOOL_EXECUTE, priority=0)
 class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
     """Archive oversized tool output and replace it with a truncated summary."""
 

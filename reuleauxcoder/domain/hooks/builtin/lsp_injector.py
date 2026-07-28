@@ -18,12 +18,11 @@ if TYPE_CHECKING:
     from reuleauxcoder.extensions.lsp.manager import LspManager
 
 from reuleauxcoder.domain.hooks.base import TransformHook
-from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.runtime_overlay import (
     has_runtime_overlay_tail,
     inject_runtime_overlay_region,
 )
-from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
+from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext
 from reuleauxcoder.extensions.lsp.diagnostics import (
     DiagnosticRouteFilter,
     render_blocks,
@@ -31,7 +30,6 @@ from reuleauxcoder.extensions.lsp.diagnostics import (
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
-@register_hook(HookPoint.BEFORE_LLM_REQUEST, priority=100)
 @dataclass(slots=True)
 class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
     """Inject accumulated LSP diagnostics before each LLM request."""

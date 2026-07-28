@@ -1,7 +1,8 @@
-"""Hook discovery and decorator-based registration."""
+"""Explicit builtin hook contributions and instantiation."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -11,14 +12,9 @@ from reuleauxcoder.domain.hooks.types import HookPoint
 if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
 
-
-# Global registry for decorator-based hook specifications
-_HOOK_SPECS: list[HookSpec] = []
-
-
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class HookSpec:
-    """Specification for a hook registered via decorator."""
+    """Declarative hook contribution instantiated by the composition root."""
 
     hook_class: type[HookBase[Any]]
     hook_point: HookPoint
@@ -26,59 +22,15 @@ class HookSpec:
     factory: Callable[["Config"], HookBase[Any]] | None = None
     enabled_by_default: bool = True
 
-
-def register_hook(
-    hook_point: HookPoint,
-    priority: int = 0,
-    enabled_by_default: bool = True,
-) -> Callable[[type[HookBase[Any]]], type[HookBase[Any]]]:
-    """Decorator to register a hook class for auto-discovery.
-
-    The decorated class should either:
-    - Have a `create_from_config(config: Config) -> Self` classmethod
-    - Or be directly instantiable with no config dependencies
-
-    Usage:
-        @register_hook(HookPoint.BEFORE_TOOL_EXECUTE, priority=100)
-        class MyGuardHook(GuardHook[BeforeToolExecuteContext]):
-            @classmethod
-            def create_from_config(cls, config: Config) -> "MyGuardHook":
-                return cls(some_option=config.some_option)
-
-            def run(self, context) -> GuardDecision:
-                ...
-    """
-
-    def decorator(cls: type[HookBase[Any]]) -> type[HookBase[Any]]:
-        spec = HookSpec(
-            hook_class=cls,
-            hook_point=hook_point,
-            priority=priority,
-            enabled_by_default=enabled_by_default,
-        )
-        _HOOK_SPECS.append(spec)
-        # Set priority as class attribute for HookBase compatibility
-        cls.priority = priority
-        return cls
-
-    return decorator
-
-
 def discover_hook_specs() -> list[HookSpec]:
-    """Return all hook specs registered via decorator.
+    """Return explicit builtin hook specs in stable pipeline order."""
+    from reuleauxcoder.domain.hooks.builtin import builtin_hook_specs
 
-    Import builtin hooks module first to ensure decorators are executed.
-    """
-    # Ensure builtin hooks are imported so decorators run.
-    from reuleauxcoder.domain.hooks import builtin as _builtin_hooks
-
-    del _builtin_hooks
-
-    return list(_HOOK_SPECS)
+    return list(builtin_hook_specs())
 
 
 def instantiate_hooks(
-    specs: list[HookSpec],
+    specs: Sequence[HookSpec],
     config: "Config",
     include_disabled: bool = False,
 ) -> list[tuple[HookPoint, HookBase[Any]]]:
@@ -101,8 +53,16 @@ def instantiate_hooks(
         hook: HookBase[Any]
         if spec.factory is not None:
             hook = spec.factory(config)
-        elif hasattr(spec.hook_class, "create_from_config"):
-            hook = spec.hook_class.create_from_config(config)
+        elif callable(
+            create_from_config := getattr(spec.hook_class, "create_from_config", None)
+        ):
+            created = create_from_config(config)
+            if not isinstance(created, HookBase):
+                raise TypeError(
+                    f"{spec.hook_class.__name__}.create_from_config() "
+                    "must return a HookBase"
+                )
+            hook = created
         else:
             # Direct instantiation with priority from spec
             hook = spec.hook_class(
@@ -112,8 +72,3 @@ def instantiate_hooks(
         result.append((spec.hook_point, hook))
 
     return result
-
-
-def clear_hook_specs() -> None:
-    """Clear all registered hook specs. Used for testing."""
-    _HOOK_SPECS.clear()

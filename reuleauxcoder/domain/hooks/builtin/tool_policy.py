@@ -14,16 +14,13 @@ from reuleauxcoder.domain.approval_engine import (
 )
 from reuleauxcoder.domain.config.models import ApprovalConfig
 from reuleauxcoder.domain.hooks.base import GuardHook
-from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.types import (
     BeforeToolExecuteContext,
     GuardDecision,
-    HookPoint,
 )
 from reuleauxcoder.extensions.tools.policies import DEFAULT_TOOL_POLICIES, ToolPolicy
 
 
-@register_hook(HookPoint.BEFORE_TOOL_EXECUTE, priority=100)
 @dataclass(slots=True)
 class ToolPolicyGuardHook(GuardHook[BeforeToolExecuteContext]):
     """Run configured tool policies before a tool executes."""

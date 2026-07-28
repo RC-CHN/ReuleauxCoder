@@ -11,12 +11,11 @@ if TYPE_CHECKING:
     from reuleauxcoder.infrastructure.version_control import GitMonitor
 
 from reuleauxcoder.domain.hooks.base import TransformHook
-from reuleauxcoder.domain.hooks.discovery import register_hook
 from reuleauxcoder.domain.hooks.runtime_overlay import (
     has_runtime_overlay_tail,
     inject_runtime_overlay_region,
 )
-from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
+from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext
 
 
 def render_git_snapshot(snapshot: dict[str, Any]) -> str:
@@ -63,7 +62,6 @@ def render_git_snapshot(snapshot: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-@register_hook(HookPoint.BEFORE_LLM_REQUEST, priority=90)
 @dataclass(slots=True)
 class GitStateInjectorHook(TransformHook[BeforeLLMRequestContext]):
     """Append bounded Git observations at the volatile request tail."""

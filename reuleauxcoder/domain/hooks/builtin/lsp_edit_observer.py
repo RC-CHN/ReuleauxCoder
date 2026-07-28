@@ -22,8 +22,7 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.agent.tool_outcome import ToolDiagnostic
-from reuleauxcoder.domain.hooks.discovery import register_hook
-from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
+from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext
 from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
 from reuleauxcoder.interfaces.events import UIEventKind
 
@@ -40,7 +39,6 @@ def _extract_file_path(tool_name: str, arguments: dict) -> str | None:
     return arguments.get("file_path")
 
 
-@register_hook(HookPoint.AFTER_TOOL_EXECUTE, priority=200)
 @dataclass(slots=True)
 class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
     """Trigger LSP diagnostics and didSave after file edits."""
