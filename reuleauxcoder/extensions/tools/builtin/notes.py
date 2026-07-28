@@ -6,7 +6,6 @@ from pathlib import Path
 
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool
-from reuleauxcoder.extensions.tools.registry import register_tool
 from reuleauxcoder.infrastructure.persistence.notes_store import NoteStore
 
 
@@ -34,7 +33,6 @@ class _NoteTool(Tool):
         )
 
 
-@register_tool
 class WriteNoteTool(_NoteTool):
     name = "write_note"
     description = (
@@ -69,7 +67,6 @@ class WriteNoteTool(_NoteTool):
         return f"Created {scope} note {entry.id}."
 
 
-@register_tool
 class EditNoteTool(_NoteTool):
     name = "edit_note"
     description = (
@@ -106,7 +103,6 @@ class EditNoteTool(_NoteTool):
         return f"Updated {scope} note {entry.id}."
 
 
-@register_tool
 class DeleteNoteTool(_NoteTool):
     name = "delete_note"
     description = (

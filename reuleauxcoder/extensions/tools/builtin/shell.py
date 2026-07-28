@@ -15,10 +15,8 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 )
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 
 
-@register_tool
 class ShellTool(Tool):
     name = "shell"
     description = (

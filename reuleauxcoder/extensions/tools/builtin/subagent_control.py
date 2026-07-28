@@ -11,7 +11,6 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 )
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 
 
 def get_subagent_manager(agent):
@@ -52,7 +51,6 @@ class _RootSubagentTool(Tool):
         return self._agent
 
 
-@register_tool
 class SpawnAgentTool(_RootSubagentTool):
     name = "spawn_agent"
     effect_class = "model_delegation"
@@ -158,7 +156,6 @@ class SpawnAgentTool(_RootSubagentTool):
             return _invalid(str(error))
 
 
-@register_tool
 class SendMessageTool(_RootSubagentTool):
     name = "send_message"
     description = "Queue a directive for one running child without waiting for a reply."
@@ -194,7 +191,6 @@ class SendMessageTool(_RootSubagentTool):
             return _invalid(str(error))
 
 
-@register_tool
 class ListAgentsTool(_RootSubagentTool):
     name = "list_agents"
     description = "Return a compact snapshot of visible child jobs and their states."
@@ -235,7 +231,6 @@ class ListAgentsTool(_RootSubagentTool):
             return _invalid(str(error))
 
 
-@register_tool
 class WaitAgentTool(_RootSubagentTool):
     name = "wait_agent"
     description = (
@@ -286,7 +281,6 @@ class WaitAgentTool(_RootSubagentTool):
             return _invalid(str(error))
 
 
-@register_tool
 class InterruptAgentTool(_RootSubagentTool):
     name = "interrupt_agent"
     description = (

@@ -10,7 +10,6 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.workspace import WorkspaceError, portable_glob_match
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 
 
 def _glob_full_match(relative_path: str, pattern: str) -> bool:
@@ -18,7 +17,6 @@ def _glob_full_match(relative_path: str, pattern: str) -> bool:
     return portable_glob_match(relative_path, pattern)
 
 
-@register_tool
 class GlobTool(Tool):
     name = "glob"
     description = (

@@ -11,10 +11,8 @@ from reuleauxcoder.domain.diff import build_tool_diff
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 
 
-@register_tool
 class WriteFileTool(Tool):
     name = "write_file"
     description = (

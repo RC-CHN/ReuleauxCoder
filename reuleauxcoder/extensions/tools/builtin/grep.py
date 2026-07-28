@@ -10,7 +10,6 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 
 _SKIP_DIRS = {
     ".git",
@@ -24,7 +23,6 @@ _SKIP_DIRS = {
 }
 
 
-@register_tool
 class GrepTool(Tool):
     name = "grep"
     description = (

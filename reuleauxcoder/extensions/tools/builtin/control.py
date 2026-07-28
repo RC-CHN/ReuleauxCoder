@@ -11,7 +11,6 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 )
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 
 
 class _AgentControlTool(Tool):
@@ -37,7 +36,6 @@ class _AgentControlTool(Tool):
         return str(tool_call_id), int(generation)
 
 
-@register_tool
 class UpdatePlanTool(_AgentControlTool):
     name = "update_plan"
     description = (
@@ -98,7 +96,6 @@ class UpdatePlanTool(_AgentControlTool):
             return _invalid(str(error))
 
 
-@register_tool
 class ReportProgressTool(_AgentControlTool):
     name = "report_progress"
     description = (
@@ -159,7 +156,6 @@ class ReportProgressTool(_AgentControlTool):
             return _invalid(str(error))
 
 
-@register_tool
 class ReportToParentTool(_AgentControlTool):
     name = "report_to_parent"
     description = (
@@ -229,7 +225,6 @@ class ReportToParentTool(_AgentControlTool):
             return _invalid(str(error))
 
 
-@register_tool
 class RequestGuidanceTool(_AgentControlTool):
     name = "request_guidance"
     description = (

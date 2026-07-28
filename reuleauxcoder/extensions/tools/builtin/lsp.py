@@ -21,7 +21,6 @@ from reuleauxcoder.extensions.lsp.tool_helpers import (
     validate_position,
 )
 from reuleauxcoder.extensions.tools.base import Tool
-from reuleauxcoder.extensions.tools.registry import register_tool
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
@@ -35,7 +34,6 @@ _OPERATIONS = frozenset({"goToDefinition", "findReferences", "documentSymbol"})
 # ── tool ───────────────────────────────────────────────────────────────────
 
 
-@register_tool
 class LspTool(Tool):
     """Single tool that dispatches LSP operations.
 

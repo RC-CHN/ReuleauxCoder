@@ -16,7 +16,6 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.workspace import WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
@@ -40,7 +39,6 @@ class _HistoryTool(Tool):
         return f"{session_id}/{suffix}"
 
 
-@register_tool
 class HistorySearchTool(_HistoryTool):
     name = "history_search"
     description = "Search the full append-only JSONL history of a saved session."
@@ -87,7 +85,6 @@ class HistorySearchTool(_HistoryTool):
             return _failure(str(error))
 
 
-@register_tool
 class HistoryReadTool(_HistoryTool):
     name = "history_read"
     description = "Read a bounded sequence range from a saved session's JSONL ledger."
@@ -131,7 +128,6 @@ class HistoryReadTool(_HistoryTool):
             return _failure(str(error))
 
 
-@register_tool
 class ArtifactReadTool(_HistoryTool):
     name = "artifact_read"
     description = "Read an immutable artifact referenced by a session ledger event."

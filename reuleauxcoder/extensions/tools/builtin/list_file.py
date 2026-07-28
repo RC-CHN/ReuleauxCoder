@@ -16,7 +16,6 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.workspace import WorkspaceEntry, WorkspaceError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
-from reuleauxcoder.extensions.tools.registry import register_tool
 
 
 _SANITIZE_RE = re.compile(r"[`*_\[\]|<>]")
@@ -50,7 +49,6 @@ def _format_mtime(ts: float) -> str:
     return dt.strftime("%b %d %H:%M")
 
 
-@register_tool
 class ListFileTool(Tool):
     name = "list_file"
     description = (
