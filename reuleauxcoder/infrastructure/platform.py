@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import platform
 import shutil
 from enum import Enum
@@ -16,6 +17,15 @@ class ShellType(Enum):
     POWERSHELL_CORE = "pwsh"
     CMD = "cmd"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class ShellInvocation:
+    """A shell launch represented without modifying the command text."""
+
+    shell_type: ShellType
+    shell_path: str
+    argv: tuple[str, ...]
 
 
 class PlatformInfo:
@@ -90,7 +100,7 @@ class PlatformInfo:
             self.get_preferred_shell()
         return self._shell_path
 
-    def get_shell_executable(self) -> list[str]:
+    def get_shell_executable(self, *, tty: bool = False) -> list[str]:
         """Get shell command as a list for subprocess."""
         shell = self.get_preferred_shell()
         path = self.get_shell_path()
@@ -99,13 +109,36 @@ class PlatformInfo:
             return []
 
         if shell in (ShellType.POWERSHELL, ShellType.POWERSHELL_CORE):
-            return [path, "-NoProfile", "-Command"]
+            flags = [path, "-NoLogo", "-NoProfile"]
+            if not tty:
+                flags.append("-NonInteractive")
+            return [*flags, "-Command"]
         elif shell == ShellType.CMD:
             return [path, "/c"]
         elif shell == ShellType.BASH:
             return [path, "-c"]
-        else:
-            return [path, "-c"]
+        return []
+
+    def resolve_shell_invocation(
+        self,
+        command: str,
+        *,
+        tty: bool = False,
+    ) -> ShellInvocation:
+        """Resolve one command to argv without interpreting or rewriting it."""
+        prefix = self.get_shell_executable(tty=tty)
+        path = self.get_shell_path()
+        shell_type = self.get_preferred_shell()
+        if not prefix or path is None or shell_type is ShellType.UNKNOWN:
+            raise FileNotFoundError(
+                "no supported shell executable was found "
+                "(expected bash/sh, pwsh/PowerShell, or cmd.exe)"
+            )
+        return ShellInvocation(
+            shell_type=shell_type,
+            shell_path=path,
+            argv=tuple([*prefix, command]),
+        )
 
     def get_bin_paths(self) -> list[Path]:
         """Get common binary paths for this platform."""

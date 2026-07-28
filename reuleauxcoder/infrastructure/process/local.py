@@ -1,20 +1,741 @@
-"""Cancellable local process execution with process-tree cleanup."""
+"""Bounded, cancellable local process sessions."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Mapping
+import codecs
+import errno
 import os
-import queue
 import signal
 import subprocess
 import threading
 import time
+from typing import Any, Protocol
+import uuid
 
-from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
-from reuleauxcoder.infrastructure.platform import ShellType, get_platform_info
+from reuleauxcoder.domain.process import (
+    ProcessCapacityError,
+    ProcessChunk,
+    ProcessCursor,
+    ProcessHandle,
+    ProcessOperationUnsupported,
+    ProcessResult,
+    ProcessSessionNotFound,
+    ProcessShutdownReport,
+    ProcessSnapshot,
+    ProcessState,
+    ProcessStreamHandler,
+    ProcessStreamMode,
+)
+from reuleauxcoder.infrastructure.platform import get_platform_info
+from reuleauxcoder.infrastructure.process.buffer import BoundedTextBuffer
+
+
+_DEFAULT_RETAINED_BYTES_PER_STREAM = 512 * 1024
+_DEFAULT_POLL_BYTES_PER_STREAM = 64 * 1024
+_TRAILING_OUTPUT_GRACE_SECONDS = 0.2
+_TERMINATE_GRACE_SECONDS = 0.5
+
+
+class _PtyTransport(Protocol):
+    def read(self, size: int) -> bytes: ...
+
+    def write(self, data: bytes) -> int: ...
+
+    def interrupt(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _FdPtyTransport:
+    """Small adapter around a POSIX PTY master descriptor."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd: int | None = fd
+        self._write_lock = threading.Lock()
+
+    def read(self, size: int) -> bytes:
+        fd = self._fd
+        if fd is None:
+            return b""
+        return os.read(fd, size)
+
+    def write(self, data: bytes) -> int:
+        with self._write_lock:
+            fd = self._fd
+            if fd is None:
+                raise OSError(errno.EBADF, "PTY is closed")
+            return os.write(fd, data)
+
+    def interrupt(self) -> None:
+        self.write(b"\x03")
+
+    def close(self) -> None:
+        with self._write_lock:
+            fd = self._fd
+            self._fd = None
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+class _WinPtyProcessAdapter:
+    """Expose pywinpty's ConPTY process through the local Popen subset."""
+
+    stdout = None
+    stderr = None
+
+    def __init__(self, process: Any) -> None:
+        self._process = process
+        self.pid = int(process.pid)
+
+    def wait(self) -> int:
+        return int(self._process.wait())
+
+    def poll(self) -> int | None:
+        if self._process.isalive():
+            return None
+        return int(self._process.exitstatus)
+
+
+class _WinPtyTransport:
+    """Transport adapter for a native Windows ConPTY session."""
+
+    def __init__(self, process: Any) -> None:
+        self._process = process
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def read(self, size: int) -> bytes:
+        try:
+            return str(self._process.read(size)).encode("utf-8")
+        except EOFError:
+            return b""
+
+    def write(self, data: bytes) -> int:
+        text = data.decode("utf-8")
+        with self._lock:
+            if self._closed:
+                raise OSError(errno.EBADF, "ConPTY is closed")
+            return int(self._process.write(text))
+
+    def interrupt(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._process.sendcontrol("c")
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            self._process.close(force=False)
+        except (EOFError, OSError):
+            pass
+
+
+class _LocalProcessEntry:
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        process: Any,
+        stream_mode: ProcessStreamMode,
+        runtime_timeout: int,
+        stream_handler: ProcessStreamHandler | None,
+        retained_bytes_per_stream: int,
+        pty_transport: _PtyTransport | None = None,
+    ) -> None:
+        self.session_id = session_id
+        self.process = process
+        self.stream_mode = stream_mode
+        self.runtime_timeout = runtime_timeout
+        self.stream_handler = stream_handler
+        self.pty_transport = pty_transport
+        self.stdout = BoundedTextBuffer(retained_bytes_per_stream)
+        self.stderr = BoundedTextBuffer(retained_bytes_per_stream)
+        self.started_at = time.time()
+        self.finished_at: float | None = None
+        self.state = ProcessState.RUNNING
+        self.exit_code: int | None = None
+        self.termination_reason: str | None = None
+        self.interrupt_requested = False
+        self.condition = threading.Condition(threading.RLock())
+        self.done = threading.Event()
+        self.reader_threads: list[threading.Thread] = []
+        self.control_threads: list[threading.Thread] = []
+        self.auto_release = False
+
+    def append(self, stream: str, text: str, byte_count: int) -> None:
+        target = self.stdout if stream == "stdout" else self.stderr
+        target.append(text, byte_count=byte_count)
+        with self.condition:
+            self.condition.notify_all()
+        handler = self.stream_handler
+        if handler is not None and text:
+            try:
+                handler(ProcessChunk(stream, text))
+            except Exception:
+                pass
 
 
 class LocalProcessPort:
+    """Own local subprocesses independently from individual tool calls."""
+
+    backend_name = "local"
+
+    def __init__(
+        self,
+        *,
+        retained_bytes_per_stream: int = _DEFAULT_RETAINED_BYTES_PER_STREAM,
+        poll_bytes_per_stream: int = _DEFAULT_POLL_BYTES_PER_STREAM,
+        max_sessions: int = 64,
+    ) -> None:
+        if retained_bytes_per_stream < 1:
+            raise ValueError("retained_bytes_per_stream must be positive")
+        if poll_bytes_per_stream < 1:
+            raise ValueError("poll_bytes_per_stream must be positive")
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be positive")
+        self._retained_bytes_per_stream = retained_bytes_per_stream
+        self._poll_bytes_per_stream = poll_bytes_per_stream
+        self._max_sessions = max_sessions
+        self._entries: dict[str, _LocalProcessEntry] = {}
+        self._idempotency: dict[str, str] = {}
+        self._lock = threading.RLock()
+        self._closing = False
+
+    def start(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        runtime_timeout: int,
+        tty: bool = False,
+        env: Mapping[str, str] | None = None,
+        idempotency_key: str | None = None,
+        stream_handler: ProcessStreamHandler | None = None,
+    ) -> ProcessHandle:
+        if not isinstance(command, str) or not command:
+            raise ValueError("command must be a non-empty string")
+        if not isinstance(runtime_timeout, int) or isinstance(runtime_timeout, bool):
+            raise ValueError("runtime_timeout must be a positive integer")
+        if runtime_timeout < 1:
+            raise ValueError("runtime_timeout must be a positive integer")
+        if not os.path.isdir(cwd):
+            raise FileNotFoundError(f"working directory does not exist ({cwd})")
+
+        key = idempotency_key or uuid.uuid4().hex
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("process port is shutting down")
+            existing_id = self._idempotency.get(key)
+            if existing_id is not None and existing_id in self._entries:
+                existing = self._entries[existing_id]
+                return ProcessHandle(existing.session_id, existing.stream_mode)
+            self._reclaim_terminal_locked()
+            if len(self._entries) >= self._max_sessions:
+                raise ProcessCapacityError(
+                    f"local process capacity reached ({self._max_sessions} sessions)"
+                )
+
+        invocation = get_platform_info().resolve_shell_invocation(command, tty=tty)
+        session_id = f"proc_{uuid.uuid4().hex}"
+        if tty:
+            process, pty_transport = self._spawn_pty(
+                invocation.argv,
+                cwd=cwd,
+                env=env,
+            )
+            mode = ProcessStreamMode.PTY
+        else:
+            process = self._spawn_pipe(invocation.argv, cwd=cwd, env=env)
+            pty_transport = None
+            mode = ProcessStreamMode.PIPE
+
+        entry = _LocalProcessEntry(
+            session_id=session_id,
+            process=process,
+            stream_mode=mode,
+            runtime_timeout=runtime_timeout,
+            stream_handler=stream_handler,
+            retained_bytes_per_stream=self._retained_bytes_per_stream,
+            pty_transport=pty_transport,
+        )
+        with self._lock:
+            if self._closing:
+                self._signal_tree(entry, force=True)
+                raise RuntimeError("process port is shutting down")
+            self._entries[session_id] = entry
+            self._idempotency[key] = session_id
+
+        self._start_readers(entry)
+        watcher = threading.Thread(
+            target=self._watch_process,
+            args=(entry, key),
+            name=f"rcoder-process-watch-{session_id[-8:]}",
+            daemon=True,
+        )
+        entry.control_threads.append(watcher)
+        watcher.start()
+        deadline = threading.Thread(
+            target=self._watch_deadline,
+            args=(entry,),
+            name=f"rcoder-process-deadline-{session_id[-8:]}",
+            daemon=True,
+        )
+        entry.control_threads.append(deadline)
+        deadline.start()
+        return ProcessHandle(session_id, mode)
+
+    @staticmethod
+    def _spawn_pipe(
+        argv: tuple[str, ...],
+        *,
+        cwd: str,
+        env: Mapping[str, str] | None,
+    ) -> subprocess.Popen[bytes]:
+        kwargs: dict[str, object] = {
+            "cwd": cwd,
+            "env": dict(env) if env is not None else None,
+            "shell": False,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": False,
+            "bufsize": 0,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        return subprocess.Popen(list(argv), **kwargs)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _spawn_pty(
+        argv: tuple[str, ...],
+        *,
+        cwd: str,
+        env: Mapping[str, str] | None,
+    ) -> tuple[Any, _PtyTransport]:
+        if os.name == "nt":
+            try:
+                from winpty import PtyProcess
+            except ImportError as error:
+                raise ProcessOperationUnsupported(
+                    "PTY requires the pywinpty ConPTY runtime on Windows"
+                ) from error
+            process = PtyProcess.spawn(
+                list(argv),
+                cwd=cwd,
+                env=dict(env) if env is not None else None,
+                dimensions=(24, 80),
+            )
+            return _WinPtyProcessAdapter(process), _WinPtyTransport(process)
+        import fcntl
+        import pty
+        import struct
+        import termios
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            fcntl.ioctl(
+                slave_fd,
+                termios.TIOCSWINSZ,
+                struct.pack("HHHH", 24, 80, 0, 0),
+            )
+            process = subprocess.Popen(
+                list(argv),
+                cwd=cwd,
+                env=dict(env) if env is not None else None,
+                shell=False,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                text=False,
+                bufsize=0,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except BaseException:
+            os.close(master_fd)
+            raise
+        finally:
+            os.close(slave_fd)
+        return process, _FdPtyTransport(master_fd)
+
+    def _start_readers(self, entry: _LocalProcessEntry) -> None:
+        if entry.stream_mode is ProcessStreamMode.PTY:
+            assert entry.pty_transport is not None
+            reader = threading.Thread(
+                target=self._read_pty,
+                args=(entry, entry.pty_transport, "stdout"),
+                name=f"rcoder-process-pty-{entry.session_id[-8:]}",
+                daemon=True,
+            )
+            entry.reader_threads.append(reader)
+            reader.start()
+            return
+
+        assert entry.process.stdout is not None
+        assert entry.process.stderr is not None
+        for stream, pipe in (
+            ("stdout", entry.process.stdout),
+            ("stderr", entry.process.stderr),
+        ):
+            reader = threading.Thread(
+                target=self._read_pipe,
+                args=(entry, pipe, stream),
+                name=f"rcoder-process-{stream}-{entry.session_id[-8:]}",
+                daemon=True,
+            )
+            entry.reader_threads.append(reader)
+            reader.start()
+
+    @staticmethod
+    def _read_pipe(entry: _LocalProcessEntry, pipe, stream: str) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            while True:
+                data = pipe.read(8192)
+                if not data:
+                    break
+                text = decoder.decode(data, final=False)
+                entry.append(stream, text, len(data))
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                entry.append(stream, tail, 0)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                pipe.close()
+            except (OSError, ValueError):
+                pass
+
+    @staticmethod
+    def _read_pty(
+        entry: _LocalProcessEntry,
+        transport: _PtyTransport,
+        stream: str,
+    ) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            while True:
+                try:
+                    data = transport.read(8192)
+                except OSError as error:
+                    if error.errno in {errno.EIO, errno.EBADF}:
+                        break
+                    raise
+                if not data:
+                    break
+                text = decoder.decode(data, final=False)
+                entry.append(stream, text, len(data))
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                entry.append(stream, tail, 0)
+        except OSError:
+            pass
+
+    def _watch_deadline(self, entry: _LocalProcessEntry) -> None:
+        if entry.done.wait(entry.runtime_timeout):
+            return
+        self._request_termination(entry, reason="timeout")
+
+    def _watch_process(self, entry: _LocalProcessEntry, idempotency_key: str) -> None:
+        try:
+            exit_code = entry.process.wait()
+        except Exception:
+            exit_code = -1
+
+        for reader in entry.reader_threads:
+            reader.join(timeout=_TRAILING_OUTPUT_GRACE_SECONDS)
+        if any(reader.is_alive() for reader in entry.reader_threads):
+            # A descendant inherited the stream. Permanent detach is not part
+            # of the process-session contract, so close the known process tree
+            # and bound the EOF wait.
+            self._signal_tree(entry, force=True, include_exited_group=True)
+            self._close_entry_streams(entry)
+            for reader in entry.reader_threads:
+                reader.join(timeout=0.1)
+
+        with entry.condition:
+            entry.exit_code = exit_code
+            if entry.termination_reason is None:
+                if entry.interrupt_requested and exit_code in {
+                    -getattr(signal, "SIGINT", 2),
+                    130,
+                }:
+                    entry.termination_reason = "interrupted"
+                else:
+                    entry.termination_reason = "exit"
+            entry.finished_at = time.time()
+            entry.state = ProcessState.EXITED
+            entry.done.set()
+            entry.condition.notify_all()
+        self._close_entry_streams(entry)
+        if entry.auto_release:
+            self._remove_entry(entry.session_id, idempotency_key=idempotency_key)
+
+    @staticmethod
+    def _close_entry_streams(entry: _LocalProcessEntry) -> None:
+        if entry.pty_transport is not None:
+            entry.pty_transport.close()
+            entry.pty_transport = None
+        for pipe in (entry.process.stdout, entry.process.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except (OSError, ValueError):
+                    pass
+
+    def poll(
+        self,
+        session_id: str,
+        *,
+        cursor: ProcessCursor | None = None,
+        wait_ms: int = 0,
+    ) -> ProcessSnapshot:
+        if wait_ms < 0:
+            raise ValueError("wait_ms must be non-negative")
+        entry = self._lookup(session_id)
+        current = cursor or ProcessCursor()
+        deadline = time.monotonic() + (wait_ms / 1000)
+        with entry.condition:
+            while (
+                entry.state is ProcessState.RUNNING
+                and entry.stdout.end_offset <= current.stdout_offset
+                and entry.stderr.end_offset <= current.stderr_offset
+                and wait_ms > 0
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                entry.condition.wait(timeout=remaining)
+        return self._snapshot(entry, current)
+
+    def _snapshot(
+        self,
+        entry: _LocalProcessEntry,
+        cursor: ProcessCursor,
+    ) -> ProcessSnapshot:
+        stdout = entry.stdout.read_after(
+            cursor.stdout_offset,
+            max_bytes=self._poll_bytes_per_stream,
+        )
+        stderr = entry.stderr.read_after(
+            cursor.stderr_offset,
+            max_bytes=self._poll_bytes_per_stream,
+        )
+        with entry.condition:
+            return ProcessSnapshot(
+                session_id=entry.session_id,
+                state=entry.state,
+                stream_mode=entry.stream_mode,
+                backend=self.backend_name,
+                stdout=stdout.text,
+                stderr=stderr.text,
+                cursor=ProcessCursor(stdout.next_offset, stderr.next_offset),
+                exit_code=entry.exit_code,
+                termination_reason=(
+                    entry.termination_reason
+                    if entry.state is ProcessState.EXITED
+                    else None
+                ),
+                started_at=entry.started_at,
+                finished_at=entry.finished_at,
+                runtime_timeout_seconds=entry.runtime_timeout,
+                output_truncated=(
+                    stdout.truncated
+                    or stderr.truncated
+                    or entry.stdout.truncated
+                    or entry.stderr.truncated
+                ),
+                total_stdout_bytes=entry.stdout.total_bytes,
+                total_stderr_bytes=entry.stderr.total_bytes,
+            )
+
+    def write_input(self, session_id: str, data: str) -> int:
+        if not isinstance(data, str) or not data:
+            raise ValueError("data must be a non-empty string")
+        entry = self._lookup(session_id)
+        if entry.stream_mode is not ProcessStreamMode.PTY:
+            raise ProcessOperationUnsupported(
+                f"session '{session_id}' uses pipe mode; stdin is closed"
+            )
+        if entry.state is not ProcessState.RUNNING or entry.pty_transport is None:
+            raise ProcessOperationUnsupported(f"session '{session_id}' has exited")
+        encoded = data.encode("utf-8")
+        transport = entry.pty_transport
+        if transport is None:
+            raise ProcessOperationUnsupported(f"session '{session_id}' has exited")
+        return transport.write(encoded)
+
+    def interrupt(self, session_id: str) -> ProcessSnapshot:
+        entry = self._lookup(session_id)
+        with entry.condition:
+            if entry.state is ProcessState.EXITED:
+                return self._snapshot(entry, ProcessCursor())
+            entry.interrupt_requested = True
+        if entry.stream_mode is ProcessStreamMode.PTY:
+            try:
+                assert entry.pty_transport is not None
+                entry.pty_transport.interrupt()
+            except (OSError, ValueError, EOFError):
+                pass
+        elif os.name == "nt":
+            try:
+                entry.process.send_signal(signal.CTRL_BREAK_EVENT)
+            except (OSError, ValueError):
+                pass
+        else:
+            try:
+                os.killpg(entry.process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+        return self._snapshot(entry, ProcessCursor())
+
+    def terminate(
+        self,
+        session_id: str,
+        *,
+        reason: str = "terminated",
+    ) -> ProcessSnapshot:
+        entry = self._lookup(session_id)
+        self._request_termination(entry, reason=reason)
+        return self._snapshot(entry, ProcessCursor())
+
+    def _request_termination(self, entry: _LocalProcessEntry, *, reason: str) -> None:
+        with entry.condition:
+            if entry.state is ProcessState.EXITED:
+                return
+            if entry.termination_reason is None or reason in {"timeout", "shutdown"}:
+                entry.termination_reason = reason
+        self._signal_tree(entry, force=False)
+
+        def escalate() -> None:
+            if entry.done.wait(_TERMINATE_GRACE_SECONDS):
+                return
+            self._signal_tree(entry, force=True)
+
+        reaper = threading.Thread(
+            target=escalate,
+            name=f"rcoder-process-reaper-{entry.session_id[-8:]}",
+            daemon=True,
+        )
+        entry.control_threads.append(reaper)
+        reaper.start()
+
+    @staticmethod
+    def _signal_tree(
+        entry: _LocalProcessEntry,
+        *,
+        force: bool,
+        include_exited_group: bool = False,
+    ) -> None:
+        process = entry.process
+        if process.poll() is not None and not include_exited_group:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+            return
+        selected = signal.SIGKILL if force else signal.SIGTERM
+        try:
+            os.killpg(process.pid, selected)
+        except ProcessLookupError:
+            pass
+
+    def release(self, session_id: str) -> None:
+        entry = self._lookup(session_id)
+        if entry.state is ProcessState.RUNNING:
+            raise RuntimeError(f"cannot release running process session '{session_id}'")
+        self._remove_entry(session_id)
+
+    def _lookup(self, session_id: str) -> _LocalProcessEntry:
+        with self._lock:
+            entry = self._entries.get(session_id)
+        if entry is None:
+            raise ProcessSessionNotFound(f"process session '{session_id}' was not found")
+        return entry
+
+    def _remove_entry(
+        self,
+        session_id: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._entries.pop(session_id, None)
+            if idempotency_key is not None:
+                self._idempotency.pop(idempotency_key, None)
+            else:
+                stale = [
+                    key for key, value in self._idempotency.items() if value == session_id
+                ]
+                for key in stale:
+                    self._idempotency.pop(key, None)
+
+    def _reclaim_terminal_locked(self) -> None:
+        terminal = [
+            session_id
+            for session_id, entry in self._entries.items()
+            if entry.state is ProcessState.EXITED
+        ]
+        for session_id in terminal:
+            self._entries.pop(session_id, None)
+        if terminal:
+            terminal_ids = set(terminal)
+            stale = [
+                key
+                for key, session_id in self._idempotency.items()
+                if session_id in terminal_ids
+            ]
+            for key in stale:
+                self._idempotency.pop(key, None)
+
+    def shutdown(self, *, grace_seconds: float = 0.5) -> ProcessShutdownReport:
+        with self._lock:
+            self._closing = True
+            entries = tuple(self._entries.values())
+        already_exited = sum(
+            entry.state is ProcessState.EXITED for entry in entries
+        )
+        live = [entry for entry in entries if entry.state is ProcessState.RUNNING]
+        for entry in live:
+            try:
+                self.interrupt(entry.session_id)
+            except ProcessSessionNotFound:
+                pass
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        for entry in live:
+            entry.done.wait(max(0.0, deadline - time.monotonic()))
+        remaining = [entry for entry in live if not entry.done.is_set()]
+        for entry in remaining:
+            self._request_termination(entry, reason="shutdown")
+        reap_timeouts = 0
+        for entry in remaining:
+            if not entry.done.wait(2.0):
+                reap_timeouts += 1
+        with self._lock:
+            self._entries.clear()
+            self._idempotency.clear()
+        return ProcessShutdownReport(
+            total=len(entries),
+            already_exited=already_exited,
+            interrupted=len(live),
+            terminated=len(remaining),
+            reap_timeouts=reap_timeouts,
+        )
+
     def run(
         self,
         command: str,
@@ -22,159 +743,51 @@ class LocalProcessPort:
         cwd: str,
         timeout: int,
         cancellation_event: threading.Event | None = None,
-        stream_handler: Callable[[ProcessChunk], None] | None = None,
+        stream_handler: ProcessStreamHandler | None = None,
     ) -> ProcessResult:
-        if not os.path.isdir(cwd):
-            raise FileNotFoundError(f"working directory does not exist ({cwd})")
-        platform = get_platform_info()
-        shell = platform.get_preferred_shell()
-        if platform.is_windows and shell is ShellType.POWERSHELL:
-            command = command.replace("&&", ";")
-        shell_command = platform.get_shell_executable()
-        args: str | list[str]
-        use_shell = not bool(shell_command)
-        args = command if use_shell else shell_command + [command]
-
-        kwargs = {
-            "cwd": cwd,
-            "shell": use_shell,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.PIPE,
-            "text": True,
-            "errors": "replace",
-            "bufsize": 1,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["start_new_session"] = True
-        process = subprocess.Popen(args, **kwargs)
-        stdout_parts: list[str] = []
-        stderr_parts: list[str] = []
-        chunk_queue: queue.Queue[ProcessChunk] = queue.Queue()
-
-        def read_stream(pipe, stream: str, parts: list[str]) -> None:
-            try:
-                for chunk in iter(pipe.readline, ""):
-                    parts.append(chunk)
-                    chunk_queue.put(ProcessChunk(stream, chunk))
-            finally:
-                pipe.close()
-
-        readers = [
-            threading.Thread(
-                target=read_stream,
-                args=(process.stdout, "stdout", stdout_parts),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=read_stream,
-                args=(process.stderr, "stderr", stderr_parts),
-                daemon=True,
-            ),
-        ]
-        for reader in readers:
-            reader.start()
-
-        def drain_chunks() -> None:
-            while True:
-                try:
-                    chunk = chunk_queue.get_nowait()
-                except queue.Empty:
-                    return
-                if stream_handler is not None:
-                    stream_handler(chunk)
-
-        def finish_result(**state) -> ProcessResult:
-            # On cancel/timeout the caller is unwinding: bound reader joins so
-            # we keep already-collected output without waiting on late streams.
-            discard = bool(state.get("cancelled") or state.get("timed_out"))
-            join_timeout = 0.15 if discard else 1.0
-            for reader in readers:
-                reader.join(timeout=join_timeout)
-            drain_chunks()
-            return ProcessResult(
-                stdout="".join(stdout_parts),
-                stderr="".join(stderr_parts),
-                exit_code=process.returncode,
-                **state,
-            )
-
-        deadline = time.monotonic() + timeout
+        handle = self.start(
+            command,
+            cwd=cwd,
+            runtime_timeout=timeout,
+            tty=False,
+            stream_handler=stream_handler,
+        )
+        entry = self._lookup(handle.session_id)
+        cursor = ProcessCursor()
         while True:
-            drain_chunks()
             if cancellation_event is not None and cancellation_event.is_set():
-                self._terminate_process_tree(process)
-                return finish_result(cancelled=True)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._terminate_process_tree(process)
-                return finish_result(timed_out=True)
-            if process.poll() is not None:
-                return finish_result()
-            if cancellation_event is not None:
-                cancellation_event.wait(timeout=min(0.05, remaining))
-            else:
-                time.sleep(min(0.05, remaining))
-
-    @staticmethod
-    def _terminate_process_tree(process: subprocess.Popen) -> None:
-        """Signal the process tree; reap/escalate off the caller's path."""
-        if process.poll() is not None:
-            return
-        if os.name == "nt":
-            # taskkill /T /F is already forceful; reap the handle off-path.
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                capture_output=True,
-                check=False,
+                self._request_termination(entry, reason="cancelled")
+                stdout = entry.stdout.retained()
+                stderr = entry.stderr.retained()
+                with entry.condition:
+                    if entry.done.is_set():
+                        self._remove_entry(handle.session_id)
+                    else:
+                        entry.auto_release = True
+                return ProcessResult(
+                    stdout=stdout.text,
+                    stderr=stderr.text,
+                    exit_code=entry.process.poll(),
+                    cancelled=True,
+                    output_truncated=stdout.truncated or stderr.truncated,
+                )
+            snapshot = self.poll(
+                handle.session_id,
+                cursor=cursor,
+                wait_ms=50,
             )
-            threading.Thread(
-                target=LocalProcessPort._reap_process,
-                args=(process,),
-                name="rcoder-process-reaper",
-                daemon=True,
-            ).start()
-            return
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        threading.Thread(
-            target=LocalProcessPort._reap_process_tree,
-            args=(process,),
-            name="rcoder-process-reaper",
-            daemon=True,
-        ).start()
-
-    @staticmethod
-    def _reap_process(process: subprocess.Popen) -> None:
-        try:
-            process.wait(timeout=2.0)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            process.kill()
-        except OSError:
-            return
-        try:
-            process.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            pass
-
-    @staticmethod
-    def _reap_process_tree(process: subprocess.Popen) -> None:
-        try:
-            process.wait(timeout=0.5)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            pass
+            cursor = snapshot.cursor
+            if snapshot.state is ProcessState.RUNNING:
+                continue
+            stdout = entry.stdout.retained()
+            stderr = entry.stderr.retained()
+            result = ProcessResult(
+                stdout=stdout.text,
+                stderr=stderr.text,
+                exit_code=snapshot.exit_code,
+                timed_out=snapshot.termination_reason == "timeout",
+                cancelled=snapshot.termination_reason == "cancelled",
+                output_truncated=stdout.truncated or stderr.truncated,
+            )
+            self.release(handle.session_id)
+            return result
