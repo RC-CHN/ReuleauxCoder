@@ -15,6 +15,7 @@ from reuleauxcoder.app.commands.loader import create_builtin_action_registry
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
+from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.remote_exec.artifacts import (
     MAX_PEER_ARTIFACT_BYTES,
@@ -58,11 +59,17 @@ def _default_load_tools(tool_backend: ToolBackend) -> list[Any]:
     return build_tools(tool_backend)
 
 
-def _default_create_agent(llm: LLM, tools: list[Any], config: Config) -> Agent:
+def _default_create_agent(
+    llm: LLM,
+    tools: list[Any],
+    config: Config,
+    hook_registry: HookRegistry,
+) -> Agent:
     return Agent(
         llm=llm,
         tools=tools,
         config=config,
+        hook_registry=hook_registry,
         max_context_tokens=config.max_context_tokens,
         available_modes=getattr(config, "modes", {}) or {},
         active_mode=getattr(config, "active_mode", None),
@@ -226,7 +233,10 @@ class AppDependencies:
         _default_create_tool_backend
     )
     load_tools: Callable[[ToolBackend], list[Any]] = _default_load_tools
-    create_agent: Callable[[LLM, list[Any], Config], Agent] = _default_create_agent
+    create_hook_registry: Callable[[], HookRegistry] = HookRegistry
+    create_agent: Callable[[LLM, list[Any], Config, HookRegistry], Agent] = (
+        _default_create_agent
+    )
     create_session_store: Callable[[Path | None], SessionStore] = (
         _default_create_session_store
     )

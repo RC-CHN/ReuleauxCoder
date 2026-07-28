@@ -163,7 +163,7 @@ def _build_runner_with_fake_agent(
             load_config=lambda _: config,
             create_llm=lambda cfg: FakeLLM(cfg.model),
             load_tools=lambda _backend: [],
-            create_agent=lambda llm, _tools, _config: FakeAgent(
+            create_agent=lambda llm, _tools, _config, _hook_registry: FakeAgent(
                 llm, chat_behavior=chat_behavior
             ),
         ),

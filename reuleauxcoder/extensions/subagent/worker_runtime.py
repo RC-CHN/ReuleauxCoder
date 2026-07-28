@@ -371,12 +371,15 @@ def worker_process_main(
 ) -> None:
     """Spawn target: run one child model loop and no workspace primitives."""
     from reuleauxcoder.domain.agent.agent import Agent
+    from reuleauxcoder.domain.hooks.registry import HookRegistry
 
     spec = WorkerSpec.from_dict(spec_data)
     client = WorkerIPCClient(spec, connection, cancel)
     try:
         llm = LLM(**spec.llm_kwargs)
-        tools = [BrokeredWorkerTool(tool_spec, client) for tool_spec in spec.tools]
+        tools: list[Tool] = [
+            BrokeredWorkerTool(tool_spec, client) for tool_spec in spec.tools
+        ]
         child = Agent(
             llm=llm,
             tools=tools,
@@ -384,6 +387,7 @@ def worker_process_main(
             max_rounds=max(0, spec.max_rounds - spec.initial_model_calls),
             max_tool_calls=spec.max_tool_calls,
             max_total_tokens=spec.max_tokens,
+            hook_registry=HookRegistry(),
             agent_id=spec.agent_id,
         )
         child._stop_event = cancel
@@ -395,7 +399,9 @@ def worker_process_main(
         child.runtime_working_directory = spec.working_directory
         child._external_message_source = client.drain_directives
         for tool in tools:
-            tool.bind_agent(child)
+            bind_agent = getattr(tool, "bind_agent", None)
+            if callable(bind_agent):
+                bind_agent(child)
         child.add_event_handler(
             lambda event: client.send(
                 "runtime_event",
@@ -439,6 +445,7 @@ def worker_process_main(
             else "ok"
         )
         if status == "blocked":
+            assert child._park_request is not None
             checkpoint_state = {
                 "messages": child.messages,
                 "prompt_tokens": child.state.total_prompt_tokens,

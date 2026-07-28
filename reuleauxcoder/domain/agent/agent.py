@@ -118,6 +118,10 @@ class Agent:
         self.relay_server: RelayServer | None = None
         self._subagent_manager: SubagentManager | None = None
         self.subagent_depth = 0
+        self.parent_agent_id: str | None = None
+        self.subagent_job_id: str | None = None
+        self.subagent_mode: str | None = None
+        self.subagent_task: str | None = None
         self.strict_tool_scope = False
         self.ui_interactor: UIInteractor | None = None
         self._subagent_approval_lock = None

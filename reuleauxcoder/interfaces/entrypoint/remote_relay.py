@@ -242,21 +242,25 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
             peer_connection_markers[peer_id] = marker
             peer_presenters[peer_id] = _presentation_for_peer(peer_id)
             return agent
+        peer_config: Config = config
 
-        peer_llm = runner.dependencies.create_llm(config)
+        peer_llm = runner.dependencies.create_llm(peer_config)
         peer_llm.ui_bus = ui_bus
         peer_backend = RemoteRelayToolBackend(relay_server=relay_server, ui_bus=ui_bus)
         peer_tools = runner.dependencies.load_tools(peer_backend)
-        peer_agent = runner.dependencies.create_agent(peer_llm, peer_tools, config)
-        peer_agent.runtime_config = config
+        peer_hook_registry = runner.dependencies.create_hook_registry()
+        peer_agent = runner.dependencies.create_agent(
+            peer_llm, peer_tools, peer_config, peer_hook_registry
+        )
+        peer_agent.runtime_config = peer_config
         peer_agent.reasoning_display_mode = (
-            "inline" if config.ui.reasoning_display == "inline" else "quiet"
+            "inline" if peer_config.ui.reasoning_display == "inline" else "quiet"
         )
         peer_agent.relay_server = relay_server
         peer_agent.extension_manager = runner._extension_manager
         peer_agent.skills_service = skills_service
         peer_agent.skills_catalog = agent.skills_catalog
-        runner._register_hooks(peer_agent, config)
+        runner._register_hooks(peer_agent, peer_config)
         runner._wire_agent_tools(peer_agent)
 
         peer = relay_server.registry.get(peer_id)
@@ -280,7 +284,7 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
 
         def _cache_created_agent(reason: str) -> Agent:
             bind_session_persistence(
-                config,
+                peer_config,
                 peer_agent,
                 session_store,
                 peer_agent.current_session_id,
@@ -303,11 +307,11 @@ def bind_remote_chat_handler(runner, agent: Agent) -> None:
         if latest:
             loaded = session_store.load(latest.id)
             if loaded is not None:
-                apply_session_runtime_state(loaded, config, peer_agent)
+                apply_session_runtime_state(loaded, peer_config, peer_agent)
                 peer_agent.current_session_id = latest.id
                 return _cache_created_agent("remote_restore")
 
-        restore_config_runtime_defaults(config, peer_agent)
+        restore_config_runtime_defaults(peer_config, peer_agent)
         peer_agent.current_session_id = session_store.generate_session_id()
         return _cache_created_agent("remote_new")
 

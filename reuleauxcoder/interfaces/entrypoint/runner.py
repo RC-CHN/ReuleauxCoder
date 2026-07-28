@@ -203,7 +203,8 @@ class AppRunner:
             )
         tools = self.dependencies.load_tools(tool_backend)
         self._report_startup(f"Loaded {len(tools)} built-in tool(s).")
-        agent = self.dependencies.create_agent(llm, tools, config)
+        hook_registry = self.dependencies.create_hook_registry()
+        agent = self.dependencies.create_agent(llm, tools, config, hook_registry)
         # Custom dependency factories may return an Agent without forwarding
         # config.  Runtime services and tool adapters must still see the exact
         # effective configuration loaded by this runner.
