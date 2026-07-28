@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from reuleauxcoder.domain.approval_engine import (
     ApprovalPolicyEngine,
+    ToolSource,
     ToolApprovalContext,
 )
 from reuleauxcoder.domain.approval import (
@@ -16,17 +18,23 @@ from reuleauxcoder.domain.approval import (
 )
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.approval_review import AutoReviewJudge
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalAction,
+    ApprovalConfig,
+    ApprovalRuleConfig,
+)
 from reuleauxcoder.domain.config.schema import DEFAULTS
 from reuleauxcoder.domain.hooks import HookPoint
 from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.mcp.runtime import find_mcp_server
-from reuleauxcoder.extensions.tools.registry import build_tools
+from reuleauxcoder.extensions.tools.builtin import builtin_tool_types
 from reuleauxcoder.infrastructure.yaml.loader import load_yaml_config
 from reuleauxcoder.services.config.loader import ConfigLoader
 
-VALID_APPROVAL_ACTIONS = {"allow", "warn", "require_approval", "deny"}
+VALID_APPROVAL_ACTIONS: frozenset[ApprovalAction] = frozenset(
+    {"allow", "warn", "require_approval", "deny"}
+)
 
 
 @dataclass(slots=True)
@@ -151,10 +159,11 @@ def parse_approval_target(target: str, action: str) -> ApprovalRuleConfig | None
     """Parse an approval target spec into a rule config."""
     if action not in VALID_APPROVAL_ACTIONS:
         return None
+    normalized_action = cast(ApprovalAction, action)
     if target == "mcp":
-        return ApprovalRuleConfig(tool_source="mcp", action=action)
+        return ApprovalRuleConfig(tool_source="mcp", action=normalized_action)
     if target.startswith("tool:"):
-        return ApprovalRuleConfig(tool_name=target[5:], action=action)
+        return ApprovalRuleConfig(tool_name=target[5:], action=normalized_action)
     if target.startswith("mcp:"):
         rest = target[4:]
         if not rest:
@@ -167,9 +176,11 @@ def parse_approval_target(target: str, action: str) -> ApprovalRuleConfig | None
                 tool_source="mcp",
                 mcp_server=server,
                 tool_name=tool_name,
-                action=action,
+                action=normalized_action,
             )
-        return ApprovalRuleConfig(tool_source="mcp", mcp_server=rest, action=action)
+        return ApprovalRuleConfig(
+            tool_source="mcp", mcp_server=rest, action=normalized_action
+        )
     return None
 
 
@@ -454,16 +465,19 @@ def _resolve_rule_source(
 
 
 def _build_tool_catalog(
-    agent, builtin_tools: list
+    agent, builtin_tools: Sequence[object]
 ) -> list[tuple[str, str, str | None]]:
     """Collect visible tools as (name, tool_source, mcp_server)."""
     catalog: dict[tuple[str, str, str | None], None] = {}
 
     for tool in builtin_tools:
+        tool_name = getattr(tool, "name", None)
+        if not isinstance(tool_name, str) or not tool_name:
+            continue
         tool_source = getattr(tool, "tool_source", None) or "builtin"
         if tool_source == "mcp":
             continue
-        catalog[(tool.name, "builtin", None)] = None
+        catalog[(tool_name, "builtin", None)] = None
 
     if agent is None:
         return sorted(catalog.keys(), key=lambda item: item[0])
@@ -481,7 +495,7 @@ def _build_tool_catalog(
 def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
     """Build a structured view for approval rules and effective tool policies."""
     if builtin_tools is None:
-        builtin_tools = build_tools()
+        builtin_tools = builtin_tool_types()
     session_rules = (
         list(getattr(agent, "session_approval_rules", []) or [])
         if agent is not None
@@ -539,13 +553,16 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
     policy_engine = ApprovalPolicyEngine(config.approval)
     tool_policies: list[ApprovalToolPolicyView] = []
     for tool_name, tool_source, mcp_server in _build_tool_catalog(agent, builtin_tools):
+        normalized_tool_source = (
+            cast(ToolSource, tool_source)
+            if tool_source in {"builtin", "mcp", "unknown"}
+            else "unknown"
+        )
         match = policy_engine.evaluate(
             ToolApprovalContext(
                 tool_call=ToolCall(id="preview", name=tool_name, arguments={}),
                 tool_name=tool_name,
-                tool_source=tool_source
-                if tool_source in {"builtin", "mcp", "unknown"}
-                else "unknown",
+                tool_source=normalized_tool_source,
                 mcp_server=mcp_server,
             )
         )

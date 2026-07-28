@@ -1,3 +1,6 @@
+from inspect import Parameter, signature
+
+from reuleauxcoder.extensions.tools.backend import LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin import builtin_tool_types
 from reuleauxcoder.extensions.tools.registry import build_tools, iter_tool_classes
 
@@ -40,4 +43,10 @@ def test_builtin_tool_contributions_have_stable_explicit_order() -> None:
 
 
 def test_build_tools_preserves_the_complete_builtin_schema_order() -> None:
-    assert tuple(tool.name for tool in build_tools()) == EXPECTED_BUILTIN_TOOL_NAMES
+    assert tuple(
+        tool.name for tool in build_tools(LocalToolBackend())
+    ) == EXPECTED_BUILTIN_TOOL_NAMES
+
+
+def test_build_tools_requires_an_explicit_backend() -> None:
+    assert signature(build_tools).parameters["backend"].default is Parameter.empty
