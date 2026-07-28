@@ -38,6 +38,7 @@ from reuleauxcoder.interfaces.tui.interaction import (
     interaction_lines as _interaction_lines,
     interaction_response as _interaction_response,
 )
+from reuleauxcoder.interfaces.tui.input_router import build_key_bindings
 from reuleauxcoder.interfaces.tui.selection_host import SelectionHost
 from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VirtualTranscriptControl,
@@ -105,7 +106,7 @@ def test_yes_no_key_bindings_only_capture_binary_interactions() -> None:
 
     bindings = {
         binding.keys: binding
-        for binding in app._key_bindings().bindings
+        for binding in build_key_bindings(app).bindings
         if binding.keys in {("y",), ("n",)}
     }
 
@@ -179,7 +180,7 @@ def test_ctrl_c_cancels_interaction_without_consuming_chat_draft() -> None:
     )
     binding = next(
         binding
-        for binding in app._key_bindings().bindings
+        for binding in build_key_bindings(app).bindings
         if binding.keys == ("c-c",)
     )
 

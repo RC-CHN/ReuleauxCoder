@@ -11,9 +11,7 @@ from typing import Callable
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     BufferControl,
     FormattedTextControl,
@@ -56,6 +54,7 @@ from reuleauxcoder.interfaces.tui.interaction import (
     MiniTUIInteractor,
     interaction_lines as _interaction_lines,
 )
+from reuleauxcoder.interfaces.tui.input_router import build_key_bindings
 from reuleauxcoder.interfaces.tui.formatting import (
     clip as _clip,
     fit_styled_row as _fit_styled_row,
@@ -269,7 +268,7 @@ class MiniTUIApplication:
         )
         self.application = Application(
             layout=Layout(body, focused_element=self.input_window),
-            key_bindings=self._key_bindings(),
+            key_bindings=build_key_bindings(self),
             full_screen=True,
             style=MINI_TUI_STYLE,
             mouse_support=MINI_TUI_MOUSE_SUPPORT,
@@ -566,153 +565,6 @@ class MiniTUIApplication:
             return
         with lock:
             commands.clear()
-
-    def _key_bindings(self) -> KeyBindings:
-        bindings = KeyBindings()
-        transcript_arrow_scroll = Condition(self._should_route_arrows_to_transcript)
-        binary_interaction_active = Condition(
-            lambda: isinstance(
-                self.interactor.active_request,
-                (ConfirmRequest, ReviewRequest),
-            )
-        )
-
-        @bindings.add("c-c")
-        def _ctrl_c(event) -> None:
-            if self.interactor.cancel_active():
-                # Cancelling a modal approval must not discard the chat draft
-                # that was present before the request took over the input lane.
-                return
-            if self.input_buffer.text:
-                self.input_buffer.reset()
-                self.exit_confirm = False
-                return
-            if self.running:
-                if self.cancelling:
-                    self._prepare_forced_exit("forced CLI exit during active turn")
-                    self._closed = True
-                    event.app.exit()
-                else:
-                    self.cancelling = True
-                    self.agent.request_stop()
-                    queued_steering = self._queued_steering()
-                    queued_commands = self._queued_commands()
-                    if queued_commands and queued_steering:
-                        message = (
-                            "Cancelling the current turn. Queued commands will run "
-                            "next; queued steers will be discarded."
-                        )
-                    elif queued_commands:
-                        message = (
-                            "Cancelling the current turn. Queued commands will run next."
-                        )
-                    elif queued_steering:
-                        message = (
-                            "Cancelling the current turn. Queued steers will be discarded."
-                        )
-                    else:
-                        message = "Cancelling the current turn…"
-                    self.ui_bus.warning(message)
-                return
-            if self.exit_confirm:
-                self._closed = True
-                event.app.exit()
-            else:
-                self.exit_confirm = True
-                self.invalidate()
-
-        @bindings.add("escape")
-        def _escape(event) -> None:  # noqa: ARG001
-            self.exit_confirm = False
-            self.invalidate()
-
-        @bindings.add("pageup")
-        def _page_up(event) -> None:  # noqa: ARG001
-            self._scroll_transcript(-self._transcript_page_size())
-
-        @bindings.add("pagedown")
-        def _page_down(event) -> None:  # noqa: ARG001
-            self._scroll_transcript(self._transcript_page_size())
-
-        @bindings.add("up", filter=transcript_arrow_scroll)
-        def _alternate_scroll_up(event) -> None:  # noqa: ARG001
-            self._scroll_transcript(-3)
-
-        @bindings.add("down", filter=transcript_arrow_scroll)
-        def _alternate_scroll_down(event) -> None:  # noqa: ARG001
-            self._scroll_transcript(3)
-
-        @bindings.add("home")
-        def _history_start(event) -> None:  # noqa: ARG001
-            self._follow_transcript = False
-            self._transcript_scroll = 0
-            self.transcript_pane.vertical_scroll = 0
-            self.invalidate()
-
-        @bindings.add("end")
-        def _history_end(event) -> None:  # noqa: ARG001
-            self._follow_transcript = True
-            self.invalidate()
-
-        selection_active = Condition(lambda: self.selection_host.active)
-
-        @bindings.add("up", filter=selection_active)
-        def _selection_up(event) -> None:  # noqa: ARG001
-            self.selection_host.move(-1)
-
-        @bindings.add("down", filter=selection_active)
-        def _selection_down(event) -> None:  # noqa: ARG001
-            self.selection_host.move(1)
-
-        @bindings.add("enter", filter=selection_active)
-        def _selection_enter(event) -> None:  # noqa: ARG001
-            self.selection_host.confirm()
-
-        @bindings.add("escape", filter=selection_active)
-        def _selection_escape(event) -> None:  # noqa: ARG001
-            self.selection_host.close()
-
-        popup_visible = Condition(lambda: bool(self._popup_candidates()))
-
-        @bindings.add("up", filter=popup_visible)
-        def _popup_up(event) -> None:  # noqa: ARG001
-            candidates = self._popup_candidates()
-            if candidates:
-                self._popup_index = (self._popup_index - 1) % len(candidates)
-                self.invalidate()
-
-        @bindings.add("down", filter=popup_visible)
-        def _popup_down(event) -> None:  # noqa: ARG001
-            candidates = self._popup_candidates()
-            if candidates:
-                self._popup_index = (self._popup_index + 1) % len(candidates)
-                self.invalidate()
-
-        @bindings.add("tab", filter=popup_visible)
-        def _popup_tab(event) -> None:  # noqa: ARG001
-            self._popup_adopt()
-
-        @bindings.add("escape", filter=popup_visible)
-        def _popup_escape(event) -> None:  # noqa: ARG001
-            self._popup_dismissed = True
-            self.invalidate()
-
-        @bindings.add("y", filter=binary_interaction_active)
-        def _interaction_yes(event) -> None:  # noqa: ARG001
-            self.interactor.submit("y")
-            self.invalidate()
-
-        @bindings.add("n", filter=binary_interaction_active)
-        def _interaction_no(event) -> None:  # noqa: ARG001
-            self.interactor.submit("n")
-            self.invalidate()
-
-        @bindings.add("f2")
-        def _toggle_header(event) -> None:  # noqa: ARG001
-            self.session_header_expanded = not self.session_header_expanded
-            self.invalidate()
-
-        return bindings
 
     def _panel_text(self) -> FormattedText:
         try:
