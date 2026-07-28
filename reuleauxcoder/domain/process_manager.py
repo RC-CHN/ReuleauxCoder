@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import threading
 import time
@@ -13,11 +13,13 @@ from reuleauxcoder.domain.process import (
     ProcessCapacityError,
     ProcessCursor,
     ProcessHandle,
+    ProcessOperationUnsupported,
     ProcessPort,
     ProcessSessionNotFound,
     ProcessShutdownReport,
     ProcessSnapshot,
     ProcessState,
+    ProcessStreamMode,
     ProcessStreamHandler,
 )
 
@@ -42,6 +44,7 @@ class ProcessEvent:
 
 
 ProcessEventSink = Callable[[ProcessEvent], None]
+_HIDDEN_INPUT_MARKER = "[hidden input redacted]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +87,48 @@ class _ManagedEntry:
     watcher: threading.Thread | None = None
     watcher_started: bool = False
     completion_emitted: bool = False
+    sensitive_values: list[str] = field(default_factory=list)
+    output_filters: dict[tuple[str, str], "_SensitiveOutputFilter"] = field(
+        default_factory=dict
+    )
+
+
+@dataclass(slots=True)
+class _SensitiveOutputFilter:
+    """Redact exact hidden values while preserving cross-chunk matches."""
+
+    values: list[str]
+    pending: str = ""
+
+    def apply(self, chunk: str, *, final: bool) -> str:
+        text = self.pending + chunk
+        self.pending = ""
+        if not text or not self.values:
+            return text
+
+        values = sorted(
+            (value for value in self.values if value),
+            key=len,
+            reverse=True,
+        )
+        output: list[str] = []
+        index = 0
+        while index < len(text):
+            matched = next(
+                (value for value in values if text.startswith(value, index)),
+                None,
+            )
+            if matched is not None:
+                output.append(_HIDDEN_INPUT_MARKER)
+                index += len(matched)
+                continue
+            suffix = text[index:]
+            if not final and any(value.startswith(suffix) for value in values):
+                self.pending = suffix
+                break
+            output.append(text[index])
+            index += 1
+        return "".join(output)
 
 
 class ProcessManager:
@@ -270,14 +315,22 @@ class ProcessManager:
             )
             with self._lock:
                 current = self._entries.get(session_id)
-                if current is entry:
-                    entry.cursors[consumer] = snapshot.cursor
-                    entry.last_snapshot = snapshot
-                    if snapshot.state is ProcessState.EXITED:
-                        entry.terminal_at = entry.terminal_at or time.monotonic()
-                        if mark_observed:
-                            entry.observed = True
-                            entry.observed_at = time.monotonic()
+                if current is not entry:
+                    raise ProcessSessionNotFound(
+                        f"process session '{session_id}' was not found"
+                    )
+                snapshot = self._redact_snapshot_locked(
+                    entry,
+                    consumer,
+                    snapshot,
+                )
+                entry.cursors[consumer] = snapshot.cursor
+                entry.last_snapshot = snapshot
+                if snapshot.state is ProcessState.EXITED:
+                    entry.terminal_at = entry.terminal_at or time.monotonic()
+                    if mark_observed:
+                        entry.observed = True
+                        entry.observed_at = time.monotonic()
         return snapshot
 
     def write(
@@ -298,6 +351,52 @@ class ProcessManager:
             session_generation=session_generation,
         )
         entry.port.write_input(session_id, chars)
+        return self.poll(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+            wait_ms=0,
+        )
+
+    def write_sensitive_line(
+        self,
+        session_id: str,
+        value: str,
+        *,
+        consumer: str,
+        agent_id: str,
+        owner_session_id: str | None,
+        session_generation: int,
+    ) -> ProcessSnapshot:
+        """Write one hidden TTY line without exposing its value in observations."""
+        if not value:
+            raise ValueError("hidden input cannot be empty")
+        if "\n" in value or "\r" in value:
+            raise ValueError("hidden input must be one line")
+        entry, _, _ = self._entry_and_cursor(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=session_generation,
+        )
+        with self._lock:
+            if entry.handle.stream_mode is not ProcessStreamMode.PTY:
+                raise ProcessOperationUnsupported(
+                    f"session '{session_id}' uses pipe mode; hidden input was not sent"
+                )
+            if entry.last_snapshot.state is not ProcessState.RUNNING:
+                raise ProcessOperationUnsupported(
+                    f"session '{session_id}' is {entry.last_snapshot.state.value}; "
+                    "hidden input was not sent"
+                )
+            if value not in entry.sensitive_values:
+                entry.sensitive_values.append(value)
+        # Retain the redaction even if the transport reports an ambiguous
+        # failure: the peer may have received the write before the error.
+        entry.port.write_input(session_id, value + "\n")
         return self.poll(
             session_id,
             consumer=consumer,
@@ -469,6 +568,11 @@ class ProcessManager:
                 )
                 with self._lock:
                     if self._entries.get(entry.handle.session_id) is entry:
+                        snapshot = self._redact_snapshot_locked(
+                            entry,
+                            "manager",
+                            snapshot,
+                        )
                         entry.last_snapshot = snapshot
                         if snapshot.state is ProcessState.EXITED:
                             entry.terminal_at = (
@@ -558,19 +662,24 @@ class ProcessManager:
         cursor = ProcessCursor()
         while True:
             try:
-                snapshot = entry.port.poll(
+                raw_snapshot = entry.port.poll(
                     entry.handle.session_id,
                     cursor=cursor,
                     wait_ms=250,
                 )
             except ProcessSessionNotFound:
                 return
-            has_output = bool(snapshot.stdout or snapshot.stderr)
-            cursor = snapshot.cursor
+            cursor = raw_snapshot.cursor
             with self._lock:
                 current = self._entries.get(entry.handle.session_id)
                 if current is not entry:
                     return
+                snapshot = self._redact_snapshot_locked(
+                    entry,
+                    "watcher",
+                    raw_snapshot,
+                )
+                has_output = bool(snapshot.stdout or snapshot.stderr)
                 previous_state = entry.last_snapshot.state
                 entry.watcher_cursor = cursor
                 entry.last_snapshot = snapshot
@@ -627,6 +736,29 @@ class ProcessManager:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _redact_snapshot_locked(
+        entry: _ManagedEntry,
+        consumer: str,
+        snapshot: ProcessSnapshot,
+    ) -> ProcessSnapshot:
+        if not entry.sensitive_values:
+            return snapshot
+        final = snapshot.state is ProcessState.EXITED
+
+        def redact(stream: str, value: str) -> str:
+            output_filter = entry.output_filters.setdefault(
+                (consumer, stream),
+                _SensitiveOutputFilter(entry.sensitive_values),
+            )
+            return output_filter.apply(value, final=final)
+
+        stdout = redact("stdout", snapshot.stdout)
+        stderr = redact("stderr", snapshot.stderr)
+        if stdout == snapshot.stdout and stderr == snapshot.stderr:
+            return snapshot
+        return replace(snapshot, stdout=stdout, stderr=stderr)
 
     @staticmethod
     def _ensure_watcher_started_locked(entry: _ManagedEntry) -> None:

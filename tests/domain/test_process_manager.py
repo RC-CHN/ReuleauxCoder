@@ -16,7 +16,11 @@ from reuleauxcoder.domain.process import (
     ProcessState,
     ProcessStreamMode,
 )
-from reuleauxcoder.domain.process_manager import ProcessEventKind, ProcessManager
+from reuleauxcoder.domain.process_manager import (
+    ProcessEventKind,
+    ProcessManager,
+    _SensitiveOutputFilter,
+)
 from reuleauxcoder.infrastructure.process.local import LocalProcessPort
 
 
@@ -74,6 +78,17 @@ def test_manager_keeps_independent_consumer_cursors(tmp_path) -> None:
     assert model_output == "hello\n"
     assert ui_output == "hello\n"
     manager.shutdown()
+
+
+def test_hidden_output_filter_redacts_values_split_across_chunks() -> None:
+    values = ["cross-chunk-secret"]
+    output_filter = _SensitiveOutputFilter(values)
+
+    assert output_filter.apply("before cross-", final=False) == "before "
+    assert (
+        output_filter.apply("chunk-secret after", final=False)
+        == "[hidden input redacted] after"
+    )
 
 
 def test_manager_rejects_stale_generation_but_can_rebind(tmp_path) -> None:
@@ -285,4 +300,63 @@ def test_pty_session_accepts_incremental_input(tmp_path) -> None:
 
     assert state is ProcessState.EXITED
     assert "got:answer" in after_write.stdout + output
+    manager.shutdown()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY integration")
+def test_sensitive_pty_line_is_redacted_for_pollers_and_events(tmp_path) -> None:
+    events = []
+    manager = ProcessManager(event_sink=events.append)
+    port = LocalProcessPort()
+    secret = "not-for-model-context"
+    handle = manager.start(
+        port,
+        _python_command(
+            "print('ready', flush=True); "
+            "value=input(); "
+            "print('received:'+value, flush=True)"
+        ),
+        cwd=str(tmp_path),
+        runtime_timeout=5,
+        tty=True,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    manager.poll(
+        handle.session_id,
+        consumer="model",
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        wait_ms=1000,
+    )
+
+    after_write = manager.write_sensitive_line(
+        handle.session_id,
+        secret,
+        consumer="model",
+        agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+    )
+    output, _, state = _poll_until_terminal(manager, handle.session_id)
+    observed = after_write.stdout + output
+    deadline = time.monotonic() + 2
+    while (
+        not any(event.kind is ProcessEventKind.COMPLETED for event in events)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    event_output = "".join(
+        event.snapshot.stdout + event.snapshot.stderr for event in events
+    )
+
+    assert state is ProcessState.EXITED
+    assert any(event.kind is ProcessEventKind.COMPLETED for event in events)
+    assert secret not in observed
+    assert secret not in event_output
+    assert "[hidden input redacted]" in observed
     manager.shutdown()

@@ -18,9 +18,15 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
-from reuleauxcoder.domain.process import ProcessSessionNotFound, ProcessSnapshot
+from reuleauxcoder.domain.process import (
+    ProcessSessionNotFound,
+    ProcessSnapshot,
+    ProcessState,
+)
 from reuleauxcoder.domain.process_manager import ManagedProcessView, ProcessManager
 from reuleauxcoder.interfaces.events import UIEventKind
+from reuleauxcoder.interfaces.interactions import InputTextRequest
+from reuleauxcoder.interfaces.ui_registry import UICapability
 
 
 _MAX_UI_OUTPUT_CHARS = 8_000
@@ -34,6 +40,11 @@ class ListProcessesCommand:
 @dataclass(frozen=True, slots=True)
 class ControlProcessCommand:
     action: str
+    session_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class SecureProcessInputCommand:
     session_id: str
 
 
@@ -106,6 +117,16 @@ def _parse_control(user_input: str, parse_ctx):
             session_id=captures["session_id"].strip(),
         )
     return None
+
+
+def _parse_secure_input(user_input: str, parse_ctx):
+    del parse_ctx
+    captures = match_template(user_input, "/ps input {session_id+}")
+    if captures is None:
+        return None
+    return SecureProcessInputCommand(
+        session_id=captures["session_id"].strip(),
+    )
 
 
 def _identity(ctx) -> tuple[ProcessManager | None, str, str | None, int]:
@@ -238,6 +259,84 @@ def _handle_control(command, ctx) -> CommandEffect:
     return _refresh(manager, ctx, agent_id, owner_session_id, generation)
 
 
+def _handle_secure_input(command, ctx) -> CommandEffect:
+    manager, agent_id, owner_session_id, generation = _identity(ctx)
+    if manager is None:
+        ctx.effect.error(
+            "Process session manager is unavailable.",
+            kind=UIEventKind.COMMAND,
+        )
+        return ctx.effect.finish(control="continue")
+    if ctx.ui_interactor is None:
+        ctx.effect.error(
+            "This interface cannot collect hidden input; no input was sent.",
+            kind=UIEventKind.COMMAND,
+        )
+        return ctx.effect.finish(control="continue")
+    try:
+        view = manager.get_view(
+            command.session_id,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=generation,
+        )
+    except ProcessSessionNotFound as error:
+        ctx.effect.error(str(error), kind=UIEventKind.COMMAND)
+        return ctx.effect.finish(control="continue")
+    if view.stream_mode != "pty":
+        ctx.effect.error(
+            f"Process {command.session_id} uses pipe mode; no input was sent.",
+            kind=UIEventKind.COMMAND,
+        )
+        return ctx.effect.finish(control="continue")
+    if view.state is not ProcessState.RUNNING:
+        ctx.effect.error(
+            f"Process {command.session_id} is {view.state.value}; no input was sent.",
+            kind=UIEventKind.COMMAND,
+        )
+        return ctx.effect.finish(control="continue")
+
+    response = ctx.ui_interactor.input_text(
+        InputTextRequest(
+            title=f"Hidden input · {command.session_id}",
+            prompt=(
+                "Enter one hidden line. It will be sent directly to the PTY "
+                "followed by Enter and will not be added to model context or history"
+            ),
+            placeholder="blank cancels",
+            secret=True,
+        )
+    )
+    if response.cancelled or response.value is None:
+        ctx.effect.info(
+            f"Hidden input to {command.session_id} was cancelled; no input was sent.",
+            kind=UIEventKind.COMMAND,
+        )
+        return ctx.effect.finish(control="continue")
+    try:
+        manager.write_sensitive_line(
+            command.session_id,
+            response.value,
+            consumer=f"human:{agent_id}",
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=generation,
+        )
+    except Exception as error:
+        ctx.effect.error(
+            f"Hidden input was not confirmed for {command.session_id}: {error}",
+            kind=UIEventKind.COMMAND,
+        )
+        return ctx.effect.finish(control="continue")
+
+    ctx.effect.info(
+        f"Hidden input was sent to {command.session_id}; its value was not recorded.",
+        kind=UIEventKind.COMMAND,
+        process_session_id=command.session_id,
+    )
+    return _refresh(manager, ctx, agent_id, owner_session_id, generation)
+
+
 def _run_control(
     manager: ProcessManager,
     command: ControlProcessCommand,
@@ -355,6 +454,14 @@ def command_panel_spec() -> CommandPanelSpec:
                 )
             ]
             if session.state != "exited":
+                if session.stream_mode == "pty":
+                    actions.append(
+                        PanelItem(
+                            label="send hidden input",
+                            description="write one masked line directly to the PTY",
+                            command=f"/ps input {session.session_id}",
+                        )
+                    )
                 actions.extend(
                     (
                         PanelItem(
@@ -427,6 +534,19 @@ def register_actions(registry: ActionRegistry) -> None:
                 ),
                 parser=_parse_control,
                 handler=_handle_control,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
+            ),
+            ActionSpec(
+                action_id="processes.secure_input",
+                feature_id="processes",
+                description="[session] Send one masked line directly to a PTY session",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED
+                | {UICapability.SECURE_TEXT_INPUT},
+                triggers=(slash_trigger("/ps input <id>"),),
+                parser=_parse_secure_input,
+                handler=_handle_secure_input,
+                interactive=True,
                 during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
         ]
