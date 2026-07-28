@@ -22,9 +22,6 @@ from reuleauxcoder.extensions.command.builtin import (
     create_builtin_command_panel_registry,
 )
 from reuleauxcoder.interfaces.tui.application import (
-    ALTERNATE_SCROLL_DISABLE,
-    ALTERNATE_SCROLL_ENABLE,
-    MINI_TUI_MOUSE_SUPPORT,
     MiniTUIApplication,
 )
 from reuleauxcoder.interfaces.tui.event_adapter import MiniTUIEventAdapter
@@ -40,6 +37,11 @@ from reuleauxcoder.interfaces.tui.interaction import (
 )
 from reuleauxcoder.interfaces.tui.input_router import build_key_bindings
 from reuleauxcoder.interfaces.tui.selection_host import SelectionHost
+from reuleauxcoder.interfaces.tui.style import (
+    ALTERNATE_SCROLL_DISABLE,
+    ALTERNATE_SCROLL_ENABLE,
+    MINI_TUI_MOUSE_SUPPORT,
+)
 from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VirtualTranscriptControl,
     VirtualTranscriptLayout,
