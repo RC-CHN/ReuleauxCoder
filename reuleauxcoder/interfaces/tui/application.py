@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import replace
-import json
 from pathlib import Path
 import queue
 import threading
@@ -54,15 +53,12 @@ from reuleauxcoder.domain.runtime.events import (
     SubagentJobChanged,
 )
 from reuleauxcoder.app.commands.view_models import (
-    EffectiveConfigViewModel,
-    HelpViewModel,
     ModelListViewModel,
     ModesViewModel,
     SessionResumeViewModel,
     SessionsViewModel,
     SubagentJobsViewModel,
     ThinkingEffortViewModel,
-    TokenUsageViewModel,
 )
 from reuleauxcoder.app.runtime.approval import ApprovalRuleView, ApprovalView
 from reuleauxcoder.extensions.mcp.models import MCPServersView
@@ -110,6 +106,7 @@ from reuleauxcoder.interfaces.tui.transcript import (
     cell_fragments as _cell_fragments,
     decorate_transcript_fragments as _decorate_transcript_fragments,
 )
+from reuleauxcoder.interfaces.tui.view_text import view_text as _view_text
 from reuleauxcoder.presentation import (
     AssistantCell,
     ExecutionPanelView,
@@ -2372,140 +2369,3 @@ def _labeled_panel_row(
     )
     value_style = "class:warning" if need else "class:panel.value"
     return [(label_style, f" {label:<5} "), (value_style, f" {value}")]
-
-
-def _format_help_view(model: HelpViewModel) -> str:
-    lines: list[str] = []
-    for section in model.sections:
-        lines.append(f"[{section.feature_id}]")
-        width = max((len(command.usage) for command in section.commands), default=0)
-        for command in section.commands:
-            lines.append(f"  {command.usage.ljust(width)}  {command.description}")
-    if model.diagnostic:
-        lines.append(f"! {model.diagnostic}")
-    return "\n".join(lines) or "(no commands available)"
-
-
-def _format_thinking_effort_view(model: ThinkingEffortViewModel) -> str:
-    lines = [f"Reasoning effort: {model.current}", f"Parameter: {model.param}", "Available:"]
-    for level in model.levels:
-        marker = " ✓" if level.label == model.current else ""
-        lines.append(f"  {level.label} → {level.api_value}{marker}")
-    lines.append(f"(profile default: {model.profile_default})")
-    return "\n".join(lines)
-
-
-def _format_token_usage_view(model: TokenUsageViewModel) -> str:
-    lines = [
-        "Tokens · "
-        f"prompt {model.prompt_tokens:,} · "
-        f"completion {model.completion_tokens:,} · "
-        f"lifetime {model.lifetime_total:,}"
-    ]
-    if model.max_context_tokens:
-        ratio = model.current_context_tokens / model.max_context_tokens
-        filled = round(max(0.0, min(1.0, ratio)) * 10)
-        bar = "█" * filled + "·" * (10 - filled)
-        percent = (
-            f"{model.context_percent:.0f}%"
-            if model.context_percent is not None
-            else f"{ratio * 100:.0f}%"
-        )
-        lines.append(
-            f"Context [{bar}] {percent} "
-            f"({model.current_context_tokens:,} / {model.max_context_tokens:,})"
-            f" · {model.message_count} messages"
-        )
-    if model.actual_prompt_tokens is not None:
-        cached = (
-            f" · cached {model.cached_input_tokens:,}"
-            if model.cached_input_tokens
-            else ""
-        )
-        lines.append(f"Actual  prompt {model.actual_prompt_tokens:,}{cached}")
-    lines.append(
-        f"Walls   snip {model.snip_wall}% · semantic {model.semantic_wall}%"
-        f" · min-gain {model.snip_min_gain}% · target {model.rewrite_target}%"
-        f" · emergency {model.emergency_at}% · epoch {model.cache_epoch}"
-    )
-    return "\n".join(lines)
-
-
-def _format_subagent_jobs_view(model: SubagentJobsViewModel) -> str:
-    lines = [
-        f"Agents · parallel {model.runtime_parallel_explore}"
-        f"/{model.max_parallel_explore}"
-    ]
-    if not model.jobs:
-        lines.append("(no jobs yet)")
-    for job in model.jobs:
-        lines.append(
-            f"{job.job_id}  {job.status:<9} {job.mode:<8} {_clip(job.task, 60)}"
-        )
-    return "\n".join(lines)
-
-
-def _format_sessions_view(model: SessionsViewModel) -> str:
-    scope = "all fingerprints" if model.show_all else f"fingerprint {model.fingerprint}"
-    lines = [f"Sessions ({scope})"]
-    if not model.sessions:
-        lines.append("(no saved sessions)")
-    for session in model.sessions:
-        position = f"#{session.position}" if session.position is not None else "  "
-        active = "  [active]" if session.active else ""
-        lines.append(
-            f"{position} {session.saved_at[:19]} · {session.model}"
-            f" · {_clip(session.preview, 50)}{active}"
-        )
-    return "\n".join(lines)
-
-
-def _format_effective_config_view(model: EffectiveConfigViewModel) -> str:
-    lines = [f"{row.path} = {row.value}  ({row.source})" for row in model.rows]
-    for diagnostic in model.diagnostics:
-        lines.append(f"! {diagnostic}")
-    return "\n".join(lines) or "(no configuration rows)"
-
-
-def _view_text(payload: ViewEventPayload) -> str:
-    model = payload.view_model
-    if payload.view_type == "session_resume" and isinstance(
-        model, SessionResumeViewModel
-    ):
-        lines = [f"RESTORED {model.session_id} · {model.model} · {model.saved_at[:19]}"]
-        lines.extend(
-            f"{'YOU' if entry.role == 'user' else 'AGENT'}  {entry.content}"
-            for entry in model.entries
-        )
-        return "\n".join(lines)
-    if payload.view_type == "help" and isinstance(model, HelpViewModel):
-        return _format_help_view(model)
-    if payload.view_type == "thinking_effort" and isinstance(
-        model, ThinkingEffortViewModel
-    ):
-        return _format_thinking_effort_view(model)
-    if payload.view_type == "token_usage" and isinstance(model, TokenUsageViewModel):
-        return _format_token_usage_view(model)
-    if payload.view_type == "subagent_jobs" and isinstance(
-        model, SubagentJobsViewModel
-    ):
-        return _format_subagent_jobs_view(model)
-    if payload.view_type == "sessions" and isinstance(model, SessionsViewModel):
-        return _format_sessions_view(model)
-    if payload.view_type == "effective_config" and isinstance(
-        model, EffectiveConfigViewModel
-    ):
-        return _format_effective_config_view(model)
-    to_payload = getattr(model, "to_payload", None)
-    if callable(to_payload):
-        try:
-            return json.dumps(to_payload(), ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-    to_dict = getattr(model, "to_dict", None)
-    if callable(to_dict):
-        try:
-            return json.dumps(to_dict(), ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-    return f"{payload.title}: {model}"

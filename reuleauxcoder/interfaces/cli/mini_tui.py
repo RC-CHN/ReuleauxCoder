@@ -21,12 +21,6 @@ from reuleauxcoder.interfaces.tui.application import (
     _decorate_transcript_fragments,
     _execution_panel_rows,
     _fit_styled_row,
-    _format_effective_config_view,
-    _format_help_view,
-    _format_sessions_view,
-    _format_subagent_jobs_view,
-    _format_thinking_effort_view,
-    _format_token_usage_view,
     _fragments_to_visual_lines,
     _interaction_lines,
     _labeled_panel_row,
@@ -47,6 +41,14 @@ from reuleauxcoder.interfaces.tui.formatting import (
 from reuleauxcoder.interfaces.tui.transcript import (
     approval_fragments as _approval_fragments,
     rstrip_fragment_newlines as _rstrip_fragment_newlines,
+)
+from reuleauxcoder.interfaces.tui.view_text import (
+    format_effective_config_view as _format_effective_config_view,
+    format_help_view as _format_help_view,
+    format_sessions_view as _format_sessions_view,
+    format_subagent_jobs_view as _format_subagent_jobs_view,
+    format_thinking_effort_view as _format_thinking_effort_view,
+    format_token_usage_view as _format_token_usage_view,
 )
 
 __all__ = [
