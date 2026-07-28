@@ -25,6 +25,10 @@ from reuleauxcoder.extensions.command.builtin.model import (
     command_panel_spec as model_panel_spec,
     register_actions as register_model_actions,
 )
+from reuleauxcoder.extensions.command.builtin.processes import (
+    command_panel_spec as processes_panel_spec,
+    register_actions as register_process_actions,
+)
 from reuleauxcoder.extensions.command.builtin.sessions import (
     command_panel_spec as sessions_panel_spec,
     register_actions as register_session_actions,
@@ -52,6 +56,7 @@ _BUILTIN_COMMAND_REGISTRARS: tuple[CommandRegistrar, ...] = (
     register_mcp_actions,
     register_mode_actions,
     register_model_actions,
+    register_process_actions,
     register_session_actions,
     register_skill_actions,
     register_subagent_job_actions,
@@ -64,6 +69,7 @@ _BUILTIN_COMMAND_PANEL_SPECS: tuple[CommandPanelSpec, ...] = (
     mcp_panel_spec(),
     mode_panel_spec(),
     model_panel_spec(),
+    processes_panel_spec(),
     sessions_panel_spec(),
     skills_panel_spec(),
     subagent_jobs_panel_spec(),

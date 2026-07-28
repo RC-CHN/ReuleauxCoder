@@ -27,7 +27,11 @@ from reuleauxcoder.app.runtime.session_state import (
 from reuleauxcoder.app.runtime.extension_bridge import LegacyHookLifecycleParticipant
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
-from reuleauxcoder.domain.process_manager import ProcessManager
+from reuleauxcoder.domain.process_manager import ProcessEvent, ProcessManager
+from reuleauxcoder.domain.runtime.events import (
+    ProcessSessionChanged,
+    RuntimeEvent,
+)
 from reuleauxcoder.domain.hooks import (
     discover_hook_specs,
     instantiate_hooks,
@@ -226,7 +230,9 @@ class AppRunner:
         agent.current_session_id = None
         agent.session_fingerprint = get_session_fingerprint(config, agent)
         agent.context._ui_bus = ui_bus
-        process_manager = self.dependencies.create_process_manager(lambda _event: None)
+        process_manager = self.dependencies.create_process_manager(
+            lambda event: self._emit_process_event(ui_bus, event)
+        )
         self._process_manager = process_manager
         agent.process_manager = process_manager
 
@@ -365,6 +371,32 @@ class AppRunner:
             bind_agent = getattr(tool, "bind_agent", None)
             if callable(bind_agent):
                 bind_agent(agent)
+
+    @staticmethod
+    def _emit_process_event(ui_bus: UIEventBus, event: ProcessEvent) -> None:
+        snapshot = event.snapshot
+        ui_bus.emit_runtime(
+            RuntimeEvent(
+                payload=ProcessSessionChanged(
+                    change=event.kind.value,
+                    process_session_id=snapshot.session_id,
+                    state=snapshot.state.value,
+                    stream_mode=snapshot.stream_mode.value,
+                    backend=snapshot.backend,
+                    command=event.command,
+                    cwd=event.cwd,
+                    elapsed_seconds=snapshot.elapsed_seconds,
+                    exit_code=snapshot.exit_code,
+                    termination_reason=snapshot.termination_reason,
+                    output_truncated=snapshot.output_truncated,
+                ),
+                agent_id=event.owner_agent_id,
+                session_generation=event.session_generation,
+                session_id=event.owner_session_id,
+                turn_id=event.origin_turn_id,
+                correlation_id=snapshot.session_id,
+            )
+        )
 
     def _attach_mcp_if_configured(
         self,

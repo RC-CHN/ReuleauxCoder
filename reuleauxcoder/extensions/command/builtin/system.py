@@ -151,8 +151,23 @@ def _handle_exit(command, ctx) -> CommandEffect:
 def _handle_reset(command, ctx) -> CommandEffect:
     ctx.agent.reset()
     restore_config_runtime_defaults(ctx.config, ctx.agent)
+    process_manager = getattr(ctx.agent, "process_manager", None)
+    active_processes = (
+        process_manager.active_count(
+            owner_session_id=ctx.agent.current_session_id
+        )
+        if process_manager is not None
+        else 0
+    )
+    process_note = (
+        f" {active_processes} unresolved process session(s) were preserved; "
+        "use /ps to inspect them."
+        if active_processes
+        else ""
+    )
     ctx.effect.warning(
         "Conversation reset (in-memory only, does not delete saved sessions)."
+        + process_note
     )
     return ctx.effect.finish(control="continue")
 

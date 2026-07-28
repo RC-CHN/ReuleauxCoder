@@ -4,6 +4,7 @@ from reuleauxcoder.domain.runtime.events import (
     ApprovalResolved,
     OperationPhaseChanged,
     PlanUpdated,
+    ProcessSessionChanged,
     ProgressReported,
     RuntimeEvent,
     SubagentJobChanged,
@@ -151,6 +152,50 @@ def test_panel_view_keeps_semantics_separate_from_terminal_layout() -> None:
     assert view.main.label == "MAIN"
     assert view.main.activity == "building panel"
     assert view.progress_next == "verify"
+
+
+def test_process_events_project_running_and_unknown_without_guessing_completion() -> None:
+    reducer = ExecutionViewReducer()
+    reducer.apply(
+        _event(
+            ProcessSessionChanged(
+                change="published",
+                process_session_id="proc_running",
+                state="running",
+                stream_mode="pipe",
+                backend="local",
+                command="sleep 30",
+                cwd="/workspace",
+                elapsed_seconds=1.0,
+            ),
+            event_id="process-running",
+        )
+    )
+    reducer.apply(
+        _event(
+            ProcessSessionChanged(
+                change="updated",
+                process_session_id="proc_unknown",
+                state="unknown",
+                stream_mode="pipe",
+                backend="remote",
+                command="remote command",
+                cwd="/workspace",
+                elapsed_seconds=2.0,
+                termination_reason="transport_unknown",
+            ),
+            event_id="process-unknown",
+        )
+    )
+
+    view = execution_panel_view(reducer.state, now=100.1)
+    rendered = "\n".join(
+        execution_panel_lines(reducer.state, width=120, now=100.1)
+    )
+
+    assert view.process_running == 1
+    assert view.process_unknown == 1
+    assert "PROCESSES 1 + 1 unknown" in rendered
 
 
 def test_stale_generation_and_duplicate_events_are_ignored() -> None:

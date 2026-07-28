@@ -50,6 +50,7 @@ _PAYLOAD_TYPES = {
         events.OperationPhaseChanged,
         events.PlanUpdated,
         events.ProgressReported,
+        events.ProcessSessionChanged,
         events.ViewRequested,
         events.ViewRefreshed,
     )

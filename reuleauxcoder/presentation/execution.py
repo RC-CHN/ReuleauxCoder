@@ -14,6 +14,7 @@ from reuleauxcoder.domain.runtime.events import (
     ChatStarted,
     ErrorOccurred,
     PlanUpdated,
+    ProcessSessionChanged,
     ProgressReported,
     NotificationRaised,
     OperationPhaseChanged,
@@ -96,6 +97,18 @@ class ExecutionPanelView:
     attention: tuple[AttentionItem, ...]
     progress_summary: str
     progress_next: str | None
+    process_running: int
+    process_unknown: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionProcessState:
+    session_id: str
+    state: str
+    command: str
+    exit_code: int | None
+    termination_reason: str | None
+    output_truncated: bool
 
 
 @dataclass(slots=True)
@@ -113,6 +126,7 @@ class ExecutionViewState:
     runtime_state: str = "idle"
     seen_event_ids: set[str] = field(default_factory=set)
     session_generations: dict[tuple[str, str | None], int] = field(default_factory=dict)
+    processes: dict[str, ExecutionProcessState] = field(default_factory=dict)
 
     @property
     def completed_plan_items(self) -> int:
@@ -216,6 +230,16 @@ class ExecutionViewReducer:
                 event,
                 f"{payload.tool_name} {'done' if payload.outcome.success else 'failed'}",
                 status=status,
+            )
+            return True
+        if isinstance(payload, ProcessSessionChanged):
+            self.state.processes[payload.process_session_id] = ExecutionProcessState(
+                session_id=payload.process_session_id,
+                state=payload.state,
+                command=payload.command,
+                exit_code=payload.exit_code,
+                termination_reason=payload.termination_reason,
+                output_truncated=payload.output_truncated,
             )
             return True
         if isinstance(payload, SubagentJobChanged):
@@ -420,6 +444,12 @@ def execution_panel_view(
         attention=tuple(state.attention.values()),
         progress_summary=state.progress_summary,
         progress_next=state.progress_next,
+        process_running=sum(
+            process.state == "running" for process in state.processes.values()
+        ),
+        process_unknown=sum(
+            process.state == "unknown" for process in state.processes.values()
+        ),
     )
 
 
@@ -446,7 +476,8 @@ def execution_panel_lines(
         )
         return (
             _fit(
-                f"{view.phase} · PLAN {plan_count} · A {len(view.subagents)}{need}",
+            f"{view.phase} · PLAN {plan_count} · A {len(view.subagents)} · "
+            f"P {view.process_running}{need}",
                 width,
             ),
             _fit(f"PLAN  {'●' if view.plan_total else '○'} {view.active_plan}", width),
@@ -456,7 +487,9 @@ def execution_panel_lines(
     lines = [
         _fit(
             f"STATUS  {view.phase} · PLAN {plan_count} · "
-            f"AGENTS {len(view.subagents)} · {live}{need}",
+            f"AGENTS {len(view.subagents)} · PROCESSES {view.process_running}"
+            f"{f' + {view.process_unknown} unknown' if view.process_unknown else ''}"
+            f" · {live}{need}",
             width,
         ),
         _fit(f"PLAN  {'●' if view.plan_total else '○'} {view.active_plan}", width),
@@ -568,6 +601,7 @@ def operation_phase_activity(payload: OperationPhaseChanged) -> str:
         "stop_interactions": "closing pending interactions",
         "stop_remote_chat": "stopping remote chat",
         "stop_subagents": "stopping sub-agent workers",
+        "stop_processes": "stopping shell processes",
         "dispose_extensions": "disposing runtime extensions",
         "stop_remote_relay": "stopping remote relay",
         "disconnect_mcp": "disconnecting MCP servers",

@@ -23,7 +23,9 @@ from reuleauxcoder.domain.process import (
 
 
 class ProcessEventKind(str, Enum):
+    PUBLISHED = "published"
     OUTPUT = "output"
+    UPDATED = "updated"
     COMPLETED = "completed"
 
 
@@ -208,6 +210,7 @@ class ProcessManager:
             ):
                 entry.completion_emitted = True
                 emit_completion = True
+        self._emit(ProcessEventKind.PUBLISHED, entry, entry.last_snapshot)
         if emit_completion:
             self._emit(ProcessEventKind.COMPLETED, entry, entry.last_snapshot)
 
@@ -560,6 +563,7 @@ class ProcessManager:
                 current = self._entries.get(entry.handle.session_id)
                 if current is not entry:
                     return
+                previous_state = entry.last_snapshot.state
                 entry.watcher_cursor = cursor
                 entry.last_snapshot = snapshot
                 if snapshot.state is ProcessState.EXITED:
@@ -583,6 +587,8 @@ class ProcessManager:
                 return
             if has_output and published:
                 self._emit(ProcessEventKind.OUTPUT, entry, snapshot)
+            elif published and snapshot.state is not previous_state:
+                self._emit(ProcessEventKind.UPDATED, entry, snapshot)
             if emit_completion:
                 self._emit(ProcessEventKind.COMPLETED, entry, snapshot)
                 return

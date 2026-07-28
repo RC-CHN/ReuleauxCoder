@@ -10,6 +10,7 @@ def test_builtin_command_features_contribute_all_interactive_panels_in_order() -
         "mcp_servers",
         "mode_profiles",
         "model_profiles",
+        "process_sessions",
         "sessions",
         "skills",
         "subagent_jobs",

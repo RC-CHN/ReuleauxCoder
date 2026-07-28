@@ -466,8 +466,22 @@ class MiniTUIApplication:
             was_cancelling = self.cancelling
             self.cancelling = False
             if was_cancelling:
+                process_manager = getattr(self.agent, "process_manager", None)
+                active_processes = (
+                    process_manager.active_count(
+                        owner_session_id=self.current_session_id
+                    )
+                    if process_manager is not None
+                    else 0
+                )
+                process_note = (
+                    f" {active_processes} process session(s) remain unresolved; "
+                    "use /ps to inspect or /stop to control them."
+                    if active_processes
+                    else ""
+                )
                 self.ui_bus.info(
-                    "Current turn cancelled.",
+                    "Current turn cancelled." + process_note,
                     kind=UIEventKind.AGENT,
                 )
             started_deferred = (

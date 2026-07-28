@@ -46,6 +46,7 @@ class RuntimeEventKind(str, Enum):
     VIEW_REFRESHED = "view_refreshed"
     PLAN_UPDATED = "plan_updated"
     PROGRESS_REPORTED = "progress_reported"
+    PROCESS_SESSION_CHANGED = "process_session_changed"
 
 
 @dataclass(frozen=True)
@@ -300,6 +301,26 @@ class ProgressReported:
 
 
 @dataclass(frozen=True)
+class ProcessSessionChanged:
+    """One source-backed background process transition for UI projection."""
+
+    change: str
+    process_session_id: str
+    state: str
+    stream_mode: str
+    backend: str
+    command: str
+    cwd: str
+    elapsed_seconds: float
+    exit_code: int | None = None
+    termination_reason: str | None = None
+    output_truncated: bool = False
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.PROCESS_SESSION_CHANGED, init=False
+    )
+
+
+@dataclass(frozen=True)
 class ViewRequested:
     request_id: str
     view_type: str
@@ -338,6 +359,7 @@ RuntimePayload: TypeAlias = (
     | OperationPhaseChanged
     | PlanUpdated
     | ProgressReported
+    | ProcessSessionChanged
     | ViewRequested
     | ViewRefreshed
 )
@@ -349,6 +371,7 @@ _TRANSIENT_PAYLOAD_TYPES = (
     StreamChunk,
     ToolOutputDelta,
     OperationPhaseChanged,
+    ProcessSessionChanged,
 )
 
 

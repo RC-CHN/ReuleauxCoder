@@ -27,7 +27,9 @@ def _execution_panel_rows(
             ("class:panel.label.secondary", " P "),
             ("class:panel.value", f" {plan_count} "),
             ("class:panel.label.secondary", " A "),
-            ("class:panel.value", f" {len(view.subagents)}"),
+            ("class:panel.value", f" {len(view.subagents)} "),
+            ("class:panel.label.secondary", " P "),
+            ("class:panel.value", f" {view.process_running}"),
         ]
         final = _compact_panel_tail(view)
         rows = [
@@ -48,6 +50,19 @@ def _execution_panel_rows(
             ("class:panel.value", f" {plan_count} "),
             ("class:panel.label.secondary", " AGENTS "),
             ("class:panel.value", f" {len(view.subagents)} "),
+            ("class:panel.label.secondary", " PROCESSES "),
+            (
+                "class:panel.value",
+                (
+                    f" {view.process_running}"
+                    + (
+                        f" + {view.process_unknown} unknown"
+                        if view.process_unknown
+                        else ""
+                    )
+                    + " "
+                ),
+            ),
             ("class:panel.live", f"● {live}"),
         ]
         if view.attention:
