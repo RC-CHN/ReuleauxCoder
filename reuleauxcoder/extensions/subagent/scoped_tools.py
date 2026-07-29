@@ -37,6 +37,7 @@ class ScopedSubagentTool(Tool):
         self.server_name = getattr(inner, "server_name", None)
         self.approval_profile = getattr(inner, "approval_profile", None)
         self.effect_class = effect_class or getattr(inner, "effect_class", None)
+        self.parallel_safe = bool(getattr(inner, "parallel_safe", False))
         self._require_reason = require_reason
         if require_reason:
             properties = cast(

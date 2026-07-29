@@ -19,6 +19,7 @@ def _glob_full_match(relative_path: str, pattern: str) -> bool:
 
 class GlobTool(Tool):
     name = "glob"
+    parallel_safe = True
     description = (
         "Find files matching a glob pattern. "
         "Supports ** for recursive matching (e.g. '**/*.py')."

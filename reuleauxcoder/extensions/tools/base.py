@@ -215,6 +215,10 @@ class Tool(ABC):
     name: str
     description: str
     parameters: dict
+    # Tool batches are conservative by default: an implementation must opt in
+    # before the executor may overlap it with sibling calls.  This keeps unknown,
+    # dynamically supplied, and side-effecting tools behind an ordering barrier.
+    parallel_safe: bool = False
     _backend_handlers: dict[str, str] = {}
     _agent_config: Any = None
 

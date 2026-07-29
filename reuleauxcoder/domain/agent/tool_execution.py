@@ -755,7 +755,40 @@ class ToolExecutor:
             return message
 
     def execute_parallel(self, tool_calls: List["ToolCall"]) -> List[str]:
-        """Execute multiple tool calls in parallel."""
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(self.execute, tc) for tc in tool_calls]
-            return [f.result() for f in futures]
+        """Execute one provider batch without reordering observable effects.
+
+        Contiguous calls whose resolved tools explicitly opt into
+        ``parallel_safe`` may overlap.  Every other call is a singleton ordering
+        barrier, so writers, shell commands, MCP calls without trustworthy
+        annotations, and unknown tools retain provider order.
+        """
+        results = [""] * len(tool_calls)
+        index = 0
+        while index < len(tool_calls):
+            if not self._parallel_safe(tool_calls[index]):
+                results[index] = self.execute(tool_calls[index])
+                index += 1
+                continue
+
+            end = index + 1
+            while end < len(tool_calls) and self._parallel_safe(tool_calls[end]):
+                end += 1
+            if end - index == 1:
+                results[index] = self.execute(tool_calls[index])
+            else:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(8, end - index)
+                ) as pool:
+                    futures = {
+                        offset: pool.submit(self.execute, tool_calls[offset])
+                        for offset in range(index, end)
+                    }
+                    for offset, future in futures.items():
+                        results[offset] = future.result()
+            index = end
+        return results
+
+    def _parallel_safe(self, tool_call: "ToolCall") -> bool:
+        """Resolve one call's scheduling declaration conservatively."""
+        tool = self.agent.get_tool(tool_call.name)
+        return bool(tool is not None and getattr(tool, "parallel_safe", False))

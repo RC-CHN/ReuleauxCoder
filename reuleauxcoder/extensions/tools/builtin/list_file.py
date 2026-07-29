@@ -51,6 +51,7 @@ def _format_mtime(ts: float) -> str:
 
 class ListFileTool(Tool):
     name = "list_file"
+    parallel_safe = True
     description = (
         "List files and directories. Pure read-only — no shell involved, always safe. "
         "Use this for exploring project structure, checking what files exist, "

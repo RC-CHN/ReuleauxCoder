@@ -16,6 +16,7 @@ from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 
 class ReadFileTool(Tool):
     name = "read_file"
+    parallel_safe = True
     description = (
         "Read a file's contents with line numbers. "
         "Always read a file before editing it. "

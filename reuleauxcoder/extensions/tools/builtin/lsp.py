@@ -44,6 +44,7 @@ class LspTool(Tool):
     """
 
     name: ClassVar[str] = "lsp"
+    parallel_safe: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Interact with Language Server Protocol (LSP) servers for code intelligence.\n"
         "\n"

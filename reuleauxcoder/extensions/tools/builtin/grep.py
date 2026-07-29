@@ -25,6 +25,7 @@ _SKIP_DIRS = {
 
 class GrepTool(Tool):
     name = "grep"
+    parallel_safe = True
     description = (
         "Search file contents with regex. "
         "Returns matching lines with file path and line number."

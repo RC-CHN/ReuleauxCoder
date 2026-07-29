@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,7 @@ from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
+from reuleauxcoder.extensions.tools.base import Tool
 
 
 class _ShellToolStub:
@@ -93,6 +95,29 @@ class _AgentStub:
 
     def _emit_event(self, event) -> None:
         self.events.append(event)
+
+
+class _MappedAgentStub(_AgentStub):
+    def __init__(self, tools) -> None:
+        self._tools = {tool.name: tool for tool in tools}
+        super().__init__(next(iter(self._tools.values())))
+
+    def get_tool(self, name: str):
+        return self._tools.get(name)
+
+
+class _ProbeTool(Tool):
+    description = "Scheduling probe"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str, callback, *, parallel_safe: bool) -> None:
+        super().__init__()
+        self.name = name
+        self._callback = callback
+        self.parallel_safe = parallel_safe
+
+    def execute(self, **kwargs) -> str:  # noqa: ARG002
+        return self._callback()
 
 
 def test_shell_cwd_syncs_to_runtime_working_directory() -> None:
@@ -756,3 +781,82 @@ def test_parallel_tool_stream_handlers_do_not_cross_or_leak(tmp_path) -> None:
         ("shell", "second\n"),
     ]
     assert context.remote_stream_handler is outer_handler
+
+
+def test_execute_parallel_runs_contiguous_safe_tools_together() -> None:
+    started = threading.Barrier(2)
+
+    def read(name: str):
+        def run() -> str:
+            started.wait(timeout=2)
+            return name
+
+        return run
+
+    tools = [
+        _ProbeTool("read_a", read("a"), parallel_safe=True),
+        _ProbeTool("read_b", read("b"), parallel_safe=True),
+    ]
+    executor = ToolExecutor(_MappedAgentStub(tools))
+
+    results = executor.execute_parallel(
+        [
+            ToolCall(id="read-a", name="read_a", arguments={}),
+            ToolCall(id="read-b", name="read_b", arguments={}),
+        ]
+    )
+
+    assert results == ["a", "b"]
+
+
+def test_execute_parallel_uses_unsafe_tools_as_ordering_barriers() -> None:
+    state = {"value": "before", "active_writers": 0, "max_writers": 0}
+    state_lock = threading.Lock()
+
+    def read_value() -> str:
+        return state["value"]
+
+    def write_value(value: str):
+        def run() -> str:
+            with state_lock:
+                state["active_writers"] += 1
+                state["max_writers"] = max(
+                    state["max_writers"], state["active_writers"]
+                )
+            time.sleep(0.03)
+            state["value"] = value
+            with state_lock:
+                state["active_writers"] -= 1
+            return value
+
+        return run
+
+    tools = [
+        _ProbeTool("read_before", read_value, parallel_safe=True),
+        _ProbeTool("write_first", write_value("first"), parallel_safe=False),
+        _ProbeTool("write_second", write_value("second"), parallel_safe=False),
+        _ProbeTool("read_after", read_value, parallel_safe=True),
+    ]
+    executor = ToolExecutor(_MappedAgentStub(tools))
+
+    results = executor.execute_parallel(
+        [
+            ToolCall(id="read-before", name="read_before", arguments={}),
+            ToolCall(id="write-first", name="write_first", arguments={}),
+            ToolCall(id="write-second", name="write_second", arguments={}),
+            ToolCall(id="read-after", name="read_after", arguments={}),
+        ]
+    )
+
+    assert results == ["before", "first", "second", "second"]
+    assert state["max_writers"] == 1
+
+
+def test_builtin_workspace_readers_opt_into_parallel_execution() -> None:
+    assert ReadFileTool.parallel_safe is True
+    assert GlobTool.parallel_safe is True
+    assert GrepTool.parallel_safe is True
+    assert ListFileTool.parallel_safe is True
+    assert EditFileTool.parallel_safe is False
+    assert WriteFileTool.parallel_safe is False
+    assert ShellTool.parallel_safe is False

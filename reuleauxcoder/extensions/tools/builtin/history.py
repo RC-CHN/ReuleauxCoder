@@ -22,6 +22,7 @@ from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
 class _HistoryTool(Tool):
     effect_class = "read_only_internal"
+    parallel_safe = True
 
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
