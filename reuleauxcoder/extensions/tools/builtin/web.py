@@ -22,6 +22,11 @@ from typing import Any, TypeVar
 
 import httpx
 
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
@@ -53,6 +58,62 @@ class _ResponseTooLarge(ValueError):
 
 class _WebRequestCancelled(Exception):
     """Raised after the active HTTP task has acknowledged cancellation."""
+
+
+def _success(
+    summary: str,
+    content: str,
+    **metadata: object,
+) -> ToolOutcome:
+    return ToolOutcome(
+        status=ToolOutcomeStatus.SUCCEEDED,
+        summary=summary,
+        content=content,
+        metadata=metadata,
+    )
+
+
+def _failure(
+    summary: str,
+    content: str,
+    *,
+    code: str,
+    status: ToolOutcomeStatus = ToolOutcomeStatus.FAILED,
+    error_kind: ToolErrorKind = ToolErrorKind.EXECUTION,
+    **metadata: object,
+) -> ToolOutcome:
+    return ToolOutcome(
+        status=status,
+        summary=summary,
+        content=content,
+        error_kind=error_kind,
+        metadata={"web_error_code": code, **metadata},
+    )
+
+
+def _safe_http_error(error: httpx.HTTPError, *, timeout: float) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        response = error.response
+        phrase = response.reason_phrase.strip()
+        suffix = f" {phrase}" if phrase else ""
+        return f"HTTP {response.status_code}{suffix}"
+    if isinstance(error, httpx.TimeoutException):
+        return f"timed out after {timeout:g}s"
+    return f"network transport failed ({type(error).__name__})"
+
+
+def _safe_provider_error(error: Exception) -> str:
+    if isinstance(error, _ResponseTooLarge):
+        return "response exceeded the 2 MiB limit"
+    if isinstance(error, httpx.HTTPError):
+        return _safe_http_error(error, timeout=_SEARCH_TIMEOUT)
+    if isinstance(error, json.JSONDecodeError):
+        return "provider returned invalid JSON"
+    if isinstance(error, ValueError):
+        return "provider returned an invalid response"
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+        return f"timed out after {_SEARCH_TIMEOUT:g}s"
+    return f"provider request failed ({type(error).__name__})"
 
 
 async def _run_interruptible(
@@ -341,12 +402,10 @@ async def _search_exa(
     client: httpx.AsyncClient, query: str, num_results: int
 ) -> list[_SearchHit]:
     api_key = os.environ.get("EXA_API_KEY", "").strip()
-    url = _EXA_MCP_URL
-    if api_key:
-        url = f"{url}?exaApiKey={api_key}"
     request = client.stream(
         "POST",
-        url,
+        _EXA_MCP_URL,
+        params={"exaApiKey": api_key} if api_key else None,
         json={
             "jsonrpc": "2.0",
             "id": 1,
@@ -484,12 +543,16 @@ class WebFetchTool(Tool):
         url: str,
         format: str = "markdown",
         timeout: float | None = None,
-    ) -> str:
+    ) -> ToolOutcome:
         enabled, _ = _web_settings(self)
         if not enabled:
-            return (
+            return _failure(
+                "Web access disabled",
                 "Web access is disabled by configuration (web_enabled=false); "
-                "ask the user to enable it before retrying."
+                "ask the user to enable it before retrying.",
+                code="disabled",
+                status=ToolOutcomeStatus.DENIED,
+                error_kind=ToolErrorKind.DENIED,
             )
         seconds = min(
             max(float(timeout), 1.0) if timeout is not None else _DEFAULT_FETCH_TIMEOUT,
@@ -515,13 +578,36 @@ class WebFetchTool(Tool):
                 )
             )
         except _WebRequestCancelled:
-            return f"Fetch cancelled for {url}"
+            return _failure(
+                "Web fetch cancelled",
+                "Web fetch was cancelled before completion.",
+                code="cancelled",
+                status=ToolOutcomeStatus.CANCELLED,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
         except (TimeoutError, asyncio.TimeoutError):
-            return f"Fetch timed out after {seconds:.0f}s for {url}"
+            return _failure(
+                "Web fetch timed out",
+                f"Web fetch timed out after {seconds:g}s.",
+                code="timeout",
+                status=ToolOutcomeStatus.TIMED_OUT,
+                error_kind=ToolErrorKind.INTERRUPTED,
+                timeout_seconds=seconds,
+            )
         except _ResponseTooLarge:
-            return f"Fetch rejected for {url}: response exceeds the 5 MiB limit"
+            return _failure(
+                "Web response too large",
+                "Web fetch stopped because the response exceeds the 5 MiB limit.",
+                code="response_too_large",
+                limit_bytes=_MAX_RESPONSE_BYTES,
+            )
         except httpx.TransportError as error:
-            return f"Fetch failed for {url}: {error}"
+            return _failure(
+                "Web fetch failed",
+                f"Web fetch failed: {_safe_http_error(error, timeout=seconds)}.",
+                code="transport_error",
+                transport_error=type(error).__name__,
+            )
 
     async def _execute_async(
         self,
@@ -529,7 +615,7 @@ class WebFetchTool(Tool):
         format: str,
         seconds: float,
         headers: dict[str, str],
-    ) -> str:
+    ) -> ToolOutcome:
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=seconds,
@@ -554,20 +640,34 @@ class WebFetchTool(Tool):
                 )
 
         if status_code >= 400:
-            return f"Fetch failed for {url}: HTTP {status_code}"
+            return _failure(
+                "Web fetch failed",
+                f"Web fetch failed: HTTP {status_code}.",
+                code="http_status",
+                http_status=status_code,
+            )
 
         content_type = response_headers.get("content-type", "").split(";")[0].strip()
         if content_type.startswith("image/"):
-            return (
-                f"Fetched {url}: image ({content_type}, {len(body)} bytes). "
-                "Image content is not rendered as text."
+            return _success(
+                "Fetched image metadata",
+                f"Fetched an image ({content_type}, {len(body)} bytes). "
+                "Image content is not rendered as text.",
+                content_type=content_type,
+                size_bytes=len(body),
             )
         text = body.decode(encoding or "utf-8", errors="replace")
         if format == "html" or not content_type.startswith("text/html"):
-            return text
-        if format == "text":
-            return _html_to_markdown(text)  # tag-free extraction
-        return _html_to_markdown(text)
+            content = text
+        else:
+            content = _html_to_markdown(text)
+        return _success(
+            "Fetched web content",
+            content,
+            content_type=content_type or "unknown",
+            size_bytes=len(body),
+            format=format,
+        )
 
     @staticmethod
     async def _fetch_once(
@@ -634,12 +734,16 @@ class WebSearchTool(Tool):
 
     def execute(  # type: ignore[override]
         self, query: str, num_results: int = 8
-    ) -> str:
+    ) -> ToolOutcome:
         enabled, preference = _web_settings(self)
         if not enabled:
-            return (
+            return _failure(
+                "Web access disabled",
                 "Web access is disabled by configuration (web_enabled=false); "
-                "ask the user to enable it before retrying."
+                "ask the user to enable it before retrying.",
+                code="disabled",
+                status=ToolOutcomeStatus.DENIED,
+                error_kind=ToolErrorKind.DENIED,
             )
         providers = _provider_order(preference)
         try:
@@ -651,12 +755,18 @@ class WebSearchTool(Tool):
                 )
             )
         except _WebRequestCancelled:
-            return f"Web search cancelled for {query!r}"
+            return _failure(
+                "Web search cancelled",
+                "Web search was cancelled before completion.",
+                code="cancelled",
+                status=ToolOutcomeStatus.CANCELLED,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
 
     @staticmethod
     async def _execute_async(
         query: str, num_results: int, providers: list[str]
-    ) -> str:
+    ) -> ToolOutcome:
         searchers = {"exa": _search_exa, "parallel": _search_parallel}
         errors: list[str] = []
         async with httpx.AsyncClient() as client:
@@ -673,8 +783,22 @@ class WebSearchTool(Tool):
                     ValueError,
                     json.JSONDecodeError,
                 ) as error:
-                    errors.append(f"{provider}: {error}")
+                    errors.append(f"{provider}: {_safe_provider_error(error)}")
                     continue
-                return _format_hits(hits, provider, query)
+                return _success(
+                    (
+                        f"Found {len(hits)} web search result(s)"
+                        if hits
+                        else "No web search results"
+                    ),
+                    _format_hits(hits, provider, query),
+                    provider=provider,
+                    result_count=len(hits),
+                )
         detail = "; ".join(errors) if errors else "no providers available"
-        return f"Web search failed for {query!r}: {detail}"
+        return _failure(
+            "Web search failed",
+            f"Web search failed after provider attempts: {detail}.",
+            code="providers_failed",
+            provider_errors=tuple(errors),
+        )

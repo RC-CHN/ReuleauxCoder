@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from typing import Any
 import httpx
 import pytest
 
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcomeStatus
 from reuleauxcoder.extensions.tools.builtin import builtin_tool_types
 from reuleauxcoder.extensions.tools.builtin import web
 from reuleauxcoder.extensions.tools.builtin.web import (
@@ -43,6 +45,7 @@ class _FakeResponse:
         self.encoding = encoding
         self.chunks = chunks
         self.chunks_yielded = 0
+        self.request: httpx.Request | None = None
 
     @property
     def text(self) -> str:
@@ -52,7 +55,8 @@ class _FakeResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise httpx.HTTPError(f"HTTP {self.status_code}")
+            request = self.request or httpx.Request("GET", "https://example.invalid")
+            httpx.Response(self.status_code, request=request).raise_for_status()
 
     async def aiter_bytes(self, chunk_size: int | None = None):
         del chunk_size
@@ -73,7 +77,13 @@ class _FakeStream:
         self._kwargs = kwargs
 
     async def __aenter__(self) -> _FakeResponse:
-        return self._handler(self._method, self._url, **self._kwargs)
+        response = self._handler(self._method, self._url, **self._kwargs)
+        response.request = httpx.Request(
+            self._method,
+            self._url,
+            params=self._kwargs.get("params"),
+        )
+        return response
 
     async def __aexit__(self, *args: Any) -> bool:
         return False
@@ -136,8 +146,12 @@ def test_approval_subjects_expose_url_and_query() -> None:
 def test_web_disabled_returns_guidance() -> None:
     fetch = _tool_with_config(WebFetchTool(), web_enabled=False)
     search = _tool_with_config(WebSearchTool(), web_enabled=False)
-    assert "disabled" in fetch.execute("https://example.com")
-    assert "disabled" in search.execute("anything")
+    fetch_outcome = fetch.execute("https://example.com")
+    search_outcome = search.execute("anything")
+    assert fetch_outcome.status is ToolOutcomeStatus.DENIED
+    assert search_outcome.status is ToolOutcomeStatus.DENIED
+    assert "disabled" in fetch_outcome.model_text
+    assert "disabled" in search_outcome.model_text
 
 
 def test_fetch_converts_html_to_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,10 +167,11 @@ def test_fetch_converts_html_to_markdown(monkeypatch: pytest.MonkeyPatch) -> Non
 
     _patch_client(monkeypatch, handler)
     output = WebFetchTool().execute("https://example.com")
-    assert "# Title" in output
-    assert "Hello world" in output
-    assert "[link](https://a.dev)" in output
-    assert "var x=1" not in output
+    assert output.status is ToolOutcomeStatus.SUCCEEDED
+    assert "# Title" in output.model_text
+    assert "Hello world" in output.model_text
+    assert "[link](https://a.dev)" in output.model_text
+    assert "var x=1" not in output.model_text
 
 
 def test_fetch_rejects_oversized_responses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,7 +185,9 @@ def test_fetch_rejects_oversized_responses(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
     _patch_client(monkeypatch, handler)
-    assert "5 MiB" in WebFetchTool().execute("https://example.com/big")
+    outcome = WebFetchTool().execute("https://example.com/big")
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert "5 MiB" in outcome.model_text
 
 
 def test_fetch_stops_streaming_as_soon_as_body_exceeds_limit(
@@ -189,7 +206,9 @@ def test_fetch_stops_streaming_as_soon_as_body_exceeds_limit(
         return response
 
     _patch_client(monkeypatch, handler)
-    assert "5 MiB" in WebFetchTool().execute("https://example.com/chunked")
+    outcome = WebFetchTool().execute("https://example.com/chunked")
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert "5 MiB" in outcome.model_text
     assert response.chunks_yielded == 2
 
 
@@ -225,7 +244,8 @@ def test_fetch_cancellation_closes_the_active_request_promptly(
     with tool.execution_scope(cancellation):
         output = tool.execute("https://example.com/slow")
 
-    assert "cancelled" in output
+    assert output.status is ToolOutcomeStatus.CANCELLED
+    assert "cancelled" in output.model_text
     assert time.monotonic() - started_at < 1
     assert cancelled.wait(timeout=1)
 
@@ -235,7 +255,9 @@ def test_fetch_reports_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
         return _FakeResponse(status_code=404, content=b"nope")
 
     _patch_client(monkeypatch, handler)
-    assert "HTTP 404" in WebFetchTool().execute("https://example.com/missing")
+    outcome = WebFetchTool().execute("https://example.com/missing")
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert "HTTP 404" in outcome.model_text
 
 
 def test_fetch_retries_cloudflare_challenge_with_honest_ua(
@@ -254,7 +276,9 @@ def test_fetch_retries_cloudflare_challenge_with_honest_ua(
         return _FakeResponse(headers={"content-type": "text/plain"}, content=b"ok")
 
     _patch_client(monkeypatch, handler)
-    assert WebFetchTool().execute("https://example.com") == "ok"
+    outcome = WebFetchTool().execute("https://example.com")
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.model_text == "ok"
     assert seen_agents[1] == web._HONEST_USER_AGENT
 
 
@@ -329,11 +353,12 @@ def test_search_unifies_format_and_fails_over(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(web, "_search_parallel", fine_parallel)
     _patch_client(monkeypatch, lambda *a, **k: None)
     output = WebSearchTool().execute("query")
-    assert "provider: parallel" in output
-    assert "1. Doc" in output
-    assert "URL: https://a.dev" in output
-    assert "Published: 2026" in output
-    assert "> x" in output
+    assert output.status is ToolOutcomeStatus.SUCCEEDED
+    assert "provider: parallel" in output.model_text
+    assert "1. Doc" in output.model_text
+    assert "URL: https://a.dev" in output.model_text
+    assert "Published: 2026" in output.model_text
+    assert "> x" in output.model_text
 
 
 def test_search_reports_when_all_providers_fail(
@@ -346,8 +371,32 @@ def test_search_reports_when_all_providers_fail(
     monkeypatch.setattr(web, "_search_parallel", broken)
     _patch_client(monkeypatch, lambda *a, **k: None)
     output = WebSearchTool().execute("query")
-    assert "Web search failed" in output
-    assert "down" in output
+    assert output.status is ToolOutcomeStatus.FAILED
+    assert "Web search failed" in output.model_text
+    assert "TransportError" in output.model_text
+    assert "down" not in output.model_text
+
+
+def test_search_never_exposes_exa_key_from_http_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_key = "secret-demo-key"
+    seen_params: list[dict[str, str] | None] = []
+
+    def handler(method: str, url: str, **kwargs: Any) -> _FakeResponse:
+        seen_params.append(kwargs.get("params"))
+        return _FakeResponse(status_code=401)
+
+    monkeypatch.setenv("EXA_API_KEY", api_key)
+    _patch_client(monkeypatch, handler)
+    tool = _tool_with_config(WebSearchTool(), web_search_provider="exa")
+    outcome = tool.execute("query")
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert seen_params == [{"exaApiKey": api_key}]
+    rendered = outcome.model_text + json.dumps(outcome.metadata)
+    assert api_key not in rendered
+    assert "HTTP 401" in rendered
 
 
 def test_search_cancellation_stops_provider_failover_promptly(
@@ -377,7 +426,8 @@ def test_search_cancellation_stops_provider_failover_promptly(
     with tool.execution_scope(cancellation):
         output = tool.execute("query")
 
-    assert "cancelled" in output
+    assert output.status is ToolOutcomeStatus.CANCELLED
+    assert "cancelled" in output.model_text
     assert time.monotonic() - started_at < 1
     assert cancelled.wait(timeout=1)
 
@@ -398,4 +448,5 @@ def test_search_calls_selected_provider(monkeypatch: pytest.MonkeyPatch) -> None
     tool = _tool_with_config(WebSearchTool(), web_search_provider="parallel")
     output = tool.execute("query")
     assert calls == [web._PARALLEL_MCP_URL]
-    assert "provider: parallel" in output
+    assert output.status is ToolOutcomeStatus.SUCCEEDED
+    assert "provider: parallel" in output.model_text
