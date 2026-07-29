@@ -5,7 +5,7 @@
 终端原生 AI 编程助手，提供 FORGE 风格 CLI、隔离的 subagent、审批、会话、
 MCP、skills、LSP 与轻量远端执行 peer。
 
-v0.6.0 CLI 使用 prompt_toolkit mini-TUI，提供常驻执行面板、可滚动 transcript
+v0.6.1 CLI 使用 prompt_toolkit mini-TUI，提供常驻执行面板、可滚动 transcript
 和集中审批/输入区域。它与未来完整 TUI 共用框架无关的 presentation state；
 当前仍未发布 Textual 完整 TUI。
 
@@ -20,13 +20,13 @@ v0.6.0 CLI 使用 prompt_toolkit mini-TUI，提供常驻执行面板、可滚动
 先安装 [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/)，再用 release 中的 wheel 进行全局安装：
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.0/reuleauxcoder-0.6.0-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.1/reuleauxcoder-0.6.1-py3-none-any.whl
 ```
 
-或者使用 [`uv`](https://docs.astral.sh/uv/)（v0.6.0+）：
+或者使用 [`uv`](https://docs.astral.sh/uv/)（v0.6.1+）：
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.0/reuleauxcoder-0.6.0-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.1/reuleauxcoder-0.6.1-py3-none-any.whl
 ```
 
 安装完成后，`rcoder` 命令在任意目录下都可以直接使用：

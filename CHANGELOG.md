@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-07-29
+
+- Serialized side-effecting tool calls and added revision-aware, verified workspace mutation receipts so local and remote edits report external changes, conflicts and uncertain outcomes instead of silently losing them.
+- Applied queued user steering at interrupt boundaries with explicit per-call interruption policies, while relaying active-chat controls through remote peers.
+- Made in-flight MCP cancellation prompt and quarantined late results without unsafe retries.
+- Fixed the verified-edit regression coverage to preserve both LF and CRLF content consistently across Linux and Windows.
+
 ## 0.6.0 - 2026-07-28
 
 - Added session-owned resumable shell processes with independent initial-yield and hard-runtime deadlines, plus `shell_session` polling, TTY input, soft interrupt and process-tree termination.
