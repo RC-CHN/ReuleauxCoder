@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.2 - 2026-07-29
+
+- Added `web_fetch` and `web_search` network tools with warn-level approval and per-URL/query grants, a `web` config section, HTML-to-Markdown retrieval with size and timeout caps, and unified dual-provider search (Exa/Parallel) with per-call rotation, failover and optional API-key overrides.
+- Hardened the web tools with bounded streamed responses, cancellable in-flight calls, credential-safe failure reporting, and strict redirect/provider parsing.
+
 ## 0.6.1 - 2026-07-29
 
 - Serialized side-effecting tool calls and added revision-aware, verified workspace mutation receipts so local and remote edits report external changes, conflicts and uncertain outcomes instead of silently losing them.
