@@ -297,12 +297,16 @@ def test_successful_replace_with_unreadable_post_state_is_unknown(
     assert path.read_text() == "new"
 
 
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
 def test_exact_edit_retries_against_latest_external_contents(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, line_ending: str
 ) -> None:
     workspace = LocalWorkspacePort(tmp_path)
     path = tmp_path / "file.txt"
-    path.write_text("old\n")
+    original = f"old{line_ending}"
+    external = f"old{line_ending}external{line_ending}"
+    updated = f"new{line_ending}external{line_ending}"
+    path.write_bytes(original.encode("utf-8"))
     approved = workspace.snapshot_text(path).revision
     original_snapshot = workspace.snapshot_text
     calls = 0
@@ -311,7 +315,7 @@ def test_exact_edit_retries_against_latest_external_contents(
         nonlocal calls
         calls += 1
         if calls == 2:
-            path.write_text("old\nexternal\n")
+            path.write_bytes(external.encode("utf-8"))
         return original_snapshot(current_path)
 
     monkeypatch.setattr(workspace, "snapshot_text", snapshot)
@@ -323,14 +327,14 @@ def test_exact_edit_retries_against_latest_external_contents(
         expected_revision=approved,
     )
 
-    assert result.old_content == "old\nexternal\n"
-    assert result.new_content == "new\nexternal\n"
+    assert result.old_content == external
+    assert result.new_content == updated
     assert result.receipt.external_change_before_write is True
     assert (
         result.receipt.verification
         is WorkspaceMutationVerification.APPLIED_VERIFIED
     )
-    assert path.read_text() == "new\nexternal\n"
+    assert path.read_bytes() == updated.encode("utf-8")
 
 
 def test_structured_list_is_recursive_bounded_and_hides_dotfiles(
