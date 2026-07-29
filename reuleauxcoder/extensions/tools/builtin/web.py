@@ -11,17 +11,20 @@ rate limits; the free tier works without them.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
+from contextlib import suppress
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 import json
 import os
 import threading
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
 
 _FETCH_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -31,6 +34,7 @@ _HONEST_USER_AGENT = "reuleauxcoder-web/0.1"
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 _MAX_SEARCH_RESPONSE_BYTES = 2 * 1024 * 1024
 _RESPONSE_CHUNK_BYTES = 64 * 1024
+_CANCELLATION_POLL_SECONDS = 0.05
 _DEFAULT_FETCH_TIMEOUT = 30.0
 _MAX_FETCH_TIMEOUT = 120.0
 _SEARCH_TIMEOUT = 25.0
@@ -40,10 +44,54 @@ _PROVIDERS = ("exa", "parallel")
 
 _rotation_lock = threading.Lock()
 _rotation_counter = 0
+_T = TypeVar("_T")
 
 
 class _ResponseTooLarge(ValueError):
     """Raised as soon as a streamed response crosses its decoded-byte limit."""
+
+
+class _WebRequestCancelled(Exception):
+    """Raised after the active HTTP task has acknowledged cancellation."""
+
+
+async def _run_interruptible(
+    coroutine: Coroutine[Any, Any, _T],
+    *,
+    cancellation: CancellationSignal | None,
+    timeout: float | None,
+) -> _T:
+    task = asyncio.create_task(coroutine)
+    loop = asyncio.get_running_loop()
+    deadline = None if timeout is None else loop.time() + timeout
+    try:
+        while True:
+            if task.done():
+                return task.result()
+            if cancellation is not None and cancellation.is_set():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                raise _WebRequestCancelled
+
+            wait_seconds = _CANCELLATION_POLL_SECONDS
+            if deadline is not None:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+                    raise TimeoutError
+                wait_seconds = min(wait_seconds, remaining)
+
+            done, _ = await asyncio.wait({task}, timeout=wait_seconds)
+            if task in done:
+                return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 async def _read_limited_body(
@@ -385,6 +433,7 @@ def _format_hits(hits: list[_SearchHit], provider: str, query: str) -> str:
 class WebFetchTool(Tool):
     effect_class = "network_read"
     parallel_safe = True
+    interrupt_mode = InterruptMode.CANCEL_WITH_PARTIAL
 
     name = "web_fetch"
     description = (
@@ -459,11 +508,14 @@ class WebFetchTool(Tool):
         }
         try:
             return asyncio.run(
-                asyncio.wait_for(
+                _run_interruptible(
                     self._execute_async(url, format, seconds, headers),
+                    cancellation=self.current_cancellation_signal(),
                     timeout=seconds,
                 )
             )
+        except _WebRequestCancelled:
+            return f"Fetch cancelled for {url}"
         except (TimeoutError, asyncio.TimeoutError):
             return f"Fetch timed out after {seconds:.0f}s for {url}"
         except _ResponseTooLarge:
@@ -544,6 +596,7 @@ class WebFetchTool(Tool):
 class WebSearchTool(Tool):
     effect_class = "network_read"
     parallel_safe = True
+    interrupt_mode = InterruptMode.CANCEL_WITH_PARTIAL
 
     name = "web_search"
     description = (
@@ -588,11 +641,22 @@ class WebSearchTool(Tool):
                 "Web access is disabled by configuration (web_enabled=false); "
                 "ask the user to enable it before retrying."
             )
-        return asyncio.run(self._execute_async(query, num_results, preference))
+        providers = _provider_order(preference)
+        try:
+            return asyncio.run(
+                _run_interruptible(
+                    self._execute_async(query, num_results, providers),
+                    cancellation=self.current_cancellation_signal(),
+                    timeout=None,
+                )
+            )
+        except _WebRequestCancelled:
+            return f"Web search cancelled for {query!r}"
 
     @staticmethod
-    async def _execute_async(query: str, num_results: int, preference: str) -> str:
-        providers = _provider_order(preference)
+    async def _execute_async(
+        query: str, num_results: int, providers: list[str]
+    ) -> str:
         searchers = {"exa": _search_exa, "parallel": _search_parallel}
         errors: list[str] = []
         async with httpx.AsyncClient() as client:

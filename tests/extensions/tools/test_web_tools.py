@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -190,6 +193,43 @@ def test_fetch_stops_streaming_as_soon_as_body_exceeds_limit(
     assert response.chunks_yielded == 2
 
 
+def test_fetch_cancellation_closes_the_active_request_promptly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation = threading.Event()
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    class _BlockingResponse(_FakeResponse):
+        async def aiter_bytes(self, chunk_size: int | None = None):
+            del chunk_size
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            yield b""  # pragma: no cover - keeps this an async generator
+
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        return _BlockingResponse(headers={"content-type": "text/plain"})
+
+    def cancel_soon() -> None:
+        assert started.wait(timeout=1)
+        cancellation.set()
+
+    _patch_client(monkeypatch, handler)
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    tool = WebFetchTool()
+    started_at = time.monotonic()
+    with tool.execution_scope(cancellation):
+        output = tool.execute("https://example.com/slow")
+
+    assert "cancelled" in output
+    assert time.monotonic() - started_at < 1
+    assert cancelled.wait(timeout=1)
+
+
 def test_fetch_reports_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(method: str, url: str, **_: Any) -> _FakeResponse:
         return _FakeResponse(status_code=404, content=b"nope")
@@ -308,6 +348,38 @@ def test_search_reports_when_all_providers_fail(
     output = WebSearchTool().execute("query")
     assert "Web search failed" in output
     assert "down" in output
+
+
+def test_search_cancellation_stops_provider_failover_promptly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation = threading.Event()
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    async def blocking_search(client: Any, query: str, num_results: int):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    def cancel_soon() -> None:
+        assert started.wait(timeout=1)
+        cancellation.set()
+
+    monkeypatch.setattr(web, "_search_exa", blocking_search)
+    _patch_client(monkeypatch, lambda *a, **k: None)
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    tool = _tool_with_config(WebSearchTool(), web_search_provider="exa")
+    started_at = time.monotonic()
+    with tool.execution_scope(cancellation):
+        output = tool.execute("query")
+
+    assert "cancelled" in output
+    assert time.monotonic() - started_at < 1
+    assert cancelled.wait(timeout=1)
 
 
 def test_search_calls_selected_provider(monkeypatch: pytest.MonkeyPatch) -> None:
