@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from collections.abc import Iterator
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -14,10 +15,15 @@ from fnmatch import translate as fnmatch_translate
 
 from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
+    WorkspaceDocumentSnapshot,
     WorkspaceError,
     WorkspaceErrorCode,
     WorkspaceGlobResult,
     WorkspaceListResult,
+    WorkspaceMutationReceipt,
+    WorkspaceMutationResult,
+    WorkspaceMutationVerification,
+    WorkspaceRevision,
     WorkspaceSearchMatch,
     WorkspaceSearchResult,
     compile_portable_glob,
@@ -109,6 +115,42 @@ class LocalWorkspacePort:
                 WorkspaceErrorCode.IO_ERROR, f"failed to read {path}: {error}"
             ) from error
 
+    def snapshot_text(self, path: str | Path) -> WorkspaceDocumentSnapshot:
+        """Read text and a raw-byte revision from one backend observation."""
+        resolved = self.resolve(path)
+        try:
+            data = resolved.read_bytes()
+            metadata = resolved.stat()
+        except FileNotFoundError:
+            return WorkspaceDocumentSnapshot(
+                resolved_path=str(resolved),
+                content=None,
+                revision=WorkspaceRevision(
+                    exists=False,
+                    sha256=None,
+                    size_bytes=0,
+                    mtime_ns=None,
+                ),
+            )
+        except IsADirectoryError as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.NOT_A_FILE, f"{path} is not a file"
+            ) from error
+        except OSError as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR, f"failed to read {path}: {error}"
+            ) from error
+        return WorkspaceDocumentSnapshot(
+            resolved_path=str(resolved),
+            content=data.decode("utf-8", errors="replace"),
+            revision=WorkspaceRevision(
+                exists=True,
+                sha256=hashlib.sha256(data).hexdigest(),
+                size_bytes=len(data),
+                mtime_ns=metadata.st_mtime_ns,
+            ),
+        )
+
     def stat_entry(self, path: str | Path) -> WorkspaceEntry:
         resolved = self.resolve(path)
         if not resolved.exists():
@@ -121,42 +163,115 @@ class LocalWorkspacePort:
             ) from error
 
     def write_text_atomic(self, path: str | Path, content: str) -> str:
+        result = self.write_text_verified(path, content)
+        return result.old_content or ""
+
+    def write_text_verified(
+        self,
+        path: str | Path,
+        content: str,
+        *,
+        expected_revision: WorkspaceRevision | None = None,
+    ) -> WorkspaceMutationResult:
+        return self._write_text_verified(
+            path,
+            content,
+            expected_revision=expected_revision,
+            required_base_revision=None,
+        )
+
+    def _write_text_verified(
+        self,
+        path: str | Path,
+        content: str,
+        *,
+        expected_revision: WorkspaceRevision | None,
+        required_base_revision: WorkspaceRevision | None,
+    ) -> WorkspaceMutationResult:
         if not isinstance(content, str):
             raise WorkspaceError(
                 WorkspaceErrorCode.INVALID_PATH, "content must be a string"
             )
         resolved = self.resolve(path)
-        old = self.read_text(resolved) if resolved.exists() else ""
+        before = self.snapshot_text(resolved)
+        if required_base_revision is not None and not before.revision.same_content(
+            required_base_revision
+        ):
+            raise WorkspaceError(
+                WorkspaceErrorCode.REVISION_CONFLICT,
+                f"{path} changed before the prepared edit could be committed",
+            )
+        encoded = content.encode("utf-8")
+        intended_sha256 = hashlib.sha256(encoded).hexdigest()
+        temporary: str | None = None
+        atomic_replace = False
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             fd, temporary = tempfile.mkstemp(
                 prefix=f".{resolved.name}.", dir=resolved.parent
             )
             try:
-                with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
-                    stream.write(content)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(encoded)
                     stream.flush()
                     os.fsync(stream.fileno())
                 if resolved.exists():
                     os.chmod(temporary, resolved.stat().st_mode)
                 os.replace(temporary, resolved)
+                atomic_replace = True
+                temporary = None
             except BaseException:
-                try:
-                    os.unlink(temporary)
-                except FileNotFoundError:
-                    pass
                 raise
         except WorkspaceError:
             raise
         except OSError as error:
+            self._unlink_temporary(temporary)
+            receipt = self._mutation_receipt(
+                resolved=resolved,
+                before=before.revision,
+                intended_sha256=intended_sha256,
+                intended_size=len(encoded),
+                expected_revision=expected_revision,
+                atomic_replace=atomic_replace,
+                write_failed=True,
+            )
             raise WorkspaceError(
-                WorkspaceErrorCode.IO_ERROR, f"failed to write {path}: {error}"
+                WorkspaceErrorCode.IO_ERROR,
+                f"failed to write {path}: {error}",
+                mutation_receipt=receipt,
             ) from error
-        return old
+        finally:
+            self._unlink_temporary(temporary)
+
+        receipt = self._mutation_receipt(
+            resolved=resolved,
+            before=before.revision,
+            intended_sha256=intended_sha256,
+            intended_size=len(encoded),
+            expected_revision=expected_revision,
+            atomic_replace=atomic_replace,
+            write_failed=False,
+        )
+        return WorkspaceMutationResult(
+            old_content=before.content,
+            new_content=content,
+            receipt=receipt,
+        )
 
     def replace_exact_atomic(
         self, path: str | Path, old: str, new: str
     ) -> tuple[str, str]:
+        result = self.replace_exact_verified(path, old, new)
+        return result.old_content or "", result.new_content
+
+    def replace_exact_verified(
+        self,
+        path: str | Path,
+        old: str,
+        new: str,
+        *,
+        expected_revision: WorkspaceRevision | None = None,
+    ) -> WorkspaceMutationResult:
         if not isinstance(old, str) or not isinstance(new, str):
             raise WorkspaceError(
                 WorkspaceErrorCode.INVALID_PATH,
@@ -166,18 +281,95 @@ class LocalWorkspacePort:
             raise WorkspaceError(
                 WorkspaceErrorCode.INVALID_PATH, "old and new values must differ"
             )
-        content = self.read_text(path)
-        occurrences = content.count(old)
-        if occurrences == 0:
-            raise WorkspaceError(WorkspaceErrorCode.NOT_FOUND, "old text was not found")
-        if occurrences > 1:
-            raise WorkspaceError(
-                WorkspaceErrorCode.NOT_UNIQUE,
-                f"old text occurs {occurrences} times",
+        for _attempt in range(3):
+            snapshot = self.snapshot_text(path)
+            if snapshot.content is None:
+                raise WorkspaceError(
+                    WorkspaceErrorCode.NOT_FOUND, f"{path} not found"
+                )
+            occurrences = snapshot.content.count(old)
+            if occurrences == 0:
+                raise WorkspaceError(
+                    WorkspaceErrorCode.NOT_FOUND, "old text was not found"
+                )
+            if occurrences > 1:
+                raise WorkspaceError(
+                    WorkspaceErrorCode.NOT_UNIQUE,
+                    f"old text occurs {occurrences} times",
+                )
+            updated = snapshot.content.replace(old, new, 1)
+            try:
+                return self._write_text_verified(
+                    path,
+                    updated,
+                    expected_revision=expected_revision,
+                    required_base_revision=snapshot.revision,
+                )
+            except WorkspaceError as error:
+                if error.code is not WorkspaceErrorCode.REVISION_CONFLICT:
+                    raise
+        raise WorkspaceError(
+            WorkspaceErrorCode.REVISION_CONFLICT,
+            f"{path} kept changing while the edit was being prepared",
+        )
+
+    @staticmethod
+    def _unlink_temporary(temporary: str | None) -> None:
+        if temporary is None:
+            return
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # The primary write result is more useful than a cleanup failure.
+            pass
+
+    def _mutation_receipt(
+        self,
+        *,
+        resolved: Path,
+        before: WorkspaceRevision,
+        intended_sha256: str,
+        intended_size: int,
+        expected_revision: WorkspaceRevision | None,
+        atomic_replace: bool,
+        write_failed: bool,
+    ) -> WorkspaceMutationReceipt:
+        try:
+            observed = self.snapshot_text(resolved).revision
+        except (WorkspaceError, OSError):
+            observed = None
+
+        if observed is None:
+            verification = WorkspaceMutationVerification.UNKNOWN
+        else:
+            intended = WorkspaceRevision(
+                exists=True,
+                sha256=intended_sha256,
+                size_bytes=intended_size,
             )
-        updated = content.replace(old, new, 1)
-        self.write_text_atomic(path, updated)
-        return content, updated
+            if observed.same_content(intended):
+                verification = WorkspaceMutationVerification.APPLIED_VERIFIED
+            elif write_failed and observed.same_content(before):
+                verification = WorkspaceMutationVerification.FAILED_UNCHANGED
+            else:
+                verification = WorkspaceMutationVerification.DIVERGED
+
+        return WorkspaceMutationReceipt(
+            resolved_path=str(resolved),
+            before=before,
+            intended_after_sha256=intended_sha256,
+            intended_size_bytes=intended_size,
+            observed_after=observed,
+            atomic_replace=atomic_replace,
+            verification=verification,
+            expected_before=expected_revision,
+            external_change_before_write=(
+                expected_revision is not None
+                and not expected_revision.same_content(before)
+            ),
+        )
 
     def list_entries(
         self,

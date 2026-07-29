@@ -8,6 +8,8 @@ import pytest
 from reuleauxcoder.domain.workspace import (
     WorkspaceError,
     WorkspaceErrorCode,
+    WorkspaceMutationReceipt,
+    WorkspaceMutationVerification,
     glob_paths_via_primitives,
     search_text_via_primitives,
 )
@@ -124,6 +126,178 @@ def test_exact_replace_is_atomic_and_requires_unique_match(tmp_path: Path) -> No
         workspace.replace_exact_atomic("file.txt", "x", "y")
     assert duplicate.value.code is WorkspaceErrorCode.NOT_UNIQUE
     assert path.read_text() == "x x"
+
+
+def test_snapshot_revision_distinguishes_missing_empty_and_raw_bytes(
+    tmp_path: Path,
+) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    missing = workspace.snapshot_text("missing.txt")
+    path = tmp_path / "file.txt"
+    path.write_bytes(b"")
+    empty = workspace.snapshot_text(path)
+    path.write_bytes(b"\xff")
+    first_invalid = workspace.snapshot_text(path)
+    path.write_bytes(b"\xfe")
+    second_invalid = workspace.snapshot_text(path)
+
+    assert missing.content is None
+    assert missing.revision.exists is False
+    assert missing.revision.sha256 is None
+    assert empty.content == ""
+    assert empty.revision.exists is True
+    assert empty.revision.size_bytes == 0
+    assert empty.revision.sha256 is not None
+    assert first_invalid.content == second_invalid.content == "\ufffd"
+    assert not first_invalid.revision.same_content(second_invalid.revision)
+
+
+def test_verified_write_reports_external_base_and_observed_result(
+    tmp_path: Path,
+) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_text("approved")
+    approved = workspace.snapshot_text(path).revision
+    path.write_text("changed by editor")
+
+    result = workspace.write_text_verified(
+        path,
+        "intended",
+        expected_revision=approved,
+    )
+
+    assert result.old_content == "changed by editor"
+    assert result.new_content == "intended"
+    assert result.receipt.external_change_before_write is True
+    assert (
+        result.receipt.verification
+        is WorkspaceMutationVerification.APPLIED_VERIFIED
+    )
+    assert result.receipt.atomic_replace is True
+    assert result.receipt.observed_after is not None
+    assert (
+        result.receipt.observed_after.sha256
+        == result.receipt.intended_after_sha256
+    )
+    assert path.read_text() == "intended"
+    assert (
+        WorkspaceMutationReceipt.from_dict(result.receipt.to_dict())
+        == result.receipt
+    )
+
+
+def test_failed_write_receipt_confirms_unchanged_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_text("old")
+
+    def fail_replace(source, target) -> None:  # noqa: ARG001
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("reuleauxcoder.infrastructure.workspace.local.os.replace", fail_replace)
+
+    with pytest.raises(WorkspaceError) as failed:
+        workspace.write_text_verified(path, "new")
+
+    receipt = failed.value.mutation_receipt
+    assert receipt is not None
+    assert receipt.verification is WorkspaceMutationVerification.FAILED_UNCHANGED
+    assert receipt.atomic_replace is False
+    assert receipt.observed_after is not None
+    assert receipt.observed_after.same_content(receipt.before)
+    assert path.read_text() == "old"
+
+
+def test_failed_write_receipt_reports_diverged_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_text("old")
+
+    def change_then_fail(source, target) -> None:  # noqa: ARG001
+        Path(target).write_text("external")
+        raise OSError("replace raced")
+
+    monkeypatch.setattr(
+        "reuleauxcoder.infrastructure.workspace.local.os.replace",
+        change_then_fail,
+    )
+
+    with pytest.raises(WorkspaceError) as failed:
+        workspace.write_text_verified(path, "new")
+
+    receipt = failed.value.mutation_receipt
+    assert receipt is not None
+    assert receipt.verification is WorkspaceMutationVerification.DIVERGED
+    assert receipt.observed_after is not None
+    assert not receipt.observed_after.same_content(receipt.before)
+    assert path.read_text() == "external"
+
+
+def test_successful_replace_with_unreadable_post_state_is_unknown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_text("old")
+    original_snapshot = workspace.snapshot_text
+    calls = 0
+
+    def snapshot(current_path):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise WorkspaceError(WorkspaceErrorCode.IO_ERROR, "cannot verify")
+        return original_snapshot(current_path)
+
+    monkeypatch.setattr(workspace, "snapshot_text", snapshot)
+
+    result = workspace.write_text_verified(path, "new")
+
+    assert result.receipt.verification is WorkspaceMutationVerification.UNKNOWN
+    assert result.receipt.atomic_replace is True
+    assert result.receipt.observed_after is None
+    assert path.read_text() == "new"
+
+
+def test_exact_edit_retries_against_latest_external_contents(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_text("old\n")
+    approved = workspace.snapshot_text(path).revision
+    original_snapshot = workspace.snapshot_text
+    calls = 0
+
+    def snapshot(current_path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            path.write_text("old\nexternal\n")
+        return original_snapshot(current_path)
+
+    monkeypatch.setattr(workspace, "snapshot_text", snapshot)
+
+    result = workspace.replace_exact_verified(
+        path,
+        "old",
+        "new",
+        expected_revision=approved,
+    )
+
+    assert result.old_content == "old\nexternal\n"
+    assert result.new_content == "new\nexternal\n"
+    assert result.receipt.external_change_before_write is True
+    assert (
+        result.receipt.verification
+        is WorkspaceMutationVerification.APPLIED_VERIFIED
+    )
+    assert path.read_text() == "new\nexternal\n"
 
 
 def test_structured_list_is_recursive_bounded_and_hides_dotfiles(
