@@ -11,6 +11,7 @@ import threading
 from reuleauxcoder.domain.workspace import WorkspacePort
 from reuleauxcoder.domain.workspace import WorkspaceRevision
 from reuleauxcoder.domain.process import ProcessPort
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.infrastructure.process import LocalProcessPort
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
@@ -24,7 +25,7 @@ class ExecutionContext:
     workspace_root: str | None = None
     execution_target: str = "local"
     remote_stream_handler: object | None = None
-    cancellation_event: threading.Event | None = None
+    cancellation_event: CancellationSignal | None = None
 
 
 class ToolBackend:
@@ -44,6 +45,7 @@ class ToolBackend:
         self.process = process
         self._stream_handler_local = threading.local()
         self._workspace_revision_local = threading.local()
+        self._cancellation_local = threading.local()
 
     @contextmanager
     def stream_handler_scope(self, handler: object | None) -> Iterator[None]:
@@ -80,6 +82,29 @@ class ToolBackend:
 
     def current_workspace_revision(self) -> WorkspaceRevision | None:
         return getattr(self._workspace_revision_local, "revision", None)
+
+    @contextmanager
+    def cancellation_scope(
+        self, signal: CancellationSignal | None
+    ) -> Iterator[None]:
+        """Bind the cooperative cancellation view for one worker call."""
+        missing = object()
+        previous = getattr(self._cancellation_local, "signal", missing)
+        self._cancellation_local.signal = signal
+        try:
+            yield
+        finally:
+            if previous is missing:
+                del self._cancellation_local.signal
+            else:
+                self._cancellation_local.signal = previous
+
+    def current_cancellation_signal(self) -> CancellationSignal | None:
+        return getattr(
+            self._cancellation_local,
+            "signal",
+            self.context.cancellation_event,
+        )
 
     def clone_for_scope(self, scope: str) -> "ToolBackend":
         """Materialize a backend adapter for an independent Agent scope."""

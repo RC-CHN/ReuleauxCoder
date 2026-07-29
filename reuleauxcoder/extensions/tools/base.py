@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 import re
-from typing import Any, final
+import threading
+from typing import Any, final, Iterator
+
+from reuleauxcoder.domain.cancellation import CancellationSignal
 
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
@@ -18,6 +23,14 @@ from reuleauxcoder.domain.approval import ApprovalGrantScope
 
 ToolResult = str | ToolOutcome
 BackendHandler = Callable[..., ToolResult]
+
+
+class InterruptMode(str, Enum):
+    """How an active tool call observes a user interrupt."""
+
+    LET_FINISH = "let_finish"
+    CANCEL_WITH_PARTIAL = "cancel_with_partial"
+    DETACH = "detach"
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +232,9 @@ class Tool(ABC):
     # before the executor may overlap it with sibling calls.  This keeps unknown,
     # dynamically supplied, and side-effecting tools behind an ordering barrier.
     parallel_safe: bool = False
+    interrupt_mode: InterruptMode = InterruptMode.LET_FINISH
     _backend_handlers: dict[str, str] = {}
+    _execution_scope_local = threading.local()
     _agent_config: Any = None
 
     def __init_subclass__(cls, **kwargs):
@@ -235,6 +250,26 @@ class Tool(ABC):
 
     def __init__(self, backend: Any = None):
         self.backend = backend
+
+    @contextmanager
+    def execution_scope(
+        self, cancellation: CancellationSignal | None
+    ) -> Iterator[None]:
+        """Bind per-call execution state without mutating a shared tool."""
+        missing = object()
+        previous = getattr(self._execution_scope_local, "cancellation", missing)
+        self._execution_scope_local.cancellation = cancellation
+        try:
+            yield
+        finally:
+            if previous is missing:
+                del self._execution_scope_local.cancellation
+            else:
+                self._execution_scope_local.cancellation = previous
+
+    def current_cancellation_signal(self) -> CancellationSignal | None:
+        """Return the cancellation view installed for this worker call."""
+        return getattr(self._execution_scope_local, "cancellation", None)
 
     @final
     def preflight_validate(

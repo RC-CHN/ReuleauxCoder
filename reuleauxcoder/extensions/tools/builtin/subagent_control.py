@@ -10,7 +10,11 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
-from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.base import (
+    InterruptMode,
+    Tool,
+    backend_handler,
+)
 
 
 def get_subagent_manager(agent):
@@ -233,6 +237,7 @@ class ListAgentsTool(_RootSubagentTool):
 
 class WaitAgentTool(_RootSubagentTool):
     name = "wait_agent"
+    interrupt_mode = InterruptMode.DETACH
     description = (
         "Wait only for new, not-yet-delivered subagent mailbox activity. Terminal "
         "results are injected into context automatically and must not be retrieved by "

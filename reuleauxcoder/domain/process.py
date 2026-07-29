@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-import threading
 from typing import Protocol
 
+from reuleauxcoder.domain.cancellation import CancellationSignal
 
 MAX_PROCESS_INPUT_BYTES = 64 * 1024
 MAX_PROCESS_SESSION_INPUT_BYTES = 1024 * 1024
@@ -189,6 +189,6 @@ class ProcessPort(Protocol):
         *,
         cwd: str,
         timeout: int,
-        cancellation_event: threading.Event | None = None,
+        cancellation_event: CancellationSignal | None = None,
         stream_handler: ProcessStreamHandler | None = None,
     ) -> ProcessResult: ...

@@ -27,7 +27,7 @@ from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
 
 
 class _ShellToolStub:
@@ -962,6 +962,95 @@ def test_execute_parallel_uses_unsafe_tools_as_ordering_barriers() -> None:
 
     assert results == ["before", "first", "second", "second"]
     assert state["max_writers"] == 1
+
+
+def test_queued_parallel_call_is_paired_as_interrupted_after_epoch_change() -> None:
+    release = threading.Event()
+    all_workers_started = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+
+    def run() -> str:
+        nonlocal started
+        with started_lock:
+            started += 1
+            if started == 8:
+                all_workers_started.set()
+        assert release.wait(timeout=2)
+        return "finished"
+
+    tool = _ProbeTool("read", run, parallel_safe=True)
+    agent = _MappedAgentStub([tool])
+    agent._stop_event = threading.Event()
+    agent._test_epoch = 0
+    agent.round_interrupt_epoch = lambda: agent._test_epoch
+    agent.stop_requested = agent._stop_event.is_set
+    executor = ToolExecutor(agent)
+    calls = [ToolCall(id=f"call-{index}", name="read", arguments={}) for index in range(9)]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            executor.execute_parallel,
+            calls,
+            interrupt_baseline=0,
+        )
+        assert all_workers_started.wait(timeout=2)
+        agent._test_epoch = 1
+        release.set()
+        results = future.result(timeout=3)
+
+    assert results[:8] == ["finished"] * 8
+    assert results[8] == "Tool execution interrupted (user steering)."
+    finished_ids = {
+        event.correlation_id
+        for event in agent.events
+        if event.event_type.value == "tool_call_end"
+    }
+    assert "call-8" in finished_ids
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (InterruptMode.LET_FINISH, "not-cancelled"),
+        (InterruptMode.CANCEL_WITH_PARTIAL, "cancelled"),
+        (InterruptMode.DETACH, "detached"),
+    ],
+)
+def test_tool_interrupt_mode_controls_the_installed_signal(mode, expected) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class _InterruptProbe(_ProbeTool):
+        interrupt_mode = mode
+
+        def execute(self, **kwargs) -> str:  # noqa: ARG002
+            signal = self.current_cancellation_signal()
+            started.set()
+            assert release.wait(timeout=2)
+            if signal is None:
+                return "detached"
+            return "cancelled" if signal.is_set() else "not-cancelled"
+
+    tool = _InterruptProbe("probe", lambda: "", parallel_safe=False)
+    agent = _MappedAgentStub([tool])
+    agent._stop_event = threading.Event()
+    agent._test_epoch = 0
+    agent.round_interrupt_epoch = lambda: agent._test_epoch
+    agent.stop_requested = agent._stop_event.is_set
+    executor = ToolExecutor(agent)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            executor.execute,
+            ToolCall(id="probe", name="probe", arguments={}),
+            interrupt_baseline=0,
+        )
+        assert started.wait(timeout=2)
+        agent._test_epoch = 1
+        release.set()
+
+    assert future.result(timeout=2) == expected
 
 
 def test_builtin_workspace_readers_opt_into_parallel_execution() -> None:

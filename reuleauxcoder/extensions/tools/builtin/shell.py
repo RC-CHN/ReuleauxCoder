@@ -28,7 +28,11 @@ from reuleauxcoder.domain.process import (
 )
 from reuleauxcoder.domain.process_manager import ProcessManager
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
-from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.base import (
+    InterruptMode,
+    Tool,
+    backend_handler,
+)
 from reuleauxcoder.infrastructure.platform import ShellType, get_platform_info
 from reuleauxcoder.infrastructure.process.buffer import BoundedTextBuffer
 
@@ -81,6 +85,8 @@ def _shell_description(*, local: bool) -> str:
 
 class _BoundProcessTool(Tool):
     """Common agent/process-manager binding without changing Tool's core layer."""
+
+    interrupt_mode = InterruptMode.CANCEL_WITH_PARTIAL
 
     def __init__(self, backend: ToolBackend | None = None) -> None:
         super().__init__(backend or LocalToolBackend())
@@ -407,7 +413,7 @@ class ShellTool(_BoundProcessTool):
                 owner_session_id=owner_session_id,
                 generation=generation,
             )
-            cancellation = self.backend.context.cancellation_event
+            cancellation = self.backend.current_cancellation_signal()
             if cancellation is not None and cancellation.is_set():
                 manager.abandon(handle.session_id, reason="cancelled")
                 return _outcome_from_snapshot(
@@ -475,7 +481,7 @@ class ShellTool(_BoundProcessTool):
         stderr = BoundedTextBuffer(_MODEL_OUTPUT_BYTES_PER_STREAM)
         snapshot: ProcessSnapshot | None = None
         while True:
-            cancellation = self.backend.context.cancellation_event
+            cancellation = self.backend.current_cancellation_signal()
             if cancellation is not None and cancellation.is_set():
                 wait_ms = 0
             else:
@@ -541,7 +547,7 @@ class ShellTool(_BoundProcessTool):
                 command,
                 cwd=actual_cwd,
                 timeout=timeout,
-                cancellation_event=self.backend.context.cancellation_event,
+                cancellation_event=self.backend.current_cancellation_signal(),
                 stream_handler=self._stream_handler(),
             )
         except FileNotFoundError:
@@ -960,7 +966,7 @@ class ShellSessionTool(_BoundProcessTool):
         deadline = time.monotonic() + (wait_ms / 1000)
         snapshot: ProcessSnapshot | None = None
         while True:
-            cancellation = self.backend.context.cancellation_event
+            cancellation = self.backend.current_cancellation_signal()
             if cancellation is not None and cancellation.is_set():
                 if snapshot is None:
                     snapshot = manager.poll(

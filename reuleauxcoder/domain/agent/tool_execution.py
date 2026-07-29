@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, List, cast
 
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.llm.models import ToolCall
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.cancellation import CancellationView
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
@@ -39,6 +40,7 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
 )
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceRevision
+from reuleauxcoder.extensions.tools.base import InterruptMode
 
 
 _EXTERNAL_PATH_ARGUMENTS = {
@@ -195,11 +197,55 @@ def _workspace_revision_scope(
         yield
 
 
+@contextmanager
+def _tool_cancellation_scope(tool, backend, signal) -> Iterator[None]:
+    """Install the same per-call signal on tool and backend compatibility paths."""
+    tool_bind = getattr(tool, "execution_scope", None)
+    backend_bind = getattr(backend, "cancellation_scope", None)
+    tool_scope = (
+        cast(AbstractContextManager[object], tool_bind(signal))
+        if callable(tool_bind)
+        else nullcontext()
+    )
+    backend_scope = (
+        cast(AbstractContextManager[object], backend_bind(signal))
+        if callable(backend_bind)
+        else nullcontext()
+    )
+    with tool_scope:
+        with backend_scope:
+            yield
+
+
 class ToolExecutor:
     """Handles tool execution for the agent."""
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
+
+    def _round_interrupt_epoch(self) -> int:
+        read = getattr(self.agent, "round_interrupt_epoch", None)
+        if not callable(read):
+            return 0
+        value = read()
+        return value if isinstance(value, int) else 0
+
+    def _stop_requested(self) -> bool:
+        read = getattr(self.agent, "stop_requested", None)
+        return bool(read()) if callable(read) else False
+
+    def _stop_signal(self):
+        signal = getattr(self.agent, "_stop_event", None)
+        if signal is not None and callable(getattr(signal, "is_set", None)):
+            return signal
+
+        executor = self
+
+        class _CompatibilityStopSignal:
+            def is_set(self) -> bool:
+                return executor._stop_requested()
+
+        return _CompatibilityStopSignal()
 
     def _finish_rejected_call(self, tc: "ToolCall", outcome: ToolOutcome) -> str:
         self.agent._emit_event(
@@ -246,8 +292,34 @@ class ToolExecutor:
             },
         )
 
-    def execute(self, tc: "ToolCall") -> str:
+    def execute(
+        self,
+        tc: "ToolCall",
+        *,
+        interrupt_baseline: int | None = None,
+    ) -> str:
         """Execute a single tool call."""
+        if interrupt_baseline is not None and (
+            self._stop_requested()
+            or self._round_interrupt_epoch() > interrupt_baseline
+        ):
+            reason = (
+                "user steering"
+                if self._round_interrupt_epoch() > interrupt_baseline
+                and not self._stop_requested()
+                else "turn cancellation"
+            )
+            message = f"Tool execution interrupted ({reason})."
+            return self._finish_rejected_call(
+                tc,
+                ToolOutcome(
+                    status=ToolOutcomeStatus.CANCELLED,
+                    summary=f"{tc.name} interrupted before execution",
+                    content=message,
+                    model_content=message,
+                    error_kind=ToolErrorKind.INTERRUPTED,
+                ),
+            )
         reviewed_diff: str | None = None
         approval_workspace_changes: list[str] = []
         expected_workspace_revision: WorkspaceRevision | None = None
@@ -610,6 +682,23 @@ class ToolExecutor:
 
         try:
             backend = getattr(tool, "backend", None)
+            if interrupt_baseline is None:
+                interrupt_baseline = self._round_interrupt_epoch()
+            interrupt_mode = getattr(
+                tool, "interrupt_mode", InterruptMode.LET_FINISH
+            )
+            cancellation = (
+                None
+                if interrupt_mode is InterruptMode.DETACH
+                else CancellationView(
+                    self._stop_signal(),
+                    self._round_interrupt_epoch,
+                    interrupt_baseline,
+                    include_round_interrupt=(
+                        interrupt_mode is InterruptMode.CANCEL_WITH_PARTIAL
+                    ),
+                )
+            )
             execution_context = getattr(backend, "context", None)
             outer_stream_handler = getattr(
                 execution_context, "remote_stream_handler", None
@@ -633,26 +722,27 @@ class ToolExecutor:
                 if callable(outer_stream_handler):
                     outer_stream_handler(tool_name, chunk)
 
-            with _stream_handler_scope(
-                backend,
-                execution_context,
-                stream_handler,
-            ):
-                with _workspace_revision_scope(
+            with _tool_cancellation_scope(tool, backend, cancellation):
+                with _stream_handler_scope(
                     backend,
-                    expected_workspace_revision,
+                    execution_context,
+                    stream_handler,
                 ):
-                    bind_execution = getattr(tool, "bind_execution", None)
-                    if callable(bind_execution):
-                        bind_execution(
-                            tool_call_id=tc.id,
-                            session_generation=self.agent.session_generation,
-                        )
-                    execution_workspace = getattr(backend, "workspace", None)
-                    with _workspace_access_scope(
-                        execution_workspace, external_target
+                    with _workspace_revision_scope(
+                        backend,
+                        expected_workspace_revision,
                     ):
-                        raw_result = tool.execute(**tool_call.arguments)
+                        bind_execution = getattr(tool, "bind_execution", None)
+                        if callable(bind_execution):
+                            bind_execution(
+                                tool_call_id=tc.id,
+                                session_generation=self.agent.session_generation,
+                            )
+                        execution_workspace = getattr(backend, "workspace", None)
+                        with _workspace_access_scope(
+                            execution_workspace, external_target
+                        ):
+                            raw_result = tool.execute(**tool_call.arguments)
             outcome = (
                 raw_result
                 if isinstance(raw_result, ToolOutcome)
@@ -758,7 +848,7 @@ class ToolExecutor:
                     ),
                 )
             )
-            if not self.agent.stop_requested():
+            if not self._stop_requested():
                 self.agent.request_stop()
             raise
         except TypeError as e:
@@ -794,7 +884,12 @@ class ToolExecutor:
             )
             return message
 
-    def execute_parallel(self, tool_calls: List["ToolCall"]) -> List[str]:
+    def execute_parallel(
+        self,
+        tool_calls: List["ToolCall"],
+        *,
+        interrupt_baseline: int | None = None,
+    ) -> List[str]:
         """Execute one provider batch without reordering observable effects.
 
         Contiguous calls whose resolved tools explicitly opt into
@@ -802,11 +897,41 @@ class ToolExecutor:
         barrier, so writers, shell commands, MCP calls without trustworthy
         annotations, and unknown tools retain provider order.
         """
+        baseline = (
+            self._round_interrupt_epoch()
+            if interrupt_baseline is None
+            else interrupt_baseline
+        )
         results = [""] * len(tool_calls)
+
+        def execute_submitted(tool_call: "ToolCall") -> str:
+            interrupted = CancellationView(
+                self._stop_signal(),
+                self._round_interrupt_epoch,
+                baseline,
+            )
+            if interrupted.is_set():
+                reason = (
+                    "user steering"
+                    if self._round_interrupt_epoch() > baseline
+                    and not self._stop_requested()
+                    else "turn cancellation"
+                )
+                message = f"Tool execution interrupted ({reason})."
+                outcome = ToolOutcome(
+                    status=ToolOutcomeStatus.CANCELLED,
+                    summary=f"{tool_call.name} interrupted before execution",
+                    content=message,
+                    model_content=message,
+                    error_kind=ToolErrorKind.INTERRUPTED,
+                )
+                return self._finish_rejected_call(tool_call, outcome)
+            return self.execute(tool_call, interrupt_baseline=baseline)
+
         index = 0
         while index < len(tool_calls):
             if not self._parallel_safe(tool_calls[index]):
-                results[index] = self.execute(tool_calls[index])
+                results[index] = execute_submitted(tool_calls[index])
                 index += 1
                 continue
 
@@ -814,13 +939,13 @@ class ToolExecutor:
             while end < len(tool_calls) and self._parallel_safe(tool_calls[end]):
                 end += 1
             if end - index == 1:
-                results[index] = self.execute(tool_calls[index])
+                results[index] = execute_submitted(tool_calls[index])
             else:
                 with concurrent.futures.ThreadPoolExecutor(
                     max_workers=min(8, end - index)
                 ) as pool:
                     futures = {
-                        offset: pool.submit(self.execute, tool_calls[offset])
+                        offset: pool.submit(execute_submitted, tool_calls[offset])
                         for offset in range(index, end)
                     }
                     for offset, future in futures.items():

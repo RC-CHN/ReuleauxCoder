@@ -29,6 +29,7 @@ from reuleauxcoder.domain.process import (
     ProcessStreamHandler,
     ProcessStreamMode,
 )
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.infrastructure.process.buffer import BoundedTextBuffer
 
@@ -1117,7 +1118,7 @@ class LocalProcessPort:
         *,
         cwd: str,
         timeout: int,
-        cancellation_event: threading.Event | None = None,
+        cancellation_event: CancellationSignal | None = None,
         stream_handler: ProcessStreamHandler | None = None,
     ) -> ProcessResult:
         handle = self.start(
