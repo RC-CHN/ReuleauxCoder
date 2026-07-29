@@ -526,10 +526,17 @@ class TestRemoteRelayHTTPService:
             )
             thread.start()
             body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.read_text"
+            reply_workspace(body, {"content": ""})
+            body = poll_workspace()
             assert body["payload"]["operation"] == "fs.write_text_atomic"
             reply_workspace(body, {"old_content": ""})
+            body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.read_text"
+            reply_workspace(body, {"content": "hello"})
             thread.join(timeout=2)
             assert holder["result"].model_text.startswith("Wrote 1 lines")
+            assert "final contents could not be verified" in holder["result"].model_text
 
             holder = {}
             thread = threading.Thread(
@@ -543,10 +550,17 @@ class TestRemoteRelayHTTPService:
             assert body["payload"]["operation"] == "fs.read_text"
             reply_workspace(body, {"content": "a"})
             body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.read_text"
+            reply_workspace(body, {"content": "a"})
+            body = poll_workspace()
             assert body["payload"]["operation"] == "fs.replace_exact_atomic"
             reply_workspace(body, {"old_content": "a", "new_content": "b"})
+            body = poll_workspace()
+            assert body["payload"]["operation"] == "fs.read_text"
+            reply_workspace(body, {"content": "b"})
             thread.join(timeout=2)
             assert holder["result"].model_text.startswith("Edited /tmp/demo.txt")
+            assert "final contents could not be verified" in holder["result"].model_text
         finally:
             service.stop()
             relay.stop()
@@ -1294,6 +1308,9 @@ class TestRemoteRelayHTTPService:
                 "process.interrupt",
                 "process.terminate",
                 "process.release",
+                "workspace.fs.snapshot_text",
+                "workspace.fs.write_text_verified",
+                "workspace.fs.replace_exact_verified",
             }.issubset(peer.capabilities)
 
             backend = RemoteRelayToolBackend(relay_server=relay)
@@ -1413,7 +1430,9 @@ class TestRemoteRelayHTTPService:
                 file_path=str(target_file),
                 content="alpha\nbeta\n",
             )
-            assert write_result == local_write_result
+            assert write_result.model_text == local_write_result.model_text
+            assert write_result.diff == local_write_result.diff
+            assert write_result.metadata["mutation_verification"] == "applied_verified"
 
             edit_result = EditFileTool(backend=backend).execute(
                 file_path=str(target_file),
@@ -1432,7 +1451,24 @@ class TestRemoteRelayHTTPService:
                 old_string="beta",
                 new_string="gamma",
             )
-            assert edit_result == local_edit_result
+            assert edit_result.model_text == local_edit_result.model_text
+            assert edit_result.diff == local_edit_result.diff
+            assert edit_result.metadata["mutation_verification"] == "applied_verified"
+
+            approved = backend.workspace.snapshot_text(target_file).revision
+            target_file.write_text("alpha\ngamma\nide change\n")
+            with backend.workspace_revision_scope(approved):
+                external_edit = EditFileTool(backend=backend).execute(
+                    file_path=str(target_file),
+                    old_string="gamma",
+                    new_string="delta",
+                )
+            assert external_edit.success is True
+            assert external_edit.metadata["external_change_before_write"] is True
+            assert "changed externally" in external_edit.model_text
+            assert "Verified result" in external_edit.model_text
+            assert target_file.read_text() == "alpha\ndelta\nide change\n"
+            target_file.write_text("alpha\ngamma\n")
 
             glob_result = GlobTool(backend=backend).execute(
                 pattern="*.txt", path=str(work_dir)

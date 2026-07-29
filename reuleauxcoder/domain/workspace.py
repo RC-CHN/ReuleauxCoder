@@ -11,6 +11,17 @@ import re
 from typing import Protocol
 
 
+def _payload_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
 class WorkspaceErrorCode(str, Enum):
     INVALID_PATH = "invalid_path"
     PATH_OUTSIDE_WORKSPACE = "path_outside_workspace"
@@ -51,6 +62,7 @@ class WorkspaceRevision:
     sha256: str | None
     size_bytes: int
     mtime_ns: int | None = None
+    authoritative: bool = True
 
     def same_content(self, other: "WorkspaceRevision") -> bool:
         return (
@@ -69,6 +81,7 @@ class WorkspaceRevision:
             "sha256": self.sha256,
             "size_bytes": self.size_bytes,
             "mtime_ns": self.mtime_ns,
+            "authoritative": self.authoritative,
         }
 
     @classmethod
@@ -78,8 +91,9 @@ class WorkspaceRevision:
         return cls(
             exists=bool(data.get("exists")),
             sha256=sha256 if isinstance(sha256, str) else None,
-            size_bytes=int(data.get("size_bytes") or 0),
+            size_bytes=_payload_int(data.get("size_bytes")),
             mtime_ns=int(mtime_ns) if isinstance(mtime_ns, int) else None,
+            authoritative=bool(data.get("authoritative", True)),
         )
 
 
@@ -138,7 +152,7 @@ class WorkspaceMutationReceipt:
             resolved_path=str(data.get("resolved_path") or ""),
             before=WorkspaceRevision.from_dict(before),
             intended_after_sha256=str(data.get("intended_after_sha256") or ""),
-            intended_size_bytes=int(data.get("intended_size_bytes") or 0),
+            intended_size_bytes=_payload_int(data.get("intended_size_bytes")),
             observed_after=(
                 WorkspaceRevision.from_dict(observed_after)
                 if isinstance(observed_after, dict)

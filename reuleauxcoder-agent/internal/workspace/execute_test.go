@@ -42,6 +42,86 @@ func TestExecuteWorkspacePrimitives(t *testing.T) {
 	}
 }
 
+func TestVerifiedWorkspaceMutationsReturnAuthoritativeReceipts(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "demo.txt")
+	if err := os.WriteFile(path, []byte("alpha\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := Execute(request("fs.snapshot_text", map[string]any{
+		"path": "demo.txt",
+	}), root, root)
+	if !snapshot.OK {
+		t.Fatalf("unexpected snapshot result: %#v", snapshot)
+	}
+	revision := snapshot.Data["revision"].(map[string]any)
+	if revision["authoritative"] != true || len(revision["sha256"].(string)) != 64 {
+		t.Fatalf("unexpected revision: %#v", revision)
+	}
+
+	write := Execute(request("fs.write_text_verified", map[string]any{
+		"path":              "demo.txt",
+		"content":           "beta\n",
+		"expected_revision": revision,
+	}), root, root)
+	if !write.OK {
+		t.Fatalf("unexpected verified write: %#v", write)
+	}
+	writeReceipt := write.Data["mutation_receipt"].(map[string]any)
+	if writeReceipt["verification"] != "applied_verified" ||
+		writeReceipt["external_change_before_write"] != false ||
+		writeReceipt["atomic_replace"] != true {
+		t.Fatalf("unexpected write receipt: %#v", writeReceipt)
+	}
+
+	if err := os.WriteFile(path, []byte("beta\nexternal\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	edit := Execute(request("fs.replace_exact_verified", map[string]any{
+		"path":              "demo.txt",
+		"old":               "beta",
+		"new":               "gamma",
+		"expected_revision": revision,
+	}), root, root)
+	if !edit.OK || edit.Data["new_content"] != "gamma\nexternal\n" {
+		t.Fatalf("unexpected verified edit: %#v", edit)
+	}
+	editReceipt := edit.Data["mutation_receipt"].(map[string]any)
+	if editReceipt["verification"] != "applied_verified" ||
+		editReceipt["external_change_before_write"] != true {
+		t.Fatalf("unexpected edit receipt: %#v", editReceipt)
+	}
+}
+
+func TestSnapshotDistinguishesMissingAndEmptyFiles(t *testing.T) {
+	root := t.TempDir()
+	missing := Execute(request("fs.snapshot_text", map[string]any{
+		"path": "missing.txt",
+	}), root, root)
+	if !missing.OK || missing.Data["content"] != nil {
+		t.Fatalf("unexpected missing snapshot: %#v", missing)
+	}
+	missingRevision := missing.Data["revision"].(map[string]any)
+	if missingRevision["exists"] != false || missingRevision["sha256"] != nil {
+		t.Fatalf("unexpected missing revision: %#v", missingRevision)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "empty.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := Execute(request("fs.snapshot_text", map[string]any{
+		"path": "empty.txt",
+	}), root, root)
+	if !empty.OK || empty.Data["content"] != "" {
+		t.Fatalf("unexpected empty snapshot: %#v", empty)
+	}
+	emptyRevision := empty.Data["revision"].(map[string]any)
+	if emptyRevision["exists"] != true || emptyRevision["sha256"] == nil {
+		t.Fatalf("unexpected empty revision: %#v", emptyRevision)
+	}
+}
+
 func TestStructuredStatAndListPrimitives(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {

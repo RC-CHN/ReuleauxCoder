@@ -6,6 +6,7 @@ from pathlib import Path
 from collections.abc import Mapping
 import concurrent.futures
 from dataclasses import dataclass, field
+import hashlib
 import threading
 import time
 from typing import Any
@@ -36,10 +37,15 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 )
 from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
+    WorkspaceDocumentSnapshot,
     WorkspaceError,
     WorkspaceErrorCode,
     WorkspaceGlobResult,
     WorkspaceListResult,
+    WorkspaceMutationReceipt,
+    WorkspaceMutationResult,
+    WorkspaceMutationVerification,
+    WorkspaceRevision,
     WorkspaceSearchMatch,
     WorkspaceSearchResult,
     glob_paths_via_primitives,
@@ -273,32 +279,247 @@ class RemoteWorkspacePort:
                 code = WorkspaceErrorCode(result.error_code or "io_error")
             except ValueError:
                 code = WorkspaceErrorCode.IO_ERROR
+            receipt_data = result.data.get("mutation_receipt")
+            receipt = (
+                WorkspaceMutationReceipt.from_dict(receipt_data)
+                if isinstance(receipt_data, dict)
+                else None
+            )
             raise WorkspaceError(
-                code, result.error_message or "remote workspace operation failed"
+                code,
+                result.error_message or "remote workspace operation failed",
+                mutation_receipt=receipt,
             )
         return result.data
 
     def read_text(self, path: str | Path) -> str:
         return str(self._request("fs.read_text", path=str(path)).get("content", ""))
 
+    def snapshot_text(self, path: str | Path) -> WorkspaceDocumentSnapshot:
+        if self.backend.supports_capability("workspace.fs.snapshot_text"):
+            data = self._request("fs.snapshot_text", path=str(path))
+            revision = data.get("revision")
+            if not isinstance(revision, dict):
+                raise WorkspaceError(
+                    WorkspaceErrorCode.IO_ERROR,
+                    "remote snapshot omitted its revision",
+                )
+            content = data.get("content")
+            return WorkspaceDocumentSnapshot(
+                resolved_path=str(data.get("resolved_path") or self.resolve(path)),
+                content=content if isinstance(content, str) else None,
+                revision=WorkspaceRevision.from_dict(revision),
+            )
+
+        try:
+            content = self.read_text(path)
+        except WorkspaceError as error:
+            if error.code is not WorkspaceErrorCode.NOT_FOUND:
+                raise
+            return WorkspaceDocumentSnapshot(
+                resolved_path=str(self.resolve(path)),
+                content=None,
+                revision=WorkspaceRevision(
+                    exists=False,
+                    sha256=None,
+                    size_bytes=0,
+                    authoritative=False,
+                ),
+            )
+        encoded = content.encode("utf-8")
+        return WorkspaceDocumentSnapshot(
+            resolved_path=str(self.resolve(path)),
+            content=content,
+            revision=WorkspaceRevision(
+                exists=True,
+                sha256=hashlib.sha256(encoded).hexdigest(),
+                size_bytes=len(encoded),
+                authoritative=False,
+            ),
+        )
+
     def stat_entry(self, path: str | Path) -> WorkspaceEntry:
         item = self._request("fs.stat", path=str(path))["entry"]
         return _workspace_entry(item)
 
     def write_text_atomic(self, path: str | Path, content: str) -> str:
-        return str(
-            self._request("fs.write_text_atomic", path=str(path), content=content).get(
-                "old_content", ""
+        result = self.write_text_verified(path, content)
+        return result.old_content or ""
+
+    def write_text_verified(
+        self,
+        path: str | Path,
+        content: str,
+        *,
+        expected_revision: WorkspaceRevision | None = None,
+    ) -> WorkspaceMutationResult:
+        if self.backend.supports_capability("workspace.fs.write_text_verified"):
+            args: dict[str, Any] = {"path": str(path), "content": content}
+            if expected_revision is not None:
+                args["expected_revision"] = expected_revision.to_dict()
+            return self._verified_mutation_result(
+                self._request("fs.write_text_verified", **args)
             )
+
+        before = self.snapshot_text(path)
+        try:
+            data = self._request(
+                "fs.write_text_atomic",
+                path=str(path),
+                content=content,
+            )
+        except WorkspaceError as error:
+            raise self._legacy_mutation_error(
+                error,
+                path=path,
+                before=before.revision,
+                intended_content=content,
+                expected_revision=expected_revision,
+            ) from error
+        old_content = data.get("old_content")
+        return WorkspaceMutationResult(
+            old_content=(
+                old_content if isinstance(old_content, str) else before.content
+            ),
+            new_content=content,
+            receipt=self._legacy_mutation_receipt(
+                path=path,
+                before=before.revision,
+                intended_content=content,
+                expected_revision=expected_revision,
+                atomic_replace=True,
+            ),
         )
 
     def replace_exact_atomic(
         self, path: str | Path, old: str, new: str
     ) -> tuple[str, str]:
-        data = self._request(
-            "fs.replace_exact_atomic", path=str(path), old=old, new=new
+        result = self.replace_exact_verified(path, old, new)
+        return result.old_content or "", result.new_content
+
+    def replace_exact_verified(
+        self,
+        path: str | Path,
+        old: str,
+        new: str,
+        *,
+        expected_revision: WorkspaceRevision | None = None,
+    ) -> WorkspaceMutationResult:
+        if self.backend.supports_capability("workspace.fs.replace_exact_verified"):
+            args: dict[str, Any] = {
+                "path": str(path),
+                "old": old,
+                "new": new,
+            }
+            if expected_revision is not None:
+                args["expected_revision"] = expected_revision.to_dict()
+            return self._verified_mutation_result(
+                self._request("fs.replace_exact_verified", **args)
+            )
+
+        before = self.snapshot_text(path)
+        prepared_content = before.content or ""
+        intended_content = (
+            prepared_content.replace(old, new, 1)
+            if prepared_content.count(old) == 1
+            else prepared_content
         )
-        return str(data.get("old_content", "")), str(data.get("new_content", ""))
+        try:
+            data = self._request(
+                "fs.replace_exact_atomic",
+                path=str(path),
+                old=old,
+                new=new,
+            )
+        except WorkspaceError as error:
+            raise self._legacy_mutation_error(
+                error,
+                path=path,
+                before=before.revision,
+                intended_content=intended_content,
+                expected_revision=expected_revision,
+            ) from error
+        old_content = data.get("old_content")
+        new_content = data.get("new_content")
+        actual_old = old_content if isinstance(old_content, str) else before.content
+        actual_new = new_content if isinstance(new_content, str) else ""
+        return WorkspaceMutationResult(
+            old_content=actual_old,
+            new_content=actual_new,
+            receipt=self._legacy_mutation_receipt(
+                path=path,
+                before=before.revision,
+                intended_content=actual_new,
+                expected_revision=expected_revision,
+                atomic_replace=True,
+            ),
+        )
+
+    @staticmethod
+    def _verified_mutation_result(data: dict[str, Any]) -> WorkspaceMutationResult:
+        receipt = data.get("mutation_receipt")
+        if not isinstance(receipt, dict):
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR,
+                "remote verified mutation omitted its receipt",
+            )
+        old_content = data.get("old_content")
+        new_content = data.get("new_content")
+        return WorkspaceMutationResult(
+            old_content=old_content if isinstance(old_content, str) else None,
+            new_content=new_content if isinstance(new_content, str) else "",
+            receipt=WorkspaceMutationReceipt.from_dict(receipt),
+        )
+
+    def _legacy_mutation_receipt(
+        self,
+        *,
+        path: str | Path,
+        before: WorkspaceRevision,
+        intended_content: str,
+        expected_revision: WorkspaceRevision | None,
+        atomic_replace: bool,
+    ) -> WorkspaceMutationReceipt:
+        encoded = intended_content.encode("utf-8")
+        try:
+            observed = self.snapshot_text(path).revision
+        except WorkspaceError:
+            observed = None
+        return WorkspaceMutationReceipt(
+            resolved_path=str(self.resolve(path)),
+            before=before,
+            intended_after_sha256=hashlib.sha256(encoded).hexdigest(),
+            intended_size_bytes=len(encoded),
+            observed_after=observed,
+            atomic_replace=atomic_replace,
+            verification=WorkspaceMutationVerification.UNKNOWN,
+            expected_before=expected_revision,
+            external_change_before_write=(
+                expected_revision is not None
+                and not expected_revision.same_content(before)
+            ),
+        )
+
+    def _legacy_mutation_error(
+        self,
+        error: WorkspaceError,
+        *,
+        path: str | Path,
+        before: WorkspaceRevision,
+        intended_content: str,
+        expected_revision: WorkspaceRevision | None,
+    ) -> WorkspaceError:
+        return WorkspaceError(
+            error.code,
+            error.message,
+            mutation_receipt=self._legacy_mutation_receipt(
+                path=path,
+                before=before,
+                intended_content=intended_content,
+                expected_revision=expected_revision,
+                atomic_replace=False,
+            ),
+        )
 
     def list_entries(
         self,
