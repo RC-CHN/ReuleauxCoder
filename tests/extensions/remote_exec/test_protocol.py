@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from reuleauxcoder.extensions.remote_exec.protocol import (
+    ChatControlRequest,
+    ChatControlResponse,
     CleanupRequest,
     CleanupResult,
     DisconnectNotice,
@@ -129,6 +131,47 @@ class TestRegisterResponse:
         assert restored.peer_token == "pt_xyz"
         assert restored.heartbeat_interval_sec == 15
         assert restored.protocol_version == REMOTE_PROTOCOL_VERSION
+        assert restored.host_capabilities == []
+
+    def test_host_capabilities_are_optional_and_roundtrip(self) -> None:
+        response = RegisterResponse(
+            peer_id="p1",
+            peer_token="pt_xyz",
+            host_capabilities=["chat.control.steering.v1"],
+        )
+
+        assert RegisterResponse.from_dict(response.to_dict()) == response
+        legacy = response.to_dict()
+        legacy.pop("host_capabilities")
+        assert RegisterResponse.from_dict(legacy).host_capabilities == []
+
+
+def test_chat_control_models_roundtrip_and_reject_empty_identity() -> None:
+    request = ChatControlRequest(
+        peer_token="pt_xyz",
+        chat_id="chat-1",
+        control_id="control-1",
+        action="admit_steering",
+        content="change direction",
+    )
+    response = ChatControlResponse(
+        ok=True,
+        control_id="control-1",
+        outcome="admitted",
+        steering_id="steer-1",
+    )
+
+    assert ChatControlRequest.from_dict(request.to_dict()) == request
+    assert ChatControlResponse.from_dict(response.to_dict()) == response
+    with pytest.raises(ValueError, match="control_id"):
+        ChatControlRequest.from_dict(
+            {
+                "peer_token": "pt_xyz",
+                "chat_id": "chat-1",
+                "control_id": "",
+                "action": "interrupt_intent",
+            }
+        )
 
 
 class TestRegisterRejected:

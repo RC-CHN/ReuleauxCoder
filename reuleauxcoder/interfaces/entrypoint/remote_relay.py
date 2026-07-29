@@ -353,6 +353,14 @@ def bind_remote_chat_handler(
         peer_agent = _create_peer_agent(peer_id)
         peer_agent.clear_stop_request()
         remote_session.cancel_callback = peer_agent.request_stop
+        admit_steering = getattr(peer_agent, "admit_user_steering", None)
+        interrupt_intent = getattr(peer_agent, "request_interrupt_intent", None)
+        if callable(admit_steering) and callable(interrupt_intent):
+            remote_session.bind_chat_control(
+                admit_steering=admit_steering,
+                interrupt_intent=interrupt_intent,
+                stop_turn=peer_agent.request_stop,
+            )
         presentation = peer_presenters[peer_id]
         ansi_console = presentation.console
         renderer = presentation.renderer
@@ -504,6 +512,14 @@ def bind_remote_chat_handler(
             if event.event_type == AgentEventType.ERROR:
                 remote_session.append_event(
                     "error", {"message": event.error_message or "unknown error"}
+                )
+            elif event.event_type == AgentEventType.USER_STEERING:
+                remote_session.append_event(
+                    "steering_applied",
+                    {
+                        "steering_id": event.data.get("steering_id"),
+                        "attempt_id": event.data.get("attempt_id"),
+                    },
                 )
             presentation.agent_bridge.on_agent_event(event)
             _flush_output()

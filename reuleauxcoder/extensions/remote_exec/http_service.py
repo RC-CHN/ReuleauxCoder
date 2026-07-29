@@ -27,6 +27,8 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     ChatRequest,
     ChatCancelRequest,
     ChatCancelResponse,
+    ChatControlRequest,
+    ChatControlResponse,
     ChatResponse,
     ChatStartRequest,
     ChatStartResponse,
@@ -62,6 +64,10 @@ class _RemoteChatSession:
     finished_at: float | None = None
     cond: threading.Condition = field(default_factory=threading.Condition)
     cancel_callback: Callable[[], None] | None = None
+    admit_steering_callback: Callable[[str], str | None] | None = None
+    interrupt_intent_callback: Callable[[], Any] | None = None
+    stop_turn_callback: Callable[[], None] | None = None
+    control_responses: dict[str, ChatControlResponse] = field(default_factory=dict)
     cancel_requested: bool = False
 
     def append_event(
@@ -199,6 +205,119 @@ class _RemoteChatSession:
         if callback is not None:
             callback()
         return True
+
+    def bind_chat_control(
+        self,
+        *,
+        admit_steering: Callable[[str], str | None],
+        interrupt_intent: Callable[[], Any],
+        stop_turn: Callable[[], None],
+    ) -> None:
+        with self.cond:
+            self.admit_steering_callback = admit_steering
+            self.interrupt_intent_callback = interrupt_intent
+            self.stop_turn_callback = stop_turn
+            self.cond.notify_all()
+
+    def apply_control(self, request: ChatControlRequest) -> ChatControlResponse:
+        """Apply one idempotent peer control operation."""
+        with self.cond:
+            cached = self.control_responses.get(request.control_id)
+            if cached is not None:
+                return cached
+            cache_response = True
+            if self.done:
+                response = ChatControlResponse(
+                    ok=True,
+                    control_id=request.control_id,
+                    outcome="already_done",
+                )
+            elif request.action == "admit_steering":
+                callback = self.admit_steering_callback
+                if callback is None:
+                    cache_response = False
+                    response = ChatControlResponse(
+                        ok=False,
+                        control_id=request.control_id,
+                        outcome="rejected",
+                        reason="chat_control_not_ready",
+                    )
+                elif not request.content or not request.content.strip():
+                    response = ChatControlResponse(
+                        ok=False,
+                        control_id=request.control_id,
+                        outcome="rejected",
+                        reason="empty_content",
+                    )
+                else:
+                    steering_id = callback(request.content)
+                    response = ChatControlResponse(
+                        ok=steering_id is not None,
+                        control_id=request.control_id,
+                        outcome=(
+                            "admitted" if steering_id is not None else "rejected"
+                        ),
+                        steering_id=steering_id,
+                        reason=(
+                            None if steering_id is not None else "turn_not_accepting"
+                        ),
+                    )
+            elif request.action == "interrupt_intent":
+                callback = self.interrupt_intent_callback
+                if callback is None:
+                    cache_response = False
+                    response = ChatControlResponse(
+                        ok=False,
+                        control_id=request.control_id,
+                        outcome="rejected",
+                        reason="chat_control_not_ready",
+                    )
+                else:
+                    result = callback()
+                    outcome = getattr(result, "outcome", result)
+                    outcome = getattr(outcome, "value", outcome)
+                    response = ChatControlResponse(
+                        ok=True,
+                        control_id=request.control_id,
+                        outcome=str(outcome),
+                    )
+            elif request.action == "stop_turn":
+                callback = self.stop_turn_callback or self.cancel_callback
+                if callback is None:
+                    cache_response = False
+                    response = ChatControlResponse(
+                        ok=False,
+                        control_id=request.control_id,
+                        outcome="rejected",
+                        reason="chat_control_not_ready",
+                    )
+                else:
+                    callback()
+                    response = ChatControlResponse(
+                        ok=True,
+                        control_id=request.control_id,
+                        outcome="stop_requested",
+                    )
+            else:
+                response = ChatControlResponse(
+                    ok=False,
+                    control_id=request.control_id,
+                    outcome="rejected",
+                    reason="unsupported_action",
+                )
+            if cache_response:
+                self.control_responses[request.control_id] = response
+            self.append_event("control_outcome", response.to_dict())
+            if response.outcome == "admitted":
+                self.append_event(
+                    "steering_admitted",
+                    {
+                        "control_id": request.control_id,
+                        "steering_id": response.steering_id,
+                        "content": request.content,
+                    },
+                )
+            return response
 
 
 class RemoteRelayHTTPService:
@@ -387,6 +506,9 @@ class RemoteRelayHTTPService:
                     return
                 if parsed.path == "/remote/chat/cancel":
                     self._handle_chat_cancel()
+                    return
+                if parsed.path == "/remote/chat/control":
+                    self._handle_chat_control()
                     return
                 if parsed.path == "/remote/approval/reply":
                     self._handle_approval_reply()
@@ -795,6 +917,43 @@ class RemoteRelayHTTPService:
                         already_done=already_done,
                     ).to_dict(),
                 )
+
+            def _handle_chat_control(self) -> None:
+                payload = self._read_json()
+                try:
+                    req = ChatControlRequest.from_dict(payload)
+                except Exception:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        ChatControlResponse(
+                            ok=False,
+                            control_id=str(payload.get("control_id", "")),
+                            outcome="rejected",
+                            reason="invalid_request",
+                        ).to_dict(),
+                    )
+                    return
+                peer_id = service.relay_server.token_manager.verify_peer_token(
+                    req.peer_token
+                )
+                if peer_id is None:
+                    self._send_json(
+                        HTTPStatus.UNAUTHORIZED, {"error": "invalid_peer_token"}
+                    )
+                    return
+                session = service._get_chat_session(req.chat_id)
+                if session is None or session.peer_id != peer_id:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        ChatControlResponse(
+                            ok=False,
+                            control_id=req.control_id,
+                            outcome="rejected",
+                            reason="chat_not_found",
+                        ).to_dict(),
+                    )
+                    return
+                self._send_json(HTTPStatus.OK, session.apply_control(req).to_dict())
 
             def _handle_approval_reply(self) -> None:
                 payload = self._read_json()

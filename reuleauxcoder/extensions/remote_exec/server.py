@@ -445,6 +445,7 @@ class RelayServer:
             peer_token=peer_token,
             heartbeat_interval_sec=self._heartbeat_interval_sec,
             protocol_version=min(req.protocol_version, REMOTE_PROTOCOL_VERSION),
+            host_capabilities=["chat.control.steering.v1"],
         )
 
     @staticmethod

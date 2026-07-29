@@ -30,10 +30,11 @@ type RegisterRejectedEnvelope struct {
 }
 
 type RegisterResponse struct {
-	PeerID               string `json:"peer_id"`
-	PeerToken            string `json:"peer_token"`
-	HeartbeatIntervalSec int    `json:"heartbeat_interval_sec"`
-	ProtocolVersion      int    `json:"protocol_version"`
+	PeerID               string   `json:"peer_id"`
+	PeerToken            string   `json:"peer_token"`
+	HeartbeatIntervalSec int      `json:"heartbeat_interval_sec"`
+	ProtocolVersion      int      `json:"protocol_version"`
+	HostCapabilities     []string `json:"host_capabilities,omitempty"`
 }
 
 type RegisterRejected struct {
@@ -133,6 +134,22 @@ type ChatCancelResponse struct {
 	OK          bool   `json:"ok"`
 	AlreadyDone bool   `json:"already_done,omitempty"`
 	Error       string `json:"error,omitempty"`
+}
+
+type ChatControlRequest struct {
+	PeerToken string `json:"peer_token"`
+	ChatID    string `json:"chat_id"`
+	ControlID string `json:"control_id"`
+	Action    string `json:"action"`
+	Content   string `json:"content,omitempty"`
+}
+
+type ChatControlResponse struct {
+	OK         bool   `json:"ok"`
+	ControlID  string `json:"control_id"`
+	Outcome    string `json:"outcome"`
+	SteeringID string `json:"steering_id,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 type InteractionReplyRequest struct {

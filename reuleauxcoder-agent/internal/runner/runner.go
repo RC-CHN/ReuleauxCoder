@@ -3,6 +3,8 @@ package runner
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,20 +36,25 @@ type Config struct {
 }
 
 type Runner struct {
-	cfg      Config
-	client   *client.HTTPClient
-	scanner  *bufio.Scanner
-	lines    chan string
-	inputErr chan error
+	cfg                 Config
+	client              *client.HTTPClient
+	scanner             *bufio.Scanner
+	lines               chan string
+	inputErr            chan error
+	chatControl         bool
+	pendingLines        []string
+	unconfirmedControls map[string]string
+	unconfirmedOrder    []string
 }
 
 func New(cfg Config) *Runner {
 	return &Runner{
-		cfg:      cfg,
-		client:   client.New(cfg.Host),
-		scanner:  bufio.NewScanner(os.Stdin),
-		lines:    make(chan string),
-		inputErr: make(chan error, 1),
+		cfg:                 cfg,
+		client:              client.New(cfg.Host),
+		scanner:             bufio.NewScanner(os.Stdin),
+		lines:               make(chan string),
+		inputErr:            make(chan error, 1),
+		unconfirmedControls: make(map[string]string),
 	}
 }
 
@@ -115,6 +122,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			registerResp.ProtocolVersion,
 		)
 	}
+	r.chatControl = containsString(
+		registerResp.HostCapabilities,
+		"chat.control.steering.v1",
+	)
 	log.Printf("registered peer_id=%s", registerResp.PeerID)
 	fmt.Printf("Connected to %s as %s (%s)\n", r.cfg.Host, registerResp.PeerID, workspaceRoot)
 
@@ -315,23 +326,29 @@ func (r *Runner) runInteractiveLoop(
 	for {
 		fmt.Print("You > ")
 		var rawInput string
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-interrupts:
-			now := time.Now()
-			if !lastIdleInterrupt.IsZero() && now.Sub(lastIdleInterrupt) <= 2*time.Second {
-				fmt.Println("\nExiting.")
+		if len(r.pendingLines) > 0 {
+			rawInput = r.pendingLines[0]
+			r.pendingLines = r.pendingLines[1:]
+			fmt.Println(rawInput)
+		} else {
+			select {
+			case <-ctx.Done():
 				return nil
+			case <-interrupts:
+				now := time.Now()
+				if !lastIdleInterrupt.IsZero() && now.Sub(lastIdleInterrupt) <= 2*time.Second {
+					fmt.Println("\nExiting.")
+					return nil
+				}
+				lastIdleInterrupt = now
+				fmt.Println("\nPress Ctrl+C again within 2s to exit.")
+				continue
+			case line, ok := <-r.lines:
+				if !ok {
+					return <-r.inputErr
+				}
+				rawInput = line
 			}
-			lastIdleInterrupt = now
-			fmt.Println("\nPress Ctrl+C again within 2s to exit.")
-			continue
-		case line, ok := <-r.lines:
-			if !ok {
-				return <-r.inputErr
-			}
-			rawInput = line
 		}
 		lastIdleInterrupt = time.Time{}
 		userInput := strings.TrimSpace(rawInput)
@@ -359,6 +376,7 @@ func (r *Runner) runRemoteChat(
 	peerToken, prompt string,
 	interrupts <-chan os.Signal,
 ) error {
+	defer r.preserveUnconfirmedControls()
 	chatCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	startResp, err := r.client.ChatStart(chatCtx, protocol.ChatStartRequest{
 		PeerToken: peerToken,
@@ -412,8 +430,79 @@ func (r *Runner) runRemoteChat(
 			return nil
 		case <-interrupts:
 			cancel()
-			r.cancelRemoteChat(peerToken, startResp.ChatID)
-			return errChatCancelled
+			if !r.chatControl {
+				r.cancelRemoteChat(peerToken, startResp.ChatID)
+				return errChatCancelled
+			}
+			controlID := newControlID()
+			response, controlErr := r.sendChatControl(
+				ctx,
+				protocol.ChatControlRequest{
+					PeerToken: peerToken,
+					ChatID:    startResp.ChatID,
+					ControlID: controlID,
+					Action:    "interrupt_intent",
+				},
+			)
+			if controlErr != nil {
+				fmt.Fprintf(os.Stderr, "\nInterrupt failed: %v\n", controlErr)
+				continue
+			}
+			switch response.Outcome {
+			case "promoted":
+				fmt.Println("\nInterrupting the current request to apply queued steering. Press Ctrl+C again to stop the turn.")
+			case "stop_requested", "already_stopping":
+				fmt.Println("\nCancelling the current turn…")
+			case "already_done":
+				return nil
+			default:
+				if response.Reason == "chat_control_not_ready" {
+					r.cancelRemoteChat(peerToken, startResp.ChatID)
+					return errChatCancelled
+				}
+				fmt.Fprintf(os.Stderr, "\nInterrupt rejected: %s\n", response.Reason)
+			}
+			continue
+		case line, ok := <-r.lines:
+			cancel()
+			if !ok {
+				return <-r.inputErr
+			}
+			text := strings.TrimSpace(line)
+			if text == "" {
+				continue
+			}
+			if strings.HasPrefix(text, "/") || !r.chatControl {
+				r.pendingLines = append(r.pendingLines, line)
+				fmt.Println("\nQueued for when the current chat becomes idle.")
+				continue
+			}
+			controlID := newControlID()
+			response, controlErr := r.sendChatControl(
+				ctx,
+				protocol.ChatControlRequest{
+					PeerToken: peerToken,
+					ChatID:    startResp.ChatID,
+					ControlID: controlID,
+					Action:    "admit_steering",
+					Content:   line,
+				},
+			)
+			if controlErr != nil {
+				if _, exists := r.unconfirmedControls[controlID]; !exists {
+					r.unconfirmedOrder = append(r.unconfirmedOrder, controlID)
+				}
+				r.unconfirmedControls[controlID] = line
+				fmt.Fprintf(os.Stderr, "\nSteering delivery was not confirmed; waiting for stream acknowledgement and preserving the input if none arrives: %v\n", controlErr)
+				continue
+			}
+			if response.Outcome == "admitted" {
+				fmt.Println("\nSteering queued. Press Ctrl+C to apply it immediately.")
+			} else {
+				r.pendingLines = append(r.pendingLines, line)
+				fmt.Printf("\nChat no longer accepted steering; input was preserved (%s).\n", response.Outcome)
+			}
+			continue
 		case result := <-resultCh:
 			cancel()
 			streamResp, err = result.response, result.err
@@ -457,6 +546,49 @@ func (r *Runner) cancelRemoteChat(peerToken, chatID string) {
 	_, _ = r.client.ChatCancel(cancelCtx, protocol.ChatCancelRequest{
 		PeerToken: peerToken, ChatID: chatID, Reason: "user_interrupt",
 	})
+}
+
+func (r *Runner) sendChatControl(
+	ctx context.Context,
+	request protocol.ChatControlRequest,
+) (protocol.ChatControlResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		controlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		response, err := r.client.ChatControl(controlCtx, request)
+		cancel()
+		if err == nil {
+			return response, nil
+		}
+		lastErr = err
+		if isAuthenticationError(err) {
+			if refreshErr := r.refreshLease(ctx, request.PeerToken); refreshErr != nil {
+				return protocol.ChatControlResponse{}, refreshErr
+			}
+			continue
+		}
+		if attempt == 0 && waitForRetry(ctx, 250*time.Millisecond) {
+			continue
+		}
+	}
+	return protocol.ChatControlResponse{}, lastErr
+}
+
+func newControlID() string {
+	var value [16]byte
+	if _, err := cryptorand.Read(value[:]); err == nil {
+		return hex.EncodeToString(value[:])
+	}
+	return fmt.Sprintf("control-%d", time.Now().UnixNano())
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func jitteredBackoff(base time.Duration) time.Duration {
@@ -518,6 +650,15 @@ func (r *Runner) handleChatEvent(
 		return r.handleInteractionRequest(ctx, peerToken, chatID, event.Payload, interrupts)
 	case "interaction_resolved":
 		return nil
+	case "control_outcome":
+		controlID, _ := event.Payload["control_id"].(string)
+		if line, exists := r.unconfirmedControls[controlID]; exists {
+			delete(r.unconfirmedControls, controlID)
+			outcome, _ := event.Payload["outcome"].(string)
+			if outcome != "admitted" {
+				r.pendingLines = append(r.pendingLines, line)
+			}
+		}
 	case "chat_end":
 		if response, _ := event.Payload["response"].(string); strings.TrimSpace(response) != "" {
 			fmt.Println()
@@ -530,6 +671,16 @@ func (r *Runner) handleChatEvent(
 		fmt.Fprintf(os.Stderr, "\nError: %s\n", msg)
 	}
 	return nil
+}
+
+func (r *Runner) preserveUnconfirmedControls() {
+	for _, controlID := range r.unconfirmedOrder {
+		if line, exists := r.unconfirmedControls[controlID]; exists {
+			r.pendingLines = append(r.pendingLines, line)
+		}
+		delete(r.unconfirmedControls, controlID)
+	}
+	r.unconfirmedOrder = r.unconfirmedOrder[:0]
 }
 
 func (r *Runner) handleInteractionRequest(
@@ -548,6 +699,7 @@ func (r *Runner) handleInteractionRequest(
 
 	value := any(nil)
 	cancelled := false
+	cancelReason := ""
 	answered := false
 	for !answered {
 		fmt.Print(interactionPrompt(payload))
@@ -556,8 +708,9 @@ func (r *Runner) handleInteractionRequest(
 			cancelled = true
 			answered = true
 		case <-interrupts:
-			r.cancelRemoteChat(peerToken, chatID)
-			return errChatCancelled
+			cancelled = true
+			cancelReason = "user_interrupt"
+			answered = true
 		case line, ok := <-r.lines:
 			if !ok {
 				cancelled = true
@@ -583,12 +736,14 @@ func (r *Runner) handleInteractionRequest(
 		RequestID: requestID,
 		Value:     value,
 		Cancelled: cancelled,
+		Reason:    cancelReason,
 	})
 	if isAuthenticationError(err) {
 		if refreshErr := r.refreshLease(ctx, peerToken); refreshErr == nil {
 			replyResp, err = r.client.InteractionReply(replyCtx, protocol.InteractionReplyRequest{
 				PeerToken: peerToken, ChatID: chatID, RequestID: requestID,
 				Value: value, Cancelled: cancelled,
+				Reason: cancelReason,
 			})
 		}
 	}

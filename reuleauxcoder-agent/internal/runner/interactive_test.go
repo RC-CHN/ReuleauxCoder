@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 )
 
 func TestIdleDoubleInterruptExitsInteractiveLoop(t *testing.T) {
@@ -94,5 +96,65 @@ func TestParseGenericInteractionInput(t *testing.T) {
 				t.Fatalf("got (%v, %v), want (%v, %v)", value, cancelled, test.expected, test.cancelled)
 			}
 		})
+	}
+}
+
+func TestControlOutcomeConfirmsOrPreservesUncertainSteering(t *testing.T) {
+	r := &Runner{
+		unconfirmedControls: map[string]string{
+			"accepted": "accepted direction",
+			"rejected": "rejected direction",
+		},
+	}
+	interrupts := make(chan os.Signal)
+
+	for controlID, outcome := range map[string]string{
+		"accepted": "admitted",
+		"rejected": "already_done",
+	} {
+		err := r.handleChatEvent(
+			context.Background(),
+			"peer",
+			"chat",
+			protocol.ChatEvent{
+				Type: "control_outcome",
+				Payload: map[string]any{
+					"control_id": controlID,
+					"outcome":    outcome,
+				},
+			},
+			interrupts,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(r.unconfirmedControls) != 0 {
+		t.Fatalf("controls remained unconfirmed: %#v", r.unconfirmedControls)
+	}
+	if len(r.pendingLines) != 1 || r.pendingLines[0] != "rejected direction" {
+		t.Fatalf("unexpected preserved input: %#v", r.pendingLines)
+	}
+}
+
+func TestUnconfirmedSteeringIsPreservedWhenChatEndsWithoutOutcome(t *testing.T) {
+	r := &Runner{
+		unconfirmedControls: map[string]string{
+			"control-1": "first direction",
+			"control-2": "second direction",
+		},
+		unconfirmedOrder: []string{"control-1", "control-2"},
+	}
+
+	r.preserveUnconfirmedControls()
+
+	if len(r.unconfirmedControls) != 0 {
+		t.Fatalf("controls remained unconfirmed: %#v", r.unconfirmedControls)
+	}
+	if len(r.pendingLines) != 2 ||
+		r.pendingLines[0] != "first direction" ||
+		r.pendingLines[1] != "second direction" {
+		t.Fatalf("unexpected preserved input: %#v", r.pendingLines)
 	}
 }

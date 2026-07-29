@@ -113,6 +113,7 @@ class RegisterResponse:
     peer_token: str
     heartbeat_interval_sec: int = 10
     protocol_version: int = REMOTE_PROTOCOL_MIN_VERSION
+    host_capabilities: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +121,7 @@ class RegisterResponse:
             "peer_token": self.peer_token,
             "heartbeat_interval_sec": self.heartbeat_interval_sec,
             "protocol_version": self.protocol_version,
+            "host_capabilities": self.host_capabilities,
         }
 
     @classmethod
@@ -131,6 +133,9 @@ class RegisterResponse:
             protocol_version=int(
                 d.get("protocol_version", REMOTE_PROTOCOL_MIN_VERSION)
             ),
+            host_capabilities=[
+                str(item) for item in (d.get("host_capabilities") or [])
+            ],
         )
 
 
@@ -370,6 +375,72 @@ class ChatCancelResponse:
             ok=bool(data.get("ok")),
             already_done=bool(data.get("already_done")),
             error=data.get("error"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatControlRequest:
+    peer_token: str
+    chat_id: str
+    control_id: str
+    action: str
+    content: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "peer_token": self.peer_token,
+            "chat_id": self.chat_id,
+            "control_id": self.control_id,
+            "action": self.action,
+            "content": self.content,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatControlRequest":
+        peer_token = str(data["peer_token"]).strip()
+        chat_id = str(data["chat_id"]).strip()
+        control_id = str(data["control_id"]).strip()
+        action = str(data["action"]).strip()
+        if not peer_token or not chat_id or not control_id or not action:
+            raise ValueError(
+                "peer_token, chat_id, control_id, and action are required"
+            )
+        return cls(
+            peer_token=peer_token,
+            chat_id=chat_id,
+            control_id=control_id,
+            action=action,
+            content=(
+                str(data["content"]) if data.get("content") is not None else None
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatControlResponse:
+    ok: bool
+    control_id: str
+    outcome: str
+    steering_id: str | None = None
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "control_id": self.control_id,
+            "outcome": self.outcome,
+            "steering_id": self.steering_id,
+            "reason": self.reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChatControlResponse":
+        return cls(
+            ok=bool(data.get("ok")),
+            control_id=str(data.get("control_id", "")),
+            outcome=str(data.get("outcome", "rejected")),
+            steering_id=data.get("steering_id"),
+            reason=data.get("reason"),
         )
 
 

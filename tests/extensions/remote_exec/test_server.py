@@ -93,6 +93,7 @@ class TestRegistration:
                 RegisterRequest(bootstrap_token=token, cwd="/tmp", protocol_version=2)
             )
             assert response.protocol_version == 2
+            assert "chat.control.steering.v1" in response.host_capabilities
         finally:
             srv.stop()
 

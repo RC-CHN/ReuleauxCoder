@@ -95,6 +95,14 @@ func (c *HTTPClient) ChatCancel(ctx context.Context, req protocol.ChatCancelRequ
 	return resp, nil
 }
 
+func (c *HTTPClient) ChatControl(ctx context.Context, req protocol.ChatControlRequest) (protocol.ChatControlResponse, error) {
+	var resp protocol.ChatControlResponse
+	if err := c.postJSON(ctx, "/remote/chat/control", req, &resp); err != nil {
+		return protocol.ChatControlResponse{}, err
+	}
+	return resp, nil
+}
+
 func (c *HTTPClient) InteractionReply(ctx context.Context, req protocol.InteractionReplyRequest) (protocol.InteractionReplyResponse, error) {
 	var resp protocol.InteractionReplyResponse
 	if err := c.postJSON(ctx, "/remote/interaction/reply", req, &resp); err != nil {
