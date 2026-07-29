@@ -244,9 +244,21 @@ def test_managed_shell_yields_and_session_can_terminate(tmp_path: Path) -> None:
 
     assert facts["state"] == "running"
     assert facts["stream_mode"] == "pipe"
-    assert "ready" in facts["stdout"]
     assert time.monotonic() - started < 2
     session_id = str(facts["session_id"])
+
+    # Windows CI spawns bash + native python slowly enough that the 250 ms
+    # yield can return before the child flushes its first line; poll for it.
+    stdout = str(facts["stdout"])
+    deadline = time.monotonic() + 10
+    while "ready" not in stdout:
+        assert time.monotonic() < deadline
+        polled = session.execute(session_id, "poll", wait_ms=250)
+        polled_facts = cast(
+            dict[str, Any],
+            polled.metadata["process_snapshot"],
+        )
+        stdout += str(polled_facts["stdout"])
 
     rejected_write = session.execute(session_id, "write", chars="hello\n")
     rejected_facts = cast(
@@ -278,7 +290,8 @@ def test_managed_shell_reports_nonzero_exit_as_process_fact(tmp_path: Path) -> N
     assert result.status is ToolOutcomeStatus.FAILED
     assert facts["state"] == "exited"
     assert facts["exit_code"] == 7
-    assert facts["stdout"] == "bad command\n"
+    # Native Windows children translate "\n" to "\r\n" on text-mode pipes.
+    assert facts["stdout"].replace("\r\n", "\n") == "bad command\n"
     assert '"executed": false' not in result.model_text.lower()
     assert '"executed": true' in result.model_text.lower()
     manager.shutdown()

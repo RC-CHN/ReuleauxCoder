@@ -136,9 +136,11 @@ def test_output_truncation_fact_never_regresses(tmp_path) -> None:
 def test_concurrent_idempotent_start_spawns_once(tmp_path) -> None:
     port = LocalProcessPort()
     output_path = tmp_path / "starts.txt"
+    # Use a cwd-relative path: an absolute Windows path embedded in the
+    # shlex-quoted command gets mangled by Git Bash argument conversion.
     command = _python_command(
         "from pathlib import Path; "
-        f"path=Path({str(output_path)!r}); "
+        "path = Path('starts.txt'); "
         "path.write_text((path.read_text() if path.exists() else '') + 'start\\n')"
     )
     barrier = threading.Barrier(6)
@@ -169,10 +171,13 @@ def test_concurrent_idempotent_start_spawns_once(tmp_path) -> None:
     assert len(handles) == 6
     assert len({handle.session_id for handle in handles}) == 1
     session_id = handles[0].session_id
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 10
     while port.poll(session_id, wait_ms=100).state is ProcessState.RUNNING:
         assert time.monotonic() < deadline
-    assert output_path.read_text() == "start\n"
+    final = port.poll(session_id)
+    assert final.exit_code == 0
+    # write_text() also translates "\n" to "\r\n" on Windows.
+    assert output_path.read_bytes().replace(b"\r\n", b"\n") == b"start\n"
     port.release(session_id)
 
 

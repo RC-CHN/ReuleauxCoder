@@ -78,8 +78,9 @@ def test_manager_keeps_independent_consumer_cursors(tmp_path) -> None:
     )
 
     assert state is ProcessState.EXITED
-    assert model_output == "hello\n"
-    assert ui_output == "hello\n"
+    # Native Windows children translate "\n" to "\r\n" on text-mode pipes.
+    assert model_output.replace("\r\n", "\n") == "hello\n"
+    assert ui_output.replace("\r\n", "\n") == "hello\n"
     manager.shutdown()
 
 
