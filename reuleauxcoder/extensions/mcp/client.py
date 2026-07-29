@@ -6,14 +6,52 @@ import asyncio
 import json
 import os
 import shutil
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from reuleauxcoder.interfaces.events import UIEventBus
+    from reuleauxcoder.domain.cancellation import CancellationSignal
 
 from reuleauxcoder import __version__
-from reuleauxcoder.extensions.mcp.models import MCPToolInfo
+from reuleauxcoder.extensions.mcp.models import (
+    MCPRequestHandle,
+    MCPRequestState,
+    MCPToolInfo,
+)
 from reuleauxcoder.infrastructure.platform import get_platform_info
+
+
+class MCPRequestError(RuntimeError):
+    """Base failure for one request lifecycle."""
+
+
+class MCPRequestNotDispatched(MCPRequestError):
+    """The request could be proven not to have entered the transport."""
+
+
+class MCPRequestTimeout(MCPRequestError):
+    """An in-flight request did not settle before its client-owned deadline."""
+
+    def __init__(self, message: str, *, request_id: int):
+        super().__init__(message)
+        self.request_id = request_id
+
+
+class MCPRequestTransportLost(MCPRequestError):
+    """The transport vanished after a request might have been dispatched."""
+
+    def __init__(self, message: str, *, request_id: int | None = None):
+        super().__init__(message)
+        self.request_id = request_id
+
+
+class MCPToolRequestCancelled(MCPRequestError):
+    """The local caller abandoned an in-flight tools/call request."""
+
+    def __init__(self, request_id: int):
+        super().__init__(f"MCP tools/call request {request_id} was cancelled")
+        self.request_id = request_id
 
 
 class MCPClient:
@@ -28,7 +66,7 @@ class MCPClient:
         self._request_id = 0
         self._tools: list[MCPToolInfo] = []
         self._initialized = False
-        self._pending_requests: dict[int, asyncio.Future] = {}
+        self._pending_requests: dict[int, MCPRequestHandle] = {}
         self._receive_task: asyncio.Task | None = None
 
     @property
@@ -80,7 +118,7 @@ class MCPClient:
         self._receive_task = asyncio.create_task(self._receive_loop())
 
         try:
-            result = await self._request(
+            initialize = await self._request(
                 "initialize",
                 {
                     "protocolVersion": "2024-11-05",
@@ -88,6 +126,7 @@ class MCPClient:
                     "clientInfo": {"name": "reuleauxcoder", "version": __version__},
                 },
             )
+            result = await self._await_request(initialize)
 
             if not result:
                 self._emit("error", f"Failed to initialize server '{self.config.name}'")
@@ -95,7 +134,8 @@ class MCPClient:
 
             await self._notify("notifications/initialized", {})
 
-            tools_result = await self._request("tools/list", {})
+            tools_request = await self._request("tools/list", {})
+            tools_result = await self._await_request(tools_request)
             if tools_result and "tools" in tools_result:
                 for t in tools_result["tools"]:
                     self._tools.append(
@@ -106,6 +146,7 @@ class MCPClient:
                                 "inputSchema", {"type": "object", "properties": {}}
                             ),
                             server_name=self.config.name,
+                            annotations=dict(t.get("annotations") or {}),
                         )
                     )
 
@@ -152,10 +193,11 @@ class MCPClient:
             finally:
                 self._receive_task = None
 
-        for future in self._pending_requests.values():
-            if not future.done():
-                future.cancel()
-        self._pending_requests.clear()
+        self._fail_pending(
+            MCPRequestTransportLost(
+                f"MCP server '{self.config.name}' disconnected"
+            )
+        )
 
         writer = self._writer
         process = self._process
@@ -168,7 +210,10 @@ class MCPClient:
             wait_closed = getattr(writer, "wait_closed", None)
             if callable(wait_closed):
                 try:
-                    await asyncio.wait_for(wait_closed(), timeout=1.0)
+                    await asyncio.wait_for(
+                        cast(Awaitable[None], wait_closed()),
+                        timeout=1.0,
+                    )
                 except Exception:
                     pass
 
@@ -189,36 +234,58 @@ class MCPClient:
         self._writer = None
         self._initialized = False
 
-    async def call_tool(self, name: str, arguments: dict, _retry: bool = False) -> str:
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        cancellation_signal: "CancellationSignal | None" = None,
+        _retry: bool = False,
+    ) -> str:
         if not self._initialized:
             # Try reconnect once if not initialized
             if not _retry:
                 if await self.reconnect():
-                    return await self.call_tool(name, arguments, _retry=True)
+                    return await self.call_tool(
+                        name,
+                        arguments,
+                        cancellation_signal=cancellation_signal,
+                        _retry=True,
+                    )
             return "Error: MCP client not connected"
 
         # Check if process is still alive
         if not self.is_connected():
             if not _retry:
                 if await self.reconnect():
-                    return await self.call_tool(name, arguments, _retry=True)
+                    return await self.call_tool(
+                        name,
+                        arguments,
+                        cancellation_signal=cancellation_signal,
+                        _retry=True,
+                    )
             return "Error: MCP server connection lost"
 
         try:
-            result = await self._request(
+            handle = await self._request(
                 "tools/call",
                 {
                     "name": name,
                     "arguments": arguments,
                 },
             )
-
+            # From this point onward the request may have executed. Never
+            # reconnect/retry it automatically, regardless of timeout or
+            # transport failure.
+            result = await self._await_request(
+                handle,
+                cancellation_signal=cancellation_signal,
+            )
             if not result:
-                # No response - might be connection issue, try reconnect
-                if not _retry:
-                    if await self.reconnect():
-                        return await self.call_tool(name, arguments, _retry=True)
-                return "Error: No response from MCP server"
+                return (
+                    "Error: MCP tool returned no response. Its side effects are "
+                    "unknown; inspect server state before deciding whether to retry."
+                )
 
             content = result.get("content", [])
             if not content:
@@ -244,16 +311,23 @@ class MCPClient:
             if result.get("isError"):
                 return f"Error: {result_text}"
             return result_text or "(no output)"
-        except Exception as e:
-            # Exception during call - try reconnect once
-            if not _retry:
+        except MCPRequestNotDispatched as e:
+            # A retry is safe only while the transport proves no bytes were
+            # accepted for this request.
+            if not _retry and not (
+                cancellation_signal is not None and cancellation_signal.is_set()
+            ):
                 if await self.reconnect():
-                    return await self.call_tool(name, arguments, _retry=True)
-            return f"Error calling MCP tool: {e}"
-
-    async def _request(self, method: str, params: dict) -> dict | None:
+                    return await self.call_tool(
+                        name,
+                        arguments,
+                        cancellation_signal=cancellation_signal,
+                        _retry=True,
+                    )
+            return f"Error calling MCP tool before dispatch: {e}"
+    async def _request(self, method: str, params: dict) -> MCPRequestHandle:
         if not self._writer or not self._reader:
-            return None
+            raise MCPRequestNotDispatched("MCP transport is not connected")
 
         self._request_id += 1
         request_id = self._request_id
@@ -266,23 +340,121 @@ class MCPClient:
 
         loop = asyncio.get_event_loop()
         future = loop.create_future()
-        self._pending_requests[request_id] = future
+        handle = MCPRequestHandle(
+            request_id=request_id,
+            method=method,
+            future=future,
+        )
+        self._pending_requests[request_id] = handle
 
         try:
             line = json.dumps(message) + "\n"
             self._writer.write(line.encode())
+            # A successful write hands bytes to the transport buffer. Even if
+            # drain fails, execution can no longer be ruled out.
+            handle.state = MCPRequestState.IN_FLIGHT
             await self._writer.drain()
         except Exception as e:
             self._pending_requests.pop(request_id, None)
             self._emit("error", f"Send error: {e}")
-            return None
+            was_dispatched = handle.state is MCPRequestState.IN_FLIGHT
+            handle.state = MCPRequestState.SETTLED
+            if not future.done():
+                future.set_exception(
+                    MCPRequestTransportLost(str(e), request_id=request_id)
+                    if was_dispatched
+                    else MCPRequestNotDispatched(str(e))
+                )
+                # The caller receives the raised exception below; consume the
+                # duplicate future exception to avoid an unhandled warning.
+                future.exception()
+            if was_dispatched:
+                raise MCPRequestTransportLost(
+                    str(e), request_id=request_id
+                ) from e
+            raise MCPRequestNotDispatched(str(e)) from e
+        return handle
 
+    async def _await_request(
+        self,
+        handle: MCPRequestHandle,
+        *,
+        timeout: float = 30.0,
+        cancellation_signal: "CancellationSignal | None" = None,
+    ) -> dict | None:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            # Response and cancellation are settled on this event loop.
+            # A response already queued/delivered wins before a later cancel.
+            if handle.future.done():
+                return handle.future.result()
+            if cancellation_signal is not None and cancellation_signal.is_set():
+                if handle.future.done():
+                    return handle.future.result()
+                await self._cancel_request(
+                    handle,
+                    reason="User interrupted the active tool call",
+                )
+                raise MCPToolRequestCancelled(handle.request_id)
+            if asyncio.get_running_loop().time() >= deadline:
+                current = self._pending_requests.get(handle.request_id)
+                if current is handle:
+                    self._pending_requests.pop(handle.request_id, None)
+                handle.state = MCPRequestState.SETTLED
+                if not handle.future.done():
+                    handle.future.cancel()
+                self._emit("warning", f"Request timeout: {handle.method}")
+                raise MCPRequestTimeout(
+                    f"{handle.method} request {handle.request_id} timed out",
+                    request_id=handle.request_id,
+                )
+            await asyncio.sleep(0.05)
+
+    async def _cancel_request(
+        self, handle: MCPRequestHandle, *, reason: str
+    ) -> bool:
+        if handle.state is MCPRequestState.SETTLED or handle.future.done():
+            return False
+        current = self._pending_requests.get(handle.request_id)
+        if current is not handle:
+            return False
+        # Remove first so a late response cannot win after cancellation has
+        # become the terminal local result.
+        self._pending_requests.pop(handle.request_id, None)
+        handle.state = MCPRequestState.SETTLED
+        if not handle.future.done():
+            handle.future.cancel()
+        if not handle.cancellation_sent:
+            handle.cancellation_sent = True
+            self._notify_detached(
+                "notifications/cancelled",
+                {"requestId": handle.request_id, "reason": reason},
+            )
+        return True
+
+    def _notify_detached(self, method: str, params: dict) -> None:
+        """Queue a fire-and-forget notification without delaying cancellation."""
+        writer = self._writer
+        if writer is None:
+            return
+        message = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        }
         try:
-            return await asyncio.wait_for(future, timeout=30.0)
-        except asyncio.TimeoutError:
-            self._pending_requests.pop(request_id, None)
-            self._emit("warning", f"Request timeout: {method}")
-            return None
+            writer.write((json.dumps(message) + "\n").encode())
+        except Exception as error:
+            self._emit("error", f"Notify error: {error}")
+            return
+
+        async def finish_drain() -> None:
+            try:
+                await writer.drain()
+            except Exception as error:
+                self._emit("error", f"Notify error: {error}")
+
+        asyncio.create_task(finish_drain())
 
     async def _notify(self, method: str, params: dict):
         if not self._writer:
@@ -324,12 +496,19 @@ class MCPClient:
                         continue
 
                     if "id" in message and message["id"] in self._pending_requests:
-                        future = self._pending_requests.pop(message["id"])
+                        handle = self._pending_requests.pop(message["id"])
+                        handle.state = MCPRequestState.SETTLED
+                        future = handle.future
                         if not future.done():
                             if "error" in message:
                                 future.set_result(None)
                             else:
                                 future.set_result(message.get("result"))
+                    elif "id" in message:
+                        self._emit(
+                            "warning",
+                            f"Ignored late result for request {message['id']}",
+                        )
 
                     if message.get("method") == "notifications/message":
                         params = message.get("params", {})
@@ -341,3 +520,26 @@ class MCPClient:
             pass
         except Exception as e:
             self._emit("error", f"Receive error: {e}")
+            self._fail_pending(MCPRequestTransportLost(str(e)))
+        else:
+            self._fail_pending(
+                MCPRequestTransportLost(
+                    f"MCP server '{self.config.name}' closed its output stream"
+                )
+            )
+        finally:
+            self._initialized = False
+
+    def _fail_pending(self, error: MCPRequestError) -> None:
+        pending = tuple(self._pending_requests.values())
+        self._pending_requests.clear()
+        for handle in pending:
+            handle.state = MCPRequestState.SETTLED
+            if not handle.future.done():
+                pending_error = error
+                if isinstance(error, MCPRequestTransportLost):
+                    pending_error = MCPRequestTransportLost(
+                        str(error),
+                        request_id=handle.request_id,
+                    )
+                handle.future.set_exception(pending_error)

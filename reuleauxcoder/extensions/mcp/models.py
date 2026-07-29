@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,24 @@ class MCPToolInfo:
     description: str
     input_schema: dict
     server_name: str | None = None
+    annotations: dict[str, Any] = field(default_factory=dict)
+
+
+class MCPRequestState(str, Enum):
+    NOT_DISPATCHED = "not_dispatched"
+    IN_FLIGHT = "in_flight"
+    SETTLED = "settled"
+
+
+@dataclass(slots=True)
+class MCPRequestHandle:
+    """One request identity whose result/cancel race is owned by the MCP loop."""
+
+    request_id: int
+    method: str
+    future: Any
+    state: MCPRequestState = MCPRequestState.NOT_DISPATCHED
+    cancellation_sent: bool = False
 
 
 @dataclass(slots=True)
