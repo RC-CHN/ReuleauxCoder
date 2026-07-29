@@ -15,10 +15,14 @@ from collections.abc import Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from ipaddress import IPv4Address, IPv6Address, ip_address
 import json
+import math
 import os
+import socket
 import threading
 from typing import Any, TypeVar
+from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -43,6 +47,8 @@ _CANCELLATION_POLL_SECONDS = 0.05
 _DEFAULT_FETCH_TIMEOUT = 30.0
 _MAX_FETCH_TIMEOUT = 120.0
 _SEARCH_TIMEOUT = 25.0
+_MAX_REDIRECTS = 20
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 _PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
 _PROVIDERS = ("exa", "parallel")
@@ -58,6 +64,35 @@ class _ResponseTooLarge(ValueError):
 
 class _WebRequestCancelled(Exception):
     """Raised after the active HTTP task has acknowledged cancellation."""
+
+
+class _InvalidWebUrl(ValueError):
+    """Raised when a requested or redirected URL cannot be fetched safely."""
+
+
+class _PrivateNetworkBlocked(ValueError):
+    """Raised when public-only mode encounters a non-global target."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        super().__init__("private or non-global network target blocked")
+
+
+class _TargetResolutionFailed(ValueError):
+    """Raised when public-only mode cannot resolve a target for validation."""
+
+
+class _TooManyRedirects(ValueError):
+    """Raised when a fetch exceeds its finite redirect budget."""
+
+
+@dataclass(frozen=True)
+class _FetchedResponse:
+    status_code: int
+    headers: httpx.Headers
+    body: bytes
+    encoding: str | None
+    url: str
 
 
 def _success(
@@ -181,11 +216,108 @@ def _decode_response_body(response: httpx.Response, body: bytes) -> str:
     return body.decode(response.encoding or "utf-8", errors="replace")
 
 
-def _web_settings(tool: Tool) -> tuple[bool, str]:
+def _web_settings(tool: Tool) -> tuple[bool, str, bool]:
     config = getattr(tool, "_agent_config", None)
     enabled = bool(getattr(config, "web_enabled", True))
     provider = str(getattr(config, "web_search_provider", "auto"))
-    return enabled, provider
+    allow_private_networks = bool(
+        getattr(config, "web_allow_private_networks", True)
+    )
+    return enabled, provider, allow_private_networks
+
+
+def _parse_web_url(url: str) -> SplitResult:
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError as error:
+        raise _InvalidWebUrl("URL contains an invalid host or port") from error
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise _InvalidWebUrl("URL scheme must be http or https")
+    if not parsed.hostname:
+        raise _InvalidWebUrl("URL must include a hostname")
+    if any(character.isspace() for character in parsed.hostname):
+        raise _InvalidWebUrl("URL hostname cannot contain whitespace")
+    if port is not None and not 1 <= port <= 65535:
+        raise _InvalidWebUrl("URL port must be between 1 and 65535")
+    return parsed
+
+
+def _display_url(url: str) -> str:
+    """Return a diagnostic URL without credentials, query values, or fragments."""
+    try:
+        parsed = _parse_web_url(url)
+    except _InvalidWebUrl:
+        return "<invalid URL>"
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    netloc = f"{host}:{port}" if port is not None else host
+    safe = urlunsplit((parsed.scheme.lower(), netloc, parsed.path or "/", "", ""))
+    return safe + ("?<redacted>" if parsed.query else "")
+
+
+async def _resolve_host_addresses(
+    host: str,
+    port: int,
+) -> tuple[IPv4Address | IPv6Address, ...]:
+    try:
+        literal = ip_address(host)
+    except ValueError:
+        try:
+            records = await asyncio.get_running_loop().getaddrinfo(
+                host,
+                port,
+                type=socket.SOCK_STREAM,
+            )
+        except OSError as error:
+            raise _TargetResolutionFailed("target hostname could not be resolved") from error
+        addresses: set[IPv4Address | IPv6Address] = set()
+        for record in records:
+            value = str(record[4][0]).split("%", 1)[0]
+            try:
+                addresses.add(ip_address(value))
+            except ValueError:
+                continue
+        if not addresses:
+            raise _TargetResolutionFailed(
+                "target hostname did not resolve to an IP address"
+            )
+        return tuple(addresses)
+    return (literal,)
+
+
+async def _validate_network_target(url: str, *, allow_private: bool) -> None:
+    parsed = _parse_web_url(url)
+    if allow_private:
+        return
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    addresses = await _resolve_host_addresses(host, port)
+    if any(not address.is_global for address in addresses):
+        raise _PrivateNetworkBlocked(url)
+
+
+def _validate_connected_peer(response: httpx.Response, *, allow_private: bool) -> None:
+    if allow_private:
+        return
+    stream = response.extensions.get("network_stream")
+    get_extra_info = getattr(stream, "get_extra_info", None)
+    if not callable(get_extra_info):
+        return
+    peer = get_extra_info("server_addr")
+    if not isinstance(peer, tuple) or not peer:
+        return
+    try:
+        address = ip_address(str(peer[0]).split("%", 1)[0])
+    except ValueError:
+        return
+    if not address.is_global:
+        raise _PrivateNetworkBlocked(str(response.request.url))
 
 
 def _provider_order(preference: str) -> list[str]:
@@ -313,26 +445,122 @@ def _html_to_markdown(html_text: str) -> str:
     return parser.markdown()
 
 
+class _TextExtractor(HTMLParser):
+    """Tag-free HTML extraction that does not emit Markdown syntax."""
+
+    _SKIP_TAGS = _MarkdownExtractor._SKIP_TAGS
+    _BLOCK_TAGS = (
+        _MarkdownExtractor._BLOCK_TAGS
+        | _MarkdownExtractor._HEADING_TAGS
+        | {"li", "br"}
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if not self._skip_depth and tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if not self._skip_depth and tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        text = " ".join(data.split())
+        if text:
+            self._parts.append(text + " ")
+
+    def text(self) -> str:
+        lines = [
+            " ".join(line.split())
+            for line in "".join(self._parts).splitlines()
+        ]
+        return "\n".join(line for line in lines if line).strip()
+
+
+def _html_to_text(html_text: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(html_text)
+    parser.close()
+    return parser.text()
+
+
+def _sse_data_items(body: str) -> list[str]:
+    items: list[str] = []
+    data_lines: list[str] = []
+
+    def flush() -> None:
+        if data_lines:
+            items.append("\n".join(data_lines))
+            data_lines.clear()
+
+    for line in body.splitlines():
+        if not line:
+            flush()
+            continue
+        if line.startswith(":"):
+            continue
+        if line == "data":
+            data_lines.append("")
+        elif line.startswith("data:"):
+            value = line[len("data:") :]
+            data_lines.append(value[1:] if value.startswith(" ") else value)
+    flush()
+    return items
+
+
 def _mcp_result_text(body: str) -> str:
-    """Extract the first text content item from a JSON or SSE MCP response."""
-    payload: dict[str, Any] | None = None
+    """Extract the matching text result from a JSON or SSE MCP response."""
     trimmed = body.strip()
     if trimmed.startswith("{"):
-        payload = json.loads(trimmed)
+        candidates = [trimmed]
     else:
-        for line in body.splitlines():
-            if line.startswith("data: "):
-                payload = json.loads(line[len("data: ") :])
-                break
-    if not isinstance(payload, dict):
+        candidates = _sse_data_items(body)
+
+    parsed_payload = False
+    last_json_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        if not candidate.strip() or candidate.strip() == "[DONE]":
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as error:
+            last_json_error = error
+            continue
+        if not isinstance(payload, dict):
+            continue
+        parsed_payload = True
+        if payload.get("id") not in {None, 1}:
+            continue
+        if payload.get("error") is not None:
+            raise ValueError("search provider returned a JSON-RPC error")
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            continue
+        for item in result.get("content") or []:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "text"
+                and item.get("text")
+            ):
+                return str(item["text"])
+    if not parsed_payload:
+        if last_json_error is not None:
+            raise last_json_error
         raise ValueError("search provider returned an unrecognized response")
-    result = payload.get("result")
-    if not isinstance(result, dict):
-        error = payload.get("error")
-        raise ValueError(f"search provider error: {error or 'missing result'}")
-    for item in result.get("content") or []:
-        if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
-            return str(item["text"])
     raise ValueError("search provider returned no text content")
 
 
@@ -499,7 +727,8 @@ class WebFetchTool(Tool):
         "Fetch one URL over HTTP and return its content. format controls the "
         "rendering: markdown (default) converts HTML, text strips tags, html "
         "returns the source. Responses are capped at 5 MiB; timeout defaults "
-        "to 30 s and is capped at 120 s. Use web_search for discovery queries."
+        "to 30 s and is capped at 120 s. Requests originate from the rcoder "
+        "host. Use web_search for discovery queries."
     )
     parameters = {
         "type": "object",
@@ -507,6 +736,7 @@ class WebFetchTool(Tool):
             "url": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 16384,
                 "description": "The URL to fetch (must start with http:// or https://)",
             },
             "format": {
@@ -516,7 +746,8 @@ class WebFetchTool(Tool):
             },
             "timeout": {
                 "type": "number",
-                "exclusiveMinimum": 0,
+                "minimum": 1,
+                "maximum": 120,
                 "description": "Optional timeout in seconds (max 120)",
             },
         },
@@ -534,8 +765,10 @@ class WebFetchTool(Tool):
     def _preflight_validate(  # type: ignore[override]
         self, url: str, **_
     ) -> str | None:
-        if not url.startswith(("http://", "https://")):
-            return "url must start with http:// or https://"
+        try:
+            _parse_web_url(url)
+        except _InvalidWebUrl as error:
+            return str(error)
         return None
 
     def execute(  # type: ignore[override]
@@ -544,7 +777,7 @@ class WebFetchTool(Tool):
         format: str = "markdown",
         timeout: float | None = None,
     ) -> ToolOutcome:
-        enabled, _ = _web_settings(self)
+        enabled, _, allow_private_networks = _web_settings(self)
         if not enabled:
             return _failure(
                 "Web access disabled",
@@ -554,10 +787,32 @@ class WebFetchTool(Tool):
                 status=ToolOutcomeStatus.DENIED,
                 error_kind=ToolErrorKind.DENIED,
             )
-        seconds = min(
-            max(float(timeout), 1.0) if timeout is not None else _DEFAULT_FETCH_TIMEOUT,
-            _MAX_FETCH_TIMEOUT,
+        seconds = (
+            float(timeout) if timeout is not None else _DEFAULT_FETCH_TIMEOUT
         )
+        if not math.isfinite(seconds) or not 1 <= seconds <= _MAX_FETCH_TIMEOUT:
+            return _failure(
+                "Invalid web fetch timeout",
+                "Web fetch timeout must be a finite number between 1 and 120 seconds.",
+                code="invalid_timeout",
+                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+            )
+        if format not in {"markdown", "text", "html"}:
+            return _failure(
+                "Invalid web fetch format",
+                "Web fetch format must be one of markdown, text, or html.",
+                code="invalid_format",
+                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+            )
+        try:
+            _parse_web_url(url)
+        except _InvalidWebUrl as error:
+            return _failure(
+                "Invalid web URL",
+                str(error),
+                code="invalid_url",
+                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+            )
         accept = {
             "markdown": "text/markdown;q=1.0, text/x-markdown;q=0.9, "
             "text/plain;q=0.8, text/html;q=0.7, */*;q=0.1",
@@ -572,7 +827,13 @@ class WebFetchTool(Tool):
         try:
             return asyncio.run(
                 _run_interruptible(
-                    self._execute_async(url, format, seconds, headers),
+                    self._execute_async(
+                        url,
+                        format,
+                        seconds,
+                        headers,
+                        allow_private_networks=allow_private_networks,
+                    ),
                     cancellation=self.current_cancellation_signal(),
                     timeout=seconds,
                 )
@@ -594,6 +855,30 @@ class WebFetchTool(Tool):
                 error_kind=ToolErrorKind.INTERRUPTED,
                 timeout_seconds=seconds,
             )
+        except _PrivateNetworkBlocked as error:
+            return _failure(
+                "Private network target blocked",
+                "Web fetch was blocked because web.allow_private_networks=false "
+                "and the requested or redirected target is not globally routable.",
+                code="private_network_blocked",
+                status=ToolOutcomeStatus.DENIED,
+                error_kind=ToolErrorKind.DENIED,
+                blocked_url=_display_url(error.url),
+            )
+        except _TargetResolutionFailed:
+            return _failure(
+                "Web target validation failed",
+                "Web fetch could not validate the target hostname while private "
+                "network access is disabled.",
+                code="target_resolution_failed",
+            )
+        except _TooManyRedirects:
+            return _failure(
+                "Too many web redirects",
+                f"Web fetch stopped after {_MAX_REDIRECTS} redirects.",
+                code="too_many_redirects",
+                redirect_limit=_MAX_REDIRECTS,
+            )
         except _ResponseTooLarge:
             return _failure(
                 "Web response too large",
@@ -608,6 +893,13 @@ class WebFetchTool(Tool):
                 code="transport_error",
                 transport_error=type(error).__name__,
             )
+        except httpx.InvalidURL:
+            return _failure(
+                "Invalid web URL",
+                "The HTTP client rejected the requested or redirected URL.",
+                code="invalid_url",
+                error_kind=ToolErrorKind.INVALID_ARGUMENTS,
+            )
 
     async def _execute_async(
         self,
@@ -615,58 +907,71 @@ class WebFetchTool(Tool):
         format: str,
         seconds: float,
         headers: dict[str, str],
+        *,
+        allow_private_networks: bool,
     ) -> ToolOutcome:
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=seconds,
+            trust_env=allow_private_networks,
         ) as client:
-            status_code, response_headers, body, encoding = await self._fetch_once(
+            response, redirect_count = await self._fetch_redirect_chain(
                 client,
                 url,
                 headers,
+                allow_private_networks=allow_private_networks,
             )
             # Cloudflare bot challenges key on TLS fingerprints; retry once
             # with an honest UA so legitimate fetches are not challenged.
             if (
-                status_code == 403
-                and response_headers.get("cf-mitigated") == "challenge"
+                response.status_code == 403
+                and response.headers.get("cf-mitigated") == "challenge"
             ):
-                status_code, response_headers, body, encoding = (
-                    await self._fetch_once(
-                        client,
-                        url,
-                        {**headers, "User-Agent": _HONEST_USER_AGENT},
-                    )
+                response, redirect_count = await self._fetch_redirect_chain(
+                    client,
+                    url,
+                    {**headers, "User-Agent": _HONEST_USER_AGENT},
+                    allow_private_networks=allow_private_networks,
                 )
 
-        if status_code >= 400:
+        common_metadata = {
+            "requested_url": _display_url(url),
+            "final_url": _display_url(response.url),
+            "redirect_count": redirect_count,
+        }
+        if response.status_code >= 400:
             return _failure(
                 "Web fetch failed",
-                f"Web fetch failed: HTTP {status_code}.",
+                f"Web fetch failed: HTTP {response.status_code}.",
                 code="http_status",
-                http_status=status_code,
+                http_status=response.status_code,
+                **common_metadata,
             )
 
-        content_type = response_headers.get("content-type", "").split(";")[0].strip()
+        content_type = response.headers.get("content-type", "").split(";")[0].strip()
         if content_type.startswith("image/"):
             return _success(
                 "Fetched image metadata",
-                f"Fetched an image ({content_type}, {len(body)} bytes). "
+                f"Fetched an image ({content_type}, {len(response.body)} bytes). "
                 "Image content is not rendered as text.",
                 content_type=content_type,
-                size_bytes=len(body),
+                size_bytes=len(response.body),
+                **common_metadata,
             )
-        text = body.decode(encoding or "utf-8", errors="replace")
+        text = response.body.decode(response.encoding or "utf-8", errors="replace")
         if format == "html" or not content_type.startswith("text/html"):
             content = text
+        elif format == "text":
+            content = _html_to_text(text)
         else:
             content = _html_to_markdown(text)
         return _success(
             "Fetched web content",
             content,
             content_type=content_type or "unknown",
-            size_bytes=len(body),
+            size_bytes=len(response.body),
             format=format,
+            **common_metadata,
         )
 
     @staticmethod
@@ -674,23 +979,63 @@ class WebFetchTool(Tool):
         client: httpx.AsyncClient,
         url: str,
         headers: dict[str, str],
-    ) -> tuple[int, httpx.Headers, bytes, str | None]:
+        *,
+        allow_private_networks: bool,
+    ) -> _FetchedResponse:
         request = client.stream("GET", url, headers=headers)
         async with request as response:
-            if response.status_code >= 400:
-                return (
-                    response.status_code,
-                    response.headers,
-                    b"",
-                    response.encoding,
-                )
-            body = await _read_limited_body(response, max_bytes=_MAX_RESPONSE_BYTES)
-            return (
-                response.status_code,
-                response.headers,
-                body,
-                response.encoding,
+            _validate_connected_peer(
+                response,
+                allow_private=allow_private_networks,
             )
+            is_redirect = (
+                response.status_code in _REDIRECT_STATUSES
+                and bool(response.headers.get("location"))
+            )
+            if response.status_code >= 400 or is_redirect:
+                body = b""
+            else:
+                body = await _read_limited_body(
+                    response,
+                    max_bytes=_MAX_RESPONSE_BYTES,
+                )
+            return _FetchedResponse(
+                status_code=response.status_code,
+                headers=response.headers,
+                body=body,
+                encoding=response.encoding,
+                url=url,
+            )
+
+    @classmethod
+    async def _fetch_redirect_chain(
+        cls,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        *,
+        allow_private_networks: bool,
+    ) -> tuple[_FetchedResponse, int]:
+        current_url = url
+        redirect_count = 0
+        while True:
+            await _validate_network_target(
+                current_url,
+                allow_private=allow_private_networks,
+            )
+            response = await cls._fetch_once(
+                client,
+                current_url,
+                headers,
+                allow_private_networks=allow_private_networks,
+            )
+            location = response.headers.get("location")
+            if response.status_code not in _REDIRECT_STATUSES or not location:
+                return response, redirect_count
+            if redirect_count >= _MAX_REDIRECTS:
+                raise _TooManyRedirects
+            current_url = urljoin(current_url, location)
+            redirect_count += 1
 
 
 class WebSearchTool(Tool):
@@ -704,7 +1049,8 @@ class WebSearchTool(Tool):
         "publish date, excerpts). Rotates between hosted search providers "
         "(Exa, Parallel) per call and fails over to the other on errors. "
         "Optional EXA_API_KEY / PARALLEL_API_KEY environment variables raise "
-        "provider rate limits. Use web_fetch to retrieve a specific URL."
+        "provider rate limits. Requests originate from the rcoder host. Use "
+        "web_fetch to retrieve a specific URL."
     )
     parameters = {
         "type": "object",
@@ -712,6 +1058,7 @@ class WebSearchTool(Tool):
             "query": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 4096,
                 "description": "Web search query",
             },
             "num_results": {
@@ -735,7 +1082,7 @@ class WebSearchTool(Tool):
     def execute(  # type: ignore[override]
         self, query: str, num_results: int = 8
     ) -> ToolOutcome:
-        enabled, preference = _web_settings(self)
+        enabled, preference, _ = _web_settings(self)
         if not enabled:
             return _failure(
                 "Web access disabled",

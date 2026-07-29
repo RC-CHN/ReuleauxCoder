@@ -401,6 +401,12 @@ class ConfigLoader:
             web_search_provider=str(
                 web_config.get("search_provider", DEFAULTS["web_search_provider"])
             ),
+            web_allow_private_networks=bool(
+                web_config.get(
+                    "allow_private_networks",
+                    DEFAULTS["web_allow_private_networks"],
+                )
+            ),
             approval=ApprovalConfig(
                 default_mode=approval_config.get(
                     "default_mode", DEFAULTS["approval_default_mode"]

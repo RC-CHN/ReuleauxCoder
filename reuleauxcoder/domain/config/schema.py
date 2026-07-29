@@ -70,6 +70,7 @@ CONFIG_SCHEMA = {
     "web": {
         "enabled": "bool (default: true)",
         "search_provider": "string (default: auto, one of auto/exa/parallel)",
+        "allow_private_networks": "bool (default: true)",
     },
     "session": {
         "auto_save": "bool (default: true)",
@@ -215,6 +216,7 @@ DEFAULTS = {
     "tool_output_store_dir": None,
     "web_enabled": True,
     "web_search_provider": "auto",
+    "web_allow_private_networks": True,
     "shell_rtk": "off",  # "auto" | "on" | "off"
     "notes_workspace_max": 30,
     "notes_global_max": 20,

@@ -46,6 +46,7 @@ class _FakeResponse:
         self.chunks = chunks
         self.chunks_yielded = 0
         self.request: httpx.Request | None = None
+        self.extensions: dict[str, object] = {}
 
     @property
     def text(self) -> str:
@@ -116,6 +117,10 @@ def _tool_with_config(tool, **overrides):
     tool._agent_config = SimpleNamespace(
         web_enabled=overrides.get("web_enabled", True),
         web_search_provider=overrides.get("web_search_provider", "auto"),
+        web_allow_private_networks=overrides.get(
+            "web_allow_private_networks",
+            True,
+        ),
     )
     return tool
 
@@ -130,9 +135,27 @@ def test_fetch_preflight_rejects_non_http_schemes() -> None:
     tool = WebFetchTool()
     assert tool._preflight_validate(url="ftp://example.com") is not None
     assert tool._preflight_validate(url="https://example.com") is None
+    assert tool._preflight_validate(url="HTTP://example.com") is None
     outcome = tool.preflight_validate({"url": "gopher://example.com"})
     assert outcome is not None
+    assert outcome.content is not None
     assert "http" in outcome.content
+
+
+def test_fetch_preflight_enforces_timeout_range() -> None:
+    tool = WebFetchTool()
+    for timeout in (0, 121):
+        outcome = tool.preflight_validate(
+            {"url": "https://example.com", "timeout": timeout}
+        )
+        assert outcome is not None
+        assert outcome.status is ToolOutcomeStatus.FAILED
+
+
+def test_search_preflight_rejects_unbounded_queries() -> None:
+    outcome = WebSearchTool().preflight_validate({"query": "x" * 4097})
+    assert outcome is not None
+    assert outcome.status is ToolOutcomeStatus.FAILED
 
 
 def test_approval_subjects_expose_url_and_query() -> None:
@@ -172,6 +195,151 @@ def test_fetch_converts_html_to_markdown(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "Hello world" in output.model_text
     assert "[link](https://a.dev)" in output.model_text
     assert "var x=1" not in output.model_text
+
+
+def test_fetch_text_format_does_not_emit_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = (
+        b'<h1>Title</h1><p>Hello <a href="https://a.dev">link</a></p>'
+        b"<script>bad()</script>"
+    )
+
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        return _FakeResponse(
+            headers={"content-type": "text/html; charset=utf-8"},
+            content=page,
+        )
+
+    _patch_client(monkeypatch, handler)
+    outcome = WebFetchTool().execute("https://example.com", format="text")
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.model_text == "Title\nHello link"
+
+
+def test_fetch_allows_private_networks_by_default_and_follows_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        calls.append(url)
+        if len(calls) == 1:
+            return _FakeResponse(
+                status_code=302,
+                headers={"location": "http://127.0.0.1/final"},
+            )
+        return _FakeResponse(
+            headers={"content-type": "text/plain"},
+            content=b"internal",
+        )
+
+    _patch_client(monkeypatch, handler)
+    outcome = WebFetchTool().execute("http://localhost/start")
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.model_text == "internal"
+    assert calls == ["http://localhost/start", "http://127.0.0.1/final"]
+    assert outcome.metadata["redirect_count"] == 1
+
+
+def test_fetch_public_only_mode_blocks_private_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        calls.append(url)
+        return _FakeResponse(
+            status_code=302,
+            headers={"location": "http://127.0.0.1/private"},
+        )
+
+    _patch_client(monkeypatch, handler)
+    tool = _tool_with_config(
+        WebFetchTool(),
+        web_allow_private_networks=False,
+    )
+    outcome = tool.execute("http://93.184.216.34/start")
+    assert outcome.status is ToolOutcomeStatus.DENIED
+    assert outcome.metadata["web_error_code"] == "private_network_blocked"
+    assert outcome.metadata["blocked_url"] == "http://127.0.0.1/private"
+    assert calls == ["http://93.184.216.34/start"]
+
+
+def test_fetch_public_only_mode_checks_the_connected_peer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PrivatePeer:
+        @staticmethod
+        def get_extra_info(name: str):
+            return ("127.0.0.1", 80) if name == "server_addr" else None
+
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        response = _FakeResponse(
+            headers={"content-type": "text/plain"},
+            content=b"must-not-be-returned",
+        )
+        response.extensions["network_stream"] = _PrivatePeer()
+        return response
+
+    _patch_client(monkeypatch, handler)
+    tool = _tool_with_config(
+        WebFetchTool(),
+        web_allow_private_networks=False,
+    )
+    outcome = tool.execute("http://93.184.216.34/")
+    assert outcome.status is ToolOutcomeStatus.DENIED
+    assert outcome.metadata["web_error_code"] == "private_network_blocked"
+
+
+def test_fetch_public_only_mode_rejects_mixed_dns_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    async def mixed_addresses(host: str, port: int):
+        del host, port
+        return (
+            web.ip_address("93.184.216.34"),
+            web.ip_address("10.0.0.8"),
+        )
+
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        nonlocal called
+        called = True
+        return _FakeResponse(content=b"must-not-run")
+
+    monkeypatch.setattr(web, "_resolve_host_addresses", mixed_addresses)
+    _patch_client(monkeypatch, handler)
+    tool = _tool_with_config(
+        WebFetchTool(),
+        web_allow_private_networks=False,
+    )
+    outcome = tool.execute("https://example.com/")
+    assert outcome.status is ToolOutcomeStatus.DENIED
+    assert called is False
+
+
+def test_fetch_metadata_redacts_url_credentials_and_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        return _FakeResponse(
+            headers={"content-type": "text/plain"},
+            content=b"ok",
+        )
+
+    _patch_client(monkeypatch, handler)
+    outcome = WebFetchTool().execute(
+        "http://user:password@127.0.0.1/path?token=secret#fragment"
+    )
+    metadata = json.dumps(outcome.metadata)
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.metadata["requested_url"] == (
+        "http://127.0.0.1/path?<redacted>"
+    )
+    for secret in ("user", "password", "token", "secret", "fragment"):
+        assert secret not in metadata
 
 
 def test_fetch_rejects_oversized_responses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -299,6 +467,43 @@ def test_mcp_result_text_supports_json_and_sse() -> None:
     assert _mcp_result_text(sse_body) == "hits"
     with pytest.raises(ValueError):
         _mcp_result_text("not a payload")
+
+
+def test_mcp_result_text_skips_notifications_and_joins_sse_data_lines() -> None:
+    body = "\n".join(
+        [
+            ": keepalive",
+            "event: message",
+            'data: {"jsonrpc": "2.0", "method": "notifications/progress"}',
+            "",
+            "data: {\"jsonrpc\": \"2.0\", \"id\": 1,",
+            'data:"result": {"content": [{"type": "text", "text": "hits"}]}}',
+            "",
+            "data: [DONE]",
+            "",
+        ]
+    )
+    assert _mcp_result_text(body) == "hits"
+
+
+def test_mcp_result_text_ignores_other_request_ids() -> None:
+    body = "\n\n".join(
+        [
+            'data: {"id": 9, "result": {"content": [{"type": "text", "text": "wrong"}]}}',
+            'data: {"id": 1, "result": {"content": [{"type": "text", "text": "right"}]}}',
+        ]
+    )
+    assert _mcp_result_text(body) == "right"
+
+
+def test_mcp_result_text_skips_non_json_sse_before_result() -> None:
+    body = "\n\n".join(
+        [
+            "data: ping",
+            'data: {"id": 1, "result": {"content": [{"type": "text", "text": "hits"}]}}',
+        ]
+    )
+    assert _mcp_result_text(body) == "hits"
 
 
 def test_exa_hit_parsing_normalizes_blocks() -> None:

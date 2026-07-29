@@ -278,6 +278,7 @@ class Config:
     # Web access settings
     web_enabled: bool = True
     web_search_provider: str = "auto"  # "auto" | "exa" | "parallel"
+    web_allow_private_networks: bool = True
 
     # Session settings
     session_auto_save: bool = True

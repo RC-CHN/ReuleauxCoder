@@ -196,6 +196,11 @@ def test_config_supports_llm_debug_trace_flag() -> None:
     assert config.llm_debug_trace is True
 
 
+def test_web_private_networks_are_allowed_by_default() -> None:
+    config = Config(api_key="key")
+    assert config.web_allow_private_networks is True
+
+
 def test_remote_exec_config_defaults() -> None:
     config = Config(api_key="key")
     assert isinstance(config.remote_exec, RemoteExecConfig)

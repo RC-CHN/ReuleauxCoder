@@ -128,6 +128,11 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
                 ],
             },
             "skills": {"enabled": True, "scan_project": False, "disabled": ["demo"]},
+            "web": {
+                "enabled": True,
+                "search_provider": "parallel",
+                "allow_private_networks": False,
+            },
             "prompt": {"system_append": "Always answer in Chinese."},
             "ui": {
                 "verbosity": "standard",
@@ -154,6 +159,9 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.approval.rules[0].scope_key == "session-workspace"
     assert config.skills.scan_project is False
     assert config.skills.disabled == ["demo"]
+    assert config.web_enabled is True
+    assert config.web_search_provider == "parallel"
+    assert config.web_allow_private_networks is False
     assert config.prompt.system_append == "Always answer in Chinese."
     assert config.preserve_reasoning_content is True
     assert config.backfill_reasoning_content_for_tool_calls is True
