@@ -29,6 +29,7 @@ from reuleauxcoder.domain.config.models import ApprovalRuleConfig
 from reuleauxcoder.domain.approval_preview import (
     build_approval_preview,
     capture_approval_document,
+    capture_workspace_document,
     diff_approval_documents,
 )
 from reuleauxcoder.domain.hooks.types import (
@@ -37,7 +38,7 @@ from reuleauxcoder.domain.hooks.types import (
     GuardDecision,
     HookPoint,
 )
-from reuleauxcoder.domain.workspace import WorkspaceError
+from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceRevision
 
 
 _EXTERNAL_PATH_ARGUMENTS = {
@@ -179,6 +180,21 @@ def _stream_handler_scope(
             execution_context.remote_stream_handler = previous
 
 
+@contextmanager
+def _workspace_revision_scope(
+    backend,
+    revision: WorkspaceRevision | None,
+) -> Iterator[None]:
+    """Bind one call's prepared revision without mutating model arguments."""
+    bind = getattr(backend, "workspace_revision_scope", None)
+    if not callable(bind):
+        yield
+        return
+    scope = cast(AbstractContextManager[object], bind(revision))
+    with scope:
+        yield
+
+
 class ToolExecutor:
     """Handles tool execution for the agent."""
 
@@ -234,6 +250,7 @@ class ToolExecutor:
         """Execute a single tool call."""
         reviewed_diff: str | None = None
         approval_workspace_changes: list[str] = []
+        expected_workspace_revision: WorkspaceRevision | None = None
         tool = self.agent.get_tool(tc.name)
         if tool is None and (
             getattr(self.agent, "strict_tool_scope", False)
@@ -350,6 +367,14 @@ class ToolExecutor:
                     preflight_failure = tool.preflight_validate(tc.arguments)
                 if preflight_failure is not None:
                     return self._finish_rejected_call(tc, preflight_failure)
+                with _workspace_access_scope(workspace, external_target):
+                    prepared_document = capture_workspace_document(
+                        tc.name,
+                        tc.arguments,
+                        workspace=workspace,
+                    )
+                if prepared_document is not None:
+                    expected_workspace_revision = prepared_document.revision
 
         if external_mutation:
             approval_required = GuardDecision.require_approval(
@@ -469,7 +494,16 @@ class ToolExecutor:
                         after_approval = capture_approval_document(
                             approval_request, workspace=workspace
                         )
-                    if before_approval == after_approval:
+                    if (
+                        before_approval is None
+                        and after_approval is None
+                    ) or (
+                        before_approval is not None
+                        and after_approval is not None
+                        and before_approval.same_content(after_approval)
+                    ):
+                        if after_approval is not None:
+                            expected_workspace_revision = after_approval.revision
                         break
                     if before_approval is not None and after_approval is not None:
                         approval_workspace_changes.append(
@@ -604,15 +638,21 @@ class ToolExecutor:
                 execution_context,
                 stream_handler,
             ):
-                bind_execution = getattr(tool, "bind_execution", None)
-                if callable(bind_execution):
-                    bind_execution(
-                        tool_call_id=tc.id,
-                        session_generation=self.agent.session_generation,
-                    )
-                execution_workspace = getattr(backend, "workspace", None)
-                with _workspace_access_scope(execution_workspace, external_target):
-                    raw_result = tool.execute(**tool_call.arguments)
+                with _workspace_revision_scope(
+                    backend,
+                    expected_workspace_revision,
+                ):
+                    bind_execution = getattr(tool, "bind_execution", None)
+                    if callable(bind_execution):
+                        bind_execution(
+                            tool_call_id=tc.id,
+                            session_generation=self.agent.session_generation,
+                        )
+                    execution_workspace = getattr(backend, "workspace", None)
+                    with _workspace_access_scope(
+                        execution_workspace, external_target
+                    ):
+                        raw_result = tool.execute(**tool_call.arguments)
             outcome = (
                 raw_result
                 if isinstance(raw_result, ToolOutcome)

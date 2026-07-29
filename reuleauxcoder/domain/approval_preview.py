@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+from typing import cast
 
 from reuleauxcoder.domain.approval import (
     ApprovalPreview,
@@ -14,6 +16,8 @@ from reuleauxcoder.domain.diff import build_tool_diff, build_unified_diff
 from reuleauxcoder.domain.workspace import (
     WorkspaceError,
     WorkspaceErrorCode,
+    WorkspaceDocumentSnapshot,
+    WorkspaceRevision,
     WorkspacePort,
 )
 
@@ -22,6 +26,10 @@ from reuleauxcoder.domain.workspace import (
 class ApprovalDocumentSnapshot:
     path: str
     content: str | None
+    revision: WorkspaceRevision
+
+    def same_content(self, other: "ApprovalDocumentSnapshot") -> bool:
+        return self.path == other.path and self.revision.same_content(other.revision)
 
 
 def capture_approval_document(
@@ -30,17 +38,51 @@ def capture_approval_document(
     """Capture the complete target document used to detect approval staleness."""
     if workspace is None or request.tool_name not in {"edit_file", "write_file"}:
         return None
-    file_path = request.tool_args.get("file_path")
+    return capture_workspace_document(
+        request.tool_name,
+        request.tool_args,
+        workspace=workspace,
+    )
+
+
+def capture_workspace_document(
+    tool_name: str,
+    tool_args: dict,
+    *,
+    workspace: WorkspacePort | None,
+) -> ApprovalDocumentSnapshot | None:
+    """Capture one mutation target for approval and execution revision binding."""
+    if workspace is None or tool_name not in {"edit_file", "write_file"}:
+        return None
+    file_path = tool_args.get("file_path")
     if not isinstance(file_path, str):
         return None
     resolved = str(workspace.resolve(file_path))
+    snapshot = getattr(workspace, "snapshot_text", None)
+    if callable(snapshot):
+        document = cast(WorkspaceDocumentSnapshot, snapshot(file_path))
+        return ApprovalDocumentSnapshot(
+            path=document.resolved_path,
+            content=document.content,
+            revision=document.revision,
+        )
     try:
         content = workspace.read_text(file_path)
     except WorkspaceError as error:
         if error.code is not WorkspaceErrorCode.NOT_FOUND:
             raise
         content = None
-    return ApprovalDocumentSnapshot(path=resolved, content=content)
+    encoded = content.encode("utf-8") if content is not None else None
+    revision = WorkspaceRevision(
+        exists=encoded is not None,
+        sha256=hashlib.sha256(encoded).hexdigest() if encoded is not None else None,
+        size_bytes=len(encoded) if encoded is not None else 0,
+    )
+    return ApprovalDocumentSnapshot(
+        path=resolved,
+        content=content,
+        revision=revision,
+    )
 
 
 def diff_approval_documents(

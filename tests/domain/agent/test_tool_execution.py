@@ -1,6 +1,7 @@
 """Tests for ToolExecutor, including CWD sync behaviour."""
 
 import concurrent.futures
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -673,6 +674,117 @@ def test_stale_approval_is_refreshed_and_external_change_reaches_model(
     assert outcome.metadata["diff_reviewed"] is True
     assert outcome.metadata["workspace_changed_during_approval"] is True
     assert "+external change" in outcome.model_text
+
+
+def test_mtime_only_change_does_not_invalidate_approval(tmp_path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("old\n")
+    tool = EditFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+        )
+    )
+    agent = _AgentStub(tool)
+    agent.hook_registry.run_guards = lambda point, ctx: [
+        GuardDecision.require_approval()
+    ]
+
+    def touch_without_changing_content() -> None:
+        current = target.stat()
+        os.utime(
+            target,
+            ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000),
+        )
+
+    provider = _ReviewingProvider(mutate=touch_without_changing_content)
+    agent.approval_provider = provider
+
+    ToolExecutor(agent).execute(
+        ToolCall(
+            id="mtime-review",
+            name="edit_file",
+            arguments={
+                "file_path": str(target),
+                "old_string": "old",
+                "new_string": "new",
+            },
+        )
+    )
+
+    assert len(provider.requests) == 1
+    assert target.read_text() == "new\n"
+
+
+def test_edit_reapplies_to_ide_change_after_preparation(tmp_path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("old\n")
+    tool = EditFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+        )
+    )
+    agent = _AgentStub(tool)
+    contributed = False
+
+    def mutate_after_preparation(context):
+        nonlocal contributed
+        if not contributed:
+            contributed = True
+            target.write_text("old\nide change\n")
+        return context
+
+    agent.extension_runtime.contribute_tool_context = mutate_after_preparation
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="ide-edit",
+            name="edit_file",
+            arguments={
+                "file_path": str(target),
+                "old_string": "old",
+                "new_string": "new",
+            },
+        )
+    )
+
+    outcome = agent.events[-1].tool_outcome
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.metadata["external_change_before_write"] is True
+    assert "changed externally" in result
+    assert "reapplied to the latest contents" in result
+    assert target.read_text() == "new\nide change\n"
+
+
+def test_write_reports_overwriting_ide_change_after_preparation(tmp_path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("approved\n")
+    tool = WriteFileTool(
+        backend=LocalToolBackend(
+            ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+        )
+    )
+    agent = _AgentStub(tool)
+
+    def mutate_after_preparation(context):
+        target.write_text("ide change\n")
+        return context
+
+    agent.extension_runtime.contribute_tool_context = mutate_after_preparation
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="ide-write",
+            name="write_file",
+            arguments={"file_path": str(target), "content": "requested\n"},
+        )
+    )
+
+    outcome = agent.events[-1].tool_outcome
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.metadata["external_change_before_write"] is True
+    assert "full-file replacement" in result
+    assert "overwrote that newer revision" in result
+    assert target.read_text() == "requested\n"
 
 
 def test_write_outcome_suppresses_identical_human_reviewed_diff(tmp_path) -> None:

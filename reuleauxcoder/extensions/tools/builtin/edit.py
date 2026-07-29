@@ -22,6 +22,11 @@ from reuleauxcoder.domain.workspace import (
 )
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
+from reuleauxcoder.extensions.tools.builtin._workspace_mutation import (
+    current_expected_revision,
+    project_successful_mutation,
+    workspace_mutation_failure,
+)
 
 
 class EditFileTool(Tool):
@@ -115,13 +120,18 @@ class EditFileTool(Tool):
         workspace = self.backend.workspace
         assert workspace is not None
         try:
-            content, new_content = workspace.replace_exact_atomic(
-                file_path, old_string, new_string
+            result = workspace.replace_exact_verified(
+                file_path,
+                old_string,
+                new_string,
+                expected_revision=current_expected_revision(self.backend),
             )
+            content = result.old_content or ""
+            new_content = result.new_content
             resolved = workspace.resolve(file_path)
             diff = build_tool_diff(content, new_content, str(resolved))
             summary = f"Edited {file_path}"
-            return ToolOutcome(
+            outcome = ToolOutcome(
                 summary=summary,
                 content=summary,
                 diff=diff,
@@ -132,8 +142,17 @@ class EditFileTool(Tool):
                     "show_diff_by_default": True,
                 },
             )
+            return project_successful_mutation(
+                outcome,
+                result.receipt,
+                operation="edit",
+            )
         except WorkspaceError as e:
-            return _workspace_failure(e)
+            return workspace_mutation_failure(
+                e,
+                operation="edit",
+                file_path=file_path,
+            )
         except Exception as e:
             return ToolOutcome(
                 status=ToolOutcomeStatus.FAILED,
@@ -175,17 +194,3 @@ def _validate_edit_request(
             "Include more surrounding lines to make it unique."
         )
     return None
-
-
-def _workspace_failure(error: WorkspaceError) -> ToolOutcome:
-    kind = (
-        ToolErrorKind.NOT_FOUND
-        if error.code is WorkspaceErrorCode.NOT_FOUND
-        else ToolErrorKind.EXECUTION
-    )
-    return ToolOutcome(
-        status=ToolOutcomeStatus.FAILED,
-        content=f"Error [{error.code.value}]: {error.message}",
-        error_kind=kind,
-        metadata={"workspace_error_code": error.code.value},
-    )

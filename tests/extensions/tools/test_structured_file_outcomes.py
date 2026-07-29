@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from reuleauxcoder.domain.agent.tool_outcome import (
@@ -5,6 +6,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolRetentionStrategy,
 )
 from reuleauxcoder.domain.diff import build_tool_diff
+from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
@@ -40,6 +42,10 @@ def test_write_and_edit_return_structured_unbounded_diffs(tmp_path: Path) -> Non
     assert edit.model_text.startswith("Edited demo.txt\n--- a/")
     assert write.metadata["show_diff_by_default"] is True
     assert edit.metadata["show_diff_by_default"] is True
+    assert write.metadata["mutation_verification"] == "applied_verified"
+    assert edit.metadata["mutation_verification"] == "applied_verified"
+    assert write.model_content is None
+    assert edit.model_content is None
 
 
 def test_diff_is_stable_across_platform_newline_encodings() -> None:
@@ -107,3 +113,83 @@ def test_external_file_approval_subject_remains_an_absolute_path(
     assert write.approval_subjects({"file_path": str(target)}) == (
         target.resolve().as_posix(),
     )
+
+
+def test_failed_write_exposes_diverged_file_state_to_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    target = tmp_path / "demo.txt"
+    target.write_text("old")
+
+    def change_then_fail(source, destination) -> None:  # noqa: ARG001
+        Path(destination).write_text("external")
+        raise OSError("replace raced")
+
+    monkeypatch.setattr(
+        "reuleauxcoder.infrastructure.workspace.local.os.replace",
+        change_then_fail,
+    )
+
+    outcome = WriteFileTool(backend).execute("demo.txt", "requested")
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.metadata["mutation_verification"] == "diverged"
+    assert "may have been partially modified or changed externally" in outcome.model_text
+    assert "Read demo.txt before making further edits" in outcome.model_text
+    assert target.read_text() == "external"
+
+
+def test_failed_write_reports_when_intended_contents_are_already_visible(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    target = tmp_path / "demo.txt"
+    target.write_text("old")
+    original_replace = os.replace
+
+    def replace_then_fail(source, destination) -> None:
+        original_replace(source, destination)
+        raise OSError("replace result was not acknowledged")
+
+    monkeypatch.setattr(
+        "reuleauxcoder.infrastructure.workspace.local.os.replace",
+        replace_then_fail,
+    )
+
+    outcome = WriteFileTool(backend).execute("demo.txt", "requested")
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.metadata["mutation_verification"] == "applied_verified"
+    assert "intended contents are visible and were verified" in outcome.model_text
+    assert "Do not retry blindly" in outcome.model_text
+    assert target.read_text() == "requested"
+
+
+def test_successful_write_with_unverifiable_result_is_not_plain_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    backend = _backend(tmp_path)
+    workspace = backend.workspace
+    assert workspace is not None
+    target = tmp_path / "demo.txt"
+    target.write_text("old")
+    original_snapshot = workspace.snapshot_text
+    calls = 0
+
+    def snapshot(path):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise WorkspaceError(WorkspaceErrorCode.IO_ERROR, "cannot verify")
+        return original_snapshot(path)
+
+    monkeypatch.setattr(workspace, "snapshot_text", snapshot)
+
+    outcome = WriteFileTool(backend).execute("demo.txt", "requested")
+
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.metadata["mutation_verification"] == "unknown"
+    assert "final contents could not be verified" in outcome.model_text
+    assert "Read " in outcome.model_text
+    assert target.read_text() == "requested"

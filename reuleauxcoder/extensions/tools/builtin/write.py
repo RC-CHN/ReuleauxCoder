@@ -15,7 +15,12 @@ from reuleauxcoder.domain.approval_subjects import (
     canonical_workspace_subject,
     file_approval_grant_scopes,
 )
-from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
+from reuleauxcoder.domain.workspace import WorkspaceError
+from reuleauxcoder.extensions.tools.builtin._workspace_mutation import (
+    current_expected_revision,
+    project_successful_mutation,
+    workspace_mutation_failure,
+)
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import Tool, backend_handler
 
@@ -82,14 +87,19 @@ class WriteFileTool(Tool):
         workspace = self.backend.workspace
         assert workspace is not None
         try:
-            old_content = workspace.write_text_atomic(file_path, content)
+            result = workspace.write_text_verified(
+                file_path,
+                content,
+                expected_revision=current_expected_revision(self.backend),
+            )
+            old_content = result.old_content or ""
             n_lines = content.count("\n") + (
                 1 if content and not content.endswith("\n") else 0
             )
             resolved = workspace.resolve(file_path)
             diff = build_tool_diff(old_content, content, str(resolved))
             summary = f"Wrote {n_lines} lines to {file_path}"
-            return ToolOutcome(
+            outcome = ToolOutcome(
                 summary=summary,
                 content=summary,
                 diff=diff,
@@ -101,17 +111,16 @@ class WriteFileTool(Tool):
                     "show_diff_by_default": True,
                 },
             )
-        except WorkspaceError as e:
-            kind = (
-                ToolErrorKind.NOT_FOUND
-                if e.code is WorkspaceErrorCode.NOT_FOUND
-                else ToolErrorKind.EXECUTION
+            return project_successful_mutation(
+                outcome,
+                result.receipt,
+                operation="write",
             )
-            return ToolOutcome(
-                status=ToolOutcomeStatus.FAILED,
-                content=f"Error [{e.code.value}]: {e.message}",
-                error_kind=kind,
-                metadata={"workspace_error_code": e.code.value},
+        except WorkspaceError as e:
+            return workspace_mutation_failure(
+                e,
+                operation="write",
+                file_path=file_path,
             )
         except Exception as e:
             return ToolOutcome(

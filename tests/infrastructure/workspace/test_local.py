@@ -1,6 +1,7 @@
 from pathlib import Path
 from fnmatch import fnmatchcase
 from functools import lru_cache
+import os
 import threading
 
 import pytest
@@ -209,6 +210,38 @@ def test_failed_write_receipt_confirms_unchanged_target(
     assert receipt.observed_after is not None
     assert receipt.observed_after.same_content(receipt.before)
     assert path.read_text() == "old"
+
+
+def test_failed_write_receipt_reports_intended_contents_already_applied(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = LocalWorkspacePort(tmp_path)
+    path = tmp_path / "file.txt"
+    path.write_text("old")
+    original_replace = os.replace
+
+    def replace_then_fail(source, target) -> None:
+        original_replace(source, target)
+        raise OSError("replace result was not acknowledged")
+
+    monkeypatch.setattr(
+        "reuleauxcoder.infrastructure.workspace.local.os.replace",
+        replace_then_fail,
+    )
+
+    with pytest.raises(WorkspaceError) as failed:
+        workspace.write_text_verified(path, "new")
+
+    receipt = failed.value.mutation_receipt
+    assert receipt is not None
+    assert (
+        receipt.verification
+        is WorkspaceMutationVerification.APPLIED_VERIFIED
+    )
+    assert receipt.atomic_replace is False
+    assert receipt.observed_after is not None
+    assert receipt.observed_after.sha256 == receipt.intended_after_sha256
+    assert path.read_text() == "new"
 
 
 def test_failed_write_receipt_reports_diverged_target(

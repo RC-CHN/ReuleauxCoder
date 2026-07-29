@@ -9,6 +9,7 @@ from pathlib import Path
 import threading
 
 from reuleauxcoder.domain.workspace import WorkspacePort
+from reuleauxcoder.domain.workspace import WorkspaceRevision
 from reuleauxcoder.domain.process import ProcessPort
 from reuleauxcoder.infrastructure.process import LocalProcessPort
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
@@ -42,6 +43,7 @@ class ToolBackend:
         self.workspace = workspace
         self.process = process
         self._stream_handler_local = threading.local()
+        self._workspace_revision_local = threading.local()
 
     @contextmanager
     def stream_handler_scope(self, handler: object | None) -> Iterator[None]:
@@ -59,6 +61,25 @@ class ToolBackend:
 
     def current_stream_handler(self) -> object | None:
         return getattr(self._stream_handler_local, "handler", None)
+
+    @contextmanager
+    def workspace_revision_scope(
+        self, revision: WorkspaceRevision | None
+    ) -> Iterator[None]:
+        """Bind the prepared/approved file revision to one executing call."""
+        missing = object()
+        previous = getattr(self._workspace_revision_local, "revision", missing)
+        self._workspace_revision_local.revision = revision
+        try:
+            yield
+        finally:
+            if previous is missing:
+                del self._workspace_revision_local.revision
+            else:
+                self._workspace_revision_local.revision = previous
+
+    def current_workspace_revision(self) -> WorkspaceRevision | None:
+        return getattr(self._workspace_revision_local, "revision", None)
 
     def clone_for_scope(self, scope: str) -> "ToolBackend":
         """Materialize a backend adapter for an independent Agent scope."""
