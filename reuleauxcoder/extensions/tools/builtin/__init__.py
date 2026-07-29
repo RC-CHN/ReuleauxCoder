@@ -33,6 +33,7 @@ from reuleauxcoder.extensions.tools.builtin.subagent_control import (
     SpawnAgentTool,
     WaitAgentTool,
 )
+from reuleauxcoder.extensions.tools.builtin.web import WebFetchTool, WebSearchTool
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 
 _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
@@ -60,6 +61,8 @@ _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
     WaitAgentTool,
     InterruptAgentTool,
     WriteFileTool,
+    WebFetchTool,
+    WebSearchTool,
 )
 
 

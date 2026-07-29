@@ -275,6 +275,10 @@ class Config:
     tool_output_store_full: bool = True
     tool_output_store_dir: Optional[str] = None
 
+    # Web access settings
+    web_enabled: bool = True
+    web_search_provider: str = "auto"  # "auto" | "exa" | "parallel"
+
     # Session settings
     session_auto_save: bool = True
     session_dir: Optional[str] = None
@@ -380,6 +384,9 @@ class Config:
             errors.append("notes_workspace_max must be positive")
         if self.notes_global_max < 1:
             errors.append("notes_global_max must be positive")
+
+        if self.web_search_provider not in {"auto", "exa", "parallel"}:
+            errors.append("web_search_provider must be one of auto, exa, parallel")
 
         if self.approval.default_mode not in valid_actions:
             errors.append(

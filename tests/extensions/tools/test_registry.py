@@ -30,6 +30,8 @@ EXPECTED_BUILTIN_TOOL_NAMES = (
     "wait_agent",
     "interrupt_agent",
     "write_file",
+    "web_fetch",
+    "web_search",
 )
 
 

@@ -274,6 +274,7 @@ class ConfigLoader:
         context_config = data.get("context", {})
         remote_exec_config = data.get("remote_exec", {})
         lsp_config = data.get("lsp", {})
+        web_config = data.get("web", {})
         diagnostics: list[ConfigDiagnostic] = []
 
         # Parse MCP servers
@@ -395,6 +396,10 @@ class ConfigLoader:
             ),
             tool_output_store_dir=tool_output_config.get(
                 "store_dir", DEFAULTS["tool_output_store_dir"]
+            ),
+            web_enabled=bool(web_config.get("enabled", DEFAULTS["web_enabled"])),
+            web_search_provider=str(
+                web_config.get("search_provider", DEFAULTS["web_search_provider"])
             ),
             approval=ApprovalConfig(
                 default_mode=approval_config.get(

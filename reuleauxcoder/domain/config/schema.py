@@ -67,6 +67,10 @@ CONFIG_SCHEMA = {
         "store_full_output": "bool (default: true)",
         "store_dir": "string (optional, default: ./.rcoder/tool-outputs, fallback ~/.rcoder/tool-outputs)",
     },
+    "web": {
+        "enabled": "bool (default: true)",
+        "search_provider": "string (default: auto, one of auto/exa/parallel)",
+    },
     "session": {
         "auto_save": "bool (default: true)",
         "dir": "string (optional, default: ./.rcoder/sessions, fallback ~/.rcoder/sessions)",
@@ -196,6 +200,8 @@ DEFAULTS = {
         {"tool_name": "history_read", "action": "allow"},
         {"tool_name": "artifact_read", "action": "allow"},
         {"tool_name": "lsp", "action": "allow"},
+        {"tool_name": "web_fetch", "action": "warn"},
+        {"tool_name": "web_search", "action": "warn"},
         {"tool_name": "write_file", "action": "require_approval"},
         {"tool_name": "edit_file", "action": "require_approval"},
         {"tool_name": "shell", "action": "require_approval"},
@@ -207,6 +213,8 @@ DEFAULTS = {
     "tool_output_max_lines": 120,
     "tool_output_store_full": True,
     "tool_output_store_dir": None,
+    "web_enabled": True,
+    "web_search_provider": "auto",
     "shell_rtk": "off",  # "auto" | "on" | "off"
     "notes_workspace_max": 30,
     "notes_global_max": 20,
