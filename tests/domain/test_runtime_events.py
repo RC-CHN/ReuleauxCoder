@@ -17,6 +17,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.runtime.events import (
     ApprovalResolved,
     AssistantContentDelta,
+    AssistantStreamInterrupted,
     NotificationRaised,
     OperationPhaseChanged,
     PlanUpdated,
@@ -30,6 +31,7 @@ from reuleauxcoder.domain.runtime.events import (
     ToolOutputDelta,
     TurnFinished,
     TurnStarted,
+    UserSteeringApplied,
     agent_event_to_runtime_event,
     runtime_event_to_agent_event,
 )
@@ -89,6 +91,25 @@ def test_runtime_worker_event_round_trips_back_to_legacy_emitter() -> None:
     assert restored.session_generation == 3
     assert restored.correlation_id == "call-worker"
     assert restored.tool_outcome == original.tool_outcome
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        AssistantStreamInterrupted(attempt_id="turn:0:2", interrupt_epoch=3),
+        UserSteeringApplied(
+            user_input="change direction",
+            steering_id="steer-1",
+            attempt_id="turn:0:2",
+        ),
+    ],
+)
+def test_interrupt_runtime_payloads_roundtrip_through_json_codec(payload) -> None:
+    original = RuntimeEvent(payload=payload, turn_id="turn")
+
+    restored = runtime_event_from_dict(runtime_event_to_dict(original))
+
+    assert restored == original
 
 
 def test_approval_resolution_round_trip_preserves_decision_provenance() -> None:

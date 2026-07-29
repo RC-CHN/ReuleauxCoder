@@ -30,6 +30,7 @@ _PAYLOAD_TYPES = {
         events.TurnStarted,
         events.TurnFinished,
         events.AssistantContentDelta,
+        events.AssistantStreamInterrupted,
         events.ReasoningDelta,
         events.ChatStarted,
         events.ChatCompleted,

@@ -532,6 +532,11 @@ class AppRunner:
 
         agent = agent or self._agent
         if agent is not None:
+            discard_steering = getattr(
+                agent, "discard_pending_user_steering", None
+            )
+            if callable(discard_steering):
+                discard_steering(reason="session_exit")
             report("Closing pending interactions...")
             shutdown_interactions = getattr(
                 getattr(agent, "ui_interactor", None), "shutdown", None

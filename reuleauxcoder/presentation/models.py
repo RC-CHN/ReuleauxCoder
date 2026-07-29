@@ -16,6 +16,7 @@ class AssistantCell:
     id: str
     text: str = ""
     complete: bool = False
+    interrupted: bool = False
     revision: int = 0
     group_id: str | None = None
 

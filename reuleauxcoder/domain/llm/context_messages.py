@@ -18,10 +18,12 @@ RESERVED_CONTEXT_TAGS = frozenset(
         "inter_agent_message",
         "legacy_runtime_context",
         "project_context",
+        "request_interrupted",
         "runtime_context_update",
         "runtime_instruction",
         "session_diagnostic",
         "subagent_conflict",
+        "turn_interrupted",
     }
 )
 

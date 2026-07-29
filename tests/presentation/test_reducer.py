@@ -50,6 +50,29 @@ def test_stream_deltas_merge_into_one_assistant_cell() -> None:
     )
 
 
+def test_interrupted_stream_is_sealed_and_retry_opens_a_new_cell() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(_runtime(AgentEvent.stream_token("partial")))
+    reducer.apply(
+        _runtime(
+            AgentEvent.assistant_stream_interrupted(
+                attempt_id="turn-1:0:1",
+                interrupt_epoch=1,
+            )
+        )
+    )
+    reducer.apply(_runtime(AgentEvent.stream_token("replacement")))
+
+    partial, replacement = reducer.state.transcript.cells
+    assert isinstance(partial, AssistantCell)
+    assert partial.text == "partial"
+    assert partial.complete is True
+    assert partial.interrupted is True
+    assert isinstance(replacement, AssistantCell)
+    assert replacement.text == "replacement"
+    assert replacement.interrupted is False
+
+
 def test_tool_call_splits_pre_and_post_tool_assistant_text_in_visual_order() -> None:
     reducer = PresentationReducer()
 

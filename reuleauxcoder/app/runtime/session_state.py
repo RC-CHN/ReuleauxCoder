@@ -234,6 +234,9 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
 
 def apply_session_runtime_state(session: Session, config: Config, agent: Agent) -> None:
     """Apply persisted session runtime state onto the live host runtime."""
+    discard_steering = getattr(agent, "discard_pending_user_steering", None)
+    if callable(discard_steering):
+        discard_steering(reason="session_exit")
     unbind = getattr(agent, "unbind_session_persistence", None)
     if callable(unbind):
         unbind()

@@ -17,6 +17,15 @@ from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.entrypoint.dependencies import AppDependencies, AppOptions
 
 
+def _take_recovered_steering_discard_count(agent: Agent) -> int:
+    """Read the optional recovery notice count without breaking old embeddings."""
+    take_count = getattr(agent, "take_recovered_steering_discard_count", None)
+    if not callable(take_count):
+        return 0
+    value = take_count()
+    return value if isinstance(value, int) else 0
+
+
 def restore_session(
     options: AppOptions,
     dependencies: AppDependencies,
@@ -47,6 +56,13 @@ def restore_session(
                     kind=UIEventKind.SESSION,
                 )
             apply_session_runtime_state(loaded, config, agent)
+            discarded_steering = _take_recovered_steering_discard_count(agent)
+            if discarded_steering:
+                ui_bus.warning(
+                    f"{discarded_steering} queued steering message(s) from the "
+                    "interrupted session were not sent and have been discarded.",
+                    kind=UIEventKind.SESSION,
+                )
             agent.session_fingerprint = loaded.fingerprint
             current_session_id = options.resume_session_id
             agent.current_session_id = current_session_id
@@ -77,6 +93,13 @@ def restore_session(
             loaded = session_store.load(latest.id)
             if loaded:
                 apply_session_runtime_state(loaded, config, agent)
+                discarded_steering = _take_recovered_steering_discard_count(agent)
+                if discarded_steering:
+                    ui_bus.warning(
+                        f"{discarded_steering} queued steering message(s) from the "
+                        "interrupted session were not sent and have been discarded.",
+                        kind=UIEventKind.SESSION,
+                    )
                 agent.session_fingerprint = loaded.fingerprint
                 current_session_id = latest.id
                 agent.current_session_id = current_session_id

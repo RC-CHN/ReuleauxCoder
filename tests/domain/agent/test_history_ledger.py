@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome, ToolOutcomeStatus
@@ -73,6 +75,47 @@ def test_one_message_batches_semantic_events_into_one_fsync(
         "user_message",
     ]
     assert len(fsync_calls) == 1
+
+
+def test_events_appended_while_unbound_are_flushed_on_bind(tmp_path) -> None:
+    ledger = HistoryLedger()
+    event = ledger.append("steering_discarded", {"steering_id": "s1"})
+    path = tmp_path / "events.jsonl"
+
+    ledger.bind_jsonl(path)
+
+    persisted = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["event_id"] for item in persisted] == [event.event_id]
+
+
+def test_failed_unbound_flush_is_retained_for_a_later_bind(
+    tmp_path, monkeypatch
+) -> None:
+    ledger = HistoryLedger()
+    event = ledger.append("steering_discarded", {"steering_id": "s1"})
+    path = tmp_path / "events.jsonl"
+    write = ledger._write_sink_events
+    attempts = 0
+
+    def flaky_write(events) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("disk unavailable")
+        write(events)
+
+    monkeypatch.setattr(ledger, "_write_sink_events", flaky_write)
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        ledger.bind_jsonl(path)
+    ledger.bind_jsonl(path)
+
+    persisted = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["event_id"] for item in persisted] == [event.event_id]
 
 
 def test_structured_tool_lifecycle_is_persisted_as_runtime_truth() -> None:

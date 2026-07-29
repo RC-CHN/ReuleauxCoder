@@ -143,6 +143,7 @@ class MiniTUIEventAdapter:
         self.interactive_view_handler: (
             Callable[[ViewEventPayload], bool] | None
         ) = None
+        self.runtime_event_handler: Callable[[RuntimeEvent], None] | None = None
         self.transcript = PresentationReducer(
             state=RuntimeViewState(
                 transcript=TranscriptModel(
@@ -208,6 +209,9 @@ class MiniTUIEventAdapter:
     def _apply_pending_event_locked(self, event: UIEvent) -> None:
         if isinstance(event.payload, RuntimeEventPayload):
             runtime = event.payload.event
+            handler = self.runtime_event_handler
+            if handler is not None:
+                handler(runtime)
             self.execution.apply(runtime)
             if self._is_root_transcript_event(runtime):
                 self._record_presentation_changes(self.transcript.apply(runtime))
@@ -556,5 +560,4 @@ class MiniTUIEventAdapter:
         self._transcript_rendered = FormattedText(layout.flatten())
         self._flattened_layout = layout
         return self._transcript_rendered
-
 

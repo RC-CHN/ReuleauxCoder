@@ -223,6 +223,95 @@ def test_ctrl_c_cancels_interaction_without_consuming_chat_draft() -> None:
     assert app.input_buffer.text == "keep this unfinished prompt"
 
 
+def test_ctrl_c_promotes_queued_steering_before_stopping_turn() -> None:
+    warnings = []
+    app = _bare_app()
+    app.interactor = SimpleNamespace(cancel_active=lambda: False)
+    app.input_buffer = SimpleNamespace(text="", reset=lambda: None)
+    app.running = True
+    app.cancelling = False
+    app.round_interrupt_applying = False
+    app.agent = SimpleNamespace(
+        stop_requested=lambda: False,
+        request_interrupt_intent=lambda: SimpleNamespace(
+            outcome=SimpleNamespace(value="promoted"),
+            discarded_count=0,
+        ),
+    )
+    app.ui_bus = SimpleNamespace(warning=warnings.append)
+    binding = next(
+        binding
+        for binding in build_key_bindings(app).bindings
+        if binding.keys == ("c-c",)
+    )
+
+    binding.handler(SimpleNamespace(app=SimpleNamespace(exit=lambda: None)))
+
+    assert app.cancelling is False
+    assert "apply queued steering" in warnings[-1]
+
+
+def test_second_ctrl_c_after_promotion_cancels_turn_and_reports_discard() -> None:
+    warnings = []
+    outcomes = iter(
+        (
+            SimpleNamespace(
+                outcome=SimpleNamespace(value="promoted"),
+                discarded_count=0,
+            ),
+            SimpleNamespace(
+                outcome=SimpleNamespace(value="stop_requested"),
+                discarded_count=1,
+            ),
+        )
+    )
+    app = _bare_app()
+    app.interactor = SimpleNamespace(cancel_active=lambda: False)
+    app.input_buffer = SimpleNamespace(text="", reset=lambda: None)
+    app.running = True
+    app.cancelling = False
+    app.round_interrupt_applying = False
+    app.agent = SimpleNamespace(
+        stop_requested=lambda: False,
+        request_interrupt_intent=lambda: next(outcomes),
+    )
+    app._queued_steering = lambda: ("queued direction",)
+    app._queued_commands = lambda: ()
+    app.ui_bus = SimpleNamespace(warning=warnings.append)
+    binding = next(
+        binding
+        for binding in build_key_bindings(app).bindings
+        if binding.keys == ("c-c",)
+    )
+    event = SimpleNamespace(app=SimpleNamespace(exit=lambda: None))
+
+    binding.handler(event)
+    binding.handler(event)
+
+    assert app.cancelling is True
+    assert "Queued steering was discarded" in warnings[-1]
+
+
+def test_rejected_active_turn_steering_preserves_input_buffer() -> None:
+    app = _bare_app()
+    app._popup_candidates = lambda: ()
+    app.interactor = SimpleNamespace(active_request=None)
+    app.running = True
+    app.exit_confirm = False
+    app.session_header_expanded = True
+    app.agent = SimpleNamespace(submit_user_steering=lambda _text: False)
+    app.invalidate = lambda: None
+    resets = []
+    buffer = SimpleNamespace(
+        text="keep this draft",
+        reset=lambda: resets.append(True),
+    )
+
+    assert app._accept_buffer(buffer) is True
+    assert resets == []
+    assert buffer.text == "keep this draft"
+
+
 def test_tool_cell_leads_with_name_and_right_aligns_status() -> None:
     from types import SimpleNamespace
 
@@ -287,7 +376,7 @@ def test_interaction_lane_shows_queued_steering_while_running() -> None:
     rendered = "".join(text for _style, text in app._interaction_text())
     assert "steer next: do this instead" in rendered
     assert "steer next: and also that" in rendered
-    assert "Ctrl+C cancels the turn and discards queued steers" in rendered
+    assert "Ctrl+C interrupts the request and applies queued steering" in rendered
     assert app._interaction_height() == 3
 
 

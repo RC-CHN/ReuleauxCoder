@@ -4,6 +4,7 @@ from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
 from reuleauxcoder.domain.plan import PlanState, ProgressState
+from reuleauxcoder.services.llm.client import LLMRequestCancelled
 from reuleauxcoder.services.prompt.builder import system_prompt
 
 
@@ -201,6 +202,98 @@ def test_subagent_round_limit_returns_tool_free_partial_handoff() -> None:
     assert llm.calls[1]["metadata"]["summary_phase"] is True
     assert "Do not discard partial results" in llm.calls[1]["messages"][-2]["content"]
     assert agent._loop.round_limit_reached is True
+
+
+def test_round_limit_summary_honours_immediate_steering_attempts() -> None:
+    class _SummarySteeringLLM(_BudgetLLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.agent = None
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return LLMResponse(
+                    tool_calls=[
+                        ToolCall(id="missing", name="unknown", arguments={})
+                    ]
+                )
+            if len(self.calls) == 2:
+                kwargs["on_token"]("partial handoff")
+                assert self.agent.submit_user_steering("include the migration risk")
+                self.agent.request_interrupt_intent()
+                raise LLMRequestCancelled("summary interrupted")
+            return LLMResponse(content="Handoff including the migration risk.")
+
+    llm = _SummarySteeringLLM()
+    agent = Agent(llm=llm, tools=[], max_rounds=1)
+    llm.agent = agent
+
+    result = agent.chat("investigate")
+
+    assert result == "Handoff including the migration risk."
+    assert len(llm.calls) == 3
+    assert all(call["metadata"]["summary_phase"] for call in llm.calls[1:])
+    assert llm.calls[1]["metadata"]["attempt_id"].endswith(":1:2")
+    assert llm.calls[2]["metadata"]["attempt_id"].endswith(":1:3")
+    final_messages = llm.calls[2]["messages"]
+    marker = next(
+        index
+        for index, message in enumerate(final_messages)
+        if "<request_interrupted>" in str(message.get("content"))
+    )
+    steering = next(
+        index
+        for index, message in enumerate(final_messages)
+        if message.get("content") == "include the migration risk"
+    )
+    assert marker < steering
+
+
+def test_stop_racing_with_tool_response_still_pairs_every_tool_call() -> None:
+    class _StopWithToolLLM(_BudgetLLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.agent = None
+
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            self.agent.request_stop()
+            return LLMResponse(
+                tool_calls=[
+                    ToolCall(id="late-tool", name="probe", arguments={})
+                ]
+            )
+
+    class _PairingExecutor:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def execute(self, tool_call, *, interrupt_baseline=None):
+            self.calls.append((tool_call.id, interrupt_baseline))
+            return "Tool execution interrupted (turn cancellation)."
+
+    llm = _StopWithToolLLM()
+    agent = Agent(llm=llm, tools=[])
+    llm.agent = agent
+    executor = _PairingExecutor()
+    agent._executor = executor
+
+    assert agent.chat("start") == "(stopped by cancellation request)"
+    assert executor.calls and executor.calls[0][0] == "late-tool"
+    assistant_index = next(
+        index
+        for index, message in enumerate(agent.messages)
+        if any(
+            call.get("id") == "late-tool"
+            for call in (message.get("tool_calls") or [])
+        )
+    )
+    assert agent.messages[assistant_index + 1] == {
+        "role": "tool",
+        "tool_call_id": "late-tool",
+        "content": "Tool execution interrupted (turn cancellation).",
+    }
 
 
 def test_configured_approval_provider_does_not_serialize_unreviewed_tools() -> None:

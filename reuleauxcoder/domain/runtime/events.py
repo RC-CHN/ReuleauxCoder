@@ -23,6 +23,7 @@ class RuntimeEventKind(str, Enum):
     CHAT_COMPLETED = "turn_finished"
     ASSISTANT_CONTENT_DELTA = "assistant_content_delta"
     REASONING_DELTA = "reasoning_delta"
+    ASSISTANT_STREAM_INTERRUPTED = "assistant_stream_interrupted"
     STREAM_CHUNK = "stream_chunk"
     REASONING_CHUNK = "reasoning_chunk"
     TOOL_STARTED = "tool_started"
@@ -75,6 +76,15 @@ class ReasoningDelta:
     text: str
     display_mode: str | None = None
     kind: RuntimeEventKind = field(default=RuntimeEventKind.REASONING_DELTA, init=False)
+
+
+@dataclass(frozen=True)
+class AssistantStreamInterrupted:
+    attempt_id: str
+    interrupt_epoch: int
+    kind: RuntimeEventKind = field(
+        default=RuntimeEventKind.ASSISTANT_STREAM_INTERRUPTED, init=False
+    )
 
 
 @dataclass(frozen=True)
@@ -243,6 +253,8 @@ class UserSteeringApplied:
     """Steering injected into the active turn at a protocol-safe boundary."""
 
     user_input: str
+    steering_id: str | None = None
+    attempt_id: str | None = None
     kind: RuntimeEventKind = field(
         default=RuntimeEventKind.USER_STEERING_APPLIED, init=False
     )
@@ -347,6 +359,7 @@ RuntimePayload: TypeAlias = (
     | TurnFinished
     | AssistantContentDelta
     | ReasoningDelta
+    | AssistantStreamInterrupted
     | ChatStarted
     | ChatCompleted
     | StreamChunk
@@ -433,6 +446,11 @@ def agent_event_to_runtime_event(
             event.data.get("token", ""),
             display_mode=event.data.get("display_mode"),
         )
+    elif event.event_type is AgentEventType.ASSISTANT_STREAM_INTERRUPTED:
+        payload = AssistantStreamInterrupted(
+            attempt_id=str(event.data.get("attempt_id") or event.correlation_id or ""),
+            interrupt_epoch=int(event.data.get("interrupt_epoch") or 0),
+        )
     elif event.event_type is AgentEventType.TOOL_CALL_START:
         payload = ToolCallStarted(
             tool_call_id=_required_correlation_id(event),
@@ -472,7 +490,11 @@ def agent_event_to_runtime_event(
             child_agent_id=event.data.get("child_agent_id"),
         )
     elif event.event_type is AgentEventType.USER_STEERING:
-        payload = UserSteeringApplied(str(event.data.get("user_input", "")))
+        payload = UserSteeringApplied(
+            str(event.data.get("user_input", "")),
+            steering_id=event.data.get("steering_id"),
+            attempt_id=event.data.get("attempt_id"),
+        )
     elif event.event_type is AgentEventType.ERROR:
         payload = ErrorOccurred(event.error_message or "Unknown agent error")
     elif event.event_type is AgentEventType.DIAGNOSTIC:
@@ -545,6 +567,11 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
     elif isinstance(payload, ReasoningDelta):
         legacy = AgentEvent.stream_reasoning(payload.text)
         legacy.data["display_mode"] = payload.display_mode
+    elif isinstance(payload, AssistantStreamInterrupted):
+        legacy = AgentEvent.assistant_stream_interrupted(
+            attempt_id=payload.attempt_id,
+            interrupt_epoch=payload.interrupt_epoch,
+        )
     elif isinstance(payload, StreamChunk):
         legacy = (
             AgentEvent.stream_reasoning(payload.text)
@@ -590,7 +617,11 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
             child_agent_id=payload.child_agent_id,
         )
     elif isinstance(payload, UserSteeringApplied):
-        legacy = AgentEvent.user_steering(payload.user_input)
+        legacy = AgentEvent.user_steering(
+            payload.user_input,
+            steering_id=payload.steering_id,
+            attempt_id=payload.attempt_id,
+        )
     elif isinstance(payload, ErrorOccurred):
         legacy = AgentEvent.error(payload.message)
     elif isinstance(payload, NotificationRaised):

@@ -16,6 +16,7 @@ class AgentEventType(Enum):
     CHAT_END = "chat_end"
     STREAM_TOKEN = "stream_token"
     STREAM_REASONING = "stream_reasoning"
+    ASSISTANT_STREAM_INTERRUPTED = "assistant_stream_interrupted"
     TOOL_CALL_START = "tool_call_start"
     TOOL_OUTPUT_DELTA = "tool_output_delta"
     TOOL_CALL_END = "tool_call_end"
@@ -181,6 +182,20 @@ class AgentEvent:
         )
 
     @classmethod
+    def assistant_stream_interrupted(
+        cls, *, attempt_id: str, interrupt_epoch: int
+    ) -> "AgentEvent":
+        """Seal the visible partial stream before a same-round retry."""
+        return cls(
+            event_type=AgentEventType.ASSISTANT_STREAM_INTERRUPTED,
+            correlation_id=attempt_id,
+            data={
+                "attempt_id": attempt_id,
+                "interrupt_epoch": interrupt_epoch,
+            },
+        )
+
+    @classmethod
     def error(cls, message: str) -> "AgentEvent":
         """Create an error event."""
         return cls(
@@ -209,11 +224,22 @@ class AgentEvent:
         )
 
     @classmethod
-    def user_steering(cls, user_input: str) -> "AgentEvent":
+    def user_steering(
+        cls,
+        user_input: str,
+        *,
+        steering_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> "AgentEvent":
         """Create an event for steering injected into the active turn."""
         return cls(
             event_type=AgentEventType.USER_STEERING,
-            data={"user_input": user_input},
+            correlation_id=steering_id,
+            data={
+                "user_input": user_input,
+                "steering_id": steering_id,
+                "attempt_id": attempt_id,
+            },
         )
 
     @classmethod

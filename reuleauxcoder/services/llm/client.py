@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
 
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.hooks.types import (
     AfterLLMResponseContext,
@@ -91,7 +92,7 @@ def _close_stream_detached(stream) -> None:
 
 
 def _cancellable_stream_open(
-    call: Callable[[], Any], cancellation_event: threading.Event | None
+    call: Callable[[], Any], cancellation_event: CancellationSignal | None
 ) -> Any:
     """Open a stream while allowing its foreground consumer to be dropped.
 
@@ -461,7 +462,7 @@ class LLM:
         session_id: str | None = None,
         trace_id: str | None = None,
         metadata: dict[str, Any] | None = None,
-        cancellation_event: threading.Event | None = None,
+        cancellation_event: CancellationSignal | None = None,
         max_output_tokens: int | None = None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls."""

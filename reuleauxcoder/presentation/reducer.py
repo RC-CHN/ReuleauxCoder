@@ -9,6 +9,7 @@ from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
     ApprovalResolved,
     AssistantContentDelta,
+    AssistantStreamInterrupted,
     ChatCompleted,
     ChatStarted,
     DiagnosticsCleared,
@@ -129,6 +130,8 @@ class PresentationReducer:
             )
         if isinstance(payload, AssistantContentDelta):
             return self._append_stream(event, payload.text)
+        if isinstance(payload, AssistantStreamInterrupted):
+            return self._interrupt_active_assistant(event)
         if isinstance(payload, ReasoningDelta):
             return ()
         if isinstance(payload, StreamChunk):
@@ -363,6 +366,19 @@ class PresentationReducer:
         if isinstance(existing, AssistantCell) and not existing.complete:
             self.state.transcript.replace(next_revision(existing, complete=True))
         self.state.active_assistant_cells.pop(route, None)
+
+    def _interrupt_active_assistant(
+        self, event: RuntimeEvent
+    ) -> tuple[PresentationChange, ...]:
+        route = self._assistant_route(event)
+        cell_id = self.state.active_assistant_cells.get(route)
+        existing = self.state.transcript.get(cell_id) if cell_id else None
+        self.state.active_assistant_cells.pop(route, None)
+        if not isinstance(existing, AssistantCell) or existing.complete:
+            return ()
+        return self._replace(
+            next_revision(existing, complete=True, interrupted=True)
+        )
 
     @staticmethod
     def _assistant_route(

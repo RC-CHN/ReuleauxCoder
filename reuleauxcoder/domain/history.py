@@ -88,6 +88,7 @@ class HistoryLedger:
         self._agent_id = agent_id
         self._sink_batch_depth = 0
         self._pending_sink_events: list[HistoryEvent] = []
+        self._unbound_events: list[HistoryEvent] = []
 
     @property
     def events(self) -> tuple[HistoryEvent, ...]:
@@ -142,6 +143,7 @@ class HistoryLedger:
         agent_id: str | None = None,
         turn_id: str | None = None,
         api_round_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> HistoryEvent:
         canonical_message = {
             key: value for key, value in message.items() if key != "_rc_token_count"
@@ -149,9 +151,12 @@ class HistoryLedger:
         role = _optional_str(message.get("role"))
         with self._lock:
             with self._batch_sink_writes():
+                payload = {"source": source, "message": canonical_message}
+                if metadata:
+                    payload.update(metadata)
                 committed = self.append(
                     "message_committed",
-                    {"source": source, "message": canonical_message},
+                    payload,
                     agent_id=agent_id,
                     turn_id=turn_id,
                     api_round_id=api_round_id,
@@ -218,8 +223,18 @@ class HistoryLedger:
 
     def bind_jsonl(self, path: str | Path) -> None:
         with self._lock:
+            previous_path = self._sink_path
             self._sink_path = Path(path)
             self._sink_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._unbound_events:
+                pending = tuple(self._unbound_events)
+                try:
+                    self._write_sink_events(pending)
+                except Exception:
+                    self._sink_path = previous_path
+                    raise
+                else:
+                    del self._unbound_events[: len(pending)]
 
     def unbind_jsonl(self) -> None:
         """Stop appending events to the previously bound session ledger."""
@@ -239,6 +254,7 @@ class HistoryLedger:
 
     def _append_to_sink(self, event: HistoryEvent) -> None:
         if self._sink_path is None:
+            self._unbound_events.append(event)
             return
         if self._sink_batch_depth:
             self._pending_sink_events.append(event)
@@ -264,8 +280,8 @@ class HistoryLedger:
             self._sink_batch_depth -= 1
             if self._sink_batch_depth == 0 and self._pending_sink_events:
                 pending = tuple(self._pending_sink_events)
-                self._pending_sink_events.clear()
                 self._write_sink_events(pending)
+                del self._pending_sink_events[: len(pending)]
 
 
 def _optional_str(value: object) -> str | None:

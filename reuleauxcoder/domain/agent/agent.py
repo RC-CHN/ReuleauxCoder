@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any, TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
+from enum import Enum
 import threading
 import time
 import uuid
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
+from reuleauxcoder.domain.cancellation import CancellationView
 from reuleauxcoder.domain.config.models import ModeConfig
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.hooks import (
@@ -35,7 +37,7 @@ from reuleauxcoder.domain.hooks import (
     HookPoint,
     HookRegistry,
 )
-from reuleauxcoder.domain.history import HistoryLedger
+from reuleauxcoder.domain.history import HistoryEvent, HistoryLedger
 from reuleauxcoder.domain.plan import PlanController
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
@@ -60,6 +62,32 @@ class AgentState:
     current_round: int = 0
     total_tool_calls: int = 0
     total_model_calls: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PendingUserSteering:
+    """One admitted user direction awaiting a model-safe boundary."""
+
+    steering_id: str
+    content: str
+    generation: int
+    turn_id: str
+
+
+class InterruptIntentOutcome(str, Enum):
+    """Authoritative result of interpreting one active-turn interrupt gesture."""
+
+    PROMOTED = "promoted"
+    STOP_REQUESTED = "stop_requested"
+    ALREADY_STOPPING = "already_stopping"
+
+
+@dataclass(frozen=True, slots=True)
+class InterruptIntentResult:
+    outcome: InterruptIntentOutcome
+    steering_ids: tuple[str, ...] = ()
+    discarded_count: int = 0
+    epoch: int = 0
 
 
 class Agent:
@@ -130,8 +158,13 @@ class Agent:
         self._subagent_approval_lock = None
         self._external_message_source: Callable[[], Iterable[Any]] | None = None
         self._steering_lock = threading.Lock()
-        self._pending_user_steering: list[tuple[str, int, str]] = []
+        self._pending_user_steering: list[PendingUserSteering] = []
         self._accepting_user_steering = False
+        self._round_interrupt_epoch = 0
+        self._round_interrupt_pending = False
+        self._turn_attempt_counter = 0
+        self._turn_interrupted_marker_recorded = False
+        self._recovered_discarded_steering_count = 0
         self._park_request: dict | None = None
 
         # Mode state
@@ -266,7 +299,13 @@ class Agent:
             )
         return synthesized
 
-    def _append_message(self, message: dict, *, source: str) -> None:
+    def _append_message(
+        self,
+        message: dict,
+        *,
+        source: str,
+        history_metadata: dict[str, Any] | None = None,
+    ) -> None:
         with self._context_revision_lock:
             api_round_id = (
                 f"{self._current_turn_id}:{self.state.current_round}"
@@ -279,6 +318,7 @@ class Agent:
                 agent_id=self.agent_id,
                 turn_id=self._current_turn_id,
                 api_round_id=api_round_id,
+                metadata=history_metadata,
             )
             self.state.messages.append(message)
             self._context_revision += 1
@@ -358,17 +398,39 @@ class Agent:
         # Never start a model-backed compression while the user is trying to
         # unwind the turn. If cancellation lands after this check, propagate
         # the same turn-scoped event into the summary request.
-        if self.stop_requested():
+        if self.stop_requested() or self.round_interrupt_pending():
             return False
+        baseline_epoch = self.round_interrupt_epoch()
+        cancellation = CancellationView(
+            self._stop_event,
+            self.round_interrupt_epoch,
+            baseline_epoch,
+        )
         with self._context_revision_lock:
             source_revision = self._context_revision
             candidate = [dict(message) for message in self.state.messages]
-            if not self.context.maybe_compress(
-                candidate,
-                llm,
-                history_events=self.history_ledger.events,
-                cancellation_event=self._stop_event,
-            ):
+            try:
+                compressed = self.context.maybe_compress(
+                    candidate,
+                    llm,
+                    history_events=self.history_ledger.events,
+                    cancellation_event=cancellation,
+                )
+            except LLMRequestCancelled:
+                if self.stop_requested():
+                    raise
+                if self.round_interrupt_epoch() <= baseline_epoch:
+                    raise
+                self._emit_event(
+                    AgentEvent.diagnostic(
+                        "Context compression skipped because user steering "
+                        "interrupted the summary request.",
+                        code="compression.interrupted",
+                        severity="info",
+                    )
+                )
+                return False
+            if not compressed:
                 return False
             if source_revision != self._context_revision:
                 return False
@@ -414,6 +476,9 @@ class Agent:
         self.history_completeness = getattr(
             session, "history_completeness", "legacy_compacted_or_unknown"
         )
+        self._recovered_discarded_steering_count = (
+            self._discard_recovered_steering_admissions()
+        )
         self.context.clear_usage_observations()
         for event in self.history_ledger.events[-100:]:
             if event.kind != "usage_observed":
@@ -457,6 +522,45 @@ class Agent:
             manager = get_subagent_manager(self)
             manager.restore_from_history(self, events)
 
+    def _discard_recovered_steering_admissions(self) -> int:
+        """Close admissions that crashed before a model-visible commit.
+
+        ``message_committed`` carrying ``steering_id`` is the authoritative
+        applied proof. A preceding ``steering_applied`` audit record without
+        that commit is deliberately treated as unsent.
+        """
+        admitted: dict[str, HistoryEvent] = {}
+        terminal: set[str] = set()
+        for event in self.history_ledger.events:
+            steering_id = event.payload.get("steering_id")
+            if not isinstance(steering_id, str) or not steering_id:
+                continue
+            if event.kind == "steering_admitted":
+                admitted[steering_id] = event
+            elif event.kind == "steering_discarded":
+                terminal.add(steering_id)
+            elif event.kind == "message_committed":
+                terminal.add(steering_id)
+        orphaned = [
+            (steering_id, event)
+            for steering_id, event in admitted.items()
+            if steering_id not in terminal
+        ]
+        for steering_id, event in orphaned:
+            self.history_ledger.append(
+                "steering_discarded",
+                {"steering_id": steering_id, "reason": "session_recovery"},
+                agent_id=event.agent_id or self.agent_id,
+                turn_id=event.turn_id,
+            )
+        return len(orphaned)
+
+    def take_recovered_steering_discard_count(self) -> int:
+        """Consume the restore-time count used for a single user notification."""
+        count = self._recovered_discarded_steering_count
+        self._recovered_discarded_steering_count = 0
+        return count
+
     def start_new_history(self) -> None:
         self.history_ledger = HistoryLedger(
             generation=self.session_generation,
@@ -484,66 +588,219 @@ class Agent:
         """Return True when cooperative stop has been requested."""
         return self._stop_event.is_set()
 
-    def submit_user_steering(self, text: str) -> bool:
-        """Queue user direction for the next protocol-safe inference boundary."""
+    def round_interrupt_epoch(self) -> int:
+        """Return the monotonic immediate-steering cancellation epoch."""
+        with self._steering_lock:
+            return self._round_interrupt_epoch
+
+    def round_interrupt_pending(self) -> bool:
+        """Return whether promoted steering has not reached an apply boundary."""
+        with self._steering_lock:
+            return self._round_interrupt_pending
+
+    def next_request_attempt_id(self, round_num: int) -> str:
+        """Allocate a turn-monotonic request attempt identifier."""
+        with self._steering_lock:
+            self._turn_attempt_counter += 1
+            turn_id = self._current_turn_id or "turn"
+            return f"{turn_id}:{round_num}:{self._turn_attempt_counter}"
+
+    def request_interrupt_intent(self) -> InterruptIntentResult:
+        """Atomically promote queued steering or request a true turn stop.
+
+        The Agent owns this transition so local and remote interfaces cannot
+        race by independently inspecting pending steering and cancellation
+        state.
+        """
+        with self._steering_lock:
+            if self._stop_event.is_set():
+                return InterruptIntentResult(
+                    InterruptIntentOutcome.ALREADY_STOPPING,
+                    epoch=self._round_interrupt_epoch,
+                )
+            if self._round_interrupt_pending:
+                discarded = self._discard_pending_user_steering_locked(
+                    reason="turn_stop"
+                )
+                self._round_interrupt_pending = False
+                self._stop_event.set()
+                return InterruptIntentResult(
+                    InterruptIntentOutcome.STOP_REQUESTED,
+                    discarded_count=discarded,
+                    epoch=self._round_interrupt_epoch,
+                )
+            steering_ids = tuple(
+                item.steering_id
+                for item in self._pending_user_steering
+                if item.generation == self.session_generation
+            )
+            if steering_ids:
+                self._round_interrupt_epoch += 1
+                self._round_interrupt_pending = True
+                return InterruptIntentResult(
+                    InterruptIntentOutcome.PROMOTED,
+                    steering_ids=steering_ids,
+                    epoch=self._round_interrupt_epoch,
+                )
+            self._stop_event.set()
+            return InterruptIntentResult(
+                InterruptIntentOutcome.STOP_REQUESTED,
+                epoch=self._round_interrupt_epoch,
+            )
+
+    def admit_user_steering(self, text: str) -> str | None:
+        """Admit one user direction and durably record its non-terminal state."""
         content = text.strip()
         if not content:
-            return False
+            return None
         with self._steering_lock:
             if not self._accepting_user_steering or self._current_turn_id is None:
-                return False
+                return None
+            steering_id = f"steer_{uuid.uuid4().hex}"
             generation = self.session_generation
             turn_id = self._current_turn_id
-            event = self.history_ledger.append_message(
-                {"role": "user", "content": content},
-                source="user_steering",
+            self.history_ledger.append(
+                "steering_admitted",
+                {
+                    "steering_id": steering_id,
+                    "turn_id": turn_id,
+                    "generation": generation,
+                    "content": content,
+                },
                 agent_id=self.agent_id,
                 turn_id=turn_id,
                 api_round_id=f"{turn_id}:{self.state.current_round}",
             )
-            self._pending_user_steering.append((content, generation, event.event_id))
+            self._pending_user_steering.append(
+                PendingUserSteering(
+                    steering_id=steering_id,
+                    content=content,
+                    generation=generation,
+                    turn_id=turn_id,
+                )
+            )
         self.persist_runtime_snapshot()
-        return True
+        return steering_id
+
+    def submit_user_steering(self, text: str) -> bool:
+        """Queue user direction for the next protocol-safe inference boundary."""
+        return self.admit_user_steering(text) is not None
 
     def _has_user_steering(self) -> bool:
         with self._steering_lock:
             return any(
-                generation == self.session_generation
-                for _, generation, _ in self._pending_user_steering
+                item.generation == self.session_generation
+                for item in self._pending_user_steering
             )
 
     def pending_user_steering(self) -> tuple[str, ...]:
         """Queued steering previews for the current generation (UI display)."""
         with self._steering_lock:
             return tuple(
-                content
-                for content, generation, _event_id in self._pending_user_steering
-                if generation == self.session_generation
+                item.content
+                for item in self._pending_user_steering
+                if item.generation == self.session_generation
             )
 
-    def _drain_user_steering(self) -> int:
-        """Project already-ledgered user messages into the runtime context."""
+    def _drain_user_steering(self, *, attempt_id: str | None = None) -> int:
+        """Apply admitted steering to model history at a protocol-safe boundary."""
+        applied: list[PendingUserSteering] = []
         with self._steering_lock:
             pending = self._pending_user_steering
             self._pending_user_steering = []
-        accepted = [
-            content
-            for content, generation, _event_id in pending
-            if generation == self.session_generation
-        ]
-        if accepted:
-            with self._context_revision_lock:
-                self.state.messages.extend(
-                    {"role": "user", "content": content} for content in accepted
+            for item in pending:
+                if item.generation != self.session_generation:
+                    self.history_ledger.append(
+                        "steering_discarded",
+                        {
+                            "steering_id": item.steering_id,
+                            "reason": "stale_generation",
+                        },
+                        agent_id=self.agent_id,
+                        turn_id=item.turn_id,
+                    )
+                    continue
+                self.history_ledger.append(
+                    "steering_applied",
+                    {
+                        "steering_id": item.steering_id,
+                        "attempt_id": attempt_id,
+                    },
+                    agent_id=self.agent_id,
+                    turn_id=item.turn_id,
                 )
-                self._context_revision += 1
-                self.persist_runtime_snapshot()
-            # The transcript shows steering only now, at the injection point,
-            # matching the actual context order (queued previews stay at the
-            # input lane until this event lands).
-            for content in accepted:
-                self._emit_event(AgentEvent.user_steering(content))
-        return len(accepted)
+                message = {"role": "user", "content": item.content}
+                self.history_ledger.append_message(
+                    message,
+                    source="user_steering",
+                    agent_id=self.agent_id,
+                    turn_id=item.turn_id,
+                    api_round_id=attempt_id,
+                    metadata={
+                        "steering_id": item.steering_id,
+                        "attempt_id": attempt_id,
+                    },
+                )
+                applied.append(item)
+            if applied:
+                with self._context_revision_lock:
+                    self.state.messages.extend(
+                        {"role": "user", "content": item.content}
+                        for item in applied
+                    )
+                    self._context_revision += 1
+            self._round_interrupt_pending = False
+        if applied:
+            self.persist_runtime_snapshot()
+            for item in applied:
+                self._emit_event(
+                    AgentEvent.user_steering(
+                        item.content,
+                        steering_id=item.steering_id,
+                        attempt_id=attempt_id,
+                    )
+                )
+        return len(applied)
+
+    def discard_pending_user_steering(self, *, reason: str) -> int:
+        """Durably discard every non-terminal steering admission."""
+        with self._steering_lock:
+            discarded = self._discard_pending_user_steering_locked(reason=reason)
+            self._round_interrupt_pending = False
+        if discarded:
+            self.persist_runtime_snapshot()
+        return discarded
+
+    def _discard_pending_user_steering_locked(self, *, reason: str) -> int:
+        pending = self._pending_user_steering
+        self._pending_user_steering = []
+        for item in pending:
+            self.history_ledger.append(
+                "steering_discarded",
+                {"steering_id": item.steering_id, "reason": reason},
+                agent_id=self.agent_id,
+                turn_id=item.turn_id,
+            )
+        return len(pending)
+
+    def _record_turn_interrupted_marker(self) -> None:
+        if self._turn_interrupted_marker_recorded:
+            return
+        marker = mark_synthetic_user_message(
+            "<turn_interrupted>\n"
+            "The previous turn was interrupted by the user. Tool calls may have "
+            "partially executed, and background processes may still be running. "
+            "Verify current state before retrying work.\n"
+            "</turn_interrupted>",
+            tag="turn_interrupted",
+            source="turn_interrupt_marker",
+        )
+        self._append_message(
+            marker,
+            source="turn_interrupt_marker",
+            history_metadata={"interrupted_turn_id": self._current_turn_id},
+        )
+        self._turn_interrupted_marker_recorded = True
 
     def get_active_mode_config(self) -> ModeConfig | None:
         """Return active mode config if mode is enabled."""
@@ -1079,6 +1336,9 @@ class Agent:
         self._current_turn_id = uuid.uuid4().hex
         with self._steering_lock:
             self._accepting_user_steering = True
+            self._round_interrupt_pending = False
+            self._turn_attempt_counter = 0
+            self._turn_interrupted_marker_recorded = False
         self.history_ledger.append(
             "agent_lifecycle",
             {"state": "turn_started"},
@@ -1111,20 +1371,25 @@ class Agent:
                 try:
                     result = self._loop.run()
                 except LLMRequestCancelled:
+                    if not self.stop_requested():
+                        raise
                     result = "(stopped by cancellation request)"
                 with self._steering_lock:
                     pending = any(
-                        generation == self.session_generation
-                        for _, generation, _ in self._pending_user_steering
+                        item.generation == self.session_generation
+                        for item in self._pending_user_steering
                     )
-                    if not pending or self.stop_requested():
+                    should_stop = self.stop_requested()
+                    if not pending or should_stop:
                         self._accepting_user_steering = False
-                        if self.stop_requested():
-                            self._pending_user_steering.clear()
                         break
+            if self.stop_requested():
+                self.discard_pending_user_steering(reason="turn_stop")
+                self._record_turn_interrupted_marker()
         except BaseException as e:
             with self._steering_lock:
                 self._accepting_user_steering = False
+            self.discard_pending_user_steering(reason="turn_failed")
             # Ensure tool-call/response parity before bubbling the failure upward.
             self.reconcile_pending_tool_calls(
                 reason=f"Interrupted due to {type(e).__name__}."
@@ -1159,6 +1424,7 @@ class Agent:
         cancel_interactions = getattr(self.ui_interactor, "cancel_all", None)
         if callable(cancel_interactions):
             cancel_interactions(reason="session reset")
+        self.discard_pending_user_steering(reason="session_reset")
         previous_generation = self.session_generation
         self.session_generation += 1
         process_manager = self.process_manager
@@ -1209,6 +1475,9 @@ class Agent:
         with self._steering_lock:
             self._pending_user_steering.clear()
             self._accepting_user_steering = False
+            self._round_interrupt_pending = False
+            self._turn_attempt_counter = 0
+            self._turn_interrupted_marker_recorded = False
         self.plan_controller.reset()
         self._control_plane_recovery_required = False
         self.persist_runtime_snapshot()

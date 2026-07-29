@@ -35,6 +35,11 @@ from reuleauxcoder.app.runtime.session_state import (
     build_session_runtime_state,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+from reuleauxcoder.domain.runtime.events import (
+    AssistantStreamInterrupted,
+    RuntimeEvent,
+    UserSteeringApplied,
+)
 from reuleauxcoder.interfaces.cli.commands import handle_command
 from reuleauxcoder.interfaces.tui.command_popup import (
     PopupEntry,
@@ -111,6 +116,7 @@ class MiniTUIApplication:
         self._exit_progress = exit_progress
         self.running = False
         self.cancelling = False
+        self.round_interrupt_applying = False
         self.exit_confirm = False
         self._exit_session_saved = False
         self._saved_session_id: str | None = None
@@ -132,6 +138,7 @@ class MiniTUIApplication:
             for event in startup_events
             if event.message.strip() and event.kind is not UIEventKind.MCP
         )[:6]
+        self.events.runtime_event_handler = self._on_runtime_event
 
         history_path = (
             str(Path(config.history_file).expanduser())
@@ -322,13 +329,16 @@ class MiniTUIApplication:
             # Choice/text prompts own a separate transient interaction buffer;
             # never consume a chat draft if focus briefly lags a state change.
             return True
-        buffer.reset()
         if not text:
+            buffer.reset()
             return True
         if self.running:
-            self._submit_during_turn(text)
+            accepted = self._submit_during_turn(text)
+            if accepted:
+                buffer.reset()
             self.invalidate()
             return True
+        buffer.reset()
         self.exit_confirm = False
         self.session_header_expanded = False
         # A stop request belongs to the turn that just finished.  Local slash
@@ -337,6 +347,7 @@ class MiniTUIApplication:
         self.agent.clear_stop_request()
         self.running = True
         self.cancelling = False
+        self.round_interrupt_applying = False
         self._worker = threading.Thread(
             target=self._handle_input,
             args=(text,),
@@ -407,13 +418,12 @@ class MiniTUIApplication:
         self.input_buffer.cursor_position = len(command)
         self._accept_buffer(self.input_buffer)
 
-    def _submit_during_turn(self, text: str) -> None:
+    def _submit_during_turn(self, text: str) -> bool:
         """Route active-turn input without leaking slash commands to the model."""
         if not text.startswith("/"):
             # Queued steering hangs above the input lane as a preview and only
             # enters the transcript when the agent injects it (drain event).
-            self.agent.submit_user_steering(text)
-            return
+            return bool(self.agent.submit_user_steering(text))
 
         self.events.append_user_command(text)
         parsed = parse_command(
@@ -434,7 +444,7 @@ class MiniTUIApplication:
                 "Press Ctrl+C to interrupt and apply it sooner.",
                 kind=UIEventKind.COMMAND,
             )
-            return
+            return True
 
         thread = threading.Thread(
             target=self._handle_concurrent_command,
@@ -443,6 +453,15 @@ class MiniTUIApplication:
             daemon=True,
         )
         thread.start()
+        return True
+
+    def _on_runtime_event(self, event: RuntimeEvent) -> None:
+        """Mirror only presentation timing; Agent remains interrupt authority."""
+        if isinstance(event.payload, AssistantStreamInterrupted):
+            if self.agent.round_interrupt_pending():
+                self.round_interrupt_applying = True
+        elif isinstance(event.payload, UserSteeringApplied):
+            self.round_interrupt_applying = False
 
     def _handle_concurrent_command(self, user_input: str) -> None:
         """Execute an immediate local command alongside the active agent turn."""
@@ -544,8 +563,12 @@ class MiniTUIApplication:
             suffix = f"\nDiagnostic saved to: {diagnostic}" if diagnostic else ""
             self.ui_bus.error(f"Error: {error}{suffix}")
         finally:
-            was_cancelling = self.cancelling
+            stop_requested = getattr(self.agent, "stop_requested", None)
+            was_cancelling = (
+                bool(stop_requested()) if callable(stop_requested) else self.cancelling
+            )
             self.cancelling = False
+            self.round_interrupt_applying = False
             if was_cancelling:
                 process_manager = getattr(self.agent, "process_manager", None)
                 active_processes = (
@@ -816,6 +839,24 @@ class MiniTUIApplication:
                 [("class:warning", "Cancelling the current turn…\n")]
             )
         if self.running:
+            round_interrupt_pending = bool(
+                getattr(self.agent, "round_interrupt_pending", lambda: False)()
+            )
+            if round_interrupt_pending:
+                status = (
+                    "Applying queued steering…"
+                    if self.round_interrupt_applying
+                    else "Interrupting the current request…"
+                )
+                return FormattedText(
+                    [
+                        ("class:warning", status + "\n"),
+                        (
+                            "class:muted",
+                            "Press Ctrl+C again to discard it and cancel the turn\n",
+                        ),
+                    ]
+                )
             queued_steering = self._queued_steering()
             queued_commands = self._queued_commands()
             pending = [
@@ -832,11 +873,13 @@ class MiniTUIApplication:
                     ("class:muted", f" … {len(pending) - 3} more queued\n")
                 )
             if queued_commands and queued_steering:
-                hint = "Ctrl+C cancels: commands run next; steers are discarded\n"
+                hint = (
+                    "Ctrl+C applies steering now; commands still run when idle\n"
+                )
             elif queued_commands:
                 hint = "Ctrl+C cancels the turn and runs queued commands next\n"
             elif queued_steering:
-                hint = "Ctrl+C cancels the turn and discards queued steers\n"
+                hint = "Ctrl+C interrupts the request and applies queued steering\n"
             else:
                 hint = "Agent running · Enter queues a steer · Ctrl+C cancels\n"
             lines.append(("class:muted", hint))
@@ -947,6 +990,11 @@ class MiniTUIApplication:
 
     def _save_exit_session(self) -> None:
         self._closed = True
+        discard_steering = getattr(
+            self.agent, "discard_pending_user_steering", None
+        )
+        if callable(discard_steering):
+            discard_steering(reason="session_exit")
         self._prepare_forced_exit("CLI session closed")
         if (
             getattr(self, "_exit_session_saved", False)

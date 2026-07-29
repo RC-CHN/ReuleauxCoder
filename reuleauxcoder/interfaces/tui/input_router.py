@@ -52,15 +52,28 @@ def build_key_bindings(host) -> KeyBindings:
             host.exit_confirm = False
             return
         if host.running:
-            if host.cancelling:
+            if host.agent.stop_requested():
                 host._prepare_forced_exit("forced CLI exit during active turn")
                 host._closed = True
                 event.app.exit()
             else:
+                result = host.agent.request_interrupt_intent()
+                outcome = getattr(result.outcome, "value", result.outcome)
+                if outcome == "promoted":
+                    host.cancelling = False
+                    host.round_interrupt_applying = False
+                    host.ui_bus.warning(
+                        "Interrupting the current model request to apply queued "
+                        "steering. Press Ctrl+C again to cancel the turn."
+                    )
+                    return
                 host.cancelling = True
-                host.agent.request_stop()
+                host.round_interrupt_applying = False
                 queued_steering = host._queued_steering()
                 queued_commands = host._queued_commands()
+                discarded_steering = int(
+                    getattr(result, "discarded_count", 0) or 0
+                )
                 if queued_commands and queued_steering:
                     message = (
                         "Cancelling the current turn. Queued commands will run "
@@ -70,9 +83,9 @@ def build_key_bindings(host) -> KeyBindings:
                     message = (
                         "Cancelling the current turn. Queued commands will run next."
                     )
-                elif queued_steering:
+                elif queued_steering or discarded_steering:
                     message = (
-                        "Cancelling the current turn. Queued steers will be discarded."
+                        "Cancelling the current turn. Queued steering was discarded."
                     )
                 else:
                     message = "Cancelling the current turn…"

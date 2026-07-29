@@ -40,13 +40,21 @@ def cell_fragments(
         ]
     if isinstance(cell, AssistantCell):
         renderer = markdown_renderer or RetainedMarkdownRenderer()
-        return renderer.render(
+        fragments = renderer.render(
             cell_id=cell.id,
             revision=cell.revision,
             text=cell.text,
             complete=cell.complete,
             width=width,
         )
+        if cell.interrupted:
+            fragments.extend(
+                [
+                    ("class:warning", " [response interrupted]\n"),
+                    ("", "\n"),
+                ]
+            )
+        return fragments
     if isinstance(cell, ToolCell):
         status = cell.status.value.upper()
         style = "class:error" if cell.status.value == "failed" else "class:tool"
