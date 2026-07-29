@@ -31,12 +31,15 @@ class _FakeResponse:
         content: bytes = b"",
         text: str | None = None,
         encoding: str = "utf-8",
+        chunks: list[bytes] | None = None,
     ) -> None:
         self.status_code = status_code
-        self.headers = headers or {}
+        self.headers = httpx.Headers(headers or {})
         self.content = content
         self._text = text
         self.encoding = encoding
+        self.chunks = chunks
+        self.chunks_yielded = 0
 
     @property
     def text(self) -> str:
@@ -48,6 +51,30 @@ class _FakeResponse:
         if self.status_code >= 400:
             raise httpx.HTTPError(f"HTTP {self.status_code}")
 
+    async def aiter_bytes(self, chunk_size: int | None = None):
+        del chunk_size
+        payload = (
+            self.content if self._text is None else self._text.encode(self.encoding)
+        )
+        chunks = self.chunks if self.chunks is not None else [payload]
+        for chunk in chunks:
+            self.chunks_yielded += 1
+            yield chunk
+
+
+class _FakeStream:
+    def __init__(self, handler, method: str, url: str, kwargs: dict[str, Any]) -> None:
+        self._handler = handler
+        self._method = method
+        self._url = url
+        self._kwargs = kwargs
+
+    async def __aenter__(self) -> _FakeResponse:
+        return self._handler(self._method, self._url, **self._kwargs)
+
+    async def __aexit__(self, *args: Any) -> bool:
+        return False
+
 
 class _FakeClient:
     """Minimal httpx.Client stand-in routed by a test-supplied handler."""
@@ -58,21 +85,18 @@ class _FakeClient:
     def __call__(self, *args: Any, **kwargs: Any) -> "_FakeClient":
         return self
 
-    def __enter__(self) -> "_FakeClient":
+    async def __aenter__(self) -> "_FakeClient":
         return self
 
-    def __exit__(self, *args: Any) -> bool:
+    async def __aexit__(self, *args: Any) -> bool:
         return False
 
-    def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeResponse:
-        return self._handler("GET", url, headers=headers)
-
-    def post(self, url: str, **kwargs: Any) -> _FakeResponse:
-        return self._handler("POST", url, **kwargs)
+    def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStream:
+        return _FakeStream(self._handler, method, url, kwargs)
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:
-    monkeypatch.setattr(web.httpx, "Client", _FakeClient(handler))
+    monkeypatch.setattr(web.httpx, "AsyncClient", _FakeClient(handler))
 
 
 def _tool_with_config(tool, **overrides):
@@ -144,6 +168,26 @@ def test_fetch_rejects_oversized_responses(monkeypatch: pytest.MonkeyPatch) -> N
 
     _patch_client(monkeypatch, handler)
     assert "5 MiB" in WebFetchTool().execute("https://example.com/big")
+
+
+def test_fetch_stops_streaming_as_soon_as_body_exceeds_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse(
+        headers={"content-type": "text/plain"},
+        chunks=[
+            b"x" * web._MAX_RESPONSE_BYTES,
+            b"y",
+            b"must-not-be-read",
+        ],
+    )
+
+    def handler(method: str, url: str, **_: Any) -> _FakeResponse:
+        return response
+
+    _patch_client(monkeypatch, handler)
+    assert "5 MiB" in WebFetchTool().execute("https://example.com/chunked")
+    assert response.chunks_yielded == 2
 
 
 def test_fetch_reports_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,10 +273,10 @@ def test_provider_order_rotation_and_pinning() -> None:
 
 
 def test_search_unifies_format_and_fails_over(monkeypatch: pytest.MonkeyPatch) -> None:
-    def failing_exa(client: Any, query: str, num_results: int):
+    async def failing_exa(client: Any, query: str, num_results: int):
         raise httpx.TransportError("exa down")
 
-    def fine_parallel(
+    async def fine_parallel(
         client: Any, query: str, num_results: int
     ) -> list[_SearchHit]:
         return [
@@ -255,7 +299,7 @@ def test_search_unifies_format_and_fails_over(monkeypatch: pytest.MonkeyPatch) -
 def test_search_reports_when_all_providers_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def broken(client: Any, query: str, num_results: int):
+    async def broken(client: Any, query: str, num_results: int):
         raise httpx.TransportError("down")
 
     monkeypatch.setattr(web, "_search_exa", broken)

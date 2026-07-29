@@ -10,6 +10,7 @@ rate limits; the free tier works without them.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 import json
@@ -28,6 +29,8 @@ _FETCH_USER_AGENT = (
 )
 _HONEST_USER_AGENT = "reuleauxcoder-web/0.1"
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+_MAX_SEARCH_RESPONSE_BYTES = 2 * 1024 * 1024
+_RESPONSE_CHUNK_BYTES = 64 * 1024
 _DEFAULT_FETCH_TIMEOUT = 30.0
 _MAX_FETCH_TIMEOUT = 120.0
 _SEARCH_TIMEOUT = 25.0
@@ -37,6 +40,36 @@ _PROVIDERS = ("exa", "parallel")
 
 _rotation_lock = threading.Lock()
 _rotation_counter = 0
+
+
+class _ResponseTooLarge(ValueError):
+    """Raised as soon as a streamed response crosses its decoded-byte limit."""
+
+
+async def _read_limited_body(
+    response: httpx.Response,
+    *,
+    max_bytes: int,
+) -> bytes:
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            declared_length = None
+        if declared_length is not None and declared_length > max_bytes:
+            raise _ResponseTooLarge
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes(chunk_size=_RESPONSE_CHUNK_BYTES):
+        if len(body) + len(chunk) > max_bytes:
+            raise _ResponseTooLarge
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _decode_response_body(response: httpx.Response, body: bytes) -> str:
+    return body.decode(response.encoding or "utf-8", errors="replace")
 
 
 def _web_settings(tool: Tool) -> tuple[bool, str]:
@@ -256,12 +289,15 @@ def _parse_parallel_hits(text: str) -> list[_SearchHit]:
     return hits
 
 
-def _search_exa(client: httpx.Client, query: str, num_results: int) -> list[_SearchHit]:
+async def _search_exa(
+    client: httpx.AsyncClient, query: str, num_results: int
+) -> list[_SearchHit]:
     api_key = os.environ.get("EXA_API_KEY", "").strip()
     url = _EXA_MCP_URL
     if api_key:
         url = f"{url}?exaApiKey={api_key}"
-    response = client.post(
+    request = client.stream(
+        "POST",
         url,
         json={
             "jsonrpc": "2.0",
@@ -280,12 +316,17 @@ def _search_exa(client: httpx.Client, query: str, num_results: int) -> list[_Sea
         headers={"Accept": "application/json, text/event-stream"},
         timeout=_SEARCH_TIMEOUT,
     )
-    response.raise_for_status()
-    return _parse_exa_hits(_mcp_result_text(response.text))
+    async with request as response:
+        response.raise_for_status()
+        body = await _read_limited_body(
+            response,
+            max_bytes=_MAX_SEARCH_RESPONSE_BYTES,
+        )
+        return _parse_exa_hits(_mcp_result_text(_decode_response_body(response, body)))
 
 
-def _search_parallel(
-    client: httpx.Client, query: str, num_results: int
+async def _search_parallel(
+    client: httpx.AsyncClient, query: str, num_results: int
 ) -> list[_SearchHit]:
     headers = {
         "Accept": "application/json, text/event-stream",
@@ -294,7 +335,8 @@ def _search_parallel(
     api_key = os.environ.get("PARALLEL_API_KEY", "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    response = client.post(
+    request = client.stream(
+        "POST",
         _PARALLEL_MCP_URL,
         json={
             "jsonrpc": "2.0",
@@ -311,8 +353,15 @@ def _search_parallel(
         headers=headers,
         timeout=_SEARCH_TIMEOUT,
     )
-    response.raise_for_status()
-    return _parse_parallel_hits(_mcp_result_text(response.text))[:num_results]
+    async with request as response:
+        response.raise_for_status()
+        body = await _read_limited_body(
+            response,
+            max_bytes=_MAX_SEARCH_RESPONSE_BYTES,
+        )
+        return _parse_parallel_hits(
+            _mcp_result_text(_decode_response_body(response, body))
+        )[:num_results]
 
 
 def _format_hits(hits: list[_SearchHit], provider: str, query: str) -> str:
@@ -409,44 +458,87 @@ class WebFetchTool(Tool):
             "Accept-Language": "en-US,en;q=0.9",
         }
         try:
-            with httpx.Client(follow_redirects=True, timeout=seconds) as client:
-                try:
-                    response = client.get(url, headers=headers)
-                except httpx.TransportError as error:
-                    return f"Fetch failed for {url}: {error}"
-                # Cloudflare bot challenges key on TLS fingerprints; retry once
-                # with an honest UA so legitimate fetches are not challenged.
-                if (
-                    response.status_code == 403
-                    and response.headers.get("cf-mitigated") == "challenge"
-                ):
-                    response = client.get(
-                        url,
-                        headers={**headers, "User-Agent": _HONEST_USER_AGENT},
-                    )
-        except httpx.TimeoutException:
+            return asyncio.run(
+                asyncio.wait_for(
+                    self._execute_async(url, format, seconds, headers),
+                    timeout=seconds,
+                )
+            )
+        except (TimeoutError, asyncio.TimeoutError):
             return f"Fetch timed out after {seconds:.0f}s for {url}"
-        if response.status_code >= 400:
-            return f"Fetch failed for {url}: HTTP {response.status_code}"
-        content_length = response.headers.get("content-length")
-        if content_length and int(content_length) > _MAX_RESPONSE_BYTES:
+        except _ResponseTooLarge:
             return f"Fetch rejected for {url}: response exceeds the 5 MiB limit"
-        body = response.content
-        if len(body) > _MAX_RESPONSE_BYTES:
-            return f"Fetch rejected for {url}: response exceeds the 5 MiB limit"
+        except httpx.TransportError as error:
+            return f"Fetch failed for {url}: {error}"
 
-        content_type = response.headers.get("content-type", "").split(";")[0].strip()
+    async def _execute_async(
+        self,
+        url: str,
+        format: str,
+        seconds: float,
+        headers: dict[str, str],
+    ) -> str:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=seconds,
+        ) as client:
+            status_code, response_headers, body, encoding = await self._fetch_once(
+                client,
+                url,
+                headers,
+            )
+            # Cloudflare bot challenges key on TLS fingerprints; retry once
+            # with an honest UA so legitimate fetches are not challenged.
+            if (
+                status_code == 403
+                and response_headers.get("cf-mitigated") == "challenge"
+            ):
+                status_code, response_headers, body, encoding = (
+                    await self._fetch_once(
+                        client,
+                        url,
+                        {**headers, "User-Agent": _HONEST_USER_AGENT},
+                    )
+                )
+
+        if status_code >= 400:
+            return f"Fetch failed for {url}: HTTP {status_code}"
+
+        content_type = response_headers.get("content-type", "").split(";")[0].strip()
         if content_type.startswith("image/"):
             return (
                 f"Fetched {url}: image ({content_type}, {len(body)} bytes). "
                 "Image content is not rendered as text."
             )
-        text = body.decode(response.encoding or "utf-8", errors="replace")
+        text = body.decode(encoding or "utf-8", errors="replace")
         if format == "html" or not content_type.startswith("text/html"):
             return text
         if format == "text":
             return _html_to_markdown(text)  # tag-free extraction
         return _html_to_markdown(text)
+
+    @staticmethod
+    async def _fetch_once(
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+    ) -> tuple[int, httpx.Headers, bytes, str | None]:
+        request = client.stream("GET", url, headers=headers)
+        async with request as response:
+            if response.status_code >= 400:
+                return (
+                    response.status_code,
+                    response.headers,
+                    b"",
+                    response.encoding,
+                )
+            body = await _read_limited_body(response, max_bytes=_MAX_RESPONSE_BYTES)
+            return (
+                response.status_code,
+                response.headers,
+                body,
+                response.encoding,
+            )
 
 
 class WebSearchTool(Tool):
@@ -496,14 +588,27 @@ class WebSearchTool(Tool):
                 "Web access is disabled by configuration (web_enabled=false); "
                 "ask the user to enable it before retrying."
             )
+        return asyncio.run(self._execute_async(query, num_results, preference))
+
+    @staticmethod
+    async def _execute_async(query: str, num_results: int, preference: str) -> str:
         providers = _provider_order(preference)
         searchers = {"exa": _search_exa, "parallel": _search_parallel}
         errors: list[str] = []
-        with httpx.Client() as client:
+        async with httpx.AsyncClient() as client:
             for provider in providers:
                 try:
-                    hits = searchers[provider](client, query, num_results)
-                except (httpx.HTTPError, ValueError, json.JSONDecodeError) as error:
+                    hits = await asyncio.wait_for(
+                        searchers[provider](client, query, num_results),
+                        timeout=_SEARCH_TIMEOUT,
+                    )
+                except (
+                    TimeoutError,
+                    asyncio.TimeoutError,
+                    httpx.HTTPError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ) as error:
                     errors.append(f"{provider}: {error}")
                     continue
                 return _format_hits(hits, provider, query)
