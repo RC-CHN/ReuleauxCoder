@@ -2,7 +2,31 @@
 
 from __future__ import annotations
 
+import re
+
 from prompt_toolkit.utils import get_cwidth
+
+_ANSI_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-2]|[@-Z\\-_])"
+    r"|\x9b[0-?]*[ -/]*[@-~]"
+)
+_UNSAFE_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def sanitize_display_text(text: str) -> str:
+    """Strip ANSI escapes and control characters from fragment text.
+
+    prompt_toolkit renders control characters as two-cell caret notation
+    while ``get_cwidth`` counts them as zero width; leaving them in fragment
+    text desynchronizes width math from the physical row and corrupts the
+    layout (scrollbar drift, panel overflow).
+    """
+    if not _UNSAFE_CHARS.search(text):
+        return text
+    text = _ANSI_ESCAPE.sub("", text)
+    text = text.replace("\t", "    ")
+    return _CONTROL_CHARS.sub("", text)
 
 
 def fit_styled_row(
@@ -12,7 +36,8 @@ def fit_styled_row(
     output: list[tuple[str, str]] = []
     used = 0
     clipped = False
-    for style, text in fragments:
+    for style, raw_text in fragments:
+        text = sanitize_display_text(raw_text)
         chunk = ""
         for character in text:
             char_width = max(0, get_cwidth(character))
@@ -49,7 +74,8 @@ def wrap_fragments(
     width = max(1, width)
     output: list[tuple[str, str]] = []
     column = 0
-    for style, text in fragments:
+    for style, raw_text in fragments:
+        text = sanitize_display_text(raw_text)
         chunk = ""
         for character in text:
             if character == "\n":
@@ -76,6 +102,7 @@ def wrap_fragments(
 def wrapped_row_count(text: str, width: int, *, cap: int = 8) -> int:
     """Count visual rows for single-line text wrapped at a cell width."""
     width = max(1, width)
+    text = sanitize_display_text(text)
     used = 0
     rows = 1
     for character in text:
@@ -108,6 +135,7 @@ def fragments_to_visual_lines(
 
 def fit_display(text: str, width: int) -> str:
     """Clip text by terminal cell width, including CJK and emoji."""
+    text = sanitize_display_text(text)
     if get_cwidth(text) <= width:
         return text
     target = max(1, width - 1)
@@ -138,6 +166,7 @@ __all__ = [
     "fit_display",
     "fit_styled_row",
     "fragments_to_visual_lines",
+    "sanitize_display_text",
     "wrap_fragments",
     "wrapped_row_count",
 ]
