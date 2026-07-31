@@ -1,7 +1,20 @@
 """Context manager - manages conversation context and compression."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
+import hashlib
+import math
+import os
+from pathlib import Path
+import re
+import socket
+import tempfile
+import threading
 from typing import TYPE_CHECKING, Optional, Any
+from urllib.error import URLError
+from urllib.request import urlopen
+import uuid
 
 from reuleauxcoder.domain.context.budget import ContextBudget
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
@@ -22,32 +35,284 @@ if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.interfaces.events import UIEventBus
 
-# Tiktoken encoder cache
+# Tiktoken's public encoding constructor downloads this vocabulary on its first
+# cache miss. Its downloader has no timeout, so never call it until we have put
+# a validated local copy in the cache ourselves.
+_TIKTOKEN_ENCODING_NAME = "o200k_base"
+_TIKTOKEN_VOCABULARY_URL = (
+    "https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken"
+)
+_TIKTOKEN_VOCABULARY_SHA256 = (
+    "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d"
+)
+_TIKTOKEN_DOWNLOAD_TIMEOUT_SECONDS = 5.0
+_TIKTOKEN_SOCKET_TIMEOUT_SECONDS = _TIKTOKEN_DOWNLOAD_TIMEOUT_SECONDS
+_TIKTOKEN_DOWNLOAD_CHUNK_SIZE = 64 * 1024
+
 _tiktoken_encoder = None
+_tiktoken_download_lock = threading.Lock()
+_tiktoken_download_thread: threading.Thread | None = None
 MESSAGE_TOKEN_KEY = "_rc_token_count"
+
+_CJK_CHARACTER_RE = re.compile(
+    "[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    "\U00020000-\U0002ebef]"
+)
+_ENGLISH_WORD_RE = re.compile(r"[A-Za-z]+(?:['’][A-Za-z]+)*")
+
+
+class _TokenizerDownloadCancelled(Exception):
+    """Internal signal used to abandon a timed-out background download."""
+
+
+def _tiktoken_cache_path() -> Path | None:
+    if "TIKTOKEN_CACHE_DIR" in os.environ:
+        cache_dir = os.environ["TIKTOKEN_CACHE_DIR"]
+    elif "DATA_GYM_CACHE_DIR" in os.environ:
+        cache_dir = os.environ["DATA_GYM_CACHE_DIR"]
+    else:
+        cache_dir = str(Path(tempfile.gettempdir()) / "data-gym-cache")
+    if not cache_dir:
+        return None
+    cache_key = hashlib.sha1(_TIKTOKEN_VOCABULARY_URL.encode()).hexdigest()
+    return Path(cache_dir) / cache_key
+
+
+def _has_valid_tiktoken_vocabulary(path: Path) -> bool:
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return digest == _TIKTOKEN_VOCABULARY_SHA256
 
 
 def _get_tiktoken_encoder():
-    """Get or create tiktoken encoder (o200k_base for modern models)."""
+    """Load the modern tokenizer only when its vocabulary is already cached."""
     global _tiktoken_encoder
-    if _tiktoken_encoder is None:
-        try:
-            import tiktoken
+    if _tiktoken_encoder is not None:
+        return _tiktoken_encoder
 
-            _tiktoken_encoder = tiktoken.get_encoding("o200k_base")
-        except Exception:
-            _tiktoken_encoder = None
+    cache_path = _tiktoken_cache_path()
+    if cache_path is None or not _has_valid_tiktoken_vocabulary(cache_path):
+        return None
+    try:
+        import tiktoken
+
+        _tiktoken_encoder = tiktoken.get_encoding(_TIKTOKEN_ENCODING_NAME)
+    except Exception:
+        _tiktoken_encoder = None
     return _tiktoken_encoder
 
 
+def _safe_tokenizer_progress(
+    progress: Callable[[str], None] | None,
+    message: str,
+) -> None:
+    if progress is None:
+        return
+    try:
+        progress(message)
+    except Exception:
+        pass
+
+
+def _download_tiktoken_vocabulary(
+    cache_path: Path,
+    *,
+    progress: Callable[[str], None] | None,
+    cancelled: threading.Event,
+) -> None:
+    """Stream and validate the vocabulary before atomically caching it."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = cache_path.with_name(f".{cache_path.name}.{uuid.uuid4().hex}.tmp")
+    digest = hashlib.sha256()
+    downloaded = 0
+    last_percent = 0
+
+    def report(message: str) -> None:
+        if not cancelled.is_set():
+            _safe_tokenizer_progress(progress, message)
+
+    try:
+        with urlopen(  # noqa: S310 - fixed HTTPS URL with a pinned content hash
+            _TIKTOKEN_VOCABULARY_URL,
+            timeout=_TIKTOKEN_SOCKET_TIMEOUT_SECONDS,
+        ) as response:
+            content_length = response.headers.get("Content-Length")
+            try:
+                total_bytes = int(content_length) if content_length else 0
+            except ValueError:
+                total_bytes = 0
+            report("Downloading tokenizer vocabulary... 0%.")
+            with temporary.open("wb") as stream:
+                while True:
+                    if cancelled.is_set():
+                        raise _TokenizerDownloadCancelled
+                    chunk = response.read(_TIKTOKEN_DOWNLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    if cancelled.is_set():
+                        raise _TokenizerDownloadCancelled
+                    stream.write(chunk)
+                    digest.update(chunk)
+                    downloaded += len(chunk)
+                    if total_bytes:
+                        percent = min(100, int(downloaded * 100 / total_bytes))
+                        if percent >= last_percent + 10:
+                            report(f"Downloading tokenizer vocabulary... {percent}%.")
+                            last_percent = percent
+                    elif downloaded // (1024 * 1024) > (
+                        downloaded - len(chunk)
+                    ) // (1024 * 1024):
+                        report(
+                            "Downloading tokenizer vocabulary... "
+                            f"{downloaded / (1024 * 1024):.1f} MB."
+                        )
+        if cancelled.is_set():
+            raise _TokenizerDownloadCancelled
+        if digest.hexdigest() != _TIKTOKEN_VOCABULARY_SHA256:
+            raise ValueError("downloaded tokenizer vocabulary failed hash validation")
+        temporary.replace(cache_path)
+        if last_percent < 100:
+            report("Downloading tokenizer vocabulary... 100%.")
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _is_timeout_error(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        return True
+    if isinstance(error, URLError) and isinstance(
+        getattr(error, "reason", None), (TimeoutError, socket.timeout)
+    ):
+        return True
+    return False
+
+
+def prepare_tiktoken_encoder(
+    *,
+    progress: Callable[[str], None] | None = None,
+    timeout_seconds: float = _TIKTOKEN_DOWNLOAD_TIMEOUT_SECONDS,
+):
+    """Prepare tiktoken within a deadline, or return None for heuristic use."""
+    global _tiktoken_download_thread
+
+    encoder = _get_tiktoken_encoder()
+    if encoder is not None:
+        return encoder
+
+    cache_path = _tiktoken_cache_path()
+    if cache_path is None:
+        _safe_tokenizer_progress(
+            progress,
+            "Tokenizer cache is disabled; using estimated token counts.",
+        )
+        return None
+
+    timeout_seconds = max(0.0, float(timeout_seconds))
+    with _tiktoken_download_lock:
+        encoder = _get_tiktoken_encoder()
+        if encoder is not None:
+            return encoder
+        if (
+            _tiktoken_download_thread is not None
+            and _tiktoken_download_thread.is_alive()
+        ):
+            _safe_tokenizer_progress(
+                progress,
+                "Tokenizer vocabulary is still downloading; "
+                "using estimated token counts.",
+            )
+            return None
+
+        _safe_tokenizer_progress(
+            progress,
+            "Tokenizer vocabulary is not cached; starting download...",
+        )
+        cancelled = threading.Event()
+        errors: list[Exception] = []
+
+        def download() -> None:
+            try:
+                _download_tiktoken_vocabulary(
+                    cache_path,
+                    progress=progress,
+                    cancelled=cancelled,
+                )
+            except Exception as error:
+                errors.append(error)
+
+        thread = threading.Thread(
+            target=download,
+            name="rcoder-tokenizer-download",
+            daemon=True,
+        )
+        _tiktoken_download_thread = thread
+        thread.start()
+        thread.join(timeout_seconds)
+        if thread.is_alive():
+            cancelled.set()
+            _safe_tokenizer_progress(
+                progress,
+                f"Tokenizer vocabulary download timed out after "
+                f"{timeout_seconds:.1f}s; using estimated token counts.",
+            )
+            return None
+        _tiktoken_download_thread = None
+
+        if errors:
+            error = errors[0]
+            if _is_timeout_error(error):
+                _safe_tokenizer_progress(
+                    progress,
+                    f"Tokenizer vocabulary download timed out after "
+                    f"{timeout_seconds:.1f}s; using estimated token counts.",
+                )
+            else:
+                _safe_tokenizer_progress(
+                    progress,
+                    "Tokenizer vocabulary download failed "
+                    f"({type(error).__name__}); using estimated token counts.",
+                )
+            return None
+
+        encoder = _get_tiktoken_encoder()
+        if encoder is None:
+            _safe_tokenizer_progress(
+                progress,
+                "Tokenizer vocabulary could not be loaded; "
+                "using estimated token counts.",
+            )
+            return None
+        _safe_tokenizer_progress(progress, "Tokenizer vocabulary ready.")
+        return encoder
+
+
+def _estimate_text_tokens_chars(text: str) -> float:
+    """Estimate mixed text: CJK×1.5 + English words×1.3 + symbols×0.5."""
+    chinese_characters = len(_CJK_CHARACTER_RE.findall(text))
+    without_chinese = _CJK_CHARACTER_RE.sub("", text)
+    english_words = len(_ENGLISH_WORD_RE.findall(without_chinese))
+    remaining = _ENGLISH_WORD_RE.sub("", without_chinese)
+    other_symbols = sum(1 for character in remaining if not character.isspace())
+    return (
+        chinese_characters * 1.5
+        + english_words * 1.3
+        + other_symbols * 0.5
+    )
+
+
 def _estimate_message_tokens_chars(message: dict) -> int:
-    """Estimate token count for a single message using chars/3 (fallback)."""
-    total = 0
+    """Estimate a message without requiring a tokenizer vocabulary."""
+    total = 0.0
     if message.get("content"):
-        total += len(str(message["content"])) // 3
+        total += _estimate_text_tokens_chars(str(message["content"]))
     if message.get("tool_calls"):
-        total += len(str(message["tool_calls"])) // 3
-    return total
+        total += _estimate_text_tokens_chars(str(message["tool_calls"]))
+    return math.ceil(total)
 
 
 def estimate_message_tokens(

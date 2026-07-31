@@ -26,6 +26,7 @@ from reuleauxcoder.interfaces.entrypoint import AppRunner, AppOptions
 from reuleauxcoder.interfaces.events import AgentEventBridge
 from reuleauxcoder.interfaces.ui_registry import UIRegistry
 from reuleauxcoder.presentation.semantics import DisplayTone
+from reuleauxcoder.domain.context.manager import prepare_tiktoken_encoder
 from reuleauxcoder.services.config.loader import ExampleConfigError
 
 
@@ -103,6 +104,8 @@ def main():
     # Initialize application using shared entrypoint
     runner = None
     try:
+        if startup_progress is not None:
+            prepare_tiktoken_encoder(progress=report_startup)
         runner = AppRunner(options, startup_progress=startup_progress)
         ctx = runner.initialize()
         startup_progress_active = False
