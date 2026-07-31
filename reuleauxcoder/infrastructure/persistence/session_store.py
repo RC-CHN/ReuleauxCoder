@@ -16,6 +16,7 @@ from typing import Optional
 from reuleauxcoder.domain.context.manager import (
     MESSAGE_TOKEN_KEY,
     ensure_message_token_counts,
+    token_count_backend_name,
 )
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.replay import (
@@ -78,6 +79,30 @@ class SessionStore:
             self._progress(message)
         except Exception:
             pass
+
+    def _ensure_message_token_counts(
+        self,
+        messages: list[dict],
+        *,
+        reason: str,
+    ) -> int:
+        pending = sum(
+            not isinstance(message.get(MESSAGE_TOKEN_KEY), int)
+            for message in messages
+        )
+        if not pending:
+            return ensure_message_token_counts(messages)
+        self._report_progress(
+            f"Calculating token counts for {pending} {reason} message(s)..."
+        )
+        started = time.monotonic()
+        total = ensure_message_token_counts(messages)
+        self._report_progress(
+            f"Token counts ready ({pending} message(s), "
+            f"{token_count_backend_name()}, "
+            f"{time.monotonic() - started:.1f}s)."
+        )
+        return total
 
     def save(
         self,
@@ -282,7 +307,10 @@ class SessionStore:
                     f"Tool '{tool_name}' interrupted in persisted session."
                 ),
             )
-            ensure_message_token_counts(updated_messages)
+            self._ensure_message_token_counts(
+                updated_messages,
+                reason="restored",
+            )
             session.messages = updated_messages
             if session.runtime_state.model is None:
                 session.runtime_state.model = session.model
@@ -666,7 +694,14 @@ class SessionStore:
             events,
         )
         if recovered_count:
-            ensure_message_token_counts(session.messages)
+            self._report_progress(
+                f"Recovering {recovered_count} message update(s) from "
+                "the durable history tail..."
+            )
+            self._ensure_message_token_counts(
+                session.messages,
+                reason="recovered",
+            )
             self._report_progress(
                 f"Recovered {recovered_count} message update(s) from "
                 "the durable history tail."

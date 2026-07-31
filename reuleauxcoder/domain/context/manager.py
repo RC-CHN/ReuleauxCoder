@@ -11,6 +11,7 @@ import re
 import socket
 import tempfile
 import threading
+import time
 from typing import TYPE_CHECKING, Optional, Any
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -86,6 +87,19 @@ def _has_valid_tiktoken_vocabulary(path: Path) -> bool:
     return digest == _TIKTOKEN_VOCABULARY_SHA256
 
 
+def has_cached_tiktoken_vocabulary() -> bool:
+    """Return whether the pinned vocabulary is already valid on disk."""
+    cache_path = _tiktoken_cache_path()
+    return cache_path is not None and _has_valid_tiktoken_vocabulary(cache_path)
+
+
+def token_count_backend_name() -> str:
+    """Describe the backend used by the most recent local token count."""
+    if _tiktoken_encoder is not None:
+        return f"tiktoken/{_TIKTOKEN_ENCODING_NAME}"
+    return "weighted estimate"
+
+
 def _get_tiktoken_encoder():
     """Load the modern tokenizer only when its vocabulary is already cached."""
     global _tiktoken_encoder
@@ -143,7 +157,14 @@ def _download_tiktoken_vocabulary(
                 total_bytes = int(content_length) if content_length else 0
             except ValueError:
                 total_bytes = 0
-            report("Downloading tokenizer vocabulary... 0%.")
+            if total_bytes:
+                total_mb = total_bytes / (1024 * 1024)
+                report(
+                    "Downloading tokenizer vocabulary... "
+                    f"0% (0.0/{total_mb:.1f} MB)."
+                )
+            else:
+                report("Downloading tokenizer vocabulary... 0%.")
             with temporary.open("wb") as stream:
                 while True:
                     if cancelled.is_set():
@@ -159,7 +180,12 @@ def _download_tiktoken_vocabulary(
                     if total_bytes:
                         percent = min(100, int(downloaded * 100 / total_bytes))
                         if percent >= last_percent + 10:
-                            report(f"Downloading tokenizer vocabulary... {percent}%.")
+                            report(
+                                "Downloading tokenizer vocabulary... "
+                                f"{percent}% "
+                                f"({downloaded / (1024 * 1024):.1f}/"
+                                f"{total_mb:.1f} MB)."
+                            )
                             last_percent = percent
                     elif downloaded // (1024 * 1024) > (
                         downloaded - len(chunk)
@@ -200,6 +226,7 @@ def prepare_tiktoken_encoder(
     """Prepare tiktoken within a deadline, or return None for heuristic use."""
     global _tiktoken_download_thread
 
+    started = time.monotonic()
     encoder = _get_tiktoken_encoder()
     if encoder is not None:
         return encoder
@@ -275,7 +302,9 @@ def prepare_tiktoken_encoder(
                 _safe_tokenizer_progress(
                     progress,
                     "Tokenizer vocabulary download failed "
-                    f"({type(error).__name__}); using estimated token counts.",
+                    f"({type(error).__name__}, "
+                    f"{time.monotonic() - started:.1f}s); "
+                    "using estimated token counts.",
                 )
             return None
 
@@ -287,7 +316,15 @@ def prepare_tiktoken_encoder(
                 "using estimated token counts.",
             )
             return None
-        _safe_tokenizer_progress(progress, "Tokenizer vocabulary ready.")
+        try:
+            vocabulary_mb = cache_path.stat().st_size / (1024 * 1024)
+        except OSError:
+            vocabulary_mb = 0.0
+        _safe_tokenizer_progress(
+            progress,
+            f"Tokenizer vocabulary ready ({vocabulary_mb:.1f} MB, "
+            f"{time.monotonic() - started:.1f}s).",
+        )
         return encoder
 
 

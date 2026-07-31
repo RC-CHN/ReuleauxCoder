@@ -165,7 +165,8 @@ def test_legacy_session_request_directory_is_bounded_on_load(
 def test_load_recovers_messages_committed_after_replay_snapshot(
     tmp_path: Path,
 ) -> None:
-    store = SessionStore(tmp_path)
+    progress = []
+    store = SessionStore(tmp_path, progress.append)
     ledger = HistoryLedger()
     first = {"role": "user", "content": "persisted snapshot"}
     second = {"role": "assistant", "content": "durable ledger tail"}
@@ -204,6 +205,17 @@ def test_load_recovers_messages_committed_after_replay_snapshot(
         "persisted snapshot",
         "durable ledger tail",
     ]
+    assert any(
+        message.startswith(
+            "Recovering 1 message update(s) from the durable history tail"
+        )
+        for message in progress
+    )
+    assert any(
+        message.startswith("Calculating token counts for 1 recovered message(s)")
+        for message in progress
+    )
+    assert any(message.startswith("Token counts ready (1 message(s),") for message in progress)
 
 
 def test_new_session_layout_separates_full_ledger_from_runtime_view(

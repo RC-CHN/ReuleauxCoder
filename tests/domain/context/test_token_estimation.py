@@ -59,8 +59,14 @@ def test_vocabulary_download_reports_percentage_and_writes_valid_cache(
     )
 
     assert cache_path.read_bytes() == content
-    assert "Downloading tokenizer vocabulary... 0%." in progress
-    assert "Downloading tokenizer vocabulary... 100%." in progress
+    assert any(
+        message.startswith("Downloading tokenizer vocabulary... 0%")
+        for message in progress
+    )
+    assert any(
+        message.startswith("Downloading tokenizer vocabulary... 100%")
+        for message in progress
+    )
 
 
 def test_slow_vocabulary_download_times_out_and_uses_estimate(
@@ -109,3 +115,21 @@ def test_missing_vocabulary_never_triggers_implicit_tiktoken_download(
     )
 
     assert manager._get_tiktoken_encoder() is None
+
+
+def test_cached_vocabulary_probe_does_not_construct_encoder(
+    tmp_path, monkeypatch
+) -> None:
+    content = b"cached tokenizer vocabulary"
+    cache_path = tmp_path / "tokenizer-cache"
+    cache_path.write_bytes(content)
+    monkeypatch.setattr(manager, "_tiktoken_cache_path", lambda: cache_path)
+    monkeypatch.setattr(
+        manager,
+        "_TIKTOKEN_VOCABULARY_SHA256",
+        hashlib.sha256(content).hexdigest(),
+    )
+    monkeypatch.setattr(manager, "_tiktoken_encoder", None)
+
+    assert manager.has_cached_tiktoken_vocabulary() is True
+    assert manager._tiktoken_encoder is None
