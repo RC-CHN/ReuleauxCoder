@@ -230,6 +230,20 @@ class AgentLoop:
             return f"Notes unavailable: {type(exc).__name__}"
 
     def _full_messages(self) -> list[dict]:
+        monitor = getattr(self.agent, "performance_monitor", None)
+        if monitor is None:
+            return self._full_messages_unmeasured()
+        with monitor.measure(
+            "context",
+            "request_messages_build",
+            attributes={
+                "history_message_count": len(self.agent.state.messages),
+                "turn_id": self.agent._current_turn_id,
+            },
+        ):
+            return self._full_messages_unmeasured()
+
+    def _full_messages_unmeasured(self) -> list[dict]:
         """Get full messages including system prompt and ephemeral runtime tail."""
         mode = self.agent.get_active_mode_config()
         active_tools = self.agent.get_active_tools()
@@ -372,6 +386,45 @@ class AgentLoop:
         )
 
     def _record_request_envelopes(
+        self,
+        request_messages: list[dict],
+        request_tools: list[dict],
+        *,
+        attempt_id: str | None = None,
+        request_settings: dict | None = None,
+        model_profile: str | None = None,
+        canonical_request_payload: dict | None = None,
+    ) -> None:
+        monitor = getattr(self.agent, "performance_monitor", None)
+        if monitor is None:
+            self._record_request_envelopes_unmeasured(
+                request_messages,
+                request_tools,
+                attempt_id=attempt_id,
+                request_settings=request_settings,
+                model_profile=model_profile,
+                canonical_request_payload=canonical_request_payload,
+            )
+            return
+        with monitor.measure(
+            "context",
+            "request_envelope_commit",
+            attributes={
+                "message_count": len(request_messages),
+                "tool_count": len(request_tools),
+                "turn_id": self.agent._current_turn_id,
+            },
+        ):
+            self._record_request_envelopes_unmeasured(
+                request_messages,
+                request_tools,
+                attempt_id=attempt_id,
+                request_settings=request_settings,
+                model_profile=model_profile,
+                canonical_request_payload=canonical_request_payload,
+            )
+
+    def _record_request_envelopes_unmeasured(
         self,
         request_messages: list[dict],
         request_tools: list[dict],

@@ -129,7 +129,7 @@ def bind_session_persistence(
         return
     agent.current_session_id = session_id
 
-    def persist() -> None:
+    def persist_snapshot() -> None:
         context_lock = getattr(agent, "_context_revision_lock", None)
         with context_lock if context_lock is not None else nullcontext():
             messages = [dict(message) for message in agent.messages]
@@ -152,6 +152,21 @@ def bind_session_persistence(
             events_already_persisted=True,
             **persistence_kwargs,
         )
+
+    def persist() -> None:
+        monitor = getattr(agent, "performance_monitor", None)
+        if monitor is None:
+            persist_snapshot()
+            return
+        with monitor.measure(
+            "persistence",
+            "session_snapshot",
+            attributes={
+                "session_id": session_id,
+                "incremental": True,
+            },
+        ):
+            persist_snapshot()
 
     events_path = store.sessions_dir / session_id / "events.jsonl"
     bind(events_path=events_path, callback=_LiveSessionPersistence(persist))

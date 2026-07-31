@@ -165,6 +165,10 @@ class ToolOutcome:
         """Return an outcome enriched with immutable presentation facts."""
         return replace(self, metadata={**self.metadata, **values})
 
+    def with_duration(self, duration_seconds: float) -> "ToolOutcome":
+        """Return an outcome with a generic backend execution duration."""
+        return replace(self, duration_seconds=max(0.0, duration_seconds))
+
     def _detailed_text(self, *, include_diagnostics: bool) -> str:
         sections: list[str] = []
         defer_status = self.status in {

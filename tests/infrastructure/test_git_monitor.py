@@ -135,6 +135,36 @@ def test_head_change_notice_is_sticky_only_for_the_observing_turn(
     assert "head_change" not in next_turn
 
 
+def test_snapshot_cache_is_turn_scoped_and_explicitly_invalidated(
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    monitor = GitMonitor(root, cache_ttl_seconds=60)
+    original_git = monitor._git
+    status_calls = 0
+
+    def counted_git(*args, **kwargs):
+        nonlocal status_calls
+        if args and args[0] == "status":
+            status_calls += 1
+        return original_git(*args, **kwargs)
+
+    monitor._git = counted_git  # type: ignore[method-assign]
+
+    first = monitor.snapshot(turn_id="turn-1")
+    first["branch"] = "mutated by caller"
+    repeated = monitor.snapshot(turn_id="turn-1")
+    assert status_calls == 1
+    assert repeated["branch"] != "mutated by caller"
+
+    monitor.invalidate()
+    monitor.snapshot(turn_id="turn-1")
+    assert status_calls == 2
+
+    monitor.snapshot(turn_id="turn-2")
+    assert status_calls == 3
+
+
 def test_non_repository_reports_that_git_is_not_initialized(tmp_path: Path) -> None:
     assert GitMonitor(tmp_path).snapshot(turn_id="turn") == {
         "repository_root": str(tmp_path),

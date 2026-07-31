@@ -43,6 +43,11 @@ from reuleauxcoder.domain.runtime.serialization import (
     tool_outcome_from_dict,
     tool_outcome_to_dict,
 )
+from reuleauxcoder.domain.runtime.performance import (
+    PerformanceSample,
+    PerformanceValue,
+    RuntimePerformanceMonitor,
+)
 
 __all__ = [
     "ApprovalRequested",
@@ -57,12 +62,15 @@ __all__ = [
     "NotificationRaised",
     "OperationPhaseChanged",
     "PlanUpdated",
+    "PerformanceSample",
+    "PerformanceValue",
     "ProgressReported",
     "ProcessSessionChanged",
     "ReasoningDelta",
     "RUNTIME_EVENT_CODEC_VERSION",
     "RuntimeEvent",
     "RuntimeEventKind",
+    "RuntimePerformanceMonitor",
     "RuntimeDiagnostic",
     "RuntimeStateChanged",
     "SessionChanged",

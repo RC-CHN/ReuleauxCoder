@@ -6,6 +6,7 @@ import concurrent.futures
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from difflib import get_close_matches
+import time
 from typing import TYPE_CHECKING, List, cast
 
 if TYPE_CHECKING:
@@ -298,6 +299,35 @@ class ToolExecutor:
         *,
         interrupt_baseline: int | None = None,
     ) -> str:
+        """Execute one call while retaining a generic end-to-end timing."""
+        started = time.monotonic()
+        status = "ok"
+        try:
+            return self._execute(tc, interrupt_baseline=interrupt_baseline)
+        except BaseException:
+            status = "error"
+            raise
+        finally:
+            monitor = getattr(self.agent, "performance_monitor", None)
+            if monitor is not None:
+                monitor.record(
+                    "tool",
+                    "call_total",
+                    (time.monotonic() - started) * 1000,
+                    status=status,
+                    attributes={
+                        "tool_name": tc.name,
+                        "tool_call_id": tc.id,
+                        "turn_id": self.agent._current_turn_id,
+                    },
+                )
+
+    def _execute(
+        self,
+        tc: "ToolCall",
+        *,
+        interrupt_baseline: int | None = None,
+    ) -> str:
         """Execute a single tool call."""
         if interrupt_baseline is not None and (
             self._stop_requested()
@@ -559,7 +589,23 @@ class ToolExecutor:
                         approval_request.preview = build_approval_preview(
                             approval_request, workspace=workspace
                         )
-                    decision = provider.request_approval(approval_request)
+                    monitor = getattr(self.agent, "performance_monitor", None)
+                    approval_measurement = (
+                        monitor.measure(
+                            "tool",
+                            "approval_wait",
+                            attributes={
+                                "tool_name": tc.name,
+                                "tool_call_id": tc.id,
+                                "approval_attempt": approval_attempt + 1,
+                                "turn_id": self.agent._current_turn_id,
+                            },
+                        )
+                        if monitor is not None
+                        else nullcontext()
+                    )
+                    with approval_measurement:
+                        decision = provider.request_approval(approval_request)
                     if not decision.approved:
                         break
                     with _workspace_access_scope(workspace, external_target):
@@ -722,31 +768,56 @@ class ToolExecutor:
                 if callable(outer_stream_handler):
                     outer_stream_handler(tool_name, chunk)
 
-            with _tool_cancellation_scope(tool, backend, cancellation):
-                with _stream_handler_scope(
-                    backend,
-                    execution_context,
-                    stream_handler,
-                ):
-                    with _workspace_revision_scope(
+            execution_started = time.monotonic()
+            try:
+                with _tool_cancellation_scope(tool, backend, cancellation):
+                    with _stream_handler_scope(
                         backend,
-                        expected_workspace_revision,
+                        execution_context,
+                        stream_handler,
                     ):
-                        bind_execution = getattr(tool, "bind_execution", None)
-                        if callable(bind_execution):
-                            bind_execution(
-                                tool_call_id=tc.id,
-                                session_generation=self.agent.session_generation,
-                            )
-                        execution_workspace = getattr(backend, "workspace", None)
-                        with _workspace_access_scope(
-                            execution_workspace, external_target
+                        with _workspace_revision_scope(
+                            backend,
+                            expected_workspace_revision,
                         ):
-                            raw_result = tool.execute(**tool_call.arguments)
+                            bind_execution = getattr(tool, "bind_execution", None)
+                            if callable(bind_execution):
+                                bind_execution(
+                                    tool_call_id=tc.id,
+                                    session_generation=self.agent.session_generation,
+                                )
+                            execution_workspace = getattr(backend, "workspace", None)
+                            with _workspace_access_scope(
+                                execution_workspace, external_target
+                            ):
+                                raw_result = tool.execute(**tool_call.arguments)
+            finally:
+                execution_seconds = time.monotonic() - execution_started
+                monitor = getattr(self.agent, "performance_monitor", None)
+                if monitor is not None:
+                    monitor.record(
+                        "tool",
+                        "execute",
+                        execution_seconds * 1000,
+                        attributes={
+                            "tool_name": tool_call.name,
+                            "tool_call_id": tc.id,
+                            "turn_id": self.agent._current_turn_id,
+                        },
+                    )
+                git_monitor = getattr(self.agent, "git_monitor", None)
+                if git_monitor is not None and (
+                    getattr(tool, "effect_class", None)
+                    in {"filesystem_mutation", "process_execution"}
+                    or tool_call.name == "shell_session"
+                ):
+                    git_monitor.invalidate()
             outcome = (
                 raw_result
                 if isinstance(raw_result, ToolOutcome)
-                else ToolOutcome.from_legacy(raw_result)
+                else ToolOutcome.from_legacy(raw_result).with_duration(
+                    execution_seconds
+                )
             )
             if approval_workspace_changes:
                 change_report = "\n\n".join(

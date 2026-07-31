@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import fields
 from types import MappingProxyType
 from typing import Any, cast
@@ -22,6 +23,7 @@ from reuleauxcoder.domain.hooks.types import (
     HookKind,
     HookPoint,
 )
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
 class HookRegistry:
@@ -31,6 +33,7 @@ class HookRegistry:
         self,
         *,
         diagnostic_sink: Callable[[HookDiagnostic], None] | None = None,
+        performance_monitor: RuntimePerformanceMonitor | None = None,
     ):
         self._hooks: dict[HookPoint, list[HookBase[Any]]] = defaultdict(list)
         self._kind_cache: dict[
@@ -38,6 +41,7 @@ class HookRegistry:
         ] = {}
         self._diagnostic_sink = diagnostic_sink
         self._diagnostics: list[HookDiagnostic] = []
+        self._performance_monitor = performance_monitor
 
     def register(self, hook_point: HookPoint, hook: HookBase[Any]) -> None:
         """Register a hook for a hook point."""
@@ -73,6 +77,11 @@ class HookRegistry:
     ) -> None:
         self._diagnostic_sink = sink
 
+    def set_performance_monitor(
+        self, monitor: RuntimePerformanceMonitor | None
+    ) -> None:
+        self._performance_monitor = monitor
+
     def drain_diagnostics(self) -> tuple[HookDiagnostic, ...]:
         diagnostics = tuple(self._diagnostics)
         self._diagnostics.clear()
@@ -91,7 +100,8 @@ class HookRegistry:
         decisions: list[GuardDecision] = []
         for hook in self._iter_kind(hook_point, HookKind.GUARD):
             try:
-                decision = cast(GuardHook[HookContext], hook).run(context)
+                with self._hook_measurement(hook, hook_point, HookKind.GUARD):
+                    decision = cast(GuardHook[HookContext], hook).run(context)
             except Exception as exc:
                 self._report_failure(hook, hook_point, HookKind.GUARD, exc)
                 decisions.append(
@@ -112,7 +122,8 @@ class HookRegistry:
         current = context
         for hook in self._iter_kind(hook_point, HookKind.TRANSFORM):
             try:
-                result = cast(TransformHook[HookContext], hook).run(current)
+                with self._hook_measurement(hook, hook_point, HookKind.TRANSFORM):
+                    result = cast(TransformHook[HookContext], hook).run(current)
             except Exception as exc:
                 self._report_failure(hook, hook_point, HookKind.TRANSFORM, exc)
                 raise
@@ -139,11 +150,27 @@ class HookRegistry:
         observers = self._iter_kind(hook_point, HookKind.OBSERVER)
         if not observers:
             return ()
-        snapshot = self._snapshot(context)
+        monitor = self._performance_monitor
+        snapshot_measurement = (
+            monitor.measure(
+                "hook",
+                f"{hook_point.value}:snapshot",
+                attributes={
+                    "hook_point": hook_point.value,
+                    "hook_kind": HookKind.OBSERVER.value,
+                    "observer_count": len(observers),
+                },
+            )
+            if monitor is not None
+            else nullcontext()
+        )
+        with snapshot_measurement:
+            snapshot = self._snapshot(context)
         diagnostics: list[HookDiagnostic] = []
         for hook in observers:
             try:
-                cast(ObserverHook[HookContext], hook).run(snapshot)
+                with self._hook_measurement(hook, hook_point, HookKind.OBSERVER):
+                    cast(ObserverHook[HookContext], hook).run(snapshot)
             except Exception as exc:
                 diagnostic = self._report_failure(
                     hook, hook_point, HookKind.OBSERVER, exc
@@ -175,10 +202,32 @@ class HookRegistry:
 
     def clone(self, *, scope: str = "child") -> "HookRegistry":
         """Create a scope-aware copy of the registry and registered hooks."""
-        cloned = HookRegistry(diagnostic_sink=self._diagnostic_sink)
+        cloned = HookRegistry(
+            diagnostic_sink=self._diagnostic_sink,
+            performance_monitor=self._performance_monitor,
+        )
         for hook_point, hooks in self._hooks.items():
             cloned._hooks[hook_point] = [hook.clone_for_scope(scope) for hook in hooks]
         return cloned
+
+    def _hook_measurement(
+        self,
+        hook: HookBase[Any],
+        hook_point: HookPoint,
+        hook_kind: HookKind,
+    ):
+        monitor = self._performance_monitor
+        if monitor is None:
+            return nullcontext()
+        return monitor.measure(
+            "hook",
+            f"{hook_point.value}:{hook.name}",
+            attributes={
+                "hook_name": hook.name,
+                "hook_point": hook_point.value,
+                "hook_kind": hook_kind.value,
+            },
+        )
 
     @staticmethod
     def _sorted_hooks(hooks: list[HookBase[Any]]) -> list[HookBase[Any]]:

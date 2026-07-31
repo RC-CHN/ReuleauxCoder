@@ -206,6 +206,65 @@ class TokenUsageViewModel:
 
 
 @dataclass(frozen=True, slots=True)
+class PerformanceRowViewModel:
+    sequence: int
+    category: str
+    operation: str
+    elapsed_ms: float
+    status: str
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceCategoryViewModel:
+    category: str
+    count: int
+    total_ms: float
+    max_ms: float
+    last_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceViewModel:
+    retained_count: int
+    capacity: int
+    dropped_count: int
+    categories: tuple[PerformanceCategoryViewModel, ...]
+    recent: tuple[PerformanceRowViewModel, ...]
+    slowest: tuple[PerformanceRowViewModel, ...]
+    view_type: str = "runtime_performance"
+
+    def to_payload(self) -> dict[str, Any]:
+        def row_payload(row: PerformanceRowViewModel) -> dict[str, Any]:
+            return {
+                "sequence": row.sequence,
+                "category": row.category,
+                "operation": row.operation,
+                "elapsed_ms": row.elapsed_ms,
+                "status": row.status,
+                "detail": row.detail,
+            }
+
+        return {
+            "retained_count": self.retained_count,
+            "capacity": self.capacity,
+            "dropped_count": self.dropped_count,
+            "categories": [
+                {
+                    "category": category.category,
+                    "count": category.count,
+                    "total_ms": category.total_ms,
+                    "max_ms": category.max_ms,
+                    "last_ms": category.last_ms,
+                }
+                for category in self.categories
+            ],
+            "recent": [row_payload(row) for row in self.recent],
+            "slowest": [row_payload(row) for row in self.slowest],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SubagentJobViewModel:
     job_id: str
     parent_agent_id: str | None

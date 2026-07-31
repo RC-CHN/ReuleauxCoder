@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,7 @@ class HistoryLedger:
         sink_path: str | Path | None = None,
         session_id: str | None = None,
         agent_id: str | None = None,
+        performance_monitor: RuntimePerformanceMonitor | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._events = [
@@ -89,6 +91,7 @@ class HistoryLedger:
         self._sink_batch_depth = 0
         self._pending_sink_events: list[HistoryEvent] = []
         self._unbound_events: list[HistoryEvent] = []
+        self._performance_monitor = performance_monitor
 
     @property
     def events(self) -> tuple[HistoryEvent, ...]:
@@ -252,6 +255,12 @@ class HistoryLedger:
             if agent_id is not None:
                 self._agent_id = agent_id
 
+    def set_performance_monitor(
+        self, monitor: RuntimePerformanceMonitor | None
+    ) -> None:
+        with self._lock:
+            self._performance_monitor = monitor
+
     def _append_to_sink(self, event: HistoryEvent) -> None:
         if self._sink_path is None:
             self._unbound_events.append(event)
@@ -264,12 +273,45 @@ class HistoryLedger:
     def _write_sink_events(self, events: tuple[HistoryEvent, ...]) -> None:
         if self._sink_path is None or not events:
             return
-        self._sink_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._sink_path.open("a", encoding="utf-8") as stream:
-            for event in events:
-                stream.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        started = time.monotonic()
+        encode_ms = 0.0
+        fsync_ms = 0.0
+        encoded_bytes = 0
+        status = "ok"
+        try:
+            encode_started = time.monotonic()
+            encoded = "".join(
+                json.dumps(event.to_dict(), ensure_ascii=False) + "\n"
+                for event in events
+            )
+            encoded_data = encoded.encode("utf-8")
+            encode_ms = (time.monotonic() - encode_started) * 1000
+            encoded_bytes = len(encoded_data)
+            self._sink_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._sink_path.open("ab") as stream:
+                stream.write(encoded_data)
+                stream.flush()
+                fsync_started = time.monotonic()
+                os.fsync(stream.fileno())
+                fsync_ms = (time.monotonic() - fsync_started) * 1000
+        except BaseException:
+            status = "error"
+            raise
+        finally:
+            monitor = self._performance_monitor
+            if monitor is not None:
+                monitor.record(
+                    "persistence",
+                    "history_ledger_write",
+                    (time.monotonic() - started) * 1000,
+                    status=status,
+                    attributes={
+                        "event_count": len(events),
+                        "encoded_bytes": encoded_bytes,
+                        "encode_ms": round(encode_ms, 3),
+                        "fsync_ms": round(fsync_ms, 3),
+                    },
+                )
 
     @contextmanager
     def _batch_sink_writes(self):

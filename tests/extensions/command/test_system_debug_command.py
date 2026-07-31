@@ -8,7 +8,10 @@ from reuleauxcoder.extensions.command.builtin.system import (
     _handle_exit,
     _parse_config,
     _parse_debug,
+    _handle_status_perf,
+    _parse_status_perf,
 )
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
@@ -20,6 +23,30 @@ def test_parse_debug_on_off() -> None:
     assert enabled is not None and enabled.enabled is True
     assert disabled is not None and disabled.enabled is False
     assert _parse_debug("/debug maybe", None) is None
+
+
+def test_status_perf_emits_bounded_typed_view() -> None:
+    assert _parse_status_perf("/STATUS PERF", None) is not None
+    monitor = RuntimePerformanceMonitor()
+    monitor.record(
+        "hook",
+        "before_llm_request:project_context",
+        12.5,
+        attributes={"hook_name": "project_context"},
+    )
+    effect = CommandEffect()
+    ctx = SimpleNamespace(
+        agent=SimpleNamespace(performance_monitor=monitor),
+        effect=effect,
+    )
+
+    result = _handle_status_perf(None, ctx)
+
+    view = result.views[-1].view_model
+    assert view.view_type == "runtime_performance"
+    assert view.retained_count == 1
+    assert view.categories[0].category == "hook"
+    assert view.slowest[0].detail == "hook_name=project_context"
 
 
 def test_handle_debug_toggles_runtime_flag(tmp_path, monkeypatch) -> None:

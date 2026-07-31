@@ -3,6 +3,7 @@ import pytest
 from reuleauxcoder.domain.hooks.base import GuardHook, ObserverHook, TransformHook
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.hooks.types import GuardDecision, HookContext, HookPoint
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
 class AllowGuard(GuardHook[HookContext]):
@@ -124,6 +125,25 @@ def test_hook_registry_run_transforms_applies_priority_order() -> None:
     result = registry.run_transforms(HookPoint.AFTER_TOOL_EXECUTE, context)
 
     assert result.metadata == {"a": "1", "b": "2"}
+
+
+def test_hook_registry_records_each_hook_timing() -> None:
+    monitor = RuntimePerformanceMonitor()
+    registry = HookRegistry(performance_monitor=monitor)
+    registry.register(
+        HookPoint.AFTER_TOOL_EXECUTE,
+        MetadataTransform(name="timed", priority=1, key="a", value="1"),
+    )
+
+    registry.run_transforms(
+        HookPoint.AFTER_TOOL_EXECUTE,
+        HookContext(hook_point=HookPoint.AFTER_TOOL_EXECUTE),
+    )
+
+    sample = monitor.snapshot()[-1]
+    assert sample.category == "hook"
+    assert sample.name == "after_tool_execute:timed"
+    assert sample.attribute_map()["hook_kind"] == "transform"
 
 
 def test_hook_registry_run_transforms_rejects_none_result() -> None:

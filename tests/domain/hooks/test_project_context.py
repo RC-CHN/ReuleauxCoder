@@ -178,3 +178,30 @@ def test_concatenated_message_is_deterministic(tmp_path: Path, monkeypatch) -> N
     r1 = hook.run(_make_context(messages))
     r2 = hook.run(_make_context(messages))
     assert r1.messages == r2.messages
+
+
+def test_context_file_content_is_cached_until_metadata_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context_file = tmp_path / "AGENT.md"
+    context_file.write_text("first", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    original_read_text = Path.read_text
+    reads = 0
+
+    def counted_read_text(path: Path, *args, **kwargs):
+        nonlocal reads
+        if path.name == "AGENT.md":
+            reads += 1
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+    hook = ProjectContextHook()
+
+    assert hook._load_all_project_contexts() == [("AGENT.md", "first")]
+    assert hook._load_all_project_contexts() == [("AGENT.md", "first")]
+    assert reads == 1
+
+    context_file.write_text("second value", encoding="utf-8")
+    assert hook._load_all_project_contexts() == [("AGENT.md", "second value")]
+    assert reads == 2

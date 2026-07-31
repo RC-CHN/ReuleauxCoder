@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import copy
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -147,6 +148,7 @@ class GitMonitor:
         sample_limit: int = 3,
         group_limit: int = 2,
         path_limit: int = 96,
+        cache_ttl_seconds: float = 0.5,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve(strict=False)
         self.timeout_seconds = max(0.05, float(timeout_seconds))
@@ -154,6 +156,7 @@ class GitMonitor:
         self.sample_limit = max(1, int(sample_limit))
         self.group_limit = max(1, int(group_limit))
         self.path_limit = max(24, int(path_limit))
+        self.cache_ttl_seconds = max(0.0, float(cache_ttl_seconds))
         self._lock = threading.Lock()
         self._repo_root: Path | None = None
         self._discovery_failed_at: float | None = None
@@ -165,6 +168,16 @@ class GitMonitor:
         self._head_notice: dict[str, Any] | None = None
         self._head_cache_signature: tuple | None = None
         self._head_cache_result: tuple[dict[str, str] | None, bool] | None = None
+        self._snapshot_cache_at: float | None = None
+        self._snapshot_cache_turn_id: str | None = None
+        self._snapshot_cache: dict[str, Any] | None = None
+
+    def invalidate(self) -> None:
+        """Discard the short-lived status cache after a possible workspace write."""
+        with self._lock:
+            self._snapshot_cache_at = None
+            self._snapshot_cache_turn_id = None
+            self._snapshot_cache = None
 
     def _git(
         self,
@@ -226,16 +239,28 @@ class GitMonitor:
         """Return one JSON-safe repository snapshot, or None outside Git."""
         with self._lock:
             normalized_turn_id = str(turn_id or "no-active-turn")
+            now = time.monotonic()
+            if (
+                self._snapshot_cache is not None
+                and self._snapshot_cache_at is not None
+                and self._snapshot_cache_turn_id == normalized_turn_id
+                and now - self._snapshot_cache_at < self.cache_ttl_seconds
+            ):
+                return copy.deepcopy(self._snapshot_cache)
             repo_root = self._discover_repo(turn_id=normalized_turn_id)
             if repo_root is None:
-                return {
-                    "repository_root": _clip(
-                        str(self.workspace_root), max(96, self.path_limit * 2)
-                    ),
-                    "available": False,
-                    "reason": self._discovery_failure_reason or "not_initialized",
-                    "truncated": False,
-                }
+                return self._remember_snapshot(
+                    {
+                        "repository_root": _clip(
+                            str(self.workspace_root), max(96, self.path_limit * 2)
+                        ),
+                        "available": False,
+                        "reason": self._discovery_failure_reason or "not_initialized",
+                        "truncated": False,
+                    },
+                    turn_id=normalized_turn_id,
+                    observed_at=now,
+                )
             status_result = self._git(
                 "status",
                 "--porcelain=v1",
@@ -246,19 +271,27 @@ class GitMonitor:
                 cwd=repo_root,
             )
             if status_result.timed_out:
-                return {
-                    "repository_root": str(repo_root),
-                    "available": False,
-                    "reason": "status_timed_out",
-                    "truncated": True,
-                }
+                return self._remember_snapshot(
+                    {
+                        "repository_root": str(repo_root),
+                        "available": False,
+                        "reason": "status_timed_out",
+                        "truncated": True,
+                    },
+                    turn_id=normalized_turn_id,
+                    observed_at=now,
+                )
             if status_result.returncode != 0 and not status_result.truncated:
-                return {
-                    "repository_root": str(repo_root),
-                    "available": False,
-                    "reason": "status_failed",
-                    "truncated": False,
-                }
+                return self._remember_snapshot(
+                    {
+                        "repository_root": str(repo_root),
+                        "available": False,
+                        "reason": "status_failed",
+                        "truncated": False,
+                    },
+                    turn_id=normalized_turn_id,
+                    observed_at=now,
+                )
 
             branch, staged, unstaged, untracked = self._parse_status(
                 status_result.stdout,
@@ -297,7 +330,23 @@ class GitMonitor:
             }
             if notice is not None:
                 result["head_change"] = notice
-            return result
+            return self._remember_snapshot(
+                result,
+                turn_id=normalized_turn_id,
+                observed_at=now,
+            )
+
+    def _remember_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        turn_id: str,
+        observed_at: float,
+    ) -> dict[str, Any]:
+        self._snapshot_cache = copy.deepcopy(snapshot)
+        self._snapshot_cache_at = max(observed_at, time.monotonic())
+        self._snapshot_cache_turn_id = turn_id
+        return snapshot
 
     def _parse_status(
         self, output: bytes, *, output_complete: bool

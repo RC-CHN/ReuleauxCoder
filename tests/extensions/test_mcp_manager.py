@@ -6,6 +6,7 @@ from reuleauxcoder.domain.config.models import MCPServerConfig
 from reuleauxcoder.extensions.mcp import manager as manager_module
 from reuleauxcoder.extensions.mcp.manager import MCPManager
 from reuleauxcoder.extensions.mcp.models import MCPToolInfo
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
 class _FakeClient:
@@ -46,6 +47,7 @@ def test_initial_discovery_is_nonblocking_and_seals_in_config_order(
     _FakeClient.delays = {"first": 0.12, "second": 0.01}
     _FakeClient.failures = set()
     manager = MCPManager()
+    manager.performance_monitor = RuntimePerformanceMonitor()
 
     try:
         started = time.monotonic()
@@ -60,6 +62,9 @@ def test_initial_discovery_is_nonblocking_and_seals_in_config_order(
         assert manager.available_tool_count == 2
         assert manager.active_servers == {"first", "second"}
         assert manager.initial_state == "sealed"
+        samples = manager.performance_monitor.snapshot()
+        assert [sample.name for sample in samples].count("initial_server_connect") == 2
+        assert samples[-1].name == "catalog_seal_wait"
     finally:
         manager.disconnect_all()
         manager.stop()

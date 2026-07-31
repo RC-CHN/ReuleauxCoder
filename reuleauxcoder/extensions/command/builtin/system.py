@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from reuleauxcoder.app.commands.help import build_help_view
 from reuleauxcoder.app.commands.matchers import match_template, matches_any
 from reuleauxcoder.app.commands.models import CommandEffect
-from reuleauxcoder.app.commands.view_models import HelpViewModel, TokenUsageViewModel
+from reuleauxcoder.app.commands.view_models import (
+    HelpViewModel,
+    PerformanceCategoryViewModel,
+    PerformanceRowViewModel,
+    PerformanceViewModel,
+    TokenUsageViewModel,
+)
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
@@ -26,6 +32,7 @@ from reuleauxcoder.app.runtime.session_state import (
 )
 from reuleauxcoder.app.runtime.effective_config import build_effective_config_view
 from reuleauxcoder.domain.context.manager import estimate_tokens
+from reuleauxcoder.domain.runtime.performance import PerformanceSample
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
@@ -93,6 +100,12 @@ def _parse_tokens(user_input: str, parse_ctx):
 
 def _parse_config(user_input: str, parse_ctx):
     if match_template(user_input, "/config") is not None:
+        return EmptyCommand()
+    return None
+
+
+def _parse_status_perf(user_input: str, parse_ctx):
+    if match_template(user_input, "/status perf", case_insensitive=True) is not None:
         return EmptyCommand()
     return None
 
@@ -299,6 +312,78 @@ def _handle_config(command, ctx) -> CommandEffect:
     return ctx.effect.finish(control="continue", state_changes=view.to_payload())
 
 
+def _performance_row(sample: PerformanceSample) -> PerformanceRowViewModel:
+    attributes = sample.attribute_map()
+    detail_keys = (
+        "hook_name",
+        "tool_name",
+        "server_name",
+        "model",
+        "tool_count",
+        "event_count",
+        "encoded_bytes",
+        "fsync_ms",
+        "attempt",
+        "error_type",
+        "outcome",
+    )
+    detail = " · ".join(
+        f"{key}={attributes[key]}"
+        for key in detail_keys
+        if attributes.get(key) is not None
+    )
+    return PerformanceRowViewModel(
+        sequence=sample.sequence,
+        category=sample.category,
+        operation=sample.name,
+        elapsed_ms=sample.elapsed_ms,
+        status=sample.status,
+        detail=detail,
+    )
+
+
+def _handle_status_perf(command, ctx) -> CommandEffect:
+    monitor = getattr(ctx.agent, "performance_monitor", None)
+    samples = monitor.snapshot() if monitor is not None else ()
+    grouped: dict[str, list[PerformanceSample]] = {}
+    for sample in samples:
+        grouped.setdefault(sample.category, []).append(sample)
+    categories = tuple(
+        PerformanceCategoryViewModel(
+            category=category,
+            count=len(items),
+            total_ms=round(sum(item.elapsed_ms for item in items), 3),
+            max_ms=max(item.elapsed_ms for item in items),
+            last_ms=items[-1].elapsed_ms,
+        )
+        for category, items in sorted(grouped.items())
+    )
+    recent = tuple(_performance_row(sample) for sample in reversed(samples[-20:]))
+    slowest = tuple(
+        _performance_row(sample)
+        for sample in sorted(
+            samples,
+            key=lambda item: (item.elapsed_ms, item.sequence),
+            reverse=True,
+        )[:10]
+    )
+    view = PerformanceViewModel(
+        retained_count=len(samples),
+        capacity=getattr(monitor, "capacity", 0),
+        dropped_count=getattr(monitor, "dropped", 0),
+        categories=categories,
+        recent=recent,
+        slowest=slowest,
+    )
+    ctx.effect.open_view(
+        view.view_type,
+        title="Runtime Performance",
+        view_model=view,
+        reuse_key=view.view_type,
+    )
+    return ctx.effect.finish(control="continue", state_changes=view.to_payload())
+
+
 def _format_percent(value: float | None) -> str:
     return f"{value:.1f}%" if value is not None else "n/a"
 
@@ -469,6 +554,17 @@ def register_actions(registry: ActionRegistry) -> None:
                 ),
                 parser=_parse_debug,
                 handler=_handle_debug,
+                during_turn=DuringTurnPolicy.IMMEDIATE,
+            ),
+            ActionSpec(
+                action_id="system.status_perf",
+                feature_id="system",
+                description="[session] Show recent runtime performance timings",
+                ui_targets=UI_TARGETS,
+                required_capabilities=TEXT_REQUIRED,
+                triggers=(slash_trigger("/status perf"),),
+                parser=_parse_status_perf,
+                handler=_handle_status_perf,
                 during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(

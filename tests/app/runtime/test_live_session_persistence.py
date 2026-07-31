@@ -80,3 +80,8 @@ def test_burst_messages_coalesce_into_one_full_snapshot(tmp_path) -> None:
         "message-2",
         "message-3",
     ]
+    performance_names = {
+        sample.name for sample in agent.performance_monitor.snapshot()
+    }
+    assert "history_ledger_write" in performance_names
+    assert "session_snapshot" in performance_names

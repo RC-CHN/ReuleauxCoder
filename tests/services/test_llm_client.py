@@ -11,6 +11,7 @@ from reuleauxcoder.domain.llm.models import (
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 from reuleauxcoder.interfaces.events import RuntimeEventPayload
 from reuleauxcoder.domain.runtime.events import OperationPhaseChanged
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.services.llm.client import LLM, LLMRequestCancelled
 from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
 
@@ -528,6 +529,7 @@ def test_llm_emits_non_replayable_request_phases() -> None:
 
     bus.subscribe(capture, replay_history=False)
     llm = LLM(model="demo-model", api_key="sk-test-12345678", ui_bus=bus)
+    llm.performance_monitor = RuntimePerformanceMonitor()
     llm._call_with_retry = lambda _params: iter(  # type: ignore[method-assign]
         [_FakeChunk(content="hello")]
     )
@@ -548,6 +550,15 @@ def test_llm_emits_non_replayable_request_phases() -> None:
     ]
     assert seen[-1].status == "completed"
     assert bus.history_snapshot() == ()
+    samples = llm.performance_monitor.snapshot()
+    assert [sample.name for sample in samples] == [
+        "request_build",
+        "connect",
+        "await_first_chunk",
+        "streaming",
+        "request_total",
+    ]
+    assert samples[-1].attribute_map()["turn_id"] == "turn-1"
 
 
 def test_llm_stream_closes_when_agent_scope_is_cancelled() -> None:

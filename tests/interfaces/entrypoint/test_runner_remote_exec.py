@@ -218,6 +218,15 @@ class TestRunnerRemoteExec:
         assert runner._relay_server is None
         assert runner._git_monitor is not None
         assert ctx.agent is not None
+        startup_names = {
+            sample.name
+            for sample in ctx.agent.performance_monitor.snapshot(
+                category="startup"
+            )
+        }
+        assert {"configuration", "model_client", "session_restore", "total"} <= (
+            startup_names
+        )
         runner.cleanup(ctx.agent)
         assert runner._git_monitor is None
 

@@ -21,6 +21,7 @@ from reuleauxcoder.domain.hooks.types import (
 )
 from reuleauxcoder.domain.llm.context_messages import normalize_provider_message_roles
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.services.llm.diagnostics import (
@@ -352,6 +353,7 @@ class LLM:
         self.ui_bus = ui_bus
         self.last_dispatched_request: dict[str, Any] | None = None
         self.last_debug_trace_path: str | None = None
+        self.performance_monitor: RuntimePerformanceMonitor | None = None
 
     def reconfigure(
         self,
@@ -470,6 +472,9 @@ class LLM:
         operation_started_monotonic = time.monotonic()
         event_metadata = dict(metadata or {})
         event_metadata.setdefault("session_id", session_id)
+        active_phase: str | None = None
+        active_phase_started = operation_started_monotonic
+        active_phase_attempt: int | None = None
 
         def report_phase(
             phase: str,
@@ -480,6 +485,57 @@ class LLM:
             max_attempts: int | None = None,
             error_type: str | None = None,
         ) -> None:
+            nonlocal active_phase, active_phase_attempt, active_phase_started
+            phase_now = time.monotonic()
+            monitor = self.performance_monitor
+            if monitor is not None and active_phase is not None:
+                phase_status = (
+                    "error"
+                    if status == "failed"
+                    else "cancelled"
+                    if status == "cancelled"
+                    else "ok"
+                )
+                monitor.record(
+                    "llm",
+                    active_phase,
+                    (phase_now - active_phase_started) * 1000,
+                    status=phase_status,
+                    attributes={
+                        "model": self.model,
+                        "attempt": active_phase_attempt,
+                        "session_id": event_metadata.get("session_id"),
+                        "turn_id": event_metadata.get("turn_id"),
+                        "trace_id": trace_id,
+                    },
+                )
+            if status == "running":
+                active_phase = phase
+                active_phase_attempt = attempt
+                active_phase_started = phase_now
+            else:
+                active_phase = None
+                active_phase_attempt = None
+                if monitor is not None:
+                    monitor.record(
+                        "llm",
+                        "request_total",
+                        (phase_now - operation_started_monotonic) * 1000,
+                        status=(
+                            "error"
+                            if status == "failed"
+                            else "cancelled"
+                            if status == "cancelled"
+                            else "ok"
+                        ),
+                        attributes={
+                            "model": self.model,
+                            "session_id": event_metadata.get("session_id"),
+                            "turn_id": event_metadata.get("turn_id"),
+                            "trace_id": trace_id,
+                            "error_type": error_type,
+                        },
+                    )
             self._emit_operation_phase(
                 operation_id=operation_id,
                 phase=phase,

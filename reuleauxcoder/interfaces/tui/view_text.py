@@ -7,6 +7,7 @@ import json
 from reuleauxcoder.app.commands.view_models import (
     EffectiveConfigViewModel,
     HelpViewModel,
+    PerformanceViewModel,
     SessionResumeViewModel,
     SessionsViewModel,
     SubagentJobsViewModel,
@@ -74,6 +75,37 @@ def format_token_usage_view(model: TokenUsageViewModel) -> str:
     return "\n".join(lines)
 
 
+def format_runtime_performance_view(model: PerformanceViewModel) -> str:
+    lines = [
+        f"Performance · retained {model.retained_count}/{model.capacity}"
+        f" · overwritten {model.dropped_count}"
+    ]
+    for category in model.categories:
+        lines.append(
+            f"{category.category:<12} count {category.count:<3}"
+            f" · max {category.max_ms:.1f} ms"
+            f" · last {category.last_ms:.1f} ms"
+        )
+    if model.slowest:
+        lines.append("Slowest:")
+        for row in model.slowest[:5]:
+            detail = f" · {row.detail}" if row.detail else ""
+            lines.append(
+                f"  {row.category}/{row.operation}: {row.elapsed_ms:.1f} ms"
+                f" [{row.status}]{detail}"
+            )
+    if model.recent:
+        lines.append("Recent:")
+        for row in model.recent[:5]:
+            lines.append(
+                f"  #{row.sequence} {row.category}/{row.operation}:"
+                f" {row.elapsed_ms:.1f} ms [{row.status}]"
+            )
+    if not model.categories:
+        lines.append("(no runtime performance samples yet)")
+    return "\n".join(lines)
+
+
 def format_subagent_jobs_view(model: SubagentJobsViewModel) -> str:
     lines = [
         f"Agents · parallel {model.runtime_parallel_explore}"
@@ -128,6 +160,10 @@ def view_text(payload: ViewEventPayload) -> str:
         return format_thinking_effort_view(model)
     if payload.view_type == "token_usage" and isinstance(model, TokenUsageViewModel):
         return format_token_usage_view(model)
+    if payload.view_type == "runtime_performance" and isinstance(
+        model, PerformanceViewModel
+    ):
+        return format_runtime_performance_view(model)
     if payload.view_type == "subagent_jobs" and isinstance(
         model, SubagentJobsViewModel
     ):
@@ -156,6 +192,7 @@ def view_text(payload: ViewEventPayload) -> str:
 __all__ = [
     "format_effective_config_view",
     "format_help_view",
+    "format_runtime_performance_view",
     "format_sessions_view",
     "format_subagent_jobs_view",
     "format_thinking_effort_view",

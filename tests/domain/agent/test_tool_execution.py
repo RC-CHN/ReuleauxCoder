@@ -18,6 +18,7 @@ from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalSectionKind
 from reuleauxcoder.domain.hooks.types import GuardDecision
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceErrorCode
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
@@ -135,6 +136,21 @@ def test_shell_cwd_syncs_to_runtime_working_directory() -> None:
     assert getattr(agent, "runtime_working_directory", None) == "/tmp/cool-dir"
     assert agent.events[-1].correlation_id == "call_1"
     assert agent.events[-1].tool_outcome.model_text == "(no output)"
+    assert agent.events[-1].tool_outcome.duration_seconds is not None
+
+
+def test_tool_executor_records_backend_and_total_timings() -> None:
+    tool = _ShellToolStub()
+    agent = _AgentStub(tool)
+    agent.performance_monitor = RuntimePerformanceMonitor()
+
+    ToolExecutor(agent).execute(
+        ToolCall(id="timed-call", name="shell", arguments={"command": "true"})
+    )
+
+    samples = agent.performance_monitor.snapshot()
+    assert [sample.name for sample in samples] == ["execute", "call_total"]
+    assert all(sample.attribute_map()["tool_name"] == "shell" for sample in samples)
 
 
 def test_non_shell_tool_does_not_set_runtime_working_directory() -> None:

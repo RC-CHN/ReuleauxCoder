@@ -17,6 +17,7 @@ from reuleauxcoder.app.commands.view_models import (
     HelpViewModel,
     ModelListViewModel,
     ModesViewModel,
+    PerformanceViewModel,
     SessionResumeViewModel,
     SessionsViewModel,
     SubagentJobsViewModel,
@@ -315,6 +316,90 @@ def render_token_usage_view(renderer, event) -> bool:
     return True
 
 
+def render_runtime_performance_view(renderer, event) -> bool:
+    model = _view_model(event)
+    if not isinstance(model, PerformanceViewModel):
+        return False
+    stop_stream_and_clear(renderer)
+    renderer.console.print(
+        f"Retained {model.retained_count}/{model.capacity} samples"
+        f" · overwritten {model.dropped_count}",
+        style=renderer.theme.style(DisplayTone.MUTED),
+    )
+    if not model.categories:
+        renderer.console.print("No runtime performance samples yet.")
+        return True
+
+    summary = make_table(
+        renderer,
+        title="PERFORMANCE SUMMARY",
+        show_header=True,
+        box=None,
+        pad_edge=False,
+    )
+    summary.add_column("Category")
+    summary.add_column("Count", justify="right")
+    summary.add_column("Observed total", justify="right")
+    summary.add_column("Max", justify="right")
+    summary.add_column("Last", justify="right")
+    for category in model.categories:
+        summary.add_row(
+            category.category,
+            str(category.count),
+            f"{category.total_ms:.1f} ms",
+            f"{category.max_ms:.1f} ms",
+            f"{category.last_ms:.1f} ms",
+        )
+    renderer.console.print(summary)
+
+    slowest = make_table(
+        renderer,
+        title="SLOWEST RETAINED OPERATIONS",
+        show_header=True,
+        box=None,
+        pad_edge=False,
+    )
+    slowest.add_column("Category")
+    slowest.add_column("Operation")
+    slowest.add_column("Time", justify="right")
+    slowest.add_column("Status")
+    slowest.add_column("Detail", overflow="fold")
+    for row in model.slowest:
+        slowest.add_row(
+            row.category,
+            row.operation,
+            f"{row.elapsed_ms:.1f} ms",
+            row.status,
+            row.detail,
+        )
+    renderer.console.print(slowest)
+
+    recent = make_table(
+        renderer,
+        title="RECENT OPERATIONS",
+        show_header=True,
+        box=None,
+        pad_edge=False,
+    )
+    recent.add_column("#", justify="right")
+    recent.add_column("Category")
+    recent.add_column("Operation")
+    recent.add_column("Time", justify="right")
+    recent.add_column("Status")
+    recent.add_column("Detail", overflow="fold")
+    for row in model.recent[:10]:
+        recent.add_row(
+            str(row.sequence),
+            row.category,
+            row.operation,
+            f"{row.elapsed_ms:.1f} ms",
+            row.status,
+            row.detail,
+        )
+    renderer.console.print(recent)
+    return True
+
+
 def render_approval_rules_view(renderer, event) -> bool:
     model = _view_model(event)
     if not isinstance(model, ApprovalView):
@@ -445,6 +530,10 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
                 view_type="thinking_effort", render=render_thinking_effort_view
             ),
             ViewRendererSpec(view_type="token_usage", render=render_token_usage_view),
+            ViewRendererSpec(
+                view_type="runtime_performance",
+                render=render_runtime_performance_view,
+            ),
             ViewRendererSpec(
                 view_type="approval_rules", render=render_approval_rules_view
             ),

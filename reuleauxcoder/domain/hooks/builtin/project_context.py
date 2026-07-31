@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import stat
+import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -47,6 +49,10 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
             name="project_context", priority=priority, extension_name="core"
         )
         self.context_files = context_files or DEFAULT_CONTEXT_FILES
+        self._cache_lock = threading.Lock()
+        self._cache_signature: tuple | None = None
+        self._cache_parts: tuple[tuple[str, str], ...] = ()
+        self._cache_rendered: str | None = None
 
     @classmethod
     def create_from_config(cls, config: "Config") -> "ProjectContextHook":
@@ -85,11 +91,25 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
             List of (filename, content) tuples in DEFAULT_CONTEXT_FILES order.
             Empty list if no files found.
         """
-        cwd = Path.cwd()
-        found: list[tuple[str, str]] = []
-        for filename in self.context_files:
-            candidate = cwd / filename
-            if candidate.exists() and candidate.is_file():
+        cwd = Path.cwd().resolve(strict=False)
+        with self._cache_lock:
+            signature = self._context_signature(cwd)
+            if signature == self._cache_signature:
+                return list(self._cache_parts)
+
+            found: list[tuple[str, str]] = []
+            for filename in self.context_files:
+                candidate = cwd / filename
+                file_signature = next(
+                    (
+                        item
+                        for item in signature[1]
+                        if item[0] == filename
+                    ),
+                    None,
+                )
+                if file_signature is None or file_signature[1] is None:
+                    continue
                 try:
                     content = candidate.read_text(encoding="utf-8").strip()
                     if content:
@@ -97,10 +117,49 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
                 except OSError:
                     # Skip files that can't be read
                     continue
-        return found
+
+            # Do not retain a value if a file changed while it was being read.
+            verified_signature = self._context_signature(cwd)
+            if verified_signature == signature:
+                self._cache_signature = signature
+                self._cache_parts = tuple(found)
+                self._cache_rendered = None
+            else:
+                self._cache_signature = None
+                self._cache_parts = ()
+                self._cache_rendered = None
+            return found
+
+    def _context_signature(self, cwd: Path) -> tuple:
+        files: list[tuple[str, tuple[int, int, int, int] | None]] = []
+        for filename in self.context_files:
+            try:
+                status = (cwd / filename).stat()
+            except OSError:
+                files.append((filename, None))
+                continue
+            if not stat.S_ISREG(status.st_mode):
+                files.append((filename, None))
+                continue
+            files.append(
+                (
+                    filename,
+                    (
+                        status.st_ino,
+                        status.st_size,
+                        status.st_mtime_ns,
+                        status.st_ctime_ns,
+                    ),
+                )
+            )
+        return (str(cwd), tuple(files))
 
     def _format_multi_message(self, parts: list[tuple[str, str]]) -> str:
         """Format multiple project context files into a single system message."""
+        parts_key = tuple(parts)
+        with self._cache_lock:
+            if parts_key == self._cache_parts and self._cache_rendered is not None:
+                return self._cache_rendered
         header = (
             "[Project Context]\n"
             "This is project-level context from local file(s) "
@@ -110,7 +169,11 @@ class ProjectContextHook(TransformHook[BeforeLLMRequestContext]):
         sections: list[str] = [header]
         for filename, content in parts:
             sections.append(f"--- {filename} ---\n{content}")
-        return "\n".join(sections)
+        rendered = "\n".join(sections)
+        with self._cache_lock:
+            if parts_key == self._cache_parts:
+                self._cache_rendered = rendered
+        return rendered
 
 
 class ProjectContextStartupNotifier(ObserverHook[RunnerStartupContext]):

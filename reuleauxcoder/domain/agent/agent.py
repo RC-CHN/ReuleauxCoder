@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.extensions.skills.service import SkillsService
     from reuleauxcoder.extensions.subagent.manager import SubagentManager
     from reuleauxcoder.infrastructure.persistence.notes_store import NoteStore
+    from reuleauxcoder.infrastructure.version_control import GitMonitor
     from reuleauxcoder.interfaces.interactions import UIInteractor
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
@@ -39,6 +40,7 @@ from reuleauxcoder.domain.hooks import (
 )
 from reuleauxcoder.domain.history import HistoryEvent, HistoryLedger
 from reuleauxcoder.domain.plan import PlanController
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
 from reuleauxcoder.domain.llm.context_messages import (
@@ -110,8 +112,12 @@ class Agent:
         executor: ToolExecutor | None = None,
         extension_runtime: ToolExtensionRuntime | None = None,
         agent_id: str | None = None,
+        performance_monitor: RuntimePerformanceMonitor | None = None,
     ):
         self.llm = llm
+        self.performance_monitor = (
+            performance_monitor or RuntimePerformanceMonitor()
+        )
         self._tool_registry_lock = threading.RLock()
         self.tools = tools if tools is not None else []
         self.config = config
@@ -146,6 +152,7 @@ class Agent:
         self.extension_manager: ExtensionManager | None = None
         self.extension_scope: ExtensionScopeContainer | None = None
         self.lsp_manager: LspManager | None = None
+        self.git_monitor: GitMonitor | None = None
         self.relay_server: RelayServer | None = None
         self._subagent_manager: SubagentManager | None = None
         self.subagent_depth = 0
@@ -186,7 +193,9 @@ class Agent:
         self._stop_event = threading.Event()
         self._current_turn_id: str | None = None
         self.history_ledger = HistoryLedger(
-            generation=self.session_generation, agent_id=self.agent_id
+            generation=self.session_generation,
+            agent_id=self.agent_id,
+            performance_monitor=self.performance_monitor,
         )
         self.history_completeness = "complete"
         self.replay_envelope = None
@@ -228,6 +237,8 @@ class Agent:
         # Hook runtime
         self.hook_registry = hook_registry or HookRegistry()
         self.hook_registry.set_diagnostic_sink(self._emit_hook_diagnostic)
+        self.hook_registry.set_performance_monitor(self.performance_monitor)
+        setattr(self.llm, "performance_monitor", self.performance_monitor)
         self.extension_runtime = extension_runtime or HookExtensionAdapter(
             self.hook_registry
         )
@@ -255,6 +266,15 @@ class Agent:
             default_mode = active_mode or next(iter(self.available_modes.keys()), None)
             if default_mode in self.available_modes:
                 self.active_mode = default_mode
+
+    def bind_performance_monitor(
+        self, monitor: RuntimePerformanceMonitor
+    ) -> None:
+        """Bind one process-scoped monitor across agent runtime components."""
+        self.performance_monitor = monitor
+        self.hook_registry.set_performance_monitor(monitor)
+        self.history_ledger.set_performance_monitor(monitor)
+        setattr(self.llm, "performance_monitor", monitor)
 
     def _collect_pending_tool_calls(self) -> list[tuple[str, str]]:
         """Collect assistant tool calls that do not yet have matching tool outputs."""
@@ -467,6 +487,7 @@ class Agent:
             generation=self.session_generation,
             session_id=getattr(session, "id", None),
             agent_id=self.agent_id,
+            performance_monitor=self.performance_monitor,
         )
         self._session_persist_callback = None
         self.replay_envelope = getattr(session, "replay_envelope", None)
@@ -566,6 +587,7 @@ class Agent:
             generation=self.session_generation,
             session_id=getattr(self, "current_session_id", None),
             agent_id=self.agent_id,
+            performance_monitor=self.performance_monitor,
         )
         self.replay_envelope = None
         self._restored_replay_envelope = None

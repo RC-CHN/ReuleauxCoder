@@ -37,6 +37,7 @@ from reuleauxcoder.domain.runtime.events import (
     ProcessSessionChanged,
     RuntimeEvent,
 )
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.domain.hooks import (
     discover_hook_specs,
     instantiate_hooks,
@@ -86,6 +87,7 @@ class AppRunner:
         self.options = options or AppOptions()
         self.dependencies = dependencies or AppDependencies()
         self._startup_progress = startup_progress
+        self._performance_monitor = RuntimePerformanceMonitor()
         self._mcp_manager: MCPManager | None = None
         self._relay_server: RelayServer | None = None
         self._relay_http_service: RemoteRelayHTTPService | None = None
@@ -116,22 +118,33 @@ class AppRunner:
 
     def initialize(self) -> AppContext:
         """Initialize all application components and return context."""
+        startup_started = time.monotonic()
         self._report_startup("Loading configuration...")
-        config = self.dependencies.load_config(self.options.config_path)
+        with self._performance_monitor.measure("startup", "configuration"):
+            config = self.dependencies.load_config(self.options.config_path)
         self._report_startup(f"Configuration loaded (model: {config.model}).")
         if self.options.server_mode:
             config.remote_exec.enabled = True
             config.remote_exec.host_mode = True
         self._report_startup("Initializing command registry and runtime services...")
-        ui_bus = self.dependencies.create_ui_bus()
-        self._ui_bus = ui_bus
-        action_registry = self.dependencies.create_action_registry()
-        self._init_remote_relay(config, ui_bus)
+        with self._performance_monitor.measure("startup", "runtime_services"):
+            ui_bus = self.dependencies.create_ui_bus()
+            self._ui_bus = ui_bus
+            action_registry = self.dependencies.create_action_registry()
+            self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
+        bind_performance = getattr(agent, "bind_performance_monitor", None)
+        if callable(bind_performance):
+            bind_performance(self._performance_monitor)
+        else:
+            agent.performance_monitor = self._performance_monitor
+            agent.hook_registry.set_performance_monitor(self._performance_monitor)
+            setattr(llm, "performance_monitor", self._performance_monitor)
         self._agent = agent
         self._bind_remote_chat_handler(agent, action_registry)
         self._report_startup("Discovering skills...")
-        skills_service = self._init_skills(config, agent, ui_bus)
+        with self._performance_monitor.measure("startup", "skills"):
+            skills_service = self._init_skills(config, agent, ui_bus)
         self._report_startup("Skills catalog ready.")
         enabled_mcp_servers = sum(
             1 for server in config.mcp_servers if getattr(server, "enabled", True)
@@ -140,7 +153,8 @@ class AppRunner:
             self._report_startup(
                 f"Connecting {enabled_mcp_servers} configured MCP server(s)..."
             )
-        mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
+        with self._performance_monitor.measure("startup", "mcp_discovery_start"):
+            mcp_manager = self._attach_mcp_if_configured(config, agent, ui_bus)
         if enabled_mcp_servers:
             self._report_startup(
                 "MCP discovery started in the background; continuing startup."
@@ -151,9 +165,12 @@ class AppRunner:
             current_session_id, session_exit_time = None, None
             self._report_startup("Session restore skipped in server mode.")
         else:
-            current_session_id, session_exit_time, sessions_dir = self._restore_session(
-                config, agent, ui_bus
-            )
+            with self._performance_monitor.measure("startup", "session_restore"):
+                (
+                    current_session_id,
+                    session_exit_time,
+                    sessions_dir,
+                ) = self._restore_session(config, agent, ui_bus)
 
         app_ctx = AppContext(
             config=config,
@@ -169,21 +186,32 @@ class AppRunner:
             session_exit_time=session_exit_time,
             sessions_dir=sessions_dir,
         )
-        extension_scope = self._extension_manager.open_scope(
-            ExtensionScope.RUNNER,
-            "runner",
-            services={
-                "agent": agent,
-                "ui_bus": ui_bus,
-                "session_id": current_session_id,
+        with self._performance_monitor.measure("startup", "extension_lifecycle"):
+            extension_scope = self._extension_manager.open_scope(
+                ExtensionScope.RUNNER,
+                "runner",
+                services={
+                    "agent": agent,
+                    "ui_bus": ui_bus,
+                    "session_id": current_session_id,
+                },
+            )
+            agent.extension_manager = self._extension_manager
+            agent.extension_scope = extension_scope
+            hook_participant = extension_scope.get("core.hooks")
+            if hook_participant is None:
+                raise RuntimeError("Core hook lifecycle extension failed to initialize")
+            hook_participant.start()
+        self._performance_monitor.record(
+            "startup",
+            "total",
+            (time.monotonic() - startup_started) * 1000,
+            attributes={
+                "tool_count": len(agent.tools),
+                "mcp_server_count": enabled_mcp_servers,
+                "session_restored": current_session_id is not None,
             },
         )
-        agent.extension_manager = self._extension_manager
-        agent.extension_scope = extension_scope
-        hook_participant = extension_scope.get("core.hooks")
-        if hook_participant is None:
-            raise RuntimeError("Core hook lifecycle extension failed to initialize")
-        hook_participant.start()
         self._report_startup("Runtime initialization complete.")
         return app_ctx
 
@@ -206,18 +234,21 @@ class AppRunner:
             config.model = self.options.model
 
         self._report_startup("Initializing model client...")
-        llm = self.dependencies.create_llm(config)
+        with self._performance_monitor.measure("startup", "model_client"):
+            llm = self.dependencies.create_llm(config)
         llm.ui_bus = ui_bus
         self._report_startup("Loading built-in tools...")
-        tool_backend = self.dependencies.create_tool_backend(config, ui_bus)
-        if self._relay_server is not None:
-            tool_backend = RemoteRelayToolBackend(
-                relay_server=self._relay_server, ui_bus=ui_bus
-            )
-        tools = self.dependencies.load_tools(tool_backend)
+        with self._performance_monitor.measure("startup", "builtin_tools"):
+            tool_backend = self.dependencies.create_tool_backend(config, ui_bus)
+            if self._relay_server is not None:
+                tool_backend = RemoteRelayToolBackend(
+                    relay_server=self._relay_server, ui_bus=ui_bus
+                )
+            tools = self.dependencies.load_tools(tool_backend)
         self._report_startup(f"Loaded {len(tools)} built-in tool(s).")
-        hook_registry = self.dependencies.create_hook_registry()
-        agent = self.dependencies.create_agent(llm, tools, config, hook_registry)
+        with self._performance_monitor.measure("startup", "agent"):
+            hook_registry = self.dependencies.create_hook_registry()
+            agent = self.dependencies.create_agent(llm, tools, config, hook_registry)
         # Custom dependency factories may return an Agent without forwarding
         # config.  Runtime services and tool adapters must still see the exact
         # effective configuration loaded by this runner.
@@ -242,14 +273,16 @@ class AppRunner:
         agent.process_manager = process_manager
 
         self._report_startup("Discovering runtime hooks and workspace services...")
-        self._register_hooks(agent, config)
-        agent.hook_registry.bind_runtime_service(
-            "process_manager", process_manager
-        )
-        self._init_git_monitor(agent)
+        with self._performance_monitor.measure("startup", "workspace_services"):
+            self._register_hooks(agent, config)
+            agent.hook_registry.bind_runtime_service(
+                "process_manager", process_manager
+            )
+            self._init_git_monitor(agent)
         if LspConfig.from_config(config).enabled:
             self._report_startup("Checking configured language servers...")
-        self._init_lsp(config, agent, ui_bus)
+        with self._performance_monitor.measure("startup", "language_servers"):
+            self._init_lsp(config, agent, ui_bus)
         self._wire_agent_tools(agent)
         self._hint_rtk_install(config, ui_bus)
         return config, ui_bus, llm, agent
@@ -366,6 +399,7 @@ class AppRunner:
             self._git_monitor = None
         else:
             self._git_monitor = GitMonitor(Path.cwd())
+        agent.git_monitor = self._git_monitor
         agent.hook_registry.bind_runtime_service("git_monitor", self._git_monitor)
 
     @staticmethod
@@ -630,6 +664,7 @@ class AppRunner:
         if self._agent is not None:
             report("Releasing workspace monitors...")
             self._agent.hook_registry.bind_runtime_service("git_monitor", None)
+            self._agent.git_monitor = None
         self._git_monitor = None
         elapsed = time.monotonic() - shutdown_started_monotonic
         if self._ui_bus is not None:
@@ -652,6 +687,7 @@ class AppRunner:
     ) -> MCPManager:
         """Initialize MCP manager and connect to servers."""
         manager = self.dependencies.create_mcp_manager(ui_bus)
+        manager.performance_monitor = self._performance_monitor
 
         enabled_servers = [s for s in mcp_servers if getattr(s, "enabled", True)]
         manager.connect_servers_async(enabled_servers)

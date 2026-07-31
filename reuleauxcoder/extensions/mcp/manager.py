@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.extensions.mcp.adapter import MCPTool
 from reuleauxcoder.extensions.mcp.client import MCPClient
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
 class MCPManager:
@@ -40,6 +41,7 @@ class MCPManager:
         self._initial_state = "idle"
         self._initial_outcome = "ready"
         self._initial_sealed = False
+        self.performance_monitor: RuntimePerformanceMonitor | None = None
 
     def start(self):
         if self._started:
@@ -195,6 +197,8 @@ class MCPManager:
             self._emit("success", f"MCP discovery ready ({connected} server(s)).")
 
     async def _connect_initial_server(self, config: "MCPServerConfig") -> None:
+        started = time.monotonic()
+        error_type: str | None = None
         client = MCPClient(config, ui_bus=self._ui_bus)
         try:
             success = await asyncio.wait_for(
@@ -203,32 +207,63 @@ class MCPManager:
         except asyncio.CancelledError:
             await client.disconnect()
             raise
-        except Exception:
+        except Exception as error:
+            error_type = type(error).__name__
             success = False
-        if not success:
-            await client.disconnect()
-            with self._state_lock:
-                self._initial_failures.add(config.name)
-            return
+        try:
+            if not success:
+                await client.disconnect()
+                with self._state_lock:
+                    self._initial_failures.add(config.name)
+                return
 
-        assert self._loop is not None
-        tools = tuple(MCPTool(client, info, self._loop) for info in client.tools)
-        with self._state_lock:
-            suppressed = config.name in self._suppressed_servers
-        if suppressed:
-            await client.disconnect()
-            return
-        with self._state_lock:
-            self._clients[config.name] = client
-            self._server_tools[config.name] = tools
+            assert self._loop is not None
+            tools = tuple(MCPTool(client, info, self._loop) for info in client.tools)
+            with self._state_lock:
+                suppressed = config.name in self._suppressed_servers
+            if suppressed:
+                await client.disconnect()
+                return
+            with self._state_lock:
+                self._clients[config.name] = client
+                self._server_tools[config.name] = tools
+        finally:
+            monitor = self.performance_monitor
+            if monitor is not None:
+                monitor.record(
+                    "mcp",
+                    "initial_server_connect",
+                    (time.monotonic() - started) * 1000,
+                    status="ok" if success else "error",
+                    attributes={
+                        "server_name": config.name,
+                        "tool_count": len(client.tools) if success else 0,
+                        "error_type": error_type,
+                    },
+                )
 
     def seal_initial_catalog(
         self, cancellation_event: threading.Event | None = None
     ) -> tuple[list[MCPTool], str]:
         """Freeze the initial tool catalog exactly once before first inference."""
+        started = time.monotonic()
         with self._state_lock:
             if self._initial_sealed:
-                return list(self._tools), self._initial_outcome
+                tools = list(self._tools)
+                outcome = self._initial_outcome
+                monitor = self.performance_monitor
+                if monitor is not None:
+                    monitor.record(
+                        "mcp",
+                        "catalog_seal_wait",
+                        (time.monotonic() - started) * 1000,
+                        attributes={
+                            "tool_count": len(tools),
+                            "outcome": outcome,
+                            "already_sealed": True,
+                        },
+                    )
+                return tools, outcome
             state = self._initial_state
         if state == "connecting":
             self._emit("info", "Waiting for initial MCP tool discovery...")
@@ -260,6 +295,19 @@ class MCPManager:
             "info",
             f"MCP tool catalog sealed with {len(tools)} tool(s) ({outcome}).",
         )
+        monitor = self.performance_monitor
+        if monitor is not None:
+            monitor.record(
+                "mcp",
+                "catalog_seal_wait",
+                (time.monotonic() - started) * 1000,
+                status="ok" if outcome == "ready" else "degraded",
+                attributes={
+                    "tool_count": len(tools),
+                    "outcome": outcome,
+                    "already_sealed": False,
+                },
+            )
         return tools, outcome
 
     def connect_server(self, config: "MCPServerConfig") -> bool:
