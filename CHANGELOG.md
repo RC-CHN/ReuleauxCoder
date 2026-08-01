@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.3 - 2026-08-01
+
+- Prevented startup and session-restore stalls by lazily initializing the tokenizer, reporting vocabulary-load progress, bounding tokenizer setup time, and falling back to a deterministic character/word estimate when exact counting is unavailable.
+- Added bounded runtime performance telemetry for startup, hooks, model calls, tools, MCP, context work and persistence, exposed through `/status perf`, alongside short-lived Git and project-context caches.
+- Made archived tool-output recovery session-aware and character-paged, with exact continuation hints and no recursive truncation or re-archiving of `artifact_read` results.
+- Sanitized terminal control characters before measuring TUI display width.
+
 ## 0.6.2 - 2026-07-29
 
 - Added `web_fetch` and `web_search` network tools with warn-level approval and per-URL/query grants, a `web` config section, HTML-to-Markdown retrieval with size and timeout caps, and unified dual-provider search (Exa/Parallel) with per-call rotation, failover and optional API-key overrides.

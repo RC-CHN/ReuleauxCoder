@@ -5,7 +5,7 @@
 A terminal-native AI coding agent with a FORGE-styled CLI, scoped subagents,
 approvals, sessions, MCP, skills, LSP, and a thin remote execution peer.
 
-The v0.6.2 CLI uses a prompt_toolkit mini-TUI with a persistent execution panel,
+The v0.6.3 CLI uses a prompt_toolkit mini-TUI with a persistent execution panel,
 virtualized Markdown transcript, and focused approval/input pane. It shares framework-neutral
 presentation state with the future full TUI; no production Textual app is shipped yet.
 
@@ -20,13 +20,13 @@ Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/
 Install [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/) first, then install the release wheel globally:
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.2/reuleauxcoder-0.6.2-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.3/reuleauxcoder-0.6.3-py3-none-any.whl
 ```
 
-Or use [`uv`](https://docs.astral.sh/uv/) (v0.6.2+):
+Or use [`uv`](https://docs.astral.sh/uv/) (v0.6.3+):
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.2/reuleauxcoder-0.6.2-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.6.3/reuleauxcoder-0.6.3-py3-none-any.whl
 ```
 
 After installation, the `rcoder` command is available globally — run it from any directory:
