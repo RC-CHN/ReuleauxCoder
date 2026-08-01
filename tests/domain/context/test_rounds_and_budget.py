@@ -99,14 +99,16 @@ def test_provider_compaction_uses_provider_neutral_boundary() -> None:
                 messages=[{"role": "user", "content": "provider compacted"}]
             )
 
+    messages = [{"role": "user", "content": "alpha beta gamma " * 1_000}]
+    probe = ContextManager(reserved_output_tokens=0, safety_margin_tokens=0)
+    estimated_tokens = probe.get_context_tokens(messages)
     manager = ContextManager(
-        max_tokens=5_000,
+        max_tokens=int(estimated_tokens / 0.65),
         reserved_output_tokens=0,
         safety_margin_tokens=0,
         provider_compactor=Adapter(),
         ui_bus=ui_bus,
     )
-    messages = [{"role": "user", "content": "alpha beta gamma " * 1_000}]
     assert manager.maybe_compress(messages) is True
     assert messages[0]["content"] == "provider compacted"
     assert manager.checkpoints[-1].strategy == ("provider_tool_cache_compaction",)

@@ -100,10 +100,13 @@ def test_semantic_wall_summarizes_and_keeps_five_recent_user_turns() -> None:
     for index in range(9):
         messages.extend(
             [
-                {"role": "user", "content": f"request {index} " + "u" * 1_200},
+                {
+                    "role": "user",
+                    "content": f"request {index} " + "user-detail " * 120,
+                },
                 {
                     "role": "assistant",
-                    "content": f"answer {index} " + "a" * 1_200,
+                    "content": f"answer {index} " + "assistant-detail " * 120,
                 },
             ]
         )

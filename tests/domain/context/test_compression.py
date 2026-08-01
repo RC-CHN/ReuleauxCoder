@@ -159,10 +159,12 @@ def test_snip_reduces_token_count() -> None:
 def test_maybe_compress_snip_counts_after_change() -> None:
     """maybe_compress with snip-only path: after-token count reflects the snip."""
     messages = _build_realistic_conversation(rounds=6, large_tool_lines=300)
-
-    # Use a small max_tokens so the snip threshold is easily crossed
+    probe = ContextManager(reserved_output_tokens=0, safety_margin_tokens=0)
+    estimated_tokens = probe.get_context_tokens(messages)
     mgr = ContextManager(
-        max_tokens=30_000,
+        max_tokens=int(estimated_tokens / 0.65),
+        reserved_output_tokens=0,
+        safety_margin_tokens=0,
         ui_bus=UIEventBus(),
         snip_keep_recent_tools=2,
     )

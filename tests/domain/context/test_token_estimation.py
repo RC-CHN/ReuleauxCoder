@@ -23,6 +23,10 @@ def test_fallback_ignores_whitespace_and_counts_non_english_symbols() -> None:
     assert manager._estimate_text_tokens_chars("123 !?") == 2.5
 
 
+def test_fallback_does_not_treat_long_ascii_runs_as_one_token() -> None:
+    assert manager._estimate_text_tokens_chars("x" * 120) == 30
+
+
 def test_vocabulary_download_reports_percentage_and_writes_valid_cache(
     tmp_path, monkeypatch
 ) -> None:

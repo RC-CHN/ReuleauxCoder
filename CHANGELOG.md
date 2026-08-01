@@ -4,7 +4,7 @@
 
 ## 0.6.3 - 2026-08-01
 
-- Prevented startup and session-restore stalls by lazily initializing the tokenizer, reporting vocabulary-load progress, bounding tokenizer setup time, and falling back to a deterministic character/word estimate when exact counting is unavailable.
+- Prevented startup and session-restore stalls by lazily initializing the tokenizer, reporting vocabulary-load progress, bounding tokenizer setup time, and falling back to a deterministic character/word estimate with conservative handling for long unbroken text when exact counting is unavailable.
 - Added bounded runtime performance telemetry for startup, hooks, model calls, tools, MCP, context work and persistence, exposed through `/status perf`, alongside short-lived Git and project-context caches.
 - Made archived tool-output recovery session-aware and character-paged, with exact continuation hints and no recursive truncation or re-archiving of `artifact_read` results.
 - Sanitized terminal control characters before measuring TUI display width.

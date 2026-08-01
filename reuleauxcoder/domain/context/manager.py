@@ -329,15 +329,18 @@ def prepare_tiktoken_encoder(
 
 
 def _estimate_text_tokens_chars(text: str) -> float:
-    """Estimate mixed text: CJK×1.5 + English words×1.3 + symbols×0.5."""
+    """Estimate mixed text with a floor for long unbroken ASCII runs."""
     chinese_characters = len(_CJK_CHARACTER_RE.findall(text))
     without_chinese = _CJK_CHARACTER_RE.sub("", text)
-    english_words = len(_ENGLISH_WORD_RE.findall(without_chinese))
+    english_tokens = sum(
+        max(1.3, len(match.group()) / 4)
+        for match in _ENGLISH_WORD_RE.finditer(without_chinese)
+    )
     remaining = _ENGLISH_WORD_RE.sub("", without_chinese)
     other_symbols = sum(1 for character in remaining if not character.isspace())
     return (
         chinese_characters * 1.5
-        + english_words * 1.3
+        + english_tokens
         + other_symbols * 0.5
     )
 
