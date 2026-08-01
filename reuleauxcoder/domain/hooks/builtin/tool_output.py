@@ -6,6 +6,7 @@ import time
 import uuid
 import re
 import hashlib
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -107,7 +108,8 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
             if artifact_ref and context.session_id:
                 summary_lines.append(f"Full output artifact: {artifact_ref}")
                 summary_lines.append(
-                    "To recover it, call artifact_read with this session_id and artifact_ref."
+                    "Read it with artifact_read("
+                    f"artifact_ref={json.dumps(artifact_ref)})."
                 )
             else:
                 summary_lines.append(f"Full output saved to: {archive_path}")
@@ -182,9 +184,11 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         return path, None
 
     def _should_bypass_truncation(self, tool_name: str, arguments: dict) -> bool:
-        return self._is_override_read(
-            tool_name, arguments
-        ) or self._is_skills_markdown_read(tool_name, arguments)
+        return (
+            tool_name == "artifact_read"
+            or self._is_override_read(tool_name, arguments)
+            or self._is_skills_markdown_read(tool_name, arguments)
+        )
 
     def _is_override_read(self, tool_name: str, arguments: dict) -> bool:
         return tool_name == "read_file" and arguments.get("override") is True

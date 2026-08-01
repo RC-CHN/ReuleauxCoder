@@ -20,12 +20,20 @@ from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
 
+ARTIFACT_READ_DEFAULT_CHARS = 12_000
+ARTIFACT_READ_MAX_CHARS = 12_000
+
+
 class _HistoryTool(Tool):
     effect_class = "read_only_internal"
     parallel_safe = True
 
     def __init__(self, backend: ToolBackend | None = None):
         super().__init__(backend or LocalToolBackend())
+        self._agent = None
+
+    def bind_agent(self, agent) -> None:
+        self._agent = agent
 
     def _workspace(self) -> LocalWorkspacePort:
         configured = getattr(getattr(self, "_agent_config", None), "session_dir", None)
@@ -38,6 +46,16 @@ class _HistoryTool(Tool):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", session_id):
             raise ValueError("session_id contains unsupported characters")
         return f"{session_id}/{suffix}"
+
+    def _resolve_session_id(self, explicit_session_id: str | None) -> str:
+        if explicit_session_id is not None:
+            return explicit_session_id
+        current_session_id = getattr(self._agent, "current_session_id", None)
+        if not isinstance(current_session_id, str) or not current_session_id:
+            raise ValueError(
+                "current session is unavailable; provide session_id explicitly"
+            )
+        return current_session_id
 
 
 class HistorySearchTool(_HistoryTool):
@@ -131,34 +149,129 @@ class HistoryReadTool(_HistoryTool):
 
 class ArtifactReadTool(_HistoryTool):
     name = "artifact_read"
-    description = "Read an immutable artifact referenced by a session ledger event."
+    description = (
+        "Read one bounded page of an immutable artifact. The current session is "
+        "used by default; provide session_id only to read another saved session. "
+        "Use next_offset from the result to continue."
+    )
     parameters = {
         "type": "object",
         "properties": {
-            "session_id": {"type": "string"},
             "artifact_ref": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Path relative to the session artifacts directory",
             },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based character offset. Default 0.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": ARTIFACT_READ_MAX_CHARS,
+                "description": (
+                    f"Maximum characters to return. Default and hard maximum "
+                    f"{ARTIFACT_READ_MAX_CHARS}."
+                ),
+            },
+            "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Saved session ID. Omit to use the current active session."
+                ),
+            },
         },
-        "required": ["session_id", "artifact_ref"],
+        "required": ["artifact_ref"],
+        "additionalProperties": False,
     }
 
-    def execute(self, session_id: str, artifact_ref: str) -> ToolOutcome:
-        return self.run_backend(session_id=session_id, artifact_ref=artifact_ref)
+    def execute(
+        self,
+        artifact_ref: str,
+        offset: int = 0,
+        limit: int = ARTIFACT_READ_DEFAULT_CHARS,
+        session_id: str | None = None,
+    ) -> ToolOutcome:
+        return self.run_backend(
+            artifact_ref=artifact_ref,
+            offset=offset,
+            limit=limit,
+            session_id=session_id,
+        )
 
     @backend_handler("local")
     @backend_handler("remote_relay")
-    def _execute_host(self, session_id: str, artifact_ref: str) -> ToolOutcome:
+    def _execute_host(
+        self,
+        artifact_ref: str,
+        offset: int = 0,
+        limit: int = ARTIFACT_READ_DEFAULT_CHARS,
+        session_id: str | None = None,
+    ) -> ToolOutcome:
         try:
             if Path(artifact_ref).is_absolute():
                 raise ValueError("artifact_ref must be relative")
-            path = self._session_path(session_id, f"artifacts/{artifact_ref}")
+            if (
+                not isinstance(offset, int)
+                or isinstance(offset, bool)
+                or offset < 0
+            ):
+                raise ValueError("offset must be a non-negative integer")
+            if (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or not 1 <= limit <= ARTIFACT_READ_MAX_CHARS
+            ):
+                raise ValueError(
+                    f"limit must be an integer from 1 to {ARTIFACT_READ_MAX_CHARS}"
+                )
+
+            resolved_session_id = self._resolve_session_id(session_id)
+            path = self._session_path(
+                resolved_session_id, f"artifacts/{artifact_ref}"
+            )
             content = self._workspace().read_text(path)
+            page = content[offset : offset + limit]
+            end_offset = offset + len(page)
+            next_offset = end_offset if end_offset < len(content) else None
+            range_summary = (
+                f"chars [{offset}:{end_offset}] of {len(content)}"
+            )
+            if next_offset is None:
+                continuation = "Artifact read complete."
+            else:
+                session_argument = (
+                    f", session_id={json.dumps(session_id)}"
+                    if session_id is not None
+                    else ""
+                )
+                continuation = (
+                    f"Next offset: {next_offset}. Continue with "
+                    f"artifact_read(artifact_ref={json.dumps(artifact_ref)}, "
+                    f"offset={next_offset}, limit={limit}{session_argument})."
+                )
+            model_content = (
+                f"[artifact page: {artifact_ref}; {range_summary}]\n"
+                f"{page}\n"
+                f"[{continuation}]"
+            )
             return ToolOutcome(
-                summary=f"Read artifact {artifact_ref} ({len(content)} chars)",
-                content=content,
-                metadata={"session_id": session_id, "artifact_ref": artifact_ref},
+                summary=f"Read artifact {artifact_ref}, {range_summary}",
+                content=page,
+                model_content=model_content,
+                metadata={
+                    "session_id": resolved_session_id,
+                    "artifact_ref": artifact_ref,
+                    "offset": offset,
+                    "limit": limit,
+                    "returned_chars": len(page),
+                    "total_chars": len(content),
+                    "next_offset": next_offset,
+                    "complete": next_offset is None,
+                },
                 retention_hint=ToolRetentionHint(strategy=ToolRetentionStrategy.HEAD),
             )
         except (ValueError, WorkspaceError, OSError) as error:

@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from pathlib import Path
 
 from reuleauxcoder.domain.hooks.builtin.tool_output import ToolOutputTruncationHook
@@ -8,6 +9,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 )
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext, HookPoint
 from reuleauxcoder.domain.llm.models import ToolCall
+from reuleauxcoder.extensions.tools.builtin.history import ArtifactReadTool
 
 
 def _ctx(
@@ -164,4 +166,57 @@ def test_tool_output_archive_is_session_scoped_and_model_recoverable(
     assert out.outcome.archive_reference.size_bytes == len(source.encode("utf-8"))
     artifact = tmp_path / "session_test" / "artifacts" / "tools" / "1.txt"
     assert artifact.read_text(encoding="utf-8") == source
-    assert "call artifact_read" in out.result
+    assert 'artifact_read(artifact_ref="tools/1.txt")' in out.result
+
+
+def test_archived_output_can_be_paged_without_recursive_archiving(
+    tmp_path: Path,
+) -> None:
+    hook = ToolOutputTruncationHook(
+        max_chars=20,
+        max_lines=2,
+        store_full_output=True,
+        sessions_dir=str(tmp_path),
+    )
+    source = "alpha-中文-beta-" * 20
+    archived_context = _ctx("/tmp/output.log", source)
+    archived_context.session_id = "session_test"
+    archived = hook.run(archived_context)
+    artifact_ref = archived.outcome.archive_reference.path
+    artifact_dir = tmp_path / "session_test" / "artifacts" / "tools"
+    original_artifacts = set(artifact_dir.iterdir())
+
+    tool = ArtifactReadTool()
+    tool._agent_config = SimpleNamespace(session_dir=str(tmp_path))
+    tool.bind_agent(SimpleNamespace(current_session_id="session_test"))
+    pages: list[str] = []
+    offset = 0
+    while True:
+        outcome = tool.execute(artifact_ref, offset=offset, limit=17)
+        artifact_context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id=f"read-{offset}",
+                name="artifact_read",
+                arguments={
+                    "artifact_ref": artifact_ref,
+                    "offset": offset,
+                    "limit": 17,
+                },
+            ),
+            result=outcome.model_text,
+            outcome=outcome,
+            round_index=2,
+            session_id="session_test",
+        )
+        processed = hook.run(artifact_context)
+        assert processed.outcome is outcome
+        assert "[truncated]" not in processed.result
+        pages.append(outcome.content or "")
+        next_offset = outcome.metadata["next_offset"]
+        if next_offset is None:
+            break
+        offset = int(next_offset)
+
+    assert "".join(pages) == source
+    assert set(artifact_dir.iterdir()) == original_artifacts
