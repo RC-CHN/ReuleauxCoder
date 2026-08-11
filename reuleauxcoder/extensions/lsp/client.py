@@ -479,8 +479,10 @@ class LspClient:
         try:
             await self._write_message(message)
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
-            raise LspClientError(f"LSP request '{method}' timed out after {timeout}s")
+        except asyncio.TimeoutError as error:
+            raise LspRequestTimedOut(
+                f"LSP request '{method}' timed out after {timeout}s"
+            ) from error
         finally:
             pending = self._pending.pop(req_id, None)
             if pending is future and not future.done():

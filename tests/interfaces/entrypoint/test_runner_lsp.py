@@ -44,6 +44,7 @@ def test_init_lsp_registers_without_path_probe_or_worker() -> None:
     manager = runner._lsp_manager
     assert manager is not None
     assert agent.lsp_manager is manager
+    assert manager.performance_monitor is runner._performance_monitor
     assert manager._worker_thread is None
     which.assert_not_called()
     health_check.assert_not_called()

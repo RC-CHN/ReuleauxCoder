@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import hashlib
 import logging
+import os
 import shutil
 import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -33,6 +35,10 @@ from reuleauxcoder.domain.runtime.events import (
     DiagnosticsPublished,
     RuntimeDiagnostic,
     RuntimeEvent,
+)
+from reuleauxcoder.domain.runtime.performance import (
+    PerformanceValue,
+    RuntimePerformanceMonitor,
 )
 
 from reuleauxcoder.extensions.lsp.client import (
@@ -74,6 +80,34 @@ MISSING_COMMAND_TTL_SECONDS = 30.0
 DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
 MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER = 32
 MAX_TRANSPORT_STATE_HISTORY = 256
+_LSP_PERFORMANCE_ATTRIBUTE_KEYS = frozenset(
+    {
+        "language",
+        "root_hash",
+        "launcher",
+        "transport_generation",
+        "work_kind",
+        "request_kind",
+        "sync_kind",
+        "shutdown_phase",
+        "outcome",
+        "cache_result",
+        "cold_start",
+        "document_committed",
+        "document_version",
+        "diagnostic_generation",
+        "diagnostic_count",
+        "transport_count",
+        "depth",
+        "respawn_count",
+        "error_type",
+    }
+)
+_LSP_REQUEST_KINDS = {
+    "textDocument/definition": "definition",
+    "textDocument/references": "references",
+    "textDocument/documentSymbol": "document_symbol",
+}
 TransportKey = tuple[LanguageId, Path]
 AvailabilityCacheKey = tuple[TransportKey, str]
 DiagnosticOwnerKey = tuple[str | None, int | None, str | None]
@@ -132,6 +166,9 @@ class ToolRequest:
     needs_sync: bool = True  # Whether to sync file content before the query
     transport_key: TransportKey | None = None
     enqueue_sequence: int = 0
+    enqueued_at: float = field(default_factory=time.monotonic)
+    queue_depth: int = 0
+    abandonment_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +181,8 @@ class DiagnosticRequest:
     document_committed: bool = False
     transport_key: TransportKey | None = None
     enqueue_sequence: int = 0
+    enqueued_at: float = field(default_factory=time.monotonic)
+    queue_depth: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +212,7 @@ class LspManager:
         self._workspace_cwd = workspace_cwd
         self.ui_bus = ui_bus
         self._runtime_event_sink = runtime_event_sink
+        self.performance_monitor: RuntimePerformanceMonitor | None = None
 
         # Per-language/workspace state. One language server must never index
         # files from an unrelated workspace root.
@@ -330,6 +370,136 @@ class LspManager:
         """Return content-free counters for lazy command resolution."""
         with self._lock:
             return dict(self._availability_metrics)
+
+    async def _observe_lsp_phase(
+        self,
+        name: str,
+        operation: Awaitable[Any],
+        *,
+        transport_key: TransportKey | None,
+        attributes: Mapping[str, PerformanceValue] | None = None,
+    ) -> Any:
+        """Await one operation and retain a bounded, content-free timing."""
+        started_at = time.monotonic()
+        status = "ok"
+        details = dict(attributes or {})
+        try:
+            return await operation
+        except BaseException as error:
+            status = self._performance_status(error)
+            details["error_type"] = type(error).__name__
+            raise
+        finally:
+            self._record_lsp_performance(
+                name,
+                started_at=started_at,
+                status=status,
+                transport_key=transport_key,
+                attributes=details,
+            )
+
+    def _record_lsp_performance(
+        self,
+        name: str,
+        *,
+        started_at: float,
+        status: str = "ok",
+        transport_key: TransportKey | None = None,
+        attributes: Mapping[str, PerformanceValue] | None = None,
+    ) -> None:
+        monitor = self.performance_monitor
+        if monitor is None:
+            return
+        try:
+            details: dict[str, PerformanceValue] = {}
+            if transport_key is not None:
+                language, root = transport_key
+                with self._lock:
+                    transport_status = self._transport_statuses.get(transport_key)
+                    respawn_count = self._re_spawn_counts.get(transport_key, 0)
+                details.update(
+                    {
+                        "language": get_language_id_string(language),
+                        "root_hash": self._workspace_identifier(root),
+                        "transport_generation": (
+                            transport_status.generation
+                            if transport_status is not None
+                            else 0
+                        ),
+                        "launcher": (
+                            transport_status.launcher
+                            if transport_status is not None
+                            else None
+                        ),
+                        "respawn_count": respawn_count,
+                    }
+                )
+            details.update(
+                (key, value)
+                for key, value in (attributes or {}).items()
+                if key in _LSP_PERFORMANCE_ATTRIBUTE_KEYS
+            )
+            error_type = details.get("error_type")
+            if isinstance(error_type, str):
+                details["error_type"] = error_type[:64]
+            monitor.record(
+                "lsp",
+                name,
+                (time.monotonic() - started_at) * 1000,
+                status=status,
+                attributes=details,
+            )
+        except Exception:
+            logger.debug("LSP performance sample failed", exc_info=True)
+
+    @staticmethod
+    def _performance_status(error: BaseException) -> str:
+        if isinstance(error, (asyncio.CancelledError, LspRequestCancelled)):
+            return "cancelled"
+        if isinstance(error, (asyncio.TimeoutError, LspRequestTimedOut)):
+            return "timeout"
+        return "error"
+
+    @staticmethod
+    def _workspace_identifier(root: Path) -> str:
+        return hashlib.sha256(os.fsencode(root)).hexdigest()[:12]
+
+    @staticmethod
+    def _request_kind(method: str) -> str:
+        return _LSP_REQUEST_KINDS.get(method, "other")
+
+    @staticmethod
+    def _document_version(client: Any, file_path: Path) -> int | None:
+        getter = getattr(client, "document_version", None)
+        if not callable(getter):
+            return None
+        try:
+            return int(getter(file_path))
+        except Exception:
+            return None
+
+    def _record_queue_wait(
+        self,
+        work: ToolRequest | DiagnosticRequest,
+        *,
+        transport_key: TransportKey | None,
+        status: str = "ok",
+    ) -> None:
+        attributes: dict[str, PerformanceValue] = {
+            "work_kind": "tool" if isinstance(work, ToolRequest) else "diagnostics",
+            "depth": work.queue_depth,
+        }
+        if isinstance(work, ToolRequest):
+            attributes["request_kind"] = self._request_kind(work.method)
+        else:
+            attributes["document_committed"] = work.document_committed
+        self._record_lsp_performance(
+            "queue_wait",
+            started_at=work.enqueued_at,
+            status=status,
+            transport_key=transport_key,
+            attributes=attributes,
+        )
 
     def start_worker(self) -> None:
         """Start the background worker thread (idempotent)."""
@@ -521,6 +691,7 @@ class LspManager:
                 if item.batch_id not in superseded_ids
             ]
             self._pending_diagnostic_requests.difference_update(superseded_ids)
+            queue_depth = len(self._tool_queue) + len(self._diagnostics_queue) + 1
             self._diagnostics_queue.append(
                 DiagnosticRequest(
                     batch_id=batch_id,
@@ -529,6 +700,7 @@ class LspManager:
                     document_committed=document_committed,
                     transport_key=transport_key,
                     enqueue_sequence=enqueue_sequence,
+                    queue_depth=queue_depth,
                 )
             )
             self._pending_diagnostic_requests.add(batch_id)
@@ -735,6 +907,7 @@ class LspManager:
             self._next_work_sequence += 1
             req.enqueue_sequence = self._next_work_sequence
             self._tool_queue.append(req)
+            req.queue_depth = len(self._tool_queue) + len(self._diagnostics_queue)
 
         self._wake_worker()
 
@@ -750,11 +923,11 @@ class LspManager:
                     return future.result()
 
             if cancellation is not None and cancellation.is_set():
-                if not self._abandon_tool_request(req):
+                if not self._abandon_tool_request(req, status="cancelled"):
                     return future.result()
                 raise LspRequestCancelled(f"LSP request '{method}' was cancelled")
             if time.monotonic() >= deadline_at:
-                if not self._abandon_tool_request(req):
+                if not self._abandon_tool_request(req, status="timeout"):
                     return future.result()
                 raise self._timeout_error(req)
 
@@ -937,7 +1110,31 @@ class LspManager:
         transport_key: TransportKey | None = None,
     ) -> None:
         """Process a synchronous active-tool request."""
+        key = (
+            transport_key
+            or req.transport_key
+            or self._transport_key(req.language_id, req.file_path)
+        )
+        total_status = "ok"
+        total_attributes: dict[str, PerformanceValue] = {
+            "work_kind": "tool",
+            "request_kind": self._request_kind(req.method),
+        }
+        self._record_queue_wait(
+            req,
+            transport_key=key,
+            status=req.abandonment_status
+            or ("cancelled" if req.future.cancelled() else "ok"),
+        )
         if req.future.cancelled():
+            total_attributes["outcome"] = "caller_abandoned"
+            self._record_lsp_performance(
+                "total",
+                started_at=req.enqueued_at,
+                status=req.abandonment_status or "cancelled",
+                transport_key=key,
+                attributes=total_attributes,
+            )
             return
         operation = asyncio.create_task(
             self._execute_tool_request(req, transport_key=transport_key)
@@ -945,6 +1142,8 @@ class LspManager:
         try:
             while not operation.done():
                 if req.future.cancelled():
+                    total_status = req.abandonment_status or "cancelled"
+                    total_attributes["outcome"] = "caller_abandoned"
                     return
                 if self._abort_current:
                     raise LspClientError("LSP manager shutting down")
@@ -957,16 +1156,30 @@ class LspManager:
                 )
 
             result = await operation
-            self._try_set_future_result(req.future, result)
+            if not self._try_set_future_result(req.future, result):
+                total_status = req.abandonment_status or "cancelled"
+                total_attributes["outcome"] = "late_completion"
         except asyncio.CancelledError:
+            total_status = req.abandonment_status or "cancelled"
+            if req.abandonment_status is not None:
+                total_attributes["outcome"] = "caller_abandoned"
             self._try_set_future_exception(
                 req.future,
                 LspClientError("LSP request cancelled"),
             )
         except Exception as e:
+            total_status = self._performance_status(e)
+            total_attributes["error_type"] = type(e).__name__
             self._try_set_future_exception(req.future, e)
         finally:
             await self._cancel_and_wait_task(operation)
+            self._record_lsp_performance(
+                "total",
+                started_at=req.enqueued_at,
+                status=total_status,
+                transport_key=key,
+                attributes=total_attributes,
+            )
 
     async def _execute_tool_request(
         self,
@@ -992,17 +1205,28 @@ class LspManager:
 
         # Document sync before query (if needed)
         if req.needs_sync:
-            stale = self._check_stale(
-                req.language_id,
-                req.file_path,
-                transport_key=key,
-            )
-            if stale:
-                content = self._read_file_content(req.file_path)
-                if content is not None:
-                    document_key = (key, req.file_path)
-                    last_sync = self._last_sync_time.get(document_key, 0)
-                    try:
+            sync_started_at = time.monotonic()
+            sync_status = "skipped"
+            sync_attributes: dict[str, PerformanceValue] = {
+                "work_kind": "tool",
+                "sync_kind": "unchanged",
+                "request_kind": self._request_kind(req.method),
+            }
+            try:
+                stale = self._check_stale(
+                    req.language_id,
+                    req.file_path,
+                    transport_key=key,
+                )
+                if stale:
+                    content = self._read_file_content(req.file_path)
+                    if content is None:
+                        sync_attributes["sync_kind"] = "unreadable"
+                    else:
+                        document_key = (key, req.file_path)
+                        last_sync = self._last_sync_time.get(document_key, 0)
+                        sync_kind = "open" if last_sync == 0 else "change"
+                        sync_attributes["sync_kind"] = sync_kind
                         if last_sync == 0:
                             await server.did_open(req.file_path, content)
                         else:
@@ -1011,15 +1235,42 @@ class LspManager:
                             self._last_sync_time[document_key] = (
                                 req.file_path.stat().st_mtime
                             )
-                    except Exception as e:
-                        logger.debug("LSP sync error (swallowed): %s", e)
+                        sync_attributes["document_version"] = self._document_version(
+                            server,
+                            req.file_path,
+                        )
+                        sync_status = "ok"
+            except Exception as e:
+                sync_status = self._performance_status(e)
+                sync_attributes["error_type"] = type(e).__name__
+                logger.debug("LSP sync error (swallowed): %s", e)
+            except BaseException as error:
+                sync_status = self._performance_status(error)
+                sync_attributes["error_type"] = type(error).__name__
+                raise
+            finally:
+                self._record_lsp_performance(
+                    "document_sync",
+                    started_at=sync_started_at,
+                    status=sync_status,
+                    transport_key=key,
+                    attributes=sync_attributes,
+                )
 
         if self._abort_current:
             raise LspClientError("LSP manager shutting down")
         remaining = req.deadline_at - time.monotonic()
         if remaining <= 0:
             raise self._timeout_error(req)
-        return await server.send_request(req.method, req.params, timeout=remaining)
+        return await self._observe_lsp_phase(
+            "request",
+            server.send_request(req.method, req.params, timeout=remaining),
+            transport_key=key,
+            attributes={
+                "request_kind": self._request_kind(req.method),
+                "document_version": self._document_version(server, req.file_path),
+            },
+        )
 
     @staticmethod
     def _timeout_error(req: ToolRequest) -> LspRequestTimedOut:
@@ -1064,11 +1315,31 @@ class LspManager:
             with suppress(asyncio.CancelledError, Exception):
                 task.result()
 
-    def _abandon_tool_request(self, req: ToolRequest) -> bool:
-        if not req.future.cancel():
-            return False
+    def _abandon_tool_request(self, req: ToolRequest, *, status: str) -> bool:
         with self._lock:
+            req.abandonment_status = status
+            if not req.future.cancel():
+                req.abandonment_status = None
+                return False
+            queued = any(item is req for item in self._tool_queue)
             self._tool_queue = [item for item in self._tool_queue if item is not req]
+        if queued:
+            key = req.transport_key or self._transport_key(
+                req.language_id,
+                req.file_path,
+            )
+            self._record_queue_wait(req, transport_key=key, status=status)
+            self._record_lsp_performance(
+                "total",
+                started_at=req.enqueued_at,
+                status=status,
+                transport_key=key,
+                attributes={
+                    "work_kind": "tool",
+                    "request_kind": self._request_kind(req.method),
+                    "outcome": "caller_abandoned",
+                },
+            )
         return True
 
     async def _handle_diagnostics_request(
@@ -1087,6 +1358,12 @@ class LspManager:
             or request.transport_key
             or self._transport_key(lang, file_path)
         )
+        total_status = "ok"
+        total_attributes: dict[str, PerformanceValue] = {
+            "work_kind": "diagnostics",
+            "document_committed": request.document_committed,
+        }
+        self._record_queue_wait(request, transport_key=resolved_transport_key)
 
         try:
             server = await self._get_or_create_server(
@@ -1095,6 +1372,8 @@ class LspManager:
                 transport_key=resolved_transport_key,
             )
             if server is None:
+                total_status = "unavailable"
+                total_attributes["outcome"] = "server_unavailable"
                 return
 
             baseline_generation = server.diagnostics_generation(file_path)
@@ -1103,45 +1382,113 @@ class LspManager:
             # A successful mutation is authoritative even when the filesystem
             # timestamp has not advanced (coarse or preserved mtimes). Always
             # send the committed on-disk content before didSave.
-            stale = request.document_committed or self._check_stale(
-                lang,
-                file_path,
-                transport_key=resolved_transport_key,
-            )
-            if stale:
-                content = self._read_file_content(file_path)
-                if content is not None:
-                    document_key = (resolved_transport_key, file_path)
-                    last_sync = self._last_sync_time.get(document_key, 0)
-                    try:
-                        if last_sync == 0:
-                            await server.did_open(file_path, content)
-                        else:
-                            await server.did_change(file_path, content)
-                        with self._lock:
-                            self._last_sync_time[document_key] = (
-                                file_path.stat().st_mtime
-                            )
-                    except Exception as e:
-                        logger.debug("LSP sync error (swallowed): %s", e)
+            sync_started_at = time.monotonic()
+            sync_status = "skipped"
+            sync_attributes: dict[str, PerformanceValue] = {
+                "work_kind": "diagnostics",
+                "sync_kind": "unchanged",
+                "document_committed": request.document_committed,
+            }
+            try:
+                stale = request.document_committed or self._check_stale(
+                    lang,
+                    file_path,
+                    transport_key=resolved_transport_key,
+                )
+                if stale:
+                    content = self._read_file_content(file_path)
+                    if content is None:
+                        sync_attributes["sync_kind"] = "unreadable"
+                    else:
+                        document_key = (resolved_transport_key, file_path)
+                        last_sync = self._last_sync_time.get(document_key, 0)
+                        sync_attributes["sync_kind"] = (
+                            "open" if last_sync == 0 else "change"
+                        )
+                        try:
+                            if last_sync == 0:
+                                await server.did_open(file_path, content)
+                            else:
+                                await server.did_change(file_path, content)
+                            with self._lock:
+                                self._last_sync_time[document_key] = (
+                                    file_path.stat().st_mtime
+                                )
+                            sync_status = "ok"
+                        except Exception as error:
+                            sync_status = self._performance_status(error)
+                            sync_attributes["error_type"] = type(error).__name__
+                            logger.debug("LSP sync error (swallowed): %s", error)
 
-            # A successful file mutation is one ordered operation: synchronize
-            # the committed content, then notify save, then observe diagnostics.
-            # Keeping these steps in this request prevents queue priority from
-            # moving diagnostics ahead of didSave.
-            if request.document_committed:
-                await server.did_save(file_path)
+                # A successful file mutation is one ordered operation:
+                # synchronize the committed content, then notify save, then
+                # observe diagnostics. Keeping these steps in this request
+                # prevents queue priority from moving diagnostics ahead of
+                # didSave.
+                if request.document_committed:
+                    await server.did_save(file_path)
+                    sync_attributes["document_version"] = self._document_version(
+                        server,
+                        file_path,
+                    )
+                    if "error_type" not in sync_attributes:
+                        sync_status = "ok"
+            except Exception as e:
+                sync_status = self._performance_status(e)
+                sync_attributes["error_type"] = type(e).__name__
+                logger.debug("LSP sync error (swallowed): %s", e)
+                raise
+            except BaseException as error:
+                sync_status = self._performance_status(error)
+                sync_attributes["error_type"] = type(error).__name__
+                raise
+            finally:
+                self._record_lsp_performance(
+                    "document_sync",
+                    started_at=sync_started_at,
+                    status=sync_status,
+                    transport_key=resolved_transport_key,
+                    attributes=sync_attributes,
+                )
 
             # Wait for diagnostics
-            diagnostics = await server.wait_for_diagnostics(
-                file_path,
-                timeout=self._config.poll_timeout_ms / 1000,
-                after_generation=baseline_generation,
-            )
-            diagnostic_generation = server.diagnostics_generation(file_path)
+            wait_started_at = time.monotonic()
+            wait_status = "ok"
+            wait_attributes: dict[str, PerformanceValue] = {
+                "document_committed": request.document_committed,
+                "document_version": self._document_version(server, file_path),
+            }
+            try:
+                diagnostics = await server.wait_for_diagnostics(
+                    file_path,
+                    timeout=self._config.poll_timeout_ms / 1000,
+                    after_generation=baseline_generation,
+                )
+                diagnostic_generation = server.diagnostics_generation(file_path)
+                wait_attributes["diagnostic_generation"] = diagnostic_generation
+                wait_attributes["diagnostic_count"] = len(diagnostics)
+                if diagnostic_generation <= baseline_generation:
+                    wait_status = "timeout"
+                    wait_attributes["outcome"] = "timeout"
+                else:
+                    wait_attributes["outcome"] = "published"
+            except BaseException as error:
+                wait_status = self._performance_status(error)
+                wait_attributes["error_type"] = type(error).__name__
+                raise
+            finally:
+                self._record_lsp_performance(
+                    "diagnostics_wait",
+                    started_at=wait_started_at,
+                    status=wait_status,
+                    transport_key=resolved_transport_key,
+                    attributes=wait_attributes,
+                )
             if diagnostic_generation <= baseline_generation:
                 # Timeout is not an explicit clean publish.  Retaining no batch
                 # is safer than clearing diagnostics from a previous version.
+                total_status = "timeout"
+                total_attributes["outcome"] = "timeout"
                 return
 
             block = DiagnosticBlock(
@@ -1177,9 +1524,21 @@ class LspManager:
                 else:
                     self._diagnostic_batch_metrics["stale_discarded"] += 1
             if accepted:
+                total_attributes["outcome"] = "published"
+                total_attributes["diagnostic_count"] = len(diagnostics)
+                total_attributes["diagnostic_generation"] = diagnostic_generation
                 self._publish_diagnostic_event(batch)
+            else:
+                total_status = "cancelled"
+                total_attributes["outcome"] = "stale_discarded"
 
+        except asyncio.CancelledError as error:
+            total_status = "cancelled"
+            total_attributes["error_type"] = type(error).__name__
+            raise
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            total_status = self._performance_status(e)
+            total_attributes["error_type"] = type(e).__name__
             logger.warning("LSP transport error for %s: %s", lang.name, e)
             self._on_transport_error(
                 lang,
@@ -1188,8 +1547,17 @@ class LspManager:
                 transport_key=resolved_transport_key,
             )
         except Exception as e:
+            total_status = self._performance_status(e)
+            total_attributes["error_type"] = type(e).__name__
             logger.debug("LSP diagnostics error (swallowed): %s", e)
         finally:
+            self._record_lsp_performance(
+                "total",
+                started_at=request.enqueued_at,
+                status=total_status,
+                transport_key=resolved_transport_key,
+                attributes=total_attributes,
+            )
             with self._lock:
                 self._pending_diagnostic_requests.discard(request.batch_id)
 
@@ -1438,16 +1806,27 @@ class LspManager:
         )
 
         try:
-            await client.spawn(cmd, args)
+            cold_start = generation == 1
+            await self._observe_lsp_phase(
+                "spawn",
+                client.spawn(cmd, args),
+                transport_key=key,
+                attributes={"cold_start": cold_start},
+            )
             if not self._transition_transport(
                 key,
                 generation,
                 LspTransportState.INITIALIZING,
                 command=cmd,
             ):
-                await client.abort()
+                await self._close_transport_observed(key, client, graceful=False)
                 return None
-            await client.initialize(init_opts)
+            await self._observe_lsp_phase(
+                "initialize",
+                client.initialize(init_opts),
+                transport_key=key,
+                attributes={"cold_start": cold_start},
+            )
             await asyncio.sleep(0)
             if not client.is_usable:
                 raise LspClientError("LSP server exited during initialization")
@@ -1459,7 +1838,12 @@ class LspManager:
                     LspTransportState.STOPPING,
                     command=cmd,
                 )
-                await client.abort(deadline_at=self._shutdown_deadline_at)
+                await self._close_transport_observed(
+                    key,
+                    client,
+                    deadline_at=self._shutdown_deadline_at,
+                    graceful=False,
+                )
                 self._transition_transport(
                     key,
                     generation,
@@ -1467,7 +1851,7 @@ class LspManager:
                     command=cmd,
                 )
             else:
-                await client.abort()
+                await self._close_transport_observed(key, client, graceful=False)
                 self._transition_transport(
                     key,
                     generation,
@@ -1478,13 +1862,14 @@ class LspManager:
                 )
             raise
         except Exception as e:
-            await client.abort()
+            await self._close_transport_observed(key, client, graceful=False)
             logger.warning(
-                "Failed to spawn LSP server (async) for %s (%s %s): %s",
+                "Failed to start LSP server: language=%s launcher=%s "
+                "arg_count=%d error_type=%s",
                 lang.name,
-                cmd,
-                " ".join(args),
-                e,
+                self._launcher_name(cmd),
+                len(args),
+                type(e).__name__,
             )
             with self._lock:
                 self._re_spawn_counts[key] = self._re_spawn_counts.get(key, 0) + 1
@@ -1516,7 +1901,7 @@ class LspManager:
                     launcher=self._launcher_name(cmd),
                 )
         if stale:
-            await client.abort()
+            await self._close_transport_observed(key, client, graceful=False)
             return None
 
         logger.info(
@@ -1525,6 +1910,51 @@ class LspManager:
             root,
         )
         return client
+
+    async def _close_transport_observed(
+        self,
+        key: TransportKey,
+        client: LspClient,
+        *,
+        deadline_at: float | None = None,
+        graceful: bool | None = None,
+    ) -> None:
+        """Close one client and retain the actual stopped/unreaped outcome."""
+        started_at = time.monotonic()
+        graceful_attempt = client.is_usable if graceful is None else graceful
+        shutdown_phase = "graceful_attempt" if graceful_attempt else "abort_only"
+        status = "ok"
+        attributes: dict[str, PerformanceValue] = {
+            "shutdown_phase": shutdown_phase,
+        }
+        try:
+            if graceful_attempt:
+                if deadline_at is None:
+                    await client.shutdown()
+                else:
+                    await client.shutdown(deadline_at=deadline_at)
+            else:
+                if deadline_at is None:
+                    await client.abort()
+                else:
+                    await client.abort(deadline_at=deadline_at)
+        except BaseException as error:
+            status = self._performance_status(error)
+            attributes["error_type"] = type(error).__name__
+            raise
+        finally:
+            if client.is_alive:
+                status = "incomplete"
+                attributes["outcome"] = "unreaped"
+            else:
+                attributes["outcome"] = "stopped"
+            self._record_lsp_performance(
+                "shutdown",
+                started_at=started_at,
+                status=status,
+                transport_key=key,
+                attributes=attributes,
+            )
 
     async def _discard_transport_async(
         self,
@@ -1547,10 +1977,7 @@ class LspManager:
                     launcher=status.launcher,
                 )
         try:
-            if client.is_usable:
-                await client.shutdown()
-            else:
-                await client.abort()
+            await self._close_transport_observed(key, client)
         except Exception:
             logger.exception("LSP transport discard failed")
         finally:
@@ -1600,7 +2027,14 @@ class LspManager:
         remaining = max(0.0, deadline_at - time.monotonic())
         if remaining <= 0:
             await asyncio.gather(
-                *(client.abort(deadline_at=deadline_at) for client in clients.values()),
+                *(
+                    self._close_transport_observed(
+                        key,
+                        client,
+                        deadline_at=deadline_at,
+                    )
+                    for key, client in clients.items()
+                ),
                 return_exceptions=True,
             )
             completed = all(not client.is_alive for client in clients.values())
@@ -1608,12 +2042,12 @@ class LspManager:
             return completed
         shutdowns = asyncio.gather(
             *(
-                (
-                    client.shutdown(deadline_at=deadline_at)
-                    if client.is_usable
-                    else client.abort(deadline_at=deadline_at)
+                self._close_transport_observed(
+                    key,
+                    client,
+                    deadline_at=deadline_at,
                 )
-                for client in clients.values()
+                for key, client in clients.items()
             ),
             return_exceptions=True,
         )
@@ -1894,8 +2328,10 @@ class LspManager:
         self, key: TransportKey, command: str
     ) -> float | None:
         """Return an active negative-cache deadline without touching PATH."""
+        started_at = time.monotonic()
         lang, root = key
         cache_key = (key, self._command_lookup_target(command, root))
+        retry_at: float | None = None
         with self._lock:
             forced = self._availability.get(lang)
             if forced is not None:
@@ -1909,21 +2345,56 @@ class LspManager:
             unavailable_until = self._negative_availability_until.get(cache_key, 0)
             if unavailable_until > now:
                 self._availability_metrics["negative_cache_hits"] += 1
-                return unavailable_until
-        return None
+                retry_at = unavailable_until
+        if retry_at is not None:
+            self._record_lsp_performance(
+                "availability_lookup",
+                started_at=started_at,
+                status="unavailable",
+                transport_key=key,
+                attributes={
+                    "cache_result": "negative_hit",
+                    "outcome": "unavailable",
+                },
+            )
+        return retry_at
 
     def _lookup_command_availability(
         self, key: TransportKey, command: str
     ) -> tuple[bool, float | None]:
         """Perform one launcher lookup and update the negative cache."""
+        started_at = time.monotonic()
         lang, root = key
         lookup_target = self._command_lookup_target(command, root)
         cache_key = (key, lookup_target)
         with self._lock:
             forced = self._availability.get(lang)
-            if forced is not None:
-                return forced, None
-        found = self._command_lookup(lookup_target) is not None
+        if forced is not None:
+            self._record_lsp_performance(
+                "availability_lookup",
+                started_at=started_at,
+                status="ok" if forced else "unavailable",
+                transport_key=key,
+                attributes={
+                    "cache_result": "forced",
+                    "outcome": "available" if forced else "unavailable",
+                },
+            )
+            return forced, None
+        try:
+            found = self._command_lookup(lookup_target) is not None
+        except BaseException as error:
+            self._record_lsp_performance(
+                "availability_lookup",
+                started_at=started_at,
+                status=self._performance_status(error),
+                transport_key=key,
+                attributes={
+                    "cache_result": "miss",
+                    "error_type": type(error).__name__,
+                },
+            )
+            raise
         with self._lock:
             self._availability_metrics["lookups"] += 1
             if found:
@@ -1934,6 +2405,16 @@ class LspManager:
                 self._availability_metrics["unavailable"] += 1
                 retry_at = self._availability_clock() + MISSING_COMMAND_TTL_SECONDS
                 self._negative_availability_until[cache_key] = retry_at
+        self._record_lsp_performance(
+            "availability_lookup",
+            started_at=started_at,
+            status="ok" if found else "unavailable",
+            transport_key=key,
+            attributes={
+                "cache_result": "miss",
+                "outcome": "available" if found else "unavailable",
+            },
+        )
         return found, retry_at
 
     @staticmethod

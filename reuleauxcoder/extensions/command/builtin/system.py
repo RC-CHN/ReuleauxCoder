@@ -105,7 +105,11 @@ def _parse_config(user_input: str, parse_ctx):
 
 
 def _parse_status_perf(user_input: str, parse_ctx):
-    if match_template(user_input, "/status perf", case_insensitive=True) is not None:
+    if matches_any(
+        user_input,
+        ("/status perf", "/debug performance"),
+        case_insensitive=True,
+    ):
         return EmptyCommand()
     return None
 
@@ -318,6 +322,22 @@ def _performance_row(sample: PerformanceSample) -> PerformanceRowViewModel:
         "hook_name",
         "tool_name",
         "server_name",
+        "language",
+        "root_hash",
+        "transport_generation",
+        "launcher",
+        "work_kind",
+        "request_kind",
+        "sync_kind",
+        "shutdown_phase",
+        "cache_result",
+        "cold_start",
+        "document_committed",
+        "document_version",
+        "diagnostic_generation",
+        "diagnostic_count",
+        "transport_count",
+        "respawn_count",
         "model",
         "tool_count",
         "event_count",
@@ -570,7 +590,10 @@ def register_actions(registry: ActionRegistry) -> None:
                 description="[session] Show recent runtime performance timings",
                 ui_targets=UI_TARGETS,
                 required_capabilities=TEXT_REQUIRED,
-                triggers=(slash_trigger("/status perf"),),
+                triggers=(
+                    slash_trigger("/status perf"),
+                    slash_trigger("/debug performance"),
+                ),
                 parser=_parse_status_perf,
                 handler=_handle_status_perf,
                 during_turn=DuringTurnPolicy.IMMEDIATE,

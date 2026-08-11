@@ -12,7 +12,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from reuleauxcoder.extensions.lsp.client import LspClient, LspClientError
+from reuleauxcoder.extensions.lsp.client import (
+    LspClient,
+    LspClientError,
+    LspRequestTimedOut,
+)
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.extensions.lsp.registry import LanguageId
@@ -138,7 +142,7 @@ def test_timeout_removes_pending_request(tmp_path: Path) -> None:
     client = _requestable_client(tmp_path)
     client._write_message = AsyncMock()
 
-    with pytest.raises(LspClientError, match="timed out"):
+    with pytest.raises(LspRequestTimedOut, match="timed out"):
         asyncio.run(client._send_request("test/timeout", {}, timeout=0.001))
 
     assert client._pending == {}

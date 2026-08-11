@@ -346,6 +346,7 @@ class AppRunner:
             ui_bus=ui_bus,
             runtime_event_sink=ui_bus.emit_runtime,
         )
+        manager.performance_monitor = self._performance_monitor
         configured = manager.configured_languages()
         ui_bus.info(
             f"LSP: {len(configured)} language integrations configured; "

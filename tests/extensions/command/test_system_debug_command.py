@@ -27,6 +27,7 @@ def test_parse_debug_on_off() -> None:
 
 def test_status_perf_emits_bounded_typed_view() -> None:
     assert _parse_status_perf("/STATUS PERF", None) is not None
+    assert _parse_status_perf("/debug performance", None) is not None
     monitor = RuntimePerformanceMonitor()
     monitor.record(
         "hook",
@@ -82,6 +83,36 @@ def test_status_perf_exposes_ui_queue_pressure() -> None:
     assert "must_deliver_waits=2" in detail
     assert "must_deliver_timeouts=1" in detail
     assert "closed_dropped=4" in detail
+
+
+def test_status_perf_exposes_secret_free_lsp_phase_details() -> None:
+    monitor = RuntimePerformanceMonitor()
+    monitor.record(
+        "lsp",
+        "request",
+        4.5,
+        attributes={
+            "language": "python",
+            "root_hash": "abc123def456",
+            "transport_generation": 2,
+            "launcher": "pyright-langserver",
+            "request_kind": "definition",
+            "document_version": 3,
+        },
+    )
+    effect = CommandEffect()
+    ctx = SimpleNamespace(
+        agent=SimpleNamespace(performance_monitor=monitor),
+        effect=effect,
+    )
+
+    detail = _handle_status_perf(None, ctx).views[-1].view_model.recent[0].detail
+
+    assert detail == (
+        "language=python · root_hash=abc123def456 · transport_generation=2 · "
+        "launcher=pyright-langserver · request_kind=definition · "
+        "document_version=3"
+    )
 
 
 def test_handle_debug_toggles_runtime_flag(tmp_path, monkeypatch) -> None:
