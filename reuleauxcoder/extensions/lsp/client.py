@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,8 @@ MAX_LSP_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 INITIALIZE_TIMEOUT = 30.0  # seconds — initial indexing can be slow
 REQUEST_TIMEOUT = 10.0  # seconds — per-request timeout for active tools
 ABORT_TIMEOUT = 1.0
+SHUTDOWN_TIMEOUT = 5.0
+_FORCE_CLOSE_RESERVE = 0.25
 
 # LSP protocol version
 LSP_PROTOCOL_VERSION = "2.0"
@@ -295,11 +298,17 @@ class LspClient:
 
     # === Shutdown ===
 
-    async def shutdown(self) -> None:
-        """Gracefully shutdown the LSP server."""
+    async def shutdown(self, *, deadline_at: float | None = None) -> None:
+        """Gracefully shutdown, then force-close within one total deadline."""
         process = self._process
         if process is None:
             return
+        if deadline_at is None:
+            deadline_at = time.monotonic() + SHUTDOWN_TIMEOUT
+        graceful_deadline = max(
+            time.monotonic(),
+            deadline_at - _FORCE_CLOSE_RESERVE,
+        )
 
         logger.info(
             "Shutting down LSP server for %s",
@@ -307,38 +316,27 @@ class LspClient:
         )
 
         try:
-            await asyncio.wait_for(
-                self._send_request("shutdown", {}, timeout=5.0),
-                timeout=5.0,
-            )
-        except Exception:
-            pass
+            remaining = graceful_deadline - time.monotonic()
+            if remaining > 0:
+                with suppress(Exception):
+                    await self._send_request("shutdown", {}, timeout=remaining)
 
-        try:
-            await self._send_notification("exit", {})
-        except Exception:
-            pass
+            remaining = graceful_deadline - time.monotonic()
+            if remaining > 0:
+                with suppress(Exception):
+                    await asyncio.wait_for(
+                        self._send_notification("exit", {}),
+                        timeout=remaining,
+                    )
 
-        if self._reader_task:
-            self._reader_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._reader_task
-
-        if process.stdin is not None:
-            with suppress(Exception):
-                process.stdin.close()
-                await process.stdin.wait_closed()
-
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
+            remaining = graceful_deadline - time.monotonic()
+            if process.returncode is None and remaining > 0:
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(process.wait(), timeout=remaining)
         finally:
-            self._fail_all_pending("LSP server shut down")
-            self._reset_runtime_state()
+            await self.abort(deadline_at=deadline_at)
 
-    async def abort(self) -> None:
+    async def abort(self, *, deadline_at: float | None = None) -> None:
         """Force-close a failed or cancelled transport without an LSP handshake."""
         process = self._process
         reader_task = self._reader_task
@@ -351,14 +349,21 @@ class LspClient:
         if process is not None and process.stdin is not None:
             with suppress(Exception):
                 process.stdin.close()
-                await process.stdin.wait_closed()
+                remaining = self._cleanup_remaining(deadline_at)
+                if remaining > 0:
+                    await asyncio.wait_for(
+                        process.stdin.wait_closed(),
+                        timeout=remaining,
+                    )
 
         if process is not None and process.returncode is None:
             with suppress(ProcessLookupError):
                 process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=ABORT_TIMEOUT)
-            except asyncio.TimeoutError:
+            remaining = self._cleanup_remaining(deadline_at)
+            if remaining > 0:
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(process.wait(), timeout=remaining)
+            if process.returncode is None:
                 with suppress(ProcessLookupError):
                     process.kill()
                 with suppress(Exception):
@@ -366,6 +371,12 @@ class LspClient:
 
         self._fail_all_pending("LSP server aborted")
         self._reset_runtime_state()
+
+    @staticmethod
+    def _cleanup_remaining(deadline_at: float | None) -> float:
+        if deadline_at is None:
+            return ABORT_TIMEOUT
+        return max(0.0, min(ABORT_TIMEOUT, deadline_at - time.monotonic()))
 
     # === Internal: Request/Response ===
 

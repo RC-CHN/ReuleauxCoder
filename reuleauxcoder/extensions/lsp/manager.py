@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 MAX_RESPWANS = 3
 WORKER_SHUTDOWN_TIMEOUT = (
-    15.0  # must allow in-flight request to time out (10s) + cleanup
+    5.0  # one total manager deadline, including active-work cancellation
 )
 _WORKER_POLL_INTERVAL = 0.1
 _TOOL_REQUEST_POLL_INTERVAL = 0.05
@@ -167,6 +167,9 @@ class LspManager:
 
         # Worker event loop reference (set once worker starts)
         self._worker_loop: asyncio.AbstractEventLoop | None = None
+        self._current_work_task: asyncio.Task[None] | None = None
+        self._shutdown_deadline_at: float | None = None
+        self._last_shutdown_completed = True
 
     # === Properties ===
 
@@ -235,6 +238,8 @@ class LspManager:
                 return
             self._stop_event.clear()
             self._abort_current = False
+            self._shutdown_deadline_at = None
+            self._last_shutdown_completed = True
             self._worker_thread = threading.Thread(
                 target=self._worker_entry,
                 name="lsp-worker",
@@ -243,14 +248,26 @@ class LspManager:
             self._worker_thread.start()
             logger.info("LSP worker thread started")
 
-    def shutdown_all(self) -> None:
-        """Gracefully shutdown all LSP servers and stop the worker thread."""
+    def shutdown_all(self, *, timeout: float = WORKER_SHUTDOWN_TIMEOUT) -> bool:
+        """Stop all LSP work within one deadline and report actual completion."""
+        if timeout <= 0:
+            raise ValueError("LSP shutdown timeout must be positive")
         logger.info("Shutting down LSP manager")
+        had_worker = self._worker_thread is not None
+        deadline_at = time.monotonic() + timeout
+        self._shutdown_deadline_at = deadline_at
         self._abort_current = True  # tells worker to skip in-flight work
         self._stop_event.set()
 
         with self._request_condition:
             self._request_condition.notify_all()
+
+        with self._lock:
+            worker_loop = self._worker_loop
+            current_work = self._current_work_task
+        if worker_loop is not None and current_work is not None:
+            with suppress(RuntimeError):
+                worker_loop.call_soon_threadsafe(current_work.cancel)
 
         # Fail queued synchronous requests immediately.  The worker owns any
         # in-flight request and will fail/finish it before shutting clients down.
@@ -268,7 +285,9 @@ class LspManager:
             self._session_generations.clear()
 
         if self._worker_thread is not None:
-            self._worker_thread.join(timeout=WORKER_SHUTDOWN_TIMEOUT)
+            self._worker_thread.join(
+                timeout=max(0.0, deadline_at - time.monotonic())
+            )
             if self._worker_thread.is_alive():
                 logger.warning("LSP worker thread did not join in time")
             else:
@@ -276,14 +295,19 @@ class LspManager:
 
         # Fallback for legacy/test-created clients when no worker is alive.
         # Runtime clients are created and closed by the worker event loop.
-        if self._worker_thread is None:
-            clients: dict[TransportKey, LspClient]
-            with self._lock:
-                clients = dict(self._transports)
-                self._transports.clear()
-            for client in clients.values():
-                with suppress(Exception):
-                    asyncio.run(client.shutdown())
+        if not had_worker and self._worker_thread is None and self._transports:
+            try:
+                self._last_shutdown_completed = asyncio.run(
+                    self._shutdown_clients_async(deadline_at=deadline_at)
+                )
+            except Exception:
+                self._last_shutdown_completed = False
+                logger.exception("LSP fallback shutdown failed")
+        return (
+            self._worker_thread is None
+            and not self._transports
+            and self._last_shutdown_completed
+        )
 
     # === Diagnostics (fire-and-forget) ===
 
@@ -584,9 +608,9 @@ class LspManager:
             while not self._stop_event.is_set():
                 kind, work = self._pop_next_work()
                 if kind == "tool":
-                    await self._handle_tool_request(work)
+                    work_coro = self._handle_tool_request(work)
                 elif kind == "diagnostics":
-                    await self._handle_diagnostics_request(work)
+                    work_coro = self._handle_diagnostics_request(work)
                 else:
                     # No work — poll briefly, then check again.
                     # Using asyncio.sleep avoids blocking the event loop
@@ -594,8 +618,30 @@ class LspManager:
                     # The main thread's enqueue + condition.notify() reduces
                     # wakeup latency, but the poll interval is the worst case.
                     await asyncio.sleep(_WORKER_POLL_INTERVAL)
+                    continue
+
+                current_work = asyncio.create_task(work_coro)
+                with self._lock:
+                    self._current_work_task = current_work
+                if self._stop_event.is_set():
+                    current_work.cancel()
+                try:
+                    await current_work
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    with self._lock:
+                        if self._current_work_task is current_work:
+                            self._current_work_task = None
         finally:
-            await self._shutdown_clients_async()
+            try:
+                self._last_shutdown_completed = await self._shutdown_clients_async(
+                    deadline_at=self._shutdown_deadline_at
+                    or time.monotonic() + WORKER_SHUTDOWN_TIMEOUT
+                )
+            except Exception:
+                self._last_shutdown_completed = False
+                logger.exception("LSP worker shutdown failed")
             self._worker_loop = None
             logger.info("LSP worker loop exited")
 
@@ -1017,16 +1063,37 @@ class LspManager:
         with suppress(Exception):
             await client.shutdown()
 
-    async def _shutdown_clients_async(self) -> None:
-        """Shut down all transports on the worker event loop."""
+    async def _shutdown_clients_async(self, *, deadline_at: float) -> bool:
+        """Shut down all transports concurrently under one manager deadline."""
         with self._lock:
             clients = dict(self._transports)
             self._transports.clear()
             self._last_sync_time.clear()
 
-        for client in clients.values():
-            with suppress(Exception):
-                await client.shutdown()
+        if not clients:
+            return True
+        remaining = max(0.0, deadline_at - time.monotonic())
+        if remaining <= 0:
+            await asyncio.gather(
+                *(client.abort(deadline_at=deadline_at) for client in clients.values()),
+                return_exceptions=True,
+            )
+            return all(not client.is_alive for client in clients.values())
+        shutdowns = asyncio.gather(
+            *(
+                client.shutdown(deadline_at=deadline_at)
+                for client in clients.values()
+            ),
+            return_exceptions=True,
+        )
+        timed_out = False
+        try:
+            await asyncio.wait_for(shutdowns, timeout=remaining)
+        except asyncio.TimeoutError:
+            timed_out = True
+        return not timed_out and all(
+            not client.is_alive for client in clients.values()
+        )
 
     def _on_transport_error(self, lang: LanguageId, reason: str) -> None:
         """Mark a transport as dead after a worker-thread error."""

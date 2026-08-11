@@ -26,7 +26,12 @@ def _requestable_client(tmp_path: Path) -> LspClient:
     return client
 
 
-def _fake_args(log_path: Path, *, initialize_behavior: str = "normal") -> list[str]:
+def _fake_args(
+    log_path: Path,
+    *,
+    initialize_behavior: str = "normal",
+    shutdown_behavior: str = "normal",
+) -> list[str]:
     return [
         "-u",
         str(FAKE_SERVER),
@@ -36,6 +41,8 @@ def _fake_args(log_path: Path, *, initialize_behavior: str = "normal") -> list[s
         str(log_path),
         "--initialize-behavior",
         initialize_behavior,
+        "--shutdown-behavior",
+        shutdown_behavior,
     ]
 
 
@@ -241,3 +248,32 @@ def test_cancelled_initialize_aborts_unregistered_process(tmp_path: Path) -> Non
 
     assert manager._transports == {}
     _assert_pid_exits(_server_pid(log_path))
+
+
+def test_shutdown_hang_is_force_closed_within_total_deadline(tmp_path: Path) -> None:
+    log_path = tmp_path / "shutdown-hang.jsonl"
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> tuple[int, float]:
+        await client.spawn(
+            sys.executable,
+            _fake_args(log_path, shutdown_behavior="hang"),
+        )
+        await client.initialize()
+        pid = _server_pid(log_path)
+
+        started_at = time.monotonic()
+        await client.shutdown(deadline_at=started_at + 0.5)
+        elapsed = time.monotonic() - started_at
+
+        assert client._process is None
+        assert client._reader_task is None
+        return pid, elapsed
+
+    pid, elapsed = asyncio.run(run())
+
+    assert elapsed < 0.75
+    assert any(
+        event["method"] == "shutdown_hanging" for event in _events(log_path)
+    )
+    _assert_pid_exits(pid)

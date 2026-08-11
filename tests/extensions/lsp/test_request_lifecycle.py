@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from reuleauxcoder.extensions.lsp.client import (
+    LspClientError,
     LspRequestCancelled,
     LspRequestTimedOut,
 )
@@ -57,6 +58,35 @@ class _ControlledServer:
             self.cancelled.set()
             raise
         return method
+
+
+class _SlowShutdownClient:
+    def __init__(self) -> None:
+        self.deadline_at: float | None = None
+        self.closed = False
+
+    @property
+    def is_alive(self) -> bool:
+        return not self.closed
+
+    async def shutdown(self, *, deadline_at: float) -> None:
+        self.deadline_at = deadline_at
+        await asyncio.sleep(0.2)
+        self.closed = True
+
+    async def abort(self, *, deadline_at: float) -> None:
+        self.deadline_at = deadline_at
+        self.closed = True
+
+
+class _BrokenShutdownClient:
+    is_alive = True
+
+    async def shutdown(self, *, deadline_at: float) -> None:
+        raise RuntimeError(f"still alive at {deadline_at}")
+
+    async def abort(self, *, deadline_at: float) -> None:
+        return None
 
 
 def _manager_with_server(tmp_path: Path, server: _ControlledServer) -> LspManager:
@@ -152,8 +182,9 @@ def test_inflight_timeout_cancels_operation_and_worker_serves_next_request(
     manager = _manager_with_server(tmp_path, server)
 
     with pytest.raises(LspRequestTimedOut, match="total"):
-        manager.send_request_sync(source, "slow", {}, timeout=0.08)
+        manager.send_request_sync(source, "slow", {}, timeout=0.5)
 
+    assert server.started.is_set()
     assert server.cancelled.wait(timeout=1.0)
     assert manager.send_request_sync(source, "fast", {}, timeout=1.0) == "fast"
     assert server.calls == ["slow", "fast"]
@@ -261,5 +292,90 @@ def test_hung_initialize_is_cancelled_at_operation_deadline(tmp_path: Path) -> N
     assert manager.send_request_sync(source, "test/healthy", {}, timeout=1.0) is None
     manager.shutdown_all()
 
+    assert manager._worker_thread is None
+    assert manager._transports == {}
+
+
+def test_manager_shuts_multiple_clients_down_concurrently(tmp_path: Path) -> None:
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    clients = [_SlowShutdownClient() for _ in range(3)]
+    for index, client in enumerate(clients):
+        manager._transports[(LanguageId.PYTHON, tmp_path / str(index))] = client  # type: ignore[assignment]
+
+    started_at = time.monotonic()
+    completed = manager.shutdown_all(timeout=1.0)
+    elapsed = time.monotonic() - started_at
+
+    assert completed is True
+    assert elapsed < 0.4
+    assert all(client.closed for client in clients)
+    assert len({client.deadline_at for client in clients}) == 1
+    assert manager.shutdown_all(timeout=1.0) is True
+
+
+def test_manager_reports_incomplete_shutdown_truthfully(tmp_path: Path) -> None:
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    manager._transports[(LanguageId.PYTHON, tmp_path)] = _BrokenShutdownClient()  # type: ignore[assignment]
+
+    assert manager.shutdown_all(timeout=0.5) is False
+
+
+def test_shutdown_during_initialize_cancels_work_and_reaps_process(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    log_path = tmp_path / "shutdown-initialize.jsonl"
+    manager = LspManager(
+        LspConfig(
+            server_overrides={
+                "python": LspServerOverride(
+                    language="python",
+                    cmd=sys.executable,
+                    args=_fake_args(log_path, initialize_behavior="hang"),
+                )
+            }
+        ),
+        workspace_cwd=tmp_path,
+    )
+    manager._availability[LanguageId.PYTHON] = True
+    errors: list[BaseException] = []
+
+    def request() -> None:
+        try:
+            manager.send_request_sync(source, "test/hung", {}, timeout=10.0)
+        except BaseException as error:
+            errors.append(error)
+
+    request_thread = threading.Thread(target=request)
+    request_thread.start()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if any(
+            event["method"] == "initialize_hanging" for event in _events(log_path)
+        ):
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("fake server never entered initialize hang")
+    pid = int(
+        next(
+            event["pid"]
+            for event in _events(log_path)
+            if event["method"] == "server_started"
+        )
+    )
+
+    started_at = time.monotonic()
+    completed = manager.shutdown_all(timeout=1.0)
+    elapsed = time.monotonic() - started_at
+    request_thread.join(timeout=1.0)
+
+    assert completed is True
+    assert elapsed < 1.25
+    assert not request_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], LspClientError)
+    _wait_for_pid_exit(pid)
     assert manager._worker_thread is None
     assert manager._transports == {}

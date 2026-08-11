@@ -19,11 +19,13 @@ class FakeLspServer:
         log_path: Path,
         first_save_gate: Path | None,
         initialize_behavior: str,
+        shutdown_behavior: str,
     ) -> None:
         self.mode = mode
         self.log_path = log_path
         self.first_save_gate = first_save_gate
         self.initialize_behavior = initialize_behavior
+        self.shutdown_behavior = shutdown_behavior
         self.documents: dict[str, dict[str, Any]] = {}
         self.result_versions: dict[str, int] = {}
         self.result_ids: dict[str, str] = {}
@@ -111,7 +113,10 @@ class FakeLspServer:
             elif method == "textDocument/diagnostic":
                 self._respond(message, self._pull(message["params"]))
             elif method == "shutdown":
-                self._respond(message, None)
+                if self.shutdown_behavior == "hang":
+                    self._log(direction="state", method="shutdown_hanging")
+                else:
+                    self._respond(message, None)
             elif method == "exit":
                 return
             elif "id" in message:
@@ -265,12 +270,18 @@ def main() -> None:
         choices=("normal", "error", "hang"),
         default="normal",
     )
+    parser.add_argument(
+        "--shutdown-behavior",
+        choices=("normal", "hang"),
+        default="normal",
+    )
     args = parser.parse_args()
     FakeLspServer(
         mode=args.mode,
         log_path=args.log,
         first_save_gate=args.block_first_save_until,
         initialize_behavior=args.initialize_behavior,
+        shutdown_behavior=args.shutdown_behavior,
     ).run()
 
 
