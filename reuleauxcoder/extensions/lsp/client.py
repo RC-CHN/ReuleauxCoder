@@ -367,8 +367,11 @@ class LspClient:
             await self._write_message(message)
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
-            self._pending.pop(req_id, None)
             raise LspClientError(f"LSP request '{method}' timed out after {timeout}s")
+        finally:
+            pending = self._pending.pop(req_id, None)
+            if pending is future and not future.done():
+                future.cancel()
 
     async def _send_notification(
         self,
