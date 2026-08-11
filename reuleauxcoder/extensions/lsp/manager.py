@@ -18,7 +18,7 @@ import shutil
 import threading
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -283,14 +283,16 @@ class LspManager:
         ``document_committed`` keeps document sync, didSave, and diagnostics in
         one ordered worker item after a successful file mutation.
         """
-        if not self._enabled_for_file(file_path):
+        path = self._canonicalize_path(file_path)
+        if not self._enabled_for_file(path):
             return None
 
-        path = Path(file_path)
         if route is None:
             route = DiagnosticRoute(file_path=path)
-        elif route.file_path != path:
+        elif self._canonicalize_path(route.file_path) != path:
             raise ValueError("diagnostic route file_path must match request path")
+        elif route.file_path != path:
+            route = replace(route, file_path=path)
 
         with self._lock:
             if route.agent_id is not None and route.session_generation is not None:
@@ -581,7 +583,10 @@ class LspManager:
             baseline_generation = server.diagnostics_generation(file_path)
 
             # Sync file content
-            stale = self._check_stale(lang, file_path)
+            # A successful mutation is authoritative even when the filesystem
+            # timestamp has not advanced (coarse or preserved mtimes). Always
+            # send the committed on-disk content before didSave.
+            stale = request.document_committed or self._check_stale(lang, file_path)
             if stale:
                 content = self._read_file_content(file_path)
                 if content is not None:
@@ -848,6 +853,12 @@ class LspManager:
         logger.warning("LSP transport for %s marked dead: %s", lang.name, reason)
 
     # === Internal: Document Sync ===
+
+    def _canonicalize_path(self, file_path: Path) -> Path:
+        path = Path(file_path)
+        if not path.is_absolute():
+            path = self._workspace_cwd / path
+        return path.resolve()
 
     def _check_stale(self, lang: LanguageId, file_path: Path) -> bool:
         """Check if a file's content is stale in the LSP server."""

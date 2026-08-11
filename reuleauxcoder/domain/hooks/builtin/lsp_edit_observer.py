@@ -96,7 +96,12 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
         if context.outcome is None or not context.outcome.success:
             return context
 
-        file_path = _extract_file_path(tool_call.name, tool_call.arguments)
+        resolved_path = context.outcome.metadata.get("resolved_path")
+        file_path = (
+            resolved_path
+            if isinstance(resolved_path, str) and resolved_path
+            else _extract_file_path(tool_call.name, tool_call.arguments)
+        )
         if file_path is None:
             return context
 

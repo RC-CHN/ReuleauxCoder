@@ -203,6 +203,40 @@ class TestLspEditObserverBasic:
         assert request.route.file_path == Path("/tmp/test.py")
         assert request.document_committed is True
 
+    def test_uses_resolved_outcome_path_for_document_commit(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "reuleauxcoder.domain.hooks.builtin.lsp_edit_observer._DIAGNOSTICS_POLL_DEADLINE",
+            0,
+        )
+        mgr = _make_manager()
+        from reuleauxcoder.extensions.lsp.registry import LanguageId
+
+        with mgr._lock:
+            mgr._availability[LanguageId.PYTHON] = True
+
+        hook = LspEditObserverHook(lsp_manager=mgr)
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id="1",
+                name="edit_file",
+                arguments={"file_path": "relative.py"},
+            ),
+            outcome=ToolOutcome(
+                content="edited",
+                metadata={"resolved_path": "/tmp/canonical.py"},
+            ),
+        )
+
+        hook.run(context)
+
+        assert len(mgr._diagnostics_queue) == 1
+        assert mgr._diagnostics_queue[0].route.file_path == Path(
+            "/tmp/canonical.py"
+        )
+
     def test_failed_edit_does_not_notify_or_enqueue(self) -> None:
         mgr = _make_manager()
         hook = LspEditObserverHook(lsp_manager=mgr)
