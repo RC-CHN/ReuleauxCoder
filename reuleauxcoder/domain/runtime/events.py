@@ -385,19 +385,41 @@ RuntimePayload: TypeAlias = (
 )
 
 
+class RuntimeEventDeliveryClass(str, Enum):
+    """Queueing and replay guarantees for one runtime payload."""
+
+    TRANSIENT = "transient"
+    CONTROL = "control"
+
+
 _TRANSIENT_PAYLOAD_TYPES = (
     AssistantContentDelta,
     ReasoningDelta,
     StreamChunk,
     ToolOutputDelta,
-    OperationPhaseChanged,
-    ProcessSessionChanged,
 )
+
+
+def runtime_event_delivery_class(
+    payload: RuntimePayload,
+) -> RuntimeEventDeliveryClass:
+    """Classify payload delivery consistently across interface adapters."""
+    if isinstance(payload, OperationPhaseChanged):
+        if payload.status == "running":
+            return RuntimeEventDeliveryClass.TRANSIENT
+        return RuntimeEventDeliveryClass.CONTROL
+    if isinstance(payload, ProcessSessionChanged):
+        if payload.state == "running":
+            return RuntimeEventDeliveryClass.TRANSIENT
+        return RuntimeEventDeliveryClass.CONTROL
+    if isinstance(payload, _TRANSIENT_PAYLOAD_TYPES):
+        return RuntimeEventDeliveryClass.TRANSIENT
+    return RuntimeEventDeliveryClass.CONTROL
 
 
 def is_transient_runtime_payload(payload: RuntimePayload) -> bool:
     """Return whether a payload is a high-rate, non-replayable stream delta."""
-    return isinstance(payload, _TRANSIENT_PAYLOAD_TYPES)
+    return runtime_event_delivery_class(payload) is RuntimeEventDeliveryClass.TRANSIENT
 
 
 @dataclass(frozen=True)

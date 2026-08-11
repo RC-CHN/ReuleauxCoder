@@ -26,7 +26,10 @@ from reuleauxcoder.interfaces.events import (
     UIEventKind,
 )
 from reuleauxcoder.interfaces.interactions import ConfirmRequest
-from reuleauxcoder.interfaces.tui.event_queue import BoundedUIEventQueue
+from reuleauxcoder.interfaces.tui.event_queue import (
+    BoundedUIEventQueue,
+    EventPutFailureReason,
+)
 
 
 def _runtime_event(
@@ -60,6 +63,31 @@ def _control(index: int) -> UIEvent:
         TurnStarted(f"request {index}"),
         turn_id=f"control-{index}",
         correlation_id=None,
+    )
+
+
+def _process_change(
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    output_truncated: bool = False,
+    output_decode_replaced: bool = False,
+) -> UIEvent:
+    return _runtime_event(
+        ProcessSessionChanged(
+            change="published",
+            process_session_id="process-1",
+            state="running",
+            stream_mode="pipe",
+            backend="local",
+            command="printf output",
+            cwd="/tmp",
+            elapsed_seconds=0.1,
+            stdout=stdout,
+            stderr=stderr,
+            output_truncated=output_truncated,
+            output_decode_replaced=output_decode_replaced,
+        )
     )
 
 
@@ -151,6 +179,62 @@ def test_coalesced_text_has_a_hard_budget() -> None:
     assert queue.stats().transient_dropped == 1
 
 
+def test_same_process_deltas_coalesce_without_losing_output_or_flags() -> None:
+    queue = BoundedUIEventQueue(capacity=4, control_reserve=1)
+
+    queue.put(
+        _process_change(
+            stdout="first ",
+            stderr="warning ",
+            output_decode_replaced=True,
+        )
+    )
+    result = queue.put(
+        _process_change(
+            stdout="second",
+            stderr="error",
+            output_truncated=True,
+        )
+    )
+
+    payload = _payload(queue.drain()[0])
+    assert result.coalesced is True
+    assert payload.stdout == "first second"
+    assert payload.stderr == "warning error"
+    assert payload.output_truncated is True
+    assert payload.output_decode_replaced is True
+
+
+def test_process_delta_coalescing_is_bounded_and_marks_truncation() -> None:
+    queue = BoundedUIEventQueue(
+        capacity=4,
+        control_reserve=1,
+        max_coalesced_chars=5,
+    )
+    queue.put(_process_change(stdout="abc", stderr="123"))
+    queue.put(_process_change(stdout="def", stderr="456"))
+
+    payload = _payload(queue.drain()[0])
+    assert payload.stdout == "bcdef"
+    assert payload.stderr == "23456"
+    assert payload.output_truncated is True
+    assert queue.stats().transient_dropped == 1
+
+
+def test_single_process_delta_budget_marks_truncation() -> None:
+    queue = BoundedUIEventQueue(
+        capacity=4,
+        control_reserve=1,
+        max_coalesced_chars=5,
+    )
+
+    queue.put(_process_change(stdout="abcdef"))
+
+    payload = _payload(queue.drain()[0])
+    assert payload.stdout == "bcdef"
+    assert payload.output_truncated is True
+
+
 @pytest.mark.parametrize(
     "event",
     [
@@ -231,6 +315,7 @@ def test_must_deliver_timeout_is_bounded_and_observable() -> None:
     elapsed = time.monotonic() - started_at
 
     assert result.accepted is False
+    assert result.reason is EventPutFailureReason.CONTROL_TIMEOUT
     assert 0.04 <= elapsed < 0.3
     assert queue.stats().must_deliver_waits == 1
     assert queue.stats().must_deliver_timeouts == 1
@@ -254,12 +339,26 @@ def test_close_wakes_blocked_publishers_and_preserves_pending_events() -> None:
 
     assert not producer.is_alive()
     assert result[0].accepted is False
-    assert queue.put(_control(4)).accepted is False
+    assert result[0].reason is EventPutFailureReason.CLOSED
+    after_close = queue.put(_control(4))
+    assert after_close.accepted is False
+    assert after_close.reason is EventPutFailureReason.CLOSED
     stats = queue.stats()
     assert stats.closed is True
     assert stats.must_deliver_timeouts == 0
     assert stats.closed_dropped == 2
     assert len(queue.drain()) == 2
+
+
+def test_transient_rejection_reports_capacity_reason() -> None:
+    queue = BoundedUIEventQueue(capacity=2, control_reserve=1)
+    queue.put(_control(1))
+    queue.put(_control(2))
+
+    result = queue.put(_runtime_event(AssistantContentDelta("late")))
+
+    assert result.accepted is False
+    assert result.reason is EventPutFailureReason.TRANSIENT_CAPACITY
 
 
 def test_concurrent_transient_producers_remain_bounded_and_controls_arrive() -> None:
@@ -301,9 +400,7 @@ def test_concurrent_transient_producers_remain_bounded_and_controls_arrive() -> 
 
     events = queue.drain()
     completions = [
-        _payload(event)
-        for event in events
-        if isinstance(_payload(event), TurnFinished)
+        _payload(event) for event in events if isinstance(_payload(event), TurnFinished)
     ]
     assert [payload.response for payload in completions] == [
         "final 0",

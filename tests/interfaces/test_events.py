@@ -70,7 +70,7 @@ def test_ui_event_bus_rejects_non_positive_history_limit() -> None:
         raise AssertionError("non-positive history limit must be rejected")
 
 
-def test_operation_phases_are_delivered_but_not_replayed() -> None:
+def test_running_operation_phases_are_delivered_but_not_replayed() -> None:
     bus = UIEventBus()
     seen = []
     bus.subscribe(lambda event: seen.append(event), replay_history=False)
@@ -87,6 +87,22 @@ def test_operation_phases_are_delivered_but_not_replayed() -> None:
     assert isinstance(seen[0].payload, RuntimeEventPayload)
     assert isinstance(seen[0].payload.event.payload, OperationPhaseChanged)
     assert bus.history_snapshot() == ()
+
+
+def test_terminal_operation_phases_are_replayed() -> None:
+    bus = UIEventBus()
+
+    bus.emit_operation_phase(
+        operation_id="request-1",
+        operation="model",
+        phase="done",
+        status="completed",
+    )
+
+    history = bus.history_snapshot()
+    assert len(history) == 1
+    assert isinstance(history[0].payload, RuntimeEventPayload)
+    assert history[0].payload.event.payload.status == "completed"
 
 
 def test_ui_event_bus_emit_ignores_handler_exceptions() -> None:

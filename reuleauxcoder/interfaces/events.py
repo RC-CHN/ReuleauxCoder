@@ -13,8 +13,9 @@ from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.runtime.events import (
     OperationPhaseChanged,
     RuntimeEvent,
+    RuntimeEventDeliveryClass,
     agent_event_to_runtime_event,
-    is_transient_runtime_payload,
+    runtime_event_delivery_class,
 )
 from reuleauxcoder.interfaces.interactions import InteractionRequest
 
@@ -241,7 +242,8 @@ class UIEventBus:
         payload = event.payload
         if not (
             isinstance(payload, RuntimeEventPayload)
-            and is_transient_runtime_payload(payload.event.payload)
+            and runtime_event_delivery_class(payload.event.payload)
+            is RuntimeEventDeliveryClass.TRANSIENT
         ):
             self._history.append(event)
             if len(self._history) > self._max_history:
@@ -354,7 +356,7 @@ class UIEventBus:
         session_id: str | None = None,
         turn_id: str | None = None,
     ) -> None:
-        """Publish one non-replayable operation lifecycle transition."""
+        """Publish one operation lifecycle transition."""
         self.emit_runtime(
             RuntimeEvent(
                 payload=OperationPhaseChanged(

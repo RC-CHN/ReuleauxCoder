@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, replace
+from enum import Enum
 import threading
 import time
 
@@ -12,9 +13,10 @@ from reuleauxcoder.domain.runtime.events import (
     OperationPhaseChanged,
     ProcessSessionChanged,
     ReasoningDelta,
+    RuntimeEventDeliveryClass,
     StreamChunk,
     ToolOutputDelta,
-    is_transient_runtime_payload,
+    runtime_event_delivery_class,
 )
 from reuleauxcoder.interfaces.events import (
     RemoteStreamPayload,
@@ -59,11 +61,7 @@ class EventQueueStats:
 
     @property
     def dropped(self) -> int:
-        return (
-            self.transient_dropped
-            + self.must_deliver_timeouts
-            + self.closed_dropped
-        )
+        return self.transient_dropped + self.must_deliver_timeouts + self.closed_dropped
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +69,15 @@ class EventPutResult:
     accepted: bool
     wake_consumer: bool = False
     coalesced: bool = False
+    reason: EventPutFailureReason | None = None
+
+
+class EventPutFailureReason(str, Enum):
+    """Stable, non-sensitive reason for a rejected event."""
+
+    CLOSED = "closed"
+    CONTROL_TIMEOUT = "control_timeout"
+    TRANSIENT_CAPACITY = "transient_capacity"
 
 
 class BoundedUIEventQueue:
@@ -129,7 +136,7 @@ class BoundedUIEventQueue:
         with self._condition:
             if self._closed:
                 self._closed_dropped += 1
-                return EventPutResult(False)
+                return EventPutResult(False, reason=EventPutFailureReason.CLOSED)
             if transient:
                 return self._put_transient_locked(event)
 
@@ -147,11 +154,17 @@ class BoundedUIEventQueue:
                 remaining = deadline_at - time.monotonic()
                 if remaining <= 0:
                     self._must_deliver_timeouts += 1
-                    return EventPutResult(False)
+                    return EventPutResult(
+                        False,
+                        reason=EventPutFailureReason.CONTROL_TIMEOUT,
+                    )
                 self._condition.wait(remaining)
                 if self._closed:
                     self._closed_dropped += 1
-                    return EventPutResult(False)
+                    return EventPutResult(
+                        False,
+                        reason=EventPutFailureReason.CLOSED,
+                    )
             wake_consumer = self._append_locked(event, transient=False)
             return EventPutResult(True, wake_consumer=wake_consumer)
 
@@ -222,7 +235,10 @@ class BoundedUIEventQueue:
         if at_transient_limit or at_total_limit:
             if not self._evict_oldest_transient_locked():
                 self._record_transient_drop_locked()
-                return EventPutResult(False)
+                return EventPutResult(
+                    False,
+                    reason=EventPutFailureReason.TRANSIENT_CAPACITY,
+                )
         wake_consumer = self._append_locked(event, transient=True)
         return EventPutResult(True, wake_consumer=wake_consumer)
 
@@ -263,11 +279,7 @@ def _is_transient_event(event: UIEvent) -> bool:
     payload = _runtime_payload(event)
     if payload is None:
         return False
-    if isinstance(payload, OperationPhaseChanged):
-        return payload.status == "running"
-    if isinstance(payload, ProcessSessionChanged):
-        return payload.state == "running"
-    return is_transient_runtime_payload(payload)
+    return runtime_event_delivery_class(payload) is RuntimeEventDeliveryClass.TRANSIENT
 
 
 def _transient_key(event: UIEvent) -> tuple | None:
@@ -353,6 +365,28 @@ def _merge_transient(
         )
         runtime = replace(current_runtime, payload=payload)
         return replace(current, payload=RuntimeEventPayload(runtime)), truncated
+    if isinstance(previous_payload, ProcessSessionChanged) and isinstance(
+        current_payload, ProcessSessionChanged
+    ):
+        stdout = previous_payload.stdout + current_payload.stdout
+        stderr = previous_payload.stderr + current_payload.stderr
+        truncated = len(stdout) > max_chars or len(stderr) > max_chars
+        payload = replace(
+            current_payload,
+            stdout=stdout[-max_chars:],
+            stderr=stderr[-max_chars:],
+            output_truncated=(
+                previous_payload.output_truncated
+                or current_payload.output_truncated
+                or truncated
+            ),
+            output_decode_replaced=(
+                previous_payload.output_decode_replaced
+                or current_payload.output_decode_replaced
+            ),
+        )
+        runtime = replace(current_runtime, payload=payload)
+        return replace(current, payload=RuntimeEventPayload(runtime)), truncated
     return current, False
 
 
@@ -361,7 +395,9 @@ def _bound_transient(event: UIEvent, *, max_chars: int) -> tuple[UIEvent, bool]:
     if isinstance(payload, RemoteStreamPayload):
         if len(payload.chunk) <= max_chars:
             return event, False
-        return replace(event, payload=replace(payload, chunk=payload.chunk[-max_chars:])), True
+        return replace(
+            event, payload=replace(payload, chunk=payload.chunk[-max_chars:])
+        ), True
     if not isinstance(payload, RuntimeEventPayload):
         return event, False
     runtime = payload.event
@@ -387,7 +423,12 @@ def _bound_transient(event: UIEvent, *, max_chars: int) -> tuple[UIEvent, bool]:
             or len(runtime_payload.stderr) > max_chars
         )
         if truncated:
-            bounded = replace(runtime_payload, stdout=stdout, stderr=stderr)
+            bounded = replace(
+                runtime_payload,
+                stdout=stdout,
+                stderr=stderr,
+                output_truncated=True,
+            )
     if not truncated:
         return event, False
     return (
@@ -396,4 +437,9 @@ def _bound_transient(event: UIEvent, *, max_chars: int) -> tuple[UIEvent, bool]:
     )
 
 
-__all__ = ["BoundedUIEventQueue", "EventPutResult", "EventQueueStats"]
+__all__ = [
+    "BoundedUIEventQueue",
+    "EventPutFailureReason",
+    "EventPutResult",
+    "EventQueueStats",
+]

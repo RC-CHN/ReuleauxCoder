@@ -26,6 +26,7 @@ from reuleauxcoder.domain.runtime.events import (
     ReasoningDelta,
     RuntimeEventKind,
     RuntimeEvent,
+    RuntimeEventDeliveryClass,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutputDelta,
@@ -33,6 +34,8 @@ from reuleauxcoder.domain.runtime.events import (
     TurnStarted,
     UserSteeringApplied,
     agent_event_to_runtime_event,
+    is_transient_runtime_payload,
+    runtime_event_delivery_class,
     runtime_event_to_agent_event,
 )
 from reuleauxcoder.domain.runtime.serialization import (
@@ -328,3 +331,70 @@ def test_operation_phase_runtime_event_round_trips() -> None:
     )
 
     assert runtime_event_from_dict(runtime_event_to_dict(event)) == event
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            AssistantContentDelta("partial"),
+            RuntimeEventDeliveryClass.TRANSIENT,
+        ),
+        (
+            OperationPhaseChanged("op-1", "model", "connect", status="running"),
+            RuntimeEventDeliveryClass.TRANSIENT,
+        ),
+        (
+            OperationPhaseChanged("op-1", "model", "done", status="completed"),
+            RuntimeEventDeliveryClass.CONTROL,
+        ),
+        (
+            OperationPhaseChanged("op-1", "model", "request", status="failed"),
+            RuntimeEventDeliveryClass.CONTROL,
+        ),
+        (
+            ProcessSessionChanged(
+                change="published",
+                process_session_id="proc-1",
+                state="running",
+                stream_mode="pipe",
+                backend="local",
+                command="sleep 1",
+                cwd="/tmp",
+                elapsed_seconds=0.1,
+            ),
+            RuntimeEventDeliveryClass.TRANSIENT,
+        ),
+        (
+            ProcessSessionChanged(
+                change="completed",
+                process_session_id="proc-1",
+                state="exited",
+                stream_mode="pipe",
+                backend="local",
+                command="true",
+                cwd="/tmp",
+                elapsed_seconds=0.1,
+            ),
+            RuntimeEventDeliveryClass.CONTROL,
+        ),
+        (
+            ProcessSessionChanged(
+                change="recovered",
+                process_session_id="proc-1",
+                state="unknown",
+                stream_mode="pipe",
+                backend="local",
+                command="unknown",
+                cwd="/tmp",
+                elapsed_seconds=0.1,
+            ),
+            RuntimeEventDeliveryClass.CONTROL,
+        ),
+    ],
+)
+def test_runtime_event_delivery_class_is_terminal_safe(payload, expected) -> None:
+    assert runtime_event_delivery_class(payload) is expected
+    assert is_transient_runtime_payload(payload) is (
+        expected is RuntimeEventDeliveryClass.TRANSIENT
+    )
