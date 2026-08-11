@@ -56,9 +56,13 @@ def _benchmark_case(
             content.get_line(row)
     scroll_frame_ms = (time.perf_counter() - started) * 1_000 / max(1, iterations)
 
+    resize_width = max(40, width - 28)
     started = time.perf_counter()
-    adapter.transcript_layout(max(40, width - 28))
-    resize_rebuild_ms = (time.perf_counter() - started) * 1_000
+    adapter.transcript_layout_rebased(resize_width, cursor[0])
+    resize_schedule_ms = (time.perf_counter() - started) * 1_000
+    assert adapter.wait_for_transcript_prewarm(10.0)
+    resized_layout = adapter.transcript_layout(resize_width)
+    resize_ready_ms = (time.perf_counter() - started) * 1_000
 
     assistant = next(
         cell
@@ -81,7 +85,10 @@ def _benchmark_case(
         "visual_lines": layout.line_count,
         "initial_layout_ms": round(initial_layout_ms, 3),
         "scroll_frame_ms": round(scroll_frame_ms, 3),
-        "resize_rebuild_ms": round(resize_rebuild_ms, 3),
+        "resize_schedule_ms": round(resize_schedule_ms, 3),
+        "resize_ready_ms": round(resize_ready_ms, 3),
+        "resize_rebuild_ms": round(resize_ready_ms, 3),
+        "resize_visual_lines": resized_layout.line_count,
         "chunk_to_paint_ms": round(chunk_to_paint_ms, 3),
     }
 

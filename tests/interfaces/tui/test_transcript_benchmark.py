@@ -10,5 +10,8 @@ def test_transcript_benchmark_reports_required_metrics() -> None:
     assert result["visual_lines"] >= 100
     assert result["initial_layout_ms"] >= 0
     assert result["scroll_frame_ms"] >= 0
+    assert result["resize_schedule_ms"] >= 0
+    assert result["resize_ready_ms"] >= result["resize_schedule_ms"]
     assert result["resize_rebuild_ms"] >= 0
+    assert result["resize_visual_lines"] >= 100
     assert result["chunk_to_paint_ms"] >= 0

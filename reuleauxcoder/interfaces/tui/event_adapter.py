@@ -47,6 +47,13 @@ from reuleauxcoder.interfaces.tui.transcript import (
     cell_fragments as _cell_fragments,
     decorate_transcript_fragments as _decorate_transcript_fragments,
 )
+from reuleauxcoder.interfaces.tui.transcript_cache import (
+    TranscriptCacheStats,
+    TranscriptLayoutPrewarmer,
+    TranscriptPrewarmObservation,
+    TranscriptPrewarmResult,
+    visual_cell_key,
+)
 from reuleauxcoder.interfaces.tui.view_text import view_text as _view_text
 from reuleauxcoder.interfaces.tui.virtual_transcript import (
     VirtualTranscriptLayout,
@@ -164,6 +171,7 @@ class MiniTUIEventAdapter:
             DEFAULT_MUST_DELIVER_TIMEOUT_SECONDS
         ),
         event_queue_max_coalesced_chars: int = DEFAULT_MAX_COALESCED_CHARS,
+        transcript_prewarm_batch_size: int = 32,
     ) -> None:
         self.root_agent_id = root_agent_id
         if session_generation is not None and (
@@ -223,6 +231,17 @@ class MiniTUIEventAdapter:
         self._placement_by_id: dict[str, TranscriptPlacement] = {}
         self._flattened_layout: VirtualTranscriptLayout | None = None
         self._transcript_rendered = FormattedText()
+        self._resize_target: (
+            tuple[int, tuple[int, int, int, int]] | None
+        ) = None
+        self._transcript_prewarmer = TranscriptLayoutPrewarmer(
+            on_complete=self._publish_transcript_prewarm,
+            on_observation=self._record_transcript_cache_sample,
+            on_failure=lambda error: self.report_projection_failure(
+                "layout_prewarm", error
+            ),
+            batch_size=transcript_prewarm_batch_size,
+        )
 
     def bind_invalidator(self, callback) -> None:
         self._invalidate = callback
@@ -328,7 +347,150 @@ class MiniTUIEventAdapter:
 
     def close(self) -> None:
         """Stop accepting UI events and wake blocked producer threads."""
+        self._transcript_prewarmer.cancel()
         self._pending_events.close()
+
+    def transcript_cache_stats(self) -> TranscriptCacheStats:
+        """Return content-free resize-cache counters for diagnostics."""
+        return self._transcript_prewarmer.snapshot()
+
+    def wait_for_transcript_prewarm(self, timeout: float = 2.0) -> bool:
+        """Wait for tests/benchmarks; the live UI never blocks on this path."""
+        return self._transcript_prewarmer.wait_idle(timeout)
+
+    def _record_transcript_cache_sample(
+        self, observation: TranscriptPrewarmObservation
+    ) -> None:
+        if observation.status == "error":
+            with self._lock:
+                if (
+                    self._resize_target is not None
+                    and self._resize_target[0] == observation.generation
+                ):
+                    self._resize_target = None
+        monitor = self._performance_monitor
+        if monitor is None:
+            return
+        try:
+            attributes: dict[str, int | str] = {
+                "generation": observation.generation,
+                "width": observation.width,
+                "cell_count": observation.cell_count,
+                "batches": observation.batches,
+                "cache_hits": observation.cache_hits,
+                "cache_misses": observation.cache_misses,
+                "render_rows": observation.render_rows,
+            }
+            if observation.error_type is not None:
+                attributes["error_type"] = observation.error_type
+            monitor.record(
+                "tui_cache",
+                "resize_prewarm",
+                observation.elapsed_ms,
+                status=observation.status,
+                attributes=attributes,
+            )
+        except BaseException as error:
+            self._retain_incident(
+                _UIIncident(
+                    kind="monitor",
+                    detail="transcript_cache",
+                    error_type=_safe_error_type(error),
+                )
+            )
+            self._request_invalidate()
+
+    def _cancel_transcript_prewarm_locked(self) -> None:
+        if self._resize_target is None:
+            return
+        self._resize_target = None
+        self._transcript_prewarmer.cancel()
+
+    def _schedule_transcript_prewarm_locked(
+        self,
+        source_key: tuple[int, int, int, int],
+    ) -> bool:
+        if (
+            self._transcript_layout_source_key is None
+            or not self._transcript_layout.cells
+        ):
+            return False
+        if self._resize_target is not None and self._resize_target[1] == source_key:
+            return True
+        model = self.transcript.state.transcript
+        placements = tuple(compose_transcript(model.cells))
+        render_key = tuple(
+            visual_cell_key(
+                placement,
+                width=source_key[2],
+                theme_revision=source_key[3],
+            )
+            for placement in placements
+        )
+        cached_lines = {
+            key: lines
+            for key in render_key
+            if (lines := self._cell_visual_cache.get(key)) is not None
+        }
+        generation = self._transcript_prewarmer.request(
+            source_key=source_key,
+            render_key=render_key,
+            placements=placements,
+            cached_lines=cached_lines,
+        )
+        self._resize_target = (generation, source_key)
+        if not self._transcript_prewarmer.snapshot().in_flight:
+            self._resize_target = None
+            return False
+        return True
+
+    def _publish_transcript_prewarm(
+        self, result: TranscriptPrewarmResult
+    ) -> bool:
+        with self._lock:
+            model = self.transcript.state.transcript
+            current_source_key = (
+                id(model),
+                model.revision,
+                self._viewport_width,
+                self._theme_revision,
+            )
+            if self._resize_target != (result.generation, result.source_key):
+                return False
+            if result.source_key != current_source_key:
+                return False
+            placements = compose_transcript(model.cells)
+            current_render_key = tuple(
+                visual_cell_key(
+                    placement,
+                    width=self._viewport_width,
+                    theme_revision=self._theme_revision,
+                )
+                for placement in placements
+            )
+            if current_render_key != result.render_key:
+                return False
+            self._cell_visual_cache.update(result.cache_entries)
+            live_keys = set(result.render_key)
+            if len(self._cell_visual_cache) > max(50, len(live_keys) * 2):
+                self._cell_visual_cache = {
+                    key: value
+                    for key, value in self._cell_visual_cache.items()
+                    if key in live_keys
+                }
+            self._placement_by_id = {
+                placement.cell.id: placement for placement in placements
+            }
+            self._transcript_layout_key = result.render_key
+            self._transcript_layout_source_key = result.source_key
+            self._transcript_layout = VirtualTranscriptLayout(result.visual_cells)
+            self._layout_model_revision = model.revision
+            self._layout_structure_dirty = False
+            self._layout_dirty_ids.clear()
+            self._flattened_layout = None
+            self._resize_target = None
+        self._request_invalidate()
+        return True
 
     def _record_queue_sample(
         self,
@@ -652,11 +814,15 @@ class MiniTUIEventAdapter:
                 continue
 
     def _record_presentation_changes(self, changes) -> None:
+        changed = False
         for change in changes:
+            changed = True
             if change.kind is PresentationChangeKind.UPDATE and change.cell is not None:
                 self._layout_dirty_ids.add(change.cell.id)
             else:
                 self._layout_structure_dirty = True
+        if changed:
+            self._cancel_transcript_prewarm_locked()
 
     def _is_root_transcript_event(self, event: RuntimeEvent) -> bool:
         """Keep child internals observable without publishing them as chat."""
@@ -678,6 +844,7 @@ class MiniTUIEventAdapter:
                 UserCell(id=cell_id, text=text, group_id=cell_id)
             )
             self._layout_structure_dirty = True
+            self._cancel_transcript_prewarm_locked()
         self._request_invalidate()
 
     def _advance_generation(self, generation: int) -> None:
@@ -751,6 +918,7 @@ class MiniTUIEventAdapter:
     def clear_transcript(self) -> None:
         """Clear only the visible canvas while preserving persisted session history."""
         with self._lock:
+            self._cancel_transcript_prewarm_locked()
             policy = self.transcript.policy
             self.transcript = PresentationReducer(
                 state=RuntimeViewState(
@@ -771,6 +939,7 @@ class MiniTUIEventAdapter:
             self._placement_by_id.clear()
             self._flattened_layout = None
             self._transcript_rendered = FormattedText()
+            self._resize_target = None
         self._request_invalidate()
 
     def append_restored_conversation(self, entries) -> None:
@@ -801,6 +970,7 @@ class MiniTUIEventAdapter:
                     )
             self._notice_seq += 1
             self._layout_structure_dirty = True
+            self._cancel_transcript_prewarm_locked()
         self._request_invalidate()
 
     def panel_lines(self, width: int) -> tuple[str, ...]:
@@ -837,6 +1007,11 @@ class MiniTUIEventAdapter:
                 self._theme_revision,
             )
             if source_key == self._transcript_layout_source_key:
+                return self._transcript_layout
+            if (
+                self._resize_target is not None
+                and self._resize_target[1] == source_key
+            ):
                 return self._transcript_layout
             cells = model.cells
             can_update_incrementally = (
@@ -875,18 +1050,17 @@ class MiniTUIEventAdapter:
                 self._layout_dirty_ids.clear()
                 self._flattened_layout = None
                 return self._transcript_layout
+        placements = compose_transcript(cells)
         render_key = tuple(
-            (
-                cell.id,
-                cell.revision,
-                self._viewport_width,
-                self._theme_revision,
+            visual_cell_key(
+                placement,
+                width=self._viewport_width,
+                theme_revision=self._theme_revision,
             )
-            for cell in cells
+            for placement in placements
         )
         if render_key == self._transcript_layout_key:
             return self._transcript_layout
-        placements = compose_transcript(cells)
         self._placement_by_id = {
             placement.cell.id: placement for placement in placements
         }
@@ -944,9 +1118,25 @@ class MiniTUIEventAdapter:
         width: int,
         scroll_line: int,
     ) -> tuple[VirtualTranscriptLayout, int]:
-        """Render at width while preserving the prior top cell/local-line anchor."""
+        """Keep the old layout usable while a changed width prewarms."""
         previous = self._transcript_layout
         anchor = previous.anchor_at(scroll_line)
+        self._drain_pending_events()
+        self.set_viewport_width(width)
+        with self._lock:
+            model = self.transcript.state.transcript
+            source_key = (
+                id(model),
+                model.revision,
+                self._viewport_width,
+                self._theme_revision,
+            )
+            width_changed = (
+                self._transcript_layout_source_key is not None
+                and self._transcript_layout_source_key[2] != self._viewport_width
+            )
+            if width_changed and self._schedule_transcript_prewarm_locked(source_key):
+                return previous, scroll_line
         current = self.transcript_layout(width)
         if current is previous:
             return current, scroll_line

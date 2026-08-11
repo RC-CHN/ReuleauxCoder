@@ -89,6 +89,37 @@ def test_status_perf_exposes_ui_queue_pressure() -> None:
     assert "stale_incident_dropped=6" in detail
 
 
+def test_status_perf_exposes_transcript_cache_metrics() -> None:
+    monitor = RuntimePerformanceMonitor()
+    monitor.record(
+        "tui_cache",
+        "resize_prewarm",
+        3.5,
+        attributes={
+            "generation": 4,
+            "width": 88,
+            "cell_count": 64,
+            "batches": 2,
+            "cache_hits": 40,
+            "cache_misses": 24,
+            "render_rows": 120,
+        },
+    )
+    effect = CommandEffect()
+    ctx = SimpleNamespace(
+        agent=SimpleNamespace(performance_monitor=monitor),
+        effect=effect,
+    )
+
+    detail = _handle_status_perf(None, ctx).views[-1].view_model.recent[0].detail
+
+    assert "generation=4" in detail
+    assert "width=88" in detail
+    assert "cache_hits=40" in detail
+    assert "cache_misses=24" in detail
+    assert "render_rows=120" in detail
+
+
 def test_status_perf_exposes_secret_free_lsp_phase_details() -> None:
     monitor = RuntimePerformanceMonitor()
     monitor.record(
