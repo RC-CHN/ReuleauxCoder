@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import sys
@@ -19,7 +20,7 @@ from reuleauxcoder.extensions.lsp.client import (
     LspRequestTimedOut,
 )
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
-from reuleauxcoder.extensions.lsp.manager import LspManager
+from reuleauxcoder.extensions.lsp.manager import LspManager, ToolRequest
 from reuleauxcoder.extensions.lsp.registry import LanguageId
 
 FAKE_SERVER = Path(__file__).with_name("fake_stdio_server.py")
@@ -108,10 +109,21 @@ class _UnusableLiveClient:
         self.is_alive = False
 
 
+class _CancelDuringSetFuture(concurrent.futures.Future[Any]):
+    def set_exception(self, exception: BaseException) -> None:
+        self.cancel()
+        super().set_exception(exception)
+
+
 def _manager_with_server(tmp_path: Path, server: _ControlledServer) -> LspManager:
     manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
 
-    async def get_server(_language: LanguageId, _path: Path):
+    async def get_server(
+        _language: LanguageId,
+        _path: Path,
+        *,
+        transport_key=None,
+    ):
         return server
 
     manager._get_or_create_server = get_server  # type: ignore[method-assign]
@@ -170,9 +182,7 @@ def test_queue_wait_consumes_deadline_without_executing_expired_request(
     first_result: list[str] = []
 
     def run_first() -> None:
-        first_result.append(
-            manager.send_request_sync(source, "slow", {}, timeout=2.0)
-        )
+        first_result.append(manager.send_request_sync(source, "slow", {}, timeout=2.0))
 
     thread = threading.Thread(target=run_first)
     thread.start()
@@ -261,13 +271,31 @@ def test_pre_cancelled_request_does_not_start_worker(tmp_path: Path) -> None:
     assert manager._worker_thread is None
 
 
+def test_shutdown_permanently_rejects_new_work(tmp_path: Path) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+
+    assert manager.shutdown_all(timeout=0.5) is True
+
+    with pytest.raises(LspClientError, match="shutting down"):
+        manager.send_request_sync(source, "after-shutdown", {}, timeout=0.5)
+    assert manager.enqueue_diagnostics(source) is None
+    assert manager._worker_thread is None
+
+
 def test_query_receives_only_remaining_end_to_end_budget(tmp_path: Path) -> None:
     source = tmp_path / "main.py"
     source.write_text("value = 1\n", encoding="utf-8")
     server = _ControlledServer()
     manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
 
-    async def delayed_start(_language: LanguageId, _path: Path):
+    async def delayed_start(
+        _language: LanguageId,
+        _path: Path,
+        *,
+        transport_key=None,
+    ):
         await asyncio.sleep(0.08)
         return server
 
@@ -332,6 +360,115 @@ def test_manager_shuts_multiple_clients_down_concurrently(tmp_path: Path) -> Non
     assert manager.shutdown_all(timeout=1.0) is True
 
 
+def test_concurrent_shutdown_wait_respects_each_caller_deadline(
+    tmp_path: Path,
+) -> None:
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    client = _SlowShutdownClient()
+    manager._transports[(LanguageId.PYTHON, tmp_path)] = client  # type: ignore[assignment]
+    first_result: list[bool] = []
+
+    first = threading.Thread(
+        target=lambda: first_result.append(manager.shutdown_all(timeout=1.0))
+    )
+    first.start()
+    deadline = time.monotonic() + 0.5
+    while client.deadline_at is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert client.deadline_at is not None
+
+    started_at = time.monotonic()
+    second_result = manager.shutdown_all(timeout=0.05)
+    elapsed = time.monotonic() - started_at
+    first.join(timeout=1.0)
+
+    assert second_result is False
+    assert elapsed < 0.15
+    assert not first.is_alive()
+    assert first_result == [True]
+
+
+def test_shutdown_tolerates_future_cancel_during_settlement(tmp_path: Path) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    future = _CancelDuringSetFuture()
+    manager._tool_queue.append(
+        ToolRequest(
+            file_path=source,
+            language_id=LanguageId.PYTHON,
+            method="test/race",
+            params={},
+            future=future,
+            timeout_seconds=1.0,
+            deadline_at=time.monotonic() + 1.0,
+        )
+    )
+
+    assert manager.shutdown_all(timeout=0.5) is True
+    assert future.cancelled()
+
+
+def test_shutdown_does_not_interrupt_cancelled_operation_cleanup(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    cleanup_started = threading.Event()
+    cleanup_interrupted = threading.Event()
+    cleanup_release = threading.Event()
+
+    async def start_then_clean(
+        _language: LanguageId,
+        _path: Path,
+        *,
+        transport_key=None,
+    ) -> None:
+        del transport_key
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            while not cleanup_release.is_set():
+                try:
+                    await asyncio.sleep(0.005)
+                except asyncio.CancelledError:
+                    cleanup_interrupted.set()
+            raise
+
+    manager._get_or_create_server = start_then_clean  # type: ignore[method-assign]
+
+    with pytest.raises(LspRequestTimedOut, match="total"):
+        manager.send_request_sync(source, "test/timeout", {}, timeout=0.1)
+    assert cleanup_started.wait(timeout=1.0)
+
+    shutdown_results: list[bool] = []
+    shutdown = threading.Thread(
+        target=lambda: shutdown_results.append(manager.shutdown_all(timeout=1.0))
+    )
+    shutdown.start()
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        with manager._lock:
+            cancelling = any(
+                active.task.cancelling() for active in manager._active_work.values()
+            )
+        if cancelling:
+            break
+        time.sleep(0.005)
+    else:
+        cleanup_release.set()
+        raise AssertionError("shutdown never cancelled active tool handler")
+
+    cleanup_release.set()
+    shutdown.join(timeout=1.0)
+
+    assert not shutdown.is_alive()
+    assert shutdown_results == [True]
+    assert not cleanup_interrupted.is_set()
+
+
 def test_manager_reports_incomplete_shutdown_truthfully(tmp_path: Path) -> None:
     manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
     manager._transports[(LanguageId.PYTHON, tmp_path)] = _BrokenShutdownClient()  # type: ignore[assignment]
@@ -379,9 +516,7 @@ def test_shutdown_during_initialize_cancels_work_and_reaps_process(
     request_thread.start()
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
-        if any(
-            event["method"] == "initialize_hanging" for event in _events(log_path)
-        ):
+        if any(event["method"] == "initialize_hanging" for event in _events(log_path)):
             break
         time.sleep(0.01)
     else:

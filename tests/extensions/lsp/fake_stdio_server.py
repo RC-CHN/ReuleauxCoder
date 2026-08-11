@@ -18,12 +18,16 @@ class FakeLspServer:
         mode: str,
         log_path: Path,
         first_save_gate: Path | None,
+        block_method: str | None,
+        block_until: Path | None,
         initialize_behavior: str,
         shutdown_behavior: str,
     ) -> None:
         self.mode = mode
         self.log_path = log_path
         self.first_save_gate = first_save_gate
+        self.block_method = block_method
+        self.block_until = block_until
         self.initialize_behavior = initialize_behavior
         self.shutdown_behavior = shutdown_behavior
         self.documents: dict[str, dict[str, Any]] = {}
@@ -43,6 +47,21 @@ class FakeLspServer:
                 request_id=message.get("id"),
                 **trace,
             )
+            if method == self.block_method and self.block_until is not None:
+                self._log(
+                    direction="state",
+                    method="request_blocked",
+                    blocked_method=method,
+                    request_id=message.get("id"),
+                )
+                while not self.block_until.exists():
+                    time.sleep(0.01)
+                self._log(
+                    direction="state",
+                    method="request_released",
+                    blocked_method=method,
+                    request_id=message.get("id"),
+                )
             if method == "initialize":
                 if self.initialize_behavior == "hang":
                     self._log(direction="state", method="initialize_hanging")
@@ -265,6 +284,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=("save-only", "push", "pull"), required=True)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--block-first-save-until", type=Path)
+    parser.add_argument("--block-method")
+    parser.add_argument("--block-until", type=Path)
     parser.add_argument(
         "--initialize-behavior",
         choices=("normal", "error", "hang"),
@@ -276,10 +297,14 @@ def main() -> None:
         default="normal",
     )
     args = parser.parse_args()
+    if (args.block_method is None) != (args.block_until is None):
+        parser.error("--block-method and --block-until must be used together")
     FakeLspServer(
         mode=args.mode,
         log_path=args.log,
         first_save_gate=args.block_first_save_until,
+        block_method=args.block_method,
+        block_until=args.block_until,
         initialize_behavior=args.initialize_behavior,
         shutdown_behavior=args.shutdown_behavior,
     ).run()

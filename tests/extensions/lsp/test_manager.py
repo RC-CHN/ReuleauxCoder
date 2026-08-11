@@ -13,6 +13,7 @@ This module tests:
 
 from __future__ import annotations
 
+import concurrent.futures
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -33,6 +34,7 @@ from reuleauxcoder.extensions.lsp.manager import (
     DiagnosticRequest,
     LspManager,
     LspTransportState,
+    ToolRequest,
 )
 from reuleauxcoder.extensions.lsp.diagnostics import (
     Diagnostic,
@@ -66,6 +68,7 @@ def manager() -> LspManager:
     # worker deterministic; the dedicated enqueue test below exercises the
     # real thread lifecycle.
     mgr.start_worker = MagicMock()  # type: ignore[method-assign]
+    mgr._accepting_work = True
     # Mark all languages unavailable to avoid accidental spawn attempts
     for lang in LanguageId:
         with mgr._lock:
@@ -154,9 +157,7 @@ class TestReSpawnLimit:
         manager._transports[key] = _make_mock_client(alive=False)
 
         with patch.object(manager, "_spawn_async") as spawn:
-            result = asyncio.run(
-                manager._get_or_create_server(LanguageId.PYTHON, path)
-            )
+            result = asyncio.run(manager._get_or_create_server(LanguageId.PYTHON, path))
 
         assert result is None
         spawn.assert_not_called()
@@ -692,12 +693,8 @@ class TestDiagnosticBatchBounds:
         self, manager: LspManager
     ) -> None:
         manager._diagnostic_clock = lambda: 1000.0
-        old = self._batch(
-            "old", path="/tmp/main.py", sequence=1, created_at=900.0
-        )
-        new = self._batch(
-            "new", path="/tmp/main.py", sequence=2, created_at=901.0
-        )
+        old = self._batch("old", path="/tmp/main.py", sequence=1, created_at=900.0)
+        new = self._batch("new", path="/tmp/main.py", sequence=2, created_at=901.0)
 
         with manager._lock:
             manager._store_diagnostic_batch_locked(old)
@@ -711,9 +708,7 @@ class TestDiagnosticBatchBounds:
     ) -> None:
         manager._diagnostic_clock = lambda: 1000.0
         manager._availability[LanguageId.PYTHON] = True
-        old = self._batch(
-            "old", path="/tmp/main.py", sequence=1, created_at=900.0
-        )
+        old = self._batch("old", path="/tmp/main.py", sequence=1, created_at=900.0)
         manager._diagnostic_batches[old.batch_id] = old
 
         queued = manager.enqueue_diagnostics(
@@ -758,19 +753,88 @@ class TestDiagnosticBatchBounds:
 
 class TestWorkerQueueOrdering:
     def test_pop_removes_exactly_one_queue_item(self, manager: LspManager) -> None:
-        tool = object()
+        tool = ToolRequest(
+            file_path=Path("/tmp/tool.py"),
+            language_id=LanguageId.PYTHON,
+            method="test/tool",
+            params={},
+            future=concurrent.futures.Future(),
+            timeout_seconds=1.0,
+            deadline_at=time.monotonic() + 1.0,
+            enqueue_sequence=1,
+        )
         manager._tool_queue.append(tool)
         request = DiagnosticRequest(
             batch_id="batch-a",
             route=DiagnosticRoute(file_path=Path("/tmp/a.py")),
             request_sequence=1,
+            enqueue_sequence=2,
         )
         manager._diagnostics_queue.append(request)
 
-        assert manager._pop_next_work() == ("tool", tool)
+        assert manager._pop_next_work()[:2] == ("tool", tool)
         assert len(manager._diagnostics_queue) == 1
         assert manager._pop_next_work()[0] == "diagnostics"
-        assert manager._pop_next_work() == (None, None)
+        assert manager._pop_next_work() == (None, None, None)
+
+    def test_cross_queue_dispatch_is_global_fifo(self, manager: LspManager) -> None:
+        for index, sequence in enumerate((1, 3)):
+            manager._tool_queue.append(
+                ToolRequest(
+                    file_path=Path(f"/tmp/tool-{index}.py"),
+                    language_id=LanguageId.PYTHON,
+                    method=f"test/tool-{index}",
+                    params={},
+                    future=concurrent.futures.Future(),
+                    timeout_seconds=1.0,
+                    deadline_at=time.monotonic() + 1.0,
+                    transport_key=(
+                        LanguageId.PYTHON,
+                        Path(f"/tmp/root-{index}"),
+                    ),
+                    enqueue_sequence=sequence,
+                )
+            )
+        diagnostics = DiagnosticRequest(
+            batch_id="batch-fair",
+            route=DiagnosticRoute(file_path=Path("/tmp/fair.py")),
+            request_sequence=1,
+            transport_key=(LanguageId.PYTHON, Path("/tmp/diagnostics")),
+            enqueue_sequence=2,
+        )
+        manager._diagnostics_queue.append(diagnostics)
+
+        assert manager._pop_next_work()[0] == "tool"
+        assert manager._pop_next_work()[:2] == ("diagnostics", diagnostics)
+        assert manager._pop_next_work()[0] == "tool"
+
+    def test_same_transport_preserves_cross_queue_order(
+        self, manager: LspManager
+    ) -> None:
+        transport_key = (LanguageId.PYTHON, Path("/tmp/shared"))
+        diagnostics = DiagnosticRequest(
+            batch_id="batch-first",
+            route=DiagnosticRoute(file_path=Path("/tmp/shared/main.py")),
+            request_sequence=1,
+            transport_key=transport_key,
+            enqueue_sequence=1,
+        )
+        tool = ToolRequest(
+            file_path=Path("/tmp/shared/main.py"),
+            language_id=LanguageId.PYTHON,
+            method="test/second",
+            params={},
+            future=concurrent.futures.Future(),
+            timeout_seconds=1.0,
+            deadline_at=time.monotonic() + 1.0,
+            transport_key=transport_key,
+            enqueue_sequence=2,
+        )
+        manager._diagnostics_queue.append(diagnostics)
+        manager._tool_queue.append(tool)
+
+        assert manager._pop_next_work()[:2] == ("diagnostics", diagnostics)
+        assert manager._pop_next_work()[:2] == ("tool", tool)
 
     def test_document_commit_syncs_then_saves_then_waits(
         self, manager: LspManager, tmp_path: Path
@@ -877,9 +941,10 @@ class TestWorkerQueueOrdering:
             )
 
         assert len(manager._diagnostics_queue) == 2
-        assert {
-            request.route.session_id for request in manager._diagnostics_queue
-        } == {"session-a", "session-b"}
+        assert {request.route.session_id for request in manager._diagnostics_queue} == {
+            "session-a",
+            "session-b",
+        }
 
 
 class TestSessionGenerationWatermark:

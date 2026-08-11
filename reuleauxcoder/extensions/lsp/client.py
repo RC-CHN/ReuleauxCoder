@@ -80,6 +80,8 @@ class LspClient:
         self._initialized: bool = False
         self._reader_task: asyncio.Task[None] | None = None
         self._process_wait_task: asyncio.Task[None] | None = None
+        self._server_response_tasks: set[asyncio.Task[None]] = set()
+        self._stdin_write_lock = asyncio.Lock()
         self._diagnostics_buffer: dict[str, list[Diagnostic]] = {}
         self._diagnostics_snapshots: dict[str, list[Diagnostic]] = {}
         self._diagnostic_generations: dict[str, int] = {}
@@ -93,10 +95,7 @@ class LspClient:
     @property
     def is_alive(self) -> bool:
         """Check whether the subprocess still needs to be reaped."""
-        return (
-            self._process is not None
-            and self._process.returncode is None
-        )
+        return self._process is not None and self._process.returncode is None
 
     @property
     def is_usable(self) -> bool:
@@ -343,7 +342,10 @@ class LspClient:
             remaining = graceful_deadline - time.monotonic()
             if remaining > 0:
                 with suppress(Exception):
-                    await self._send_request("shutdown", {}, timeout=remaining)
+                    await asyncio.wait_for(
+                        self._send_request("shutdown", {}, timeout=remaining),
+                        timeout=remaining,
+                    )
 
             remaining = graceful_deadline - time.monotonic()
             if remaining > 0:
@@ -362,6 +364,21 @@ class LspClient:
 
     async def abort(self, *, deadline_at: float | None = None) -> None:
         """Force-close a failed or cancelled transport without an LSP handshake."""
+        if deadline_at is None:
+            deadline_at = time.monotonic() + ABORT_TIMEOUT
+        cleanup = asyncio.create_task(self._abort_impl(deadline_at=deadline_at))
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _abort_impl(self, *, deadline_at: float) -> None:
+        """Finish force-close once started, even if the owner is cancelled."""
         self._closing = True
         process = self._process
         reader_task = self._reader_task
@@ -379,31 +396,54 @@ class LspClient:
             with suppress(asyncio.CancelledError, Exception):
                 await reader_task
 
+        response_tasks = tuple(self._server_response_tasks)
+        for task in response_tasks:
+            if not task.done():
+                task.cancel()
+        if response_tasks:
+            await asyncio.gather(*response_tasks, return_exceptions=True)
+        self._server_response_tasks.clear()
+
         if process is not None and process.stdin is not None:
             with suppress(Exception):
                 process.stdin.close()
-                remaining = self._cleanup_remaining(deadline_at)
-                if remaining > 0:
-                    await asyncio.wait_for(
-                        process.stdin.wait_closed(),
-                        timeout=remaining,
-                    )
 
         if process is not None and process.returncode is None:
             with suppress(ProcessLookupError):
                 process.terminate()
             remaining = self._cleanup_remaining(deadline_at)
-            if remaining > 0:
+            graceful_remaining = max(0.0, remaining - _FORCE_CLOSE_RESERVE)
+            if graceful_remaining > 0:
                 with suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(process.wait(), timeout=remaining)
+                    await asyncio.wait_for(
+                        process.wait(),
+                        timeout=graceful_remaining,
+                    )
             if process.returncode is None:
                 with suppress(ProcessLookupError):
                     process.kill()
-                with suppress(Exception):
-                    await process.wait()
+                remaining = self._cleanup_remaining(deadline_at)
+                if remaining > 0:
+                    with suppress(asyncio.TimeoutError, Exception):
+                        await asyncio.wait_for(process.wait(), timeout=remaining)
+
+        if process is not None and process.stdin is not None:
+            remaining = self._cleanup_remaining(deadline_at)
+            if remaining > 0:
+                with suppress(asyncio.TimeoutError, Exception):
+                    await asyncio.wait_for(
+                        process.stdin.wait_closed(),
+                        timeout=remaining,
+                    )
 
         self._fail_all_pending("LSP server aborted")
-        self._reset_runtime_state()
+        if process is None or process.returncode is not None:
+            self._reset_runtime_state()
+        else:
+            self._reader_task = None
+            self._process_wait_task = None
+            self._transport_failed = True
+            self._initialized = False
 
     @staticmethod
     def _cleanup_remaining(deadline_at: float | None) -> float:
@@ -461,13 +501,15 @@ class LspClient:
 
     async def _write_message(self, message: dict[str, Any]) -> None:
         """Write a JSON-RPC message to the server's stdin."""
-        if self._process is None or self._process.stdin is None:
-            raise LspClientError("LSP server not running")
-
         body = json.dumps(message, ensure_ascii=False)
         header = f"Content-Length: {len(body.encode('utf-8'))}\r\n\r\n"
-        self._process.stdin.write((header + body).encode("utf-8"))
-        await self._process.stdin.drain()
+        frame = (header + body).encode("utf-8")
+        async with self._stdin_write_lock:
+            process = self._process
+            if process is None or process.stdin is None:
+                raise LspClientError("LSP server not running")
+            process.stdin.write(frame)
+            await process.stdin.drain()
 
     # === Internal: Response Reader ===
 
@@ -481,9 +523,7 @@ class LspClient:
         if self._process is process:
             self._report_transport_failure("process exited", process.returncode)
 
-    def _report_transport_failure(
-        self, reason: str, returncode: int | None
-    ) -> None:
+    def _report_transport_failure(self, reason: str, returncode: int | None) -> None:
         """Fail pending work and notify the manager exactly once."""
         bounded_reason = " ".join(reason.split())[:256] or "transport closed"
         self._transport_failed = True
@@ -577,7 +617,11 @@ class LspClient:
         method = message.get("method")
 
         if req_id is not None and isinstance(method, str):
-            self._handle_server_request(req_id, method, message.get("params", {}))
+            self._handle_server_request(
+                req_id,
+                method,
+                message.get("params", {}),
+            )
             return
 
         if req_id is not None:
@@ -687,7 +731,7 @@ class LspClient:
             # Registration, progress and diagnostic refresh requests do not
             # require product-specific state in this minimal client.
             result = None
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._write_message(
                 {
                     "jsonrpc": LSP_PROTOCOL_VERSION,
@@ -696,6 +740,19 @@ class LspClient:
                 }
             )
         )
+        self._server_response_tasks.add(task)
+        task.add_done_callback(self._server_response_done)
+
+    def _server_response_done(self, task: asyncio.Task[None]) -> None:
+        self._server_response_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._report_transport_failure(
+                f"server response write failed: {type(error).__name__}",
+                self._process.returncode if self._process is not None else None,
+            )
 
     def _fail_all_pending(self, reason: str) -> None:
         """Fail all outstanding requests (used on server crash / shutdown)."""
@@ -711,6 +768,7 @@ class LspClient:
         self._process = None
         self._reader_task = None
         self._process_wait_task = None
+        self._server_response_tasks.clear()
         self._transport_failed = False
         self._initialized = False
         self._diagnostics_buffer.clear()

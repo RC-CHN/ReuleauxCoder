@@ -47,6 +47,7 @@ def _make_manager() -> LspManager:
     # Hook unit tests control completion directly and must never start a real
     # language-server process in the background.
     mgr.start_worker = MagicMock()  # type: ignore[method-assign]
+    mgr._accepting_work = True
     for lang in range(10):  # all LanguageId values
         mgr._availability[lang] = False
     return mgr
@@ -258,9 +259,7 @@ class TestLspEditObserverBasic:
         assert mgr.diagnostic_request_result(batch_ids[0]) == ()
         mgr._command_lookup.assert_called_once()
 
-    def test_uses_resolved_outcome_path_for_document_commit(
-        self, monkeypatch
-    ) -> None:
+    def test_uses_resolved_outcome_path_for_document_commit(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "reuleauxcoder.domain.hooks.builtin.lsp_edit_observer._DIAGNOSTICS_POLL_DEADLINE",
             0,
@@ -288,9 +287,7 @@ class TestLspEditObserverBasic:
         hook.run(context)
 
         assert len(mgr._diagnostics_queue) == 1
-        assert mgr._diagnostics_queue[0].route.file_path == Path(
-            "/tmp/canonical.py"
-        )
+        assert mgr._diagnostics_queue[0].route.file_path == Path("/tmp/canonical.py")
 
     def test_failed_edit_does_not_notify_or_enqueue(self) -> None:
         mgr = _make_manager()

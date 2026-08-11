@@ -26,6 +26,43 @@ def _requestable_client(tmp_path: Path) -> LspClient:
     return client
 
 
+class _ImmediateStdin:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class _StubbornProcess:
+    def __init__(self, *, exits_on_kill: bool) -> None:
+        self.stdin = _ImmediateStdin()
+        self.returncode: int | None = None
+        self.exits_on_kill = exits_on_kill
+        self.wait_started = asyncio.Event()
+        self.exited = asyncio.Event()
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+        if self.exits_on_kill:
+            self.returncode = -9
+            self.exited.set()
+
+    async def wait(self) -> int:
+        self.wait_started.set()
+        await self.exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+
 def _fake_args(
     log_path: Path,
     *,
@@ -126,9 +163,7 @@ def test_coroutine_cancellation_removes_pending_and_ignores_late_response(
             await task
 
         assert client._pending == {}
-        client._dispatch_message(
-            {"jsonrpc": "2.0", "id": request_id, "result": "late"}
-        )
+        client._dispatch_message({"jsonrpc": "2.0", "id": request_id, "result": "late"})
         assert client._pending == {}
 
     asyncio.run(run())
@@ -172,10 +207,7 @@ def test_abort_force_closes_real_stdio_process_idempotently(tmp_path: Path) -> N
         await client.spawn(sys.executable, _fake_args(log_path))
         deadline = asyncio.get_running_loop().time() + 2.0
         while (
-            not any(
-                event["method"] == "server_started"
-                for event in _events(log_path)
-            )
+            not any(event["method"] == "server_started" for event in _events(log_path))
             and asyncio.get_running_loop().time() < deadline
         ):
             await asyncio.sleep(0.01)
@@ -193,6 +225,53 @@ def test_abort_force_closes_real_stdio_process_idempotently(tmp_path: Path) -> N
 
     pid = asyncio.run(run())
     _assert_pid_exits(pid)
+
+
+def test_abort_finishes_force_kill_before_propagating_cancellation(
+    tmp_path: Path,
+) -> None:
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> _StubbornProcess:
+        process = _StubbornProcess(exits_on_kill=True)
+        client._process = process  # type: ignore[assignment]
+        client._initialized = True
+        abort = asyncio.create_task(client.abort(deadline_at=time.monotonic() + 0.35))
+        await asyncio.wait_for(process.wait_started.wait(), timeout=0.2)
+
+        abort.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(abort, timeout=0.6)
+        return process
+
+    process = asyncio.run(run())
+
+    assert process.terminated
+    assert process.killed
+    assert process.stdin.closed
+    assert client._process is None
+    assert not client.is_initialized
+
+
+def test_abort_preserves_unreaped_process_as_unusable(tmp_path: Path) -> None:
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> _StubbornProcess:
+        process = _StubbornProcess(exits_on_kill=False)
+        client._process = process  # type: ignore[assignment]
+        client._initialized = True
+        await client.abort(deadline_at=time.monotonic())
+        return process
+
+    process = asyncio.run(run())
+
+    assert process.terminated
+    assert process.killed
+    assert process.stdin.closed
+    assert client._process is process
+    assert client.is_alive
+    assert not client.is_usable
+    assert not client.is_initialized
 
 
 def test_failed_initialize_aborts_unregistered_process(tmp_path: Path) -> None:
@@ -244,8 +323,7 @@ def test_cancelled_initialize_aborts_unregistered_process(tmp_path: Path) -> Non
         deadline = asyncio.get_running_loop().time() + 2.0
         while asyncio.get_running_loop().time() < deadline:
             if any(
-                event["method"] == "initialize_hanging"
-                for event in _events(log_path)
+                event["method"] == "initialize_hanging" for event in _events(log_path)
             ):
                 break
             await asyncio.sleep(0.01)
@@ -286,9 +364,7 @@ def test_shutdown_hang_is_force_closed_within_total_deadline(tmp_path: Path) -> 
     pid, elapsed = asyncio.run(run())
 
     assert elapsed < 0.75
-    assert any(
-        event["method"] == "shutdown_hanging" for event in _events(log_path)
-    )
+    assert any(event["method"] == "shutdown_hanging" for event in _events(log_path))
     _assert_pid_exits(pid)
 
 

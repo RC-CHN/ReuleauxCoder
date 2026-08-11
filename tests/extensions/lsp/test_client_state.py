@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from reuleauxcoder.extensions.lsp.client import LspClient
@@ -10,6 +12,38 @@ from reuleauxcoder.extensions.lsp.registry import LanguageId
 
 def _client(tmp_path: Path) -> LspClient:
     return LspClient(LanguageId.PYTHON, tmp_path)
+
+
+class _GatedStdin:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.frames: list[bytes] = []
+        self.active_drains = 0
+        self.max_active_drains = 0
+        self.closed = False
+
+    def write(self, frame: bytes) -> None:
+        self.frames.append(frame)
+
+    async def drain(self) -> None:
+        self.active_drains += 1
+        self.max_active_drains = max(self.max_active_drains, self.active_drains)
+        self.entered.set()
+        try:
+            await self.release.wait()
+        finally:
+            self.active_drains -= 1
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+def _decode_frame(frame: bytes) -> dict:
+    return json.loads(frame.split(b"\r\n\r\n", 1)[1])
 
 
 def test_document_versions_increase_monotonically(tmp_path: Path) -> None:
@@ -236,3 +270,102 @@ def test_server_configuration_request_receives_json_rpc_response(
     client._write_message.assert_awaited_once_with(
         {"jsonrpc": "2.0", "id": 7, "result": [{}]}
     )
+
+
+def test_server_response_waits_for_active_stdin_write(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    async def run() -> tuple[list[bytes], int]:
+        stdin = _GatedStdin()
+        client._process = SimpleNamespace(stdin=stdin)  # type: ignore[assignment]
+        notification = asyncio.create_task(client.send_notification("test/first", {}))
+        await asyncio.wait_for(stdin.entered.wait(), timeout=0.5)
+        client._dispatch_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "workspace/configuration",
+                "params": {"items": []},
+            }
+        )
+        response = next(iter(client._server_response_tasks))
+        await asyncio.sleep(0)
+
+        assert len(stdin.frames) == 1
+        assert stdin.max_active_drains == 1
+        stdin.release.set()
+        await notification
+        await response
+        return stdin.frames, stdin.max_active_drains
+
+    frames, max_active_drains = asyncio.run(run())
+
+    assert [_decode_frame(frame) for frame in frames] == [
+        {"jsonrpc": "2.0", "method": "test/first", "params": {}},
+        {"jsonrpc": "2.0", "id": 9, "result": []},
+    ]
+    assert max_active_drains == 1
+
+
+def test_abort_collects_tracked_server_response_write(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    async def run() -> tuple[asyncio.Task[None], _GatedStdin]:
+        stdin = _GatedStdin()
+        client._process = SimpleNamespace(  # type: ignore[assignment]
+            stdin=stdin,
+            returncode=0,
+        )
+        client._dispatch_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "workspace/configuration",
+                "params": {"items": []},
+            }
+        )
+        response = next(iter(client._server_response_tasks))
+        await asyncio.wait_for(stdin.entered.wait(), timeout=0.5)
+
+        await asyncio.wait_for(client.abort(), timeout=0.5)
+        return response, stdin
+
+    response, stdin = asyncio.run(run())
+
+    assert response.done()
+    assert response.cancelled()
+    assert stdin.closed
+    assert not client._stdin_write_lock.locked()
+    assert client._reader_task is None
+    assert client._process is None
+
+
+def test_shutdown_deadline_includes_waiting_for_stdin_lock(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    async def run() -> tuple[float, asyncio.Task[None], _GatedStdin]:
+        stdin = _GatedStdin()
+        client._process = SimpleNamespace(  # type: ignore[assignment]
+            stdin=stdin,
+            returncode=0,
+        )
+        reader = asyncio.create_task(client.send_notification("test/blocked", {}))
+        client._reader_task = reader
+        await asyncio.wait_for(stdin.entered.wait(), timeout=0.5)
+
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.wait_for(
+            client.shutdown(deadline_at=started_at + 0.4),
+            timeout=0.7,
+        )
+        return asyncio.get_running_loop().time() - started_at, reader, stdin
+
+    elapsed, reader, stdin = asyncio.run(run())
+
+    assert elapsed < 0.7
+    assert reader.done()
+    assert reader.cancelled()
+    assert stdin.closed
+    assert not client._stdin_write_lock.locked()
+    assert client._pending == {}
+    assert client._process is None

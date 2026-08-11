@@ -126,6 +126,15 @@ def _tool_request(path: Path) -> ToolRequest:
     )
 
 
+class _CancelledDiscardClient:
+    is_usable = False
+    is_alive = True
+
+    async def abort(self) -> None:
+        self.is_alive = False
+        raise asyncio.CancelledError
+
+
 def test_supported_file_is_observable_as_unstarted_generation_zero(
     tmp_path: Path,
 ) -> None:
@@ -238,9 +247,7 @@ def test_missing_launcher_negative_cache_reuses_generation_then_retries(
         assert ready.retry_at_monotonic is None
         assert lookup.call_count == 2
 
-        assert await manager._shutdown_clients_async(
-            deadline_at=time.monotonic() + 2.0
-        )
+        assert await manager._shutdown_clients_async(deadline_at=time.monotonic() + 2.0)
 
     asyncio.run(run())
     for pid in _server_pids(log_path):
@@ -362,9 +369,7 @@ def test_real_initialize_and_shutdown_publish_terminal_states(tmp_path: Path) ->
             LspTransportState.READY,
         ]
 
-        assert await manager._shutdown_clients_async(
-            deadline_at=time.monotonic() + 2.0
-        )
+        assert await manager._shutdown_clients_async(deadline_at=time.monotonic() + 2.0)
 
     asyncio.run(run())
 
@@ -383,6 +388,23 @@ def test_real_initialize_and_shutdown_publish_terminal_states(tmp_path: Path) ->
     ]
     for pid in _server_pids(log_path):
         _assert_pid_exits(pid)
+
+
+def test_cancelled_discard_still_publishes_terminal_state(tmp_path: Path) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, path)
+    client = _CancelledDiscardClient()
+    manager._transports[key] = client  # type: ignore[assignment]
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(manager._discard_transport_async(key, client))  # type: ignore[arg-type]
+
+    status = manager.transport_status_for_file(path)
+    assert status is not None
+    assert status.state is LspTransportState.STOPPED
+    assert key not in manager._transports
 
 
 def test_unexpected_process_exit_is_error_then_restarts(tmp_path: Path) -> None:
@@ -427,9 +449,7 @@ def test_unexpected_process_exit_is_error_then_restarts(tmp_path: Path) -> None:
         assert status is not None
         assert status.state is LspTransportState.READY
         assert status.generation == 2
-        assert await manager._shutdown_clients_async(
-            deadline_at=time.monotonic() + 2.0
-        )
+        assert await manager._shutdown_clients_async(deadline_at=time.monotonic() + 2.0)
 
     asyncio.run(run())
     pids = _server_pids(log_path)
@@ -464,9 +484,7 @@ def test_new_generation_forgets_sync_and_sends_did_open_again(
         assert status is not None
         assert status.state is LspTransportState.READY
         assert status.generation == 2
-        assert await manager._shutdown_clients_async(
-            deadline_at=time.monotonic() + 2.0
-        )
+        assert await manager._shutdown_clients_async(deadline_at=time.monotonic() + 2.0)
 
     asyncio.run(run())
 
@@ -474,8 +492,7 @@ def test_new_generation_forgets_sync_and_sends_did_open_again(
         event["method"]
         for event in _events(log_path)
         if event["direction"] == "recv"
-        and event["method"]
-        in {"textDocument/didOpen", "textDocument/didChange"}
+        and event["method"] in {"textDocument/didOpen", "textDocument/didChange"}
     ]
     assert received == ["textDocument/didOpen", "textDocument/didOpen"]
     assert len(_server_pids(log_path)) == 2

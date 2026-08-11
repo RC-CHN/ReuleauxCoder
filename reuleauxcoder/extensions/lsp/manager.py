@@ -23,6 +23,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -66,8 +67,8 @@ MAX_RESPWANS = 3
 WORKER_SHUTDOWN_TIMEOUT = (
     5.0  # one total manager deadline, including active-work cancellation
 )
-_WORKER_POLL_INTERVAL = 0.1
 _TOOL_REQUEST_POLL_INTERVAL = 0.05
+_WORKER_WAKEUP_FALLBACK_INTERVAL = 0.01
 SPAWN_TIMEOUT = 30.0
 MISSING_COMMAND_TTL_SECONDS = 30.0
 DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
@@ -129,6 +130,8 @@ class ToolRequest:
     timeout_seconds: float
     deadline_at: float
     needs_sync: bool = True  # Whether to sync file content before the query
+    transport_key: TransportKey | None = None
+    enqueue_sequence: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,14 +142,23 @@ class DiagnosticRequest:
     route: DiagnosticRoute
     request_sequence: int
     document_committed: bool = False
+    transport_key: TransportKey | None = None
+    enqueue_sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveWork:
+    kind: str
+    item: ToolRequest | DiagnosticRequest
+    task: asyncio.Task[None]
 
 
 class LspManager:
     """Workspace-scoped coordinator for LSP server interactions.
 
-    All LSP I/O (subprocess stdin/stdout) passes through a single
-    background worker thread.  This avoids locks — serialisation is
-    natural because only one writer exists.
+    All LSP I/O (subprocess stdin/stdout) passes through one background
+    event loop. Work is serialized per transport while independent language
+    and workspace transports may run concurrently.
     """
 
     def __init__(
@@ -188,6 +200,7 @@ class LspManager:
         # Queues
         self._diagnostics_queue: list[DiagnosticRequest] = []
         self._tool_queue: list[ToolRequest] = []
+        self._next_work_sequence = 0
 
         # Routed results.  Clean publishes are retained as empty batches until
         # the owning consumer acknowledges them.
@@ -210,16 +223,19 @@ class LspManager:
 
         # Lock (RLock for reentrancy in health_check)
         self._lock: threading.RLock = threading.RLock()
+        self._shutdown_lock = threading.Lock()
 
         # Worker thread
         self._worker_thread: threading.Thread | None = None
+        self._accepting_work = False
+        self._closed = False
         self._stop_event = threading.Event()
         self._abort_current = False  # set during shutdown to skip in-flight work
-        self._request_condition = threading.Condition()
 
         # Worker event loop reference (set once worker starts)
         self._worker_loop: asyncio.AbstractEventLoop | None = None
-        self._current_work_task: asyncio.Task[None] | None = None
+        self._worker_wakeup: asyncio.Event | None = None
+        self._active_work: dict[TransportKey | None, _ActiveWork] = {}
         self._shutdown_deadline_at: float | None = None
         self._last_shutdown_completed = True
 
@@ -266,9 +282,7 @@ class LspManager:
                 )
             )
 
-    def transport_status_for_file(
-        self, file_path: Path
-    ) -> LspTransportStatus | None:
+    def transport_status_for_file(self, file_path: Path) -> LspTransportStatus | None:
         """Resolve a supported file to its slot, initially ``unstarted g0``."""
         path = self._canonicalize_path(file_path)
         language = detect_language(path)
@@ -309,8 +323,7 @@ class LspManager:
         from reuleauxcoder.extensions.lsp.registry import iter_supported_languages
 
         return tuple(
-            get_language_id_string(language)
-            for language in iter_supported_languages()
+            get_language_id_string(language) for language in iter_supported_languages()
         )
 
     def availability_metrics(self) -> dict[str, int]:
@@ -324,12 +337,13 @@ class LspManager:
             return
 
         with self._lock:
-            if self._worker_thread is not None:
+            if self._worker_thread is not None or self._closed:
                 return
             self._stop_event.clear()
             self._abort_current = False
             self._shutdown_deadline_at = None
             self._last_shutdown_completed = True
+            self._accepting_work = True
             self._worker_thread = threading.Thread(
                 target=self._worker_entry,
                 name="lsp-worker",
@@ -342,31 +356,41 @@ class LspManager:
         """Stop all LSP work within one deadline and report actual completion."""
         if timeout <= 0:
             raise ValueError("LSP shutdown timeout must be positive")
+        deadline_at = time.monotonic() + timeout
+        if not self._shutdown_lock.acquire(
+            timeout=max(0.0, deadline_at - time.monotonic())
+        ):
+            return False
+        try:
+            return self._shutdown_all_locked(deadline_at=deadline_at)
+        finally:
+            self._shutdown_lock.release()
+
+    def _shutdown_all_locked(self, *, deadline_at: float) -> bool:
+        """Serialize shutdown ownership across callers."""
         logger.info("Shutting down LSP manager")
         had_worker = self._worker_thread is not None
-        deadline_at = time.monotonic() + timeout
-        self._shutdown_deadline_at = deadline_at
-        self._abort_current = True  # tells worker to skip in-flight work
-        self._stop_event.set()
-
-        with self._request_condition:
-            self._request_condition.notify_all()
-
         with self._lock:
+            self._closed = True
+            self._accepting_work = False
+            self._shutdown_deadline_at = deadline_at
+            self._abort_current = True
+            self._stop_event.set()
             worker_loop = self._worker_loop
-            current_work = self._current_work_task
-        if worker_loop is not None and current_work is not None:
-            with suppress(RuntimeError):
-                worker_loop.call_soon_threadsafe(current_work.cancel)
-
-        # Fail queued synchronous requests immediately.  The worker owns any
-        # in-flight request and will fail/finish it before shutting clients down.
-        with self._lock:
-            for req in self._tool_queue:
-                if not req.future.done():
-                    req.future.set_exception(
-                        LspClientError("LSP manager shutting down")
+            active_work = tuple(self._active_work.values())
+            for active in active_work:
+                if active.kind == "tool":
+                    request = active.item
+                    assert isinstance(request, ToolRequest)
+                    self._try_set_future_exception(
+                        request.future,
+                        LspClientError("LSP manager shutting down"),
                     )
+            for request in self._tool_queue:
+                self._try_set_future_exception(
+                    request.future,
+                    LspClientError("LSP manager shutting down"),
+                )
             self._tool_queue.clear()
             self._diagnostics_queue.clear()
             self._pending_diagnostic_requests.clear()
@@ -375,10 +399,18 @@ class LspManager:
             self._latest_diagnostic_sequence.clear()
             self._session_generations.clear()
 
+        self._wake_worker()
+
+        active_tasks = tuple(active.task for active in active_work)
+        if worker_loop is not None and active_tasks:
+            with suppress(RuntimeError):
+                worker_loop.call_soon_threadsafe(
+                    self._cancel_tasks_once,
+                    active_tasks,
+                )
+
         if self._worker_thread is not None:
-            self._worker_thread.join(
-                timeout=max(0.0, deadline_at - time.monotonic())
-            )
+            self._worker_thread.join(timeout=max(0.0, deadline_at - time.monotonic()))
             if self._worker_thread.is_alive():
                 logger.warning("LSP worker thread did not join in time")
             else:
@@ -419,6 +451,10 @@ class LspManager:
         path = self._canonicalize_path(file_path)
         if not self._enabled_for_file(path):
             return None
+        language = detect_language(path)
+        if language is None:
+            return None
+        transport_key = self._transport_key(language, path)
 
         if route is None:
             route = DiagnosticRoute(file_path=path)
@@ -427,7 +463,10 @@ class LspManager:
         elif route.file_path != path:
             route = replace(route, file_path=path)
 
+        self.start_worker()
         with self._lock:
+            if not self._accepting_work or self._stop_event.is_set():
+                return None
             self._prune_expired_diagnostic_batches_locked()
             if route.agent_id is not None and route.session_generation is not None:
                 current_generation = self._session_generations.get(route.agent_id)
@@ -455,6 +494,8 @@ class LspManager:
             self._diagnostic_batch_metrics["overwritten"] += len(overwritten)
             self._next_diagnostic_sequence += 1
             request_sequence = self._next_diagnostic_sequence
+            self._next_work_sequence += 1
+            enqueue_sequence = self._next_work_sequence
             key = (
                 route.agent_id,
                 route.session_generation,
@@ -486,13 +527,13 @@ class LspManager:
                     route=route,
                     request_sequence=request_sequence,
                     document_committed=document_committed,
+                    transport_key=transport_key,
+                    enqueue_sequence=enqueue_sequence,
                 )
             )
             self._pending_diagnostic_requests.add(batch_id)
 
-        self.start_worker()
-        with self._request_condition:
-            self._request_condition.notify()
+        self._wake_worker()
         return batch_id
 
     def advance_session_generation(self, agent_id: str, generation: int) -> None:
@@ -529,8 +570,8 @@ class LspManager:
             for batch_id, batch in self._diagnostic_batches.items()
             if not self._is_older_generation(batch.route, agent_id, generation)
         }
-        self._diagnostic_batch_metrics["stale_discarded"] += (
-            previous_batch_count - len(self._diagnostic_batches)
+        self._diagnostic_batch_metrics["stale_discarded"] += previous_batch_count - len(
+            self._diagnostic_batches
         )
         self._latest_diagnostic_sequence = {
             key: sequence
@@ -662,9 +703,10 @@ class LspManager:
         """
         if timeout <= 0:
             raise ValueError("LSP request timeout must be positive")
-        lang = detect_language(file_path)
+        path = self._canonicalize_path(file_path)
+        lang = detect_language(path)
         if lang is None:
-            raise LspClientError(f"No LSP support for file type: {file_path.suffix}")
+            raise LspClientError(f"No LSP support for file type: {path.suffix}")
         if cancellation is not None and cancellation.is_set():
             raise LspRequestCancelled(f"LSP request '{method}' was cancelled")
 
@@ -676,7 +718,7 @@ class LspManager:
         # Enqueue the request — worker handles spawn + sync + query
         future: concurrent.futures.Future[Any] = concurrent.futures.Future()
         req = ToolRequest(
-            file_path=file_path,
+            file_path=path,
             language_id=lang,
             method=method,
             params=params,
@@ -684,13 +726,17 @@ class LspManager:
             timeout_seconds=timeout,
             deadline_at=deadline_at,
             needs_sync=True,
+            transport_key=self._transport_key(lang, path),
         )
 
         with self._lock:
+            if not self._accepting_work or self._stop_event.is_set():
+                raise LspClientError("LSP manager shutting down")
+            self._next_work_sequence += 1
+            req.enqueue_sequence = self._next_work_sequence
             self._tool_queue.append(req)
 
-        with self._request_condition:
-            self._request_condition.notify()
+        self._wake_worker()
 
         while True:
             remaining = deadline_at - time.monotonic()
@@ -719,39 +765,57 @@ class LspManager:
         asyncio.run(self._async_worker_main())
 
     async def _async_worker_main(self) -> None:
-        """Main worker loop — sole owner of LSP subprocesses."""
-        self._worker_loop = asyncio.get_event_loop()
+        """Dispatch one active work item per transport on the worker loop."""
+        worker_loop = asyncio.get_running_loop()
+        wakeup = asyncio.Event()
+        with self._lock:
+            self._worker_loop = worker_loop
+            self._worker_wakeup = wakeup
 
         try:
             while not self._stop_event.is_set():
-                kind, work = self._pop_next_work()
-                if kind == "tool":
-                    work_coro = self._handle_tool_request(work)
-                elif kind == "diagnostics":
-                    work_coro = self._handle_diagnostics_request(work)
-                else:
-                    # No work — poll briefly, then check again.
-                    # Using asyncio.sleep avoids blocking the event loop
-                    # (unlike threading.Condition.wait which would stall it).
-                    # The main thread's enqueue + condition.notify() reduces
-                    # wakeup latency, but the poll interval is the worst case.
-                    await asyncio.sleep(_WORKER_POLL_INTERVAL)
+                if self._dispatch_next_work():
                     continue
-
-                current_work = asyncio.create_task(work_coro)
-                with self._lock:
-                    self._current_work_task = current_work
+                wakeup.clear()
+                if self._dispatch_next_work():
+                    continue
                 if self._stop_event.is_set():
-                    current_work.cancel()
-                try:
-                    await current_work
-                except asyncio.CancelledError:
-                    pass
-                finally:
-                    with self._lock:
-                        if self._current_work_task is current_work:
-                            self._current_work_task = None
+                    break
+                # ``call_soon_threadsafe`` normally wakes the selector
+                # immediately.  Some restricted runtimes deny writes to
+                # asyncio's internal socketpair, so keep a short bounded
+                # fallback rather than leaving queued work asleep forever.
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        wakeup.wait(),
+                        timeout=_WORKER_WAKEUP_FALLBACK_INTERVAL,
+                    )
         finally:
+            with self._lock:
+                self._accepting_work = False
+                active_work = tuple(self._active_work.values())
+                for active in active_work:
+                    if active.kind == "tool":
+                        request = active.item
+                        assert isinstance(request, ToolRequest)
+                        self._try_set_future_exception(
+                            request.future,
+                            LspClientError("LSP worker stopped"),
+                        )
+                for request in self._tool_queue:
+                    self._try_set_future_exception(
+                        request.future,
+                        LspClientError("LSP worker stopped"),
+                    )
+                self._tool_queue.clear()
+                self._diagnostics_queue.clear()
+            active_tasks = tuple(active.task for active in active_work)
+            self._cancel_tasks_once(active_tasks)
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
+            with self._lock:
+                self._active_work.clear()
+                self._pending_diagnostic_requests.clear()
             try:
                 self._last_shutdown_completed = await self._shutdown_clients_async(
                     deadline_at=self._shutdown_deadline_at
@@ -760,23 +824,124 @@ class LspManager:
             except Exception:
                 self._last_shutdown_completed = False
                 logger.exception("LSP worker shutdown failed")
-            self._worker_loop = None
+            with self._lock:
+                self._worker_loop = None
+                self._worker_wakeup = None
             logger.info("LSP worker loop exited")
 
-    def _pop_next_work(self) -> tuple[str | None, Any]:
-        """Pop exactly one queued item without discarding lower-priority work."""
+    def _dispatch_next_work(self) -> bool:
+        """Atomically claim, create, and register one runnable work item."""
         with self._lock:
-            if self._tool_queue:
-                return "tool", self._tool_queue.pop(0)
-            if self._diagnostics_queue:
-                return "diagnostics", self._diagnostics_queue.pop(0)
-        return None, None
+            if not self._accepting_work or self._stop_event.is_set():
+                return False
+            kind, work, transport_key = self._pop_next_work()
+            if kind is None:
+                return False
+            if kind == "tool":
+                work_coro = self._handle_tool_request(
+                    work,
+                    transport_key=transport_key,
+                )
+            else:
+                work_coro = self._handle_diagnostics_request(
+                    work,
+                    transport_key=transport_key,
+                )
+            work_task = asyncio.create_task(work_coro)
+            self._active_work[transport_key] = _ActiveWork(
+                kind=kind,
+                item=work,
+                task=work_task,
+            )
+            work_task.add_done_callback(partial(self._work_task_done, transport_key))
+            return True
 
-    async def _handle_tool_request(self, req: ToolRequest) -> None:
+    def _pop_next_work(
+        self,
+    ) -> tuple[str | None, Any, TransportKey | None]:
+        """Pop the oldest runnable item across both ingress queues."""
+        with self._lock:
+            candidates: list[tuple[int, int, int, str, TransportKey | None]] = []
+            for kind_rank, (kind, queue) in enumerate(
+                (("tool", self._tool_queue), ("diagnostics", self._diagnostics_queue))
+            ):
+                for index, work in enumerate(queue):
+                    transport_key = self._work_transport_key(kind, work)
+                    if transport_key in self._active_work:
+                        continue
+                    candidates.append(
+                        (
+                            work.enqueue_sequence,
+                            kind_rank,
+                            index,
+                            kind,
+                            transport_key,
+                        )
+                    )
+            if candidates:
+                _, _, index, kind, transport_key = min(candidates)
+                queue = self._tool_queue if kind == "tool" else self._diagnostics_queue
+                return kind, queue.pop(index), transport_key
+        return None, None, None
+
+    def _work_transport_key(
+        self,
+        kind: str,
+        work: ToolRequest | DiagnosticRequest,
+    ) -> TransportKey | None:
+        if work.transport_key is not None:
+            return work.transport_key
+        if kind == "tool":
+            return self._transport_key(work.language_id, work.file_path)
+        language = detect_language(work.route.file_path)
+        if language is None:
+            return None
+        return self._transport_key(language, work.route.file_path)
+
+    @staticmethod
+    def _cancel_tasks_once(tasks: tuple[asyncio.Task[None], ...]) -> None:
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+
+    def _work_task_done(
+        self,
+        transport_key: TransportKey | None,
+        task: asyncio.Task[None],
+    ) -> None:
+        with self._lock:
+            active = self._active_work.get(transport_key)
+            if active is not None and active.task is task:
+                self._active_work.pop(transport_key, None)
+            wakeup = self._worker_wakeup
+        if wakeup is not None:
+            wakeup.set()
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error("Unhandled LSP worker task error: %s", error)
+
+    def _wake_worker(self) -> None:
+        with self._lock:
+            worker_loop = self._worker_loop
+            wakeup = self._worker_wakeup
+        if worker_loop is not None and wakeup is not None:
+            with suppress(RuntimeError):
+                worker_loop.call_soon_threadsafe(wakeup.set)
+
+    async def _handle_tool_request(
+        self,
+        req: ToolRequest,
+        *,
+        transport_key: TransportKey | None = None,
+    ) -> None:
         """Process a synchronous active-tool request."""
         if req.future.cancelled():
             return
-        operation = asyncio.create_task(self._execute_tool_request(req))
+        operation = asyncio.create_task(
+            self._execute_tool_request(req, transport_key=transport_key)
+        )
         try:
             while not operation.done():
                 if req.future.cancelled():
@@ -792,23 +957,34 @@ class LspManager:
                 )
 
             result = await operation
-            if not req.future.done():
-                req.future.set_result(result)
+            self._try_set_future_result(req.future, result)
         except asyncio.CancelledError:
-            if not req.future.done():
-                req.future.set_exception(LspClientError("LSP request cancelled"))
+            self._try_set_future_exception(
+                req.future,
+                LspClientError("LSP request cancelled"),
+            )
         except Exception as e:
-            if not req.future.done():
-                req.future.set_exception(e)
+            self._try_set_future_exception(req.future, e)
         finally:
-            if not operation.done():
-                operation.cancel()
-                with suppress(asyncio.CancelledError, Exception):
-                    await operation
+            await self._cancel_and_wait_task(operation)
 
-    async def _execute_tool_request(self, req: ToolRequest) -> Any:
+    async def _execute_tool_request(
+        self,
+        req: ToolRequest,
+        *,
+        transport_key: TransportKey | None = None,
+    ) -> Any:
         """Run start, document sync and query under one caller-owned deadline."""
-        server = await self._get_or_create_server(req.language_id, req.file_path)
+        key = (
+            transport_key
+            or req.transport_key
+            or self._transport_key(req.language_id, req.file_path)
+        )
+        server = await self._get_or_create_server(
+            req.language_id,
+            req.file_path,
+            transport_key=key,
+        )
         if server is None:
             raise LspClientError(
                 f"No LSP server available for {get_language_id_string(req.language_id)}"
@@ -816,22 +992,25 @@ class LspManager:
 
         # Document sync before query (if needed)
         if req.needs_sync:
-            stale = self._check_stale(req.language_id, req.file_path)
+            stale = self._check_stale(
+                req.language_id,
+                req.file_path,
+                transport_key=key,
+            )
             if stale:
                 content = self._read_file_content(req.file_path)
                 if content is not None:
-                    key = (
-                        self._transport_key(req.language_id, req.file_path),
-                        req.file_path,
-                    )
-                    last_sync = self._last_sync_time.get(key, 0)
+                    document_key = (key, req.file_path)
+                    last_sync = self._last_sync_time.get(document_key, 0)
                     try:
                         if last_sync == 0:
                             await server.did_open(req.file_path, content)
                         else:
                             await server.did_change(req.file_path, content)
                         with self._lock:
-                            self._last_sync_time[key] = req.file_path.stat().st_mtime
+                            self._last_sync_time[document_key] = (
+                                req.file_path.stat().st_mtime
+                            )
                     except Exception as e:
                         logger.debug("LSP sync error (swallowed): %s", e)
 
@@ -845,9 +1024,45 @@ class LspManager:
     @staticmethod
     def _timeout_error(req: ToolRequest) -> LspRequestTimedOut:
         return LspRequestTimedOut(
-            f"LSP request '{req.method}' timed out after "
-            f"{req.timeout_seconds:g}s total"
+            f"LSP request '{req.method}' timed out after {req.timeout_seconds:g}s total"
         )
+
+    @staticmethod
+    def _try_set_future_result(
+        future: concurrent.futures.Future[Any], result: Any
+    ) -> bool:
+        try:
+            future.set_result(result)
+        except concurrent.futures.InvalidStateError:
+            return False
+        return True
+
+    @staticmethod
+    def _try_set_future_exception(
+        future: concurrent.futures.Future[Any], error: BaseException
+    ) -> bool:
+        try:
+            future.set_exception(error)
+        except concurrent.futures.InvalidStateError:
+            return False
+        return True
+
+    @staticmethod
+    async def _cancel_and_wait_task(task: asyncio.Task[Any]) -> None:
+        """Cancel one child operation and shield its cleanup from outer cancel."""
+        if not task.done() and not task.cancelling():
+            task.cancel()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if task.done():
+                    break
+            except Exception:
+                break
+        if task.done():
+            with suppress(asyncio.CancelledError, Exception):
+                task.result()
 
     def _abandon_tool_request(self, req: ToolRequest) -> bool:
         if not req.future.cancel():
@@ -856,15 +1071,29 @@ class LspManager:
             self._tool_queue = [item for item in self._tool_queue if item is not req]
         return True
 
-    async def _handle_diagnostics_request(self, request: DiagnosticRequest) -> None:
+    async def _handle_diagnostics_request(
+        self,
+        request: DiagnosticRequest,
+        *,
+        transport_key: TransportKey | None = None,
+    ) -> None:
         """Process a fire-and-forget diagnostics request."""
         file_path = request.route.file_path
         lang = detect_language(file_path)
         if lang is None:
             return
+        resolved_transport_key = (
+            transport_key
+            or request.transport_key
+            or self._transport_key(lang, file_path)
+        )
 
         try:
-            server = await self._get_or_create_server(lang, file_path)
+            server = await self._get_or_create_server(
+                lang,
+                file_path,
+                transport_key=resolved_transport_key,
+            )
             if server is None:
                 return
 
@@ -874,19 +1103,25 @@ class LspManager:
             # A successful mutation is authoritative even when the filesystem
             # timestamp has not advanced (coarse or preserved mtimes). Always
             # send the committed on-disk content before didSave.
-            stale = request.document_committed or self._check_stale(lang, file_path)
+            stale = request.document_committed or self._check_stale(
+                lang,
+                file_path,
+                transport_key=resolved_transport_key,
+            )
             if stale:
                 content = self._read_file_content(file_path)
                 if content is not None:
-                    key = (self._transport_key(lang, file_path), file_path)
-                    last_sync = self._last_sync_time.get(key, 0)
+                    document_key = (resolved_transport_key, file_path)
+                    last_sync = self._last_sync_time.get(document_key, 0)
                     try:
                         if last_sync == 0:
                             await server.did_open(file_path, content)
                         else:
                             await server.did_change(file_path, content)
                         with self._lock:
-                            self._last_sync_time[key] = file_path.stat().st_mtime
+                            self._last_sync_time[document_key] = (
+                                file_path.stat().st_mtime
+                            )
                     except Exception as e:
                         logger.debug("LSP sync error (swallowed): %s", e)
 
@@ -925,16 +1160,17 @@ class LspManager:
             accepted = False
             with self._lock:
                 # A slower obsolete request must not overwrite a newer batch.
-                key = (
+                route_key = (
                     request.route.agent_id,
                     request.route.session_generation,
                     request.route.session_id,
                     file_path,
                 )
-                if self._latest_diagnostic_sequence.get(
-                    key
-                ) == request.request_sequence and self._route_generation_is_current(
-                    request.route
+                if (
+                    not self._abort_current
+                    and self._latest_diagnostic_sequence.get(route_key)
+                    == request.request_sequence
+                    and self._route_generation_is_current(request.route)
                 ):
                     self._store_diagnostic_batch_locked(batch)
                     accepted = True
@@ -945,7 +1181,12 @@ class LspManager:
 
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             logger.warning("LSP transport error for %s: %s", lang.name, e)
-            self._on_transport_error(lang, file_path, str(e))
+            self._on_transport_error(
+                lang,
+                file_path,
+                str(e),
+                transport_key=resolved_transport_key,
+            )
         except Exception as e:
             logger.debug("LSP diagnostics error (swallowed): %s", e)
         finally:
@@ -1075,9 +1316,11 @@ class LspManager:
         self,
         lang: LanguageId,
         file_path: Path,
+        *,
+        transport_key: TransportKey | None = None,
     ) -> LspClient | None:
         """Get or create an LSP server (called from worker thread)."""
-        key = self._transport_key(lang, file_path)
+        key = transport_key or self._transport_key(lang, file_path)
         self._ensure_transport_status(key)
         server = self._transports.get(key)
         if server is not None and server.is_usable:
@@ -1116,16 +1359,22 @@ class LspManager:
                 )
                 return None
 
-        return await self._spawn_async(lang, file_path)
+        return await self._spawn_async(
+            lang,
+            file_path,
+            transport_key=key,
+        )
 
     async def _spawn_async(
         self,
         lang: LanguageId,
         file_path: Path,
+        *,
+        transport_key: TransportKey | None = None,
     ) -> LspClient | None:
         """Spawn + initialize from the worker thread (inline await)."""
-        root = self._resolve_root(lang, file_path)
-        key = (lang, root)
+        key = transport_key or self._transport_key(lang, file_path)
+        root = key[1]
         self._ensure_transport_status(key)
         launch = self._resolve_launch(lang, root)
         cmd, args = launch.command, list(launch.args)
@@ -1179,14 +1428,12 @@ class LspManager:
         client = LspClient(
             language_id=lang,
             workspace_root=root,
-            on_unexpected_exit=lambda current, reason, returncode: (
-                self._on_client_exit(
-                    key,
-                    current,
-                    generation,
-                    reason,
-                    returncode,
-                )
+            on_unexpected_exit=lambda current, reason, returncode: self._on_client_exit(
+                key,
+                current,
+                generation,
+                reason,
+                returncode,
             ),
         )
 
@@ -1212,7 +1459,7 @@ class LspManager:
                     LspTransportState.STOPPING,
                     command=cmd,
                 )
-                await client.abort()
+                await client.abort(deadline_at=self._shutdown_deadline_at)
                 self._transition_transport(
                     key,
                     generation,
@@ -1306,21 +1553,22 @@ class LspManager:
                 await client.abort()
         except Exception:
             logger.exception("LSP transport discard failed")
-        if generation is not None:
-            if client.is_alive:
-                self._transition_transport(
-                    key,
-                    generation,
-                    LspTransportState.ERROR,
-                    error_type="ShutdownIncomplete",
-                    error_message="transport remained alive after discard",
-                )
-            else:
-                self._transition_transport(
-                    key,
-                    generation,
-                    LspTransportState.STOPPED,
-                )
+        finally:
+            if generation is not None:
+                if client.is_alive:
+                    self._transition_transport(
+                        key,
+                        generation,
+                        LspTransportState.ERROR,
+                        error_type="ShutdownIncomplete",
+                        error_message="transport remained alive after discard",
+                    )
+                else:
+                    self._transition_transport(
+                        key,
+                        generation,
+                        LspTransportState.STOPPED,
+                    )
 
     async def _shutdown_clients_async(self, *, deadline_at: float) -> bool:
         """Shut down all transports concurrently under one manager deadline."""
@@ -1375,9 +1623,7 @@ class LspManager:
         except asyncio.TimeoutError:
             timed_out = True
         self._finalize_transport_shutdown_states(clients, generations)
-        return not timed_out and all(
-            not client.is_alive for client in clients.values()
-        )
+        return not timed_out and all(not client.is_alive for client in clients.values())
 
     def _finalize_transport_shutdown_states(
         self,
@@ -1427,9 +1673,7 @@ class LspManager:
                     generation=generation,
                     launcher=status.launcher,
                     error_type=(
-                        "ProcessExited"
-                        if returncode is not None
-                        else "TransportClosed"
+                        "ProcessExited" if returncode is not None else "TransportClosed"
                     ),
                     error_message=" ".join(message.split())[:512],
                 )
@@ -1444,10 +1688,15 @@ class LspManager:
             )
 
     def _on_transport_error(
-        self, lang: LanguageId, file_path: Path, reason: str
+        self,
+        lang: LanguageId,
+        file_path: Path,
+        reason: str,
+        *,
+        transport_key: TransportKey | None = None,
     ) -> None:
         """Mark the current file transport as errored after an I/O failure."""
-        key = self._transport_key(lang, file_path)
+        key = transport_key or self._transport_key(lang, file_path)
         status = self._ensure_transport_status(key)
         self._transition_transport(
             key,
@@ -1466,14 +1715,20 @@ class LspManager:
             path = self._workspace_cwd / path
         return path.resolve()
 
-    def _check_stale(self, lang: LanguageId, file_path: Path) -> bool:
+    def _check_stale(
+        self,
+        lang: LanguageId,
+        file_path: Path,
+        *,
+        transport_key: TransportKey | None = None,
+    ) -> bool:
         """Check if a file's content is stale in the LSP server."""
         try:
             mtime = file_path.stat().st_mtime
         except OSError:
             return False
 
-        key = (self._transport_key(lang, file_path), file_path)
+        key = (transport_key or self._transport_key(lang, file_path), file_path)
         last_sync = self._last_sync_time.get(key, 0)
         return mtime > last_sync
 
@@ -1507,9 +1762,7 @@ class LspManager:
         with self._lock:
             return self._ensure_transport_status_locked(key)
 
-    def _ensure_transport_status_locked(
-        self, key: TransportKey
-    ) -> LspTransportStatus:
+    def _ensure_transport_status_locked(self, key: TransportKey) -> LspTransportStatus:
         status = self._transport_statuses.get(key)
         if status is not None:
             return status
