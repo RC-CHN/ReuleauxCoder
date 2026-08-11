@@ -17,6 +17,7 @@ Crush 的强项是 provider 产品化、终端 UI、共享会话后端和较轻�
 2. 吸收 Crush 的懒启动、显式运行状态、有界事件背压、UI 缓存、provider catalog 和本地统计投影。
 3. 先修确定性的 LSP 时序错误，再扩充 rename、call hierarchy 等 LSP 功能。
 4. 不增加新的万能抽象；优先让已有 provider、extension、event 和 performance 边界真正落地。
+5. 让业务、传输、协议和同步故障真实发生，并把安全、结构化的原因交给 agent；只隔离会导致进程或共享运行时崩溃的二次观测、回调和清理故障。隔离时也必须记录错误类型，禁止静默吞掉、伪造成功或伪造 clean 状态。
 
 ## 1. 改进登记表
 
