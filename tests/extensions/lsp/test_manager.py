@@ -32,6 +32,7 @@ from reuleauxcoder.extensions.lsp.manager import (
     MISSING_COMMAND_TTL_SECONDS,
     DiagnosticRequest,
     LspManager,
+    LspTransportState,
 )
 from reuleauxcoder.extensions.lsp.diagnostics import (
     Diagnostic,
@@ -49,8 +50,10 @@ def _make_mock_client(*, alive: bool = True) -> MagicMock:
 
     c = MagicMock()
     c.is_alive = alive
+    c.is_usable = alive
     c.is_initialized = True
-    c.shutdown = MagicMock()
+    c.shutdown = AsyncMock()
+    c.abort = AsyncMock()
     return c
 
 
@@ -139,6 +142,28 @@ class TestReSpawnLimit:
         assert result is None
         with manager._lock:
             assert manager._availability[LanguageId.PYTHON] is True
+
+    def test_dead_transport_reaching_limit_reports_error(
+        self, manager: LspManager
+    ) -> None:
+        import asyncio
+
+        path = Path("/tmp/test.py")
+        key = manager._transport_key(LanguageId.PYTHON, path)
+        manager._re_spawn_counts[key] = MAX_RESPWANS - 1
+        manager._transports[key] = _make_mock_client(alive=False)
+
+        with patch.object(manager, "_spawn_async") as spawn:
+            result = asyncio.run(
+                manager._get_or_create_server(LanguageId.PYTHON, path)
+            )
+
+        assert result is None
+        spawn.assert_not_called()
+        status = manager.transport_status_for_file(path)
+        assert status is not None
+        assert status.state is LspTransportState.ERROR
+        assert status.error_type == "RespawnLimitReached"
 
 
 class TestWorkspaceTransportIsolation:

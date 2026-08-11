@@ -153,6 +153,17 @@ def test_eof_failure_clears_all_pending_idempotently(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_failed_transport_remains_alive_until_process_is_reaped(
+    tmp_path: Path,
+) -> None:
+    client = _requestable_client(tmp_path)
+    client._process.returncode = None
+    client._transport_failed = True
+
+    assert client.is_alive
+    assert not client.is_usable
+
+
 def test_abort_force_closes_real_stdio_process_idempotently(tmp_path: Path) -> None:
     log_path = tmp_path / "abort.jsonl"
     client = LspClient(LanguageId.PYTHON, tmp_path)
@@ -176,6 +187,7 @@ def test_abort_force_closes_real_stdio_process_idempotently(tmp_path: Path) -> N
 
         assert client._process is None
         assert client._reader_task is None
+        assert client._process_wait_task is None
         assert client._pending == {}
         return pid
 
@@ -268,6 +280,7 @@ def test_shutdown_hang_is_force_closed_within_total_deadline(tmp_path: Path) -> 
 
         assert client._process is None
         assert client._reader_task is None
+        assert client._process_wait_task is None
         return pid, elapsed
 
     pid, elapsed = asyncio.run(run())
@@ -276,4 +289,61 @@ def test_shutdown_hang_is_force_closed_within_total_deadline(tmp_path: Path) -> 
     assert any(
         event["method"] == "shutdown_hanging" for event in _events(log_path)
     )
+    _assert_pid_exits(pid)
+
+
+def test_unexpected_exit_callback_is_once_per_process(tmp_path: Path) -> None:
+    log_path = tmp_path / "unexpected-exit.jsonl"
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+
+    async def run() -> int:
+        await client.spawn(sys.executable, _fake_args(log_path))
+        await client.initialize()
+        process = client._process
+        assert process is not None
+        process.terminate()
+        watcher = client._process_wait_task
+        assert watcher is not None
+        await asyncio.wait_for(watcher, timeout=1.0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert not client.is_alive
+        assert len(callbacks) == 1
+        assert callbacks[0][0] is client
+        assert callbacks[0][1]
+        await client.abort()
+        assert len(callbacks) == 1
+        return process.pid
+
+    pid = asyncio.run(run())
+    _assert_pid_exits(pid)
+
+
+def test_graceful_shutdown_does_not_report_unexpected_exit(tmp_path: Path) -> None:
+    log_path = tmp_path / "expected-exit.jsonl"
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+
+    async def run() -> int:
+        await client.spawn(sys.executable, _fake_args(log_path))
+        await client.initialize()
+        process = client._process
+        assert process is not None
+        pid = process.pid
+        await client.shutdown(deadline_at=time.monotonic() + 1.0)
+        assert callbacks == []
+        assert client._process_wait_task is None
+        return pid
+
+    pid = asyncio.run(run())
     _assert_pid_exits(pid)

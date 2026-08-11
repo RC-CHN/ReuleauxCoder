@@ -69,6 +69,10 @@ class _SlowShutdownClient:
     def is_alive(self) -> bool:
         return not self.closed
 
+    @property
+    def is_usable(self) -> bool:
+        return self.is_alive
+
     async def shutdown(self, *, deadline_at: float) -> None:
         self.deadline_at = deadline_at
         await asyncio.sleep(0.2)
@@ -81,12 +85,27 @@ class _SlowShutdownClient:
 
 class _BrokenShutdownClient:
     is_alive = True
+    is_usable = True
 
     async def shutdown(self, *, deadline_at: float) -> None:
         raise RuntimeError(f"still alive at {deadline_at}")
 
     async def abort(self, *, deadline_at: float) -> None:
         return None
+
+
+class _UnusableLiveClient:
+    def __init__(self) -> None:
+        self.is_alive = True
+        self.is_usable = False
+        self.aborted = False
+
+    async def shutdown(self, *, deadline_at: float) -> None:
+        raise AssertionError(f"unusable transport was shut down at {deadline_at}")
+
+    async def abort(self, *, deadline_at: float) -> None:
+        self.aborted = True
+        self.is_alive = False
 
 
 def _manager_with_server(tmp_path: Path, server: _ControlledServer) -> LspManager:
@@ -318,6 +337,15 @@ def test_manager_reports_incomplete_shutdown_truthfully(tmp_path: Path) -> None:
     manager._transports[(LanguageId.PYTHON, tmp_path)] = _BrokenShutdownClient()  # type: ignore[assignment]
 
     assert manager.shutdown_all(timeout=0.5) is False
+
+
+def test_manager_aborts_unusable_live_transport(tmp_path: Path) -> None:
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    client = _UnusableLiveClient()
+    manager._transports[(LanguageId.PYTHON, tmp_path)] = client  # type: ignore[assignment]
+
+    assert manager.shutdown_all(timeout=0.5) is True
+    assert client.aborted is True
 
 
 def test_shutdown_during_initialize_cancels_work_and_reaps_process(

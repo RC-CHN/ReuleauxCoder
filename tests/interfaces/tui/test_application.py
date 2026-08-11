@@ -1654,11 +1654,14 @@ def test_view_text_formats_help_sessions_jobs_tokens_and_config() -> None:
                     ),
                 ),
                 diagnostics=("something odd",),
+                lsp_scopes=("python:/workspace:g2:error:launcher=npx",),
             )
         )
     )
     assert "models.active = k3  (workspace)" in config_text
     assert "! something odd" in config_text
+    assert "LSP Scopes:" in config_text
+    assert "python:/workspace:g2:error:launcher=npx" in config_text
     assert "{" not in config_text
 
 

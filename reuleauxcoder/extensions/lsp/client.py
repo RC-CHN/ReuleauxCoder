@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ REQUEST_TIMEOUT = 10.0  # seconds — per-request timeout for active tools
 ABORT_TIMEOUT = 1.0
 SHUTDOWN_TIMEOUT = 5.0
 _FORCE_CLOSE_RESERVE = 0.25
+_PROCESS_EXIT_POLL_INTERVAL = 0.05
 
 # LSP protocol version
 LSP_PROTOCOL_VERSION = "2.0"
@@ -62,15 +64,22 @@ class LspClient:
         self,
         language_id: LanguageId,
         workspace_root: Path,
+        *,
+        on_unexpected_exit: Callable[[LspClient, str, int | None], None] | None = None,
     ) -> None:
         self._language_id = language_id
         self._language_id_string = get_language_id_string(language_id)
         self._workspace_root = workspace_root
         self._process: asyncio.subprocess.Process | None = None
+        self._on_unexpected_exit = on_unexpected_exit
+        self._closing = False
+        self._transport_failed = False
+        self._exit_reported = False
         self._request_id: int = 0
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._initialized: bool = False
         self._reader_task: asyncio.Task[None] | None = None
+        self._process_wait_task: asyncio.Task[None] | None = None
         self._diagnostics_buffer: dict[str, list[Diagnostic]] = {}
         self._diagnostics_snapshots: dict[str, list[Diagnostic]] = {}
         self._diagnostic_generations: dict[str, int] = {}
@@ -83,8 +92,16 @@ class LspClient:
 
     @property
     def is_alive(self) -> bool:
-        """Check if the subprocess is still running."""
-        return self._process is not None and self._process.returncode is None
+        """Check whether the subprocess still needs to be reaped."""
+        return (
+            self._process is not None
+            and self._process.returncode is None
+        )
+
+    @property
+    def is_usable(self) -> bool:
+        """Check whether the subprocess transport can serve requests."""
+        return self.is_alive and not self._transport_failed
 
     @property
     def is_initialized(self) -> bool:
@@ -94,6 +111,9 @@ class LspClient:
 
     async def spawn(self, cmd: str, args: list[str]) -> None:
         """Start the LSP server subprocess."""
+        self._closing = False
+        self._transport_failed = False
+        self._exit_reported = False
         full_args = [cmd] + args
         logger.info(
             "Spawning LSP server: %s (lang=%s, root=%s)",
@@ -120,6 +140,9 @@ class LspClient:
 
         # Start reading responses/notifications from stdout
         self._reader_task = asyncio.create_task(self._read_responses())
+        self._process_wait_task = asyncio.create_task(
+            self._watch_process_exit(self._process)
+        )
 
     async def initialize(
         self, init_opts: dict[str, Any] | None = None
@@ -300,6 +323,7 @@ class LspClient:
 
     async def shutdown(self, *, deadline_at: float | None = None) -> None:
         """Gracefully shutdown, then force-close within one total deadline."""
+        self._closing = True
         process = self._process
         if process is None:
             return
@@ -338,8 +362,17 @@ class LspClient:
 
     async def abort(self, *, deadline_at: float | None = None) -> None:
         """Force-close a failed or cancelled transport without an LSP handshake."""
+        self._closing = True
         process = self._process
         reader_task = self._reader_task
+        process_wait_task = self._process_wait_task
+
+        current_task = asyncio.current_task()
+        if process_wait_task is not None and process_wait_task is not current_task:
+            if not process_wait_task.done():
+                process_wait_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await process_wait_task
 
         if reader_task is not None:
             reader_task.cancel()
@@ -438,6 +471,34 @@ class LspClient:
 
     # === Internal: Response Reader ===
 
+    async def _watch_process_exit(self, process: asyncio.subprocess.Process) -> None:
+        """Observe process exit even when a descendant keeps stdout open."""
+        try:
+            while process.returncode is None:
+                await asyncio.sleep(_PROCESS_EXIT_POLL_INTERVAL)
+        except asyncio.CancelledError:
+            return
+        if self._process is process:
+            self._report_transport_failure("process exited", process.returncode)
+
+    def _report_transport_failure(
+        self, reason: str, returncode: int | None
+    ) -> None:
+        """Fail pending work and notify the manager exactly once."""
+        bounded_reason = " ".join(reason.split())[:256] or "transport closed"
+        self._transport_failed = True
+        self._fail_all_pending(bounded_reason)
+        if self._closing or self._exit_reported:
+            return
+        self._exit_reported = True
+        callback = self._on_unexpected_exit
+        if callback is None:
+            return
+        try:
+            callback(self, bounded_reason, returncode)
+        except Exception:
+            logger.exception("LSP unexpected-exit callback failed")
+
     async def _read_responses(self) -> None:
         """Continuously read JSON-RPC messages from the server's stdout.
 
@@ -448,58 +509,67 @@ class LspClient:
         if self._process is None or self._process.stdout is None:
             return
 
+        process = self._process
         stdout = self._process.stdout
+        failure_reason: str | None = None
+        try:
+            while True:
+                try:
+                    header_bytes = await stdout.readuntil(b"\r\n\r\n")
+                except asyncio.CancelledError:
+                    return
+                except asyncio.IncompleteReadError:
+                    failure_reason = "server stdout closed"
+                    logger.debug(
+                        "LSP server stdout closed (lang=%s)",
+                        self._language_id_string,
+                    )
+                    return
 
-        while True:
-            try:
-                header_bytes = await stdout.readuntil(b"\r\n\r\n")
-            except asyncio.CancelledError:
-                break
-            except asyncio.IncompleteReadError:
-                # EOF — server exited (normal during shutdown, noisy during startup)
-                logger.debug(
-                    "LSP server stdout closed (lang=%s)",
-                    self._language_id_string,
+                header = header_bytes[:-4].decode("utf-8", errors="replace")
+                content_length = 0
+                for hdr_line in header.split("\r\n"):
+                    if hdr_line.lower().startswith("content-length:"):
+                        try:
+                            content_length = int(hdr_line.split(":", 1)[1].strip())
+                        except ValueError:
+                            pass
+
+                if content_length <= 0:
+                    logger.debug("Skipping LSP message with missing Content-Length")
+                    continue
+
+                try:
+                    body_bytes = await stdout.readexactly(content_length)
+                except asyncio.CancelledError:
+                    return
+                except asyncio.IncompleteReadError:
+                    failure_reason = "server stdout closed mid-message"
+                    logger.debug(
+                        "LSP server stdout closed mid-message (lang=%s)",
+                        self._language_id_string,
+                    )
+                    return
+
+                try:
+                    body = json.loads(body_bytes.decode("utf-8"))
+                except json.JSONDecodeError as e:
+                    logger.warning("Failed to parse LSP message: %s", e)
+                    continue
+
+                self._dispatch_message(body)
+        except Exception as error:
+            failure_reason = f"response reader error: {type(error).__name__}"
+            logger.debug("LSP response reader stopped: %s", error)
+        finally:
+            if failure_reason is not None:
+                # Give asyncio's subprocess transport one event-loop turn to
+                # publish a concrete return code before the EOF fallback.
+                await asyncio.sleep(0)
+                self._report_transport_failure(
+                    failure_reason,
+                    process.returncode,
                 )
-                self._fail_all_pending("LSP server exited unexpectedly")
-                break
-            except Exception as e:
-                logger.debug("LSP response reader stopped: %s", e)
-                self._fail_all_pending(str(e))
-                break
-
-            header = header_bytes[:-4].decode("utf-8", errors="replace")
-            content_length = 0
-            for hdr_line in header.split("\r\n"):
-                if hdr_line.lower().startswith("content-length:"):
-                    try:
-                        content_length = int(hdr_line.split(":", 1)[1].strip())
-                    except ValueError:
-                        pass
-
-            if content_length <= 0:
-                logger.debug("Skipping LSP message with missing Content-Length")
-                continue
-
-            try:
-                body_bytes = await stdout.readexactly(content_length)
-            except asyncio.CancelledError:
-                break
-            except asyncio.IncompleteReadError:
-                logger.debug(
-                    "LSP server stdout closed mid-message (lang=%s)",
-                    self._language_id_string,
-                )
-                self._fail_all_pending("LSP server exited unexpectedly")
-                break
-
-            try:
-                body = json.loads(body_bytes.decode("utf-8"))
-            except json.JSONDecodeError as e:
-                logger.warning("Failed to parse LSP message: %s", e)
-                continue
-
-            self._dispatch_message(body)
 
     def _dispatch_message(self, message: dict[str, Any]) -> None:
         """Route an incoming JSON-RPC message."""
@@ -640,6 +710,8 @@ class LspClient:
     def _reset_runtime_state(self) -> None:
         self._process = None
         self._reader_task = None
+        self._process_wait_task = None
+        self._transport_failed = False
         self._initialized = False
         self._diagnostics_buffer.clear()
         self._diagnostics_snapshots.clear()

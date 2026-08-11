@@ -18,10 +18,12 @@ import shutil
 import threading
 import time
 import uuid
+from collections import deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any
 
 from reuleauxcoder.domain.cancellation import CancellationSignal
@@ -70,9 +72,40 @@ SPAWN_TIMEOUT = 30.0
 MISSING_COMMAND_TTL_SECONDS = 30.0
 DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
 MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER = 32
+MAX_TRANSPORT_STATE_HISTORY = 256
 TransportKey = tuple[LanguageId, Path]
 AvailabilityCacheKey = tuple[TransportKey, str]
 DiagnosticOwnerKey = tuple[str | None, int | None, str | None]
+
+
+class LspTransportState(str, Enum):
+    """Observable lifecycle of one language/workspace transport slot."""
+
+    UNSTARTED = "unstarted"
+    RESOLVING = "resolving"
+    STARTING = "starting"
+    INITIALIZING = "initializing"
+    READY = "ready"
+    DEGRADED = "degraded"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class LspTransportStatus:
+    """Immutable current state/transition record for one transport slot."""
+
+    language: LanguageId
+    workspace_root: Path
+    state: LspTransportState
+    generation: int
+    sequence: int
+    updated_at_monotonic: float
+    launcher: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    retry_at_monotonic: float | None = None
 
 
 @dataclass
@@ -133,6 +166,12 @@ class LspManager:
         # files from an unrelated workspace root.
         self._transports: dict[TransportKey, LspClient] = {}
         self._workspace_roots: dict[TransportKey, Path] = {}
+        self._transport_statuses: dict[TransportKey, LspTransportStatus] = {}
+        self._transport_state_history: deque[LspTransportStatus] = deque(
+            maxlen=MAX_TRANSPORT_STATE_HISTORY
+        )
+        self._next_transport_state_sequence = 0
+        self._transport_state_clock: Callable[[], float] = time.monotonic
         self._availability: dict[LanguageId, bool] = {}
         self._negative_availability_until: dict[AvailabilityCacheKey, float] = {}
         self._availability_clock: Callable[[], float] = time.monotonic
@@ -200,8 +239,8 @@ class LspManager:
             self._prune_expired_diagnostic_batches_locked()
             transports = tuple(
                 sorted(
-                    f"{get_language_id_string(language)}:{root}"
-                    for language, root in self._transports
+                    self._describe_transport_status(status)
+                    for status in self._transport_statuses.values()
                 )
             )
             pending = tuple(
@@ -213,6 +252,35 @@ class LspManager:
                 )
             )
         return (*transports, *pending)
+
+    def transport_statuses(self) -> tuple[LspTransportStatus, ...]:
+        """Return an immutable, stable-order snapshot of all resolved slots."""
+        with self._lock:
+            return tuple(
+                sorted(
+                    self._transport_statuses.values(),
+                    key=lambda status: (
+                        get_language_id_string(status.language),
+                        str(status.workspace_root),
+                    ),
+                )
+            )
+
+    def transport_status_for_file(
+        self, file_path: Path
+    ) -> LspTransportStatus | None:
+        """Resolve a supported file to its slot, initially ``unstarted g0``."""
+        path = self._canonicalize_path(file_path)
+        language = detect_language(path)
+        if not self._config.enabled or language is None:
+            return None
+        key = self._transport_key(language, path)
+        return self._ensure_transport_status(key)
+
+    def transport_state_history(self) -> tuple[LspTransportStatus, ...]:
+        """Return the bounded transition history, oldest first."""
+        with self._lock:
+            return tuple(self._transport_state_history)
 
     # === Lifecycle ===
 
@@ -877,7 +945,7 @@ class LspManager:
 
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             logger.warning("LSP transport error for %s: %s", lang.name, e)
-            self._on_transport_error(lang, str(e))
+            self._on_transport_error(lang, file_path, str(e))
         except Exception as e:
             logger.debug("LSP diagnostics error (swallowed): %s", e)
         finally:
@@ -1010,8 +1078,9 @@ class LspManager:
     ) -> LspClient | None:
         """Get or create an LSP server (called from worker thread)."""
         key = self._transport_key(lang, file_path)
+        self._ensure_transport_status(key)
         server = self._transports.get(key)
-        if server is not None and server.is_alive:
+        if server is not None and server.is_usable:
             return server
 
         count = self._re_spawn_counts.get(key, 0)
@@ -1022,6 +1091,14 @@ class LspManager:
                 key[1],
                 MAX_RESPWANS,
             )
+            status = self._ensure_transport_status(key)
+            self._transition_transport(
+                key,
+                status.generation,
+                LspTransportState.ERROR,
+                error_type="RespawnLimitReached",
+                error_message=f"transport failed {MAX_RESPWANS} times",
+            )
             return None
 
         if server is not None:
@@ -1029,6 +1106,14 @@ class LspManager:
             with self._lock:
                 self._re_spawn_counts[key] = count + 1
             if count + 1 >= MAX_RESPWANS:
+                status = self._ensure_transport_status(key)
+                self._transition_transport(
+                    key,
+                    status.generation,
+                    LspTransportState.ERROR,
+                    error_type="RespawnLimitReached",
+                    error_message=f"transport failed {MAX_RESPWANS} times",
+                )
                 return None
 
         return await self._spawn_async(lang, file_path)
@@ -1041,24 +1126,109 @@ class LspManager:
         """Spawn + initialize from the worker thread (inline await)."""
         root = self._resolve_root(lang, file_path)
         key = (lang, root)
+        self._ensure_transport_status(key)
         launch = self._resolve_launch(lang, root)
         cmd, args = launch.command, list(launch.args)
         init_opts = launch.initialization_options
 
-        if not self._command_available(key, cmd):
+        cached_retry_at = self._negative_command_retry_at(key, cmd)
+        if cached_retry_at is not None:
+            status = self._ensure_transport_status(key)
+            if status.state is not LspTransportState.ERROR:
+                generation = (
+                    self._begin_transport_attempt(key, cmd)
+                    if status.generation == 0
+                    else status.generation
+                )
+                self._transition_transport(
+                    key,
+                    generation,
+                    LspTransportState.ERROR,
+                    command=cmd,
+                    error_type="LauncherNotFound",
+                    error_message=f"launcher not found: {self._launcher_name(cmd)}",
+                    retry_at=cached_retry_at,
+                )
+            return None
+
+        generation = self._begin_transport_attempt(key, cmd)
+        found, retry_at = self._lookup_command_availability(key, cmd)
+        if not found:
             logger.info(
                 "LSP command unavailable for %s: %s",
                 get_language_id_string(lang),
                 cmd,
             )
+            self._transition_transport(
+                key,
+                generation,
+                LspTransportState.ERROR,
+                command=cmd,
+                error_type="LauncherNotFound",
+                error_message=f"launcher not found: {self._launcher_name(cmd)}",
+                retry_at=retry_at,
+            )
             return None
 
-        client = LspClient(language_id=lang, workspace_root=root)
+        self._transition_transport(
+            key,
+            generation,
+            LspTransportState.STARTING,
+            command=cmd,
+        )
+        client = LspClient(
+            language_id=lang,
+            workspace_root=root,
+            on_unexpected_exit=lambda current, reason, returncode: (
+                self._on_client_exit(
+                    key,
+                    current,
+                    generation,
+                    reason,
+                    returncode,
+                )
+            ),
+        )
 
         try:
-            await self._do_spawn(client, cmd, args, init_opts)
+            await client.spawn(cmd, args)
+            if not self._transition_transport(
+                key,
+                generation,
+                LspTransportState.INITIALIZING,
+                command=cmd,
+            ):
+                await client.abort()
+                return None
+            await client.initialize(init_opts)
+            await asyncio.sleep(0)
+            if not client.is_usable:
+                raise LspClientError("LSP server exited during initialization")
         except asyncio.CancelledError:
-            await client.abort()
+            if self._stop_event.is_set():
+                self._transition_transport(
+                    key,
+                    generation,
+                    LspTransportState.STOPPING,
+                    command=cmd,
+                )
+                await client.abort()
+                self._transition_transport(
+                    key,
+                    generation,
+                    LspTransportState.STOPPED,
+                    command=cmd,
+                )
+            else:
+                await client.abort()
+                self._transition_transport(
+                    key,
+                    generation,
+                    LspTransportState.ERROR,
+                    command=cmd,
+                    error_type="StartCancelled",
+                    error_message="transport start cancelled",
+                )
             raise
         except Exception as e:
             await client.abort()
@@ -1071,11 +1241,36 @@ class LspManager:
             )
             with self._lock:
                 self._re_spawn_counts[key] = self._re_spawn_counts.get(key, 0) + 1
+            self._transition_transport(
+                key,
+                generation,
+                LspTransportState.ERROR,
+                command=cmd,
+                error_type=type(e).__name__,
+                error_message=str(e),
+            )
             return None
 
         with self._lock:
-            self._transports[key] = client
-            self._re_spawn_counts[key] = 0
+            status = self._ensure_transport_status_locked(key)
+            if (
+                status.generation != generation
+                or status.state is not LspTransportState.INITIALIZING
+            ):
+                stale = True
+            else:
+                stale = False
+                self._transports[key] = client
+                self._re_spawn_counts[key] = 0
+                self._record_transport_status_locked(
+                    key,
+                    state=LspTransportState.READY,
+                    generation=generation,
+                    launcher=self._launcher_name(cmd),
+                )
+        if stale:
+            await client.abort()
+            return None
 
         logger.info(
             "LSP server ready (async): lang=%s, root=%s",
@@ -1083,17 +1278,6 @@ class LspManager:
             root,
         )
         return client
-
-    async def _do_spawn(
-        self,
-        client: LspClient,
-        cmd: str,
-        args: list[str],
-        init_opts: dict[str, Any] | None,
-    ) -> None:
-        """Spawn and initialize a client (shared by sync and async paths)."""
-        await client.spawn(cmd, args)
-        await client.initialize(init_opts)
 
     async def _discard_transport_async(
         self,
@@ -1103,11 +1287,40 @@ class LspManager:
         """Remove and shut down a transport on the worker event loop."""
         if client is None:
             return
+        generation: int | None = None
         with self._lock:
             if self._transports.get(key) is client:
                 self._transports.pop(key, None)
-        with suppress(Exception):
-            await client.shutdown()
+                status = self._ensure_transport_status_locked(key)
+                generation = status.generation
+                self._record_transport_status_locked(
+                    key,
+                    state=LspTransportState.STOPPING,
+                    generation=generation,
+                    launcher=status.launcher,
+                )
+        try:
+            if client.is_usable:
+                await client.shutdown()
+            else:
+                await client.abort()
+        except Exception:
+            logger.exception("LSP transport discard failed")
+        if generation is not None:
+            if client.is_alive:
+                self._transition_transport(
+                    key,
+                    generation,
+                    LspTransportState.ERROR,
+                    error_type="ShutdownIncomplete",
+                    error_message="transport remained alive after discard",
+                )
+            else:
+                self._transition_transport(
+                    key,
+                    generation,
+                    LspTransportState.STOPPED,
+                )
 
     async def _shutdown_clients_async(self, *, deadline_at: float) -> bool:
         """Shut down all transports concurrently under one manager deadline."""
@@ -1115,6 +1328,24 @@ class LspManager:
             clients = dict(self._transports)
             self._transports.clear()
             self._last_sync_time.clear()
+            generations: dict[TransportKey, int] = {}
+            for key in clients:
+                status = self._ensure_transport_status_locked(key)
+                generations[key] = status.generation
+                self._record_transport_status_locked(
+                    key,
+                    state=LspTransportState.STOPPING,
+                    generation=status.generation,
+                    launcher=status.launcher,
+                )
+            for key, status in tuple(self._transport_statuses.items()):
+                if key not in clients and status.state is not LspTransportState.STOPPED:
+                    self._record_transport_status_locked(
+                        key,
+                        state=LspTransportState.STOPPED,
+                        generation=status.generation,
+                        launcher=status.launcher,
+                    )
 
         if not clients:
             return True
@@ -1124,10 +1355,16 @@ class LspManager:
                 *(client.abort(deadline_at=deadline_at) for client in clients.values()),
                 return_exceptions=True,
             )
-            return all(not client.is_alive for client in clients.values())
+            completed = all(not client.is_alive for client in clients.values())
+            self._finalize_transport_shutdown_states(clients, generations)
+            return completed
         shutdowns = asyncio.gather(
             *(
-                client.shutdown(deadline_at=deadline_at)
+                (
+                    client.shutdown(deadline_at=deadline_at)
+                    if client.is_usable
+                    else client.abort(deadline_at=deadline_at)
+                )
                 for client in clients.values()
             ),
             return_exceptions=True,
@@ -1137,12 +1374,88 @@ class LspManager:
             await asyncio.wait_for(shutdowns, timeout=remaining)
         except asyncio.TimeoutError:
             timed_out = True
+        self._finalize_transport_shutdown_states(clients, generations)
         return not timed_out and all(
             not client.is_alive for client in clients.values()
         )
 
-    def _on_transport_error(self, lang: LanguageId, reason: str) -> None:
-        """Mark a transport as dead after a worker-thread error."""
+    def _finalize_transport_shutdown_states(
+        self,
+        clients: dict[TransportKey, LspClient],
+        generations: dict[TransportKey, int],
+    ) -> None:
+        for key, client in clients.items():
+            if client.is_alive:
+                self._transition_transport(
+                    key,
+                    generations[key],
+                    LspTransportState.ERROR,
+                    error_type="ShutdownIncomplete",
+                    error_message="transport remained alive after shutdown deadline",
+                )
+            else:
+                self._transition_transport(
+                    key,
+                    generations[key],
+                    LspTransportState.STOPPED,
+                )
+
+    def _on_client_exit(
+        self,
+        key: TransportKey,
+        client: LspClient,
+        generation: int,
+        reason: str,
+        returncode: int | None,
+    ) -> None:
+        """Accept an unexpected exit only from the current ready generation."""
+        changed = False
+        with self._lock:
+            status = self._transport_statuses.get(key)
+            if (
+                self._transports.get(key) is client
+                and status is not None
+                and status.generation == generation
+                and status.state is LspTransportState.READY
+            ):
+                message = reason
+                if returncode is not None:
+                    message += f" (return code {returncode})"
+                self._record_transport_status_locked(
+                    key,
+                    state=LspTransportState.ERROR,
+                    generation=generation,
+                    launcher=status.launcher,
+                    error_type=(
+                        "ProcessExited"
+                        if returncode is not None
+                        else "TransportClosed"
+                    ),
+                    error_message=" ".join(message.split())[:512],
+                )
+                changed = True
+        if changed:
+            logger.warning(
+                "LSP transport exited: language=%s root=%s generation=%d reason=%s",
+                get_language_id_string(key[0]),
+                key[1],
+                generation,
+                reason,
+            )
+
+    def _on_transport_error(
+        self, lang: LanguageId, file_path: Path, reason: str
+    ) -> None:
+        """Mark the current file transport as errored after an I/O failure."""
+        key = self._transport_key(lang, file_path)
+        status = self._ensure_transport_status(key)
+        self._transition_transport(
+            key,
+            status.generation,
+            LspTransportState.ERROR,
+            error_type="TransportIOError",
+            error_message=reason,
+        )
         logger.warning("LSP transport for %s marked dead: %s", lang.name, reason)
 
     # === Internal: Document Sync ===
@@ -1190,15 +1503,150 @@ class LspManager:
             forced_availability = self._availability.get(lang)
         return forced_availability is not False
 
+    def _ensure_transport_status(self, key: TransportKey) -> LspTransportStatus:
+        with self._lock:
+            return self._ensure_transport_status_locked(key)
+
+    def _ensure_transport_status_locked(
+        self, key: TransportKey
+    ) -> LspTransportStatus:
+        status = self._transport_statuses.get(key)
+        if status is not None:
+            return status
+        return self._record_transport_status_locked(
+            key,
+            state=LspTransportState.UNSTARTED,
+            generation=0,
+        )
+
+    def _begin_transport_attempt(self, key: TransportKey, command: str) -> int:
+        """Advance one slot generation and enter resolving atomically."""
+        with self._lock:
+            current = self._ensure_transport_status_locked(key)
+            generation = current.generation + 1
+            self._last_sync_time = {
+                document_key: synced_at
+                for document_key, synced_at in self._last_sync_time.items()
+                if document_key[0] != key
+            }
+            self._record_transport_status_locked(
+                key,
+                state=LspTransportState.RESOLVING,
+                generation=generation,
+                launcher=self._launcher_name(command),
+            )
+            return generation
+
+    def _transition_transport(
+        self,
+        key: TransportKey,
+        generation: int,
+        state: LspTransportState,
+        *,
+        command: str | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        retry_at: float | None = None,
+    ) -> bool:
+        """CAS one transition; stale generation completions are rejected."""
+        with self._lock:
+            current = self._ensure_transport_status_locked(key)
+            if current.generation != generation:
+                return False
+            launcher = (
+                self._launcher_name(command)
+                if command is not None
+                else current.launcher
+            )
+            if state is not LspTransportState.ERROR:
+                error_type = None
+                error_message = None
+                retry_at = None
+            bounded_message = (
+                " ".join(error_message.split())[:512]
+                if error_message is not None
+                else None
+            )
+            if (
+                current.state is state
+                and current.launcher == launcher
+                and current.error_type == error_type
+                and current.error_message == bounded_message
+                and current.retry_at_monotonic == retry_at
+            ):
+                return True
+            self._record_transport_status_locked(
+                key,
+                state=state,
+                generation=generation,
+                launcher=launcher,
+                error_type=error_type,
+                error_message=bounded_message,
+                retry_at=retry_at,
+            )
+            return True
+
+    def _record_transport_status_locked(
+        self,
+        key: TransportKey,
+        *,
+        state: LspTransportState,
+        generation: int,
+        launcher: str | None = None,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        retry_at: float | None = None,
+    ) -> LspTransportStatus:
+        self._next_transport_state_sequence += 1
+        status = LspTransportStatus(
+            language=key[0],
+            workspace_root=key[1],
+            state=state,
+            generation=generation,
+            sequence=self._next_transport_state_sequence,
+            updated_at_monotonic=self._transport_state_clock(),
+            launcher=launcher,
+            error_type=error_type,
+            error_message=error_message,
+            retry_at_monotonic=retry_at,
+        )
+        self._transport_statuses[key] = status
+        self._transport_state_history.append(status)
+        return status
+
+    @staticmethod
+    def _launcher_name(command: str) -> str:
+        return (Path(command).name or command)[:128]
+
+    @staticmethod
+    def _describe_transport_status(status: LspTransportStatus) -> str:
+        description = (
+            f"{get_language_id_string(status.language)}:"
+            f"{status.workspace_root}:g{status.generation}:{status.state.value}"
+        )
+        if status.launcher:
+            description += f":launcher={status.launcher}"
+        if status.error_type:
+            description += f":error={status.error_type}"
+        return description
+
     def _command_available(self, key: TransportKey, command: str) -> bool:
         """Resolve one launcher lazily, retrying missing commands after a TTL."""
+        if self._negative_command_retry_at(key, command) is not None:
+            return False
+        found, _ = self._lookup_command_availability(key, command)
+        return found
+
+    def _negative_command_retry_at(
+        self, key: TransportKey, command: str
+    ) -> float | None:
+        """Return an active negative-cache deadline without touching PATH."""
         lang, root = key
-        lookup_target = self._command_lookup_target(command, root)
-        cache_key = (key, lookup_target)
+        cache_key = (key, self._command_lookup_target(command, root))
         with self._lock:
             forced = self._availability.get(lang)
             if forced is not None:
-                return forced
+                return None
             now = self._availability_clock()
             self._negative_availability_until = {
                 cached_key: expires_at
@@ -1208,20 +1656,32 @@ class LspManager:
             unavailable_until = self._negative_availability_until.get(cache_key, 0)
             if unavailable_until > now:
                 self._availability_metrics["negative_cache_hits"] += 1
-                return False
+                return unavailable_until
+        return None
 
+    def _lookup_command_availability(
+        self, key: TransportKey, command: str
+    ) -> tuple[bool, float | None]:
+        """Perform one launcher lookup and update the negative cache."""
+        lang, root = key
+        lookup_target = self._command_lookup_target(command, root)
+        cache_key = (key, lookup_target)
+        with self._lock:
+            forced = self._availability.get(lang)
+            if forced is not None:
+                return forced, None
         found = self._command_lookup(lookup_target) is not None
         with self._lock:
             self._availability_metrics["lookups"] += 1
             if found:
                 self._availability_metrics["available"] += 1
                 self._negative_availability_until.pop(cache_key, None)
+                retry_at = None
             else:
                 self._availability_metrics["unavailable"] += 1
-                self._negative_availability_until[cache_key] = (
-                    now + MISSING_COMMAND_TTL_SECONDS
-                )
-        return found
+                retry_at = self._availability_clock() + MISSING_COMMAND_TTL_SECONDS
+                self._negative_availability_until[cache_key] = retry_at
+        return found, retry_at
 
     @staticmethod
     def _command_lookup_target(command: str, root: Path) -> str:

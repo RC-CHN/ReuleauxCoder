@@ -137,6 +137,11 @@ def format_effective_config_view(model: EffectiveConfigViewModel) -> str:
     lines = [f"{row.path} = {row.value}  ({row.source})" for row in model.rows]
     for diagnostic in model.diagnostics:
         lines.append(f"! {diagnostic}")
+    if model.lsp_scopes:
+        if lines:
+            lines.append("")
+        lines.append("LSP Scopes:")
+        lines.extend(f"- {scope}" for scope in model.lsp_scopes)
     return "\n".join(lines) or "(no configuration rows)"
 
 
