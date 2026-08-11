@@ -44,6 +44,10 @@ class LspClientError(Exception):
     """Raised when the LSP client encounters a fatal error."""
 
 
+class LspRequestTimedOut(LspClientError):
+    """Raised when an end-to-end LSP operation exhausts its deadline."""
+
+
 class LspClient:
     """Minimal LSP client over stdio."""
 

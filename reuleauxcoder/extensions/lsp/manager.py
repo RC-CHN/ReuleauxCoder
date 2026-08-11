@@ -34,6 +34,7 @@ from reuleauxcoder.domain.runtime.events import (
 from reuleauxcoder.extensions.lsp.client import (
     LspClient,
     LspClientError,
+    LspRequestTimedOut,
     MAX_LSP_FILE_SIZE_BYTES,
 )
 from reuleauxcoder.extensions.lsp.config import LspConfig
@@ -61,6 +62,7 @@ WORKER_SHUTDOWN_TIMEOUT = (
     15.0  # must allow in-flight request to time out (10s) + cleanup
 )
 _WORKER_POLL_INTERVAL = 0.1
+_TOOL_REQUEST_POLL_INTERVAL = 0.05
 SPAWN_TIMEOUT = 30.0
 DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
 MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER = 32
@@ -86,7 +88,8 @@ class ToolRequest:
     method: str
     params: dict[str, Any]
     future: concurrent.futures.Future[Any]
-    timeout: float
+    timeout_seconds: float
+    deadline_at: float
     needs_sync: bool = True  # Whether to sync file content before the query
 
 
@@ -512,10 +515,13 @@ class LspManager:
 
         Raises LspClientError on timeout or server error.
         """
+        if timeout <= 0:
+            raise ValueError("LSP request timeout must be positive")
         lang = detect_language(file_path)
         if lang is None:
             raise LspClientError(f"No LSP support for file type: {file_path.suffix}")
 
+        deadline_at = time.monotonic() + timeout
         # Start worker if not already running.  The worker owns LSP subprocesses,
         # so it also handles lazy spawn before executing the request.
         self.start_worker()
@@ -528,7 +534,8 @@ class LspManager:
             method=method,
             params=params,
             future=future,
-            timeout=timeout,
+            timeout_seconds=timeout,
+            deadline_at=deadline_at,
             needs_sync=True,
         )
 
@@ -539,9 +546,17 @@ class LspManager:
             self._request_condition.notify()
 
         try:
-            return future.result(timeout=timeout)
+            return future.result(timeout=max(0.0, deadline_at - time.monotonic()))
         except concurrent.futures.TimeoutError:
-            raise LspClientError(f"LSP request '{method}' timed out after {timeout}s")
+            # A result settled at the deadline boundary wins. Otherwise this
+            # Future is the cross-thread abandonment signal for the worker.
+            if future.done():
+                return future.result()
+            if not future.cancel():
+                return future.result()
+            with self._lock:
+                self._tool_queue = [item for item in self._tool_queue if item is not req]
+            raise self._timeout_error(req)
 
     # === Internal: Worker Thread ===
 
@@ -583,58 +598,80 @@ class LspManager:
 
     async def _handle_tool_request(self, req: ToolRequest) -> None:
         """Process a synchronous active-tool request."""
+        if req.future.cancelled():
+            return
+        operation = asyncio.create_task(self._execute_tool_request(req))
         try:
-            server = await self._get_or_create_server(req.language_id, req.file_path)
-            if server is None:
-                req.future.set_exception(
-                    LspClientError(
-                        f"No LSP server available for {get_language_id_string(req.language_id)}"
-                    )
+            while not operation.done():
+                if req.future.cancelled():
+                    return
+                if self._abort_current:
+                    raise LspClientError("LSP manager shutting down")
+                remaining = req.deadline_at - time.monotonic()
+                if remaining <= 0:
+                    raise self._timeout_error(req)
+                await asyncio.wait(
+                    {operation},
+                    timeout=min(_TOOL_REQUEST_POLL_INTERVAL, remaining),
                 )
-                return
 
-            # Document sync before query (if needed)
-            if req.needs_sync:
-                stale = self._check_stale(req.language_id, req.file_path)
-                if stale:
-                    content = self._read_file_content(req.file_path)
-                    if content is not None:
-                        key = (
-                            self._transport_key(req.language_id, req.file_path),
-                            req.file_path,
-                        )
-                        last_sync = self._last_sync_time.get(key, 0)
-                        try:
-                            if last_sync == 0:
-                                await server.did_open(req.file_path, content)
-                            else:
-                                await server.did_change(req.file_path, content)
-                            with self._lock:
-                                self._last_sync_time[key] = (
-                                    req.file_path.stat().st_mtime
-                                )
-                        except Exception as e:
-                            logger.debug("LSP sync error (swallowed): %s", e)
-
-            # Execute the actual LSP request
-            if self._abort_current:
-                req.future.set_exception(LspClientError("LSP manager shutting down"))
-                return
-
-            result = await asyncio.wait_for(
-                server.send_request(req.method, req.params),
-                timeout=req.timeout,
-            )
-            req.future.set_result(result)
-
-        except asyncio.TimeoutError:
-            req.future.set_exception(
-                LspClientError(
-                    f"LSP request '{req.method}' timed out after {req.timeout}s"
-                )
-            )
+            result = await operation
+            if not req.future.done():
+                req.future.set_result(result)
+        except asyncio.CancelledError:
+            if not req.future.done():
+                req.future.set_exception(LspClientError("LSP request cancelled"))
         except Exception as e:
-            req.future.set_exception(e)
+            if not req.future.done():
+                req.future.set_exception(e)
+        finally:
+            if not operation.done():
+                operation.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await operation
+
+    async def _execute_tool_request(self, req: ToolRequest) -> Any:
+        """Run start, document sync and query under one caller-owned deadline."""
+        server = await self._get_or_create_server(req.language_id, req.file_path)
+        if server is None:
+            raise LspClientError(
+                f"No LSP server available for {get_language_id_string(req.language_id)}"
+            )
+
+        # Document sync before query (if needed)
+        if req.needs_sync:
+            stale = self._check_stale(req.language_id, req.file_path)
+            if stale:
+                content = self._read_file_content(req.file_path)
+                if content is not None:
+                    key = (
+                        self._transport_key(req.language_id, req.file_path),
+                        req.file_path,
+                    )
+                    last_sync = self._last_sync_time.get(key, 0)
+                    try:
+                        if last_sync == 0:
+                            await server.did_open(req.file_path, content)
+                        else:
+                            await server.did_change(req.file_path, content)
+                        with self._lock:
+                            self._last_sync_time[key] = req.file_path.stat().st_mtime
+                    except Exception as e:
+                        logger.debug("LSP sync error (swallowed): %s", e)
+
+        if self._abort_current:
+            raise LspClientError("LSP manager shutting down")
+        remaining = req.deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise self._timeout_error(req)
+        return await server.send_request(req.method, req.params, timeout=remaining)
+
+    @staticmethod
+    def _timeout_error(req: ToolRequest) -> LspRequestTimedOut:
+        return LspRequestTimedOut(
+            f"LSP request '{req.method}' timed out after "
+            f"{req.timeout_seconds:g}s total"
+        )
 
     async def _handle_diagnostics_request(self, request: DiagnosticRequest) -> None:
         """Process a fire-and-forget diagnostics request."""
