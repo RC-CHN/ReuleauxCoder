@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from reuleauxcoder.domain.agent import tool_execution as tool_execution_module
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
@@ -15,7 +16,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalSectionKind
-from reuleauxcoder.domain.hooks.types import GuardDecision
+from reuleauxcoder.domain.hooks.types import GuardDecision, HookPoint
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
@@ -120,6 +121,59 @@ class _ProbeTool(Tool):
 
     def execute(self, **kwargs) -> str:  # noqa: ARG002
         return self._callback()
+
+
+class _PreEffectProbeTool:
+    name = "pre_effect_probe"
+    description = "Probe pre-effect callback boundaries"
+    parameters = {"type": "object", "properties": {}}
+    effect_class = "read"
+    backend = None
+
+    def __init__(self) -> None:
+        self.execute_calls = 0
+        self.preflight_callback = lambda schema_only: None
+        self.subjects_callback = lambda arguments: ()
+        self.scopes_callback = lambda arguments, subjects: ()
+
+    def preflight_validate(self, arguments, *, schema_only=False):  # noqa: ARG002
+        return self.preflight_callback(schema_only)
+
+    def approval_subjects(self, arguments):
+        return self.subjects_callback(arguments)
+
+    def approval_grant_scopes(self, arguments, subjects):
+        return self.scopes_callback(arguments, subjects)
+
+    def execute(self, **kwargs) -> str:  # noqa: ARG002
+        self.execute_calls += 1
+        return "probe executed"
+
+
+def _assert_safe_pre_effect_failure(
+    *,
+    agent: _AgentStub,
+    result: str,
+    tool: _PreEffectProbeTool,
+    phase: str,
+    error_type: str,
+    secret: str,
+) -> None:
+    outcome = agent.events[-1].tool_outcome
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.error_kind is ToolErrorKind.INTERNAL
+    assert outcome.metadata == {
+        "failure_phase": phase,
+        "error_type": error_type,
+        "effect_state": "not_started",
+    }
+    assert f"phase={phase}" in result
+    assert f"error_type={error_type}" in result
+    assert "effect_state=not_started" in result
+    assert secret not in result
+    assert secret not in outcome.display_text
+    assert secret not in repr(outcome.metadata)
+    assert tool.execute_calls == 0
 
 
 def test_shell_cwd_syncs_to_runtime_working_directory() -> None:
@@ -252,6 +306,9 @@ def test_missing_required_arguments_are_rejected_before_execution(tmp_path) -> N
     outcome = agent.events[-1].tool_outcome
     assert outcome.error_kind is ToolErrorKind.INVALID_ARGUMENTS
     assert outcome.metadata["missing_arguments"] == ("content",)
+    assert outcome.metadata["failure_phase"] == "schema_validation"
+    assert outcome.metadata["error_type"] == "ToolPreflightRejected"
+    assert outcome.metadata["effect_state"] == "not_started"
     assert agent.events[-1].tool_result == outcome.display_text
     assert result == outcome.model_text
     assert outcome.display_text != outcome.model_text
@@ -299,7 +356,8 @@ def test_authorization_receives_canonical_approval_subjects(tmp_path) -> None:
         )
     )
 
-    assert result == "stop after observing context"
+    assert "stop after observing context" in result
+    assert "phase=authorize" in result
     assert authorization_contexts[0].metadata["approval_subjects"] == (
         "src/demo.py",
     )
@@ -375,6 +433,393 @@ class _DenyingProvider:
     def request_approval(self, request):
         self.requests.append(request)
         return ApprovalDecision.deny_once("external path rejected")
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_phase"),
+    [
+        ("schema", "schema_validation"),
+        ("environment", "environment_preflight"),
+        ("approval_subjects", "approval_subjects"),
+        ("authorize", "authorize"),
+        ("context_contribution", "context_contribution"),
+        ("execution_setup", "execution_setup"),
+    ],
+)
+def test_primary_pre_effect_callback_failures_are_safe_and_fail_closed(
+    stage,
+    expected_phase,
+) -> None:
+    secret = "provider-internal-secret"
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+
+    def fail(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError(secret)
+
+    if stage == "schema":
+        tool.preflight_callback = lambda schema_only: fail() if schema_only else None
+    elif stage == "environment":
+        tool.preflight_callback = lambda schema_only: None if schema_only else fail()
+    elif stage == "approval_subjects":
+        tool.subjects_callback = fail
+    elif stage == "authorize":
+        agent.extension_runtime.authorize_tool = fail
+    elif stage == "context_contribution":
+        agent.extension_runtime.contribute_tool_context = fail
+    else:
+        tool.bind_execution = fail
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id=f"pre-effect-{stage}", name=tool.name, arguments={})
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase=expected_phase,
+        error_type="RuntimeError",
+        secret=secret,
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_phase", "error_type"),
+    [
+        (
+            "approval_subjects",
+            "approval_subjects",
+            "InvalidApprovalSubjectsResult",
+        ),
+        ("authorize", "authorize", "InvalidAuthorizationResult"),
+        ("approval_scope", "approval_scope", "InvalidApprovalScopeResult"),
+        ("approval_preview", "approval_preview", "InvalidApprovalPreview"),
+        (
+            "context_contribution",
+            "context_contribution",
+            "InvalidContextContributionResult",
+        ),
+    ],
+)
+def test_malformed_pre_effect_callback_results_fail_closed(
+    monkeypatch,
+    stage,
+    expected_phase,
+    error_type,
+) -> None:
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+
+    if stage == "approval_subjects":
+        tool.subjects_callback = lambda arguments: ("valid", object())
+    elif stage == "authorize":
+        agent.extension_runtime.authorize_tool = lambda context: (
+            GuardDecision(allowed="not-a-bool"),  # type: ignore[arg-type]
+        )
+    elif stage == "context_contribution":
+        agent.extension_runtime.contribute_tool_context = lambda context: object()
+    else:
+        agent.extension_runtime.authorize_tool = lambda context: (
+            GuardDecision.require_approval("review probe"),
+        )
+        agent.approval_provider = _ReviewingProvider()
+        if stage == "approval_scope":
+            tool.scopes_callback = lambda arguments, subjects: (object(),)
+        else:
+            monkeypatch.setattr(
+                tool_execution_module,
+                "build_approval_preview",
+                lambda request, workspace: object(),
+            )
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id=f"malformed-{stage}", name=tool.name, arguments={})
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase=expected_phase,
+        error_type=error_type,
+        secret="not-a-bool",
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_phase"),
+    [
+        ("schema", "schema_validation"),
+        ("environment", "environment_preflight"),
+    ],
+)
+@pytest.mark.parametrize(
+    "invalid_result",
+    [
+        object(),
+        ToolOutcome(status=ToolOutcomeStatus.SUCCEEDED, content="not a failure"),
+    ],
+)
+def test_invalid_preflight_results_do_not_authorize_execution(
+    stage,
+    expected_phase,
+    invalid_result,
+) -> None:
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+    tool.preflight_callback = (
+        (lambda schema_only: invalid_result if schema_only else None)
+        if stage == "schema"
+        else (lambda schema_only: None if schema_only else invalid_result)
+    )
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id=f"invalid-preflight-{stage}", name=tool.name, arguments={})
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase=expected_phase,
+        error_type="InvalidPreflightResult",
+        secret="not a failure",
+    )
+
+
+def test_invalid_post_approval_preflight_result_does_not_start_effect(tmp_path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = tmp_path / "outside.txt"
+    tool = _PreEffectProbeTool()
+    tool.name = "write_file"
+    tool.backend = LocalToolBackend(
+        ExecutionContext(cwd=str(root), workspace_root=str(root))
+    )
+    preflight_calls = []
+
+    def preflight(schema_only):
+        preflight_calls.append(schema_only)
+        if schema_only:
+            return None
+        return ToolOutcome(
+            status=ToolOutcomeStatus.SUCCEEDED,
+            content="malformed successful preflight",
+        )
+
+    tool.preflight_callback = preflight
+    agent = _AgentStub(tool)
+    agent.approval_provider = _ReviewingProvider()
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="invalid-post-approval-preflight",
+            name=tool.name,
+            arguments={"file_path": str(target), "content": "blocked\n"},
+        )
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase="post_approval_preflight",
+        error_type="InvalidPreflightResult",
+        secret="malformed successful preflight",
+    )
+    assert preflight_calls == [True, False]
+    assert not target.exists()
+
+
+def test_approval_scope_key_failure_is_safe_and_fail_closed(monkeypatch) -> None:
+    secret = "scope-key-secret"
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+
+    def fail(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(tool_execution_module, "approval_scope_key", fail)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="scope-key-failure", name=tool.name, arguments={})
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase="approval_scope",
+        error_type="RuntimeError",
+        secret=secret,
+    )
+
+
+def test_workspace_target_failure_is_safe_and_fail_closed() -> None:
+    secret = "workspace-adapter-secret"
+    tool = _PreEffectProbeTool()
+    tool.name = "read_file"
+
+    class BrokenWorkspace:
+        def external_path(self, path):  # noqa: ARG002
+            raise RuntimeError(secret)
+
+        def grant_external_path(self, path):  # noqa: ARG002
+            raise AssertionError("access must not be granted after inspection fails")
+
+    tool.backend = SimpleNamespace(workspace=BrokenWorkspace())
+    agent = _AgentStub(tool)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(
+            id="workspace-target-failure",
+            name=tool.name,
+            arguments={"file_path": "target.txt"},
+        )
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase="workspace_target",
+        error_type="RuntimeError",
+        secret=secret,
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_phase"),
+    [
+        ("approval_scope", "approval_scope"),
+        ("approval_preview", "approval_preview"),
+        ("approval_provider", "approval_provider"),
+    ],
+)
+def test_primary_approval_callback_failures_are_safe_and_fail_closed(
+    monkeypatch,
+    stage,
+    expected_phase,
+) -> None:
+    secret = "approval-callback-secret"
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+    agent.extension_runtime.authorize_tool = lambda context: (
+        GuardDecision.require_approval("review probe"),
+    )
+
+    def fail(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError(secret)
+
+    if stage == "approval_scope":
+        tool.scopes_callback = fail
+        agent.approval_provider = _ReviewingProvider()
+    elif stage == "approval_preview":
+        monkeypatch.setattr(tool_execution_module, "build_approval_preview", fail)
+        agent.approval_provider = _ReviewingProvider()
+    else:
+        agent.approval_provider = SimpleNamespace(request_approval=fail)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id=f"{stage}-failure", name=tool.name, arguments={})
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase=expected_phase,
+        error_type="RuntimeError",
+        secret=secret,
+    )
+
+
+def test_invalid_approval_decision_is_a_visible_pre_effect_failure() -> None:
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+    agent.extension_runtime.authorize_tool = lambda context: (
+        GuardDecision.require_approval("review probe"),
+    )
+    agent.approval_provider = SimpleNamespace(
+        request_approval=lambda request: object()
+    )
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="invalid-approval-decision", name=tool.name, arguments={})
+    )
+
+    _assert_safe_pre_effect_failure(
+        agent=agent,
+        result=result,
+        tool=tool,
+        phase="approval_decision",
+        error_type="InvalidApprovalDecisionResult",
+        secret="object at",
+    )
+
+
+def test_before_execute_observer_failure_is_visible_but_non_fatal() -> None:
+    secret = "observer-secret"
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+
+    def observe(point, context):  # noqa: ARG001
+        if point is HookPoint.BEFORE_TOOL_EXECUTE:
+            raise RuntimeError(secret)
+
+    agent.extension_runtime.observe = observe
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="observer-failure", name=tool.name, arguments={})
+    )
+
+    assert result == "probe executed"
+    assert tool.execute_calls == 1
+    diagnostic = next(
+        event
+        for event in agent.events
+        if event.data.get("code") == "tool.secondary_failure"
+    )
+    assert diagnostic.data["details"] == {
+        "tool_name": tool.name,
+        "tool_call_id": "observer-failure",
+        "failure_phase": "before_execute_observer",
+        "error_type": "RuntimeError",
+    }
+    assert secret not in repr(agent.events)
+
+
+def test_approval_monitor_failure_is_visible_but_does_not_block_effect() -> None:
+    secret = "monitor-secret"
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+    agent.extension_runtime.authorize_tool = lambda context: (
+        GuardDecision.require_approval("review probe"),
+    )
+    agent.approval_provider = _ReviewingProvider()
+
+    class BrokenApprovalMonitor:
+        def record(self, category, name, *args, **kwargs):  # noqa: ARG002
+            if name == "approval_wait":
+                raise RuntimeError(secret)
+
+    agent.performance_monitor = BrokenApprovalMonitor()
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="approval-monitor-failure", name=tool.name, arguments={})
+    )
+
+    assert result == "probe executed"
+    assert tool.execute_calls == 1
+    diagnostic = next(
+        event
+        for event in agent.events
+        if event.data.get("code") == "tool.secondary_failure"
+    )
+    assert diagnostic.data["details"]["failure_phase"] == "approval_monitor"
+    assert diagnostic.data["details"]["error_type"] == "RuntimeError"
+    assert secret not in repr(agent.events)
 
 
 @pytest.mark.parametrize(
@@ -456,7 +901,8 @@ def test_external_readonly_tool_still_honors_explicit_approval_policy(
         )
     )
 
-    assert result == "external path rejected"
+    assert "external path rejected" in result
+    assert "phase=approval_decision" in result
     assert len(provider.requests) == 1
     request = provider.requests[0]
     assert request.metadata["force_human_review"] is False
@@ -645,7 +1091,8 @@ def test_denied_external_write_does_not_create_target(tmp_path) -> None:
         )
     )
 
-    assert result == "external path rejected"
+    assert "external path rejected" in result
+    assert "phase=approval_decision" in result
     assert not target.exists()
     assert len(provider.requests) == 1
 

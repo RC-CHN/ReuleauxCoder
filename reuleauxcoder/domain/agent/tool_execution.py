@@ -5,7 +5,9 @@ from __future__ import annotations
 import concurrent.futures
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
+from dataclasses import dataclass
 from difflib import get_close_matches
+import logging
 import time
 from typing import TYPE_CHECKING, List, cast
 
@@ -21,8 +23,10 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.approval import (
+    ApprovalDecision,
     ApprovalGrantCandidate,
     ApprovalGrantScope,
+    ApprovalPreview,
     ApprovalRequest,
     ApprovalSectionKind,
 )
@@ -40,7 +44,7 @@ from reuleauxcoder.domain.hooks.types import (
     GuardDecision,
     HookPoint,
 )
-from reuleauxcoder.domain.workspace import WorkspaceError, WorkspaceRevision
+from reuleauxcoder.domain.workspace import WorkspaceRevision
 from reuleauxcoder.extensions.tools.base import InterruptMode
 
 
@@ -54,6 +58,82 @@ _EXTERNAL_PATH_ARGUMENTS = {
     "write_file": "file_path",
 }
 _EXTERNAL_MUTATION_TOOLS = frozenset({"edit_file", "write_file"})
+_LOG = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _PreEffectState:
+    phase: str = "interrupt_check"
+    effect_started: bool = False
+
+
+class InvalidPreflightResult(RuntimeError):
+    """A preflight callback returned a value that cannot safely authorize work."""
+
+
+class InvalidApprovalSubjectsResult(RuntimeError):
+    """An approval-subject callback returned malformed resource identities."""
+
+
+class InvalidApprovalScopeResult(RuntimeError):
+    """An approval-scope callback returned malformed reusable grants."""
+
+
+class InvalidAuthorizationResult(RuntimeError):
+    """An authorization callback returned malformed guard decisions."""
+
+
+class InvalidApprovalPreview(RuntimeError):
+    """An approval preview callback returned an invalid review payload."""
+
+
+class InvalidApprovalDecisionResult(RuntimeError):
+    """An approval provider returned a value outside its typed contract."""
+
+
+class InvalidContextContributionResult(RuntimeError):
+    """A context contributor returned a value outside its typed contract."""
+
+
+def _safe_pre_effect_error_type(error: BaseException) -> str:
+    name = type(error).__name__
+    if (
+        not name
+        or len(name) > 64
+        or not name.isascii()
+        or not name.replace("_", "").isalnum()
+    ):
+        return "Exception"
+    return name
+
+
+def _validated_preflight_failure(value: object) -> ToolOutcome | None:
+    if value is None:
+        return None
+    if not isinstance(value, ToolOutcome) or value.success:
+        raise InvalidPreflightResult
+    return value
+
+
+def _with_pre_effect_facts(
+    outcome: ToolOutcome,
+    *,
+    phase: str,
+    error_type: str,
+) -> ToolOutcome:
+    fact = (
+        "Tool execution stopped before effects began "
+        f"(phase={phase}, error_type={error_type}, effect_state=not_started)."
+    )
+    return outcome.with_model_projection(
+        f"{fact}\n\n{outcome.model_text}",
+        truncation=outcome.truncation,
+        archive_reference=outcome.archive_reference,
+    ).with_metadata(
+        failure_phase=phase,
+        error_type=error_type,
+        effect_state="not_started",
+    )
 
 
 def _approval_grant_candidates(
@@ -68,12 +148,9 @@ def _approval_grant_candidates(
 ) -> tuple[ApprovalGrantCandidate, ...]:
     build_scopes = getattr(tool, "approval_grant_scopes", None)
     raw_scopes = build_scopes(tc.arguments, subjects) if callable(build_scopes) else ()
-    scope_items = raw_scopes if isinstance(raw_scopes, (tuple, list)) else ()
-    scopes = tuple(
-        scope
-        for scope in scope_items
-        if isinstance(scope, ApprovalGrantScope)
-    )
+    if not isinstance(raw_scopes, (tuple, list)):
+        raise InvalidApprovalScopeResult
+    scopes = tuple(raw_scopes)
     if not scopes and tool_source == "mcp":
         scopes = (
             ApprovalGrantScope(
@@ -88,8 +165,22 @@ def _approval_grant_candidates(
     candidates: list[ApprovalGrantCandidate] = []
     seen_ids: set[str] = set()
     for scope in scopes:
-        if not scope.id or scope.id in seen_ids:
-            continue
+        if (
+            not isinstance(scope, ApprovalGrantScope)
+            or not isinstance(scope.id, str)
+            or not scope.id.strip()
+            or scope.id in seen_ids
+            or not isinstance(scope.label, str)
+            or not scope.label.strip()
+            or not isinstance(scope.description, str)
+            or not isinstance(scope.patterns, (tuple, list))
+            or any(
+                not isinstance(pattern, str) or not pattern
+                for pattern in scope.patterns
+            )
+            or not isinstance(scope.broad, bool)
+        ):
+            raise InvalidApprovalScopeResult
         seen_ids.add(scope.id)
         patterns: tuple[str | None, ...] = (
             tuple(scope.patterns) if scope.patterns else (None,)
@@ -139,10 +230,7 @@ def _external_workspace_target(tool, arguments: dict) -> str | None:
         return None
     if not isinstance(file_path, str) or not file_path:
         return None
-    try:
-        external = inspect_external(file_path)
-    except (WorkspaceError, OSError, ValueError):
-        return None
+    external = inspect_external(file_path)
     return str(external) if external is not None else None
 
 
@@ -248,16 +336,117 @@ class ToolExecutor:
 
         return _CompatibilityStopSignal()
 
-    def _finish_rejected_call(self, tc: "ToolCall", outcome: ToolOutcome) -> str:
-        self.agent._emit_event(
-            AgentEvent.tool_call_end(
-                tc.name,
-                outcome.display_text,
-                success=False,
-                tool_call_id=tc.id,
-                outcome=outcome,
-            )
+    @staticmethod
+    def _pre_effect_failure_outcome(
+        phase: str,
+        error: BaseException,
+    ) -> ToolOutcome:
+        error_type = _safe_pre_effect_error_type(error)
+        message = (
+            "Tool execution failed before effects began "
+            f"(phase={phase}, error_type={error_type}, effect_state=not_started)."
         )
+        return ToolOutcome(
+            status=ToolOutcomeStatus.FAILED,
+            summary="Tool pre-execution failed",
+            content=message,
+            model_content=message,
+            error_kind=ToolErrorKind.INTERNAL,
+            metadata={
+                "failure_phase": phase,
+                "error_type": error_type,
+                "effect_state": "not_started",
+            },
+        )
+
+    @staticmethod
+    def _pre_effect_denial_outcome(
+        message: str,
+        *,
+        phase: str,
+        error_type: str,
+    ) -> ToolOutcome:
+        facts = (
+            "Tool execution denied before effects began "
+            f"(phase={phase}, error_type={error_type}, effect_state=not_started)."
+        )
+        return ToolOutcome(
+            status=ToolOutcomeStatus.DENIED,
+            summary="Tool execution denied",
+            content=f"{facts}\n\n{message}",
+            error_kind=ToolErrorKind.DENIED,
+            metadata={
+                "failure_phase": phase,
+                "error_type": error_type,
+                "effect_state": "not_started",
+            },
+        )
+
+    def _record_secondary_failure(
+        self,
+        tc: "ToolCall",
+        *,
+        phase: str,
+        error: BaseException,
+    ) -> None:
+        error_type = _safe_pre_effect_error_type(error)
+        try:
+            _LOG.warning(
+                "Tool secondary observer failed: phase=%s error_type=%s tool_call_id=%s",
+                phase,
+                error_type,
+                tc.id,
+            )
+        except Exception:
+            pass
+        try:
+            self.agent._emit_event(
+                AgentEvent.diagnostic(
+                    "Tool secondary observer failed "
+                    f"(phase={phase}, error_type={error_type}).",
+                    code="tool.secondary_failure",
+                    details={
+                        "tool_name": tc.name,
+                        "tool_call_id": tc.id,
+                        "failure_phase": phase,
+                        "error_type": error_type,
+                    },
+                )
+            )
+        except Exception as diagnostic_error:
+            try:
+                _LOG.warning(
+                    "Tool secondary diagnostic emission failed: error_type=%s",
+                    _safe_pre_effect_error_type(diagnostic_error),
+                )
+            except Exception:
+                pass
+
+    def _finish_rejected_call(self, tc: "ToolCall", outcome: ToolOutcome) -> str:
+        try:
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(
+                    tc.name,
+                    outcome.display_text,
+                    success=False,
+                    tool_call_id=tc.id,
+                    outcome=outcome,
+                )
+            )
+        except Exception as error:
+            error_type = _safe_pre_effect_error_type(error)
+            try:
+                _LOG.warning(
+                    "Tool rejection event emission failed: error_type=%s tool_call_id=%s",
+                    error_type,
+                    tc.id,
+                )
+            except Exception:
+                pass
+            return (
+                f"{outcome.model_text}\n\nTool failure event emission failed "
+                f"(phase=failure_event, error_type={error_type})."
+            )
         return outcome.model_text
 
     def _unknown_tool_outcome(self, tool_name: str) -> ToolOutcome:
@@ -328,6 +517,28 @@ class ToolExecutor:
         *,
         interrupt_baseline: int | None = None,
     ) -> str:
+        pre_effect = _PreEffectState()
+        try:
+            return self._execute_pipeline(
+                tc,
+                interrupt_baseline=interrupt_baseline,
+                pre_effect=pre_effect,
+            )
+        except Exception as error:
+            if pre_effect.effect_started:
+                raise
+            return self._finish_rejected_call(
+                tc,
+                self._pre_effect_failure_outcome(pre_effect.phase, error),
+            )
+
+    def _execute_pipeline(
+        self,
+        tc: "ToolCall",
+        *,
+        interrupt_baseline: int | None,
+        pre_effect: _PreEffectState,
+    ) -> str:
         """Execute a single tool call."""
         if interrupt_baseline is not None and (
             self._stop_requested()
@@ -353,13 +564,16 @@ class ToolExecutor:
         reviewed_diff: str | None = None
         approval_workspace_changes: list[str] = []
         expected_workspace_revision: WorkspaceRevision | None = None
+        pre_effect.phase = "tool_lookup"
         tool = self.agent.get_tool(tc.name)
+        pre_effect.phase = "tool_scope"
         if tool is None and (
             getattr(self.agent, "strict_tool_scope", False)
             or self.agent.is_tool_in_scope(tc.name)
         ):
             return self._finish_rejected_call(tc, self._unknown_tool_outcome(tc.name))
 
+        pre_effect.phase = "mode_policy"
         if not self.agent.is_tool_allowed_in_mode(tc.name):
             mode_name = self.agent.active_mode or "default"
             suggested_modes = self.agent.suggest_modes_for_tool(tc.name)
@@ -375,35 +589,52 @@ class ToolExecutor:
                 message = (
                     f"Tool '{tc.name}' is not available in current mode '{mode_name}'"
                 )
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tc.name, message, success=False, tool_call_id=tc.id
-                )
+            return self._finish_rejected_call(
+                tc,
+                self._pre_effect_denial_outcome(
+                    message,
+                    phase="mode_policy",
+                    error_type="ToolModeDenied",
+                ),
             )
-            return message
 
         approval_subjects: tuple[str, ...] = ()
         if tool is not None:
-            schema_failure = tool.preflight_validate(
-                tc.arguments,
-                schema_only=True,
+            pre_effect.phase = "schema_validation"
+            schema_failure = _validated_preflight_failure(
+                tool.preflight_validate(
+                    tc.arguments,
+                    schema_only=True,
+                )
             )
             if schema_failure is not None:
-                return self._finish_rejected_call(tc, schema_failure)
+                return self._finish_rejected_call(
+                    tc,
+                    _with_pre_effect_facts(
+                        schema_failure,
+                        phase="schema_validation",
+                        error_type="ToolPreflightRejected",
+                    ),
+                )
+            pre_effect.phase = "approval_subjects"
             build_subjects = getattr(tool, "approval_subjects", None)
             if callable(build_subjects):
                 built_subjects = build_subjects(tc.arguments)
-                if isinstance(built_subjects, (tuple, list)):
-                    approval_subjects = tuple(
-                        subject
-                        for subject in built_subjects
-                        if isinstance(subject, str) and subject
-                    )
+                if not isinstance(built_subjects, (tuple, list)) or any(
+                    not isinstance(subject, str) or not subject.strip()
+                    for subject in built_subjects
+                ) or len(set(built_subjects)) != len(built_subjects):
+                    raise InvalidApprovalSubjectsResult
+                approval_subjects = tuple(built_subjects)
 
+        pre_effect.phase = "approval_scope"
         current_scope_key = approval_scope_key(
             tool,
             session_id=self.agent.current_session_id,
         )
+        if not isinstance(current_scope_key, str) or not current_scope_key:
+            raise InvalidApprovalScopeResult
+        pre_effect.phase = "authorization_context"
         before_context = BeforeToolExecuteContext(
             hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
             agent_id=self.agent.agent_id,
@@ -430,45 +661,78 @@ class ToolExecutor:
         # -> authorize -> environment validation -> approve -> contribute ->
         # execute -> process outcome -> observe -> publish. Extension code
         # cannot reorder or bypass the core stages.
-        guard_decisions = self.agent.extension_runtime.authorize_tool(before_context)
+        pre_effect.phase = "authorize"
+        raw_guard_decisions = self.agent.extension_runtime.authorize_tool(before_context)
+        if not isinstance(raw_guard_decisions, (tuple, list)) or any(
+            not isinstance(decision, GuardDecision)
+            or not isinstance(decision.allowed, bool)
+            or (
+                decision.reason is not None
+                and not isinstance(decision.reason, str)
+            )
+            or (
+                decision.warning is not None
+                and not isinstance(decision.warning, str)
+            )
+            or not isinstance(decision.requires_approval, bool)
+            for decision in raw_guard_decisions
+        ):
+            raise InvalidAuthorizationResult
+        guard_decisions = tuple(raw_guard_decisions)
         denied = next((d for d in guard_decisions if not d.allowed), None)
         if denied is not None:
             message = denied.reason or f"Tool '{tc.name}' blocked by guard hook"
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tc.name,
+            return self._finish_rejected_call(
+                tc,
+                self._pre_effect_denial_outcome(
                     message,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=ToolOutcome.from_legacy(
-                        message, success=False, error_kind=ToolErrorKind.DENIED
-                    ),
-                )
+                    phase="authorize",
+                    error_type="ToolAuthorizationDenied",
+                ),
             )
-            return message
 
         for decision in guard_decisions:
             if decision.warning:
-                self.agent._emit_event(
-                    AgentEvent.diagnostic(
-                        decision.warning,
-                        code="tool.guard_warning",
-                        details={"tool_name": tc.name, "tool_call_id": tc.id},
+                try:
+                    self.agent._emit_event(
+                        AgentEvent.diagnostic(
+                            decision.warning,
+                            code="tool.guard_warning",
+                            details={"tool_name": tc.name, "tool_call_id": tc.id},
+                        )
                     )
-                )
+                except Exception as error:
+                    self._record_secondary_failure(
+                        tc,
+                        phase="guard_warning_observer",
+                        error=error,
+                    )
 
+        pre_effect.phase = "workspace_target"
         external_target = _external_workspace_target(tool, tc.arguments)
         external_mutation = (
             external_target is not None and tc.name in _EXTERNAL_MUTATION_TOOLS
         )
+        pre_effect.phase = "tool_environment"
         backend = getattr(tool, "backend", None)
         workspace = getattr(backend, "workspace", None)
         if tool is not None:
             if not external_mutation:
+                pre_effect.phase = "environment_preflight"
                 with _workspace_access_scope(workspace, external_target):
-                    preflight_failure = tool.preflight_validate(tc.arguments)
+                    preflight_failure = _validated_preflight_failure(
+                        tool.preflight_validate(tc.arguments)
+                    )
                 if preflight_failure is not None:
-                    return self._finish_rejected_call(tc, preflight_failure)
+                    return self._finish_rejected_call(
+                        tc,
+                        _with_pre_effect_facts(
+                            preflight_failure,
+                            phase="environment_preflight",
+                            error_type="ToolPreflightRejected",
+                        ),
+                    )
+                pre_effect.phase = "document_snapshot"
                 with _workspace_access_scope(workspace, external_target):
                     prepared_document = capture_workspace_document(
                         tc.name,
@@ -478,6 +742,7 @@ class ToolExecutor:
                 if prepared_document is not None:
                     expected_workspace_revision = prepared_document.revision
 
+        pre_effect.phase = "approval_policy"
         if external_mutation:
             approval_required = GuardDecision.require_approval(
                 "Target is outside the workspace. Approval grants this tool call "
@@ -488,18 +753,21 @@ class ToolExecutor:
                 (d for d in guard_decisions if d.requires_approval), None
             )
         if approval_required is not None:
+            pre_effect.phase = "approval_provider"
             provider = self.agent.approval_provider
             if provider is None:
                 message = (
                     approval_required.reason
                     or f"Tool '{tc.name}' requires approval, but no approval provider is configured"
                 )
-                self.agent._emit_event(
-                    AgentEvent.tool_call_end(
-                        tc.name, message, success=False, tool_call_id=tc.id
-                    )
+                return self._finish_rejected_call(
+                    tc,
+                    self._pre_effect_denial_outcome(
+                        message,
+                        phase="approval_provider",
+                        error_type="ApprovalProviderUnavailable",
+                    ),
                 )
-                return message
             try:
                 for approval_attempt in range(3):
                     tool_source = str(
@@ -507,6 +775,7 @@ class ToolExecutor:
                     )
                     mcp_server = before_context.metadata.get("mcp_server")
                     profile = before_context.metadata.get("profile")
+                    pre_effect.phase = "approval_scope"
                     grant_candidates = _approval_grant_candidates(
                         tool,
                         tc,
@@ -524,6 +793,7 @@ class ToolExecutor:
                             for candidate in grant_candidates
                             if not candidate.broad
                         )
+                    pre_effect.phase = "approval_request"
                     approval_request = ApprovalRequest(
                         tool_name=tc.name,
                         tool_args=dict(tc.arguments),
@@ -570,6 +840,7 @@ class ToolExecutor:
                         tc.arguments.get("reason"), str
                     ):
                         approval_request.reason = tc.arguments["reason"].strip()
+                    pre_effect.phase = "approval_preview"
                     with _workspace_access_scope(workspace, external_target):
                         before_approval = capture_approval_document(
                             approval_request, workspace=workspace
@@ -586,28 +857,73 @@ class ToolExecutor:
                             approval_request.metadata["approval_operation"] = (
                                 "Run command"
                             )
-                        approval_request.preview = build_approval_preview(
+                        preview = build_approval_preview(
                             approval_request, workspace=workspace
                         )
-                    monitor = getattr(self.agent, "performance_monitor", None)
-                    approval_measurement = (
-                        monitor.measure(
-                            "tool",
-                            "approval_wait",
-                            attributes={
-                                "tool_name": tc.name,
-                                "tool_call_id": tc.id,
-                                "approval_attempt": approval_attempt + 1,
-                                "turn_id": self.agent._current_turn_id,
-                            },
+                        if not isinstance(preview, ApprovalPreview):
+                            raise InvalidApprovalPreview
+                        approval_request.preview = preview
+                    pre_effect.phase = "approval_provider"
+                    try:
+                        monitor = getattr(self.agent, "performance_monitor", None)
+                    except Exception as error:
+                        monitor = None
+                        self._record_secondary_failure(
+                            tc,
+                            phase="approval_monitor",
+                            error=error,
                         )
-                        if monitor is not None
-                        else nullcontext()
-                    )
-                    with approval_measurement:
+                    approval_started = time.monotonic()
+                    approval_status = "ok"
+                    try:
                         decision = provider.request_approval(approval_request)
+                    except BaseException:
+                        approval_status = "error"
+                        raise
+                    finally:
+                        if monitor is not None:
+                            try:
+                                monitor.record(
+                                    "tool",
+                                    "approval_wait",
+                                    (time.monotonic() - approval_started) * 1000,
+                                    status=approval_status,
+                                    attributes={
+                                        "tool_name": tc.name,
+                                        "tool_call_id": tc.id,
+                                        "approval_attempt": approval_attempt + 1,
+                                        "turn_id": self.agent._current_turn_id,
+                                    },
+                                )
+                            except Exception as error:
+                                self._record_secondary_failure(
+                                    tc,
+                                    phase="approval_monitor",
+                                    error=error,
+                                )
+                    pre_effect.phase = "approval_decision"
+                    if (
+                        not isinstance(decision, ApprovalDecision)
+                        or decision.mode
+                        not in {"allow_once", "allow_session", "deny_once"}
+                        or (
+                            decision.reason is not None
+                            and not isinstance(decision.reason, str)
+                        )
+                        or not isinstance(decision.reviewed, bool)
+                        or (
+                            decision.grant is not None
+                            and not isinstance(decision.grant, ApprovalGrantCandidate)
+                        )
+                        or (
+                            decision.mode == "allow_session"
+                            and decision.grant is None
+                        )
+                    ):
+                        raise InvalidApprovalDecisionResult
                     if not decision.approved:
                         break
+                    pre_effect.phase = "approval_revalidation"
                     with _workspace_access_scope(workspace, external_target):
                         after_approval = capture_approval_document(
                             approval_request, workspace=workspace
@@ -624,6 +940,7 @@ class ToolExecutor:
                             expected_workspace_revision = after_approval.revision
                         break
                     if before_approval is not None and after_approval is not None:
+                        pre_effect.phase = "approval_revalidation"
                         approval_workspace_changes.append(
                             diff_approval_documents(before_approval, after_approval)
                         )
@@ -632,31 +949,54 @@ class ToolExecutor:
                         f"Tool '{tc.name}' target kept changing during approval; "
                         "retry after editor changes settle"
                     )
-                    self.agent._emit_event(
-                        AgentEvent.tool_call_end(
-                            tc.name, message, success=False, tool_call_id=tc.id
-                        )
+                    return self._finish_rejected_call(
+                        tc,
+                        ToolOutcome(
+                            status=ToolOutcomeStatus.FAILED,
+                            content=(
+                                "Tool execution failed before effects began "
+                                "(phase=approval_revalidation, "
+                                "error_type=ApprovalTargetUnstable, "
+                                "effect_state=not_started).\n\n"
+                                f"{message}"
+                            ),
+                            error_kind=ToolErrorKind.EXECUTION,
+                            metadata={
+                                "failure_phase": "approval_revalidation",
+                                "error_type": "ApprovalTargetUnstable",
+                                "effect_state": "not_started",
+                            },
+                        ),
                     )
-                    return message
             except (KeyboardInterrupt, EOFError):
                 message = f"Tool '{tc.name}' approval interrupted by user"
-                self.agent._emit_event(
-                    AgentEvent.tool_call_end(
-                        tc.name, message, success=False, tool_call_id=tc.id
-                    )
+                return self._finish_rejected_call(
+                    tc,
+                    ToolOutcome(
+                        status=ToolOutcomeStatus.CANCELLED,
+                        content=message,
+                        error_kind=ToolErrorKind.INTERRUPTED,
+                        metadata={
+                            "failure_phase": "approval_provider",
+                            "error_type": "ApprovalInterrupted",
+                            "effect_state": "not_started",
+                        },
+                    ),
                 )
-                return message
 
+            pre_effect.phase = "approval_decision"
             if not decision.approved:
                 message = (
                     decision.reason or f"Tool '{tc.name}' denied by approval provider"
                 )
-                self.agent._emit_event(
-                    AgentEvent.tool_call_end(
-                        tc.name, message, success=False, tool_call_id=tc.id
-                    )
+                return self._finish_rejected_call(
+                    tc,
+                    self._pre_effect_denial_outcome(
+                        message,
+                        phase="approval_decision",
+                        error_type="ApprovalDenied",
+                    ),
                 )
-                return message
             if decision.reviewed and approval_request.preview is not None:
                 reviewed_diff = next(
                     (
@@ -668,39 +1008,45 @@ class ToolExecutor:
                 )
 
             if external_mutation and tool is not None:
+                pre_effect.phase = "post_approval_preflight"
                 with _workspace_access_scope(workspace, external_target):
-                    preflight_failure = tool.preflight_validate(tc.arguments)
+                    preflight_failure = _validated_preflight_failure(
+                        tool.preflight_validate(tc.arguments)
+                    )
                 if preflight_failure is not None:
-                    return self._finish_rejected_call(tc, preflight_failure)
+                    return self._finish_rejected_call(
+                        tc,
+                        _with_pre_effect_facts(
+                            preflight_failure,
+                            phase="post_approval_preflight",
+                            error_type="ToolPreflightRejected",
+                        ),
+                    )
 
-        try:
-            before_context = self.agent.extension_runtime.contribute_tool_context(
-                before_context
-            )
-        except Exception as exc:
-            message = f"Tool '{tc.name}' context contribution failed: {exc}"
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tc.name,
-                    message,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=ToolOutcome.from_legacy(
-                        message,
-                        success=False,
-                        error_kind=ToolErrorKind.INTERNAL,
-                    ),
-                )
-            )
-            return message
-        self.agent.extension_runtime.observe(
-            HookPoint.BEFORE_TOOL_EXECUTE, before_context
+        pre_effect.phase = "context_contribution"
+        before_context = self.agent.extension_runtime.contribute_tool_context(
+            before_context
         )
+        if not isinstance(before_context, BeforeToolExecuteContext):
+            raise InvalidContextContributionResult
+        pre_effect.phase = "before_execute_observer"
+        try:
+            self.agent.extension_runtime.observe(
+                HookPoint.BEFORE_TOOL_EXECUTE, before_context
+            )
+        except Exception as error:
+            self._record_secondary_failure(
+                tc,
+                phase="before_execute_observer",
+                error=error,
+            )
 
+        pre_effect.phase = "context_result"
         tool_call = before_context.tool_call or tc
 
         # Tool availability is scoped by composition. Never reconstruct a
         # builtin with a different backend after authorization.
+        pre_effect.phase = "tool_lookup_after_context"
         tool = self.agent.get_tool(tool_call.name)
 
         if tool is None:
@@ -708,24 +1054,25 @@ class ToolExecutor:
                 tc, self._unknown_tool_outcome(tool_call.name)
             )
 
+        pre_effect.phase = "final_cancel_check"
         stop_requested = getattr(self.agent, "stop_requested", None)
         if callable(stop_requested) and stop_requested():
             message = f"Tool '{tc.name}' cancelled before execution."
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tc.name,
-                    message,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=ToolOutcome(
-                        status=ToolOutcomeStatus.CANCELLED,
-                        content=message,
-                        error_kind=ToolErrorKind.INTERRUPTED,
-                    ),
-                )
+            return self._finish_rejected_call(
+                tc,
+                ToolOutcome(
+                    status=ToolOutcomeStatus.CANCELLED,
+                    content=message,
+                    error_kind=ToolErrorKind.INTERRUPTED,
+                    metadata={
+                        "failure_phase": "final_cancel_check",
+                        "error_type": "ToolExecutionCancelled",
+                        "effect_state": "not_started",
+                    },
+                ),
             )
-            return message
 
+        pre_effect.phase = "execution_setup"
         try:
             backend = getattr(tool, "backend", None)
             if interrupt_baseline is None:
@@ -790,6 +1137,8 @@ class ToolExecutor:
                             with _workspace_access_scope(
                                 execution_workspace, external_target
                             ):
+                                pre_effect.phase = "execute"
+                                pre_effect.effect_started = True
                                 raw_result = tool.execute(**tool_call.arguments)
             finally:
                 execution_seconds = time.monotonic() - execution_started
@@ -923,6 +1272,8 @@ class ToolExecutor:
                 self.agent.request_stop()
             raise
         except TypeError as e:
+            if not pre_effect.effect_started:
+                raise
             message = f"Error: bad arguments for {tool_call.name}: {e}"
             self.agent._emit_event(
                 AgentEvent.tool_call_end(
@@ -939,6 +1290,8 @@ class ToolExecutor:
             )
             return message
         except Exception as e:
+            if not pre_effect.effect_started:
+                raise
             message = f"Error executing {tool_call.name}: {e}"
             self.agent._emit_event(
                 AgentEvent.tool_call_end(

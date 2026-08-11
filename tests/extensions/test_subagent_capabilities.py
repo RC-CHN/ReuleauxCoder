@@ -201,9 +201,9 @@ def test_root_cannot_recover_child_only_control_from_global_registry() -> None:
         )
     )
 
-    assert result == (
-        "Tool 'report_to_parent' is not available in current mode 'default'"
-    )
+    assert "phase=mode_policy" in result
+    assert "error_type=ToolModeDenied" in result
+    assert "Tool 'report_to_parent' is not available" in result
 
 
 def test_effectful_child_schema_requires_reason_and_strips_it_before_primitive() -> (
