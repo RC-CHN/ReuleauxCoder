@@ -17,9 +17,11 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,9 @@ ABORT_TIMEOUT = 1.0
 SHUTDOWN_TIMEOUT = 5.0
 _FORCE_CLOSE_RESERVE = 0.25
 _PROCESS_EXIT_POLL_INTERVAL = 0.05
+_UNEXPECTED_EXIT_STDERR_GRACE = 0.25
+LSP_STDERR_TAIL_BYTES = 64 * 1024
+_STDERR_READ_BYTES = 8 * 1024
 
 # LSP protocol version
 LSP_PROTOCOL_VERSION = "2.0"
@@ -55,6 +60,69 @@ class LspRequestTimedOut(LspClientError):
 
 class LspRequestCancelled(LspClientError):
     """Raised when the caller abandons an in-flight LSP operation."""
+
+
+@dataclass(frozen=True, slots=True)
+class LspStderrSnapshot:
+    """Raw in-memory stderr state; callers must sanitize before projection."""
+
+    text: str
+    total_bytes: int
+    truncated: bool
+    read_error: str | None = None
+    cleanup_error: str | None = None
+
+
+class _BoundedStderrCapture:
+    """Drain all bytes while retaining only an exact bounded suffix."""
+
+    def __init__(self, max_bytes: int = LSP_STDERR_TAIL_BYTES) -> None:
+        self._max_bytes = max_bytes
+        self._tail = bytearray()
+        self._total_bytes = 0
+        self._read_error: str | None = None
+        self._cleanup_error: str | None = None
+        self._lock = threading.Lock()
+
+    def append(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        with self._lock:
+            self._total_bytes += len(chunk)
+            self._tail.extend(chunk)
+            excess = len(self._tail) - self._max_bytes
+            if excess > 0:
+                del self._tail[:excess]
+
+    def record_error(self, error: BaseException | str) -> None:
+        if isinstance(error, BaseException):
+            detail = f"{type(error).__name__}: {error}"
+        else:
+            detail = error
+        bounded = " ".join(detail.split())[:256] or "stderr reader failed"
+        with self._lock:
+            if self._read_error is None:
+                self._read_error = bounded
+
+    def record_cleanup_error(self, operation: str, error: BaseException) -> None:
+        bounded = f"{operation}: {type(error).__name__}"[:128]
+        with self._lock:
+            if self._cleanup_error is None:
+                self._cleanup_error = bounded
+
+    def snapshot(self) -> LspStderrSnapshot:
+        with self._lock:
+            raw = bytes(self._tail)
+            total_bytes = self._total_bytes
+            read_error = self._read_error
+            cleanup_error = self._cleanup_error
+        return LspStderrSnapshot(
+            text=raw.decode("utf-8", errors="replace"),
+            total_bytes=total_bytes,
+            truncated=total_bytes > len(raw),
+            read_error=read_error,
+            cleanup_error=cleanup_error,
+        )
 
 
 class LspClient:
@@ -79,6 +147,8 @@ class LspClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._initialized: bool = False
         self._reader_task: asyncio.Task[None] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
+        self._stderr_capture = _BoundedStderrCapture()
         self._process_wait_task: asyncio.Task[None] | None = None
         self._server_response_tasks: set[asyncio.Task[None]] = set()
         self._stdin_write_lock = asyncio.Lock()
@@ -106,6 +176,11 @@ class LspClient:
     def is_initialized(self) -> bool:
         return self._initialized
 
+    @property
+    def stderr_snapshot(self) -> LspStderrSnapshot:
+        """Return the bounded raw tail without placing it in model context."""
+        return self._stderr_capture.snapshot()
+
     # === Spawn & Initialize ===
 
     async def spawn(self, cmd: str, args: list[str]) -> None:
@@ -113,6 +188,8 @@ class LspClient:
         self._closing = False
         self._transport_failed = False
         self._exit_reported = False
+        stderr_capture = _BoundedStderrCapture()
+        self._stderr_capture = stderr_capture
         full_args = [cmd] + args
         logger.info(
             "Spawning LSP server: %s (lang=%s, root=%s)",
@@ -126,7 +203,7 @@ class LspClient:
                 *full_args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._workspace_root),
             )
         except FileNotFoundError:
@@ -137,7 +214,12 @@ class LspClient:
         except OSError as e:
             raise LspClientError(f"Failed to spawn LSP server {cmd}: {e}")
 
-        # Start reading responses/notifications from stdout
+        # Drain stderr independently so a noisy server cannot block its own
+        # protocol loop when the OS pipe buffer fills.
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(self._process, stderr_capture)
+        )
+        # Start reading responses/notifications from stdout.
         self._reader_task = asyncio.create_task(self._read_responses())
         self._process_wait_task = asyncio.create_task(
             self._watch_process_exit(self._process)
@@ -382,6 +464,8 @@ class LspClient:
         self._closing = True
         process = self._process
         reader_task = self._reader_task
+        stderr_task = self._stderr_task
+        stderr_capture = self._stderr_capture
         process_wait_task = self._process_wait_task
 
         current_task = asyncio.current_task()
@@ -427,6 +511,12 @@ class LspClient:
                     with suppress(asyncio.TimeoutError, Exception):
                         await asyncio.wait_for(process.wait(), timeout=remaining)
 
+        await self._settle_stderr_task(
+            stderr_task,
+            stderr_capture,
+            deadline_at=deadline_at,
+        )
+
         if process is not None and process.stdin is not None:
             remaining = self._cleanup_remaining(deadline_at)
             if remaining > 0:
@@ -450,6 +540,31 @@ class LspClient:
         if deadline_at is None:
             return ABORT_TIMEOUT
         return max(0.0, min(ABORT_TIMEOUT, deadline_at - time.monotonic()))
+
+    async def _settle_stderr_task(
+        self,
+        task: asyncio.Task[None] | None,
+        capture: _BoundedStderrCapture,
+        *,
+        deadline_at: float,
+    ) -> None:
+        """Wait for stderr EOF after reaping, then cancel within the deadline."""
+        if task is None:
+            return
+        if not task.done():
+            remaining = max(0.0, deadline_at - time.monotonic())
+            if remaining > 0:
+                with suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                    await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+        if not task.done():
+            capture.record_error(
+                "stderr reader did not reach EOF before cleanup deadline"
+            )
+            task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+        if self._stderr_task is task:
+            self._stderr_task = None
 
     # === Internal: Request/Response ===
 
@@ -524,6 +639,54 @@ class LspClient:
             return
         if self._process is process:
             self._report_transport_failure("process exited", process.returncode)
+            if not self._closing:
+                await self._settle_stderr_task(
+                    self._stderr_task,
+                    self._stderr_capture,
+                    deadline_at=time.monotonic() + _UNEXPECTED_EXIT_STDERR_GRACE,
+                )
+
+    async def _drain_stderr(
+        self,
+        process: asyncio.subprocess.Process,
+        capture: _BoundedStderrCapture,
+    ) -> None:
+        """Continuously drain stderr without parsing lines or blocking stdout."""
+        stderr = process.stderr
+        if stderr is None:
+            return
+        try:
+            while chunk := await stderr.read(_STDERR_READ_BYTES):
+                capture.append(chunk)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            capture.record_error(error)
+            self._report_transport_failure(
+                f"stderr reader failed: {type(error).__name__}",
+                process.returncode,
+            )
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception as cleanup_error:
+                    capture.record_cleanup_error(
+                        "stderr_force_kill_failed",
+                        cleanup_error,
+                    )
+                    logger.warning(
+                        "Failed to kill LSP after stderr reader failure: "
+                        "lang=%s error_type=%s",
+                        self._language_id_string,
+                        type(cleanup_error).__name__,
+                    )
+            logger.warning(
+                "LSP stderr reader failed: lang=%s error_type=%s",
+                self._language_id_string,
+                type(error).__name__,
+            )
 
     def _report_transport_failure(self, reason: str, returncode: int | None) -> None:
         """Fail pending work and notify the manager exactly once."""
@@ -769,6 +932,7 @@ class LspClient:
     def _reset_runtime_state(self) -> None:
         self._process = None
         self._reader_task = None
+        self._stderr_task = None
         self._process_wait_task = None
         self._server_response_tasks.clear()
         self._transport_failed = False

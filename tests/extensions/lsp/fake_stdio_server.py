@@ -22,6 +22,7 @@ class FakeLspServer:
         block_until: Path | None,
         initialize_behavior: str,
         shutdown_behavior: str,
+        stderr_bytes: int,
     ) -> None:
         self.mode = mode
         self.log_path = log_path
@@ -30,6 +31,7 @@ class FakeLspServer:
         self.block_until = block_until
         self.initialize_behavior = initialize_behavior
         self.shutdown_behavior = shutdown_behavior
+        self.stderr_bytes = stderr_bytes
         self.documents: dict[str, dict[str, Any]] = {}
         self.result_versions: dict[str, int] = {}
         self.result_ids: dict[str, str] = {}
@@ -38,6 +40,7 @@ class FakeLspServer:
 
     def run(self) -> None:
         self._log(direction="state", method="server_started", pid=os.getpid())
+        self._emit_stderr()
         while message := self._read_message():
             method = message.get("method")
             trace = self._request_trace(message)
@@ -140,6 +143,20 @@ class FakeLspServer:
                 return
             elif "id" in message:
                 self._respond(message, None)
+
+    def _emit_stderr(self) -> None:
+        if self.stderr_bytes <= 0:
+            return
+        prefix = b"FAKE_STDERR_BEGIN\n"
+        suffix = b"\nFAKE_STDERR_END\n"
+        if self.stderr_bytes >= len(prefix) + len(suffix):
+            payload = (
+                prefix + b"x" * (self.stderr_bytes - len(prefix) - len(suffix)) + suffix
+            )
+        else:
+            payload = (prefix + suffix)[-self.stderr_bytes :]
+        sys.stderr.buffer.write(payload)
+        sys.stderr.buffer.flush()
 
     def _pull(self, params: dict[str, Any]) -> dict[str, Any]:
         uri = params["textDocument"]["uri"]
@@ -296,6 +313,7 @@ def main() -> None:
         choices=("normal", "hang"),
         default="normal",
     )
+    parser.add_argument("--stderr-bytes", type=int, default=0)
     args = parser.parse_args()
     if (args.block_method is None) != (args.block_until is None):
         parser.error("--block-method and --block-until must be used together")
@@ -307,6 +325,7 @@ def main() -> None:
         block_until=args.block_until,
         initialize_behavior=args.initialize_behavior,
         shutdown_behavior=args.shutdown_behavior,
+        stderr_bytes=max(0, args.stderr_bytes),
     ).run()
 
 

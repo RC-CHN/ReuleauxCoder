@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from reuleauxcoder.extensions.lsp.client import (
+    LSP_STDERR_TAIL_BYTES,
     LspClient,
     LspClientError,
     LspRequestTimedOut,
@@ -42,10 +43,18 @@ class _ImmediateStdin:
 
 
 class _StubbornProcess:
-    def __init__(self, *, exits_on_kill: bool) -> None:
+    def __init__(
+        self,
+        *,
+        exits_on_kill: bool,
+        emit_stderr: bool = False,
+        close_stderr_on_kill: bool = True,
+    ) -> None:
         self.stdin = _ImmediateStdin()
+        self.stderr = asyncio.StreamReader() if emit_stderr else None
         self.returncode: int | None = None
         self.exits_on_kill = exits_on_kill
+        self.close_stderr_on_kill = close_stderr_on_kill
         self.wait_started = asyncio.Event()
         self.exited = asyncio.Event()
         self.terminated = False
@@ -53,12 +62,18 @@ class _StubbornProcess:
 
     def terminate(self) -> None:
         self.terminated = True
+        if self.stderr is not None:
+            self.stderr.feed_data(b"after terminate|")
 
     def kill(self) -> None:
         self.killed = True
+        if self.stderr is not None:
+            self.stderr.feed_data(b"after kill")
         if self.exits_on_kill:
             self.returncode = -9
             self.exited.set()
+            if self.stderr is not None and self.close_stderr_on_kill:
+                self.stderr.feed_eof()
 
     async def wait(self) -> int:
         self.wait_started.set()
@@ -72,8 +87,9 @@ def _fake_args(
     *,
     initialize_behavior: str = "normal",
     shutdown_behavior: str = "normal",
+    stderr_bytes: int = 0,
 ) -> list[str]:
-    return [
+    args = [
         "-u",
         str(FAKE_SERVER),
         "--mode",
@@ -85,6 +101,9 @@ def _fake_args(
         "--shutdown-behavior",
         shutdown_behavior,
     ]
+    if stderr_bytes:
+        args.extend(("--stderr-bytes", str(stderr_bytes)))
+    return args
 
 
 def _events(log_path: Path) -> list[dict]:
@@ -229,6 +248,193 @@ def test_abort_force_closes_real_stdio_process_idempotently(tmp_path: Path) -> N
 
     pid = asyncio.run(run())
     _assert_pid_exits(pid)
+
+
+def test_large_stderr_is_drained_and_retains_exact_bounded_suffix(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "large-stderr.jsonl"
+    stderr_bytes = 4 * 1024 * 1024 + 17
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> asyncio.Task[None]:
+        await client.spawn(
+            sys.executable,
+            _fake_args(log_path, stderr_bytes=stderr_bytes),
+        )
+        stderr_task = client._stderr_task
+        assert stderr_task is not None
+        await asyncio.wait_for(client.initialize(), timeout=2.0)
+        await client.shutdown(deadline_at=time.monotonic() + 1.0)
+        await client.abort()
+        return stderr_task
+
+    stderr_task = asyncio.run(run())
+
+    snapshot = client.stderr_snapshot
+    suffix = b"\nFAKE_STDERR_END\n"
+    expected_tail = b"x" * (LSP_STDERR_TAIL_BYTES - len(suffix)) + suffix
+    assert snapshot.total_bytes == stderr_bytes
+    assert snapshot.truncated is True
+    assert snapshot.text.encode("utf-8") == expected_tail
+    assert snapshot.read_error is None
+    assert client._stderr_task is None
+    assert stderr_task.done()
+    assert not stderr_task.cancelled()
+
+
+def test_stderr_snapshot_decodes_split_utf8_only_after_eof(tmp_path: Path) -> None:
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> None:
+        stderr = asyncio.StreamReader()
+        process = MagicMock(stderr=stderr)
+        task = asyncio.create_task(
+            client._drain_stderr(process, client._stderr_capture)
+        )
+        await asyncio.sleep(0)
+        stderr.feed_data(b"no-newline:\xe4")
+        await asyncio.sleep(0)
+        stderr.feed_data(b"\xb8\xad")
+        stderr.feed_eof()
+        await task
+
+    asyncio.run(run())
+
+    assert client.stderr_snapshot.text == "no-newline:中"
+    assert client.stderr_snapshot.total_bytes == len("no-newline:中".encode())
+    assert client.stderr_snapshot.read_error is None
+
+
+def test_abort_drains_through_kill_then_bounds_missing_stderr_eof(
+    tmp_path: Path,
+) -> None:
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> tuple[_StubbornProcess, asyncio.Task[None], float]:
+        process = _StubbornProcess(
+            exits_on_kill=True,
+            emit_stderr=True,
+            close_stderr_on_kill=False,
+        )
+        client._process = process  # type: ignore[assignment]
+        client._stderr_task = asyncio.create_task(
+            client._drain_stderr(process, client._stderr_capture)  # type: ignore[arg-type]
+        )
+        stderr_task = client._stderr_task
+        await asyncio.sleep(0)
+        started_at = time.monotonic()
+        await client.abort(deadline_at=started_at + 0.35)
+        await client.abort()
+        return process, stderr_task, time.monotonic() - started_at
+
+    process, stderr_task, elapsed = asyncio.run(run())
+
+    assert elapsed < 0.55
+    assert process.terminated
+    assert process.killed
+    assert client.stderr_snapshot.text == "after terminate|after kill"
+    assert client.stderr_snapshot.read_error == (
+        "stderr reader did not reach EOF before cleanup deadline"
+    )
+    assert client._stderr_task is None
+    assert stderr_task.done()
+    assert stderr_task.cancelled()
+
+
+def test_stderr_reader_error_is_retained_without_crashing_transport_task(
+    tmp_path: Path,
+) -> None:
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+
+    async def run() -> None:
+        stderr = AsyncMock()
+        stderr.read.side_effect = OSError("deterministic read failure")
+        process = MagicMock(stderr=stderr, returncode=None)
+        client._process = process
+        pending = asyncio.get_running_loop().create_future()
+        client._pending[1] = pending
+
+        await client._drain_stderr(process, client._stderr_capture)
+
+        assert isinstance(pending.exception(), LspClientError)
+        process.kill.assert_called_once_with()
+
+    asyncio.run(run())
+
+    assert client.stderr_snapshot.read_error == ("OSError: deterministic read failure")
+    assert not client.is_usable
+    assert [(reason, returncode) for _, reason, returncode in callbacks] == [
+        ("stderr reader failed: OSError", None)
+    ]
+
+
+def test_stderr_force_kill_failure_is_retained_without_sensitive_detail(
+    tmp_path: Path,
+) -> None:
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> None:
+        stderr = AsyncMock()
+        stderr.read.side_effect = OSError("reader failed")
+        process = MagicMock(stderr=stderr, returncode=None)
+        process.kill.side_effect = PermissionError("credential=must-not-leak")
+        client._process = process
+
+        await client._drain_stderr(process, client._stderr_capture)
+
+    asyncio.run(run())
+
+    assert client.stderr_snapshot.cleanup_error == (
+        "stderr_force_kill_failed: PermissionError"
+    )
+    assert "must-not-leak" not in repr(client.stderr_snapshot)
+
+
+def test_unexpected_exit_bounds_stderr_without_eof_when_idle(tmp_path: Path) -> None:
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+
+    async def run() -> asyncio.Task[None]:
+        process = _StubbornProcess(
+            exits_on_kill=True,
+            emit_stderr=True,
+            close_stderr_on_kill=False,
+        )
+        assert process.stderr is not None
+        process.stderr.feed_data(b"final idle marker")
+        process.returncode = 23
+        client._process = process  # type: ignore[assignment]
+        stderr_task = asyncio.create_task(
+            client._drain_stderr(process, client._stderr_capture)  # type: ignore[arg-type]
+        )
+        client._stderr_task = stderr_task
+
+        watcher = asyncio.create_task(client._watch_process_exit(process))  # type: ignore[arg-type]
+        await asyncio.wait_for(watcher, timeout=0.6)
+        return stderr_task
+
+    stderr_task = asyncio.run(run())
+
+    assert [(reason, returncode) for _, reason, returncode in callbacks] == [
+        ("process exited", 23)
+    ]
+    assert client.stderr_snapshot.text == "final idle marker"
+    assert client.stderr_snapshot.read_error == (
+        "stderr reader did not reach EOF before cleanup deadline"
+    )
+    assert client._stderr_task is None
+    assert stderr_task.done()
+    assert stderr_task.cancelled()
 
 
 def test_abort_finishes_force_kill_before_propagating_cancellation(
