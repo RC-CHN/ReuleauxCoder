@@ -16,7 +16,11 @@ from reuleauxcoder.interfaces.events import UIEventBus, UIEventLevel
 from reuleauxcoder.interfaces.events import RuntimeEventPayload
 from reuleauxcoder.domain.runtime.events import OperationPhaseChanged
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
-from reuleauxcoder.services.llm.client import LLM, LLMRequestCancelled
+from reuleauxcoder.services.llm.client import (
+    LLM,
+    LLMDispatchCallbackError,
+    LLMRequestCancelled,
+)
 from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
 
 
@@ -523,32 +527,153 @@ def test_llm_keeps_dispatch_commit_when_provider_open_fails_after_handoff(
     assert callbacks == ["callback"]
 
 
-def test_deferred_dispatch_failure_is_visible_without_crashing_request() -> None:
-    registry = HookRegistry()
+def test_deferred_dispatch_failure_is_safe_terminal_and_blocks_provider(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    sentinel = "callback-secret-must-not-leak"
+    agent_diagnostics = []
+    registry = HookRegistry(diagnostic_sink=agent_diagnostics.append)
 
     def fail(_context: BeforeLLMRequestContext) -> None:
-        raise RuntimeError("secondary dispatch feedback failed")
+        raise RuntimeError(f"dispatch feedback failed: {sentinel}")
 
     registry.register(
         HookPoint.BEFORE_LLM_REQUEST,
         _DeferredDispatchProbe(fail),
     )
-    llm = LLM(model="demo-model", api_key="sk-test-12345678")
-    llm._call_with_retry = lambda _params: iter(  # type: ignore[method-assign]
-        [_FakeChunk(content="ok")]
-    )
+    bus = UIEventBus()
+    phases: list[OperationPhaseChanged] = []
 
-    response = llm.chat(
-        [{"role": "user", "content": "Hi"}],
-        hook_registry=registry,
-    )
+    def capture(event) -> None:
+        if isinstance(event.payload, RuntimeEventPayload) and isinstance(
+            event.payload.event.payload, OperationPhaseChanged
+        ):
+            phases.append(event.payload.event.payload)
 
-    assert response.content == "ok"
+    bus.subscribe(capture, replay_history=False)
+    llm = LLM(
+        model="demo-model",
+        api_key="sk-test-12345678",
+        ui_bus=bus,
+    )
+    llm.performance_monitor = RuntimePerformanceMonitor()
+    provider_calls: list[dict] = []
+
+    def open_stream(params):
+        provider_calls.append(params)
+        return iter([_FakeChunk(content="must-not-run")])
+
+    llm._call_with_retry = open_stream  # type: ignore[method-assign]
+
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            hook_registry=registry,
+        )
+    except LLMDispatchCallbackError as error:
+        assert error.phase == "dispatch_callback"
+        assert error.error_type == "RuntimeError"
+        assert str(error) == (
+            "LLM request failed before provider dispatch "
+            "(phase=dispatch_callback, error_type=RuntimeError)"
+        )
+        assert error.__cause__ is None
+    else:
+        raise AssertionError("dispatch callback failure must terminate the request")
+
+    assert provider_calls == []
+    assert llm.last_dispatched_request is None
     diagnostics = registry.drain_diagnostics()
     assert len(diagnostics) == 1
+    assert agent_diagnostics == [diagnostics[0]]
     assert diagnostics[0].hook_name == "deferred_dispatch"
-    assert diagnostics[0].severity == "warning"
-    assert "secondary dispatch feedback failed" in diagnostics[0].message
+    assert diagnostics[0].severity == "error"
+    assert diagnostics[0].message == (
+        "Deferred dispatch callback failed "
+        "(phase=dispatch_callback, error_type=RuntimeError)"
+    )
+    assert phases[-1].phase == "dispatch_callback"
+    assert phases[-1].status == "failed"
+    assert phases[-1].error_type == "RuntimeError"
+
+    samples = llm.performance_monitor.snapshot()
+    dispatch_sample = next(
+        sample for sample in samples if sample.name == "dispatch_callback"
+    )
+    assert dispatch_sample.status == "error"
+    assert dispatch_sample.attribute_map()["error_type"] == "RuntimeError"
+    request_total = next(sample for sample in samples if sample.name == "request_total")
+    assert request_total.status == "error"
+    assert request_total.attribute_map()["error_type"] == "RuntimeError"
+
+    diagnostic_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / ".rcoder" / "diagnostics").glob("*.json")
+    )
+    observable_text = "\n".join(
+        [
+            *(diagnostic.message for diagnostic in diagnostics),
+            *(str(event) for event in phases),
+            *(str(sample) for sample in samples),
+            diagnostic_text,
+        ]
+    )
+    assert sentinel not in observable_text
+
+
+def test_deferred_dispatch_failure_survives_diagnostic_reporting_failures(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    callback_secret = "primary-callback-secret"
+    reporting_secret = "secondary-reporting-secret"
+    registry = HookRegistry()
+
+    def fail_callback(_context: BeforeLLMRequestContext) -> None:
+        raise ValueError(f"callback failed: {callback_secret}")
+
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(fail_callback),
+    )
+
+    def fail_report(_diagnostic) -> None:
+        raise RuntimeError(f"diagnostic sink failed: {reporting_secret}")
+
+    def fail_persist(**_kwargs):
+        raise OSError(f"diagnostic persistence failed: {reporting_secret}")
+
+    monkeypatch.setattr(registry, "report_diagnostic", fail_report)
+    monkeypatch.setattr(
+        llm_client_module,
+        "persist_llm_error_diagnostic",
+        fail_persist,
+    )
+    provider_calls: list[dict] = []
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    def open_stream(params):
+        provider_calls.append(params)
+        return iter([_FakeChunk(content="must-not-run")])
+
+    llm._call_with_retry = open_stream  # type: ignore[method-assign]
+
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            hook_registry=registry,
+        )
+    except LLMDispatchCallbackError as error:
+        rendered = str(error)
+        assert error.phase == "dispatch_callback"
+        assert error.error_type == "ValueError"
+    else:
+        raise AssertionError("callback failure must survive diagnostic failures")
+
+    assert provider_calls == []
+    assert callback_secret not in rendered
+    assert reporting_secret not in rendered
 
 
 def test_deferred_dispatch_effect_disables_ambiguous_provider_retry(

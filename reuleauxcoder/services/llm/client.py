@@ -45,9 +45,35 @@ class LLMRequestCancelled(RuntimeError):
     """Raised when a scoped Agent cancels an in-flight streamed request."""
 
 
+class LLMDispatchCallbackError(RuntimeError):
+    """Safe terminal failure raised before a provider request is dispatched."""
+
+    phase = "dispatch_callback"
+
+    def __init__(self, *, error_type: str) -> None:
+        self.error_type = error_type
+        super().__init__(
+            "LLM request failed before provider dispatch "
+            f"(phase={self.phase}, error_type={error_type})"
+        )
+
+
 _STREAM_DONE = object()
 _STREAM_QUEUE_MAXSIZE = 256
 _CANCELLATION_POLL_SECONDS = 0.05
+
+
+def _safe_exception_type(error: BaseException) -> str:
+    """Return a bounded type fact without rendering exception-controlled text."""
+    name = type(error).__name__
+    if (
+        not name
+        or len(name) > 64
+        or not name.isascii()
+        or not name.replace("_", "").isalnum()
+    ):
+        return "Exception"
+    return name
 
 
 def _stream_options_unsupported(error: BaseException) -> bool:
@@ -201,9 +227,7 @@ def _cancellable_stream_chunks(stream, cancellation_event):
         except Exception as exc:  # surfaced to the consumer thread
             offer(exc)
 
-    threading.Thread(
-        target=produce, name="rcoder-llm-stream", daemon=True
-    ).start()
+    threading.Thread(target=produce, name="rcoder-llm-stream", daemon=True).start()
     try:
         while True:
             # Check before every item, not only on an empty queue: a producer
@@ -511,6 +535,7 @@ class LLM:
                         "session_id": event_metadata.get("session_id"),
                         "turn_id": event_metadata.get("turn_id"),
                         "trace_id": trace_id,
+                        "error_type": error_type,
                     },
                 )
             if status == "running":
@@ -713,21 +738,56 @@ class LLM:
             if cancellation_event is not None and cancellation_event.is_set():
                 raise LLMRequestCancelled("LLM request cancelled before dispatch")
             has_dispatch_effects = before_context._has_dispatch_callbacks()
-            for error in before_context._commit_dispatch_callbacks():
-                diagnostic = HookDiagnostic(
-                    hook_name="deferred_dispatch",
-                    hook_point=HookPoint.BEFORE_LLM_REQUEST,
-                    hook_kind=HookKind.OBSERVER,
-                    message=f"{type(error).__name__}: {str(error)[:160]}",
-                    severity="warning",
-                )
-                if hook_registry is not None:
-                    hook_registry.report_diagnostic(diagnostic)
-                else:
-                    self._emit_debug(
-                        f"[hooks] {diagnostic.message}",
-                        error_type=type(error).__name__,
+            if has_dispatch_effects:
+                try:
+                    report_phase("dispatch_callback")
+                except Exception:
+                    # Phase reporting is secondary observation. It must not
+                    # decide whether a final callback or provider call runs.
+                    pass
+            dispatch_failures = before_context._commit_dispatch_callbacks()
+            if dispatch_failures:
+                primary_error_type = _safe_exception_type(dispatch_failures[0])
+                for error in dispatch_failures:
+                    error_type = _safe_exception_type(error)
+                    diagnostic = HookDiagnostic(
+                        hook_name="deferred_dispatch",
+                        hook_point=HookPoint.BEFORE_LLM_REQUEST,
+                        hook_kind=HookKind.OBSERVER,
+                        message=(
+                            "Deferred dispatch callback failed "
+                            "(phase=dispatch_callback, "
+                            f"error_type={error_type})"
+                        ),
+                        severity="error",
                     )
+                    try:
+                        if hook_registry is not None:
+                            hook_registry.report_diagnostic(diagnostic)
+                        else:
+                            self._emit_debug(
+                                f"[hooks] {diagnostic.message}",
+                                phase="dispatch_callback",
+                                error_type=error_type,
+                            )
+                    except Exception:
+                        # Do not let a broken diagnostic sink replace the
+                        # callback failure or revive provider dispatch.
+                        pass
+                try:
+                    finish_operation(
+                        "dispatch_callback",
+                        status="failed",
+                        detail=(
+                            "Deferred dispatch callback failed "
+                            f"(error_type={primary_error_type})"
+                        ),
+                        error_type=primary_error_type,
+                    )
+                except Exception:
+                    # Runtime telemetry is also secondary to the real failure.
+                    pass
+                raise LLMDispatchCallbackError(error_type=primary_error_type) from None
             if before_context._consume_dispatch_payload_changed():
                 refresh_budget = getattr(
                     hook_registry,
@@ -1011,21 +1071,33 @@ class LLM:
                 detail=str(e)[:160] or type(e).__name__,
                 error_type=type(e).__name__,
             )
-            diagnostic_path = persist_llm_error_diagnostic(
-                model=self.model,
-                base_url=self.base_url,
-                session_id=session_id,
-                request_params=params,
-                raw_messages=raw_messages,
-                sanitized_messages=messages,
-                error=e,
-                metadata=dict(before_context.metadata),
-            )
-            setattr(e, "llm_diagnostic_path", str(diagnostic_path))
-            if session_id:
-                before_context.metadata["llm_error_diagnostic_path"] = str(
-                    diagnostic_path
+            diagnostic_path: Path | None = None
+            try:
+                diagnostic_path = persist_llm_error_diagnostic(
+                    model=self.model,
+                    base_url=self.base_url,
+                    session_id=session_id,
+                    request_params=params,
+                    raw_messages=raw_messages,
+                    sanitized_messages=messages,
+                    error=e,
+                    metadata=dict(before_context.metadata),
                 )
+            except Exception as diagnostic_error:
+                try:
+                    self._emit_debug(
+                        "[llm] error diagnostic persistence failed",
+                        phase="error_diagnostic",
+                        error_type=_safe_exception_type(diagnostic_error),
+                    )
+                except Exception:
+                    pass
+            if diagnostic_path is not None:
+                setattr(e, "llm_diagnostic_path", str(diagnostic_path))
+                if session_id:
+                    before_context.metadata["llm_error_diagnostic_path"] = str(
+                        diagnostic_path
+                    )
             raise
 
     def _call_with_retry_observed(
