@@ -48,6 +48,10 @@ class LspRequestTimedOut(LspClientError):
     """Raised when an end-to-end LSP operation exhausts its deadline."""
 
 
+class LspRequestCancelled(LspClientError):
+    """Raised when the caller abandons an in-flight LSP operation."""
+
+
 class LspClient:
     """Minimal LSP client over stdio."""
 

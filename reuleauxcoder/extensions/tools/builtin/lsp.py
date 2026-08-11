@@ -11,7 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar
 
-from reuleauxcoder.extensions.lsp.client import LspClientError
+from reuleauxcoder.extensions.lsp.client import (
+    LspClientError,
+    LspRequestCancelled,
+    LspRequestTimedOut,
+)
 from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.extensions.lsp.tool_helpers import (
     format_document_symbols,
@@ -20,7 +24,7 @@ from reuleauxcoder.extensions.lsp.tool_helpers import (
     resolve_file_path,
     validate_position,
 )
-from reuleauxcoder.extensions.tools.base import Tool
+from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolOutcome,
@@ -45,6 +49,7 @@ class LspTool(Tool):
 
     name: ClassVar[str] = "lsp"
     parallel_safe: ClassVar[bool] = True
+    interrupt_mode: ClassVar[InterruptMode] = InterruptMode.CANCEL_WITH_PARTIAL
     description: ClassVar[str] = (
         "Interact with Language Server Protocol (LSP) servers for code intelligence.\n"
         "\n"
@@ -153,7 +158,24 @@ class LspTool(Tool):
 
         # 6. Send request through worker thread
         try:
-            raw = manager.send_request_sync(path, method, params)
+            raw = manager.send_request_sync(
+                path,
+                method,
+                params,
+                cancellation=self.current_cancellation_signal(),
+            )
+        except LspRequestCancelled as e:
+            return _lsp_failure(
+                str(e),
+                status=ToolOutcomeStatus.CANCELLED,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        except LspRequestTimedOut as e:
+            return _lsp_failure(
+                str(e),
+                status=ToolOutcomeStatus.TIMED_OUT,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
         except LspClientError as e:
             return _lsp_failure(f"LSP server for this file type is not responding: {e}")
         except Exception as e:
@@ -191,12 +213,17 @@ def _lsp_success(operation: str, content: str) -> ToolOutcome:
     )
 
 
-def _lsp_failure(message: str) -> ToolOutcome:
+def _lsp_failure(
+    message: str,
+    *,
+    status: ToolOutcomeStatus = ToolOutcomeStatus.FAILED,
+    error_kind: ToolErrorKind = ToolErrorKind.EXECUTION,
+) -> ToolOutcome:
     return ToolOutcome(
-        status=ToolOutcomeStatus.FAILED,
+        status=status,
         summary=message.splitlines()[0][:160],
         content=message,
-        error_kind=ToolErrorKind.EXECUTION,
+        error_kind=error_kind,
         metadata={"effect_class": "read"},
     )
 

@@ -13,7 +13,10 @@ from typing import Any
 
 import pytest
 
-from reuleauxcoder.extensions.lsp.client import LspRequestTimedOut
+from reuleauxcoder.extensions.lsp.client import (
+    LspRequestCancelled,
+    LspRequestTimedOut,
+)
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.extensions.lsp.registry import LanguageId
@@ -155,6 +158,57 @@ def test_inflight_timeout_cancels_operation_and_worker_serves_next_request(
     assert manager.send_request_sync(source, "fast", {}, timeout=1.0) == "fast"
     assert server.calls == ["slow", "fast"]
     manager.shutdown_all()
+
+
+def test_inflight_caller_cancellation_is_prompt_and_worker_recovers(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    server = _ControlledServer()
+    manager = _manager_with_server(tmp_path, server)
+    cancellation = threading.Event()
+
+    def cancel_after_start() -> None:
+        assert server.started.wait(timeout=1.0)
+        cancellation.set()
+
+    canceller = threading.Thread(target=cancel_after_start)
+    canceller.start()
+    started_at = time.monotonic()
+    with pytest.raises(LspRequestCancelled, match="cancelled"):
+        manager.send_request_sync(
+            source,
+            "slow",
+            {},
+            timeout=5.0,
+            cancellation=cancellation,
+        )
+    elapsed = time.monotonic() - started_at
+
+    canceller.join(timeout=1.0)
+    assert elapsed < 1.0
+    assert server.cancelled.wait(timeout=1.0)
+    assert manager.send_request_sync(source, "fast", {}, timeout=1.0) == "fast"
+    manager.shutdown_all()
+
+
+def test_pre_cancelled_request_does_not_start_worker(tmp_path: Path) -> None:
+    source = tmp_path / "main.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    cancellation = threading.Event()
+    cancellation.set()
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+
+    with pytest.raises(LspRequestCancelled, match="cancelled"):
+        manager.send_request_sync(
+            source,
+            "never-started",
+            {},
+            cancellation=cancellation,
+        )
+
+    assert manager._worker_thread is None
 
 
 def test_query_receives_only_remaining_end_to_end_budget(tmp_path: Path) -> None:

@@ -24,6 +24,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.domain.runtime.events import (
     DiagnosticsCleared,
     DiagnosticsPublished,
@@ -34,6 +35,7 @@ from reuleauxcoder.domain.runtime.events import (
 from reuleauxcoder.extensions.lsp.client import (
     LspClient,
     LspClientError,
+    LspRequestCancelled,
     LspRequestTimedOut,
     MAX_LSP_FILE_SIZE_BYTES,
 )
@@ -506,6 +508,7 @@ class LspManager:
         method: str,
         params: dict[str, Any],
         timeout: float = 10.0,
+        cancellation: CancellationSignal | None = None,
     ) -> Any:
         """Send a synchronous LSP request via the worker thread.
 
@@ -520,6 +523,8 @@ class LspManager:
         lang = detect_language(file_path)
         if lang is None:
             raise LspClientError(f"No LSP support for file type: {file_path.suffix}")
+        if cancellation is not None and cancellation.is_set():
+            raise LspRequestCancelled(f"LSP request '{method}' was cancelled")
 
         deadline_at = time.monotonic() + timeout
         # Start worker if not already running.  The worker owns LSP subprocesses,
@@ -545,18 +550,25 @@ class LspManager:
         with self._request_condition:
             self._request_condition.notify()
 
-        try:
-            return future.result(timeout=max(0.0, deadline_at - time.monotonic()))
-        except concurrent.futures.TimeoutError:
-            # A result settled at the deadline boundary wins. Otherwise this
-            # Future is the cross-thread abandonment signal for the worker.
-            if future.done():
-                return future.result()
-            if not future.cancel():
-                return future.result()
-            with self._lock:
-                self._tool_queue = [item for item in self._tool_queue if item is not req]
-            raise self._timeout_error(req)
+        while True:
+            remaining = deadline_at - time.monotonic()
+            try:
+                return future.result(
+                    timeout=max(0.0, min(_TOOL_REQUEST_POLL_INTERVAL, remaining))
+                )
+            except concurrent.futures.TimeoutError:
+                # A result settled at an interrupt boundary always wins.
+                if future.done():
+                    return future.result()
+
+            if cancellation is not None and cancellation.is_set():
+                if not self._abandon_tool_request(req):
+                    return future.result()
+                raise LspRequestCancelled(f"LSP request '{method}' was cancelled")
+            if time.monotonic() >= deadline_at:
+                if not self._abandon_tool_request(req):
+                    return future.result()
+                raise self._timeout_error(req)
 
     # === Internal: Worker Thread ===
 
@@ -672,6 +684,13 @@ class LspManager:
             f"LSP request '{req.method}' timed out after "
             f"{req.timeout_seconds:g}s total"
         )
+
+    def _abandon_tool_request(self, req: ToolRequest) -> bool:
+        if not req.future.cancel():
+            return False
+        with self._lock:
+            self._tool_queue = [item for item in self._tool_queue if item is not req]
+        return True
 
     async def _handle_diagnostics_request(self, request: DiagnosticRequest) -> None:
         """Process a fire-and-forget diagnostics request."""
