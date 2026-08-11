@@ -990,6 +990,9 @@ class MiniTUIApplication:
 
     def _save_exit_session(self) -> None:
         self._closed = True
+        close_events = getattr(getattr(self, "events", None), "close", None)
+        if callable(close_events):
+            close_events()
         discard_steering = getattr(
             self.agent, "discard_pending_user_steering", None
         )

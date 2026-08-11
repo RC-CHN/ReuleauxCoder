@@ -592,15 +592,18 @@ def test_completed_agent_turn_starts_deferred_command_before_marking_idle(
 
 def test_exit_finalizer_skips_duplicate_save_after_exit_command() -> None:
     prepared = []
+    queue_closed = []
     app = _bare_app()
     app._exit_session_saved = True
     app.agent = SimpleNamespace(messages=[{"role": "user", "content": "done"}])
     app.config = SimpleNamespace(session_auto_save=True)
+    app.events = SimpleNamespace(close=lambda: queue_closed.append(True))
     app._prepare_forced_exit = prepared.append
 
     app._save_exit_session()
 
     assert prepared == ["CLI session closed"]
+    assert queue_closed == [True]
 
 
 def test_exit_finalizer_records_saved_session_for_terminal_report(monkeypatch) -> None:

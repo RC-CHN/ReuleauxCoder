@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-import queue
 import threading
 import time
 from typing import Callable
@@ -11,15 +10,13 @@ from typing import Callable
 from prompt_toolkit.formatted_text import FormattedText
 
 from reuleauxcoder.app.commands.view_models import SessionResumeViewModel
+from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.domain.runtime.events import (
     ApprovalRequested,
     ApprovalResolved,
-    AssistantContentDelta,
     PlanUpdated,
     ProgressReported,
-    ReasoningDelta,
     RuntimeEvent,
-    StreamChunk,
     SubagentJobChanged,
 )
 from reuleauxcoder.interfaces.events import (
@@ -32,6 +29,14 @@ from reuleauxcoder.interfaces.interactions import ReviewRequest
 from reuleauxcoder.interfaces.tui.formatting import (
     fragments_to_visual_lines as _fragments_to_visual_lines,
     wrap_fragments as _wrap_fragments,
+)
+from reuleauxcoder.interfaces.tui.event_queue import (
+    DEFAULT_CONTROL_RESERVE,
+    DEFAULT_EVENT_QUEUE_CAPACITY,
+    DEFAULT_MAX_COALESCED_CHARS,
+    DEFAULT_MUST_DELIVER_TIMEOUT_SECONDS,
+    BoundedUIEventQueue,
+    EventQueueStats,
 )
 from reuleauxcoder.interfaces.tui.markdown_fragments import RetainedMarkdownRenderer
 from reuleauxcoder.interfaces.tui.transcript import (
@@ -59,85 +64,28 @@ from reuleauxcoder.presentation import (
 )
 
 
-_COALESCIBLE_STREAM_TYPES = (AssistantContentDelta, ReasoningDelta, StreamChunk)
-
-
-def _stream_event_key(event: UIEvent) -> tuple | None:
-    envelope = event.payload
-    if not isinstance(envelope, RuntimeEventPayload):
-        return None
-    runtime = envelope.event
-    payload = runtime.payload
-    if not isinstance(payload, _COALESCIBLE_STREAM_TYPES):
-        return None
-    payload_variant = (
-        getattr(payload, "reasoning", None),
-        getattr(payload, "display_mode", None),
-    )
-    return (
-        type(payload),
-        runtime.agent_id,
-        runtime.session_id,
-        runtime.session_generation,
-        runtime.turn_id,
-        runtime.correlation_id,
-        payload_variant,
-    )
-
-
-def _coalesce_stream_events(events: list[UIEvent]) -> list[UIEvent]:
-    """Merge adjacent stream deltas already waiting for the same UI paint."""
-    merged: list[UIEvent] = []
-    current: UIEvent | None = None
-    current_key: tuple | None = None
-    text_parts: list[str] = []
-
-    def flush() -> None:
-        nonlocal current, current_key, text_parts
-        if current is None:
-            return
-        if len(text_parts) > 1:
-            envelope = current.payload
-            assert isinstance(envelope, RuntimeEventPayload)
-            runtime = envelope.event
-            payload = replace(runtime.payload, text="".join(text_parts))
-            current = replace(
-                current,
-                payload=RuntimeEventPayload(replace(runtime, payload=payload)),
-            )
-        merged.append(current)
-        current = None
-        current_key = None
-        text_parts = []
-
-    for event in events:
-        key = _stream_event_key(event)
-        if key is None:
-            flush()
-            merged.append(event)
-            continue
-        envelope = event.payload
-        assert isinstance(envelope, RuntimeEventPayload)
-        stream_payload = envelope.event.payload
-        # _stream_event_key only admits _COALESCIBLE_STREAM_TYPES payloads.
-        assert isinstance(stream_payload, _COALESCIBLE_STREAM_TYPES)
-        if current is not None and key == current_key:
-            current = event
-            text_parts.append(stream_payload.text)
-            continue
-        flush()
-        current = event
-        current_key = key
-        text_parts = [stream_payload.text]
-    flush()
-    return merged
+_QUEUE_SAMPLE_INTERVAL_SECONDS = 1.0
 
 
 class MiniTUIEventAdapter:
     """Thread-safe, source-backed event projection for the mini-TUI."""
 
-    def __init__(self, *, root_agent_id: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        root_agent_id: str | None = None,
+        performance_monitor: RuntimePerformanceMonitor | None = None,
+        event_queue_capacity: int = DEFAULT_EVENT_QUEUE_CAPACITY,
+        event_queue_control_reserve: int = DEFAULT_CONTROL_RESERVE,
+        event_queue_must_deliver_timeout: float = (
+            DEFAULT_MUST_DELIVER_TIMEOUT_SECONDS
+        ),
+        event_queue_max_coalesced_chars: int = DEFAULT_MAX_COALESCED_CHARS,
+    ) -> None:
         self.root_agent_id = root_agent_id
+        self._performance_monitor = performance_monitor
+        self._queue_sample_lock = threading.Lock()
+        self._last_queue_sample_at = 0.0
         # Optional hook: focused interactive views (selection panels) may be
         # claimed by the app instead of being projected as transcript notices.
         self.interactive_view_handler: (
@@ -156,7 +104,12 @@ class MiniTUIEventAdapter:
         self._lock = threading.RLock()
         self._invalidate = lambda: None
         self._notice_seq = 0
-        self._pending_events: queue.SimpleQueue[UIEvent] = queue.SimpleQueue()
+        self._pending_events = BoundedUIEventQueue(
+            capacity=event_queue_capacity,
+            control_reserve=event_queue_control_reserve,
+            must_deliver_timeout=event_queue_must_deliver_timeout,
+            max_coalesced_chars=event_queue_max_coalesced_chars,
+        )
         self._viewport_width = 100
         self._markdown = RetainedMarkdownRenderer()
         self._theme_revision = 0
@@ -179,18 +132,26 @@ class MiniTUIEventAdapter:
     def on_ui_event(self, event: UIEvent) -> None:
         # Worker/model/tool threads only enqueue. Projection and rendering are
         # drained by prompt_toolkit's UI thread on the next paint.
-        self._pending_events.put(event)
-        self._invalidate()
+        started_at = time.monotonic()
+        result = self._pending_events.put(event)
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+        if result.wake_consumer:
+            self._invalidate()
+        if not result.accepted or elapsed_ms >= 1:
+            self._record_queue_sample(
+                "enqueue",
+                elapsed_ms,
+                status="ok" if result.accepted else "dropped",
+                force=True,
+            )
 
     def _drain_pending_events(self) -> None:
+        started_at = time.monotonic()
+        pending = self._pending_events.drain()
+        if not pending:
+            return
         with self._lock:
-            pending: list[UIEvent] = []
-            while True:
-                try:
-                    pending.append(self._pending_events.get_nowait())
-                except queue.Empty:
-                    break
-            for event in _coalesce_stream_events(pending):
+            for event in pending:
                 try:
                     self._apply_pending_event_locked(event)
                 except Exception as error:
@@ -205,6 +166,61 @@ class MiniTUIEventAdapter:
                             category="ui",
                         )
                     )
+        self._record_queue_sample(
+            "drain",
+            (time.monotonic() - started_at) * 1000,
+            batch_size=len(pending),
+        )
+
+    def event_queue_stats(self) -> EventQueueStats:
+        """Return a content-free snapshot of current TUI queue pressure."""
+        return self._pending_events.stats()
+
+    def close(self) -> None:
+        """Stop accepting UI events and wake blocked producer threads."""
+        self._pending_events.close()
+
+    def _record_queue_sample(
+        self,
+        name: str,
+        elapsed_ms: float,
+        *,
+        status: str = "ok",
+        batch_size: int | None = None,
+        force: bool = False,
+    ) -> None:
+        monitor = self._performance_monitor
+        if monitor is None:
+            return
+        observed_at = time.monotonic()
+        with self._queue_sample_lock:
+            if (
+                not force
+                and observed_at - self._last_queue_sample_at
+                < _QUEUE_SAMPLE_INTERVAL_SECONDS
+            ):
+                return
+            self._last_queue_sample_at = observed_at
+        stats = self._pending_events.stats()
+        attributes = {
+            "capacity": stats.capacity,
+            "depth": stats.depth,
+            "high_watermark": stats.high_watermark,
+            "coalesced": stats.coalesced,
+            "transient_dropped": stats.transient_dropped,
+            "must_deliver_waits": stats.must_deliver_waits,
+            "must_deliver_timeouts": stats.must_deliver_timeouts,
+            "closed_dropped": stats.closed_dropped,
+        }
+        if batch_size is not None:
+            attributes["batch_size"] = batch_size
+        monitor.record(
+            "ui_queue",
+            name,
+            elapsed_ms,
+            status=status,
+            attributes=attributes,
+        )
 
     def _apply_pending_event_locked(self, event: UIEvent) -> None:
         if isinstance(event.payload, RuntimeEventPayload):
@@ -560,4 +576,3 @@ class MiniTUIEventAdapter:
         self._transcript_rendered = FormattedText(layout.flatten())
         self._flattened_layout = layout
         return self._transcript_rendered
-

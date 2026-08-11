@@ -50,6 +50,109 @@ def test_stream_deltas_merge_into_one_assistant_cell() -> None:
     )
 
 
+def test_turn_finished_reconciles_a_partial_stream() -> None:
+    reducer = PresentationReducer()
+
+    reducer.apply(_runtime(AgentEvent.stream_token("hel")))
+    reducer.apply(
+        _runtime(AgentEvent.chat_end("hello world", render_response=False))
+    )
+
+    cells = reducer.state.transcript.cells
+    assert len(cells) == 1
+    assert isinstance(cells[0], AssistantCell)
+    assert cells[0].text == "hello world"
+    assert cells[0].complete is True
+
+
+def test_turn_finished_recovers_when_all_stream_deltas_were_dropped() -> None:
+    reducer = PresentationReducer()
+
+    reducer.apply(
+        _runtime(AgentEvent.chat_end("complete response", render_response=False))
+    )
+
+    cells = reducer.state.transcript.cells
+    assert len(cells) == 1
+    assert isinstance(cells[0], AssistantCell)
+    assert cells[0].text == "complete response"
+    assert cells[0].complete is True
+
+
+def test_turn_finished_does_not_duplicate_an_exact_stream() -> None:
+    reducer = PresentationReducer()
+
+    reducer.apply(_runtime(AgentEvent.stream_token("complete response")))
+    reducer.apply(
+        _runtime(AgentEvent.chat_end("complete response", render_response=False))
+    )
+
+    cells = reducer.state.transcript.cells
+    assert len(cells) == 1
+    assert isinstance(cells[0], AssistantCell)
+    assert cells[0].text == "complete response"
+    assert cells[0].complete is True
+
+
+def test_turn_finished_recovers_after_interrupted_retry_deltas_were_dropped() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(_runtime(AgentEvent.stream_token("interrupted partial")))
+    reducer.apply(
+        _runtime(
+            AgentEvent.assistant_stream_interrupted(
+                attempt_id="turn-1:0:1",
+                interrupt_epoch=1,
+            )
+        )
+    )
+
+    reducer.apply(_runtime(AgentEvent.chat_end("retry final", render_response=False)))
+
+    assistants = [
+        cell
+        for cell in reducer.state.transcript.cells
+        if isinstance(cell, AssistantCell)
+    ]
+    assert [cell.text for cell in assistants] == [
+        "interrupted partial",
+        "retry final",
+    ]
+    assert assistants[0].interrupted is True
+    assert assistants[1].complete is True
+    assert assistants[0].id != assistants[1].id
+
+
+def test_turn_finished_recovers_after_post_tool_deltas_were_dropped() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(_runtime(AgentEvent.stream_token("before tool")))
+    reducer.apply(
+        _runtime(AgentEvent.tool_call_start("shell", {}, tool_call_id="tool-1"))
+    )
+
+    reducer.apply(_runtime(AgentEvent.chat_end("after tool", render_response=False)))
+
+    assistants = [
+        cell
+        for cell in reducer.state.transcript.cells
+        if isinstance(cell, AssistantCell)
+    ]
+    assert [cell.text for cell in assistants] == ["before tool", "after tool"]
+    assert all(cell.complete for cell in assistants)
+    assert assistants[0].id != assistants[1].id
+
+
+def test_empty_turn_finished_response_clears_partial_stream() -> None:
+    reducer = PresentationReducer()
+    reducer.apply(_runtime(AgentEvent.stream_token("stale partial")))
+
+    reducer.apply(_runtime(AgentEvent.chat_end("", render_response=False)))
+
+    cell = reducer.state.transcript.cells[0]
+    assert isinstance(cell, AssistantCell)
+    assert cell.text == ""
+    assert cell.complete is True
+
+
 def test_interrupted_stream_is_sealed_and_retry_opens_a_new_cell() -> None:
     reducer = PresentationReducer()
     reducer.apply(_runtime(AgentEvent.stream_token("partial")))

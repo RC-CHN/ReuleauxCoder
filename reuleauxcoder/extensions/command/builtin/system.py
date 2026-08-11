@@ -326,6 +326,14 @@ def _performance_row(sample: PerformanceSample) -> PerformanceRowViewModel:
         "attempt",
         "error_type",
         "outcome",
+        "batch_size",
+        "depth",
+        "high_watermark",
+        "coalesced",
+        "transient_dropped",
+        "must_deliver_waits",
+        "must_deliver_timeouts",
+        "closed_dropped",
     )
     detail = " · ".join(
         f"{key}={attributes[key]}"

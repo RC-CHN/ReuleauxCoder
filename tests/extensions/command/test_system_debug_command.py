@@ -49,6 +49,41 @@ def test_status_perf_emits_bounded_typed_view() -> None:
     assert view.slowest[0].detail == "hook_name=project_context"
 
 
+def test_status_perf_exposes_ui_queue_pressure() -> None:
+    monitor = RuntimePerformanceMonitor()
+    monitor.record(
+        "ui_queue",
+        "drain",
+        1.5,
+        attributes={
+            "batch_size": 32,
+            "depth": 0,
+            "high_watermark": 64,
+            "coalesced": 100,
+            "transient_dropped": 3,
+            "must_deliver_waits": 2,
+            "must_deliver_timeouts": 1,
+            "closed_dropped": 4,
+        },
+    )
+    effect = CommandEffect()
+    ctx = SimpleNamespace(
+        agent=SimpleNamespace(performance_monitor=monitor),
+        effect=effect,
+    )
+
+    view = _handle_status_perf(None, ctx).views[-1].view_model
+
+    assert view.categories[0].category == "ui_queue"
+    detail = view.recent[0].detail
+    assert "high_watermark=64" in detail
+    assert "coalesced=100" in detail
+    assert "transient_dropped=3" in detail
+    assert "must_deliver_waits=2" in detail
+    assert "must_deliver_timeouts=1" in detail
+    assert "closed_dropped=4" in detail
+
+
 def test_handle_debug_toggles_runtime_flag(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     effect = CommandEffect()

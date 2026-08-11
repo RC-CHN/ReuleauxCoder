@@ -152,7 +152,10 @@ def main():
             MiniTUIInteractor,
         )
 
-        event_adapter = MiniTUIEventAdapter(root_agent_id=ctx.agent.agent_id)
+        event_adapter = MiniTUIEventAdapter(
+            root_agent_id=ctx.agent.agent_id,
+            performance_monitor=getattr(ctx.agent, "performance_monitor", None),
+        )
         if ctx.current_session_id and ctx.agent.messages:
             from reuleauxcoder.domain.session.models import Session
 

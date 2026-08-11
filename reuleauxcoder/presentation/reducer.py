@@ -313,15 +313,7 @@ class PresentationReducer:
         cell_id = self.state.active_assistant_cells.get(route)
         existing = self.state.transcript.get(cell_id) if cell_id else None
         if not isinstance(existing, AssistantCell) or existing.complete:
-            identity = event.turn_id or event.event_id
-            cell_id = (
-                f"assistant:{event.agent_id}:{identity}"
-                if event.agent_id
-                else f"assistant:{identity}"
-            )
-            existing_same_id = self.state.transcript.get(cell_id)
-            if isinstance(existing_same_id, AssistantCell):
-                cell_id = f"{cell_id}:{event.event_id}"
+            cell_id = self._next_assistant_cell_id(event)
             cell = AssistantCell(
                 id=cell_id,
                 text=text,
@@ -339,25 +331,35 @@ class PresentationReducer:
         cell_id = self.state.active_assistant_cells.get(route)
         existing = self.state.transcript.get(cell_id) if cell_id else None
         if isinstance(existing, AssistantCell) and not existing.complete:
-            updated = next_revision(existing, complete=True)
+            updated = next_revision(
+                existing,
+                text=payload.response,
+                complete=True,
+            )
             self.state.active_assistant_cells.pop(route, None)
             return self._replace(updated)
         self.state.active_assistant_cells.pop(route, None)
-        if payload.response and payload.render_response:
-            identity = event.turn_id or event.event_id
+        if payload.response:
             return self._append(
                 AssistantCell(
-                    id=(
-                        f"assistant:{event.agent_id}:{identity}"
-                        if event.agent_id
-                        else f"assistant:{identity}"
-                    ),
+                    id=self._next_assistant_cell_id(event),
                     text=payload.response,
                     complete=True,
                     group_id=self._event_group(event),
                 )
             )
         return ()
+
+    def _next_assistant_cell_id(self, event: RuntimeEvent) -> str:
+        identity = event.turn_id or event.event_id
+        cell_id = (
+            f"assistant:{event.agent_id}:{identity}"
+            if event.agent_id
+            else f"assistant:{identity}"
+        )
+        if self.state.transcript.get(cell_id) is not None:
+            return f"{cell_id}:{event.event_id}"
+        return cell_id
 
     def _complete_active_assistant(self, event: RuntimeEvent) -> None:
         route = self._assistant_route(event)
