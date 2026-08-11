@@ -1,7 +1,7 @@
 # ReuleauxCoder × Crush 对照改进清单与 LSP 时序设计
 
 > 日期：2026-08-11  
-> 状态：调研与设计记录，尚未实施  
+> 状态：调研、设计与实施跟踪（更新于 2026-08-12）
 > Crush 基线：`references/crush`，commit `feb63006e9452be370721c22a0c2a3be008fd475`（2026-08-10 nightly）  
 > 目的：记录从 Crush 源码中可吸收的产品与运行时改进，并重点校正 ReuleauxCoder 当前 LSP 的启动、同步、诊断、重启和关闭时序。
 
@@ -643,3 +643,17 @@ Crush 的 Fantasy/Catwalk provider 面是最大的产品差距。优先让现有
 最先应动的不是 LSP 功能表，而是 `LSP-01`：把编辑后的 document sync、didSave 和 diagnostics 变成同一原子工作项。当前分队列设计存在可确定复现的时序反转；只改优先级不能彻底解决。
 
 第二步是 `LSP-02/LSP-03`：让迟到 batch 能 carry-forward，并让 cold start、调用超时和 shutdown 使用一致、可观测的 deadline。完成这三项后，再做 lazy availability、per-transport concurrency、状态 UI 和新工具，收益才不会建立在不稳定时序上。
+
+## 12. 2026-08-12 实施记录
+
+本轮完成了 LSP 之外的三组改进，每组保持独立提交：
+
+| ID | 状态 | Commit | 已落地边界 | 验证 |
+| --- | --- | --- | --- | --- |
+| `PROVIDER-01` | 完成 | `542c80e` | Agent 依赖 provider-neutral `LLMProtocol`；增加原生 Anthropic Messages/SSE adapter、配置贯通、tool/usage/thinking stream 转换、安全传输错误和 contract tests | 全量 `1995 passed, 25 skipped` |
+| `TUI-01` | 完成 | `dc2f29d` | transcript resize 使用单 worker single-flight 分批预热；generation stale rejection；cache hit/miss、batch、render rows、elapsed 进入 `tui_cache` performance samples；后台失败进入 UI/runtime incident | 全量 `2000 passed, 25 skipped`；1000 cells resize 调度约 1.5 ms，后台完成约 383 ms |
+| `SESSION-01` | 完成 | `a6b5c76` | 增加可丢弃、可重建 SQLite inventory projection；dirty marker 覆盖 save 崩溃窗口；候选 manifest freshness 校验；索引损坏自动重建；token/event/request/checkpoint 聚合查询 | 全量 `2005 passed, 25 skipped`；300 sessions 查询由首次扫描约 68 ms 降至约 0.9 ms |
+
+三组都遵守同一故障原则：provider/协议/权威 session artifact 的业务失败继续真实抛出；只隔离 provider cleanup、TUI prewarm 和 session projection 这类次生失败，并把安全、结构化的错误类型暴露给 agent。SQLite 只保存可重建查询字段，`events.jsonl`、`replay.json`、request envelope、checkpoint 和 artifact 仍是权威数据。
+
+本轮没有把 cost、tool usage、response latency 加入 session 聚合，也没有扩展第三个 native provider；这些属于现有投影/provider port 上的后续增量，不是本轮完成定义的一部分。
