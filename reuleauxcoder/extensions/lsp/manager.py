@@ -158,10 +158,11 @@ class LspStderrReference:
     total_bytes: int
     truncated: bool
     tail_available: bool
-    finalized: bool
+    finalized: bool | None
     read_error_type: str | None = None
     cleanup_operation: str | None = None
     cleanup_error_type: str | None = None
+    metadata_error_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,8 +402,8 @@ class LspManager:
                 total_bytes=0,
                 truncated=False,
                 tail_available=False,
-                finalized=True,
-                read_error_type=type(error).__name__,
+                finalized=None,
+                metadata_error_type=type(error).__name__,
             )
 
     def describe_failure_for_file(
@@ -452,8 +453,10 @@ class LspManager:
                 fields.append(f"stderr_bytes={view.stderr.total_bytes}")
                 if view.stderr.truncated:
                     fields.append("stderr_truncated=true")
-                if not view.stderr.finalized:
+                if view.stderr.finalized is False:
                     fields.append("stderr_pending=true")
+                elif view.stderr.finalized is None:
+                    fields.append("stderr_finalized=unknown")
                 if view.stderr.read_error_type is not None:
                     fields.append(
                         "stderr_read_error_type="
@@ -468,6 +471,11 @@ class LspManager:
                     fields.append(
                         "stderr_cleanup_error_type="
                         f"{self._safe_fact(view.stderr.cleanup_error_type, 'Error')}"
+                    )
+                if view.stderr.metadata_error_type is not None:
+                    fields.append(
+                        "stderr_metadata_error_type="
+                        f"{self._safe_fact(view.stderr.metadata_error_type, 'Error')}"
                     )
         if protocol_error_code is not None:
             fields.append(f"protocol_error_code={protocol_error_code}")
@@ -2791,8 +2799,11 @@ class LspManager:
                 f":stderr={status.stderr.ref}"
                 f":stderr_bytes={status.stderr.total_bytes}"
                 f":stderr_truncated={str(status.stderr.truncated).lower()}"
-                f":stderr_pending={str(not status.stderr.finalized).lower()}"
             )
+            if status.stderr.finalized is False:
+                description += ":stderr_pending=true"
+            elif status.stderr.finalized is None:
+                description += ":stderr_finalized=unknown"
             if status.stderr.read_error_type is not None:
                 description += f":stderr_read_error={status.stderr.read_error_type}"
             if status.stderr.cleanup_operation is not None:
@@ -2800,6 +2811,10 @@ class LspManager:
             if status.stderr.cleanup_error_type is not None:
                 description += (
                     f":stderr_cleanup_error={status.stderr.cleanup_error_type}"
+                )
+            if status.stderr.metadata_error_type is not None:
+                description += (
+                    f":stderr_metadata_error={status.stderr.metadata_error_type}"
                 )
         return description
 

@@ -492,6 +492,47 @@ def test_stderr_retention_failure_does_not_mask_transport_failure(
     assert "credential=" not in caplog.text
 
 
+def test_stderr_metadata_failure_is_unknown_not_false_finalization(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "credential=metadata-secret-must-not-leak"
+    path = tmp_path / "main.py"
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, path)
+    generation = manager._begin_transport_attempt(key, "fake-lsp")
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+    ref = manager._retain_client_stderr(key, generation, client)
+    assert ref is not None
+    assert manager._transition_transport(
+        key,
+        generation,
+        LspTransportState.ERROR,
+        error_type="ProcessExited",
+        error_phase="runtime",
+        stderr_ref=ref,
+    )
+    client.stderr_capture.metadata = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError(secret)
+    )
+
+    with caplog.at_level("INFO"):
+        metadata = manager.stderr_reference(ref)
+        failure = manager.describe_failure_for_file(
+            path,
+            phase="request",
+            error_type="LspClientError",
+        )
+
+    assert metadata is not None
+    assert metadata.finalized is None
+    assert metadata.metadata_error_type == "RuntimeError"
+    assert metadata.read_error_type is None
+    assert "stderr_finalized=unknown" in failure
+    assert "stderr_metadata_error_type=RuntimeError" in failure
+    assert secret not in repr((metadata, failure, caplog.text))
+
+
 def test_stderr_reference_registry_is_bounded_and_owner_stable(
     tmp_path: Path,
 ) -> None:
