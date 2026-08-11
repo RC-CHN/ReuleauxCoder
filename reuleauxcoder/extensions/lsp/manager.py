@@ -44,6 +44,12 @@ from reuleauxcoder.domain.runtime.performance import (
 from reuleauxcoder.extensions.lsp.client import (
     LspClient,
     LspClientError,
+    LspDocumentChangedDuringRead,
+    LspDocumentCloseError,
+    LspDocumentDecodeError,
+    LspDocumentReadError,
+    LspDocumentStatError,
+    LspDocumentTooLarge,
     LspFailureFacts,
     LspRequestCancelled,
     LspRequestTimedOut,
@@ -223,6 +229,31 @@ class ToolRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class _DocumentStamp:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+    @classmethod
+    def from_stat(cls, metadata: os.stat_result) -> _DocumentStamp:
+        return cls(
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            size=metadata.st_size,
+            mtime_ns=metadata.st_mtime_ns,
+            ctime_ns=metadata.st_ctime_ns,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentSnapshot:
+    content: str = field(repr=False)
+    stamp: _DocumentStamp
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticRequest:
     """A routed diagnostics request owned by one edit operation."""
 
@@ -288,7 +319,7 @@ class LspManager:
             "negative_cache_hits": 0,
         }
         self._re_spawn_counts: dict[TransportKey, int] = {}
-        self._last_sync_time: dict[tuple[TransportKey, Path], float] = {}
+        self._document_sync_stamps: dict[tuple[TransportKey, Path], _DocumentStamp] = {}
 
         # Queues
         self._diagnostics_queue: list[DiagnosticRequest] = []
@@ -1779,33 +1810,28 @@ class LspManager:
                 "request_kind": self._request_kind(req.method),
             }
             try:
-                stale = self._check_stale(
-                    req.language_id,
+                document_key = (key, req.file_path)
+                with self._lock:
+                    last_stamp = self._document_sync_stamps.get(document_key)
+                snapshot = self._load_document_for_sync(
                     req.file_path,
-                    transport_key=key,
+                    last_stamp=last_stamp,
+                    force=False,
                 )
-                if stale:
-                    content = self._read_file_content(req.file_path)
-                    if content is None:
-                        sync_attributes["sync_kind"] = "unreadable"
+                if snapshot is not None:
+                    sync_kind = "open" if last_stamp is None else "change"
+                    sync_attributes["sync_kind"] = sync_kind
+                    if last_stamp is None:
+                        await server.did_open(req.file_path, snapshot.content)
                     else:
-                        document_key = (key, req.file_path)
-                        last_sync = self._last_sync_time.get(document_key, 0)
-                        sync_kind = "open" if last_sync == 0 else "change"
-                        sync_attributes["sync_kind"] = sync_kind
-                        if last_sync == 0:
-                            await server.did_open(req.file_path, content)
-                        else:
-                            await server.did_change(req.file_path, content)
-                        with self._lock:
-                            self._last_sync_time[document_key] = (
-                                req.file_path.stat().st_mtime
-                            )
-                        sync_attributes["document_version"] = self._document_version(
-                            server,
-                            req.file_path,
-                        )
-                        sync_status = "ok"
+                        await server.did_change(req.file_path, snapshot.content)
+                    with self._lock:
+                        self._document_sync_stamps[document_key] = snapshot.stamp
+                    sync_attributes["document_version"] = self._document_version(
+                        server,
+                        req.file_path,
+                    )
+                    sync_status = "ok"
             except Exception as e:
                 sync_status = self._performance_status(e)
                 sync_attributes["error_type"] = type(e).__name__
@@ -1983,41 +2009,36 @@ class LspManager:
                 "document_committed": request.document_committed,
             }
             try:
-                stale = request.document_committed or self._check_stale(
-                    lang,
+                document_key = (resolved_transport_key, file_path)
+                with self._lock:
+                    last_stamp = self._document_sync_stamps.get(document_key)
+                snapshot = self._load_document_for_sync(
                     file_path,
-                    transport_key=resolved_transport_key,
+                    last_stamp=last_stamp,
+                    force=request.document_committed,
                 )
-                if stale:
-                    content = self._read_file_content(file_path)
-                    if content is None:
-                        sync_attributes["sync_kind"] = "unreadable"
-                    else:
-                        document_key = (resolved_transport_key, file_path)
-                        last_sync = self._last_sync_time.get(document_key, 0)
-                        sync_attributes["sync_kind"] = (
-                            "open" if last_sync == 0 else "change"
+                if snapshot is not None:
+                    sync_attributes["sync_kind"] = (
+                        "open" if last_stamp is None else "change"
+                    )
+                    try:
+                        if last_stamp is None:
+                            await server.did_open(file_path, snapshot.content)
+                        else:
+                            await server.did_change(file_path, snapshot.content)
+                        with self._lock:
+                            self._document_sync_stamps[document_key] = snapshot.stamp
+                        sync_status = "ok"
+                    except Exception as error:
+                        sync_status = self._performance_status(error)
+                        sync_attributes["error_type"] = type(error).__name__
+                        logger.warning(
+                            "LSP diagnostics document sync failed: "
+                            "language=%s error_type=%s",
+                            get_language_id_string(lang),
+                            type(error).__name__,
                         )
-                        try:
-                            if last_sync == 0:
-                                await server.did_open(file_path, content)
-                            else:
-                                await server.did_change(file_path, content)
-                            with self._lock:
-                                self._last_sync_time[document_key] = (
-                                    file_path.stat().st_mtime
-                                )
-                            sync_status = "ok"
-                        except Exception as error:
-                            sync_status = self._performance_status(error)
-                            sync_attributes["error_type"] = type(error).__name__
-                            logger.warning(
-                                "LSP diagnostics document sync failed: "
-                                "language=%s error_type=%s",
-                                get_language_id_string(lang),
-                                type(error).__name__,
-                            )
-                            raise
+                        raise
 
                 # A successful file mutation is one ordered operation:
                 # synchronize the committed content, then notify save, then
@@ -2032,6 +2053,7 @@ class LspManager:
                     )
                     if "error_type" not in sync_attributes:
                         sync_status = "ok"
+                await server.refresh_diagnostics(file_path)
             except Exception as e:
                 sync_status = self._performance_status(e)
                 sync_attributes["error_type"] = type(e).__name__
@@ -2650,7 +2672,7 @@ class LspManager:
         with self._lock:
             clients = dict(self._transports)
             self._transports.clear()
-            self._last_sync_time.clear()
+            self._document_sync_stamps.clear()
             generations: dict[TransportKey, int] = {}
             for key in clients:
                 status = self._ensure_transport_status_locked(key)
@@ -2872,35 +2894,107 @@ class LspManager:
             path = self._workspace_cwd / path
         return path.resolve()
 
-    def _check_stale(
-        self,
-        lang: LanguageId,
+    @classmethod
+    def _read_file_content(cls, file_path: Path) -> str:
+        """Read one bounded UTF-8 document or raise a typed safe failure."""
+        snapshot = cls._load_document_for_sync(
+            file_path,
+            last_stamp=None,
+            force=True,
+        )
+        assert snapshot is not None
+        return snapshot.content
+
+    @classmethod
+    def _load_document_for_sync(
+        cls,
         file_path: Path,
         *,
-        transport_key: TransportKey | None = None,
-    ) -> bool:
-        """Check if a file's content is stale in the LSP server."""
-        try:
-            mtime = file_path.stat().st_mtime
-        except OSError:
-            return False
+        last_stamp: _DocumentStamp | None,
+        force: bool,
+    ) -> _DocumentSnapshot | None:
+        """Load a stable bounded snapshot, retrying one concurrent mutation."""
+        for attempt in range(2):
+            try:
+                handle = file_path.open("rb")
+            except OSError as error:
+                raise LspDocumentReadError("LSP document read failed") from error
 
-        key = (transport_key or self._transport_key(lang, file_path), file_path)
-        last_sync = self._last_sync_time.get(key, 0)
-        return mtime > last_sync
+            changed_during_read = False
+            snapshot: _DocumentSnapshot | None = None
+            try:
+                before = cls._document_stamp(handle)
+                if before.size > MAX_LSP_FILE_SIZE_BYTES:
+                    raise LspDocumentTooLarge("LSP document exceeds the size limit")
+                if force or last_stamp is None or before != last_stamp:
+                    try:
+                        raw = handle.read(MAX_LSP_FILE_SIZE_BYTES + 1)
+                    except OSError as error:
+                        raise LspDocumentReadError(
+                            "LSP document read failed"
+                        ) from error
+                    if len(raw) > MAX_LSP_FILE_SIZE_BYTES:
+                        raise LspDocumentTooLarge("LSP document exceeds the size limit")
+                    after = cls._document_stamp(handle)
+                    if before != after:
+                        changed_during_read = True
+                    else:
+                        try:
+                            content = raw.decode("utf-8")
+                        except UnicodeDecodeError as error:
+                            raise LspDocumentDecodeError(
+                                "LSP document is not valid UTF-8"
+                            ) from error
+                        snapshot = _DocumentSnapshot(content=content, stamp=after)
+            except BaseException as primary_error:
+                cls._close_document_handle(
+                    handle,
+                    primary_error=primary_error,
+                )
+                raise
+            cls._close_document_handle(handle)
+            if not changed_during_read:
+                return snapshot
+            if attempt == 0:
+                continue
+            raise LspDocumentChangedDuringRead(
+                "LSP document changed repeatedly while being read"
+            )
+        raise AssertionError("document read retry loop exhausted")
 
     @staticmethod
-    def _read_file_content(file_path: Path) -> str | None:
-        """Read file content, returning None if unreadable or too large."""
+    def _document_stamp(handle: Any) -> _DocumentStamp:
         try:
-            content = file_path.read_text(encoding="utf-8")
-        except Exception:
-            return None
+            return _DocumentStamp.from_stat(os.fstat(handle.fileno()))
+        except (OSError, ValueError) as error:
+            raise LspDocumentStatError("LSP document stat failed") from error
 
-        if len(content.encode("utf-8")) > MAX_LSP_FILE_SIZE_BYTES:
-            return None
-
-        return content
+    @staticmethod
+    def _close_document_handle(
+        handle: Any,
+        *,
+        primary_error: BaseException | None = None,
+    ) -> None:
+        try:
+            handle.close()
+        except Exception as close_error:
+            if primary_error is None:
+                raise LspDocumentCloseError(
+                    "LSP document close failed"
+                ) from close_error
+            try:
+                primary_error.secondary_error_operation = "document_close"  # type: ignore[attr-defined]
+                primary_error.secondary_error_type = type(close_error).__name__  # type: ignore[attr-defined]
+            except Exception as observation_error:
+                logger.warning(
+                    "LSP document close-failure observation failed: error_type=%s",
+                    type(observation_error).__name__,
+                )
+            logger.warning(
+                "LSP document close failed while preserving primary failure: "
+                "error_type=%s",
+                type(close_error).__name__,
+            )
 
     # === Internal: Helpers ===
 
@@ -2934,9 +3028,9 @@ class LspManager:
         with self._lock:
             current = self._ensure_transport_status_locked(key)
             generation = current.generation + 1
-            self._last_sync_time = {
-                document_key: synced_at
-                for document_key, synced_at in self._last_sync_time.items()
+            self._document_sync_stamps = {
+                document_key: stamp
+                for document_key, stamp in self._document_sync_stamps.items()
                 if document_key[0] != key
             }
             self._record_transport_status_locked(

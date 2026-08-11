@@ -14,6 +14,7 @@ This module tests:
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,7 +25,17 @@ from reuleauxcoder.domain.runtime.events import (
     DiagnosticsCleared,
     DiagnosticsPublished,
 )
-from reuleauxcoder.extensions.lsp.client import LspClientError
+from reuleauxcoder.extensions.lsp.client import (
+    MAX_LSP_FILE_SIZE_BYTES,
+    LspClientError,
+    LspDocumentChangedDuringRead,
+    LspDocumentCloseError,
+    LspDocumentDecodeError,
+    LspDocumentReadError,
+    LspDocumentStatError,
+    LspDocumentTooLarge,
+    LspServerError,
+)
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import (
     DIAGNOSTIC_BATCH_TTL_SECONDS,
@@ -203,38 +214,6 @@ class TestWorkspaceTransportIsolation:
         assert resolved_second is second
 
 
-class TestFileStaleness:
-    def test_file_not_stale_when_no_last_sync(
-        self, manager: LspManager, tmp_path: Path
-    ) -> None:
-        f = tmp_path / "test.py"
-        f.write_text("hello")
-        # No last_sync_time entry → technically stale (mtime > 0)
-        assert manager._check_stale(LanguageId.PYTHON, f) is True
-
-    def test_file_not_stale_when_up_to_date(
-        self, manager: LspManager, tmp_path: Path
-    ) -> None:
-        f = tmp_path / "test.py"
-        f.write_text("hello")
-        future_mtime = f.stat().st_mtime + 100
-        key = manager._transport_key(LanguageId.PYTHON, f)
-        manager._last_sync_time[(key, f)] = future_mtime
-        assert manager._check_stale(LanguageId.PYTHON, f) is False
-
-    def test_file_stale_after_edit(self, manager: LspManager, tmp_path: Path) -> None:
-        f = tmp_path / "test.py"
-        f.write_text("old")
-        key = manager._transport_key(LanguageId.PYTHON, f)
-        manager._last_sync_time[(key, f)] = f.stat().st_mtime
-        time.sleep(0.01)  # ensure mtime changes
-        f.write_text("new")
-        assert manager._check_stale(LanguageId.PYTHON, f) is True
-
-    def test_missing_file_not_stale(self, manager: LspManager) -> None:
-        assert manager._check_stale(LanguageId.PYTHON, Path("/nonexistent.py")) is False
-
-
 class TestReadFileContent:
     def test_read_normal_file(self, manager: LspManager, tmp_path: Path) -> None:
         f = tmp_path / "test.py"
@@ -242,7 +221,386 @@ class TestReadFileContent:
         assert manager._read_file_content(f) == "print(1)"
 
     def test_read_missing_file(self, manager: LspManager) -> None:
-        assert manager._read_file_content(Path("/nonexistent.py")) is None
+        with pytest.raises(LspDocumentReadError):
+            manager._read_file_content(Path("/nonexistent.py"))
+
+    def test_fstat_failure_is_typed(self, manager: LspManager) -> None:
+        handle = MagicMock()
+        handle.fileno.return_value = 7
+
+        with (
+            patch.object(Path, "open", return_value=handle),
+            patch(
+                "reuleauxcoder.extensions.lsp.manager.os.fstat",
+                side_effect=OSError("credential=stat-must-not-leak"),
+            ),
+        ):
+            with pytest.raises(LspDocumentStatError):
+                manager._read_file_content(Path("/virtual.py"))
+
+        handle.close.assert_called_once_with()
+
+    def test_close_failure_is_reported_without_masking_primary_failure(
+        self,
+        manager: LspManager,
+    ) -> None:
+        handle = MagicMock()
+        handle.fileno.return_value = 7
+        handle.close.side_effect = RuntimeError("credential=close-must-not-leak")
+
+        with (
+            patch.object(Path, "open", return_value=handle),
+            patch(
+                "reuleauxcoder.extensions.lsp.manager.os.fstat",
+                side_effect=OSError("credential=stat-must-not-leak"),
+            ),
+        ):
+            with pytest.raises(LspDocumentStatError) as raised:
+                manager._read_file_content(Path("/virtual.py"))
+
+        frozen = manager._freeze_failure(
+            raised.value,
+            None,
+            phase="document_sync",
+        )
+        facts = frozen.failure_facts  # type: ignore[attr-defined]
+        assert facts is not None
+        assert facts.error_type == "LspDocumentStatError"
+        assert facts.secondary_error_operation == "document_close"
+        assert facts.secondary_error_type == "RuntimeError"
+
+    def test_rejects_oversized_file_before_reading(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        file_path = tmp_path / "large.py"
+        with file_path.open("wb") as handle:
+            handle.truncate(MAX_LSP_FILE_SIZE_BYTES + 1)
+
+        with patch(
+            "reuleauxcoder.extensions.lsp.manager.os.fstat",
+            wraps=os.fstat,
+        ) as fstat:
+            with pytest.raises(LspDocumentTooLarge):
+                manager._read_file_content(file_path)
+
+        assert fstat.call_count == 1
+
+    def test_rejects_non_utf8_document(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        file_path = tmp_path / "invalid.py"
+        file_path.write_bytes(b"\xff\xfe")
+
+        with pytest.raises(LspDocumentDecodeError):
+            manager._read_file_content(file_path)
+
+    def test_bounds_read_when_file_grows_after_metadata_check(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        file_path = tmp_path / "growing.py"
+        file_path.write_bytes(b"x")
+        handle = MagicMock()
+        handle.fileno.return_value = 7
+        handle.read.return_value = b"x" * (MAX_LSP_FILE_SIZE_BYTES + 1)
+        metadata = MagicMock(st_size=1, st_mtime=1.0)
+
+        with (
+            patch.object(Path, "open", return_value=handle),
+            patch(
+                "reuleauxcoder.extensions.lsp.manager.os.fstat", return_value=metadata
+            ),
+        ):
+            with pytest.raises(LspDocumentTooLarge):
+                manager._read_file_content(file_path)
+
+        handle.read.assert_called_once_with(MAX_LSP_FILE_SIZE_BYTES + 1)
+        handle.close.assert_called_once_with()
+
+    def test_first_sync_reads_file_with_epoch_mtime(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        file_path = tmp_path / "epoch.py"
+        file_path.write_text("value = 1", encoding="utf-8")
+        os.utime(file_path, ns=(0, 0))
+
+        snapshot = manager._load_document_for_sync(
+            file_path,
+            last_stamp=None,
+            force=False,
+        )
+
+        assert snapshot is not None
+        assert snapshot.content == "value = 1"
+        assert snapshot.stamp.mtime_ns == 0
+
+    def test_timestamp_rollback_still_loads_changed_content(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        file_path = tmp_path / "rollback.py"
+        file_path.write_text("old", encoding="utf-8")
+        previous = manager._load_document_for_sync(
+            file_path,
+            last_stamp=None,
+            force=False,
+        )
+        assert previous is not None
+        file_path.write_text("new", encoding="utf-8")
+        os.utime(file_path, ns=(0, 0))
+
+        current = manager._load_document_for_sync(
+            file_path,
+            last_stamp=previous.stamp,
+            force=False,
+        )
+
+        assert current is not None
+        assert current.content == "new"
+
+    def test_same_mtime_invalid_rewrite_is_not_treated_as_unchanged(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        file_path = tmp_path / "invalid-rewrite.py"
+        file_path.write_bytes(b"ok")
+        previous = manager._load_document_for_sync(
+            file_path,
+            last_stamp=None,
+            force=False,
+        )
+        assert previous is not None
+        previous_mtime = file_path.stat().st_mtime_ns
+        file_path.write_bytes(b"\xff\xfe")
+        os.utime(file_path, ns=(previous_mtime, previous_mtime))
+
+        with pytest.raises(LspDocumentDecodeError):
+            manager._load_document_for_sync(
+                file_path,
+                last_stamp=previous.stamp,
+                force=False,
+            )
+
+    def test_retries_once_when_document_changes_during_read(
+        self,
+        manager: LspManager,
+    ) -> None:
+        first_handle = MagicMock()
+        first_handle.fileno.return_value = 7
+        first_handle.read.return_value = b"first"
+        second_handle = MagicMock()
+        second_handle.fileno.return_value = 8
+        second_handle.read.return_value = b"second"
+        first_before = MagicMock(
+            st_dev=1,
+            st_ino=2,
+            st_size=5,
+            st_mtime_ns=10,
+            st_ctime_ns=10,
+        )
+        stable = MagicMock(
+            st_dev=1,
+            st_ino=2,
+            st_size=6,
+            st_mtime_ns=11,
+            st_ctime_ns=11,
+        )
+
+        with (
+            patch.object(Path, "open", side_effect=[first_handle, second_handle]),
+            patch(
+                "reuleauxcoder.extensions.lsp.manager.os.fstat",
+                side_effect=[first_before, stable, stable, stable],
+            ),
+        ):
+            snapshot = manager._load_document_for_sync(
+                Path("/virtual.py"),
+                last_stamp=None,
+                force=False,
+            )
+
+        assert snapshot is not None
+        assert snapshot.content == "second"
+        first_handle.close.assert_called_once_with()
+        second_handle.close.assert_called_once_with()
+
+    def test_repeated_change_during_read_is_typed_failure(
+        self,
+        manager: LspManager,
+    ) -> None:
+        handles = [MagicMock(), MagicMock()]
+        for number, handle in enumerate(handles, start=7):
+            handle.fileno.return_value = number
+            handle.read.return_value = b"value"
+        stamps = [
+            MagicMock(
+                st_dev=1,
+                st_ino=2,
+                st_size=5,
+                st_mtime_ns=value,
+                st_ctime_ns=value,
+            )
+            for value in range(4)
+        ]
+
+        with (
+            patch.object(Path, "open", side_effect=handles),
+            patch(
+                "reuleauxcoder.extensions.lsp.manager.os.fstat",
+                side_effect=stamps,
+            ),
+        ):
+            with pytest.raises(LspDocumentChangedDuringRead):
+                manager._load_document_for_sync(
+                    Path("/virtual.py"),
+                    last_stamp=None,
+                    force=False,
+                )
+
+    def test_close_failure_after_success_is_typed(
+        self,
+        manager: LspManager,
+    ) -> None:
+        handle = MagicMock()
+        handle.fileno.return_value = 7
+        handle.read.return_value = b"value"
+        handle.close.side_effect = RuntimeError("credential=close-must-not-leak")
+        metadata = MagicMock(
+            st_dev=1,
+            st_ino=2,
+            st_size=5,
+            st_mtime_ns=1,
+            st_ctime_ns=1,
+        )
+
+        with (
+            patch.object(Path, "open", return_value=handle),
+            patch(
+                "reuleauxcoder.extensions.lsp.manager.os.fstat",
+                return_value=metadata,
+            ),
+        ):
+            with pytest.raises(LspDocumentCloseError):
+                manager._load_document_for_sync(
+                    Path("/virtual.py"),
+                    last_stamp=None,
+                    force=False,
+                )
+
+
+class TestActiveRequestFailureFacts:
+    def test_document_decode_failure_stops_before_query(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        import asyncio
+
+        file_path = tmp_path / "invalid.py"
+        file_path.write_bytes(b"\xff\xfe")
+        server = MagicMock()
+        server.did_open = AsyncMock()
+        server.did_change = AsyncMock()
+        server.send_request = AsyncMock(return_value={})
+        manager._get_or_create_server = AsyncMock(return_value=server)
+        request = ToolRequest(
+            file_path=file_path,
+            language_id=LanguageId.PYTHON,
+            method="textDocument/documentSymbol",
+            params={},
+            future=concurrent.futures.Future(),
+            timeout_seconds=1.0,
+            deadline_at=time.monotonic() + 1.0,
+        )
+
+        with pytest.raises(LspDocumentDecodeError) as raised:
+            asyncio.run(manager._execute_tool_request(request))
+
+        facts = raised.value.failure_facts
+        assert facts is not None
+        assert facts.phase == "document_sync"
+        assert facts.error_type == "LspDocumentDecodeError"
+        server.did_open.assert_not_awaited()
+        server.did_change.assert_not_awaited()
+        server.send_request.assert_not_awaited()
+
+    def test_failed_did_open_does_not_commit_document_stamp(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        import asyncio
+
+        file_path = tmp_path / "main.py"
+        file_path.write_text("value = 1\n", encoding="utf-8")
+        server = MagicMock()
+        server.did_open = AsyncMock(side_effect=LspClientError("sync failed"))
+        server.did_change = AsyncMock()
+        server.send_request = AsyncMock(return_value={})
+        manager._get_or_create_server = AsyncMock(return_value=server)
+        key = manager._transport_key(LanguageId.PYTHON, file_path)
+        request = ToolRequest(
+            file_path=file_path,
+            language_id=LanguageId.PYTHON,
+            method="textDocument/documentSymbol",
+            params={},
+            future=concurrent.futures.Future(),
+            timeout_seconds=1.0,
+            deadline_at=time.monotonic() + 1.0,
+            transport_key=key,
+        )
+
+        with pytest.raises(LspClientError) as raised:
+            asyncio.run(manager._execute_tool_request(request))
+
+        assert raised.value.failure_facts is not None
+        assert raised.value.failure_facts.phase == "document_sync"
+        assert (key, file_path) not in manager._document_sync_stamps
+        server.did_change.assert_not_awaited()
+        server.send_request.assert_not_awaited()
+
+    def test_server_error_freezes_request_phase_and_protocol_code(
+        self,
+        manager: LspManager,
+        tmp_path: Path,
+    ) -> None:
+        import asyncio
+
+        file_path = tmp_path / "main.py"
+        file_path.write_text("value = 1\n", encoding="utf-8")
+        server = MagicMock()
+        server.did_open = AsyncMock()
+        server.did_change = AsyncMock()
+        server.send_request = AsyncMock(side_effect=LspServerError(-32002))
+        manager._get_or_create_server = AsyncMock(return_value=server)
+        request = ToolRequest(
+            file_path=file_path,
+            language_id=LanguageId.PYTHON,
+            method="textDocument/documentSymbol",
+            params={},
+            future=concurrent.futures.Future(),
+            timeout_seconds=1.0,
+            deadline_at=time.monotonic() + 1.0,
+        )
+
+        with pytest.raises(LspServerError) as raised:
+            asyncio.run(manager._execute_tool_request(request))
+
+        facts = raised.value.failure_facts
+        assert facts is not None
+        assert facts.phase == "request"
+        assert facts.error_type == "LspServerError"
+        assert facts.protocol_error_code == -32002
+        server.send_request.assert_awaited_once()
 
 
 class TestConfigOverrides:
@@ -894,12 +1252,16 @@ class TestWorkerQueueOrdering:
         async def did_save(_path):
             calls.append("did_save")
 
+        async def refresh_diagnostics(_path):
+            calls.append("refresh_diagnostics")
+
         async def wait_for_diagnostics(*_args, **_kwargs):
             calls.append("wait_for_diagnostics")
             return [Diagnostic(line=1, character=1, message="saved")]
 
         server.did_open.side_effect = did_open
         server.did_save.side_effect = did_save
+        server.refresh_diagnostics.side_effect = refresh_diagnostics
         server.wait_for_diagnostics.side_effect = wait_for_diagnostics
         manager._get_or_create_server = AsyncMock(return_value=server)
 
@@ -907,10 +1269,15 @@ class TestWorkerQueueOrdering:
         request = manager._diagnostics_queue.pop()
         asyncio.run(manager._handle_diagnostics_request(request))
 
-        assert calls == ["did_open", "did_save", "wait_for_diagnostics"]
+        assert calls == [
+            "did_open",
+            "did_save",
+            "refresh_diagnostics",
+            "wait_for_diagnostics",
+        ]
         assert manager.pending_diagnostic_batches(batch_id=batch_id)
 
-    def test_document_commit_forces_sync_when_mtime_is_unchanged(
+    def test_document_commit_forces_sync_when_stamp_is_unchanged(
         self, manager: LspManager, tmp_path: Path
     ) -> None:
         import asyncio
@@ -919,7 +1286,13 @@ class TestWorkerQueueOrdering:
         path.write_text("value = 2", encoding="utf-8")
         manager._availability[LanguageId.PYTHON] = True
         key = (manager._transport_key(LanguageId.PYTHON, path), path)
-        manager._last_sync_time[key] = path.stat().st_mtime
+        previous = manager._load_document_for_sync(
+            path,
+            last_stamp=None,
+            force=False,
+        )
+        assert previous is not None
+        manager._document_sync_stamps[key] = previous.stamp
         calls: list[str] = []
         server = MagicMock()
         server.diagnostics_generation.side_effect = [0, 1]
@@ -938,6 +1311,7 @@ class TestWorkerQueueOrdering:
 
         server.did_change.side_effect = did_change
         server.did_save.side_effect = did_save
+        server.refresh_diagnostics = AsyncMock()
         server.wait_for_diagnostics.side_effect = wait_for_diagnostics
         manager._get_or_create_server = AsyncMock(return_value=server)
 
@@ -1028,6 +1402,7 @@ class TestSessionGenerationWatermark:
         server = MagicMock()
         server.diagnostics_generation.side_effect = [1, 2]
         server.diagnostic_document_version.return_value = 1
+        server.refresh_diagnostics = AsyncMock()
         server.wait_for_diagnostics = AsyncMock(
             return_value=[Diagnostic(line=1, character=1, message="late")]
         )
@@ -1060,6 +1435,7 @@ class TestDiagnosticReplacement:
         server.did_change = AsyncMock()
         server.diagnostics_generation.side_effect = [1, 2]
         server.diagnostic_document_version.return_value = 2
+        server.refresh_diagnostics = AsyncMock()
         server.wait_for_diagnostics = AsyncMock(return_value=[])
         manager._get_or_create_server = AsyncMock(return_value=server)
         runtime_events = []
@@ -1137,6 +1513,7 @@ class TestDiagnosticReplacement:
         server = MagicMock()
         server.diagnostics_generation.side_effect = [4, 5]
         server.diagnostic_document_version.return_value = 7
+        server.refresh_diagnostics = AsyncMock()
         server.wait_for_diagnostics = AsyncMock(
             return_value=[Diagnostic(line=1, character=1, message="stale")]
         )
@@ -1167,6 +1544,7 @@ class TestDiagnosticReplacement:
         server.did_open = AsyncMock()
         server.did_change = AsyncMock()
         server.diagnostics_generation.return_value = 8
+        server.refresh_diagnostics = AsyncMock()
         server.wait_for_diagnostics = AsyncMock(return_value=[])
         manager._get_or_create_server = AsyncMock(return_value=server)
         manager._availability[LanguageId.PYTHON] = True

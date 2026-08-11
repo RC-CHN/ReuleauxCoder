@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from reuleauxcoder.extensions.lsp.client import MAX_LSP_FILE_SIZE_BYTES
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
     detect_language,
@@ -76,10 +77,16 @@ def validate_position(file_path: Path, line: int, character: int) -> int:
     """
     total = 0
     try:
-        text = file_path.read_text(encoding="utf-8")
+        if file_path.stat().st_size > MAX_LSP_FILE_SIZE_BYTES:
+            return 0
+        with file_path.open("rb") as handle:
+            raw = handle.read(MAX_LSP_FILE_SIZE_BYTES + 1)
+        if len(raw) > MAX_LSP_FILE_SIZE_BYTES:
+            return 0
+        text = raw.decode("utf-8")
         total = text.count("\n") + (1 if len(text) > 0 else 0)
-    except Exception:
-        # can't read file → skip validation, let the LSP deal with it
+    except (OSError, UnicodeDecodeError):
+        # The manager owns typed document failures; validation must not hide them.
         return 0
 
     if line > total:

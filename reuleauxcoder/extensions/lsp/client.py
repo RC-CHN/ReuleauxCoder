@@ -567,7 +567,6 @@ class LspClient:
                 }
             },
         )
-        await self._pull_document_diagnostics(file_path)
 
     async def did_change(
         self, file_path: Path, content: str, version: int | None = None
@@ -587,7 +586,6 @@ class LspClient:
                 "contentChanges": [{"text": content}],
             },
         )
-        await self._pull_document_diagnostics(file_path)
 
     async def did_save(self, file_path: Path) -> None:
         """Notify the server that a file has been saved."""
@@ -599,6 +597,9 @@ class LspClient:
                 }
             },
         )
+
+    async def refresh_diagnostics(self, file_path: Path) -> None:
+        """Request pull diagnostics after document synchronization completes."""
         await self._pull_document_diagnostics(file_path)
 
     # === Diagnostics ===

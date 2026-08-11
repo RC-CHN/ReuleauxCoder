@@ -209,9 +209,11 @@ def test_pull_diagnostics_full_and_unchanged_track_fresh_versions(
 
     async def run() -> tuple[list, list]:
         await client.did_open(path, "broken")
+        await client.refresh_diagnostics(path)
         first = await client.wait_for_diagnostics(path, timeout=0.01)
         baseline = client.diagnostics_generation(path)
         await client.did_change(path, "still broken")
+        await client.refresh_diagnostics(path)
         second = await client.wait_for_diagnostics(
             path, timeout=0.01, after_generation=baseline
         )

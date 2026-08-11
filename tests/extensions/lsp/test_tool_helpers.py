@@ -8,9 +8,11 @@ without requiring a real LSP server.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from reuleauxcoder.extensions.lsp.client import MAX_LSP_FILE_SIZE_BYTES
 from reuleauxcoder.extensions.lsp.registry import LanguageId
 from reuleauxcoder.extensions.lsp.tool_helpers import (
     MAX_REFERENCES,
@@ -77,6 +79,19 @@ class TestValidatePosition:
         # Empty file has 0 lines — any position is beyond end
         with pytest.raises(ValueError, match="beyond end of file"):
             validate_position(f, 1, 1)
+
+    def test_oversized_file_is_not_loaded_during_validation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        file_path = tmp_path / "large.py"
+        with file_path.open("wb") as handle:
+            handle.truncate(MAX_LSP_FILE_SIZE_BYTES + 1)
+
+        with patch.object(Path, "open") as open_file:
+            assert validate_position(file_path, 1, 1) == 0
+
+        open_file.assert_not_called()
 
 
 # ── format_location ───────────────────────────────────────────────────────

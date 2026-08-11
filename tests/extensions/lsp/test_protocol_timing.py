@@ -212,7 +212,7 @@ def test_pull_server_handles_full_unchanged_and_clean(tmp_path: Path) -> None:
         assert first_id is not None
         first = _wait_for_batch(manager, first_id)
         assert [item.message for item in first.block.items] == ["pull error"]
-        assert first.diagnostic_generation == 2
+        assert first.diagnostic_generation == 1
         assert manager.acknowledge_diagnostic_batch(first_id, consumer_id="test")
 
         path.write_text("clean = True\n", encoding="utf-8")
@@ -224,7 +224,7 @@ def test_pull_server_handles_full_unchanged_and_clean(tmp_path: Path) -> None:
         assert clean_id is not None
         clean = _wait_for_batch(manager, clean_id)
         assert clean.block.items == []
-        assert clean.diagnostic_generation == 4
+        assert clean.diagnostic_generation == 2
         assert clean.document_version == 2
     finally:
         manager.shutdown_all()
@@ -239,28 +239,21 @@ def test_pull_server_handles_full_unchanged_and_clean(tmp_path: Path) -> None:
     ]
     assert [event["kind"] for event in diagnostic_responses] == [
         "full",
-        "unchanged",
         "full",
-        "unchanged",
     ]
     assert [event["result_id"] for event in diagnostic_responses] == [
         "result-1",
-        "result-1",
-        "result-2",
         "result-2",
     ]
-    assert [event["item_count"] for event in diagnostic_responses] == [1, 0, 0, 0]
+    assert [event["item_count"] for event in diagnostic_responses] == [1, 0]
     diagnostic_requests = [
         event
         for event in _events(log_path)
-        if event["direction"] == "recv"
-        and event["method"] == "textDocument/diagnostic"
+        if event["direction"] == "recv" and event["method"] == "textDocument/diagnostic"
     ]
     assert [event.get("previous_result_id") for event in diagnostic_requests] == [
         None,
         "result-1",
-        "result-1",
-        "result-2",
     ]
 
 
