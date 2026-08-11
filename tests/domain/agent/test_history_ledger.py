@@ -1,9 +1,10 @@
 import json
+import threading
 from pathlib import Path
 
 import pytest
 
-from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.domain.agent.agent import Agent, RuntimeIssue
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome, ToolOutcomeStatus
 from reuleauxcoder.domain.context.replay import ReplayEnvelope, content_hash
@@ -88,6 +89,15 @@ def test_events_appended_while_unbound_are_flushed_on_bind(tmp_path) -> None:
         json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert [item["event_id"] for item in persisted] == [event.event_id]
+
+
+def test_binding_empty_ledger_does_not_materialize_session_directory(tmp_path) -> None:
+    ledger = HistoryLedger()
+    path = tmp_path / "session" / "events.jsonl"
+
+    ledger.bind_jsonl(path)
+
+    assert not path.parent.exists()
 
 
 def test_failed_unbound_flush_is_retained_for_a_later_bind(
@@ -401,6 +411,65 @@ def test_resume_restores_actual_usage_calibration_from_ledger() -> None:
     assert agent.context._latest_usage.cached_input_tokens == 900
 
 
+def test_degraded_history_keeps_audit_but_does_not_restore_usage_projection() -> None:
+    ledger = HistoryLedger(session_id="session", agent_id="root")
+    usage = ledger.append(
+        "usage_observed",
+        {
+            "actual_prompt_tokens": 1_200,
+            "cached_input_tokens": 900,
+            "local_request_estimate": 1_000,
+            "local_history_estimate": 800,
+            "request_boundary": "turn:1",
+            "model_profile": "test-model",
+        },
+    )
+    session = Session(
+        id="session",
+        model="test-model",
+        saved_at="now",
+        messages=[{"role": "user", "content": "restored"}],
+        history_events=list(ledger.events),
+        history_behavior_projection_safe=False,
+    )
+    agent = Agent(llm=_LLM(), tools=[])
+
+    agent.restore_history_runtime(session)
+
+    assert usage in agent.history_ledger.events
+    assert agent.context._latest_usage is None
+
+
+def test_degraded_completeness_disables_behavior_even_if_legacy_flag_is_true() -> None:
+    ledger = HistoryLedger(session_id="session", agent_id="root")
+    ledger.append(
+        "usage_observed",
+        {
+            "actual_prompt_tokens": 1_200,
+            "cached_input_tokens": 900,
+            "local_request_estimate": 1_000,
+            "local_history_estimate": 800,
+            "request_boundary": "turn:1",
+            "model_profile": "test-model",
+        },
+    )
+    session = Session(
+        id="session",
+        model="test-model",
+        saved_at="now",
+        messages=[{"role": "user", "content": "restored"}],
+        history_events=list(ledger.events),
+        history_completeness="degraded",
+        history_behavior_projection_safe=True,
+    )
+    agent = Agent(llm=_LLM(), tools=[])
+
+    agent.restore_history_runtime(session)
+
+    assert agent.history_ledger.events == ledger.events
+    assert agent.context._latest_usage is None
+
+
 def test_reset_preserves_ledger_truth_but_commits_empty_runtime_view() -> None:
     agent = Agent(llm=_LLM(), tools=[])
     agent._append_message({"role": "user", "content": "keep truth"}, source="user")
@@ -417,6 +486,185 @@ def test_reset_preserves_ledger_truth_but_commits_empty_runtime_view() -> None:
         "context_view_committed",
     ]
     assert agent.context.cache_epoch == 1
+
+
+def test_runtime_issues_are_bounded_aggregated_non_consuming_and_reset() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    sentinel = "runtime-issue-secret"
+    agent.record_runtime_issue("ui_subscriber", "RuntimeError", "dispatch", 2)
+    agent.record_runtime_issue("ui_subscriber", "RuntimeError", "dispatch")
+    agent.record_runtime_issue(
+        f"ui:{sentinel}",
+        sentinel,
+        f"../{sentinel}",
+        True,
+    )
+    for index in range(10):
+        agent.record_runtime_issue("ui_projection", "SystemExit", f"ref_{index}")
+
+    first = agent.runtime_issue_snapshot()
+    second = agent.runtime_issue_snapshot()
+
+    assert first == second
+    assert first[0] == RuntimeIssue(
+        phase="ui_subscriber",
+        error_type="RuntimeError",
+        ref="dispatch",
+        count=3,
+    )
+    assert first[1] == RuntimeIssue(
+        phase="runtime",
+        error_type="Exception",
+        ref="observer",
+        count=1,
+    )
+    assert len(first) == 8
+    assert first[-1] == RuntimeIssue(
+        phase="runtime_issue",
+        error_type="Overflow",
+        ref="capacity",
+        count=5,
+    )
+    assert sentinel not in repr(first)
+
+    previous_generation = agent.session_generation
+    agent.reset()
+
+    assert agent.session_generation == previous_generation + 1
+    assert agent.runtime_issue_snapshot() == ()
+
+
+def test_runtime_issue_rejects_explicit_foreign_or_stale_route() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+
+    assert (
+        agent.record_runtime_issue(
+            "ui_projection",
+            "RuntimeError",
+            "execution",
+            agent_id="other-agent",
+            session_generation=agent.session_generation,
+        )
+        is False
+    )
+    assert (
+        agent.record_runtime_issue(
+            "ui_projection",
+            "RuntimeError",
+            "execution",
+            agent_id=agent.agent_id,
+            session_generation=agent.session_generation + 1,
+        )
+        is False
+    )
+    assert agent.runtime_issue_snapshot() == ()
+
+
+def test_runtime_issue_count_saturates() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+
+    agent.record_runtime_issue(
+        "ui_projection",
+        "RuntimeError",
+        "execution",
+        2_000_000,
+    )
+    agent.record_runtime_issue(
+        "ui_projection",
+        "RuntimeError",
+        "execution",
+        2_000_000,
+    )
+
+    assert agent.runtime_issue_snapshot()[0].count == 1_000_000
+
+
+def test_event_failure_finishing_after_reset_cannot_pollute_new_generation() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def late_failure(_event) -> None:
+        entered.set()
+        assert release.wait(timeout=1)
+        raise SystemExit("old-generation-secret")
+
+    agent.add_event_handler(late_failure)
+    worker = threading.Thread(target=agent._emit_event, args=(AgentEvent.chat_start("old"),))
+    worker.start()
+    assert entered.wait(timeout=1)
+    agent.reset()
+    release.set()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert agent.runtime_issue_snapshot() == ()
+
+
+def test_agent_event_handler_failure_is_visible_and_does_not_block_peers() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    seen = []
+    agent.add_event_handler(
+        lambda _event: (_ for _ in ()).throw(SystemExit("handler-secret"))
+    )
+    agent.add_event_handler(lambda event: seen.append(event.event_type.value))
+
+    agent._emit_event(AgentEvent.chat_start("event-secret"))
+
+    assert seen == ["chat_start"]
+    assert agent.runtime_issue_snapshot() == (
+        RuntimeIssue(
+            phase="agent_event_delivery",
+            error_type="SystemExit",
+            ref="agent_event_subscriber",
+            count=1,
+        ),
+    )
+    assert "secret" not in repr(agent.runtime_issue_snapshot())
+
+
+def test_agent_event_recorder_base_exception_does_not_cover_peer_delivery(
+    monkeypatch,
+) -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    seen = []
+    agent.add_event_handler(
+        lambda _event: (_ for _ in ()).throw(RuntimeError("handler-secret"))
+    )
+    agent.add_event_handler(lambda event: seen.append(event.event_type.value))
+    monkeypatch.setattr(
+        agent,
+        "record_runtime_issue",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            GeneratorExit("recorder-secret")
+        ),
+    )
+
+    agent._emit_event(AgentEvent.chat_start("event-secret"))
+
+    assert seen == ["chat_start"]
+    assert agent.runtime_issue_snapshot() == (
+        RuntimeIssue(
+            phase="agent_event_delivery",
+            error_type="RuntimeError",
+            ref="agent_event_subscriber",
+            count=1,
+        ),
+        RuntimeIssue(
+            phase="runtime_issue_recorder",
+            error_type="GeneratorExit",
+            ref="agent_event_delivery",
+            count=1,
+        ),
+    )
+
+
+def test_agent_event_handler_keyboard_interrupt_propagates() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent.add_event_handler(lambda _event: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    with pytest.raises(KeyboardInterrupt):
+        agent._emit_event(AgentEvent.chat_start("interrupt"))
 
 
 def test_execution_overlay_injects_plan_as_escaped_ephemeral_data() -> None:

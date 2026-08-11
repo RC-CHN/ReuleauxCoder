@@ -39,12 +39,49 @@ def test_keyboard_interrupt_during_initialize_exits_without_traceback(
     assert capsys.readouterr().err == "Interrupted.\n"
 
 
+def test_session_restore_failure_exits_safely_without_traceback(
+    monkeypatch, capsys
+) -> None:
+    cleaned_up = []
+
+    class FailingRunner:
+        def __init__(self, _options, *, startup_progress=None) -> None:
+            pass
+
+        def initialize(self):
+            raise main_module.SessionRestoreError(
+                phase="manifest_decode",
+                error_type="JSONDecodeError",
+                ref="manifest",
+            )
+
+        def cleanup(self) -> None:
+            cleaned_up.append(True)
+
+    monkeypatch.setattr(
+        main_module,
+        "parse_args",
+        lambda: SimpleNamespace(
+            config=None,
+            model=None,
+            resume=None,
+            server=False,
+        ),
+    )
+    monkeypatch.setattr(main_module, "AppRunner", FailingRunner)
+
+    assert main_module.main() == 1
+    assert cleaned_up == [True]
+    stderr = capsys.readouterr().err
+    assert "phase=manifest_decode" in stderr
+    assert "error_type=JSONDecodeError" in stderr
+    assert "Traceback" not in stderr
+
+
 def test_terminal_status_flushes_progress_to_stderr(capsys) -> None:
     main_module._terminal_status("Reading history ledger (12.0 MB)...")
 
-    assert capsys.readouterr().err == (
-        "rcoder: Reading history ledger (12.0 MB)...\n"
-    )
+    assert capsys.readouterr().err == ("rcoder: Reading history ledger (12.0 MB)...\n")
 
 
 def test_terminal_status_uses_theme_colors_on_a_color_terminal() -> None:

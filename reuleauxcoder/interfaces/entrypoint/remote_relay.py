@@ -46,6 +46,10 @@ from reuleauxcoder.interfaces.interactions import (
     ReviewResponse,
 )
 from reuleauxcoder.interfaces.events import AgentEventBridge, UIEventBus, UIEventKind
+from reuleauxcoder.interfaces.entrypoint.session_lifecycle import (
+    observe_session_callback,
+)
+from reuleauxcoder.infrastructure.persistence.session_store import SessionRestoreError
 from reuleauxcoder.presentation import PresentationPolicy
 
 
@@ -189,10 +193,19 @@ def bind_remote_chat_handler(
     def _console_for_peer(peer_id: str) -> Console:
         return create_remote_console(_terminal_for_peer(peer_id))
 
-    def _presentation_for_peer(peer_id: str) -> PeerPresentation:
+    def _presentation_for_peer(
+        peer_id: str, presentation_agent: Agent
+    ) -> PeerPresentation:
         console = _console_for_peer(peer_id)
         renderer = _renderer_for(console, peer_id)
         command_bus = UIEventBus()
+        record_runtime_issue = getattr(presentation_agent, "record_runtime_issue", None)
+        if callable(record_runtime_issue):
+            command_bus.bind_subscriber_failure_sink(
+                record_runtime_issue,
+                agent_id=presentation_agent.agent_id,
+                default=True,
+            )
         command_bus.subscribe(renderer.on_ui_event, replay_history=False)
         return PeerPresentation(
             console, renderer, command_bus, AgentEventBridge(command_bus)
@@ -207,6 +220,8 @@ def bind_remote_chat_handler(
         if presenter is not None:
             presenter.renderer.close()
         peer_agent = peer_agents.pop(peer_id, None)
+        if peer_agent is not None and peer_agent is not agent:
+            ui_bus.unbind_subscriber_failure_sink(agent_id=peer_agent.agent_id)
         manager = getattr(peer_agent, "_subagent_manager", None)
         if manager is not None:
             manager.shutdown(wait=True)
@@ -243,7 +258,7 @@ def bind_remote_chat_handler(
         if config is None:
             peer_agents[peer_id] = agent
             peer_connection_markers[peer_id] = marker
-            peer_presenters[peer_id] = _presentation_for_peer(peer_id)
+            peer_presenters[peer_id] = _presentation_for_peer(peer_id, agent)
             return agent
         peer_config: Config = config
 
@@ -293,9 +308,16 @@ def bind_remote_chat_handler(
                 peer_agent.current_session_id,
                 fingerprint=fingerprint,
             )
+            presentation = _presentation_for_peer(peer_id, peer_agent)
+            record_runtime_issue = getattr(peer_agent, "record_runtime_issue", None)
+            if callable(record_runtime_issue):
+                ui_bus.bind_subscriber_failure_sink(
+                    record_runtime_issue,
+                    agent_id=peer_agent.agent_id,
+                )
             peer_agents[peer_id] = peer_agent
             peer_connection_markers[peer_id] = marker
-            peer_presenters[peer_id] = _presentation_for_peer(peer_id)
+            peer_presenters[peer_id] = presentation
             peer_agent.lifecycle.runner_started(
                 metadata={"ui_bus": ui_bus, "peer_id": peer_id}
             )
@@ -306,15 +328,59 @@ def bind_remote_chat_handler(
             )
             return peer_agent
 
-        latest = session_store.get_latest(fingerprint=fingerprint)
+        latest_result = session_store.get_latest_result(fingerprint=fingerprint)
+        latest = latest_result.session
+        inventory_issues = tuple(latest_result.issues)
         if latest:
             loaded = session_store.load(latest.id)
-            if loaded is not None:
-                apply_session_runtime_state(loaded, peer_config, peer_agent)
-                peer_agent.current_session_id = latest.id
-                return _cache_created_agent("remote_restore")
+            if loaded is None:
+                raise SessionRestoreError(
+                    phase="session_load",
+                    error_type="FileNotFoundError",
+                    ref="session",
+                ) from None
+            apply_session_runtime_state(loaded, peer_config, peer_agent)
+            peer_agent.session_inventory_issues = inventory_issues
+            restore_issues = tuple(getattr(loaded, "restore_issues", ()))
+            for diagnostic_phase, issues in (
+                ("inventory_observer", inventory_issues),
+                ("restore_observer", restore_issues),
+            ):
+                for issue in issues:
+                    observe_session_callback(
+                        ui_bus.warning if ui_bus is not None else None,
+                        f"Remote session state is degraded ({issue.render()}).",
+                        kind=UIEventKind.SESSION,
+                        phase=issue.phase,
+                        error_type=issue.error_type,
+                        ref=issue.ref,
+                        count=issue.count,
+                        agent=peer_agent,
+                        diagnostic_phase=diagnostic_phase,
+                        diagnostic_ref="ui_bus",
+                    )
+            peer_agent.current_session_id = latest.id
+            return _cache_created_agent(
+                "remote_restore_degraded"
+                if restore_issues or inventory_issues
+                else "remote_restore"
+            )
 
         restore_config_runtime_defaults(peer_config, peer_agent)
+        peer_agent.session_inventory_issues = inventory_issues
+        for issue in inventory_issues:
+            observe_session_callback(
+                ui_bus.warning if ui_bus is not None else None,
+                f"Remote session inventory degraded ({issue.render()}).",
+                kind=UIEventKind.SESSION,
+                phase=issue.phase,
+                error_type=issue.error_type,
+                ref=issue.ref,
+                count=issue.count,
+                agent=peer_agent,
+                diagnostic_phase="inventory_observer",
+                diagnostic_ref="ui_bus",
+            )
         peer_agent.current_session_id = session_store.generate_session_id()
         return _cache_created_agent("remote_new")
 
@@ -340,7 +406,10 @@ def bind_remote_chat_handler(
         peer_agent.lifecycle.session_saved(sid)
 
     def _chat(peer_id: str, prompt: str) -> ChatResponse:
-        peer_agent = _create_peer_agent(peer_id)
+        try:
+            peer_agent = _create_peer_agent(peer_id)
+        except SessionRestoreError as error:
+            return ChatResponse(response="", error=str(error))
         try:
             response = peer_agent.chat(prompt)
             _save_peer_session(peer_agent, peer_id)
@@ -350,7 +419,20 @@ def bind_remote_chat_handler(
             return ChatResponse(response="", error=str(exc))
 
     def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
-        peer_agent = _create_peer_agent(peer_id)
+        try:
+            peer_agent = _create_peer_agent(peer_id)
+        except SessionRestoreError as error:
+            remote_session.append_event(
+                "error",
+                {
+                    "message": str(error),
+                    "code": error.code,
+                    "phase": error.phase,
+                    "error_type": error.error_type,
+                    "ref": error.ref,
+                },
+            )
+            return
         peer_agent.clear_stop_request()
         remote_session.cancel_callback = peer_agent.request_stop
         admit_steering = getattr(peer_agent, "admit_user_steering", None)

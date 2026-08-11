@@ -104,6 +104,9 @@ def build_session_persistence_kwargs(agent: Agent) -> dict:
     context = getattr(agent, "context", None)
     return {
         "history_events": list(ledger.events) if ledger is not None else None,
+        "history_next_seq_floor": (
+            ledger.last_sequence if ledger is not None else 0
+        ),
         "replay_envelope": getattr(agent, "replay_envelope", None),
         "request_envelopes": list(getattr(agent, "request_envelopes", ())),
         "history_completeness": getattr(
@@ -112,6 +115,7 @@ def build_session_persistence_kwargs(agent: Agent) -> dict:
             "complete" if ledger is not None else "legacy_snapshot_only",
         ),
         "checkpoints": list(getattr(context, "checkpoints", ())),
+        "restore_issues": list(getattr(agent, "session_restore_issues", ())),
     }
 
 
@@ -124,10 +128,17 @@ def bind_session_persistence(
     fingerprint: str,
 ) -> None:
     """Bind live ledger fsync and replay snapshots to the active session."""
+    agent.current_session_id = session_id
+    ledger = getattr(agent, "history_ledger", None)
+    bind_context = getattr(ledger, "bind_context", None)
+    if callable(bind_context):
+        bind_context(
+            session_id=session_id,
+            agent_id=getattr(agent, "agent_id", None),
+        )
     bind = getattr(agent, "bind_session_persistence", None)
     if not callable(bind):
         return
-    agent.current_session_id = session_id
 
     def persist_snapshot() -> None:
         context_lock = getattr(agent, "_context_revision_lock", None)
@@ -168,7 +179,12 @@ def bind_session_persistence(
         ):
             persist_snapshot()
 
-    events_path = store.sessions_dir / session_id / "events.jsonl"
+    resolve_events_path = getattr(store, "get_session_events_path", None)
+    events_path = (
+        resolve_events_path(session_id)
+        if callable(resolve_events_path)
+        else store.sessions_dir / session_id / "events.jsonl"
+    )
     bind(events_path=events_path, callback=_LiveSessionPersistence(persist))
 
 
@@ -221,6 +237,8 @@ def build_session_runtime_state(config: Config, agent: Agent) -> SessionRuntimeS
 
 def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
     """Reset live runtime state back to config defaults for a fresh session."""
+    agent.session_restore_issues = ()
+    agent.session_inventory_issues = ()
     profiles = getattr(config, "model_profiles", {}) or {}
     main_profile_name = getattr(config, "active_main_model_profile", None) or getattr(
         config, "active_model_profile", None
@@ -259,6 +277,7 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
     if callable(reset):
         reset()
     restore_config_runtime_defaults(config, agent)
+    agent.session_restore_issues = tuple(getattr(session, "restore_issues", ()))
     runtime = session.runtime_state
 
     restore_history = getattr(agent, "restore_history_runtime", None)

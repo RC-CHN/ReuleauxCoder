@@ -330,6 +330,11 @@ class PlanController:
         self.restore(None, None)
 
     @classmethod
+    def validate_items(cls, raw_items: list[dict]) -> tuple[PlanItem, ...]:
+        """Validate persisted/tool plan items with the consumer invariants."""
+        return cls._validate_items(raw_items)
+
+    @classmethod
     def _validate_items(cls, raw_items: list[dict]) -> tuple[PlanItem, ...]:
         if not isinstance(raw_items, list) or len(raw_items) > cls.MAX_ITEMS:
             raise ValueError(f"plan must contain at most {cls.MAX_ITEMS} items")

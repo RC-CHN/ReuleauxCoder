@@ -34,7 +34,10 @@ from reuleauxcoder.app.runtime.session_state import (
     get_session_fingerprint,
     restore_config_runtime_defaults,
 )
-from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+from reuleauxcoder.infrastructure.persistence.session_store import (
+    SessionRestoreError,
+    SessionStore,
+)
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
@@ -103,11 +106,28 @@ def _parse_new_session(user_input: str, parse_ctx):
     return None
 
 
+def _report_session_inventory(ctx, issues: tuple) -> tuple:
+    issues = tuple(issues)
+    ctx.agent.session_inventory_issues = issues
+    for issue in issues:
+        ctx.effect.warning(
+            f"Session inventory degraded ({issue.render()}).",
+            kind=UIEventKind.SESSION,
+            phase=issue.phase,
+            error_type=issue.error_type,
+            ref=issue.ref,
+            count=issue.count,
+        )
+    return issues
+
+
 def _handle_list_sessions(command, ctx) -> CommandEffect:
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     filter_fingerprint = None if command.show_all else fingerprint
-    sessions = store.list(limit=command.limit, fingerprint=filter_fingerprint)
+    inventory = store.list_result(limit=command.limit, fingerprint=filter_fingerprint)
+    sessions = inventory.sessions
+    _report_session_inventory(ctx, inventory.issues)
     current_session_id = getattr(ctx.agent, "current_session_id", None)
     view = SessionsViewModel(
         fingerprint=fingerprint,
@@ -147,7 +167,9 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
     session_id = command.target
     if command.target.isdecimal():
         position = int(command.target)
-        sessions = store.list(limit=20, fingerprint=fingerprint)
+        inventory = store.list_result(limit=20, fingerprint=fingerprint)
+        sessions = inventory.sessions
+        _report_session_inventory(ctx, inventory.issues)
         if position < 1 or position > len(sessions):
             ctx.effect.error(
                 f"Session number {position} is not available; use /session to list.",
@@ -156,7 +178,9 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
             return ctx.effect.finish(control="continue")
         session_id = sessions[position - 1].id
     elif command.target == "latest":
-        latest = store.get_latest(fingerprint=fingerprint)
+        inventory = store.get_latest_result(fingerprint=fingerprint)
+        latest = inventory.session
+        _report_session_inventory(ctx, inventory.issues)
         if latest is None:
             ctx.effect.error(
                 f"No saved sessions for fingerprint: {fingerprint}",
@@ -168,8 +192,11 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
 
     loaded = store.load(session_id)
     if loaded is None:
-        ctx.effect.error(f"Session '{session_id}' not found.", kind=UIEventKind.SESSION)
-        return ctx.effect.finish(control="continue")
+        raise SessionRestoreError(
+            phase="session_discovery",
+            error_type="FileNotFoundError",
+            ref="session",
+        ) from None
 
     if loaded.fingerprint != fingerprint:
         ctx.effect.warning(
@@ -215,8 +242,23 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
 
     runtime = loaded.runtime_state
     exit_time = store.get_exit_time(loaded.messages)
-    ctx.effect.success(
-        f"Resumed session: {session_id}",
+    restore_issues = tuple(getattr(loaded, "restore_issues", ()))
+    for issue in restore_issues:
+        ctx.effect.warning(
+            f"Session restored with degraded state ({issue.render()}).",
+            kind=UIEventKind.SESSION,
+            phase=issue.phase,
+            error_type=issue.error_type,
+            ref=issue.ref,
+            count=issue.count,
+        )
+    restored_notice = ctx.effect.warning if restore_issues else ctx.effect.success
+    restored_notice(
+        (
+            f"Resumed session with degraded recovery: {session_id}"
+            if restore_issues
+            else f"Resumed session: {session_id}"
+        ),
         kind=UIEventKind.SESSION,
         session_id=session_id,
     )
@@ -340,11 +382,7 @@ def command_panel_spec() -> CommandPanelSpec:
         assert isinstance(model, SessionsViewModel)
         items = tuple(
             PanelItem(
-                label=(
-                    f"#{session.position}"
-                    if session.position is not None
-                    else "  "
-                )
+                label=(f"#{session.position}" if session.position is not None else "  ")
                 + f" {session.saved_at[:19]}",
                 description=(
                     f"{session.model} · {session.preview[:40]} · {session.session_id}"

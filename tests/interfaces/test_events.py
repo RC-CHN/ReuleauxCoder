@@ -1,7 +1,12 @@
+import queue
+
+import pytest
+
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.runtime.events import (
     ErrorOccurred,
     OperationPhaseChanged,
+    RuntimeEvent,
     ToolCallFinished,
     ToolCallStarted,
 )
@@ -120,6 +125,172 @@ def test_ui_event_bus_emit_ignores_handler_exceptions() -> None:
     bus.info("hello")
 
     assert seen == ["hello"]
+
+
+def test_ui_event_bus_reports_base_exception_without_blocking_dispatch() -> None:
+    incidents = []
+    seen = []
+    bus = UIEventBus()
+    bus.bind_subscriber_failure_sink(
+        lambda phase, error_type, ref, count, **_route: incidents.append(
+            (phase, error_type, ref, count)
+        )
+    )
+
+    def broken_handler(_event) -> None:
+        raise SystemExit("subscriber-secret")
+
+    bus.subscribe(broken_handler, replay_history=False)
+    bus.subscribe(lambda event: seen.append(event.message), replay_history=False)
+
+    bus.info("hello")
+
+    assert seen == ["hello"]
+    assert incidents == [("ui_subscriber", "SystemExit", "dispatch", 1)]
+    assert "subscriber-secret" not in repr(incidents)
+
+
+def test_ui_event_bus_reports_replay_and_queued_drain_failures() -> None:
+    incidents = []
+    event_queue: queue.Queue = queue.Queue()
+    bus = UIEventBus(
+        event_queue=event_queue,
+        subscriber_failure_sink=lambda phase, error_type, ref, count, **_route: (
+            incidents.append((phase, error_type, ref, count))
+        ),
+    )
+    bus.info("history")
+
+    def broken_handler(_event) -> None:
+        raise GeneratorExit("subscriber-secret")
+
+    bus.subscribe(broken_handler, replay_history=True)
+    bus.drain()
+
+    assert incidents == [
+        ("ui_subscriber", "GeneratorExit", "history_replay", 1),
+        ("ui_subscriber", "GeneratorExit", "dispatch", 1),
+    ]
+
+
+def test_ui_event_bus_secondary_failure_does_not_cover_delivery() -> None:
+    seen = []
+
+    def broken_sink(*_facts, **_route) -> None:
+        raise GeneratorExit("observer-secret")
+
+    bus = UIEventBus(subscriber_failure_sink=broken_sink)
+    bus.subscribe(
+        lambda _event: (_ for _ in ()).throw(RuntimeError("primary-secret")),
+        replay_history=False,
+    )
+    bus.subscribe(lambda event: seen.append(event.message), replay_history=False)
+
+    bus.info("still-delivered")
+
+    assert seen == ["still-delivered"]
+    pending = bus.subscriber_failure_snapshot()
+    assert [fact.error_type for fact in pending] == ["RuntimeError", "GeneratorExit"]
+    assert "secret" not in repr(pending)
+
+    recovered = []
+    bus.bind_subscriber_failure_sink(
+        lambda phase, error_type, ref, count, **route: recovered.append(
+            (phase, error_type, ref, count, route)
+        )
+    )
+    assert [fact[1] for fact in recovered] == ["RuntimeError", "GeneratorExit"]
+    assert bus.subscriber_failure_snapshot() == ()
+
+
+def test_ui_event_bus_routes_runtime_failures_without_default_misattribution() -> None:
+    root_incidents = []
+    peer_incidents = []
+    late_incidents = []
+    bus = UIEventBus()
+
+    def collect(target):
+        return lambda phase, error_type, ref, count, **route: target.append(
+            (phase, error_type, ref, count, route)
+        )
+
+    bus.bind_subscriber_failure_sink(
+        collect(root_incidents), agent_id="root", default=True
+    )
+    bus.bind_subscriber_failure_sink(collect(peer_incidents), agent_id="peer")
+    bus.subscribe(
+        lambda _event: (_ for _ in ()).throw(SystemExit("subscriber-secret")),
+        replay_history=False,
+    )
+
+    bus.emit_runtime(
+        RuntimeEvent(
+            payload=ErrorOccurred("peer-event-secret"),
+            agent_id="peer",
+            session_generation=4,
+        )
+    )
+    bus.emit_runtime(
+        RuntimeEvent(
+            payload=ErrorOccurred("late-event-secret"),
+            agent_id="late-peer",
+            session_generation=7,
+        )
+    )
+    bus.info("unrouted")
+
+    assert len(peer_incidents) == 1
+    assert peer_incidents[0][-1] == {
+        "agent_id": "peer",
+        "session_generation": 4,
+    }
+    assert len(root_incidents) == 1
+    assert root_incidents[0][-1] == {
+        "agent_id": None,
+        "session_generation": None,
+    }
+    pending = bus.subscriber_failure_snapshot()
+    assert len(pending) == 1
+    assert pending[0].agent_id == "late-peer"
+    assert "secret" not in repr(peer_incidents + root_incidents + list(pending))
+
+    bus.bind_subscriber_failure_sink(collect(late_incidents), agent_id="late-peer")
+    assert len(late_incidents) == 1
+    assert bus.subscriber_failure_snapshot() == ()
+
+
+def test_ui_event_bus_discards_route_rejected_stale_failure_as_metric() -> None:
+    bus = UIEventBus()
+    bus.bind_subscriber_failure_sink(
+        lambda *_facts, **_route: False,
+        agent_id="root",
+    )
+    bus.subscribe(
+        lambda _event: (_ for _ in ()).throw(RuntimeError("stale-secret")),
+        replay_history=False,
+    )
+
+    bus.emit_runtime(
+        RuntimeEvent(
+            payload=ErrorOccurred("event-secret"),
+            agent_id="root",
+            session_generation=1,
+        )
+    )
+
+    assert bus.subscriber_failure_stale_dropped == 1
+    assert bus.subscriber_failure_snapshot() == ()
+
+
+def test_ui_event_bus_keyboard_interrupt_propagates() -> None:
+    bus = UIEventBus()
+    bus.subscribe(
+        lambda _event: (_ for _ in ()).throw(KeyboardInterrupt()),
+        replay_history=False,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        bus.info("interrupt")
 
 
 def test_ui_event_bus_open_view_emits_structured_view_event() -> None:

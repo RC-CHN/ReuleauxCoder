@@ -31,6 +31,7 @@ from reuleauxcoder.domain.context.manager import (
     prepare_tiktoken_encoder,
 )
 from reuleauxcoder.services.config.loader import ExampleConfigError
+from reuleauxcoder.infrastructure.persistence.session_store import SessionRestoreError
 
 
 def _install_sigint_handler(agent):
@@ -115,6 +116,14 @@ def main():
     except ExampleConfigError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
+    except SessionRestoreError as error:
+        if runner is not None:
+            try:
+                runner.cleanup()
+            except Exception:
+                pass
+        _terminal_status(str(error), tone=DisplayTone.ERROR)
+        return 1
     except KeyboardInterrupt:
         if runner is not None:
             try:

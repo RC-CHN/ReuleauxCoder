@@ -133,6 +133,13 @@ class AppRunner:
             action_registry = self.dependencies.create_action_registry()
             self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
+        record_runtime_issue = getattr(agent, "record_runtime_issue", None)
+        if callable(record_runtime_issue):
+            ui_bus.bind_subscriber_failure_sink(
+                record_runtime_issue,
+                agent_id=agent.agent_id,
+                default=True,
+            )
         bind_performance = getattr(agent, "bind_performance_monitor", None)
         if callable(bind_performance):
             bind_performance(self._performance_monitor)
@@ -483,7 +490,9 @@ class AppRunner:
             config,
             agent,
             ui_bus,
-            progress=self._report_startup,
+            # Session restore owns observer isolation so callback failures can
+            # become model-visible safe facts instead of disappearing here.
+            progress=self._startup_progress,
         )
 
     def cleanup(

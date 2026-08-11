@@ -54,6 +54,10 @@ from reuleauxcoder.services.llm.client import LLMRequestCancelled
 from reuleauxcoder.services.prompt.builder import system_prompt
 
 
+_MAX_RUNTIME_ISSUE_KEYS = 8
+_MAX_RUNTIME_ISSUE_COUNT = 1_000_000
+
+
 @dataclass
 class AgentState:
     """State of the agent."""
@@ -74,6 +78,16 @@ class PendingUserSteering:
     content: str
     generation: int
     turn_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeIssue:
+    """Bounded, content-free runtime failure facts exposed to the next request."""
+
+    phase: str
+    error_type: str
+    ref: str
+    count: int = 1
 
 
 class InterruptIntentOutcome(str, Enum):
@@ -173,6 +187,9 @@ class Agent:
         self._turn_interrupted_marker_recorded = False
         self._recovered_discarded_steering_count = 0
         self._park_request: dict | None = None
+        self._runtime_issue_lock = threading.Lock()
+        self._runtime_issue_counts: dict[tuple[str, str, str], int] = {}
+        self._runtime_issue_overflow = 0
 
         # Mode state
         self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
@@ -231,7 +248,9 @@ class Agent:
         else:
             self.context = ContextManager(max_tokens=max_context_tokens)
 
-        # Event handlers are available before hook diagnostics are wired.
+        # Event handlers are best-effort observers available before hook
+        # diagnostics are wired. Correctness-critical delivery belongs behind
+        # an explicit port with its own result contract, not in this list.
         self._event_handlers: List[Callable[[AgentEvent], None]] = []
 
         # Hook runtime
@@ -484,6 +503,7 @@ class Agent:
     def restore_history_runtime(self, session) -> None:
         self.history_ledger = HistoryLedger(
             getattr(session, "history_events", ()),
+            next_seq_floor=getattr(session, "history_next_seq_floor", 0),
             generation=self.session_generation,
             session_id=getattr(session, "id", None),
             agent_id=self.agent_id,
@@ -497,11 +517,18 @@ class Agent:
         self.history_completeness = getattr(
             session, "history_completeness", "legacy_compacted_or_unknown"
         )
+        behavior_projection_safe = getattr(
+            session, "history_behavior_projection_safe", True
+        ) and self.history_completeness != "degraded"
         self._recovered_discarded_steering_count = (
             self._discard_recovered_steering_admissions()
+            if behavior_projection_safe
+            else 0
         )
         self.context.clear_usage_observations()
-        for event in self.history_ledger.events[-100:]:
+        for event in (
+            self.history_ledger.events[-100:] if behavior_projection_safe else ()
+        ):
             if event.kind != "usage_observed":
                 continue
             payload = event.payload
@@ -535,7 +562,9 @@ class Agent:
             "subagent_communication_queued",
             "subagent_communication_delivered",
         }
-        if any(event.kind in restorable_subagent_kinds for event in events):
+        if behavior_projection_safe and any(
+            event.kind in restorable_subagent_kinds for event in events
+        ):
             from reuleauxcoder.extensions.subagent.manager import (
                 get_subagent_manager,
             )
@@ -906,6 +935,84 @@ class Agent:
         """Add an event handler."""
         self._event_handlers.append(handler)
 
+    @staticmethod
+    def _safe_runtime_issue_field(value: object, fallback: str) -> str:
+        """Keep one diagnostic field bounded and incapable of carrying content."""
+        if not isinstance(value, str):
+            return fallback
+        if not value or len(value) > 64 or not value.isascii():
+            return fallback
+        if not value.replace("_", "").isalnum():
+            return fallback
+        return value
+
+    def record_runtime_issue(
+        self,
+        phase: str,
+        error_type: str,
+        ref: str,
+        count: int = 1,
+        *,
+        agent_id: str | None = None,
+        session_generation: int | None = None,
+    ) -> bool:
+        """Retain a safe failure fact owned by the current agent generation."""
+        if agent_id is not None and agent_id != self.agent_id:
+            return False
+        if session_generation is not None and (
+            not isinstance(session_generation, int)
+            or isinstance(session_generation, bool)
+        ):
+            return False
+        key = (
+            self._safe_runtime_issue_field(phase, "runtime"),
+            self._safe_runtime_issue_field(error_type, "Exception"),
+            self._safe_runtime_issue_field(ref, "observer"),
+        )
+        safe_count = (
+            min(count, _MAX_RUNTIME_ISSUE_COUNT)
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0
+            else 1
+        )
+        with self._runtime_issue_lock:
+            if (
+                session_generation is not None
+                and session_generation != self.session_generation
+            ):
+                return False
+            current = self._runtime_issue_counts.get(key)
+            if current is not None:
+                self._runtime_issue_counts[key] = min(
+                    current + safe_count, _MAX_RUNTIME_ISSUE_COUNT
+                )
+            elif len(self._runtime_issue_counts) < _MAX_RUNTIME_ISSUE_KEYS - 1:
+                self._runtime_issue_counts[key] = safe_count
+            else:
+                self._runtime_issue_overflow = min(
+                    self._runtime_issue_overflow + safe_count,
+                    _MAX_RUNTIME_ISSUE_COUNT,
+                )
+        return True
+
+    def runtime_issue_snapshot(self) -> tuple[RuntimeIssue, ...]:
+        """Return an immutable, non-consuming view of current runtime failures."""
+        with self._runtime_issue_lock:
+            issues = tuple(
+                RuntimeIssue(*key, count=count)
+                for key, count in self._runtime_issue_counts.items()
+            )
+            overflow = self._runtime_issue_overflow
+        if overflow:
+            issues += (
+                RuntimeIssue(
+                    phase="runtime_issue",
+                    error_type="Overflow",
+                    ref="capacity",
+                    count=overflow,
+                ),
+            )
+        return issues
+
     def _emit_event(self, event: AgentEvent) -> None:
         """Emit an event to all handlers."""
         if event.agent_id is None:
@@ -920,8 +1027,47 @@ class Agent:
         for handler in self._event_handlers:
             try:
                 handler(event)
-            except Exception:
-                pass  # Don't let handler errors break execution
+            except KeyboardInterrupt:
+                raise
+            except BaseException as error:
+                try:
+                    self.record_runtime_issue(
+                        "agent_event_delivery",
+                        type(error).__name__,
+                        "agent_event_subscriber",
+                        agent_id=event.agent_id,
+                        session_generation=event.session_generation,
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except BaseException as recorder_error:
+                    # Bypass an overridden/broken public recorder once. This
+                    # fallback writes directly to the same bounded store and
+                    # never emits another event.
+                    try:
+                        Agent.record_runtime_issue(
+                            self,
+                            "agent_event_delivery",
+                            type(error).__name__,
+                            "agent_event_subscriber",
+                            agent_id=event.agent_id,
+                            session_generation=event.session_generation,
+                        )
+                        Agent.record_runtime_issue(
+                            self,
+                            "runtime_issue_recorder",
+                            type(recorder_error).__name__,
+                            "agent_event_delivery",
+                            agent_id=event.agent_id,
+                            session_generation=event.session_generation,
+                        )
+                    except KeyboardInterrupt:
+                        raise
+                    except BaseException:
+                        # The bounded store itself is the final non-recursive
+                        # boundary; peer delivery must still continue.
+                        pass
+                    continue
 
     def _record_runtime_fact(self, event: AgentEvent) -> None:
         """Persist correctness-relevant runtime facts; omit high-rate chunks."""
@@ -1451,8 +1597,11 @@ class Agent:
         if callable(cancel_interactions):
             cancel_interactions(reason="session reset")
         self.discard_pending_user_steering(reason="session_reset")
-        previous_generation = self.session_generation
-        self.session_generation += 1
+        with self._runtime_issue_lock:
+            previous_generation = self.session_generation
+            self.session_generation += 1
+            self._runtime_issue_counts.clear()
+            self._runtime_issue_overflow = 0
         process_manager = self.process_manager
         rebind_processes = getattr(process_manager, "rebind_generation", None)
         if callable(rebind_processes):

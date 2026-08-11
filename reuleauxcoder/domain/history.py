@@ -71,6 +71,7 @@ class HistoryLedger:
         self,
         events: Iterable[HistoryEvent | dict[str, Any]] = (),
         *,
+        next_seq_floor: int = 0,
         generation: int = 0,
         sink_path: str | Path | None = None,
         session_id: str | None = None,
@@ -83,7 +84,19 @@ class HistoryLedger:
             for event in events
         ]
         self._events.sort(key=lambda event: event.seq)
-        self._next_seq = max((event.seq for event in self._events), default=0) + 1
+        if (
+            not isinstance(next_seq_floor, int)
+            or isinstance(next_seq_floor, bool)
+            or next_seq_floor < 0
+        ):
+            raise ValueError("next sequence floor must be a non-negative integer")
+        self._next_seq = (
+            max(
+                max((event.seq for event in self._events), default=0),
+                next_seq_floor,
+            )
+            + 1
+        )
         self._generation = generation
         self._sink_path = Path(sink_path) if sink_path is not None else None
         self._session_id = session_id
@@ -97,6 +110,12 @@ class HistoryLedger:
     def events(self) -> tuple[HistoryEvent, ...]:
         with self._lock:
             return tuple(self._events)
+
+    @property
+    def last_sequence(self) -> int:
+        """Return the highest consumed or reserved durable sequence."""
+        with self._lock:
+            return self._next_seq - 1
 
     def append(
         self,
@@ -228,7 +247,6 @@ class HistoryLedger:
         with self._lock:
             previous_path = self._sink_path
             self._sink_path = Path(path)
-            self._sink_path.parent.mkdir(parents=True, exist_ok=True)
             if self._unbound_events:
                 pending = tuple(self._unbound_events)
                 try:

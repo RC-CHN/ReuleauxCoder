@@ -18,7 +18,8 @@ from reuleauxcoder.extensions.command.builtin.sessions import (
     _parse_list_sessions,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
-from reuleauxcoder.interfaces.events import UIEventKind
+from reuleauxcoder.interfaces.cli.commands import handle_command
+from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.ui_registry import UICapability, UIProfile
 
 
@@ -55,6 +56,7 @@ class FakeAgent:
         self.active_mode = None
         self.hook_registry = HookRegistry()
         self.lifecycle = LifecycleCoordinator(self.hook_registry)
+        self.runtime_issues: list[tuple[str, str, str]] = []
 
     def set_mode(self, mode_name: str) -> None:
         self.active_mode = mode_name
@@ -65,6 +67,9 @@ class FakeAgent:
         self.state.total_prompt_tokens = 0
         self.state.total_completion_tokens = 0
         self.state.current_round = 0
+
+    def record_runtime_issue(self, phase: str, error_type: str, ref: str) -> None:
+        self.runtime_issues.append((phase, error_type, ref))
 
 
 def _build_ctx(tmp_path: Path, *, fingerprint: str = "local") -> SimpleNamespace:
@@ -176,6 +181,82 @@ def test_resume_latest_uses_current_fingerprint_only(tmp_path: Path) -> None:
         view for view in ctx.effect.views if view.view_type == "session_resume"
     )
     assert transcript.view_model.entries[0].content == "local msg"
+
+
+def test_corrupt_resume_keeps_current_session_and_exposes_safe_failure_fact(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    target_id = store.save(
+        messages=[{"role": "user", "content": "target"}], model="model"
+    )
+    sentinel = "resume-command-secret-must-not-leak"
+    (tmp_path / target_id / "replay.json").write_text(
+        '{"broken":"' + sentinel,
+        encoding="utf-8",
+    )
+    ctx = _build_ctx(tmp_path)
+    ctx.agent.current_session_id = "current-session"
+    ctx.agent.messages.append({"role": "user", "content": "current work"})
+    ui_bus = UIEventBus()
+    profile = UIProfile(
+        ui_id="cli",
+        display_name="CLI",
+        capabilities=frozenset({UICapability.TEXT_INPUT}),
+    )
+
+    result = handle_command(
+        f"/session {target_id}",
+        ctx.agent,
+        ctx.config,
+        "current-session",
+        ui_bus,
+        profile,
+        create_builtin_action_registry(),
+        sessions_dir=tmp_path,
+    )
+
+    assert result["action"] == "continue"
+    assert result["session_id"] == "current-session"
+    assert ctx.agent.current_session_id == "current-session"
+    assert ctx.agent.messages[-1]["content"] == "current work"
+    assert ctx.agent.runtime_issues == [("replay_decode", "JSONDecodeError", "replay")]
+    rendered = "\n".join(event.message for event in ui_bus.history_snapshot())
+    assert "phase=replay_decode" in rendered
+    assert sentinel not in rendered
+
+
+def test_missing_resume_is_a_model_visible_failed_command(tmp_path: Path) -> None:
+    ctx = _build_ctx(tmp_path)
+    ctx.agent.current_session_id = "current-session"
+    ctx.agent.messages.append({"role": "user", "content": "current work"})
+    ui_bus = UIEventBus()
+    profile = UIProfile(
+        ui_id="cli",
+        display_name="CLI",
+        capabilities=frozenset({UICapability.TEXT_INPUT}),
+    )
+
+    result = handle_command(
+        "/session session_missing",
+        ctx.agent,
+        ctx.config,
+        "current-session",
+        ui_bus,
+        profile,
+        create_builtin_action_registry(),
+        sessions_dir=tmp_path,
+    )
+
+    assert result["action"] == "continue"
+    assert result["session_id"] == "current-session"
+    assert ctx.agent.messages[-1]["content"] == "current work"
+    assert ctx.agent.runtime_issues == [
+        ("session_discovery", "FileNotFoundError", "session")
+    ]
+    rendered = "\n".join(event.message for event in ui_bus.history_snapshot())
+    assert "phase=session_discovery" in rendered
+    assert "error_type=FileNotFoundError" in rendered
 
 
 def test_resume_by_list_number_replays_recent_human_turns(tmp_path: Path) -> None:

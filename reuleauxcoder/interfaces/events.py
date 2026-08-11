@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import queue
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -88,6 +90,76 @@ UIEventPayload: TypeAlias = (
     | ReasoningNoticePayload
     | InteractionPromptPayload
 )
+
+_MAX_PENDING_RUNTIME_ISSUES = 8
+_MAX_RUNTIME_ISSUE_COUNT = 1_000_000
+
+
+class RuntimeIssueSink(Protocol):
+    """Route one content-free failure fact to its owning runtime."""
+
+    def __call__(
+        self,
+        phase: str,
+        error_type: str,
+        ref: str,
+        count: int = 1,
+        *,
+        agent_id: str | None = None,
+        session_generation: int | None = None,
+    ) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeIssueFact:
+    """Bounded bus-local fallback retained while an owner sink is unavailable."""
+
+    phase: str
+    error_type: str
+    ref: str
+    count: int = 1
+    agent_id: str | None = None
+    session_generation: int | None = None
+
+
+def deliver_runtime_issue(
+    sink: RuntimeIssueSink,
+    phase: str,
+    error_type: str,
+    ref: str,
+    count: int = 1,
+    *,
+    agent_id: str | None = None,
+    session_generation: int | None = None,
+) -> object:
+    """Call a runtime-issue sink once, with routing when it supports it."""
+    try:
+        parameters = inspect.signature(sink).parameters
+        supports_routing = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ) or {"agent_id", "session_generation"}.issubset(parameters)
+    except KeyboardInterrupt:
+        raise
+    except BaseException:
+        supports_routing = False
+    if supports_routing:
+        return sink(
+            phase,
+            error_type,
+            ref,
+            count,
+            agent_id=agent_id,
+            session_generation=session_generation,
+        )
+    return sink(phase, error_type, ref, count)
+
+
+def _safe_error_type(error: BaseException) -> str:
+    name = type(error).__name__
+    if name and len(name) <= 64 and name.isascii() and name.replace("_", "").isalnum():
+        return name
+    return "Exception"
 
 
 @dataclass
@@ -199,7 +271,7 @@ class UIEventBus:
       ``drain()`` to dispatch them.  Used by TUI (cross-thread).
 
     Handlers are always called on the **draining thread** — never on the
-    emitting thread when queued.
+    emitting thread when queued. Handler return values are ignored.
     """
 
     def __init__(
@@ -207,13 +279,20 @@ class UIEventBus:
         *,
         event_queue: queue.Queue | None = None,
         max_history: int = 256,
+        subscriber_failure_sink: RuntimeIssueSink | None = None,
     ):
         if max_history < 1:
             raise ValueError("max_history must be positive")
         self._queue = event_queue
-        self._handlers: list[Callable[[UIEvent], None]] = []
+        self._handlers: list[Callable[[UIEvent], object]] = []
         self._history: list[UIEvent] = []
         self._max_history = max_history
+        self._subscriber_failure_lock = threading.Lock()
+        self._subscriber_failure_default_sink = subscriber_failure_sink
+        self._subscriber_failure_sinks: dict[str, RuntimeIssueSink] = {}
+        self._pending_subscriber_failures: list[RuntimeIssueFact] = []
+        self._pending_subscriber_failure_overflow = 0
+        self._subscriber_failure_stale_dropped = 0
 
     @property
     def is_queued(self) -> bool:
@@ -224,19 +303,64 @@ class UIEventBus:
         """Return initialization events without exposing mutable bus history."""
         return tuple(self._history)
 
+    def bind_subscriber_failure_sink(
+        self,
+        sink: RuntimeIssueSink | None,
+        *,
+        agent_id: str | None = None,
+        default: bool = False,
+    ) -> None:
+        """Bind one owner sink and replay its bounded pending failure facts."""
+        with self._subscriber_failure_lock:
+            if agent_id is None or default:
+                self._subscriber_failure_default_sink = sink
+            if agent_id is not None:
+                if sink is None:
+                    self._subscriber_failure_sinks.pop(agent_id, None)
+                else:
+                    self._subscriber_failure_sinks[agent_id] = sink
+        if sink is not None:
+            self._replay_subscriber_failures(sink, agent_id)
+            if default and agent_id is not None:
+                self._replay_subscriber_failures(sink, None)
+
+    def unbind_subscriber_failure_sink(self, *, agent_id: str) -> None:
+        """Forget a routed owner without attributing later events elsewhere."""
+        with self._subscriber_failure_lock:
+            self._subscriber_failure_sinks.pop(agent_id, None)
+
+    def subscriber_failure_snapshot(self) -> tuple[RuntimeIssueFact, ...]:
+        """Expose bounded non-recursive fallback facts for diagnostics/tests."""
+        with self._subscriber_failure_lock:
+            facts = tuple(self._pending_subscriber_failures)
+            overflow = self._pending_subscriber_failure_overflow
+        if overflow:
+            facts += (
+                RuntimeIssueFact(
+                    "ui_subscriber",
+                    "Overflow",
+                    "capacity",
+                    count=overflow,
+                ),
+            )
+        return facts
+
+    @property
+    def subscriber_failure_stale_dropped(self) -> int:
+        """Count route-rejected stale facts without presenting them as faults."""
+        with self._subscriber_failure_lock:
+            return self._subscriber_failure_stale_dropped
+
     def subscribe(
         self,
-        handler: Callable[[UIEvent], None],
+        handler: Callable[[UIEvent], object],
         *,
         replay_history: bool = True,
     ) -> None:
         self._handlers.append(handler)
         if replay_history:
             for event in self._history:
-                try:
-                    handler(event)
-                except Exception:
-                    pass
+                self._invoke_handler(handler, event, ref="history_replay")
 
     def emit(self, event: UIEvent) -> None:
         payload = event.payload
@@ -271,10 +395,149 @@ class UIEventBus:
     def _dispatch(self, event: UIEvent) -> None:
         """Call every registered handler for *event*."""
         for handler in self._handlers:
-            try:
-                handler(event)
-            except Exception:
-                pass
+            self._invoke_handler(handler, event, ref="dispatch")
+
+    def _invoke_handler(
+        self,
+        handler: Callable[[UIEvent], object],
+        event: UIEvent,
+        *,
+        ref: str,
+    ) -> None:
+        try:
+            handler(event)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._record_subscriber_failure(error, event=event, ref=ref)
+
+    @staticmethod
+    def _subscriber_failure_route(
+        event: UIEvent,
+    ) -> tuple[str | None, int | None]:
+        payload = event.payload
+        if not isinstance(payload, RuntimeEventPayload):
+            return None, None
+        runtime = payload.event
+        generation = runtime.session_generation
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            generation = None
+        return runtime.agent_id, generation
+
+    def _record_subscriber_failure(
+        self,
+        error: BaseException,
+        *,
+        event: UIEvent,
+        ref: str,
+    ) -> None:
+        agent_id, session_generation = self._subscriber_failure_route(event)
+        fact = RuntimeIssueFact(
+            "ui_subscriber",
+            _safe_error_type(error),
+            ref,
+            agent_id=agent_id,
+            session_generation=session_generation,
+        )
+        with self._subscriber_failure_lock:
+            sink = (
+                self._subscriber_failure_sinks.get(agent_id)
+                if agent_id is not None
+                else self._subscriber_failure_default_sink
+            )
+        if sink is None:
+            self._retain_subscriber_failure(fact)
+            return
+        self._deliver_subscriber_failure(sink, fact, replay=True)
+
+    def _deliver_subscriber_failure(
+        self,
+        sink: RuntimeIssueSink,
+        fact: RuntimeIssueFact,
+        *,
+        replay: bool,
+    ) -> None:
+        try:
+            accepted = deliver_runtime_issue(
+                sink,
+                fact.phase,
+                fact.error_type,
+                fact.ref,
+                fact.count,
+                agent_id=fact.agent_id,
+                session_generation=fact.session_generation,
+            )
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._retain_subscriber_failure(fact)
+            self._retain_subscriber_failure(
+                RuntimeIssueFact(
+                    "ui_subscriber_sink",
+                    _safe_error_type(error),
+                    "delivery",
+                    agent_id=fact.agent_id,
+                    session_generation=fact.session_generation,
+                )
+            )
+            return
+        if accepted is False:
+            with self._subscriber_failure_lock:
+                self._subscriber_failure_stale_dropped = min(
+                    self._subscriber_failure_stale_dropped + fact.count,
+                    _MAX_RUNTIME_ISSUE_COUNT,
+                )
+        if replay:
+            self._replay_subscriber_failures(
+                sink, fact.agent_id, fact.session_generation
+            )
+
+    def _retain_subscriber_failure(self, fact: RuntimeIssueFact) -> None:
+        count = (
+            min(fact.count, _MAX_RUNTIME_ISSUE_COUNT)
+            if isinstance(fact.count, int)
+            and not isinstance(fact.count, bool)
+            and fact.count > 0
+            else 1
+        )
+        retained = RuntimeIssueFact(
+            fact.phase,
+            fact.error_type,
+            fact.ref,
+            count,
+            fact.agent_id,
+            fact.session_generation,
+        )
+        with self._subscriber_failure_lock:
+            if len(self._pending_subscriber_failures) < _MAX_PENDING_RUNTIME_ISSUES - 1:
+                self._pending_subscriber_failures.append(retained)
+            else:
+                self._pending_subscriber_failure_overflow = min(
+                    self._pending_subscriber_failure_overflow + count,
+                    _MAX_RUNTIME_ISSUE_COUNT,
+                )
+
+    def _replay_subscriber_failures(
+        self,
+        sink: RuntimeIssueSink,
+        agent_id: str | None,
+        session_generation: int | None = None,
+    ) -> None:
+        with self._subscriber_failure_lock:
+            pending = tuple(
+                fact
+                for fact in self._pending_subscriber_failures
+                if fact.agent_id == agent_id
+                and (
+                    session_generation is None
+                    or fact.session_generation == session_generation
+                )
+            )
+            self._pending_subscriber_failures = [
+                fact for fact in self._pending_subscriber_failures if fact not in pending
+            ]
+        for fact in pending:
+            self._deliver_subscriber_failure(sink, fact, replay=False)
 
     def info(
         self,

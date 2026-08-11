@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from reuleauxcoder.app.commands import CommandContext, dispatch_command, parse_command
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.infrastructure.persistence.session_store import SessionRestoreError
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.ui_registry import UIProfile
 
@@ -181,6 +182,37 @@ def handle_command(
                 ),
             )
             _record_command_control_event(agent, parsed_action.action.action_id, result)
+        except SessionRestoreError as error:
+            # The active session remains usable. This is a failed command, not
+            # degraded state restored from disk, so publish it through the
+            # generic runtime-incident channel.
+            recorder_error_type = None
+            record_runtime_issue = getattr(agent, "record_runtime_issue", None)
+            if callable(record_runtime_issue):
+                try:
+                    record_runtime_issue(error.phase, error.error_type, error.ref)
+                except KeyboardInterrupt:
+                    raise
+                except BaseException as recorder_error:
+                    name = type(recorder_error).__name__
+                    recorder_error_type = (
+                        name
+                        if name
+                        and len(name) <= 64
+                        and name.isascii()
+                        and name.replace("_", "").isalnum()
+                        else "Exception"
+                    )
+            result = CommandEffect()
+            result.error(
+                str(error),
+                kind=UIEventKind.SESSION,
+                phase=error.phase,
+                error_type=error.error_type,
+                ref=error.ref,
+                runtime_issue_recorder_error_type=recorder_error_type,
+            )
+            result.finish(control="continue")
         except Exception as exc:
             result = CommandEffect()
             result.error(f"Command failed: {exc}", kind=UIEventKind.COMMAND)

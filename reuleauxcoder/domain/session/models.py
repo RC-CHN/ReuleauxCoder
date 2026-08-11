@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -9,6 +10,26 @@ from reuleauxcoder.domain.context.replay import ReplayEnvelope, RequestEnvelope
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.history import HistoryEvent
 from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
+
+MAX_SESSION_PREVIEW_CHARS = 120
+
+
+def is_safe_session_preview(value: object) -> bool:
+    """Return whether a persisted preview is bounded and display-safe."""
+    return (
+        isinstance(value, str)
+        and len(value) <= MAX_SESSION_PREVIEW_CHARS
+        and not any(unicodedata.category(char) in {"Cc", "Cf"} for char in value)
+    )
+
+
+def normalize_session_preview(value: str) -> str:
+    """Normalize message text into a bounded, single-line display preview."""
+    without_controls = "".join(
+        " " if unicodedata.category(char) in {"Cc", "Cf"} else char
+        for char in value
+    )
+    return " ".join(without_controls.split())[:MAX_SESSION_PREVIEW_CHARS]
 
 
 def _display_message_text(message: dict) -> str:
@@ -105,6 +126,63 @@ class SessionRuntimeState:
         return asdict(self)
 
 
+def _restore_fact(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        raise ValueError(f"invalid restore issue {field_name}")
+    if not value.isascii() or not value.replace("_", "").isalnum():
+        raise ValueError(f"invalid restore issue {field_name}")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRestoreIssue:
+    """Content-free facts for an optional artifact that restored degraded."""
+
+    phase: str
+    error_type: str
+    ref: str
+    count: int = 0
+
+    def __post_init__(self) -> None:
+        _restore_fact(self.phase, "phase")
+        _restore_fact(self.error_type, "error_type")
+        _restore_fact(self.ref, "ref")
+        if (
+            not isinstance(self.count, int)
+            or isinstance(self.count, bool)
+            or self.count < 0
+        ):
+            raise ValueError("restore issue count must be a non-negative integer")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SessionRestoreIssue":
+        if not isinstance(data, dict):
+            raise TypeError("restore issue must be an object")
+        phase = _restore_fact(data.get("phase"), "phase")
+        error_type = _restore_fact(data.get("error_type"), "error_type")
+        ref = _restore_fact(data.get("ref"), "ref")
+        count = data.get("count", 0)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ValueError("restore issue count must be a non-negative integer")
+        return cls(phase=phase, error_type=error_type, ref=ref, count=count)
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "phase": self.phase,
+            "error_type": self.error_type,
+            "ref": self.ref,
+        }
+        if self.count:
+            payload["count"] = self.count
+        return payload
+
+    def render(self) -> str:
+        suffix = f", count={self.count}" if self.count else ""
+        return (
+            f"phase={self.phase}, error_type={self.error_type}, ref={self.ref}{suffix}"
+        )
+
+
 @dataclass
 class Session:
     """A conversation session with messages and metadata."""
@@ -123,6 +201,12 @@ class Session:
     request_envelopes: list[RequestEnvelope] = field(default_factory=list)
     checkpoints: list[CompactionCheckpoint] = field(default_factory=list)
     history_completeness: str = "legacy_compacted_or_unknown"
+    history_next_seq_floor: int = 0
+    history_behavior_projection_safe: bool = True
+    restore_issues: tuple[SessionRestoreIssue, ...] = field(
+        default_factory=tuple,
+        repr=False,
+    )
 
     @classmethod
     def from_dict(cls, d: dict) -> "Session":
@@ -168,6 +252,10 @@ class Session:
             history_completeness=str(
                 d.get("history_completeness") or "legacy_compacted_or_unknown"
             ),
+            restore_issues=tuple(
+                SessionRestoreIssue.from_dict(item)
+                for item in d.get("restore_issues", ())
+            ),
         )
 
     def to_dict(self) -> dict:
@@ -183,6 +271,7 @@ class Session:
             "total_completion_tokens": self.total_completion_tokens,
             "runtime_state": self.runtime_state.to_dict(),
             "history_completeness": self.history_completeness,
+            "restore_issues": [issue.to_dict() for issue in self.restore_issues],
             "replay_envelope": (
                 self.replay_envelope.to_dict() if self.replay_envelope else None
             ),
@@ -195,9 +284,9 @@ class Session:
         for message in reversed(self.messages):
             if message.get("role") != "user":
                 continue
-            text = _display_message_text(message).replace("\n", " ")
+            text = normalize_session_preview(_display_message_text(message))
             if text:
-                return text[:120]
+                return text
         return ""
 
     def get_recent_conversation(self, max_user_turns: int = 3) -> list[dict[str, str]]:

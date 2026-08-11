@@ -24,6 +24,7 @@ from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.entrypoint.runner import (
     AppDependencies,
     AppOptions,
@@ -220,9 +221,7 @@ class TestRunnerRemoteExec:
         assert ctx.agent is not None
         startup_names = {
             sample.name
-            for sample in ctx.agent.performance_monitor.snapshot(
-                category="startup"
-            )
+            for sample in ctx.agent.performance_monitor.snapshot(category="startup")
         }
         assert {"configuration", "model_client", "session_restore", "total"} <= (
             startup_names
@@ -449,6 +448,148 @@ class TestRunnerRemoteExec:
                 event for event in second_events if event["type"] == "chat_end"
             ][-1]
             assert second_end["payload"]["response"] == "call:2"
+        finally:
+            runner.cleanup(ctx.agent)
+
+    def test_remote_restore_failure_is_safe_and_does_not_create_session(
+        self, tmp_path: Path
+    ) -> None:
+        port = _free_port()
+        sessions_dir = tmp_path / "sessions"
+        chat_calls: list[str] = []
+
+        def chat_behavior(_agent: FakeAgent, prompt: str) -> str:
+            chat_calls.append(prompt)
+            return "must-not-run"
+
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}",
+            session_dir=sessions_dir,
+            chat_behavior=chat_behavior,
+        )
+        ctx = runner.initialize()
+        try:
+            assert runner._relay_server is not None
+            assert runner._relay_http_service is not None
+            base_url = runner._relay_http_service.base_url
+            peer_id, peer_token = _register_peer(
+                base_url,
+                runner._relay_server.issue_bootstrap_token(ttl_sec=60),
+                str(tmp_path),
+            )
+            store = SessionStore(sessions_dir)
+            session_id = store.save(
+                messages=[{"role": "user", "content": "saved"}],
+                model="model",
+                fingerprint=f"remote:{peer_id}:{tmp_path}",
+            )
+            sentinel = "remote-replay-secret-must-not-leak"
+            (sessions_dir / session_id / "replay.json").write_text(
+                '{"broken":"' + sentinel,
+                encoding="utf-8",
+            )
+
+            _, chat_body = _json_request(
+                "POST",
+                f"{base_url}/remote/chat",
+                {"peer_token": peer_token, "prompt": "sync"},
+            )
+            assert "phase=replay_decode" in chat_body["error"]
+            assert "error_type=JSONDecodeError" in chat_body["error"]
+            assert sentinel not in chat_body["error"]
+
+            _, start_body = _json_request(
+                "POST",
+                f"{base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "stream"},
+            )
+            events = _collect_stream_events(
+                base_url,
+                peer_token,
+                start_body["chat_id"],
+            )
+            error = next(event for event in events if event["type"] == "error")
+            assert error["payload"]["code"] == "session_restore_failed"
+            assert error["payload"]["phase"] == "replay_decode"
+            assert error["payload"]["error_type"] == "JSONDecodeError"
+            assert error["payload"]["ref"] == "replay"
+            assert sentinel not in str(error)
+            assert not any(event["type"] == "chat_end" for event in events)
+            assert chat_calls == []
+            assert {path.name for path in sessions_dir.iterdir()} == {session_id}
+        finally:
+            runner.cleanup(ctx.agent)
+
+    def test_remote_selected_session_disappearing_is_terminal(
+        self, tmp_path: Path
+    ) -> None:
+        port = _free_port()
+        sessions_dir = tmp_path / "sessions"
+        chat_calls: list[str] = []
+
+        class VanishingStore(SessionStore):
+            vanish_on_load = False
+
+            def load(self, session_id: str):
+                if self.vanish_on_load:
+                    return None
+                return super().load(session_id)
+
+        store = VanishingStore(sessions_dir)
+
+        def chat_behavior(_agent: FakeAgent, prompt: str) -> str:
+            chat_calls.append(prompt)
+            return "must-not-run"
+
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}",
+            session_dir=sessions_dir,
+            chat_behavior=chat_behavior,
+        )
+        runner.dependencies.create_session_store = lambda _path: store
+        ctx = runner.initialize()
+        try:
+            assert runner._relay_server is not None
+            assert runner._relay_http_service is not None
+            base_url = runner._relay_http_service.base_url
+            peer_id, peer_token = _register_peer(
+                base_url,
+                runner._relay_server.issue_bootstrap_token(ttl_sec=60),
+                str(tmp_path),
+            )
+            session_id = store.save(
+                messages=[{"role": "user", "content": "saved"}],
+                model="model",
+                fingerprint=f"remote:{peer_id}:{tmp_path}",
+            )
+            store.vanish_on_load = True
+
+            _, chat_body = _json_request(
+                "POST",
+                f"{base_url}/remote/chat",
+                {"peer_token": peer_token, "prompt": "sync"},
+            )
+            assert "phase=session_load" in chat_body["error"]
+            assert "error_type=FileNotFoundError" in chat_body["error"]
+
+            _, start_body = _json_request(
+                "POST",
+                f"{base_url}/remote/chat/start",
+                {"peer_token": peer_token, "prompt": "stream"},
+            )
+            events = _collect_stream_events(
+                base_url,
+                peer_token,
+                start_body["chat_id"],
+            )
+            error = next(event for event in events if event["type"] == "error")
+            assert error["payload"]["code"] == "session_restore_failed"
+            assert error["payload"]["phase"] == "session_load"
+            assert error["payload"]["error_type"] == "FileNotFoundError"
+            assert error["payload"]["ref"] == "session"
+            assert not any(event["type"] == "chat_end" for event in events)
+            assert chat_calls == []
+            assert {path.name for path in sessions_dir.iterdir()} == {session_id}
         finally:
             runner.cleanup(ctx.agent)
 

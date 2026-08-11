@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import math
+import re
 import unicodedata
 import uuid
 from typing import Any
@@ -35,6 +37,225 @@ def canonical_json(value: Any) -> str:
 
 def content_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+SUPPORTED_REPLAY_SCHEMA_VERSIONS = frozenset({1, 2, 3})
+_PROVIDER_MESSAGE_ROLES = frozenset(
+    {"system", "developer", "user", "assistant", "tool"}
+)
+_MAX_REPLAY_COUNTER = (1 << 63) - 1
+
+
+def _validate_json_value(value: object, *, depth: int = 0) -> None:
+    if depth > 32:
+        raise ValueError("provider value nesting is too deep")
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("provider value contains a non-finite number")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item, depth=depth + 1)
+        return
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("provider object keys must be strings")
+        for item in value.values():
+            _validate_json_value(item, depth=depth + 1)
+        return
+    raise TypeError("provider value is not JSON-compatible")
+
+
+def validate_provider_message(message: object) -> None:
+    """Validate a persisted chat-completions message without coercion."""
+    if not isinstance(message, dict):
+        raise TypeError("provider message must be an object")
+    role = message.get("role")
+    if role not in _PROVIDER_MESSAGE_ROLES:
+        raise ValueError("provider message role is invalid")
+    if "content" not in message:
+        raise ValueError("provider message content is missing")
+    content = message["content"]
+    if content is not None and not isinstance(content, (str, list)):
+        raise TypeError("provider message content is invalid")
+    if content is None and role != "assistant":
+        raise ValueError("only assistant content may be null")
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                raise TypeError("provider content part must be an object")
+            part_type = part.get("type")
+            if not isinstance(part_type, str) or not part_type:
+                raise ValueError("provider content part type is invalid")
+            if part_type in {"text", "input_text", "output_text"} and not isinstance(
+                part.get("text"), str
+            ):
+                raise TypeError("provider text content is invalid")
+            _validate_json_value(part)
+
+    tool_call_id = message.get("tool_call_id")
+    if tool_call_id is not None and (
+        not isinstance(tool_call_id, str) or not tool_call_id
+    ):
+        raise ValueError("provider tool_call_id is invalid")
+    if role == "tool" and not isinstance(tool_call_id, str):
+        raise ValueError("tool message requires tool_call_id")
+    name = message.get("name")
+    if name is not None and (not isinstance(name, str) or not name):
+        raise ValueError("provider message name is invalid")
+
+    tool_calls = message.get("tool_calls")
+    if tool_calls is not None:
+        if role != "assistant" or not isinstance(tool_calls, list):
+            raise TypeError("provider tool_calls is invalid")
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                raise TypeError("provider tool call must be an object")
+            call_id = call.get("id")
+            call_type = call.get("type", "function")
+            function = call.get("function")
+            if (
+                not isinstance(call_id, str)
+                or not call_id
+                or call_type != "function"
+                or not isinstance(function, dict)
+                or not isinstance(function.get("name"), str)
+                or not function["name"]
+                or not isinstance(function.get("arguments"), str)
+            ):
+                raise ValueError("provider function tool call is invalid")
+            _validate_json_value(call)
+    _validate_json_value(message)
+
+
+def validate_replay_payload(
+    payload: object, *, expected_session_id: str | None = None
+) -> None:
+    """Validate raw replay semantics before the compatibility constructor."""
+    if not isinstance(payload, dict):
+        raise TypeError("replay must be an object")
+    schema_version = payload.get("schema_version")
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in SUPPORTED_REPLAY_SCHEMA_VERSIONS
+    ):
+        raise ValueError("replay schema version is unsupported")
+    required = {
+        "schema_version",
+        "session_id",
+        "view_id",
+        "cache_epoch",
+        "history_version",
+        "model_profile",
+        "provider_family",
+        "request_mode",
+        "instructions",
+        "tools",
+        "items",
+        "stable_prefix_hash",
+        "canonical_payload_hash",
+    }
+    if schema_version >= 2:
+        required.add("request_settings")
+    if schema_version >= 3:
+        required.add("item_provenance")
+    if not required.issubset(payload):
+        raise ValueError("replay required field is missing")
+
+    session_id = payload["session_id"]
+    if schema_version >= 3:
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("replay session id is invalid")
+    elif session_id is not None and (
+        not isinstance(session_id, str) or not session_id
+    ):
+        raise ValueError("legacy replay session id is invalid")
+    if expected_session_id is not None and (
+        session_id != expected_session_id
+        if schema_version >= 3
+        else session_id not in (None, expected_session_id)
+    ):
+        raise ValueError("replay session id does not match")
+
+    for key in ("cache_epoch", "history_version"):
+        value = payload[key]
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or value > _MAX_REPLAY_COUNTER
+        ):
+            raise ValueError("replay counter is invalid")
+    for key in ("view_id", "model_profile", "provider_family", "request_mode"):
+        value = payload[key]
+        if not isinstance(value, str) or not value or len(value) > 256:
+            raise ValueError("replay text field is invalid")
+    for key in ("stable_prefix_hash", "canonical_payload_hash"):
+        value = payload[key]
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError("replay hash is invalid")
+
+    request_settings = payload.get("request_settings", {})
+    if not isinstance(request_settings, dict):
+        raise TypeError("replay request settings must be an object")
+    _validate_json_value(request_settings)
+    for key in ("instructions", "items"):
+        messages = payload[key]
+        if not isinstance(messages, list):
+            raise TypeError("replay messages must be a list")
+        for message in messages:
+            validate_provider_message(message)
+    tools = payload["tools"]
+    if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
+        raise TypeError("replay tools must be a list of objects")
+    for tool in tools:
+        tool_type = tool.get("type")
+        if tool_type is not None and (
+            not isinstance(tool_type, str) or not tool_type
+        ):
+            raise ValueError("replay tool type is invalid")
+        if tool_type == "function" or "function" in tool:
+            function = tool.get("function")
+            if (
+                not isinstance(function, dict)
+                or not isinstance(function.get("name"), str)
+                or not function["name"]
+            ):
+                raise ValueError("replay function tool is invalid")
+            description = function.get("description")
+            parameters = function.get("parameters")
+            strict = function.get("strict")
+            if description is not None and not isinstance(description, str):
+                raise TypeError("replay tool description is invalid")
+            if parameters is not None and not isinstance(parameters, dict):
+                raise TypeError("replay tool parameters are invalid")
+            if strict is not None and not isinstance(strict, bool):
+                raise TypeError("replay tool strict flag is invalid")
+    _validate_json_value(tools)
+
+    provenance = payload.get("item_provenance", [])
+    if not isinstance(provenance, list):
+        raise TypeError("replay provenance must be a list")
+    if schema_version >= 3 and len(provenance) != len(payload["items"]):
+        raise ValueError("replay provenance does not align with items")
+    for item in provenance:
+        if not isinstance(item, dict):
+            raise TypeError("replay provenance item must be an object")
+        for key in ("source_event_ids", "artifact_refs"):
+            refs = item.get(key, [])
+            if not isinstance(refs, list) or not all(
+                isinstance(ref, str) and ref for ref in refs
+            ):
+                raise ValueError("replay provenance references are invalid")
+        checkpoint_id = item.get("checkpoint_id")
+        if checkpoint_id is not None and (
+            not isinstance(checkpoint_id, str) or not checkpoint_id
+        ):
+            raise ValueError("replay checkpoint id is invalid")
+        _validate_json_value(item)
 
 
 @dataclass(frozen=True, slots=True)
