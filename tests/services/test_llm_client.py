@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import reuleauxcoder.services.llm.client as llm_client_module
 from reuleauxcoder.domain.hooks.base import TransformHook
-from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.hooks.registry import HookExecutionError, HookRegistry
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.domain.llm.models import (
     EMPTY_ASSISTANT_CONTENT_PLACEHOLDER,
@@ -896,8 +896,11 @@ def test_llm_request_transform_rejection_terminates_operation_telemetry() -> Non
             [{"role": "user", "content": "Hi"}],
             hook_registry=registry,
         )
-    except RuntimeError as error:
-        assert str(error) == "request rejected after build"
+    except HookExecutionError as error:
+        assert error.phase == "before_llm_request"
+        assert error.hook_name == "reject_request"
+        assert error.error_type == "RuntimeError"
+        assert "request rejected after build" not in str(error)
     else:
         raise AssertionError("request transform rejection must propagate")
 

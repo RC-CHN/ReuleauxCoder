@@ -210,3 +210,7 @@ class HookDiagnostic:
     hook_kind: HookKind
     message: str
     severity: str = "warning"
+    phase: str | None = None
+    error_type: str | None = None
+    code: str | None = None
+    ref: str | None = None

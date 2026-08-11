@@ -1002,6 +1002,10 @@ class Agent:
                 "hook_name": diagnostic.hook_name,
                 "hook_point": diagnostic.hook_point.value,
                 "hook_kind": diagnostic.hook_kind.value,
+                "phase": diagnostic.phase or diagnostic.hook_point.value,
+                "error_type": diagnostic.error_type,
+                "failure_code": diagnostic.code,
+                "ref": diagnostic.ref,
             },
         )
 

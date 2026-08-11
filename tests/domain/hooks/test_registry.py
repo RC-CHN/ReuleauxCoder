@@ -1,7 +1,7 @@
 import pytest
 
 from reuleauxcoder.domain.hooks.base import GuardHook, ObserverHook, TransformHook
-from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.hooks.registry import HookExecutionError, HookRegistry
 from reuleauxcoder.domain.hooks.types import (
     BeforeLLMRequestContext,
     GuardDecision,
@@ -23,7 +23,17 @@ class DenyGuard(GuardHook[HookContext]):
 
 class FailingGuard(GuardHook[HookContext]):
     def run(self, context: HookContext) -> GuardDecision:
-        raise RuntimeError("boom")
+        raise RuntimeError("guard-secret-must-not-leak")
+
+
+class RecordingGuard(GuardHook[HookContext]):
+    def __init__(self, *, name: str, bucket: list[str], priority: int = 0):
+        super().__init__(name=name, priority=priority)
+        self.bucket = bucket
+
+    def run(self, context: HookContext) -> GuardDecision:
+        self.bucket.append(self.name)
+        return GuardDecision.allow()
 
 
 class MetadataTransform(TransformHook[HookContext]):
@@ -47,6 +57,11 @@ class WrongTypeTransform(TransformHook[HookContext]):
         return object()
 
 
+class FailingTransform(TransformHook[HookContext]):
+    def run(self, context: HookContext) -> HookContext:
+        raise RuntimeError("transform-secret-must-not-leak")
+
+
 class RecordingObserver(ObserverHook[HookContext]):
     def __init__(self, *, name: str, bucket: list[str]):
         super().__init__(name=name)
@@ -58,7 +73,32 @@ class RecordingObserver(ObserverHook[HookContext]):
 
 class FailingObserver(ObserverHook[HookContext]):
     def run(self, context: HookContext) -> None:
-        raise RuntimeError("boom")
+        raise RuntimeError("observer-secret-must-not-leak")
+
+
+class SafeFactObserverError(RuntimeError):
+    def __init__(self) -> None:
+        self.phase = "stat"
+        self.error_type = "PermissionError"
+        self.code = "context_read_failed"
+        self.ref = "AGENTS.md"
+        super().__init__("safe-fact-secret-must-not-leak")
+
+
+class SafeFactObserver(ObserverHook[HookContext]):
+    def run(self, context: HookContext) -> None:
+        raise SafeFactObserverError
+
+
+class BrokenPerformanceMonitor:
+    def record(self, *args, **kwargs) -> None:
+        del args, kwargs
+        raise RuntimeError("performance-secret-must-not-leak")
+
+
+class BrokenSnapshotMetadata(dict):
+    def items(self):
+        raise RuntimeError("snapshot-secret-must-not-leak")
 
 
 class MutatingObserver(ObserverHook[HookContext]):
@@ -107,17 +147,34 @@ def test_hook_registry_run_guards_stops_on_deny() -> None:
 
 
 def test_hook_registry_run_guards_fail_closed_on_exception() -> None:
+    effects: list[str] = []
     registry = HookRegistry()
-    registry.register(HookPoint.BEFORE_TOOL_EXECUTE, FailingGuard(name="failing"))
+    registry.register(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        FailingGuard(name="failing", priority=10),
+    )
+    registry.register(
+        HookPoint.BEFORE_TOOL_EXECUTE,
+        RecordingGuard(name="must_not_run", bucket=effects, priority=0),
+    )
 
     decisions = registry.run_guards(
         HookPoint.BEFORE_TOOL_EXECUTE,
         HookContext(hook_point=HookPoint.BEFORE_TOOL_EXECUTE),
     )
 
+    assert effects == []
     assert len(decisions) == 1
     assert decisions[0].allowed is False
-    assert "guard hook 'failing' failed" in (decisions[0].reason or "")
+    reason = decisions[0].reason or ""
+    assert "phase=before_tool_execute" in reason
+    assert "hook=failing" in reason
+    assert "hook_kind=guard" in reason
+    assert "error_type=RuntimeError" in reason
+    assert "guard-secret-must-not-leak" not in reason
+    diagnostic = registry.drain_diagnostics()[0]
+    assert diagnostic.phase == "before_tool_execute"
+    assert diagnostic.error_type == "RuntimeError"
 
 
 def test_hook_registry_run_transforms_applies_priority_order() -> None:
@@ -156,15 +213,63 @@ def test_hook_registry_records_each_hook_timing() -> None:
     assert sample.attribute_map()["hook_kind"] == "transform"
 
 
-def test_hook_registry_run_transforms_rejects_none_result() -> None:
-    registry = HookRegistry()
-    registry.register(HookPoint.AFTER_TOOL_EXECUTE, NoneTransform(name="none"))
+def test_performance_failure_is_secondary_and_safely_observable() -> None:
+    registry = HookRegistry(
+        performance_monitor=BrokenPerformanceMonitor(),  # type: ignore[arg-type]
+    )
+    registry.register(
+        HookPoint.AFTER_TOOL_EXECUTE,
+        MetadataTransform(name="timed", priority=1, key="effect", value="kept"),
+    )
+    context = HookContext(hook_point=HookPoint.AFTER_TOOL_EXECUTE)
 
-    with pytest.raises(TypeError):
+    result = registry.run_transforms(HookPoint.AFTER_TOOL_EXECUTE, context)
+
+    assert result.metadata == {"effect": "kept"}
+    diagnostics = registry.drain_diagnostics()
+    assert len(diagnostics) == 1
+    assert diagnostics[0].phase == "performance_measurement"
+    assert diagnostics[0].hook_name == "timed"
+    assert diagnostics[0].error_type == "RuntimeError"
+    assert "performance-secret-must-not-leak" not in diagnostics[0].message
+
+
+def test_performance_failure_does_not_replace_transform_primary_failure() -> None:
+    registry = HookRegistry(
+        performance_monitor=BrokenPerformanceMonitor(),  # type: ignore[arg-type]
+    )
+    registry.register(
+        HookPoint.AFTER_TOOL_EXECUTE,
+        FailingTransform(name="failing_transform"),
+    )
+
+    with pytest.raises(HookExecutionError) as raised:
         registry.run_transforms(
             HookPoint.AFTER_TOOL_EXECUTE,
             HookContext(hook_point=HookPoint.AFTER_TOOL_EXECUTE),
         )
+
+    assert raised.value.error_type == "RuntimeError"
+    assert "performance-secret-must-not-leak" not in str(raised.value)
+    assert "transform-secret-must-not-leak" not in str(raised.value)
+    assert [item.phase for item in registry.drain_diagnostics()] == [
+        "performance_measurement",
+        "after_tool_execute",
+    ]
+
+
+def test_hook_registry_run_transforms_rejects_none_result() -> None:
+    registry = HookRegistry()
+    registry.register(HookPoint.AFTER_TOOL_EXECUTE, NoneTransform(name="none"))
+
+    with pytest.raises(HookExecutionError) as raised:
+        registry.run_transforms(
+            HookPoint.AFTER_TOOL_EXECUTE,
+            HookContext(hook_point=HookPoint.AFTER_TOOL_EXECUTE),
+        )
+    assert raised.value.phase == "after_tool_execute"
+    assert raised.value.hook_name == "none"
+    assert raised.value.error_type == "TypeError"
     diagnostic = registry.drain_diagnostics()[0]
     assert diagnostic.hook_name == "none"
     assert diagnostic.hook_kind.value == "transform"
@@ -175,11 +280,34 @@ def test_hook_registry_run_transforms_rejects_wrong_type() -> None:
     registry = HookRegistry()
     registry.register(HookPoint.AFTER_TOOL_EXECUTE, WrongTypeTransform(name="wrong"))
 
-    with pytest.raises(TypeError):
+    with pytest.raises(HookExecutionError):
         registry.run_transforms(
             HookPoint.AFTER_TOOL_EXECUTE,
             HookContext(hook_point=HookPoint.AFTER_TOOL_EXECUTE),
         )
+
+
+def test_transform_primary_failure_is_safe_terminal_without_exception_context() -> None:
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.AFTER_TOOL_EXECUTE,
+        FailingTransform(name="failing_transform"),
+    )
+
+    with pytest.raises(HookExecutionError) as raised:
+        registry.run_transforms(
+            HookPoint.AFTER_TOOL_EXECUTE,
+            HookContext(hook_point=HookPoint.AFTER_TOOL_EXECUTE),
+        )
+
+    error = raised.value
+    assert error.phase == "after_tool_execute"
+    assert error.hook_name == "failing_transform"
+    assert error.hook_kind == "transform"
+    assert error.error_type == "RuntimeError"
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert "transform-secret-must-not-leak" not in str(error)
 
 
 def test_hook_registry_run_observers_fail_open() -> None:
@@ -198,12 +326,64 @@ def test_hook_registry_run_observers_fail_open() -> None:
     assert bucket == ["good"]
     assert len(diagnostics) == 1
     assert diagnostics[0].hook_name == "bad"
-    assert diagnostics[0].message == "boom"
+    assert diagnostics[0].phase == "after_llm_response"
+    assert diagnostics[0].error_type == "RuntimeError"
+    assert "observer-secret-must-not-leak" not in diagnostics[0].message
+
+
+def test_observer_snapshot_failure_is_isolated_and_safely_observable() -> None:
+    effects: list[str] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.AFTER_LLM_RESPONSE,
+        RecordingObserver(name="must_not_run", bucket=effects),
+    )
+
+    diagnostics = registry.run_observers(
+        HookPoint.AFTER_LLM_RESPONSE,
+        HookContext(
+            hook_point=HookPoint.AFTER_LLM_RESPONSE,
+            metadata=BrokenSnapshotMetadata(),
+        ),
+    )
+
+    assert effects == []
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.hook_name == "observer_snapshot"
+    assert diagnostic.phase == "observer_snapshot"
+    assert diagnostic.error_type == "RuntimeError"
+    assert "snapshot-secret-must-not-leak" not in diagnostic.message
+    assert registry.drain_diagnostics() == diagnostics
+
+
+def test_observer_preserves_only_allowlisted_safe_failure_facts() -> None:
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.RUNNER_STARTUP,
+        SafeFactObserver(name="safe_fact_observer"),
+    )
+
+    diagnostics = registry.run_observers(
+        HookPoint.RUNNER_STARTUP,
+        HookContext(hook_point=HookPoint.RUNNER_STARTUP),
+    )
+
+    diagnostic = diagnostics[0]
+    assert diagnostic.phase == "stat"
+    assert diagnostic.error_type == "PermissionError"
+    assert diagnostic.code == "context_read_failed"
+    assert diagnostic.ref == "AGENTS.md"
+    assert "phase=stat" in diagnostic.message
+    assert "error_type=PermissionError" in diagnostic.message
+    assert "code=context_read_failed" in diagnostic.message
+    assert "ref=AGENTS.md" in diagnostic.message
+    assert "safe-fact-secret-must-not-leak" not in diagnostic.message
 
 
 def test_diagnostic_sink_failure_is_recorded_without_escaping() -> None:
     def fail_sink(_diagnostic) -> None:
-        raise RuntimeError("diagnostic relay unavailable")
+        raise RuntimeError("sink-secret-must-not-leak")
 
     registry = HookRegistry(diagnostic_sink=fail_sink)
     registry.register(
@@ -222,7 +402,12 @@ def test_diagnostic_sink_failure_is_recorded_without_escaping() -> None:
         "bad",
         "diagnostic_sink",
     ]
-    assert "diagnostic relay unavailable" in stored[-1].message
+    assert stored[-1].phase == "diagnostic_sink"
+    assert stored[-1].error_type == "RuntimeError"
+    assert "sink-secret-must-not-leak" not in stored[-1].message
+    assert "observer-secret-must-not-leak" not in "\n".join(
+        diagnostic.message for diagnostic in stored
+    )
 
 
 def test_observer_receives_immutable_snapshot_and_failure_is_observable() -> None:
