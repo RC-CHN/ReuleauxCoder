@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.extensions.lsp.client import (
     LspClient,
     LspClientError,
+    LspFailureFacts,
     LspRequestCancelled,
     LspRequestTimedOut,
     LspServerError,
@@ -141,7 +142,9 @@ def test_lsp_tool_projects_exception_types_without_untrusted_messages(
     assert "credential=" not in repr(outcome)
 
 
-def test_lsp_tool_projects_protocol_code_and_current_stderr_ref(tmp_path) -> None:
+def test_lsp_tool_projects_frozen_failure_after_new_generation_is_ready(
+    tmp_path,
+) -> None:
     secret = "credential=server-secret-must-not-leak"
     source = tmp_path / "demo.py"
     source.write_text("value = 1\n", encoding="utf-8")
@@ -161,9 +164,19 @@ def test_lsp_tool_projects_protocol_code_and_current_stderr_ref(tmp_path) -> Non
         protocol_error_code=-32002,
         stderr_ref=ref,
     )
-    manager.send_request_sync = MagicMock(  # type: ignore[method-assign]
-        side_effect=LspServerError(-32002)
+    error = manager._freeze_failure(
+        LspServerError(-32002),
+        key,
+        phase="availability",
     )
+    next_generation = manager._begin_transport_attempt(key, "replacement-lsp")
+    assert next_generation == generation + 1
+    assert manager._transition_transport(
+        key,
+        next_generation,
+        LspTransportState.READY,
+    )
+    manager.send_request_sync = MagicMock(side_effect=error)  # type: ignore[method-assign]
 
     outcome = LspTool(lsp_manager=manager).execute(
         operation="documentSymbol",
@@ -173,14 +186,19 @@ def test_lsp_tool_projects_protocol_code_and_current_stderr_ref(tmp_path) -> Non
     )
 
     assert outcome.status is ToolOutcomeStatus.FAILED
-    assert "phase=initialize" in outcome.model_text
+    assert "phase=availability" in outcome.model_text
     assert "error_type=LspServerError" in outcome.model_text
+    assert "state=error" in outcome.model_text
+    assert f"generation={generation}" in outcome.model_text
+    assert "transport_phase=initialize" in outcome.model_text
     assert "protocol_error_code=-32002" in outcome.model_text
     assert f"stderr_ref={ref}" in outcome.model_text
+    assert f"generation={next_generation}" not in outcome.model_text
+    assert "replacement-lsp" not in outcome.model_text
     assert secret not in repr(outcome)
 
 
-def test_lsp_tool_survives_failure_projection_error_and_reports_both_types(
+def test_lsp_tool_does_not_query_mutable_failure_projection(
     tmp_path,
 ) -> None:
     secret = "credential=projection-secret-must-not-leak"
@@ -188,10 +206,9 @@ def test_lsp_tool_survives_failure_projection_error_and_reports_both_types(
     source.write_text("value = 1\n", encoding="utf-8")
     manager = _FailingLspManager(LspClientError(secret))
 
-    def fail_projection(*_args, **_kwargs):
-        raise ValueError(secret)
-
-    manager.describe_failure_for_file = fail_projection  # type: ignore[attr-defined]
+    manager.describe_failure_for_file = MagicMock(  # type: ignore[attr-defined]
+        side_effect=ValueError(secret)
+    )
     outcome = LspTool(lsp_manager=manager).execute(
         operation="documentSymbol",
         filePath=str(source),
@@ -200,6 +217,68 @@ def test_lsp_tool_survives_failure_projection_error_and_reports_both_types(
     )
 
     assert outcome.status is ToolOutcomeStatus.FAILED
+    assert "error_type=LspClientError" in outcome.model_text
+    manager.describe_failure_for_file.assert_not_called()
+    assert secret not in repr(outcome)
+
+
+def test_lsp_tool_reports_snapshot_projection_failure_without_masking_primary(
+    tmp_path,
+) -> None:
+    secret = "credential=snapshot-projection-must-not-leak"
+    source = tmp_path / "demo.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, source)
+    manager._ensure_transport_status(key)
+    manager._transport_status_view = MagicMock(  # type: ignore[method-assign]
+        side_effect=ValueError(secret)
+    )
+    error = manager._freeze_failure(
+        LspClientError("credential=primary-must-not-leak"),
+        key,
+        phase="request",
+    )
+    manager.send_request_sync = MagicMock(side_effect=error)  # type: ignore[method-assign]
+
+    outcome = LspTool(lsp_manager=manager).execute(
+        operation="documentSymbol",
+        filePath=str(source),
+        line=1,
+        character=1,
+    )
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert "phase=request" in outcome.model_text
+    assert "error_type=LspClientError" in outcome.model_text
+    assert "failure_projection_error_type=ValueError" in outcome.model_text
+    assert secret not in repr(outcome)
+    assert "credential=primary-must-not-leak" not in repr(outcome)
+
+
+def test_lsp_tool_contains_failure_render_error_and_reports_its_type(tmp_path) -> None:
+    secret = "credential=render-must-not-leak"
+    source = tmp_path / "demo.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, source)
+    error = manager._freeze_failure(
+        LspClientError("credential=primary-must-not-leak"),
+        key,
+        phase="request",
+    )
+    manager.send_request_sync = MagicMock(side_effect=error)  # type: ignore[method-assign]
+
+    with patch.object(LspFailureFacts, "render", side_effect=ValueError(secret)):
+        outcome = LspTool(lsp_manager=manager).execute(
+            operation="documentSymbol",
+            filePath=str(source),
+            line=1,
+            character=1,
+        )
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert "phase=request" in outcome.model_text
     assert "error_type=LspClientError" in outcome.model_text
     assert "failure_projection_error_type=ValueError" in outcome.model_text
     assert secret not in repr(outcome)

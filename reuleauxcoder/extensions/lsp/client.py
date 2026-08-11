@@ -45,13 +45,144 @@ _PROCESS_EXIT_POLL_INTERVAL = 0.05
 _UNEXPECTED_EXIT_STDERR_GRACE = 0.25
 LSP_STDERR_TAIL_BYTES = 64 * 1024
 _STDERR_READ_BYTES = 8 * 1024
+MAX_LSP_MESSAGE_BYTES = 16 * 1024 * 1024
+_MIN_PROTOCOL_ERROR_CODE = -(2**31)
+_MAX_PROTOCOL_ERROR_CODE = 2**31 - 1
+_KNOWN_LAUNCHER_NAMES = frozenset({"npx", "rust-analyzer", "gopls", "clangd", "node"})
 
 # LSP protocol version
 LSP_PROTOCOL_VERSION = "2.0"
 
 
+def _safe_failure_value(value: str, fallback: str = "unknown") -> str:
+    safe = "".join(
+        character
+        for character in value
+        if character.isascii() and (character.isalnum() or character in {"_", "-", "."})
+    )[:128]
+    return safe or fallback
+
+
+def _safe_protocol_error_code(value: object) -> int | None:
+    if (
+        type(value) is int
+        and _MIN_PROTOCOL_ERROR_CODE <= value <= _MAX_PROTOCOL_ERROR_CODE
+    ):
+        return value
+    return None
+
+
+def _reject_nonfinite_json(_value: str) -> None:
+    raise ValueError("non-finite JSON number")
+
+
+def _safe_launcher_name(command: str) -> str:
+    name = Path(command).name
+    return name if name in _KNOWN_LAUNCHER_NAMES else "configured-launcher"
+
+
+@dataclass(frozen=True, slots=True)
+class LspFailureFacts:
+    """Immutable, content-free facts captured at the causal failure boundary."""
+
+    phase: str
+    error_type: str
+    language: str | None = None
+    root_hash: str | None = None
+    state: str | None = None
+    generation: int | None = None
+    launcher: str | None = None
+    transport_error_phase: str | None = None
+    transport_error_type: str | None = None
+    transport_observation_error_type: str | None = None
+    protocol_error_code: int | None = None
+    return_code: int | None = None
+    retry_scheduled: bool = False
+    stderr_ref: str | None = None
+    stderr_bytes: int | None = None
+    stderr_truncated: bool = False
+    stderr_finalized: bool | None = None
+    stderr_read_error_type: str | None = None
+    stderr_cleanup_operation: str | None = None
+    stderr_cleanup_error_type: str | None = None
+    stderr_metadata_error_type: str | None = None
+    secondary_error_operation: str | None = None
+    secondary_error_type: str | None = None
+    failure_projection_error_type: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "protocol_error_code",
+            _safe_protocol_error_code(self.protocol_error_code),
+        )
+
+    def render(self) -> str:
+        fields = [
+            f"phase={_safe_failure_value(self.phase)}",
+            f"error_type={_safe_failure_value(self.error_type, 'Error')}",
+        ]
+        for name, value in (
+            ("language", self.language),
+            ("root_hash", self.root_hash),
+            ("state", self.state),
+            ("generation", self.generation),
+            ("launcher", self.launcher),
+            ("transport_phase", self.transport_error_phase),
+            ("transport_error_type", self.transport_error_type),
+            ("transport_observation_error_type", self.transport_observation_error_type),
+            ("protocol_error_code", self.protocol_error_code),
+            ("return_code", self.return_code),
+            ("stderr_ref", self.stderr_ref),
+            ("stderr_bytes", self.stderr_bytes),
+            ("stderr_read_error_type", self.stderr_read_error_type),
+            ("stderr_cleanup_operation", self.stderr_cleanup_operation),
+            ("stderr_cleanup_error_type", self.stderr_cleanup_error_type),
+            ("stderr_metadata_error_type", self.stderr_metadata_error_type),
+            ("secondary_error_operation", self.secondary_error_operation),
+            ("secondary_error_type", self.secondary_error_type),
+            ("failure_projection_error_type", self.failure_projection_error_type),
+        ):
+            if value is not None:
+                rendered = (
+                    _safe_failure_value(value) if isinstance(value, str) else str(value)
+                )
+                fields.append(f"{name}={rendered}")
+        if self.retry_scheduled:
+            fields.append("retry_scheduled=true")
+        if self.stderr_truncated:
+            fields.append("stderr_truncated=true")
+        if self.stderr_ref is not None:
+            if self.stderr_finalized is False:
+                fields.append("stderr_pending=true")
+            elif self.stderr_finalized is None:
+                fields.append("stderr_finalized=unknown")
+        return "LSP request failed (" + ", ".join(fields) + ")"
+
+
+def render_lsp_failure(
+    facts: LspFailureFacts,
+    *,
+    fallback_phase: str,
+    fallback_error_type: str,
+) -> str:
+    """Render failure facts without letting projection become a fatal fault."""
+    try:
+        return facts.render()
+    except Exception as projection_error:
+        return (
+            "LSP request failed "
+            f"(phase={_safe_failure_value(fallback_phase)}, "
+            f"error_type={_safe_failure_value(fallback_error_type, 'Error')}, "
+            "failure_projection_error_type="
+            f"{_safe_failure_value(type(projection_error).__name__, 'Error')})"
+        )
+
+
 class LspClientError(Exception):
     """Raised when the LSP client encounters a fatal error."""
+
+    failure_facts: LspFailureFacts | None = None
 
 
 class LspServerError(LspClientError):
@@ -73,6 +204,42 @@ class LspRequestCancelled(LspClientError):
 
 class LspServerUnavailable(LspClientError):
     """Raised when no usable transport can serve the requested file."""
+
+
+class LspDocumentStatError(LspClientError):
+    """Raised when document metadata cannot be read safely."""
+
+
+class LspDocumentReadError(LspClientError):
+    """Raised when document bytes cannot be read safely."""
+
+
+class LspDocumentDecodeError(LspClientError):
+    """Raised when document bytes are not valid UTF-8."""
+
+
+class LspDocumentTooLarge(LspClientError):
+    """Raised before syncing a document beyond the configured size bound."""
+
+
+class LspDocumentChangedDuringRead(LspClientError):
+    """Raised when a document cannot be read as one stable snapshot."""
+
+
+class LspDocumentCloseError(LspClientError):
+    """Raised when a successfully read document handle cannot be closed."""
+
+
+class LspProtocolFramingError(LspClientError):
+    """Raised when an incoming JSON-RPC frame is invalid or oversized."""
+
+
+class LspProtocolDecodeError(LspClientError):
+    """Raised when an incoming JSON-RPC body cannot be decoded."""
+
+
+class LspProtocolMessageError(LspClientError):
+    """Raised when a decoded JSON-RPC value has an invalid shape."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +384,8 @@ class LspClient:
         self._on_unexpected_exit = on_unexpected_exit
         self._closing = False
         self._transport_failed = False
+        self._transport_failure_reason: str | None = None
+        self._transport_failure_callback_error_type: str | None = None
         self._exit_reported = False
         self._reported_returncode: int | None = None
         self._request_id: int = 0
@@ -253,6 +422,18 @@ class LspClient:
         return self._initialized
 
     @property
+    def transport_failure_reason(self) -> str | None:
+        return self._transport_failure_reason
+
+    @property
+    def transport_failure_callback_error_type(self) -> str | None:
+        return self._transport_failure_callback_error_type
+
+    @property
+    def transport_failure_returncode(self) -> int | None:
+        return self._reported_returncode
+
+    @property
     def stderr_snapshot(self) -> LspStderrSnapshot:
         """Return the bounded raw tail without placing it in model context."""
         return self._stderr_capture.snapshot()
@@ -268,6 +449,8 @@ class LspClient:
         """Start the LSP server subprocess."""
         self._closing = False
         self._transport_failed = False
+        self._transport_failure_reason = None
+        self._transport_failure_callback_error_type = None
         self._exit_reported = False
         self._reported_returncode = None
         stderr_capture = LspStderrCapture()
@@ -780,6 +963,8 @@ class LspClient:
         """Notify once, plus one later refinement from unknown to known exit code."""
         bounded_reason = " ".join(reason.split())[:256] or "transport closed"
         self._transport_failed = True
+        if self._transport_failure_reason is None:
+            self._transport_failure_reason = bounded_reason
         self._fail_all_pending(bounded_reason)
         if self._closing:
             return
@@ -798,6 +983,7 @@ class LspClient:
         try:
             callback(self, bounded_reason, returncode)
         except Exception as error:
+            self._transport_failure_callback_error_type = type(error).__name__
             logger.warning(
                 "LSP unexpected-exit callback failed: error_type=%s",
                 type(error).__name__,
@@ -1041,6 +1227,8 @@ class LspClient:
         self._process_wait_task = None
         self._server_response_tasks.clear()
         self._transport_failed = False
+        self._transport_failure_reason = None
+        self._transport_failure_callback_error_type = None
         self._initialized = False
         self._diagnostics_buffer.clear()
         self._diagnostics_snapshots.clear()

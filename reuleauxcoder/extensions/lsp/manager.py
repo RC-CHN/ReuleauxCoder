@@ -44,12 +44,14 @@ from reuleauxcoder.domain.runtime.performance import (
 from reuleauxcoder.extensions.lsp.client import (
     LspClient,
     LspClientError,
+    LspFailureFacts,
     LspRequestCancelled,
     LspRequestTimedOut,
     LspServerError,
     LspServerUnavailable,
     LspStderrCapture,
     MAX_LSP_FILE_SIZE_BYTES,
+    render_lsp_failure,
 )
 from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.extensions.lsp.diagnostics import (
@@ -217,6 +219,7 @@ class ToolRequest:
     enqueued_at: float = field(default_factory=time.monotonic)
     queue_depth: int = 0
     abandonment_status: str | None = None
+    phase: str = "queue"
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,69 +420,210 @@ class LspManager:
         """Build a model-safe failure fact without external error text."""
         path = self._canonicalize_path(file_path)
         language = detect_language(path)
-        status: LspTransportStatus | None = None
-        if language is not None:
-            key = self._transport_key(language, path)
-            with self._lock:
-                status = self._transport_statuses.get(key)
-        view = self._transport_status_view(status) if status is not None else None
-        resolved_phase = view.error_phase if view is not None else None
-        resolved_error_type = view.error_type if view is not None else None
-        fields = [
-            f"phase={self._safe_fact(resolved_phase or phase, 'unknown')}",
-            f"error_type={self._safe_fact(resolved_error_type or error_type, 'Error')}",
-        ]
-        if view is not None:
-            fields.extend(
-                (
-                    f"state={view.state.value}",
-                    f"generation={view.generation}",
-                    f"root_hash={view.root_hash}",
+        key = self._transport_key(language, path) if language is not None else None
+        facts = self._capture_failure_facts(
+            key,
+            phase=phase,
+            error_type=error_type,
+            protocol_error_code=protocol_error_code,
+        )
+        return render_lsp_failure(
+            facts,
+            fallback_phase=phase,
+            fallback_error_type=error_type,
+        )
+
+    def _capture_failure_facts(
+        self,
+        key: TransportKey | None,
+        *,
+        phase: str,
+        error_type: str,
+        protocol_error_code: int | None = None,
+    ) -> LspFailureFacts:
+        """Freeze one causal failure without retaining paths or free-form text."""
+        safe_phase = self._safe_fact(phase, "unknown")
+        safe_error_type = self._safe_fact(error_type, "Error")
+        try:
+            status: LspTransportStatus | None = None
+            client: LspClient | None = None
+            if key is not None:
+                with self._lock:
+                    status = self._transport_statuses.get(key)
+                    client = self._transports.get(key)
+            view = self._transport_status_view(status) if status is not None else None
+            stderr = view.stderr if view is not None else None
+            status_failed = view is not None and view.state is LspTransportState.ERROR
+            client_failure_reason = (
+                client.transport_failure_reason if client is not None else None
+            )
+            client_failed = client_failure_reason is not None
+            if (
+                client_failed
+                and not status_failed
+                and key is not None
+                and status is not None
+            ):
+                stderr_ref = self._retain_client_stderr(
+                    key,
+                    status.generation,
+                    client,
+                )
+                stderr = (
+                    self.stderr_reference(stderr_ref)
+                    if stderr_ref is not None
+                    else None
+                )
+            if protocol_error_code is None and status_failed:
+                protocol_error_code = view.protocol_error_code
+            transport_error_type = (
+                view.error_type
+                if status_failed
+                else self._runtime_failure_type(
+                    client_failure_reason or "transport closed",
+                    client.transport_failure_returncode if client is not None else None,
+                )
+                if client_failed
+                else None
+            )
+            return LspFailureFacts(
+                phase=safe_phase,
+                error_type=safe_error_type,
+                language=(
+                    view.language
+                    if view is not None
+                    else get_language_id_string(key[0])
+                    if key is not None
+                    else None
+                ),
+                root_hash=(
+                    view.root_hash
+                    if view is not None
+                    else self._workspace_identifier(key[1])
+                    if key is not None
+                    else None
+                ),
+                state=(
+                    LspTransportState.ERROR.value
+                    if client_failed and not status_failed
+                    else view.state.value
+                    if view is not None
+                    else None
+                ),
+                generation=view.generation if view is not None else None,
+                launcher=view.launcher if view is not None else None,
+                transport_error_phase=(
+                    view.error_phase
+                    if status_failed
+                    else "runtime"
+                    if client_failed
+                    else None
+                ),
+                transport_error_type=transport_error_type,
+                transport_observation_error_type=(
+                    client.transport_failure_callback_error_type
+                    if client_failed and client is not None
+                    else None
+                ),
+                protocol_error_code=protocol_error_code,
+                return_code=(
+                    view.return_code
+                    if status_failed
+                    else client.transport_failure_returncode
+                    if client_failed and client is not None
+                    else None
+                ),
+                retry_scheduled=(status_failed and view.retry_at_monotonic is not None),
+                stderr_ref=stderr.ref if stderr is not None else None,
+                stderr_bytes=stderr.total_bytes if stderr is not None else None,
+                stderr_truncated=stderr.truncated if stderr is not None else False,
+                stderr_finalized=stderr.finalized if stderr is not None else None,
+                stderr_read_error_type=(
+                    stderr.read_error_type if stderr is not None else None
+                ),
+                stderr_cleanup_operation=(
+                    stderr.cleanup_operation if stderr is not None else None
+                ),
+                stderr_cleanup_error_type=(
+                    stderr.cleanup_error_type if stderr is not None else None
+                ),
+                stderr_metadata_error_type=(
+                    stderr.metadata_error_type if stderr is not None else None
+                ),
+            )
+        except Exception as projection_error:
+            logger.warning(
+                "LSP failure snapshot failed: error_type=%s",
+                type(projection_error).__name__,
+            )
+            return LspFailureFacts(
+                phase=safe_phase,
+                error_type=safe_error_type,
+                failure_projection_error_type=self._safe_fact(
+                    type(projection_error).__name__,
+                    "Error",
+                ),
+            )
+
+    def _freeze_failure(
+        self,
+        error: Exception,
+        key: TransportKey | None,
+        *,
+        phase: str,
+    ) -> Exception:
+        """Attach an immutable safe snapshot before crossing thread boundaries."""
+        try:
+            existing = getattr(error, "failure_facts", None)
+        except Exception:
+            existing = None
+        if isinstance(existing, LspFailureFacts):
+            return error
+        try:
+            code = getattr(error, "code", None)
+        except Exception:
+            code = None
+        try:
+            secondary_operation = getattr(error, "secondary_error_operation", None)
+            secondary_error_type = getattr(error, "secondary_error_type", None)
+        except Exception:
+            secondary_operation = None
+            secondary_error_type = None
+        facts = self._capture_failure_facts(
+            key,
+            phase=phase,
+            error_type=type(error).__name__,
+            protocol_error_code=self._safe_protocol_error_code(code),
+        )
+        if isinstance(secondary_operation, str) or isinstance(
+            secondary_error_type, str
+        ):
+            facts = replace(
+                facts,
+                secondary_error_operation=(
+                    self._safe_fact(secondary_operation, "cleanup")
+                    if isinstance(secondary_operation, str)
+                    else None
+                ),
+                secondary_error_type=(
+                    self._safe_fact(secondary_error_type, "Error")
+                    if isinstance(secondary_error_type, str)
+                    else None
+                ),
+            )
+        try:
+            error.failure_facts = facts  # type: ignore[attr-defined]
+            return error
+        except Exception:
+            fallback = LspClientError(
+                render_lsp_failure(
+                    facts,
+                    fallback_phase=phase,
+                    fallback_error_type=type(error).__name__,
                 )
             )
-            if view.launcher:
-                fields.append(f"launcher={view.launcher}")
-            protocol_error_code = (
-                view.protocol_error_code
-                if view.protocol_error_code is not None
-                else protocol_error_code
-            )
-            if view.return_code is not None:
-                fields.append(f"return_code={view.return_code}")
-            if view.retry_at_monotonic is not None:
-                fields.append("retry_scheduled=true")
-            if view.stderr is not None:
-                fields.append(f"stderr_ref={view.stderr.ref}")
-                fields.append(f"stderr_bytes={view.stderr.total_bytes}")
-                if view.stderr.truncated:
-                    fields.append("stderr_truncated=true")
-                if view.stderr.finalized is False:
-                    fields.append("stderr_pending=true")
-                elif view.stderr.finalized is None:
-                    fields.append("stderr_finalized=unknown")
-                if view.stderr.read_error_type is not None:
-                    fields.append(
-                        "stderr_read_error_type="
-                        f"{self._safe_fact(view.stderr.read_error_type, 'Error')}"
-                    )
-                if view.stderr.cleanup_error_type is not None:
-                    if view.stderr.cleanup_operation is not None:
-                        fields.append(
-                            "stderr_cleanup_operation="
-                            f"{self._safe_fact(view.stderr.cleanup_operation, 'cleanup')}"
-                        )
-                    fields.append(
-                        "stderr_cleanup_error_type="
-                        f"{self._safe_fact(view.stderr.cleanup_error_type, 'Error')}"
-                    )
-                if view.stderr.metadata_error_type is not None:
-                    fields.append(
-                        "stderr_metadata_error_type="
-                        f"{self._safe_fact(view.stderr.metadata_error_type, 'Error')}"
-                    )
-        if protocol_error_code is not None:
-            fields.append(f"protocol_error_code={protocol_error_code}")
-        return "LSP request failed (" + ", ".join(fields) + ")"
+            fallback.failure_facts = facts
+            return fallback
 
     def transport_status_for_file(self, file_path: Path) -> LspTransportStatus | None:
         """Resolve a privileged raw slot, initially ``unstarted g0``."""
@@ -636,6 +780,12 @@ class LspManager:
         )[:64]
         return safe or fallback
 
+    @staticmethod
+    def _safe_protocol_error_code(value: object) -> int | None:
+        if type(value) is int and -(2**31) <= value <= 2**31 - 1:
+            return value
+        return None
+
     def _retain_client_stderr(
         self,
         key: TransportKey,
@@ -722,14 +872,27 @@ class LspManager:
         self,
         status: LspTransportStatus,
     ) -> LspTransportStatusView:
-        stderr = (
-            self.stderr_reference(status.stderr_ref)
-            if status.stderr_ref is not None
-            else None
+        key = (status.language, status.workspace_root)
+        with self._lock:
+            client = self._transports.get(key)
+        client_failure_reason = (
+            client.transport_failure_reason if client is not None else None
         )
-        if status.stderr_ref is not None and stderr is None:
+        client_failed = (
+            client_failure_reason is not None
+            and status.state is not LspTransportState.ERROR
+        )
+        stderr_ref = status.stderr_ref
+        if client_failed and stderr_ref is None and client is not None:
+            stderr_ref = self._retain_client_stderr(
+                key,
+                status.generation,
+                client,
+            )
+        stderr = self.stderr_reference(stderr_ref) if stderr_ref is not None else None
+        if stderr_ref is not None and stderr is None:
             stderr = LspStderrReference(
-                ref=status.stderr_ref,
+                ref=stderr_ref,
                 total_bytes=0,
                 truncated=False,
                 tail_available=False,
@@ -739,7 +902,7 @@ class LspManager:
         return LspTransportStatusView(
             language=get_language_id_string(status.language),
             root_hash=self._workspace_identifier(status.workspace_root),
-            state=status.state,
+            state=(LspTransportState.ERROR if client_failed else status.state),
             generation=status.generation,
             launcher=(
                 self._safe_fact(status.launcher, "configured-launcher")
@@ -747,18 +910,29 @@ class LspManager:
                 else None
             ),
             error_phase=(
-                self._safe_fact(status.error_phase, "unknown")
+                "runtime"
+                if client_failed
+                else self._safe_fact(status.error_phase, "unknown")
                 if status.error_phase is not None
                 else None
             ),
             error_type=(
-                self._safe_fact(status.error_type, "Error")
+                self._runtime_failure_type(
+                    client_failure_reason or "transport closed",
+                    client.transport_failure_returncode if client is not None else None,
+                )
+                if client_failed
+                else self._safe_fact(status.error_type, "Error")
                 if status.error_type is not None
                 else None
             ),
             protocol_error_code=status.protocol_error_code,
-            return_code=status.return_code,
-            retry_at_monotonic=status.retry_at_monotonic,
+            return_code=(
+                client.transport_failure_returncode
+                if client_failed and client is not None
+                else status.return_code
+            ),
+            retry_at_monotonic=(None if client_failed else status.retry_at_monotonic),
             stderr=stderr,
         )
 
@@ -852,12 +1026,20 @@ class LspManager:
                     assert isinstance(request, ToolRequest)
                     self._try_set_future_exception(
                         request.future,
-                        LspClientError("LSP manager shutting down"),
+                        self._freeze_failure(
+                            LspClientError("LSP manager shutting down"),
+                            request.transport_key,
+                            phase=request.phase,
+                        ),
                     )
             for request in self._tool_queue:
                 self._try_set_future_exception(
                     request.future,
-                    LspClientError("LSP manager shutting down"),
+                    self._freeze_failure(
+                        LspClientError("LSP manager shutting down"),
+                        request.transport_key,
+                        phase=request.phase,
+                    ),
                 )
             self._tool_queue.clear()
             self._diagnostics_queue.clear()
@@ -1201,8 +1383,13 @@ class LspManager:
         lang = detect_language(path)
         if lang is None:
             raise LspClientError(f"No LSP support for file type: {path.suffix}")
+        key = self._transport_key(lang, path)
         if cancellation is not None and cancellation.is_set():
-            raise LspRequestCancelled(f"LSP request '{method}' was cancelled")
+            raise self._freeze_failure(
+                LspRequestCancelled(f"LSP request '{method}' was cancelled"),
+                key,
+                phase="queue",
+            )
 
         deadline_at = time.monotonic() + timeout
         # Start worker if not already running.  The worker owns LSP subprocesses,
@@ -1220,12 +1407,16 @@ class LspManager:
             timeout_seconds=timeout,
             deadline_at=deadline_at,
             needs_sync=True,
-            transport_key=self._transport_key(lang, path),
+            transport_key=key,
         )
 
         with self._lock:
             if not self._accepting_work or self._stop_event.is_set():
-                raise LspClientError("LSP manager shutting down")
+                raise self._freeze_failure(
+                    LspClientError("LSP manager shutting down"),
+                    key,
+                    phase="queue",
+                )
             self._next_work_sequence += 1
             req.enqueue_sequence = self._next_work_sequence
             self._tool_queue.append(req)
@@ -1247,7 +1438,11 @@ class LspManager:
             if cancellation is not None and cancellation.is_set():
                 if not self._abandon_tool_request(req, status="cancelled"):
                     return future.result()
-                raise LspRequestCancelled(f"LSP request '{method}' was cancelled")
+                raise self._freeze_failure(
+                    LspRequestCancelled(f"LSP request '{method}' was cancelled"),
+                    key,
+                    phase=req.phase,
+                )
             if time.monotonic() >= deadline_at:
                 if not self._abandon_tool_request(req, status="timeout"):
                     return future.result()
@@ -1295,12 +1490,20 @@ class LspManager:
                         assert isinstance(request, ToolRequest)
                         self._try_set_future_exception(
                             request.future,
-                            LspClientError("LSP worker stopped"),
+                            self._freeze_failure(
+                                LspClientError("LSP worker stopped"),
+                                request.transport_key,
+                                phase=request.phase,
+                            ),
                         )
                 for request in self._tool_queue:
                     self._try_set_future_exception(
                         request.future,
-                        LspClientError("LSP worker stopped"),
+                        self._freeze_failure(
+                            LspClientError("LSP worker stopped"),
+                            request.transport_key,
+                            phase=request.phase,
+                        ),
                     )
                 self._tool_queue.clear()
                 self._diagnostics_queue.clear()
@@ -1455,7 +1658,11 @@ class LspManager:
             or ("cancelled" if req.future.cancelled() else "ok"),
         )
         if req.future.cancelled():
-            total_attributes["outcome"] = "caller_abandoned"
+            total_attributes["outcome"] = (
+                "deadline_exhausted"
+                if req.abandonment_status == "timeout"
+                else "caller_abandoned"
+            )
             self._record_lsp_performance(
                 "total",
                 started_at=req.enqueued_at,
@@ -1471,10 +1678,18 @@ class LspManager:
             while not operation.done():
                 if req.future.cancelled():
                     total_status = req.abandonment_status or "cancelled"
-                    total_attributes["outcome"] = "caller_abandoned"
+                    total_attributes["outcome"] = (
+                        "deadline_exhausted"
+                        if req.abandonment_status == "timeout"
+                        else "caller_abandoned"
+                    )
                     return
                 if self._abort_current:
-                    raise LspClientError("LSP manager shutting down")
+                    raise self._freeze_failure(
+                        LspClientError("LSP manager shutting down"),
+                        key,
+                        phase=req.phase,
+                    )
                 remaining = req.deadline_at - time.monotonic()
                 if remaining <= 0:
                     raise self._timeout_error(req)
@@ -1490,15 +1705,28 @@ class LspManager:
         except asyncio.CancelledError:
             total_status = req.abandonment_status or "cancelled"
             if req.abandonment_status is not None:
-                total_attributes["outcome"] = "caller_abandoned"
+                total_attributes["outcome"] = (
+                    "deadline_exhausted"
+                    if req.abandonment_status == "timeout"
+                    else "caller_abandoned"
+                )
             self._try_set_future_exception(
                 req.future,
-                LspClientError("LSP request cancelled"),
+                self._freeze_failure(
+                    LspRequestCancelled("LSP request cancelled"),
+                    key,
+                    phase=req.phase,
+                ),
             )
         except Exception as e:
             total_status = self._performance_status(e)
             total_attributes["error_type"] = type(e).__name__
-            self._try_set_future_exception(req.future, e)
+            if isinstance(e, LspRequestTimedOut):
+                total_attributes["outcome"] = "deadline_exhausted"
+            self._try_set_future_exception(
+                req.future,
+                self._freeze_failure(e, key, phase=req.phase),
+            )
         finally:
             await self._cancel_and_wait_task(operation)
             self._record_lsp_performance(
@@ -1521,16 +1749,28 @@ class LspManager:
             or req.transport_key
             or self._transport_key(req.language_id, req.file_path)
         )
-        server = await self._get_or_create_server(
-            req.language_id,
-            req.file_path,
-            transport_key=key,
-        )
+        req.phase = "availability"
+        try:
+            server = await self._get_or_create_server(
+                req.language_id,
+                req.file_path,
+                transport_key=key,
+            )
+        except Exception as error:
+            frozen = self._freeze_failure(error, key, phase=req.phase)
+            if frozen is error:
+                raise
+            raise frozen from error
         if server is None:
-            raise LspServerUnavailable("LSP server unavailable")
+            raise self._freeze_failure(
+                LspServerUnavailable("LSP server unavailable"),
+                key,
+                phase=req.phase,
+            )
 
         # Document sync before query (if needed)
         if req.needs_sync:
+            req.phase = "document_sync"
             sync_started_at = time.monotonic()
             sync_status = "skipped"
             sync_attributes: dict[str, PerformanceValue] = {
@@ -1574,7 +1814,10 @@ class LspManager:
                     get_language_id_string(req.language_id),
                     type(e).__name__,
                 )
-                raise
+                frozen = self._freeze_failure(e, key, phase=req.phase)
+                if frozen is e:
+                    raise
+                raise frozen from e
             except BaseException as error:
                 sync_status = self._performance_status(error)
                 sync_attributes["error_type"] = type(error).__name__
@@ -1588,26 +1831,41 @@ class LspManager:
                     attributes=sync_attributes,
                 )
 
+        req.phase = "request"
         if self._abort_current:
-            raise LspClientError("LSP manager shutting down")
+            raise self._freeze_failure(
+                LspClientError("LSP manager shutting down"),
+                key,
+                phase=req.phase,
+            )
         remaining = req.deadline_at - time.monotonic()
         if remaining <= 0:
             raise self._timeout_error(req)
-        return await self._observe_lsp_phase(
-            "request",
-            server.send_request(req.method, req.params, timeout=remaining),
-            transport_key=key,
-            attributes={
-                "request_kind": self._request_kind(req.method),
-                "document_version": self._document_version(server, req.file_path),
-            },
-        )
+        try:
+            return await self._observe_lsp_phase(
+                "request",
+                server.send_request(req.method, req.params, timeout=remaining),
+                transport_key=key,
+                attributes={
+                    "request_kind": self._request_kind(req.method),
+                    "document_version": self._document_version(server, req.file_path),
+                },
+            )
+        except Exception as error:
+            frozen = self._freeze_failure(error, key, phase=req.phase)
+            if frozen is error:
+                raise
+            raise frozen from error
 
-    @staticmethod
-    def _timeout_error(req: ToolRequest) -> LspRequestTimedOut:
-        return LspRequestTimedOut(
+    def _timeout_error(self, req: ToolRequest) -> Exception:
+        error = LspRequestTimedOut(
             f"LSP request '{req.method}' timed out after {req.timeout_seconds:g}s total"
         )
+        key = req.transport_key or self._transport_key(
+            req.language_id,
+            req.file_path,
+        )
+        return self._freeze_failure(error, key, phase=req.phase)
 
     @staticmethod
     def _try_set_future_result(
@@ -1668,7 +1926,11 @@ class LspManager:
                 attributes={
                     "work_kind": "tool",
                     "request_kind": self._request_kind(req.method),
-                    "outcome": "caller_abandoned",
+                    "outcome": (
+                        "deadline_exhausted"
+                        if status == "timeout"
+                        else "caller_abandoned"
+                    ),
                 },
             )
         return True
@@ -2578,13 +2840,23 @@ class LspManager:
             if client is not None
             else None
         )
+        preserve_cause = status.state is LspTransportState.ERROR
         self._transition_transport(
             key,
             status.generation,
             LspTransportState.ERROR,
-            error_type=self._safe_fact(error_type, "TransportIOError"),
-            error_phase="runtime",
+            error_type=(
+                status.error_type
+                if preserve_cause
+                else self._safe_fact(error_type, "TransportIOError")
+            ),
+            error_phase=(status.error_phase if preserve_cause else "runtime"),
+            protocol_error_code=(
+                status.protocol_error_code if preserve_cause else None
+            ),
+            return_code=status.return_code if preserve_cause else None,
             stderr_ref=stderr_ref,
+            retry_at=status.retry_at_monotonic if preserve_cause else None,
         )
         logger.warning(
             "LSP transport marked dead: language=%s error_type=%s",
@@ -2690,6 +2962,7 @@ class LspManager:
         retry_at: float | None = None,
     ) -> bool:
         """CAS one transition; stale generation completions are rejected."""
+        protocol_error_code = self._safe_protocol_error_code(protocol_error_code)
         with self._lock:
             current = self._ensure_transport_status_locked(key)
             if current.generation != generation:

@@ -307,7 +307,7 @@ def test_active_caller_timeout_is_not_reported_as_cancellation(tmp_path: Path) -
     ]
     assert len(totals) == 1
     assert totals[0].status == "timeout"
-    assert totals[0].attribute_map()["outcome"] == "caller_abandoned"
+    assert totals[0].attribute_map()["outcome"] == "deadline_exhausted"
 
 
 def test_observation_metadata_failure_never_changes_operation_result(

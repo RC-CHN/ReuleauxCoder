@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
-from reuleauxcoder.extensions.lsp.client import LspClient
+from reuleauxcoder.extensions.lsp.client import LspClient, LspClientError
 from reuleauxcoder.extensions.lsp.manager import (
     MAX_LSP_STDERR_RECORDS,
     MAX_TRANSPORT_STATE_HISTORY,
@@ -213,6 +213,110 @@ def test_state_history_is_bounded_and_scope_projection_is_secret_free(
     assert "InitializeError" in scopes[0]
     assert "credential=" not in scopes[0]
     assert "/private/credential-bin" not in scopes[0]
+
+
+def test_failure_snapshot_recovers_client_failure_when_status_callback_fails(
+    tmp_path: Path,
+) -> None:
+    secret = "credential=callback-must-not-leak"
+    path = tmp_path / "main.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, path)
+
+    def fail_callback(*_args) -> None:
+        raise ValueError(secret)
+
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=fail_callback,
+    )
+    client._process = MagicMock(returncode=None)
+    generation = manager._begin_transport_attempt(key, "fake-lsp")
+    manager._transports[key] = client
+    assert manager._transition_transport(
+        key,
+        generation,
+        LspTransportState.READY,
+    )
+
+    client._report_transport_failure(
+        "response reader error: LspProtocolFramingError",
+        None,
+    )
+    frozen = manager._freeze_failure(
+        LspClientError("credential=primary-must-not-leak"),
+        key,
+        phase="request",
+    )
+    facts = frozen.failure_facts  # type: ignore[attr-defined]
+
+    raw_status = manager.transport_status_for_file(path)
+    assert raw_status is not None
+    assert raw_status.state is LspTransportState.READY
+    public_status = manager.transport_status_views()[0]
+    assert public_status.state is LspTransportState.ERROR
+    assert public_status.error_type == "ResponseReaderLspProtocolFramingError"
+    assert facts is not None
+    assert facts.state == "error"
+    assert facts.transport_error_phase == "runtime"
+    assert facts.transport_error_type == "ResponseReaderLspProtocolFramingError"
+    assert facts.transport_observation_error_type == "ValueError"
+    assert secret not in facts.render()
+
+
+def test_secondary_io_classification_does_not_overwrite_transport_root_cause(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, path)
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+    manager._transports[key] = client
+    generation = manager._begin_transport_attempt(key, "fake-lsp")
+    assert manager._transition_transport(
+        key,
+        generation,
+        LspTransportState.ERROR,
+        error_type="ProtocolWriteBrokenPipeError",
+        error_phase="runtime",
+    )
+
+    manager._on_transport_error(
+        LanguageId.PYTHON,
+        path,
+        "BrokenPipeError",
+        transport_key=key,
+    )
+
+    status = manager.transport_status_for_file(path)
+    assert status is not None
+    assert status.error_type == "ProtocolWriteBrokenPipeError"
+    assert status.error_phase == "runtime"
+
+
+def test_transport_status_rejects_unbounded_protocol_error_code(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.py"
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, path)
+    generation = manager._begin_transport_attempt(key, "fake-lsp")
+
+    assert manager._transition_transport(
+        key,
+        generation,
+        LspTransportState.ERROR,
+        error_type="LspServerError",
+        error_phase="request",
+        protocol_error_code=2**63,
+    )
+
+    status = manager.transport_status_for_file(path)
+    assert status is not None
+    assert status.protocol_error_code is None
 
 
 def test_missing_launcher_negative_cache_reuses_generation_then_retries(

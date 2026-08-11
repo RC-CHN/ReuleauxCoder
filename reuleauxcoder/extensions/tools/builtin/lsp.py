@@ -13,8 +13,10 @@ from typing import Any, ClassVar
 
 from reuleauxcoder.extensions.lsp.client import (
     LspClientError,
+    LspFailureFacts,
     LspRequestCancelled,
     LspRequestTimedOut,
+    render_lsp_failure,
 )
 from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.extensions.lsp.tool_helpers import (
@@ -166,22 +168,20 @@ class LspTool(Tool):
             )
         except LspRequestCancelled as e:
             return _lsp_failure(
-                "LSP request cancelled; "
-                + _safe_failure_message(manager, path, "request", e),
+                "LSP request cancelled; " + _safe_failure_message("request", e),
                 status=ToolOutcomeStatus.CANCELLED,
                 error_kind=ToolErrorKind.INTERRUPTED,
             )
         except LspRequestTimedOut as e:
             return _lsp_failure(
-                "LSP request timed out; "
-                + _safe_failure_message(manager, path, "request", e),
+                "LSP request timed out; " + _safe_failure_message("request", e),
                 status=ToolOutcomeStatus.TIMED_OUT,
                 error_kind=ToolErrorKind.INTERRUPTED,
             )
         except LspClientError as e:
-            return _lsp_failure(_safe_failure_message(manager, path, "request", e))
+            return _lsp_failure(_safe_failure_message("request", e))
         except Exception as e:
-            return _lsp_failure(_safe_failure_message(manager, path, "request", e))
+            return _lsp_failure(_safe_failure_message("request", e))
 
         # 7. Format result
         try:
@@ -198,7 +198,7 @@ class LspTool(Tool):
                     operation, format_document_symbols(raw, file_path=str(path))
                 )
         except Exception as e:
-            return _lsp_failure(_safe_failure_message(manager, path, "format", e))
+            return _lsp_failure(_safe_failure_message("format", e))
 
         return _lsp_failure(f"Unknown operation: {operation}")
 
@@ -231,39 +231,28 @@ def _lsp_failure(
 
 
 def _safe_failure_message(
-    manager: Any,
-    path: Path,
     phase: str,
     error: BaseException,
 ) -> str:
-    """Project only typed failure facts into the model-visible outcome."""
+    """Render the frozen causal snapshot, or a minimal local-only fallback."""
+    try:
+        facts = getattr(error, "failure_facts", None)
+    except Exception:
+        facts = None
+    if isinstance(facts, LspFailureFacts):
+        return render_lsp_failure(
+            facts,
+            fallback_phase=phase,
+            fallback_error_type=type(error).__name__,
+        )
     safe_phase = _safe_failure_fact(phase, "unknown")
     safe_error_type = _safe_failure_fact(type(error).__name__, "Error")
-    describe = getattr(manager, "describe_failure_for_file", None)
-    protocol_code = getattr(error, "code", None)
-    if not isinstance(protocol_code, int):
+    try:
+        protocol_code = getattr(error, "code", None)
+    except Exception:
         protocol_code = None
-    if callable(describe):
-        try:
-            return str(
-                describe(
-                    path,
-                    phase=phase,
-                    error_type=type(error).__name__,
-                    protocol_error_code=protocol_code,
-                )
-            )
-        except Exception as projection_error:
-            projection_error_type = _safe_failure_fact(
-                type(projection_error).__name__,
-                "Error",
-            )
-            return (
-                "LSP request failed "
-                f"(phase={safe_phase}, error_type={safe_error_type}, "
-                "failure_projection_error_type="
-                f"{projection_error_type})"
-            )
+    if not (type(protocol_code) is int and -(2**31) <= protocol_code <= 2**31 - 1):
+        protocol_code = None
     code_fact = (
         f", protocol_error_code={protocol_code}" if protocol_code is not None else ""
     )
