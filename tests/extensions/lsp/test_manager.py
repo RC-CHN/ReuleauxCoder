@@ -4,7 +4,7 @@ Tests that require actual LSP subprocess communication (async worker,
 spawn/initialize) are deferred to integration tests.
 
 This module tests:
-- Health check caching
+- Explicit health checks and lazy command availability
 - Server lifecycle state transitions (re-spawn limit)
 - File staleness detection
 - Config override resolution
@@ -29,6 +29,7 @@ from reuleauxcoder.extensions.lsp.manager import (
     DIAGNOSTIC_BATCH_TTL_SECONDS,
     MAX_RESPWANS,
     MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER,
+    MISSING_COMMAND_TTL_SECONDS,
     DiagnosticRequest,
     LspManager,
 )
@@ -58,6 +59,10 @@ def manager() -> LspManager:
     """Create a manager with all languages marked unavailable."""
     config = LspConfig(enabled=True)
     mgr = LspManager(config, workspace_cwd=Path("/tmp"))
+    # Queue-focused unit tests inspect requests synchronously.  Keep their
+    # worker deterministic; the dedicated enqueue test below exercises the
+    # real thread lifecycle.
+    mgr.start_worker = MagicMock()  # type: ignore[method-assign]
     # Mark all languages unavailable to avoid accidental spawn attempts
     for lang in LanguageId:
         with mgr._lock:
@@ -66,13 +71,25 @@ def manager() -> LspManager:
 
 
 class TestHealthCheck:
-    def test_health_check_caches_availability(self, manager: LspManager) -> None:
+    def test_health_check_does_not_populate_lazy_runtime_cache(self) -> None:
+        manager = LspManager(LspConfig(enabled=True), workspace_cwd=Path("/tmp"))
+        lookup = MagicMock(return_value=None)
+        manager._command_lookup = lookup
+
         report = manager.health_check()
+
         assert report.total == 9  # 9 supported languages
-        assert isinstance(report.available, int)
-        # Health check should populate _availability
+        assert report.available == 0
+        assert lookup.call_count == report.total
         with manager._lock:
-            assert len(manager._availability) == 9
+            assert manager._availability == {}
+            assert manager._negative_availability_until == {}
+        assert manager.availability_metrics() == {
+            "lookups": 0,
+            "available": 0,
+            "unavailable": 0,
+            "negative_cache_hits": 0,
+        }
 
     def test_health_report_has_language_entries(self, manager: LspManager) -> None:
         report = manager.health_check()
@@ -217,6 +234,40 @@ class TestConfigOverrides:
         cmd, args = manager._resolve_command(LanguageId.RUST)
         assert cmd == "rust-analyzer"
 
+    def test_resolve_launch_accepts_explicit_empty_args(
+        self, manager: LspManager
+    ) -> None:
+        manager._config.server_overrides["python"] = LspServerOverride(
+            language="python",
+            args=[],
+        )
+
+        launch = manager._resolve_launch(LanguageId.PYTHON, Path("/tmp"))
+
+        assert launch.args == ()
+
+    def test_init_override_preserves_root_aware_typescript_launch(
+        self, manager: LspManager, tmp_path: Path
+    ) -> None:
+        package_root = tmp_path / "node_modules" / "typescript"
+        package_root.mkdir(parents=True)
+        (package_root / "package.json").write_text(
+            '{"version": "7.0.0"}', encoding="utf-8"
+        )
+        manager._config.server_overrides["typescript"] = LspServerOverride(
+            language="typescript",
+            init_opts={"typescript": {"custom": True}},
+        )
+
+        launch = manager._resolve_launch(LanguageId.TYPESCRIPT, tmp_path)
+
+        assert launch.args == (
+            str(package_root / "bin" / "tsc"),
+            "--lsp",
+            "--stdio",
+        )
+        assert launch.initialization_options == {"typescript": {"custom": True}}
+
     def test_resolve_init_opts(self, manager: LspManager) -> None:
         manager._config.server_overrides["python"] = LspServerOverride(
             language="python",
@@ -260,6 +311,83 @@ class TestEnabledForFile:
             manager._availability[LanguageId.PYTHON] = True
         assert manager._enabled_for_file(Path("/tmp/test.py")) is True
 
+    def test_supported_unknown_does_not_probe_path(self, manager: LspManager) -> None:
+        lookup = MagicMock(side_effect=AssertionError("PATH must stay lazy"))
+        manager._command_lookup = lookup
+        with manager._lock:
+            manager._availability.pop(LanguageId.PYTHON)
+
+        assert manager._enabled_for_file(Path("/tmp/test.py")) is True
+        lookup.assert_not_called()
+
+
+class TestLazyCommandAvailability:
+    def test_missing_command_cache_expires_and_is_keyed_by_final_command(
+        self, manager: LspManager
+    ) -> None:
+        assert MISSING_COMMAND_TTL_SECONDS == 30.0
+        now = [100.0]
+        launch_command = "node_modules/.bin/lsp"
+        first_key = (LanguageId.PYTHON, Path("/workspace/first").resolve())
+        second_key = (LanguageId.PYTHON, Path("/workspace/second").resolve())
+        first_command = "/workspace/first/node_modules/.bin/lsp"
+        second_command = "/workspace/second/node_modules/.bin/lsp"
+        resolved = {
+            first_command: None,
+            second_command: second_command,
+        }
+        lookup = MagicMock(side_effect=lambda command: resolved[command])
+        manager._availability_clock = lambda: now[0]
+        manager._command_lookup = lookup
+        with manager._lock:
+            manager._availability.pop(LanguageId.PYTHON)
+
+        assert not manager._command_available(first_key, launch_command)
+
+        resolved[first_command] = first_command
+        now[0] += MISSING_COMMAND_TTL_SECONDS - 0.001
+        assert not manager._command_available(first_key, launch_command)
+        assert manager._command_available(second_key, launch_command)
+
+        now[0] += 0.001
+        assert manager._command_available(first_key, launch_command)
+        assert [call.args[0] for call in lookup.call_args_list] == [
+            first_command,
+            second_command,
+            first_command,
+        ]
+        assert manager.availability_metrics() == {
+            "lookups": 3,
+            "available": 2,
+            "unavailable": 1,
+            "negative_cache_hits": 1,
+        }
+        with manager._lock:
+            assert manager._negative_availability_until == {}
+
+    def test_dot_relative_command_is_checked_from_transport_root(
+        self, manager: LspManager, tmp_path: Path, monkeypatch
+    ) -> None:
+        app_cwd = tmp_path / "app"
+        available_root = tmp_path / "available"
+        missing_root = tmp_path / "missing"
+        for directory in (app_cwd, available_root, missing_root):
+            directory.mkdir()
+        for directory in (app_cwd, available_root):
+            executable = directory / "fake-lsp"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+        monkeypatch.chdir(app_cwd)
+        with manager._lock:
+            manager._availability.pop(LanguageId.PYTHON)
+
+        assert manager._command_available(
+            (LanguageId.PYTHON, available_root), "./fake-lsp"
+        )
+        assert not manager._command_available(
+            (LanguageId.PYTHON, missing_root), "./fake-lsp"
+        )
+
 
 class TestRelativizePath:
     def test_within_workspace(self, manager: LspManager) -> None:
@@ -283,31 +411,52 @@ class TestSendRequestSyncValidation:
                 {},
             )
 
-    def test_raises_when_server_unavailable(self, manager: LspManager) -> None:
-        with pytest.raises(LspClientError, match="No LSP server available"):
-            manager.send_request_sync(
-                Path("/tmp/test.py"),
-                "textDocument/definition",
-                {},
-                timeout=1.0,
-            )
-        manager.shutdown_all()
+    def test_raises_when_server_unavailable(self) -> None:
+        manager = LspManager(LspConfig(enabled=True), workspace_cwd=Path("/tmp"))
+        manager._availability[LanguageId.PYTHON] = False
+        try:
+            with pytest.raises(LspClientError, match="No LSP server available"):
+                manager.send_request_sync(
+                    Path("/tmp/test.py"),
+                    "textDocument/definition",
+                    {},
+                    timeout=1.0,
+                )
+        finally:
+            assert manager.shutdown_all(timeout=1.0)
 
 
 class TestEnqueueDiagnostics:
-    def test_enqueue_when_enabled(self, manager: LspManager) -> None:
+    def test_enqueue_when_enabled(self) -> None:
+        manager = LspManager(LspConfig(enabled=True), workspace_cwd=Path("/tmp"))
         manager._config.enabled = True
         with manager._lock:
             manager._availability[LanguageId.PYTHON] = True
 
-        assert len(manager._diagnostics_queue) == 0
-        manager.enqueue_diagnostics(Path("/tmp/test.py"))
-        assert len(manager._diagnostics_queue) == 1
+        with patch.object(
+            manager,
+            "_worker_entry",
+            side_effect=lambda: manager._stop_event.wait(),
+        ) as worker_entry:
+            assert manager._worker_thread is None
+            try:
+                batch_id = manager.enqueue_diagnostics(Path("/tmp/test.py"))
+                worker = manager._worker_thread
+                assert batch_id is not None
+                assert worker is not None
+                assert worker.is_alive()
+                assert len(manager._diagnostics_queue) == 1
+            finally:
+                assert manager.shutdown_all(timeout=1.0)
+
+        worker_entry.assert_called_once_with()
+        assert manager._worker_thread is None
 
     def test_no_enqueue_when_disabled(self, manager: LspManager) -> None:
         manager._config.enabled = False
         manager.enqueue_diagnostics(Path("/tmp/test.py"))
         assert len(manager._diagnostics_queue) == 0
+        assert manager._worker_thread is None
 
 
 class TestDiagnosticBatchConsumption:

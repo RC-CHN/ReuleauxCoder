@@ -5,7 +5,7 @@ Ownership:
 - Lazy per-language LspClient map
 - Dual-queue worker thread (diagnostics fire-and-forget + active tool sync bridge)
 - Crash detection with re-spawn limit
-- Startup health check
+- Lazy command availability with a short negative cache
 - Session-scoped document sync tracking
 """
 
@@ -48,6 +48,7 @@ from reuleauxcoder.extensions.lsp.diagnostics import (
 )
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
+    LspServerLaunch,
     detect_language,
     get_language_id_string,
     resolve_server_launch,
@@ -66,9 +67,11 @@ WORKER_SHUTDOWN_TIMEOUT = (
 _WORKER_POLL_INTERVAL = 0.1
 _TOOL_REQUEST_POLL_INTERVAL = 0.05
 SPAWN_TIMEOUT = 30.0
+MISSING_COMMAND_TTL_SECONDS = 30.0
 DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
 MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER = 32
 TransportKey = tuple[LanguageId, Path]
+AvailabilityCacheKey = tuple[TransportKey, str]
 DiagnosticOwnerKey = tuple[str | None, int | None, str | None]
 
 
@@ -131,6 +134,15 @@ class LspManager:
         self._transports: dict[TransportKey, LspClient] = {}
         self._workspace_roots: dict[TransportKey, Path] = {}
         self._availability: dict[LanguageId, bool] = {}
+        self._negative_availability_until: dict[AvailabilityCacheKey, float] = {}
+        self._availability_clock: Callable[[], float] = time.monotonic
+        self._command_lookup: Callable[[str], str | None] = shutil.which
+        self._availability_metrics: dict[str, int] = {
+            "lookups": 0,
+            "available": 0,
+            "unavailable": 0,
+            "negative_cache_hits": 0,
+        }
         self._re_spawn_counts: dict[TransportKey, int] = {}
         self._last_sync_time: dict[tuple[TransportKey, Path], float] = {}
 
@@ -141,6 +153,7 @@ class LspManager:
         # Routed results.  Clean publishes are retained as empty batches until
         # the owning consumer acknowledges them.
         self._diagnostic_batches: dict[str, DiagnosticBatch] = {}
+        self._pending_diagnostic_requests: set[str] = set()
         self._acknowledged_batches: dict[str, str] = {}
         self._latest_diagnostic_sequence: dict[
             tuple[str | None, int | None, str | None, Path], int
@@ -204,19 +217,14 @@ class LspManager:
     # === Lifecycle ===
 
     def health_check(self) -> LspHealthReport:
-        """Scan PATH for available LSP servers.
-
-        Called once at startup.  Availability is cached for the session.
-        """
+        """Explicitly probe PATH without changing lazy runtime availability."""
         from reuleauxcoder.extensions.lsp.registry import iter_supported_languages
 
         report = LspHealthReport()
         for lang in iter_supported_languages():
             cmd, args = self._resolve_command(lang)
-            found = shutil.which(cmd) is not None
-
-            with self._lock:
-                self._availability[lang] = found
+            lookup_target = self._command_lookup_target(cmd, self._workspace_cwd)
+            found = self._command_lookup(lookup_target) is not None
 
             lang_name = get_language_id_string(lang)
             full_cmd = f"{cmd} {' '.join(args)}".strip()
@@ -227,6 +235,20 @@ class LspManager:
                 report.available += 1
 
         return report
+
+    def configured_languages(self) -> tuple[str, ...]:
+        """Return the declarative catalog without probing PATH or starting work."""
+        from reuleauxcoder.extensions.lsp.registry import iter_supported_languages
+
+        return tuple(
+            get_language_id_string(language)
+            for language in iter_supported_languages()
+        )
+
+    def availability_metrics(self) -> dict[str, int]:
+        """Return content-free counters for lazy command resolution."""
+        with self._lock:
+            return dict(self._availability_metrics)
 
     def start_worker(self) -> None:
         """Start the background worker thread (idempotent)."""
@@ -279,6 +301,7 @@ class LspManager:
                     )
             self._tool_queue.clear()
             self._diagnostics_queue.clear()
+            self._pending_diagnostic_requests.clear()
             self._diagnostic_batches.clear()
             self._acknowledged_batches.clear()
             self._latest_diagnostic_sequence.clear()
@@ -372,8 +395,8 @@ class LspManager:
             )
             self._latest_diagnostic_sequence[key] = request_sequence
             batch_id = uuid.uuid4().hex
-            self._diagnostics_queue = [
-                item
+            superseded_ids = {
+                item.batch_id
                 for item in self._diagnostics_queue
                 if (
                     item.route.agent_id,
@@ -381,8 +404,14 @@ class LspManager:
                     item.route.session_id,
                     item.route.file_path,
                 )
-                != key
+                == key
+            }
+            self._diagnostics_queue = [
+                item
+                for item in self._diagnostics_queue
+                if item.batch_id not in superseded_ids
             ]
+            self._pending_diagnostic_requests.difference_update(superseded_ids)
             self._diagnostics_queue.append(
                 DiagnosticRequest(
                     batch_id=batch_id,
@@ -391,7 +420,9 @@ class LspManager:
                     document_committed=document_committed,
                 )
             )
+            self._pending_diagnostic_requests.add(batch_id)
 
+        self.start_worker()
         with self._request_condition:
             self._request_condition.notify()
         return batch_id
@@ -413,11 +444,17 @@ class LspManager:
     ) -> None:
         self._prune_expired_diagnostic_batches_locked()
         self._session_generations[agent_id] = generation
+        stale_request_ids = {
+            request.batch_id
+            for request in self._diagnostics_queue
+            if self._is_older_generation(request.route, agent_id, generation)
+        }
         self._diagnostics_queue = [
             request
             for request in self._diagnostics_queue
-            if not self._is_older_generation(request.route, agent_id, generation)
+            if request.batch_id not in stale_request_ids
         ]
+        self._pending_diagnostic_requests.difference_update(stale_request_ids)
         previous_batch_count = len(self._diagnostic_batches)
         self._diagnostic_batches = {
             batch_id: batch
@@ -458,6 +495,19 @@ class LspManager:
                 if (batch_id is None or current_id == batch_id)
                 and (route is None or self._route_matches(batch.route, route))
             )
+
+    def diagnostic_request_result(
+        self, batch_id: str
+    ) -> tuple[DiagnosticBatch, ...] | None:
+        """Return ``None`` while work is pending, otherwise its final batch set."""
+        with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
+            batch = self._diagnostic_batches.get(batch_id)
+            if batch is not None:
+                return (batch,)
+            if batch_id in self._pending_diagnostic_requests:
+                return None
+            return ()
 
     def pending_diagnostic_batches_for_owner(
         self,
@@ -830,6 +880,9 @@ class LspManager:
             self._on_transport_error(lang, str(e))
         except Exception as e:
             logger.debug("LSP diagnostics error (swallowed): %s", e)
+        finally:
+            with self._lock:
+                self._pending_diagnostic_requests.discard(request.batch_id)
 
     def _route_generation_is_current(self, route: DiagnosticRoute) -> bool:
         if route.agent_id is None or route.session_generation is None:
@@ -986,26 +1039,19 @@ class LspManager:
         file_path: Path,
     ) -> LspClient | None:
         """Spawn + initialize from the worker thread (inline await)."""
-        if lang not in self._availability or not self._availability[lang]:
-            return None
-
         root = self._resolve_root(lang, file_path)
         key = (lang, root)
-        override = self._config.get_override(lang.name.lower())
-        if override is not None and any(
-            value is not None
-            for value in (override.cmd, override.args, override.init_opts)
-        ):
-            cmd, args = self._resolve_command(lang)
-            init_opts = self._resolve_init_opts(lang)
-        else:
-            launch = resolve_server_launch(
-                lang,
-                root,
-                typescript_mode=self._config.typescript_mode,
+        launch = self._resolve_launch(lang, root)
+        cmd, args = launch.command, list(launch.args)
+        init_opts = launch.initialization_options
+
+        if not self._command_available(key, cmd):
+            logger.info(
+                "LSP command unavailable for %s: %s",
+                get_language_id_string(lang),
+                cmd,
             )
-            cmd, args = launch.command, list(launch.args)
-            init_opts = launch.initialization_options
+            return None
 
         client = LspClient(language_id=lang, workspace_root=root)
 
@@ -1134,15 +1180,56 @@ class LspManager:
     # === Internal: Helpers ===
 
     def _enabled_for_file(self, file_path: Path) -> bool:
-        """Check if LSP is enabled and supports this file type."""
+        """Check cheap configuration/file gates without probing PATH."""
         if not self._config.enabled:
             return False
         lang = detect_language(file_path)
         if lang is None:
             return False
         with self._lock:
-            available = self._availability.get(lang, False)
-        return available
+            forced_availability = self._availability.get(lang)
+        return forced_availability is not False
+
+    def _command_available(self, key: TransportKey, command: str) -> bool:
+        """Resolve one launcher lazily, retrying missing commands after a TTL."""
+        lang, root = key
+        lookup_target = self._command_lookup_target(command, root)
+        cache_key = (key, lookup_target)
+        with self._lock:
+            forced = self._availability.get(lang)
+            if forced is not None:
+                return forced
+            now = self._availability_clock()
+            self._negative_availability_until = {
+                cached_key: expires_at
+                for cached_key, expires_at in self._negative_availability_until.items()
+                if expires_at > now
+            }
+            unavailable_until = self._negative_availability_until.get(cache_key, 0)
+            if unavailable_until > now:
+                self._availability_metrics["negative_cache_hits"] += 1
+                return False
+
+        found = self._command_lookup(lookup_target) is not None
+        with self._lock:
+            self._availability_metrics["lookups"] += 1
+            if found:
+                self._availability_metrics["available"] += 1
+                self._negative_availability_until.pop(cache_key, None)
+            else:
+                self._availability_metrics["unavailable"] += 1
+                self._negative_availability_until[cache_key] = (
+                    now + MISSING_COMMAND_TTL_SECONDS
+                )
+        return found
+
+    @staticmethod
+    def _command_lookup_target(command: str, root: Path) -> str:
+        """Resolve path-like launchers as the subprocess cwd would resolve them."""
+        path = Path(command)
+        if path.is_absolute() or path.name == command:
+            return command
+        return str((root / path).resolve())
 
     def _resolve_root(self, lang: LanguageId, file_path: Path) -> Path:
         """Resolve and cache workspace root for a language."""
@@ -1163,11 +1250,32 @@ class LspManager:
         cmd, args = get_server_command(lang)
         cfg_override = self._config.get_override(lang.name.lower())
         if cfg_override:
-            if cfg_override.cmd:
+            if cfg_override.cmd is not None:
                 cmd = cfg_override.cmd
-            if cfg_override.args:
+            if cfg_override.args is not None:
                 args = cfg_override.args
         return cmd, args
+
+    def _resolve_launch(self, lang: LanguageId, root: Path) -> LspServerLaunch:
+        """Resolve the exact root-aware launch consumed by availability and spawn."""
+        launch = resolve_server_launch(
+            lang,
+            root,
+            typescript_mode=self._config.typescript_mode,
+        )
+        override = self._config.get_override(lang.name.lower())
+        if override is None:
+            return launch
+        return LspServerLaunch(
+            command=override.cmd if override.cmd is not None else launch.command,
+            args=(tuple(override.args) if override.args is not None else launch.args),
+            initialization_options=(
+                override.init_opts
+                if override.init_opts is not None
+                else launch.initialization_options
+            ),
+            implementation=launch.implementation,
+        )
 
     def _resolve_init_opts(self, lang: LanguageId) -> dict[str, Any] | None:
         """Get initialization options from config override."""

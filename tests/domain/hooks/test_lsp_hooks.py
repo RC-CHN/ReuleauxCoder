@@ -6,6 +6,7 @@ LspDiagnosticsInjectorHook (BEFORE_LLM_REQUEST) with mocked LspManager.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -43,6 +44,9 @@ def _make_manager() -> LspManager:
     """Create an LspManager with all languages marked unavailable."""
     config = LspConfig(enabled=True)
     mgr = LspManager(config, workspace_cwd=Path("/tmp"))
+    # Hook unit tests control completion directly and must never start a real
+    # language-server process in the background.
+    mgr.start_worker = MagicMock()  # type: ignore[method-assign]
     for lang in range(10):  # all LanguageId values
         mgr._availability[lang] = False
     return mgr
@@ -163,6 +167,9 @@ class TestLspEditObserverBasic:
 
     def test_enqueues_diagnostics_for_edit_tools(self) -> None:
         mgr = _make_manager()
+        mgr.diagnostic_request_result = MagicMock(  # type: ignore[method-assign]
+            return_value=()
+        )
         # Mark Python as available so enqueue passes the guard
         from reuleauxcoder.extensions.lsp.registry import LanguageId
 
@@ -184,6 +191,9 @@ class TestLspEditObserverBasic:
 
     def test_enqueues_atomic_document_commit_for_edit_tools(self) -> None:
         mgr = _make_manager()
+        mgr.diagnostic_request_result = MagicMock(  # type: ignore[method-assign]
+            return_value=()
+        )
         from reuleauxcoder.extensions.lsp.registry import LanguageId
 
         with mgr._lock:
@@ -204,6 +214,49 @@ class TestLspEditObserverBasic:
         request = mgr._diagnostics_queue[0]
         assert request.route.file_path == Path("/tmp/test.py")
         assert request.document_committed is True
+
+    def test_missing_launcher_completes_without_waiting_for_poll_deadline(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "test.py"
+        path.write_text("value = 1\n", encoding="utf-8")
+        mgr = LspManager(LspConfig(enabled=True), workspace_cwd=tmp_path)
+        mgr._command_lookup = MagicMock(return_value=None)
+        batch_ids: list[str] = []
+        enqueue = mgr.enqueue_diagnostics
+
+        def capture_enqueue(*args, **kwargs):
+            batch_id = enqueue(*args, **kwargs)
+            assert batch_id is not None
+            batch_ids.append(batch_id)
+            return batch_id
+
+        mgr.enqueue_diagnostics = MagicMock(  # type: ignore[method-assign]
+            side_effect=capture_enqueue
+        )
+        hook = LspEditObserverHook(lsp_manager=mgr)
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id="missing-launcher",
+                name="edit_file",
+                arguments={"file_path": str(path)},
+            ),
+            outcome=ToolOutcome(content="edited"),
+        )
+
+        started_at = time.monotonic()
+        try:
+            result = hook.run(context)
+            elapsed = time.monotonic() - started_at
+        finally:
+            assert mgr.shutdown_all(timeout=1.0)
+
+        assert result is context
+        assert elapsed < 1.0
+        assert len(batch_ids) == 1
+        assert mgr.diagnostic_request_result(batch_ids[0]) == ()
+        mgr._command_lookup.assert_called_once()
 
     def test_uses_resolved_outcome_path_for_document_commit(
         self, monkeypatch

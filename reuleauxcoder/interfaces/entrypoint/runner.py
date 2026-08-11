@@ -280,7 +280,7 @@ class AppRunner:
             )
             self._init_git_monitor(agent)
         if LspConfig.from_config(config).enabled:
-            self._report_startup("Checking configured language servers...")
+            self._report_startup("Registering language server configuration...")
         with self._performance_monitor.measure("startup", "language_servers"):
             self._init_lsp(config, agent, ui_bus)
         self._wire_agent_tools(agent)
@@ -346,44 +346,12 @@ class AppRunner:
             ui_bus=ui_bus,
             runtime_event_sink=ui_bus.emit_runtime,
         )
-        report = manager.health_check()
-
-        if report.available == 0:
-            ui_bus.info(
-                "LSP: No language servers found on PATH. "
-                "Install pyright, rust-analyzer, gopls, etc. for diagnostics.",
-                kind=UIEventKind.SYSTEM,
-            )
-            return
-
-        _MAX_CMD_LEN = 55
-
-        def _fmt(cmd: str) -> str:
-            return cmd if len(cmd) <= _MAX_CMD_LEN else cmd[:_MAX_CMD_LEN] + "..."
-
-        available_lines = [
-            f"  ✓ {lang_name} ({_fmt(details)})"
-            for lang_name, available, details in report.languages
-            if available
-        ]
-        missing_lines = [
-            f"  ✗ {lang_name} ({_fmt(details)})"
-            for lang_name, available, details in report.languages
-            if not available
-        ]
-
+        configured = manager.configured_languages()
         ui_bus.info(
-            f"LSP: {report.available}/{report.total} language servers ready\n"
-            + "\n".join(available_lines),
+            f"LSP: {len(configured)} language integrations configured; "
+            "servers start on first supported file or LSP query.",
             kind=UIEventKind.SYSTEM,
         )
-        if missing_lines:
-            ui_bus.debug(
-                "LSP: unavailable servers\n" + "\n".join(missing_lines),
-                kind=UIEventKind.SYSTEM,
-            )
-
-        manager.start_worker()
         self._lsp_manager = manager
         agent.lsp_manager = manager
 

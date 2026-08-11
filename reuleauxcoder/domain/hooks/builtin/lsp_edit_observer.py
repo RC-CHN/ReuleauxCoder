@@ -131,10 +131,9 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
         deadline = time.monotonic() + _DIAGNOSTICS_POLL_DEADLINE
         batches = ()
         while time.monotonic() < deadline:
-            batches = self.lsp_manager.pending_diagnostic_batches(
-                batch_id=batch_id,
-            )
-            if batches:
+            result = self.lsp_manager.diagnostic_request_result(batch_id)
+            if result is not None:
+                batches = result
                 break
             time.sleep(_DIAGNOSTICS_POLL_INTERVAL)
 
