@@ -939,6 +939,8 @@ def test_configured_approval_provider_does_not_serialize_unreviewed_tools() -> N
     class _Executor:
         def __init__(self) -> None:
             self.parallel_calls = []
+            self.agent = None
+            self.flush_snapshots = []
 
         def execute(self, _tool_call):
             raise AssertionError("multi-tool rounds must not use serial execution")
@@ -947,9 +949,19 @@ def test_configured_approval_provider_does_not_serialize_unreviewed_tools() -> N
             self.parallel_calls.append(tuple(call.id for call in tool_calls))
             return ["one-result", "two-result"]
 
+        def flush_pending_batch_runtime_context(self):
+            self.flush_snapshots.append(
+                tuple(
+                    (message.get("role"), message.get("tool_call_id"))
+                    for message in self.agent.messages[-2:]
+                )
+            )
+            return 0
+
     llm = _ParallelLLM()
     executor = _Executor()
     agent = Agent(llm=llm, tools=[], executor=executor)
+    executor.agent = agent
     agent.approval_provider = SimpleNamespace()
 
     assert agent._loop.run() == "done"
@@ -959,3 +971,25 @@ def test_configured_approval_provider_does_not_serialize_unreviewed_tools() -> N
         for message in agent.messages
         if message.get("role") == "tool"
     ] == ["one-result", "two-result"]
+    assert executor.flush_snapshots == [(), (("tool", "first"), ("tool", "second"))]
+
+
+def test_unpublished_batch_runtime_facts_stop_before_the_next_model_request() -> None:
+    class _NeverCalledLLM(_BudgetLLM):
+        def chat(self, **kwargs):  # noqa: ARG002
+            raise AssertionError("model must not run without pending runtime facts")
+
+    class _BlockedExecutor:
+        flush_calls = 0
+
+        def flush_pending_batch_runtime_context(self):
+            self.flush_calls += 1
+            return None
+
+    executor = _BlockedExecutor()
+    agent = Agent(llm=_NeverCalledLLM(), tools=[], executor=executor)
+
+    assert agent._loop.run() == (
+        "(stopped: parallel batch runtime facts could not be published)"
+    )
+    assert executor.flush_calls == 1

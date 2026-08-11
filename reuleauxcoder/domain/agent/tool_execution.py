@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import concurrent.futures
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from copy import deepcopy
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import get_close_matches
-import logging
+from enum import Enum
+import math
+from threading import Lock
 import time
+from types import MappingProxyType
 from typing import TYPE_CHECKING, List, cast
 
 if TYPE_CHECKING:
@@ -18,9 +22,15 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.cancellation import CancellationView
 from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolArchiveReference,
+    ToolDiagnostic,
+    ToolDiff,
     ToolErrorKind,
     ToolOutcome,
     ToolOutcomeStatus,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
+    ToolTruncation,
 )
 from reuleauxcoder.domain.approval import (
     ApprovalDecision,
@@ -38,12 +48,16 @@ from reuleauxcoder.domain.approval_preview import (
     capture_workspace_document,
     diff_approval_documents,
 )
+from reuleauxcoder.domain.runtime.serialization import tool_outcome_to_dict
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeToolExecuteContext,
     GuardDecision,
+    HookDiagnostic,
+    HookKind,
     HookPoint,
 )
+from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 from reuleauxcoder.domain.workspace import WorkspaceRevision
 from reuleauxcoder.extensions.tools.base import InterruptMode
 
@@ -58,7 +72,620 @@ _EXTERNAL_PATH_ARGUMENTS = {
     "write_file": "file_path",
 }
 _EXTERNAL_MUTATION_TOOLS = frozenset({"edit_file", "write_file"})
-_LOG = logging.getLogger(__name__)
+_POST_EFFECT_FAILURE_LIMIT = 16
+_PENDING_BATCH_FAILURE_LIMIT = 8
+_BATCH_CONTEXT_PUBLISH_ATTEMPTS = 2
+_METADATA_MAX_DEPTH = 32
+_FAILURE_FACT_KEYS = frozenset(
+    {"failure_phase", "error_type", "effect_state", "completion_state", "retry_safety"}
+)
+_RUNTIME_METADATA_KEYS = _FAILURE_FACT_KEYS | {"post_effect_failures"}
+_VALID_TRUNCATION_STRATEGIES = frozenset(
+    strategy.value for strategy in ToolRetentionStrategy
+)
+_UNRESOLVED_TOOL = object()
+
+
+class InvalidAfterToolPrimaryOutcomeTransition(RuntimeError):
+    pass
+
+
+class InvalidToolResultProjection(TypeError):
+    pass
+
+
+class InvalidToolOutcomeProtocol(TypeError):
+    pass
+
+
+class MissingRuntimeContextSink(RuntimeError):
+    pass
+
+
+def _tool_call_signature(tool_call: object) -> tuple[object, object, object]:
+    try:
+        tool_call_id = getattr(tool_call, "id")
+        name = getattr(tool_call, "name")
+        arguments = getattr(tool_call, "arguments")
+        if not isinstance(tool_call_id, str) or not isinstance(name, str):
+            raise TypeError
+        if not isinstance(arguments, dict):
+            raise TypeError
+        return tool_call_id, name, _snapshot_json_value(arguments)
+    except BaseException:
+        raise InvalidContextContributionResult from None
+
+
+def _safe_exception_type(error: BaseException) -> str:
+    return _safe_failure_error_type(type(error).__name__)
+
+
+def _safe_failure_phase(phase: object) -> str:
+    return (
+        phase
+        if isinstance(phase, str)
+        and 0 < len(phase) <= 64
+        and phase.isascii()
+        and all(character.isalnum() or character in "._-:" for character in phase)
+        else "post_effect"
+    )
+
+
+def _safe_failure_error_type(error_type: object) -> str:
+    return (
+        error_type
+        if isinstance(error_type, str)
+        and 0 < len(error_type) <= 64
+        and error_type.isascii()
+        and error_type.replace("_", "").isalnum()
+        else "Exception"
+    )
+
+
+class _PostEffectFailureCollector:
+    """Thread-safe aggregation with one deterministic bounded projection."""
+
+    def __init__(self, *, limit: int = _POST_EFFECT_FAILURE_LIMIT) -> None:
+        self._limit = max(1, limit)
+        self._counts: dict[tuple[str, str], int] = {}
+        self._lock = Lock()
+
+    def record(self, phase: object, error_type: object) -> None:
+        fact = (_safe_failure_phase(phase), _safe_failure_error_type(error_type))
+        with self._lock:
+            self._counts[fact] = self._counts.get(fact, 0) + 1
+
+    def snapshot(self) -> tuple[tuple[str, str, int], ...]:
+        with self._lock:
+            ranked = sorted(
+                self._counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        selected = ranked[: self._limit]
+        facts = tuple(
+            (phase, error_type, count)
+            for (phase, error_type), count in sorted(selected)
+        )
+        overflow_count = sum(count for _, count in ranked[self._limit :])
+        if overflow_count:
+            facts += (("post_effect", "AdditionalFailuresOmitted", overflow_count),)
+        return facts
+
+    def __bool__(self) -> bool:
+        with self._lock:
+            return bool(self._counts)
+
+
+def _optional_int(value: object, *, nonnegative: bool = False) -> bool:
+    return value is None or (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and (not nonnegative or value >= 0)
+    )
+
+
+def _snapshot_json_value(
+    value: object,
+    *,
+    depth: int = 0,
+    trail: set[int] | None = None,
+) -> object:
+    """Copy extension-owned metadata into immutable, JSON-safe runtime data."""
+    if depth > _METADATA_MAX_DEPTH:
+        raise InvalidToolOutcomeProtocol
+    if isinstance(value, Enum):
+        return _snapshot_json_value(value.value, depth=depth, trail=trail)
+    if isinstance(value, str):
+        owned = str(value)
+        try:
+            owned.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            raise InvalidToolOutcomeProtocol from None
+        return owned
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise InvalidToolOutcomeProtocol
+        return value
+    if not isinstance(value, (Mapping, list, tuple)):
+        raise InvalidToolOutcomeProtocol
+
+    owned_trail = trail if trail is not None else set()
+    identity = id(value)
+    if identity in owned_trail:
+        raise InvalidToolOutcomeProtocol
+    owned_trail.add(identity)
+    try:
+        if isinstance(value, Mapping):
+            copied: dict[str, object] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise InvalidToolOutcomeProtocol
+                owned_key = cast(str, _snapshot_json_value(key))
+                copied[owned_key] = _snapshot_json_value(
+                    item,
+                    depth=depth + 1,
+                    trail=owned_trail,
+                )
+            return MappingProxyType(copied)
+        return tuple(
+            _snapshot_json_value(item, depth=depth + 1, trail=owned_trail)
+            for item in value
+        )
+    finally:
+        owned_trail.remove(identity)
+
+
+def _check_tool_outcome_protocol(outcome: ToolOutcome) -> dict[str, object]:
+    """Reject malformed facts and produce the one JSON-safe source snapshot."""
+    try:
+        encoded = tool_outcome_to_dict(outcome)
+    except BaseException:
+        raise InvalidToolOutcomeProtocol from None
+    diff, truncation, archive, retention = (
+        outcome.diff,
+        outcome.truncation,
+        outcome.archive_reference,
+        outcome.retention_hint,
+    )
+    valid = (
+        isinstance(outcome.status, ToolOutcomeStatus)
+        and (
+            outcome.error_kind is None or isinstance(outcome.error_kind, ToolErrorKind)
+        )
+        and (outcome.status is ToolOutcomeStatus.SUCCEEDED)
+        == (outcome.error_kind is None)
+        and (
+            outcome.status is not ToolOutcomeStatus.DENIED
+            or outcome.error_kind is ToolErrorKind.DENIED
+        )
+        and (
+            outcome.status is not ToolOutcomeStatus.CANCELLED
+            or outcome.error_kind is ToolErrorKind.INTERRUPTED
+        )
+        and (outcome.summary is None or isinstance(outcome.summary, str))
+        and (outcome.content is None or isinstance(outcome.content, str))
+        and isinstance(outcome.stdout, str)
+        and isinstance(outcome.stderr, str)
+        and _optional_int(outcome.exit_code)
+        and isinstance(outcome.metadata, Mapping)
+        and (
+            outcome.duration_seconds is None
+            or isinstance(outcome.duration_seconds, (int, float))
+            and not isinstance(outcome.duration_seconds, bool)
+            and math.isfinite(outcome.duration_seconds)
+            and outcome.duration_seconds >= 0
+        )
+        and (diff is None or isinstance(diff, ToolDiff))
+        and isinstance(outcome.diagnostics, tuple)
+        and all(isinstance(item, ToolDiagnostic) for item in outcome.diagnostics)
+        and (truncation is None or isinstance(truncation, ToolTruncation))
+        and (archive is None or isinstance(archive, ToolArchiveReference))
+        and isinstance(retention, ToolRetentionHint)
+    )
+    if diff is not None:
+        valid &= (
+            isinstance(diff.path, str)
+            and isinstance(diff.unified, str)
+            and all(
+                _optional_int(value, nonnegative=True)
+                for value in (diff.additions, diff.deletions, diff.original_chars)
+            )
+            and isinstance(diff.truncated, bool)
+        )
+    for item in outcome.diagnostics:
+        valid &= (
+            isinstance(item.path, str)
+            and _optional_int(item.line, nonnegative=True)
+            and item.line is not None
+            and _optional_int(item.character, nonnegative=True)
+            and item.character is not None
+            and isinstance(item.message, str)
+            and isinstance(item.severity, str)
+            and (
+                item.code is None
+                or isinstance(item.code, (str, int))
+                and not isinstance(item.code, bool)
+            )
+            and (item.source is None or isinstance(item.source, str))
+            and _optional_int(item.end_line, nonnegative=True)
+            and _optional_int(item.end_character, nonnegative=True)
+        )
+    if truncation is not None:
+        counts = (
+            truncation.original_chars,
+            truncation.original_lines,
+            truncation.retained_chars,
+            truncation.retained_lines,
+        )
+        valid &= (
+            all(
+                _optional_int(value, nonnegative=True) and value is not None
+                for value in counts
+            )
+            and truncation.retained_chars <= truncation.original_chars
+            and truncation.retained_lines <= truncation.original_lines
+            and truncation.strategy in _VALID_TRUNCATION_STRATEGIES
+            and isinstance(outcome.model_content, str)
+        )
+    if archive is not None:
+        valid &= (
+            isinstance(archive.path, str)
+            and bool(archive.path)
+            and isinstance(archive.media_type, str)
+            and (
+                archive.checksum_sha256 is None
+                or isinstance(archive.checksum_sha256, str)
+            )
+            and _optional_int(archive.size_bytes, nonnegative=True)
+        )
+    valid &= isinstance(retention.strategy, ToolRetentionStrategy) and (
+        retention.anchor_line is None
+        or _optional_int(retention.anchor_line)
+        and retention.anchor_line > 0
+    )
+    if not valid:
+        raise InvalidToolOutcomeProtocol
+    return encoded
+
+
+def _normalize_model_projection(value: object) -> str:
+    if not isinstance(value, str):
+        raise InvalidToolResultProjection
+    try:
+        owned = str(value)
+        owned.encode("utf-8", errors="strict")
+    except BaseException:
+        raise InvalidToolResultProjection from None
+    return owned
+
+
+def _normalize_tool_outcome(outcome: ToolOutcome) -> ToolOutcome:
+    """Validate once and retain no live extension-owned projection or metadata."""
+    if outcome.model_content is not None and not isinstance(outcome.model_content, str):
+        raise InvalidToolResultProjection
+    try:
+        encoded = _check_tool_outcome_protocol(outcome)
+        snapshot = cast(Mapping[str, object], _snapshot_json_value(encoded))
+        metadata = snapshot["metadata"]
+    except InvalidToolOutcomeProtocol:
+        raise
+    except BaseException:
+        raise InvalidToolOutcomeProtocol from None
+    try:
+        model_text = outcome.model_text
+    except BaseException:
+        raise InvalidToolResultProjection from None
+    model_text = _normalize_model_projection(model_text)
+    try:
+        return replace(
+            outcome,
+            metadata=cast(Mapping[str, object], metadata),
+            model_content=model_text,
+        )
+    except (TypeError, ValueError):
+        raise InvalidToolOutcomeProtocol from None
+
+
+_AFTER_FIXED_OUTCOME_FIELDS = (
+    "status",
+    "summary",
+    "content",
+    "stdout",
+    "stderr",
+    "diff",
+    "exit_code",
+    "duration_seconds",
+    "error_kind",
+    "retention_hint",
+)
+_AFTER_FIXED_CONTEXT_FIELDS = (
+    "hook_point",
+    "agent_id",
+    "session_generation",
+    "session_id",
+    "turn_id",
+    "trace_id",
+    "round_index",
+)
+
+
+def _accepted_after_transform(
+    original_context: AfterToolExecuteContext,
+    transformed_context: object,
+) -> ToolOutcome:
+    """Accept presentation enrichment without yielding primary fact authority."""
+    if not isinstance(transformed_context, AfterToolExecuteContext):
+        raise InvalidAfterToolPrimaryOutcomeTransition
+    if any(
+        getattr(transformed_context, field) != getattr(original_context, field)
+        for field in _AFTER_FIXED_CONTEXT_FIELDS
+    ) or _tool_call_signature(transformed_context.tool_call) != _tool_call_signature(
+        original_context.tool_call
+    ):
+        raise InvalidAfterToolPrimaryOutcomeTransition
+    if not isinstance(transformed_context.outcome, ToolOutcome):
+        raise InvalidToolResultProjection
+
+    original = cast(ToolOutcome, original_context.outcome)
+    transformed_outcome = transformed_context.outcome
+    candidate = (
+        original
+        if transformed_outcome is original
+        else _normalize_tool_outcome(transformed_outcome)
+    )
+    result = _normalize_model_projection(transformed_context.result)
+    if result != candidate.model_text:
+        candidate = candidate.with_model_projection(
+            result,
+            truncation=candidate.truncation,
+            archive_reference=candidate.archive_reference,
+        )
+    if (
+        any(
+            getattr(candidate, field) != getattr(original, field)
+            for field in _AFTER_FIXED_OUTCOME_FIELDS
+        )
+        or candidate.diagnostics[: len(original.diagnostics)] != original.diagnostics
+    ):
+        raise InvalidAfterToolPrimaryOutcomeTransition
+
+    original_metadata = original.metadata
+    if any(
+        key not in candidate.metadata or candidate.metadata[key] != value
+        for key, value in original_metadata.items()
+    ):
+        raise InvalidAfterToolPrimaryOutcomeTransition
+    added_keys = candidate.metadata.keys() - original_metadata.keys()
+    if added_keys & _RUNTIME_METADATA_KEYS:
+        raise InvalidAfterToolPrimaryOutcomeTransition
+    return candidate
+
+
+def _safe_metadata_fact(metadata: Mapping[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    if not isinstance(value, str):
+        return None
+    if key == "error_type":
+        return value if _safe_failure_error_type(value) == value else None
+    if key == "effect_state":
+        return (
+            value
+            if value in {"not_started", "started", "completed", "unknown"}
+            else None
+        )
+    if key == "completion_state":
+        return value if value in {"not_started", "completed", "uncertain"} else None
+    if key == "retry_safety":
+        return (
+            value if value in {"safe_to_retry", "do_not_retry_automatically"} else None
+        )
+    return value if _safe_failure_phase(value) == value else None
+
+
+def _with_failure_facts(
+    outcome: ToolOutcome,
+    *,
+    phase: str,
+    error_type: str,
+    effect_state: str,
+    completion_state: str,
+    retry_safety: str,
+    replace_existing: bool = False,
+) -> ToolOutcome:
+    """Fill canonical non-success facts without replacing tool-owned safe facts."""
+    if outcome.success:
+        if not replace_existing or not (
+            outcome.metadata.keys() & _RUNTIME_METADATA_KEYS
+        ):
+            return outcome
+        return replace(
+            outcome,
+            metadata=MappingProxyType(
+                {
+                    key: value
+                    for key, value in outcome.metadata.items()
+                    if key not in _RUNTIME_METADATA_KEYS
+                }
+            ),
+        )
+    metadata = {
+        key: value
+        for key, value in outcome.metadata.items()
+        if not replace_existing or key not in _RUNTIME_METADATA_KEYS
+    }
+    defaults = {
+        "failure_phase": _safe_failure_phase(phase),
+        "error_type": _safe_failure_error_type(error_type),
+        "effect_state": _safe_failure_phase(effect_state),
+        "completion_state": _safe_failure_phase(completion_state),
+        "retry_safety": _safe_failure_phase(retry_safety),
+    }
+    for key, default in defaults.items():
+        if replace_existing or _safe_metadata_fact(metadata, key) is None:
+            metadata[key] = default
+    return replace(outcome, metadata=MappingProxyType(metadata))
+
+
+def _cancelled_before_outcome(
+    tool_name: str,
+    phase: str,
+    message: str,
+) -> ToolOutcome:
+    return _with_failure_facts(
+        ToolOutcome(
+            status=ToolOutcomeStatus.CANCELLED,
+            summary=f"{tool_name} interrupted before execution",
+            content=message,
+            model_content=message,
+            error_kind=ToolErrorKind.INTERRUPTED,
+        ),
+        phase=phase,
+        error_type="ToolExecutionCancelled",
+        effect_state="not_started",
+        completion_state="not_started",
+        retry_safety="safe_to_retry",
+        replace_existing=True,
+    )
+
+
+def _with_canonical_failure_projection(outcome: ToolOutcome) -> ToolOutcome:
+    if outcome.success:
+        return outcome
+    metadata = outcome.metadata
+    line = (
+        f"status={outcome.status.value} "
+        f"phase={metadata['failure_phase']} "
+        f"error_type={metadata['error_type']} "
+        f"effect_state={metadata['effect_state']} "
+        f"completion_state={metadata['completion_state']} "
+        f"retry_safety={metadata['retry_safety']}"
+    )
+    marker = "[tool outcome facts]"
+    text = outcome.model_text
+    text = f"{text.rstrip()}\n\n{marker}\n{line}" if text else f"{marker}\n{line}"
+    return outcome.with_model_projection(
+        text,
+        truncation=outcome.truncation,
+        archive_reference=outcome.archive_reference,
+    )
+
+
+def _coerce_returned_outcome(
+    raw_result: object, execution_seconds: float
+) -> ToolOutcome:
+    if isinstance(raw_result, ToolOutcome):
+        outcome = raw_result
+    else:
+        if not isinstance(raw_result, str):
+            raise InvalidToolOutcomeProtocol
+        outcome = ToolOutcome.from_legacy(raw_result).with_duration(execution_seconds)
+    normalized = _normalize_tool_outcome(outcome)
+    phase = _safe_metadata_fact(normalized.metadata, "failure_phase") or "execute"
+    error_type = (
+        _safe_metadata_fact(normalized.metadata, "error_type") or "ToolReportedFailure"
+    )
+    return _with_failure_facts(
+        normalized,
+        phase=phase,
+        error_type=error_type,
+        effect_state="started",
+        completion_state="completed",
+        retry_safety="do_not_retry_automatically",
+        replace_existing=True,
+    )
+
+
+def _completed_result_failure(error: BaseException) -> ToolOutcome:
+    protocol_failure = isinstance(error, InvalidToolOutcomeProtocol)
+    phase = "result_protocol" if protocol_failure else "result_projection"
+    error_type = _safe_exception_type(error)
+    problem = (
+        "violated the result protocol" if protocol_failure else "could not be projected"
+    )
+    message = (
+        f"The tool returned, but its result {problem} "
+        f"(phase={phase}, error_type={error_type}, "
+        "effect_state=completed, completion_state=completed, "
+        "retry_safety=do_not_retry_automatically). Do not retry solely because "
+        "the result "
+        f"{('protocol validation' if protocol_failure else 'projection')} failed."
+    )
+    return ToolOutcome(
+        status=ToolOutcomeStatus.FAILED,
+        summary="Tool execution failed",
+        content=message,
+        model_content=message,
+        error_kind=ToolErrorKind.INTERNAL,
+        metadata={
+            "failure_phase": phase,
+            "error_type": error_type,
+            "effect_state": "completed",
+            "completion_state": "completed",
+            "retry_safety": "do_not_retry_automatically",
+        },
+    )
+
+
+def _record_hook_diagnostics(
+    failures: _PostEffectFailureCollector,
+    diagnostics: object,
+    *,
+    hook_point: HookPoint,
+    default_phase: str,
+) -> None:
+    if not isinstance(diagnostics, tuple):
+        raise TypeError("observer diagnostics must be a tuple")
+    for diagnostic in diagnostics:
+        if (
+            not isinstance(diagnostic, HookDiagnostic)
+            or diagnostic.hook_point is not hook_point
+            or diagnostic.hook_kind is not HookKind.OBSERVER
+            or not isinstance(diagnostic.error_type, str)
+            or not diagnostic.error_type
+            or (diagnostic.phase is not None and not isinstance(diagnostic.phase, str))
+        ):
+            raise TypeError("observer returned an invalid diagnostic")
+        failures.record(
+            diagnostic.phase or default_phase,
+            diagnostic.error_type,
+        )
+
+
+def _with_post_effect_failures(
+    outcome: ToolOutcome,
+    failures: _PostEffectFailureCollector,
+) -> ToolOutcome:
+    snapshot = failures.snapshot()
+    if not snapshot:
+        return outcome
+    lines = [
+        "[post-effect diagnostics]",
+        "The tool outcome above remains authoritative. Do not retry the tool "
+        "solely because secondary processing failed.",
+    ]
+    lines.extend(
+        f"phase={phase} error_type={error_type} count={count}"
+        for phase, error_type, count in snapshot
+    )
+    diagnostics = "\n".join(lines)
+    model_text = outcome.model_text
+    model_text = (
+        f"{model_text.rstrip()}\n\n{diagnostics}" if model_text else diagnostics
+    )
+    facts = tuple(
+        MappingProxyType({"phase": phase, "error_type": error_type, "count": count})
+        for phase, error_type, count in snapshot
+    )
+    return replace(
+        outcome.with_model_projection(
+            model_text,
+            truncation=outcome.truncation,
+            archive_reference=outcome.archive_reference,
+        ),
+        metadata=MappingProxyType({**outcome.metadata, "post_effect_failures": facts}),
+    )
 
 
 @dataclass(slots=True)
@@ -67,52 +694,53 @@ class _PreEffectState:
     effect_started: bool = False
 
 
+@dataclass(slots=True)
+class _PendingBatchRuntimeFailure:
+    batch_id: int
+    tool_count: int
+    failures: _PostEffectFailureCollector
+
+
 class InvalidPreflightResult(RuntimeError):
-    """A preflight callback returned a value that cannot safely authorize work."""
+    pass
 
 
 class InvalidApprovalSubjectsResult(RuntimeError):
-    """An approval-subject callback returned malformed resource identities."""
+    pass
 
 
 class InvalidApprovalScopeResult(RuntimeError):
-    """An approval-scope callback returned malformed reusable grants."""
+    pass
 
 
 class InvalidAuthorizationResult(RuntimeError):
-    """An authorization callback returned malformed guard decisions."""
+    pass
 
 
 class InvalidApprovalPreview(RuntimeError):
-    """An approval preview callback returned an invalid review payload."""
+    pass
 
 
 class InvalidApprovalDecisionResult(RuntimeError):
-    """An approval provider returned a value outside its typed contract."""
+    pass
 
 
 class InvalidContextContributionResult(RuntimeError):
-    """A context contributor returned a value outside its typed contract."""
-
-
-def _safe_pre_effect_error_type(error: BaseException) -> str:
-    name = type(error).__name__
-    if (
-        not name
-        or len(name) > 64
-        or not name.isascii()
-        or not name.replace("_", "").isalnum()
-    ):
-        return "Exception"
-    return name
+    pass
 
 
 def _validated_preflight_failure(value: object) -> ToolOutcome | None:
     if value is None:
         return None
-    if not isinstance(value, ToolOutcome) or value.success:
+    if not isinstance(value, ToolOutcome):
         raise InvalidPreflightResult
-    return value
+    try:
+        normalized = _normalize_tool_outcome(value)
+    except BaseException:
+        raise InvalidPreflightResult from None
+    if normalized.success:
+        raise InvalidPreflightResult
+    return normalized
 
 
 def _with_pre_effect_facts(
@@ -125,14 +753,22 @@ def _with_pre_effect_facts(
         "Tool execution stopped before effects began "
         f"(phase={phase}, error_type={error_type}, effect_state=not_started)."
     )
-    return outcome.with_model_projection(
-        f"{fact}\n\n{outcome.model_text}",
-        truncation=outcome.truncation,
-        archive_reference=outcome.archive_reference,
-    ).with_metadata(
-        failure_phase=phase,
+    return _with_failure_facts(
+        outcome.with_model_projection(
+            f"{fact}\n\n{outcome.model_text}",
+            truncation=outcome.truncation,
+            archive_reference=outcome.archive_reference,
+        ),
+        phase=phase,
         error_type=error_type,
         effect_state="not_started",
+        completion_state="not_started",
+        retry_safety=(
+            "do_not_retry_automatically"
+            if outcome.status is ToolOutcomeStatus.DENIED
+            else "safe_to_retry"
+        ),
+        replace_existing=True,
     )
 
 
@@ -147,7 +783,9 @@ def _approval_grant_candidates(
     scope_key: str,
 ) -> tuple[ApprovalGrantCandidate, ...]:
     build_scopes = getattr(tool, "approval_grant_scopes", None)
-    raw_scopes = build_scopes(tc.arguments, subjects) if callable(build_scopes) else ()
+    raw_scopes = (
+        build_scopes(deepcopy(tc.arguments), subjects) if callable(build_scopes) else ()
+    )
     if not isinstance(raw_scopes, (tuple, list)):
         raise InvalidApprovalScopeResult
     scopes = tuple(raw_scopes)
@@ -156,9 +794,7 @@ def _approval_grant_candidates(
             ApprovalGrantScope(
                 id="exact_tool",
                 label="This MCP tool",
-                description=(
-                    f"{mcp_server} · {tc.name}" if mcp_server else tc.name
-                ),
+                description=(f"{mcp_server} · {tc.name}" if mcp_server else tc.name),
             ),
         )
 
@@ -216,9 +852,7 @@ def _external_workspace_target(tool, arguments: dict) -> str | None:
     """Detect an exact local file target outside the configured workspace."""
     tool_name = getattr(tool, "name", None)
     path_argument = (
-        _EXTERNAL_PATH_ARGUMENTS.get(tool_name)
-        if isinstance(tool_name, str)
-        else None
+        _EXTERNAL_PATH_ARGUMENTS.get(tool_name) if isinstance(tool_name, str) else None
     )
     if tool is None or path_argument is None:
         return None
@@ -241,9 +875,7 @@ def _workspace_access_scope(workspace, external_target: str | None) -> Iterator[
     if external_target is None or not callable(grant_external):
         yield
         return
-    access_scope = cast(
-        AbstractContextManager[object], grant_external(external_target)
-    )
+    access_scope = cast(AbstractContextManager[object], grant_external(external_target))
     with access_scope:
         yield
 
@@ -311,6 +943,10 @@ class ToolExecutor:
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
+        self._pending_batch_failure_lock = Lock()
+        self._pending_batch_failures: list[_PendingBatchRuntimeFailure] = []
+        self._next_batch_failure_id = 1
+        self._omitted_batch_failure_count = 0
 
     def _round_interrupt_epoch(self) -> int:
         read = getattr(self.agent, "round_interrupt_epoch", None)
@@ -336,27 +972,298 @@ class ToolExecutor:
 
         return _CompatibilityStopSignal()
 
+    def _emit_post_effect_diagnostic(
+        self,
+        tc: "ToolCall",
+        failure: tuple[str, str, int],
+        failures: _PostEffectFailureCollector,
+    ) -> None:
+        phase, error_type, count = failure
+        try:
+            self.agent._emit_event(
+                AgentEvent.diagnostic(
+                    "Secondary tool processing failed after the primary outcome "
+                    f"was fixed (phase={phase}, error_type={error_type}, "
+                    f"count={count}).",
+                    code="tool.post_effect_failure",
+                    details={
+                        "tool_name": tc.name,
+                        "tool_call_id": tc.id,
+                        "phase": phase,
+                        "error_type": error_type,
+                        "count": count,
+                    },
+                )
+            )
+        except BaseException as error:
+            # The model-facing result still carries the same safe fact. A
+            # broken event sink cannot replace the primary tool outcome.
+            self._capture_post_effect_failure(
+                failures,
+                "post_effect_diagnostic",
+                error,
+            )
+
+    def _emit_batch_post_effect_diagnostic(
+        self,
+        batch: _PendingBatchRuntimeFailure,
+        failure: tuple[str, str, int],
+    ) -> None:
+        phase, error_type, count = failure
+        try:
+            self.agent._emit_event(
+                AgentEvent.diagnostic(
+                    "Secondary parallel-batch processing failed after all tool "
+                    "outcomes were fixed "
+                    f"(phase={phase}, error_type={error_type}, count={count}).",
+                    code="tool.post_effect_failure",
+                    details={
+                        "scope": "parallel_batch",
+                        "batch_id": batch.batch_id,
+                        "tool_count": batch.tool_count,
+                        "phase": phase,
+                        "error_type": error_type,
+                        "count": count,
+                    },
+                )
+            )
+        except BaseException as error:
+            self._capture_post_effect_failure(
+                batch.failures,
+                "post_effect_diagnostic",
+                error,
+            )
+
+    def _queue_batch_runtime_failure(
+        self,
+        phase: str,
+        error: BaseException,
+        *,
+        tool_count: int,
+    ) -> None:
+        failures = _PostEffectFailureCollector()
+        self._capture_post_effect_failure(failures, phase, error)
+        with self._pending_batch_failure_lock:
+            batch_id = self._next_batch_failure_id
+            self._next_batch_failure_id += 1
+        batch = _PendingBatchRuntimeFailure(
+            batch_id=batch_id,
+            tool_count=tool_count,
+            failures=failures,
+        )
+        self._emit_batch_post_effect_diagnostic(batch, failures.snapshot()[0])
+        with self._pending_batch_failure_lock:
+            if len(self._pending_batch_failures) < _PENDING_BATCH_FAILURE_LIMIT:
+                self._pending_batch_failures.append(batch)
+            else:
+                self._omitted_batch_failure_count += 1
+
+    def _acknowledge_batch_runtime_failures(
+        self,
+        batches: tuple[_PendingBatchRuntimeFailure, ...],
+        omitted_count: int,
+    ) -> None:
+        batch_ids = {batch.batch_id for batch in batches}
+        with self._pending_batch_failure_lock:
+            self._pending_batch_failures = [
+                batch
+                for batch in self._pending_batch_failures
+                if batch.batch_id not in batch_ids
+            ]
+            self._omitted_batch_failure_count = max(
+                0,
+                self._omitted_batch_failure_count - omitted_count,
+            )
+
+    def _flush_pending_batch_runtime_context_once(self) -> tuple[int, bool]:
+        with self._pending_batch_failure_lock:
+            batches = tuple(self._pending_batch_failures)
+            omitted_count = self._omitted_batch_failure_count
+        if not batches and not omitted_count:
+            return 0, False
+
+        lines = [
+            "[parallel batch runtime facts]",
+            "Completed tool outcomes remain authoritative. Do not retry any tool "
+            "solely because secondary batch processing failed.",
+            "delivery_semantics=at_least_once; batch_id identifies duplicate facts.",
+        ]
+        for batch in batches:
+            lines.append(f"batch_id={batch.batch_id} tool_count={batch.tool_count}")
+            lines.extend(
+                f"phase={phase} error_type={error_type} count={count}"
+                for phase, error_type, count in batch.failures.snapshot()
+            )
+        if omitted_count:
+            lines.append(f"additional_batches_omitted={omitted_count}")
+
+        message = None
+        try:
+            message = synthetic_user_message(
+                "runtime_context_update",
+                "\n".join(lines),
+                source="parallel_scheduler_cleanup",
+                attributes={"kind": "parallel_batch_runtime_failure"},
+            )
+            append_message = getattr(self.agent, "_append_message", None)
+            if not callable(append_message):
+                raise MissingRuntimeContextSink
+            append_message(message, source="parallel_scheduler_cleanup")
+        except BaseException as error:
+            committed = False
+            if message is not None:
+                try:
+                    committed = any(
+                        item is message for item in self.agent.state.messages
+                    )
+                except BaseException as commit_check_error:
+                    self._queue_batch_runtime_failure(
+                        "parallel_runtime_context_commit_check",
+                        commit_check_error,
+                        tool_count=0,
+                    )
+            # _append_message is ledger-first. If it failed after mutating the
+            # ledger but before state.messages, there is no transaction token
+            # to prove that partial commit. Retain and retry the diagnostic as
+            # explicitly at-least-once data; stable batch IDs expose any
+            # duplicate ledger records without repeating a tool effect.
+            if committed:
+                self._acknowledge_batch_runtime_failures(batches, omitted_count)
+            self._queue_batch_runtime_failure(
+                "parallel_runtime_context_publish",
+                error,
+                tool_count=0,
+            )
+            acknowledged = len(batches) + omitted_count if committed else 0
+            return acknowledged, True
+
+        self._acknowledge_batch_runtime_failures(batches, omitted_count)
+        return len(batches) + omitted_count, False
+
+    def flush_pending_batch_runtime_context(self) -> int | None:
+        """Return acknowledged facts, or ``None`` when continuation is unsafe."""
+        acknowledged = 0
+        for _ in range(_BATCH_CONTEXT_PUBLISH_ATTEMPTS):
+            published, failed = self._flush_pending_batch_runtime_context_once()
+            acknowledged += published
+            if not failed:
+                return acknowledged
+
+        stop_failures = _PostEffectFailureCollector()
+        self._request_stop_safely(stop_failures)
+        if stop_failures:
+            failure = stop_failures.snapshot()[0]
+            batch = _PendingBatchRuntimeFailure(
+                batch_id=0,
+                tool_count=0,
+                failures=stop_failures,
+            )
+            self._emit_batch_post_effect_diagnostic(batch, failure)
+        return None
+
+    def _request_stop_safely(
+        self,
+        failures: _PostEffectFailureCollector,
+    ) -> None:
+        """Request shutdown without allowing ordinary observer faults to win."""
+        try:
+            already_requested = self._stop_requested()
+        except BaseException as error:
+            failures.record("post_effect", _safe_exception_type(error))
+            already_requested = False
+        if already_requested:
+            return
+        try:
+            request_stop = getattr(self.agent, "request_stop", None)
+            if callable(request_stop):
+                request_stop()
+        except BaseException as error:
+            failures.record("post_effect", _safe_exception_type(error))
+
+    def _capture_post_effect_failure(
+        self,
+        failures: _PostEffectFailureCollector,
+        phase: str,
+        error: BaseException,
+    ) -> None:
+        failures.record(phase, _safe_exception_type(error))
+        if not isinstance(error, Exception):
+            self._request_stop_safely(failures)
+
+    def _finalize_post_effect_projection(
+        self,
+        outcome: ToolOutcome,
+        failures: _PostEffectFailureCollector,
+    ) -> ToolOutcome:
+        """Add runtime-owned facts once, after every secondary stage has run."""
+        if not outcome.success:
+            outcome = _with_failure_facts(
+                outcome,
+                phase="tool_result",
+                error_type="ToolReportedFailure",
+                effect_state="started",
+                completion_state="completed",
+                retry_safety="do_not_retry_automatically",
+            )
+            outcome = _with_canonical_failure_projection(outcome)
+        return _with_post_effect_failures(outcome, failures)
+
+    def _publish_post_effect_outcome(
+        self,
+        tc: "ToolCall",
+        tool_name: str,
+        outcome: ToolOutcome,
+        failures: _PostEffectFailureCollector,
+    ) -> ToolOutcome:
+        published = self._finalize_post_effect_projection(outcome, failures)
+        try:
+            self.agent._emit_event(
+                AgentEvent.tool_call_end(
+                    tool_name,
+                    published.model_text,
+                    tool_call_id=tc.id,
+                    outcome=published,
+                )
+            )
+        except BaseException as error:
+            self._capture_post_effect_failure(failures, "tool_end_event", error)
+            published = self._finalize_post_effect_projection(outcome, failures)
+        return published
+
     @staticmethod
     def _pre_effect_failure_outcome(
         phase: str,
         error: BaseException,
+        *,
+        cancelled: bool = False,
     ) -> ToolOutcome:
-        error_type = _safe_pre_effect_error_type(error)
+        error_type = _safe_exception_type(error)
+        action = "interrupted" if cancelled else "failed"
         message = (
-            "Tool execution failed before effects began "
-            f"(phase={phase}, error_type={error_type}, effect_state=not_started)."
+            f"Tool execution {action} before effects began "
+            f"(phase={phase}, error_type={error_type}, effect_state=not_started, "
+            "completion_state=not_started, retry_safety=safe_to_retry)."
         )
-        return ToolOutcome(
-            status=ToolOutcomeStatus.FAILED,
-            summary="Tool pre-execution failed",
-            content=message,
-            model_content=message,
-            error_kind=ToolErrorKind.INTERNAL,
-            metadata={
-                "failure_phase": phase,
-                "error_type": error_type,
-                "effect_state": "not_started",
-            },
+        return _with_failure_facts(
+            ToolOutcome(
+                status=(
+                    ToolOutcomeStatus.CANCELLED
+                    if cancelled
+                    else ToolOutcomeStatus.FAILED
+                ),
+                summary=f"Tool pre-execution {action}",
+                content=message,
+                model_content=message,
+                error_kind=(
+                    ToolErrorKind.INTERRUPTED if cancelled else ToolErrorKind.INTERNAL
+                ),
+            ),
+            phase=phase,
+            error_type=error_type,
+            effect_state="not_started",
+            completion_state="not_started",
+            retry_safety="safe_to_retry",
+            replace_existing=True,
         )
 
     @staticmethod
@@ -370,84 +1277,20 @@ class ToolExecutor:
             "Tool execution denied before effects began "
             f"(phase={phase}, error_type={error_type}, effect_state=not_started)."
         )
-        return ToolOutcome(
-            status=ToolOutcomeStatus.DENIED,
-            summary="Tool execution denied",
-            content=f"{facts}\n\n{message}",
-            error_kind=ToolErrorKind.DENIED,
-            metadata={
-                "failure_phase": phase,
-                "error_type": error_type,
-                "effect_state": "not_started",
-            },
+        return _with_failure_facts(
+            ToolOutcome(
+                status=ToolOutcomeStatus.DENIED,
+                summary="Tool execution denied",
+                content=f"{facts}\n\n{message}",
+                error_kind=ToolErrorKind.DENIED,
+            ),
+            phase=phase,
+            error_type=error_type,
+            effect_state="not_started",
+            completion_state="not_started",
+            retry_safety="do_not_retry_automatically",
+            replace_existing=True,
         )
-
-    def _record_secondary_failure(
-        self,
-        tc: "ToolCall",
-        *,
-        phase: str,
-        error: BaseException,
-    ) -> None:
-        error_type = _safe_pre_effect_error_type(error)
-        try:
-            _LOG.warning(
-                "Tool secondary observer failed: phase=%s error_type=%s tool_call_id=%s",
-                phase,
-                error_type,
-                tc.id,
-            )
-        except Exception:
-            pass
-        try:
-            self.agent._emit_event(
-                AgentEvent.diagnostic(
-                    "Tool secondary observer failed "
-                    f"(phase={phase}, error_type={error_type}).",
-                    code="tool.secondary_failure",
-                    details={
-                        "tool_name": tc.name,
-                        "tool_call_id": tc.id,
-                        "failure_phase": phase,
-                        "error_type": error_type,
-                    },
-                )
-            )
-        except Exception as diagnostic_error:
-            try:
-                _LOG.warning(
-                    "Tool secondary diagnostic emission failed: error_type=%s",
-                    _safe_pre_effect_error_type(diagnostic_error),
-                )
-            except Exception:
-                pass
-
-    def _finish_rejected_call(self, tc: "ToolCall", outcome: ToolOutcome) -> str:
-        try:
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tc.name,
-                    outcome.display_text,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=outcome,
-                )
-            )
-        except Exception as error:
-            error_type = _safe_pre_effect_error_type(error)
-            try:
-                _LOG.warning(
-                    "Tool rejection event emission failed: error_type=%s tool_call_id=%s",
-                    error_type,
-                    tc.id,
-                )
-            except Exception:
-                pass
-            return (
-                f"{outcome.model_text}\n\nTool failure event emission failed "
-                f"(phase=failure_event, error_type={error_type})."
-            )
-        return outcome.model_text
 
     def _unknown_tool_outcome(self, tool_name: str) -> ToolOutcome:
         available_names = sorted(
@@ -464,22 +1307,30 @@ class ToolExecutor:
             if matches
             else ""
         )
-        return ToolOutcome(
-            status=ToolOutcomeStatus.FAILED,
-            summary=f"Unknown tool: {tool_name}",
-            content=f"Error: unknown tool '{tool_name}'",
-            model_content=(
-                f"Tool call rejected [unknown_tool]: '{tool_name}' is not available."
-                f"{suggestion}\n"
-                "Retry only with an exact currently available tool name, or continue "
-                "without a tool. Do not repeat the unavailable tool call."
+        return _with_failure_facts(
+            ToolOutcome(
+                status=ToolOutcomeStatus.FAILED,
+                summary=f"Unknown tool: {tool_name}",
+                content=f"Error: unknown tool '{tool_name}'",
+                model_content=(
+                    f"Tool call rejected [unknown_tool]: '{tool_name}' is not available."
+                    f"{suggestion}\n"
+                    "Retry only with an exact currently available tool name, or continue "
+                    "without a tool. Do not repeat the unavailable tool call."
+                ),
+                error_kind=ToolErrorKind.NOT_FOUND,
+                metadata={
+                    "preflight_code": "unknown_tool",
+                    "requested_tool": tool_name,
+                    "suggested_tools": tuple(matches),
+                },
             ),
-            error_kind=ToolErrorKind.NOT_FOUND,
-            metadata={
-                "preflight_code": "unknown_tool",
-                "requested_tool": tool_name,
-                "suggested_tools": tuple(matches),
-            },
+            phase="tool_lookup",
+            error_type="UnknownTool",
+            effect_state="not_started",
+            completion_state="not_started",
+            retry_safety="do_not_retry_automatically",
+            replace_existing=True,
         )
 
     def execute(
@@ -487,50 +1338,106 @@ class ToolExecutor:
         tc: "ToolCall",
         *,
         interrupt_baseline: int | None = None,
+        _resolved_tool: object = _UNRESOLVED_TOOL,
+        _resolution_error: BaseException | None = None,
     ) -> str:
-        """Execute one call while retaining a generic end-to-end timing."""
+        """Execute and publish exactly one authoritative result for one call."""
         started = time.monotonic()
-        status = "ok"
+        failures = _PostEffectFailureCollector()
+        pre_effect = _PreEffectState()
+        tool_call = tc
         try:
-            return self._execute(tc, interrupt_baseline=interrupt_baseline)
-        except BaseException:
-            status = "error"
-            raise
-        finally:
+            pre_effect.phase = "tool_call_snapshot"
+            tool_call = deepcopy(tc)
+            _tool_call_signature(tool_call)
+            outcome = self._execute_pipeline(
+                tool_call,
+                interrupt_baseline=interrupt_baseline,
+                pre_effect=pre_effect,
+                failures=failures,
+                resolved_tool=_resolved_tool,
+                resolution_error=_resolution_error,
+            )
+        except BaseException as error:
+            if not isinstance(error, Exception):
+                self._request_stop_safely(failures)
+            outcome = (
+                self._execution_failure_outcome(pre_effect.phase, error)
+                if pre_effect.effect_started
+                else self._pre_effect_failure_outcome(
+                    pre_effect.phase,
+                    error,
+                    cancelled=True,
+                )
+                if isinstance(error, KeyboardInterrupt)
+                else self._pre_effect_failure_outcome(pre_effect.phase, error)
+            )
+
+        try:
             monitor = getattr(self.agent, "performance_monitor", None)
             if monitor is not None:
                 monitor.record(
                     "tool",
                     "call_total",
                     (time.monotonic() - started) * 1000,
-                    status=status,
+                    status="ok" if outcome.success else "error",
                     attributes={
-                        "tool_name": tc.name,
-                        "tool_call_id": tc.id,
+                        "tool_name": tool_call.name,
+                        "tool_call_id": tool_call.id,
                         "turn_id": self.agent._current_turn_id,
                     },
                 )
+        except BaseException as error:
+            self._capture_post_effect_failure(failures, "call_total_monitor", error)
+        if failures:
+            self._emit_post_effect_diagnostic(
+                tool_call, failures.snapshot()[0], failures
+            )
+        published = self._publish_post_effect_outcome(
+            tool_call,
+            tool_call.name,
+            outcome,
+            failures,
+        )
+        return published.model_text
 
-    def _execute(
-        self,
-        tc: "ToolCall",
-        *,
-        interrupt_baseline: int | None = None,
-    ) -> str:
-        pre_effect = _PreEffectState()
-        try:
-            return self._execute_pipeline(
-                tc,
-                interrupt_baseline=interrupt_baseline,
-                pre_effect=pre_effect,
-            )
-        except Exception as error:
-            if pre_effect.effect_started:
-                raise
-            return self._finish_rejected_call(
-                tc,
-                self._pre_effect_failure_outcome(pre_effect.phase, error),
-            )
+    @staticmethod
+    def _execution_failure_outcome(
+        phase: str,
+        error: BaseException,
+    ) -> ToolOutcome:
+        interrupted = isinstance(error, KeyboardInterrupt)
+        action = "interrupted" if interrupted else "failed"
+        error_type = _safe_exception_type(error)
+        message = (
+            f"Tool execution {action} (phase={phase}, error_type={error_type}, "
+            "effect_state=started, completion_state=uncertain, "
+            "retry_safety=do_not_retry_automatically). The tool may have produced "
+            "partial effects; do not retry automatically."
+        )
+        return _with_failure_facts(
+            ToolOutcome(
+                status=(
+                    ToolOutcomeStatus.CANCELLED
+                    if interrupted
+                    else ToolOutcomeStatus.FAILED
+                ),
+                summary=f"Tool execution {action}",
+                content=message,
+                model_content=message,
+                error_kind=(
+                    ToolErrorKind.INTERRUPTED
+                    if interrupted
+                    else ToolErrorKind.EXECUTION
+                ),
+            ),
+            phase=phase,
+            error_type=error_type,
+            effect_state="started",
+            completion_state="uncertain",
+            retry_safety="do_not_retry_automatically",
+            replace_existing=True,
+        )
 
     def _execute_pipeline(
         self,
@@ -538,11 +1445,14 @@ class ToolExecutor:
         *,
         interrupt_baseline: int | None,
         pre_effect: _PreEffectState,
-    ) -> str:
+        failures: _PostEffectFailureCollector,
+        resolved_tool: object,
+        resolution_error: BaseException | None,
+    ) -> ToolOutcome:
         """Execute a single tool call."""
+        authorized_signature = _tool_call_signature(tc)
         if interrupt_baseline is not None and (
-            self._stop_requested()
-            or self._round_interrupt_epoch() > interrupt_baseline
+            self._stop_requested() or self._round_interrupt_epoch() > interrupt_baseline
         ):
             reason = (
                 "user steering"
@@ -550,28 +1460,31 @@ class ToolExecutor:
                 and not self._stop_requested()
                 else "turn cancellation"
             )
-            message = f"Tool execution interrupted ({reason})."
-            return self._finish_rejected_call(
-                tc,
-                ToolOutcome(
-                    status=ToolOutcomeStatus.CANCELLED,
-                    summary=f"{tc.name} interrupted before execution",
-                    content=message,
-                    model_content=message,
-                    error_kind=ToolErrorKind.INTERRUPTED,
-                ),
+            message = (
+                f"Tool execution interrupted before execution ({reason}; "
+                "phase=initial_cancel_check, error_type=ToolExecutionCancelled, "
+                "effect_state=not_started, completion_state=not_started, "
+                "retry_safety=safe_to_retry)."
+            )
+            return _cancelled_before_outcome(
+                tc.name,
+                "initial_cancel_check",
+                message,
             )
         reviewed_diff: str | None = None
         approval_workspace_changes: list[str] = []
         expected_workspace_revision: WorkspaceRevision | None = None
         pre_effect.phase = "tool_lookup"
-        tool = self.agent.get_tool(tc.name)
+        if resolution_error is not None:
+            raise resolution_error
+        tool = (
+            self.agent.get_tool(tc.name)
+            if resolved_tool is _UNRESOLVED_TOOL
+            else resolved_tool
+        )
         pre_effect.phase = "tool_scope"
-        if tool is None and (
-            getattr(self.agent, "strict_tool_scope", False)
-            or self.agent.is_tool_in_scope(tc.name)
-        ):
-            return self._finish_rejected_call(tc, self._unknown_tool_outcome(tc.name))
+        if tool is None:
+            return self._unknown_tool_outcome(tc.name)
 
         pre_effect.phase = "mode_policy"
         if not self.agent.is_tool_allowed_in_mode(tc.name):
@@ -589,13 +1502,10 @@ class ToolExecutor:
                 message = (
                     f"Tool '{tc.name}' is not available in current mode '{mode_name}'"
                 )
-            return self._finish_rejected_call(
-                tc,
-                self._pre_effect_denial_outcome(
-                    message,
-                    phase="mode_policy",
-                    error_type="ToolModeDenied",
-                ),
+            return self._pre_effect_denial_outcome(
+                message,
+                phase="mode_policy",
+                error_type="ToolModeDenied",
             )
 
         approval_subjects: tuple[str, ...] = ()
@@ -603,27 +1513,28 @@ class ToolExecutor:
             pre_effect.phase = "schema_validation"
             schema_failure = _validated_preflight_failure(
                 tool.preflight_validate(
-                    tc.arguments,
+                    deepcopy(tc.arguments),
                     schema_only=True,
                 )
             )
             if schema_failure is not None:
-                return self._finish_rejected_call(
-                    tc,
-                    _with_pre_effect_facts(
-                        schema_failure,
-                        phase="schema_validation",
-                        error_type="ToolPreflightRejected",
-                    ),
+                return _with_pre_effect_facts(
+                    schema_failure,
+                    phase="schema_validation",
+                    error_type="ToolPreflightRejected",
                 )
             pre_effect.phase = "approval_subjects"
             build_subjects = getattr(tool, "approval_subjects", None)
             if callable(build_subjects):
-                built_subjects = build_subjects(tc.arguments)
-                if not isinstance(built_subjects, (tuple, list)) or any(
-                    not isinstance(subject, str) or not subject.strip()
-                    for subject in built_subjects
-                ) or len(set(built_subjects)) != len(built_subjects):
+                built_subjects = build_subjects(deepcopy(tc.arguments))
+                if (
+                    not isinstance(built_subjects, (tuple, list))
+                    or any(
+                        not isinstance(subject, str) or not subject.strip()
+                        for subject in built_subjects
+                    )
+                    or len(set(built_subjects)) != len(built_subjects)
+                ):
                     raise InvalidApprovalSubjectsResult
                 approval_subjects = tuple(built_subjects)
 
@@ -662,18 +1573,19 @@ class ToolExecutor:
         # execute -> process outcome -> observe -> publish. Extension code
         # cannot reorder or bypass the core stages.
         pre_effect.phase = "authorize"
-        raw_guard_decisions = self.agent.extension_runtime.authorize_tool(before_context)
+        authorization_context = deepcopy(before_context)
+        raw_guard_decisions = self.agent.extension_runtime.authorize_tool(
+            authorization_context
+        )
+        if _tool_call_signature(
+            authorization_context.tool_call
+        ) != _tool_call_signature(tc):
+            raise InvalidAuthorizationResult
         if not isinstance(raw_guard_decisions, (tuple, list)) or any(
             not isinstance(decision, GuardDecision)
             or not isinstance(decision.allowed, bool)
-            or (
-                decision.reason is not None
-                and not isinstance(decision.reason, str)
-            )
-            or (
-                decision.warning is not None
-                and not isinstance(decision.warning, str)
-            )
+            or (decision.reason is not None and not isinstance(decision.reason, str))
+            or (decision.warning is not None and not isinstance(decision.warning, str))
             or not isinstance(decision.requires_approval, bool)
             for decision in raw_guard_decisions
         ):
@@ -682,13 +1594,10 @@ class ToolExecutor:
         denied = next((d for d in guard_decisions if not d.allowed), None)
         if denied is not None:
             message = denied.reason or f"Tool '{tc.name}' blocked by guard hook"
-            return self._finish_rejected_call(
-                tc,
-                self._pre_effect_denial_outcome(
-                    message,
-                    phase="authorize",
-                    error_type="ToolAuthorizationDenied",
-                ),
+            return self._pre_effect_denial_outcome(
+                message,
+                phase="authorize",
+                error_type="ToolAuthorizationDenied",
             )
 
         for decision in guard_decisions:
@@ -701,11 +1610,11 @@ class ToolExecutor:
                             details={"tool_name": tc.name, "tool_call_id": tc.id},
                         )
                     )
-                except Exception as error:
-                    self._record_secondary_failure(
-                        tc,
-                        phase="guard_warning_observer",
-                        error=error,
+                except BaseException as error:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "guard_warning_observer",
+                        error,
                     )
 
         pre_effect.phase = "workspace_target"
@@ -721,16 +1630,13 @@ class ToolExecutor:
                 pre_effect.phase = "environment_preflight"
                 with _workspace_access_scope(workspace, external_target):
                     preflight_failure = _validated_preflight_failure(
-                        tool.preflight_validate(tc.arguments)
+                        tool.preflight_validate(deepcopy(tc.arguments))
                     )
                 if preflight_failure is not None:
-                    return self._finish_rejected_call(
-                        tc,
-                        _with_pre_effect_facts(
-                            preflight_failure,
-                            phase="environment_preflight",
-                            error_type="ToolPreflightRejected",
-                        ),
+                    return _with_pre_effect_facts(
+                        preflight_failure,
+                        phase="environment_preflight",
+                        error_type="ToolPreflightRejected",
                     )
                 pre_effect.phase = "document_snapshot"
                 with _workspace_access_scope(workspace, external_target):
@@ -760,13 +1666,10 @@ class ToolExecutor:
                     approval_required.reason
                     or f"Tool '{tc.name}' requires approval, but no approval provider is configured"
                 )
-                return self._finish_rejected_call(
-                    tc,
-                    self._pre_effect_denial_outcome(
-                        message,
-                        phase="approval_provider",
-                        error_type="ApprovalProviderUnavailable",
-                    ),
+                return self._pre_effect_denial_outcome(
+                    message,
+                    phase="approval_provider",
+                    error_type="ApprovalProviderUnavailable",
                 )
             try:
                 for approval_attempt in range(3):
@@ -796,7 +1699,7 @@ class ToolExecutor:
                     pre_effect.phase = "approval_request"
                     approval_request = ApprovalRequest(
                         tool_name=tc.name,
-                        tool_args=dict(tc.arguments),
+                        tool_args=deepcopy(tc.arguments),
                         tool_source=tool_source,
                         mcp_server=(
                             str(mcp_server) if mcp_server is not None else None
@@ -852,7 +1755,9 @@ class ToolExecutor:
                                 else "Overwrite file"
                             )
                         elif tc.name == "edit_file":
-                            approval_request.metadata["approval_operation"] = "Edit file"
+                            approval_request.metadata["approval_operation"] = (
+                                "Edit file"
+                            )
                         elif tc.name == "shell":
                             approval_request.metadata["approval_operation"] = (
                                 "Run command"
@@ -866,12 +1771,12 @@ class ToolExecutor:
                     pre_effect.phase = "approval_provider"
                     try:
                         monitor = getattr(self.agent, "performance_monitor", None)
-                    except Exception as error:
+                    except BaseException as error:
                         monitor = None
-                        self._record_secondary_failure(
-                            tc,
-                            phase="approval_monitor",
-                            error=error,
+                        self._capture_post_effect_failure(
+                            failures,
+                            "approval_monitor",
+                            error,
                         )
                     approval_started = time.monotonic()
                     approval_status = "ok"
@@ -895,11 +1800,11 @@ class ToolExecutor:
                                         "turn_id": self.agent._current_turn_id,
                                     },
                                 )
-                            except Exception as error:
-                                self._record_secondary_failure(
-                                    tc,
-                                    phase="approval_monitor",
-                                    error=error,
+                            except BaseException as error:
+                                self._capture_post_effect_failure(
+                                    failures,
+                                    "approval_monitor",
+                                    error,
                                 )
                     pre_effect.phase = "approval_decision"
                     if (
@@ -915,10 +1820,7 @@ class ToolExecutor:
                             decision.grant is not None
                             and not isinstance(decision.grant, ApprovalGrantCandidate)
                         )
-                        or (
-                            decision.mode == "allow_session"
-                            and decision.grant is None
-                        )
+                        or (decision.mode == "allow_session" and decision.grant is None)
                     ):
                         raise InvalidApprovalDecisionResult
                     if not decision.approved:
@@ -928,10 +1830,7 @@ class ToolExecutor:
                         after_approval = capture_approval_document(
                             approval_request, workspace=workspace
                         )
-                    if (
-                        before_approval is None
-                        and after_approval is None
-                    ) or (
+                    if (before_approval is None and after_approval is None) or (
                         before_approval is not None
                         and after_approval is not None
                         and before_approval.same_content(after_approval)
@@ -949,8 +1848,7 @@ class ToolExecutor:
                         f"Tool '{tc.name}' target kept changing during approval; "
                         "retry after editor changes settle"
                     )
-                    return self._finish_rejected_call(
-                        tc,
+                    return _with_failure_facts(
                         ToolOutcome(
                             status=ToolOutcomeStatus.FAILED,
                             content=(
@@ -961,27 +1859,32 @@ class ToolExecutor:
                                 f"{message}"
                             ),
                             error_kind=ToolErrorKind.EXECUTION,
-                            metadata={
-                                "failure_phase": "approval_revalidation",
-                                "error_type": "ApprovalTargetUnstable",
-                                "effect_state": "not_started",
-                            },
                         ),
+                        phase="approval_revalidation",
+                        error_type="ApprovalTargetUnstable",
+                        effect_state="not_started",
+                        completion_state="not_started",
+                        retry_safety="safe_to_retry",
+                        replace_existing=True,
                     )
-            except (KeyboardInterrupt, EOFError):
+            except (KeyboardInterrupt, EOFError) as error:
                 message = f"Tool '{tc.name}' approval interrupted by user"
-                return self._finish_rejected_call(
-                    tc,
+                return _with_failure_facts(
                     ToolOutcome(
                         status=ToolOutcomeStatus.CANCELLED,
                         content=message,
                         error_kind=ToolErrorKind.INTERRUPTED,
-                        metadata={
-                            "failure_phase": "approval_provider",
-                            "error_type": "ApprovalInterrupted",
-                            "effect_state": "not_started",
-                        },
                     ),
+                    phase="approval_provider",
+                    error_type=(
+                        "ApprovalInterrupted"
+                        if isinstance(error, KeyboardInterrupt)
+                        else "ApprovalInputClosed"
+                    ),
+                    effect_state="not_started",
+                    completion_state="not_started",
+                    retry_safety="safe_to_retry",
+                    replace_existing=True,
                 )
 
             pre_effect.phase = "approval_decision"
@@ -989,13 +1892,10 @@ class ToolExecutor:
                 message = (
                     decision.reason or f"Tool '{tc.name}' denied by approval provider"
                 )
-                return self._finish_rejected_call(
-                    tc,
-                    self._pre_effect_denial_outcome(
-                        message,
-                        phase="approval_decision",
-                        error_type="ApprovalDenied",
-                    ),
+                return self._pre_effect_denial_outcome(
+                    message,
+                    phase="approval_decision",
+                    error_type="ApprovalDenied",
                 )
             if decision.reviewed and approval_request.preview is not None:
                 reviewed_diff = next(
@@ -1011,75 +1911,72 @@ class ToolExecutor:
                 pre_effect.phase = "post_approval_preflight"
                 with _workspace_access_scope(workspace, external_target):
                     preflight_failure = _validated_preflight_failure(
-                        tool.preflight_validate(tc.arguments)
+                        tool.preflight_validate(deepcopy(tc.arguments))
                     )
                 if preflight_failure is not None:
-                    return self._finish_rejected_call(
-                        tc,
-                        _with_pre_effect_facts(
-                            preflight_failure,
-                            phase="post_approval_preflight",
-                            error_type="ToolPreflightRejected",
-                        ),
+                    return _with_pre_effect_facts(
+                        preflight_failure,
+                        phase="post_approval_preflight",
+                        error_type="ToolPreflightRejected",
                     )
 
         pre_effect.phase = "context_contribution"
-        before_context = self.agent.extension_runtime.contribute_tool_context(
-            before_context
+        contributed_context = self.agent.extension_runtime.contribute_tool_context(
+            deepcopy(before_context)
         )
-        if not isinstance(before_context, BeforeToolExecuteContext):
+        if not isinstance(contributed_context, BeforeToolExecuteContext) or (
+            _tool_call_signature(contributed_context.tool_call)
+            != _tool_call_signature(tc)
+        ):
             raise InvalidContextContributionResult
+        before_context = contributed_context
+        before_context.tool_call = deepcopy(tc)
         pre_effect.phase = "before_execute_observer"
         try:
-            self.agent.extension_runtime.observe(
-                HookPoint.BEFORE_TOOL_EXECUTE, before_context
+            observer_diagnostics = self.agent.extension_runtime.observe(
+                HookPoint.BEFORE_TOOL_EXECUTE, deepcopy(before_context)
             )
-        except Exception as error:
-            self._record_secondary_failure(
-                tc,
-                phase="before_execute_observer",
-                error=error,
+            _record_hook_diagnostics(
+                failures,
+                observer_diagnostics,
+                hook_point=HookPoint.BEFORE_TOOL_EXECUTE,
+                default_phase="before_execute_observer",
+            )
+        except BaseException as error:
+            self._capture_post_effect_failure(
+                failures,
+                "before_execute_observer",
+                error,
             )
 
         pre_effect.phase = "context_result"
-        tool_call = before_context.tool_call or tc
-
-        # Tool availability is scoped by composition. Never reconstruct a
-        # builtin with a different backend after authorization.
-        pre_effect.phase = "tool_lookup_after_context"
-        tool = self.agent.get_tool(tool_call.name)
-
-        if tool is None:
-            return self._finish_rejected_call(
-                tc, self._unknown_tool_outcome(tool_call.name)
-            )
+        tool_call = tc
+        if _tool_call_signature(tool_call) != authorized_signature:
+            raise InvalidAuthorizationResult
 
         pre_effect.phase = "final_cancel_check"
         stop_requested = getattr(self.agent, "stop_requested", None)
         if callable(stop_requested) and stop_requested():
-            message = f"Tool '{tc.name}' cancelled before execution."
-            return self._finish_rejected_call(
-                tc,
-                ToolOutcome(
-                    status=ToolOutcomeStatus.CANCELLED,
-                    content=message,
-                    error_kind=ToolErrorKind.INTERRUPTED,
-                    metadata={
-                        "failure_phase": "final_cancel_check",
-                        "error_type": "ToolExecutionCancelled",
-                        "effect_state": "not_started",
-                    },
-                ),
+            message = (
+                f"Tool '{tc.name}' cancelled before execution "
+                "(phase=final_cancel_check, error_type=ToolExecutionCancelled, "
+                "effect_state=not_started, completion_state=not_started, "
+                "retry_safety=safe_to_retry)."
+            )
+            return _cancelled_before_outcome(
+                tc.name,
+                "final_cancel_check",
+                message,
             )
 
         pre_effect.phase = "execution_setup"
+        tool_returned = False
+        authoritative_outcome: ToolOutcome | None = None
         try:
             backend = getattr(tool, "backend", None)
             if interrupt_baseline is None:
                 interrupt_baseline = self._round_interrupt_epoch()
-            interrupt_mode = getattr(
-                tool, "interrupt_mode", InterruptMode.LET_FINISH
-            )
+            interrupt_mode = getattr(tool, "interrupt_mode", InterruptMode.LET_FINISH)
             cancellation = (
                 None
                 if interrupt_mode is InterruptMode.DETACH
@@ -1098,215 +1995,311 @@ class ToolExecutor:
             )
 
             def stream_handler(tool_name, chunk) -> None:
-                from reuleauxcoder.domain.process_output import (
-                    terminal_safe_display,
-                )
-
-                self.agent._emit_event(
-                    AgentEvent.tool_output_delta(
-                        tool_name,
-                        terminal_safe_display(
-                            str(getattr(chunk, "data", ""))
-                        ),
-                        stream=str(getattr(chunk, "chunk_type", "stdout")),
-                        tool_call_id=tc.id,
+                try:
+                    from reuleauxcoder.domain.process_output import (
+                        terminal_safe_display,
                     )
-                )
+
+                    self.agent._emit_event(
+                        AgentEvent.tool_output_delta(
+                            tool_name,
+                            terminal_safe_display(str(getattr(chunk, "data", ""))),
+                            stream=str(getattr(chunk, "chunk_type", "stdout")),
+                            tool_call_id=tc.id,
+                        )
+                    )
+                except BaseException as error:
+                    self._capture_post_effect_failure(failures, "stream_event", error)
                 if callable(outer_stream_handler):
-                    outer_stream_handler(tool_name, chunk)
+                    try:
+                        outer_stream_handler(tool_name, chunk)
+                    except BaseException as error:
+                        self._capture_post_effect_failure(
+                            failures, "stream_observer", error
+                        )
 
             execution_started = time.monotonic()
+            primary_execution_error: BaseException | None = None
             try:
-                with _tool_cancellation_scope(tool, backend, cancellation):
-                    with _stream_handler_scope(
-                        backend,
-                        execution_context,
-                        stream_handler,
-                    ):
-                        with _workspace_revision_scope(
+                try:
+                    with _tool_cancellation_scope(tool, backend, cancellation):
+                        with _stream_handler_scope(
                             backend,
-                            expected_workspace_revision,
+                            execution_context,
+                            stream_handler,
                         ):
-                            bind_execution = getattr(tool, "bind_execution", None)
-                            if callable(bind_execution):
-                                bind_execution(
-                                    tool_call_id=tc.id,
-                                    session_generation=self.agent.session_generation,
-                                )
-                            execution_workspace = getattr(backend, "workspace", None)
-                            with _workspace_access_scope(
-                                execution_workspace, external_target
+                            with _workspace_revision_scope(
+                                backend,
+                                expected_workspace_revision,
                             ):
-                                pre_effect.phase = "execute"
-                                pre_effect.effect_started = True
-                                raw_result = tool.execute(**tool_call.arguments)
+                                bind_execution = getattr(tool, "bind_execution", None)
+                                if callable(bind_execution):
+                                    bind_execution(
+                                        tool_call_id=tc.id,
+                                        session_generation=self.agent.session_generation,
+                                    )
+                                execution_workspace = getattr(
+                                    backend, "workspace", None
+                                )
+                                with _workspace_access_scope(
+                                    execution_workspace, external_target
+                                ):
+                                    pre_effect.phase = "execute"
+                                    pre_effect.effect_started = True
+                                    try:
+                                        raw_result = tool.execute(**tool_call.arguments)
+                                    except BaseException as error:
+                                        primary_execution_error = error
+                                        raise
+                                    tool_returned = True
+                except BaseException as error:
+                    if primary_execution_error is not None:
+                        if error is not primary_execution_error:
+                            self._capture_post_effect_failure(
+                                failures,
+                                "execution_cleanup",
+                                error,
+                            )
+                        raise primary_execution_error
+                    if not tool_returned:
+                        raise
+                    self._capture_post_effect_failure(
+                        failures,
+                        "execution_cleanup",
+                        error,
+                    )
+                if primary_execution_error is not None:
+                    # A compatibility context manager may suppress the tool's
+                    # exception. The tool failure remains the primary fact.
+                    raise primary_execution_error
             finally:
                 execution_seconds = time.monotonic() - execution_started
-                monitor = getattr(self.agent, "performance_monitor", None)
-                if monitor is not None:
-                    monitor.record(
-                        "tool",
-                        "execute",
-                        execution_seconds * 1000,
-                        attributes={
-                            "tool_name": tool_call.name,
-                            "tool_call_id": tc.id,
-                            "turn_id": self.agent._current_turn_id,
-                        },
+                try:
+                    monitor = getattr(self.agent, "performance_monitor", None)
+                    if monitor is not None:
+                        monitor.record(
+                            "tool",
+                            "execute",
+                            execution_seconds * 1000,
+                            attributes={
+                                "tool_name": tool_call.name,
+                                "tool_call_id": tc.id,
+                                "turn_id": self.agent._current_turn_id,
+                            },
+                        )
+                except BaseException as error:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "execute_monitor",
+                        error,
                     )
-                git_monitor = getattr(self.agent, "git_monitor", None)
-                if git_monitor is not None and (
-                    getattr(tool, "effect_class", None)
-                    in {"filesystem_mutation", "process_execution"}
-                    or tool_call.name == "shell_session"
-                ):
-                    git_monitor.invalidate()
-            outcome = (
-                raw_result
-                if isinstance(raw_result, ToolOutcome)
-                else ToolOutcome.from_legacy(raw_result).with_duration(
-                    execution_seconds
-                )
-            )
+                try:
+                    git_monitor = getattr(self.agent, "git_monitor", None)
+                    if git_monitor is not None and (
+                        getattr(tool, "effect_class", None)
+                        in {"filesystem_mutation", "process_execution"}
+                        or tool_call.name == "shell_session"
+                    ):
+                        git_monitor.invalidate()
+                except BaseException as error:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "git_invalidate",
+                        error,
+                    )
+            outcome = _coerce_returned_outcome(raw_result, execution_seconds)
+            authoritative_outcome = outcome
             if approval_workspace_changes:
-                change_report = "\n\n".join(
-                    item for item in approval_workspace_changes if item
+                try:
+                    change_report = "\n\n".join(
+                        item for item in approval_workspace_changes if item
+                    )
+                    notice = (
+                        "[workspace changed while approval was pending; "
+                        "preview was refreshed]"
+                    )
+                    if change_report:
+                        notice += f"\n{change_report}"
+                    outcome = replace(
+                        outcome.with_model_projection(
+                            f"{outcome.model_text}\n\n{notice}",
+                            truncation=outcome.truncation,
+                            archive_reference=outcome.archive_reference,
+                        ),
+                        metadata=MappingProxyType(
+                            {
+                                **outcome.metadata,
+                                "workspace_changed_during_approval": True,
+                            }
+                        ),
+                    )
+                    authoritative_outcome = outcome
+                except BaseException as error:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "approval_projection",
+                        error,
+                    )
+            try:
+                if (shell_cwd := getattr(tool, "_cwd", None)) is not None:
+                    self.agent.runtime_working_directory = str(shell_cwd)
+            except BaseException as error:
+                self._capture_post_effect_failure(
+                    failures,
+                    "working_directory_sync",
+                    error,
                 )
-                notice = "[workspace changed while approval was pending; preview was refreshed]"
-                if change_report:
-                    notice += f"\n{change_report}"
-                outcome = outcome.with_model_projection(
-                    f"{outcome.model_text}\n\n{notice}"
-                ).with_metadata(workspace_changed_during_approval=True)
-            if (shell_cwd := getattr(tool, "_cwd", None)) is not None:
-                self.agent.runtime_working_directory = str(shell_cwd)
-            after_context = AfterToolExecuteContext(
-                hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-                agent_id=self.agent.agent_id,
-                session_generation=self.agent.session_generation,
-                session_id=self.agent.current_session_id,
-                turn_id=self.agent._current_turn_id,
-                tool_call=tool_call,
-                result=outcome.model_text,
-                outcome=outcome,
-                round_index=self.agent.state.current_round,
-            )
-            after_context = self.agent.extension_runtime.process_tool_outcome(
-                after_context
-            )
-            outcome = after_context.outcome or ToolOutcome.from_legacy(
-                after_context.result
-            )
-            if (
-                reviewed_diff is not None
-                and outcome.diff is not None
-                and outcome.diff.unified == reviewed_diff
-            ):
-                outcome = outcome.with_metadata(diff_reviewed=True)
-                after_context.outcome = outcome
-            # Legacy transforms may still replace ``result``.  Preserve that
-            # compatibility at this single hook boundary.
-            if after_context.result != outcome.model_text:
-                outcome = outcome.with_model_projection(after_context.result)
-                after_context.outcome = outcome
-            self.agent.extension_runtime.observe(
-                HookPoint.AFTER_TOOL_EXECUTE, after_context
-            )
-            if outcome.archive_reference is not None:
-                self.agent.history_ledger.append(
-                    "artifact_stored",
-                    {
-                        "tool_call_id": tc.id,
-                        "tool_name": tool_call.name,
-                        "artifact": {
-                            "path": outcome.archive_reference.path,
-                            "media_type": outcome.archive_reference.media_type,
-                            "checksum_sha256": outcome.archive_reference.checksum_sha256,
-                            "size_bytes": outcome.archive_reference.size_bytes,
-                        },
-                        "original_lines": (
-                            outcome.truncation.original_lines
-                            if outcome.truncation
-                            else None
-                        ),
-                        "original_chars": (
-                            outcome.truncation.original_chars
-                            if outcome.truncation
-                            else None
-                        ),
-                    },
+
+            after_context: AfterToolExecuteContext | None = None
+            try:
+                after_context = AfterToolExecuteContext(
+                    hook_point=HookPoint.AFTER_TOOL_EXECUTE,
                     agent_id=self.agent.agent_id,
+                    session_generation=self.agent.session_generation,
+                    session_id=self.agent.current_session_id,
                     turn_id=self.agent._current_turn_id,
-                    api_round_id=(
-                        f"{self.agent._current_turn_id}:{self.agent.state.current_round}"
-                        if self.agent._current_turn_id is not None
-                        else None
-                    ),
-                    artifact_refs=(outcome.archive_reference.path,),
-                )
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tool_call.name,
-                    outcome.model_text,
-                    tool_call_id=tc.id,
+                    tool_call=deepcopy(tool_call),
+                    result=outcome.model_text,
                     outcome=outcome,
+                    round_index=self.agent.state.current_round,
                 )
-            )
-            return outcome.model_text
-        except KeyboardInterrupt:
-            message = f"Tool '{tool_call.name}' interrupted by user."
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tool_call.name,
-                    message,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=ToolOutcome.from_legacy(
-                        message,
-                        success=False,
-                        error_kind=ToolErrorKind.INTERRUPTED,
-                    ),
+            except BaseException as error:
+                self._capture_post_effect_failure(
+                    failures,
+                    "after_tool_context",
+                    error,
                 )
-            )
-            if not self._stop_requested():
-                self.agent.request_stop()
-            raise
-        except TypeError as e:
+
+            if after_context is not None:
+                transform_input_outcome = outcome
+                try:
+                    transformed_context = (
+                        self.agent.extension_runtime.process_tool_outcome(
+                            replace(
+                                after_context,
+                                tool_call=deepcopy(after_context.tool_call),
+                            )
+                        )
+                    )
+                    outcome = _accepted_after_transform(
+                        after_context,
+                        transformed_context,
+                    )
+                    if reviewed_diff is not None and (
+                        outcome.diff is not None
+                        and outcome.diff.unified == reviewed_diff
+                    ):
+                        outcome = replace(
+                            outcome,
+                            metadata=MappingProxyType(
+                                {**outcome.metadata, "diff_reviewed": True}
+                            ),
+                        )
+                    authoritative_outcome = outcome
+                except BaseException as error:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "after_tool_transform",
+                        error,
+                    )
+                    outcome = transform_input_outcome
+                    authoritative_outcome = outcome
+
+                try:
+                    observer_context = replace(
+                        after_context,
+                        tool_call=deepcopy(tool_call),
+                        result=outcome.model_text,
+                        outcome=outcome,
+                    )
+                    observer_diagnostics = self.agent.extension_runtime.observe(
+                        HookPoint.AFTER_TOOL_EXECUTE, observer_context
+                    )
+                    _record_hook_diagnostics(
+                        failures,
+                        observer_diagnostics,
+                        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+                        default_phase="after_tool_observer",
+                    )
+                except BaseException as error:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "after_tool_observer",
+                        error,
+                    )
+            if outcome.archive_reference is not None:
+                try:
+                    self.agent.history_ledger.append(
+                        "artifact_stored",
+                        {
+                            "tool_call_id": tc.id,
+                            "tool_name": tool_call.name,
+                            "artifact": {
+                                "path": outcome.archive_reference.path,
+                                "media_type": outcome.archive_reference.media_type,
+                                "checksum_sha256": (
+                                    outcome.archive_reference.checksum_sha256
+                                ),
+                                "size_bytes": outcome.archive_reference.size_bytes,
+                            },
+                            "original_lines": (
+                                outcome.truncation.original_lines
+                                if outcome.truncation
+                                else None
+                            ),
+                            "original_chars": (
+                                outcome.truncation.original_chars
+                                if outcome.truncation
+                                else None
+                            ),
+                        },
+                        agent_id=self.agent.agent_id,
+                        turn_id=self.agent._current_turn_id,
+                        api_round_id=(
+                            f"{self.agent._current_turn_id}:"
+                            f"{self.agent.state.current_round}"
+                            if self.agent._current_turn_id is not None
+                            else None
+                        ),
+                        artifact_refs=(outcome.archive_reference.path,),
+                    )
+                except BaseException as error:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "artifact_ledger",
+                        error,
+                    )
+            return outcome
+        except BaseException as error:
             if not pre_effect.effect_started:
                 raise
-            message = f"Error: bad arguments for {tool_call.name}: {e}"
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tool_call.name,
-                    message,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=ToolOutcome.from_legacy(
-                        message,
-                        success=False,
-                        error_kind=ToolErrorKind.INVALID_ARGUMENTS,
-                    ),
-                )
+
+            result_failure = tool_returned and isinstance(
+                error,
+                (InvalidToolOutcomeProtocol, InvalidToolResultProjection),
             )
-            return message
-        except Exception as e:
-            if not pre_effect.effect_started:
-                raise
-            message = f"Error executing {tool_call.name}: {e}"
-            self.agent._emit_event(
-                AgentEvent.tool_call_end(
-                    tool_call.name,
-                    message,
-                    success=False,
-                    tool_call_id=tc.id,
-                    outcome=ToolOutcome.from_legacy(
-                        message,
-                        success=False,
-                        error_kind=ToolErrorKind.EXECUTION,
-                    ),
-                )
-            )
-            return message
+            if authoritative_outcome is None and tool_returned:
+                if result_failure:
+                    authoritative_outcome = _completed_result_failure(error)
+                else:
+                    try:
+                        authoritative_outcome = _coerce_returned_outcome(
+                            raw_result,
+                            execution_seconds,
+                        )
+                    except BaseException as result_error:
+                        authoritative_outcome = _completed_result_failure(result_error)
+            if authoritative_outcome is not None:
+                if not result_failure:
+                    self._capture_post_effect_failure(
+                        failures,
+                        "post_effect",
+                        error,
+                    )
+                return authoritative_outcome
+            if not isinstance(error, Exception):
+                self._request_stop_safely(failures)
+            return self._execution_failure_outcome(pre_effect.phase, error)
 
     def execute_parallel(
         self,
@@ -1321,63 +2314,187 @@ class ToolExecutor:
         barrier, so writers, shell commands, MCP calls without trustworthy
         annotations, and unknown tools retain provider order.
         """
-        baseline = (
-            self._round_interrupt_epoch()
-            if interrupt_baseline is None
-            else interrupt_baseline
-        )
-        results = [""] * len(tool_calls)
-
-        def execute_submitted(tool_call: "ToolCall") -> str:
-            interrupted = CancellationView(
-                self._stop_signal(),
-                self._round_interrupt_epoch,
-                baseline,
+        baseline_error: BaseException | None = None
+        try:
+            baseline = (
+                self._round_interrupt_epoch()
+                if interrupt_baseline is None
+                else interrupt_baseline
             )
-            if interrupted.is_set():
-                reason = (
-                    "user steering"
-                    if self._round_interrupt_epoch() > baseline
-                    and not self._stop_requested()
-                    else "turn cancellation"
+        except BaseException as error:
+            baseline = 0
+            baseline_error = error
+        results = [""] * len(tool_calls)
+        resolved: list[tuple[object, BaseException | None, bool]] = []
+        for tool_call in tool_calls:
+            if baseline_error is not None:
+                resolved.append((None, baseline_error, False))
+                continue
+            try:
+                tool = self.agent.get_tool(tool_call.name)
+                parallel_safe = bool(
+                    tool is not None and getattr(tool, "parallel_safe", False)
                 )
-                message = f"Tool execution interrupted ({reason})."
-                outcome = ToolOutcome(
-                    status=ToolOutcomeStatus.CANCELLED,
-                    summary=f"{tool_call.name} interrupted before execution",
-                    content=message,
-                    model_content=message,
-                    error_kind=ToolErrorKind.INTERRUPTED,
+            except BaseException as error:
+                resolved.append((None, error, False))
+            else:
+                resolved.append((tool, None, parallel_safe))
+
+        def execute_submitted(
+            index: int,
+            scheduler_error: BaseException | None = None,
+        ) -> str:
+            tool, resolution_error, _ = resolved[index]
+            return self.execute(
+                tool_calls[index],
+                interrupt_baseline=(None if scheduler_error is not None else baseline),
+                _resolved_tool=tool,
+                _resolution_error=(
+                    scheduler_error if scheduler_error is not None else resolution_error
+                ),
+            )
+
+        def publish_uncertain_scheduler_failure(
+            index: int,
+            error: BaseException,
+            phase: str,
+        ) -> str:
+            failures = _PostEffectFailureCollector()
+            if not isinstance(error, Exception):
+                self._request_stop_safely(failures)
+            outcome = self._execution_failure_outcome(phase, error)
+            if failures:
+                self._emit_post_effect_diagnostic(
+                    tool_calls[index], failures.snapshot()[0], failures
                 )
-                return self._finish_rejected_call(tool_call, outcome)
-            return self.execute(tool_call, interrupt_baseline=baseline)
+            return self._publish_post_effect_outcome(
+                tool_calls[index],
+                tool_calls[index].name,
+                outcome,
+                failures,
+            ).model_text
+
+        def execute_attempt(
+            index: int,
+            attempt: concurrent.futures.Future[str],
+        ) -> str:
+            if not attempt.set_running_or_notify_cancel():
+                return ""
+            try:
+                result = execute_submitted(index)
+            except BaseException as error:
+                attempt.set_exception(error)
+                raise
+            attempt.set_result(result)
+            return result
+
+        def settle_failed_attempt(
+            index: int,
+            attempt: concurrent.futures.Future[str],
+            boundary_error: BaseException,
+            phase: str,
+        ) -> str:
+            if attempt.cancel():
+                return publish_uncertain_scheduler_failure(
+                    index,
+                    boundary_error,
+                    phase,
+                )
+            try:
+                return attempt.result()
+            except BaseException as error:
+                return publish_uncertain_scheduler_failure(index, error, phase)
 
         index = 0
         while index < len(tool_calls):
-            if not self._parallel_safe(tool_calls[index]):
-                results[index] = execute_submitted(tool_calls[index])
+            if not resolved[index][2]:
+                results[index] = execute_submitted(index)
                 index += 1
                 continue
 
             end = index + 1
-            while end < len(tool_calls) and self._parallel_safe(tool_calls[end]):
+            while end < len(tool_calls) and resolved[end][2]:
                 end += 1
             if end - index == 1:
-                results[index] = execute_submitted(tool_calls[index])
+                results[index] = execute_submitted(index)
             else:
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(8, end - index)
-                ) as pool:
-                    futures = {
-                        offset: pool.submit(execute_submitted, tool_calls[offset])
-                        for offset in range(index, end)
-                    }
-                    for offset, future in futures.items():
+                try:
+                    pool = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(8, end - index)
+                    )
+                    entered_pool = pool.__enter__()
+                except BaseException as error:
+                    for offset in range(index, end):
+                        results[offset] = execute_submitted(offset, error)
+                    index = end
+                    continue
+
+                futures: dict[
+                    int,
+                    tuple[
+                        concurrent.futures.Future[str],
+                        concurrent.futures.Future[str],
+                    ],
+                ] = {}
+                submit_error: BaseException | None = None
+                next_offset = index
+                for offset in range(index, end):
+                    attempt: concurrent.futures.Future[str] = (
+                        concurrent.futures.Future()
+                    )
+                    try:
+                        future = entered_pool.submit(
+                            execute_attempt,
+                            offset,
+                            attempt,
+                        )
+                    except BaseException as error:
+                        submit_error = error
+                        if not isinstance(error, Exception):
+                            stop_failures = _PostEffectFailureCollector()
+                            self._request_stop_safely(stop_failures)
+                            if stop_failures:
+                                self._emit_post_effect_diagnostic(
+                                    tool_calls[offset],
+                                    stop_failures.snapshot()[0],
+                                    stop_failures,
+                                )
+                        results[offset] = settle_failed_attempt(
+                            offset,
+                            attempt,
+                            error,
+                            "parallel_submit",
+                        )
+                        next_offset = offset + 1
+                        break
+                    futures[offset] = (future, attempt)
+                    next_offset = offset + 1
+
+                for offset, (future, attempt) in futures.items():
+                    try:
                         results[offset] = future.result()
+                    except BaseException as error:
+                        results[offset] = settle_failed_attempt(
+                            offset,
+                            attempt,
+                            error,
+                            "parallel_future",
+                        )
+
+                exit_error: BaseException | None = None
+                try:
+                    pool.__exit__(None, None, None)
+                except BaseException as error:
+                    exit_error = error
+
+                if submit_error is not None:
+                    for offset in range(next_offset, end):
+                        results[offset] = execute_submitted(offset, submit_error)
+                if exit_error is not None:
+                    self._queue_batch_runtime_failure(
+                        "parallel_scheduler_cleanup",
+                        exit_error,
+                        tool_count=end - index,
+                    )
             index = end
         return results
-
-    def _parallel_safe(self, tool_call: "ToolCall") -> bool:
-        """Resolve one call's scheduling declaration conservatively."""
-        tool = self.agent.get_tool(tool_call.name)
-        return bool(tool is not None and getattr(tool, "parallel_safe", False))

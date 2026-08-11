@@ -162,6 +162,14 @@ class AgentLoop:
         self._tool_schema_cache_key: tuple | None = None
         self._tool_schema_cache: tuple[dict, ...] = ()
 
+    def _flush_batch_runtime_context(self) -> bool:
+        flush = getattr(
+            self.agent._executor,
+            "flush_pending_batch_runtime_context",
+            None,
+        )
+        return not callable(flush) or flush() is not None
+
     @staticmethod
     def _tool_signature(tools) -> tuple:
         return tuple(
@@ -921,6 +929,8 @@ class AgentLoop:
         self.agent.seal_startup_capabilities()
         if self.agent.stop_requested():
             return "(stopped by cancellation request)"
+        if not self._flush_batch_runtime_context():
+            return "(stopped: parallel batch runtime facts could not be published)"
         # Compress if needed
         self.agent.report_operation_phase("context_prepare")
         self.agent.maybe_compress_context(
@@ -1094,6 +1104,9 @@ class AgentLoop:
                         },
                         source="tool_result",
                     )
+
+            if not self._flush_batch_runtime_context():
+                return "(stopped: parallel batch runtime facts could not be published)"
 
             if self.agent._park_request is not None:
                 request_id = self.agent._park_request.get("guidance_request_id", "-")
