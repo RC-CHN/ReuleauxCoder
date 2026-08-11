@@ -58,6 +58,28 @@ class LLMDispatchCallbackError(RuntimeError):
         )
 
 
+class LLMToolArgumentsError(RuntimeError):
+    """Safe terminal failure for malformed provider tool arguments."""
+
+    phase = "response_parse"
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        error_type: str,
+        tool_call_index: int,
+    ) -> None:
+        self.code = code
+        self.error_type = error_type
+        self.tool_call_index = tool_call_index
+        super().__init__(
+            "LLM response contained invalid tool arguments "
+            f"(phase={self.phase}, code={code}, error_type={error_type}, "
+            f"tool_call_index={tool_call_index})"
+        )
+
+
 _STREAM_DONE = object()
 _STREAM_QUEUE_MAXSIZE = 256
 _CANCELLATION_POLL_SECONDS = 0.05
@@ -74,6 +96,30 @@ def _safe_exception_type(error: BaseException) -> str:
     ):
         return "Exception"
     return name
+
+
+def _reject_non_finite_json(_value: str) -> None:
+    raise ValueError("non-finite JSON number")
+
+
+def _parse_tool_arguments(
+    raw_arguments: object,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Parse one provider payload without retaining exception-controlled text."""
+    if not isinstance(raw_arguments, str):
+        return None, "invalid_tool_arguments_type", "TypeError"
+    try:
+        arguments = json.loads(
+            raw_arguments,
+            parse_constant=_reject_non_finite_json,
+        )
+    except json.JSONDecodeError:
+        return None, "invalid_tool_arguments_json", "JSONDecodeError"
+    except (RecursionError, TypeError, ValueError) as error:
+        return None, "invalid_tool_arguments_json", _safe_exception_type(error)
+    if not isinstance(arguments, dict):
+        return None, "invalid_tool_arguments_shape", "TypeError"
+    return arguments, None, None
 
 
 def _stream_options_unsupported(error: BaseException) -> bool:
@@ -928,15 +974,24 @@ class LLM:
 
             # Parse accumulated tool calls
             parsed: list[ToolCall] = []
-            for idx in sorted(tc_map):
+            for tool_call_index, idx in enumerate(sorted(tc_map)):
                 raw = tc_map[idx]
                 tool_call_id = raw.get("id") or f"tool_call_{idx}"
-                try:
-                    args = json.loads(raw["args"])
-                except (json.JSONDecodeError, KeyError):
-                    args = {}
+                args, argument_error_code, argument_error_type = _parse_tool_arguments(
+                    raw.get("args")
+                )
+                if args is None or argument_error_code is not None:
+                    raise LLMToolArgumentsError(
+                        code=argument_error_code or "invalid_tool_arguments",
+                        error_type=argument_error_type or "Exception",
+                        tool_call_index=tool_call_index,
+                    ) from None
                 parsed.append(
-                    ToolCall(id=tool_call_id, name=raw["name"], arguments=args)
+                    ToolCall(
+                        id=tool_call_id,
+                        name=raw["name"],
+                        arguments=args,
+                    )
                 )
 
             response = LLMResponse(
@@ -1065,12 +1120,22 @@ class LLM:
             finish_operation("cancelled", status="cancelled")
             raise
         except Exception as e:
-            finish_operation(
-                "failed",
-                status="failed",
-                detail=str(e)[:160] or type(e).__name__,
-                error_type=type(e).__name__,
-            )
+            failure_phase = "failed"
+            failure_error_type = type(e).__name__
+            if isinstance(e, LLMToolArgumentsError):
+                failure_phase = e.phase
+                failure_error_type = e.error_type
+            try:
+                finish_operation(
+                    failure_phase,
+                    status="failed",
+                    detail=str(e)[:160] or type(e).__name__,
+                    error_type=failure_error_type,
+                )
+            except Exception:
+                # Telemetry is secondary and must not replace the provider
+                # protocol failure that terminated this request.
+                pass
             diagnostic_path: Path | None = None
             try:
                 diagnostic_path = persist_llm_error_diagnostic(

@@ -20,6 +20,7 @@ from reuleauxcoder.services.llm.client import (
     LLM,
     LLMDispatchCallbackError,
     LLMRequestCancelled,
+    LLMToolArgumentsError,
 )
 from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
 
@@ -452,9 +453,121 @@ class _FakeChoice:
 
 
 class _FakeChunk:
-    def __init__(self, *, content: str = "", usage=None):
+    def __init__(self, *, content: str = "", usage=None, tool_calls=None):
         self.usage = usage
-        self.choices = [_FakeChoice(_FakeDelta(content=content))]
+        self.choices = [_FakeChoice(_FakeDelta(content=content, tool_calls=tool_calls))]
+
+
+def _fake_tool_call_delta(arguments: object):
+    return SimpleNamespace(
+        index=0,
+        id="provider-call-id",
+        function=SimpleNamespace(name="shell", arguments=arguments),
+    )
+
+
+def test_llm_rejects_malformed_tool_arguments_with_safe_failure_facts(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    sentinel = "provider-argument-secret-must-not-leak"
+    raw_arguments = '{"command":"' + sentinel
+    bus = UIEventBus()
+    phases: list[OperationPhaseChanged] = []
+
+    def capture(event) -> None:
+        if isinstance(event.payload, RuntimeEventPayload) and isinstance(
+            event.payload.event.payload, OperationPhaseChanged
+        ):
+            phases.append(event.payload.event.payload)
+
+    bus.subscribe(capture, replay_history=False)
+    llm = LLM(
+        model="demo-model",
+        api_key="sk-test-12345678",
+        debug_trace=True,
+        ui_bus=bus,
+    )
+    llm._call_with_retry = lambda _params: iter(  # type: ignore[method-assign]
+        [_FakeChunk(tool_calls=[_fake_tool_call_delta(raw_arguments)])]
+    )
+
+    try:
+        llm.chat([{"role": "user", "content": "Hi"}])
+    except LLMToolArgumentsError as error:
+        assert error.phase == "response_parse"
+        assert error.code == "invalid_tool_arguments_json"
+        assert error.error_type == "JSONDecodeError"
+        assert error.tool_call_index == 0
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        assert sentinel not in str(error)
+    else:
+        raise AssertionError("malformed tool arguments must terminate the response")
+
+    assert phases[-1].phase == "response_parse"
+    assert phases[-1].status == "failed"
+    assert phases[-1].error_type == "JSONDecodeError"
+    observable_text = "\n".join(
+        [
+            *(str(phase) for phase in phases),
+            *(
+                path.read_text(encoding="utf-8")
+                for path in (tmp_path / ".rcoder" / "diagnostics").glob("*.json")
+            ),
+        ]
+    )
+    assert sentinel not in observable_text
+
+
+def test_llm_rejects_non_object_tool_arguments_and_accepts_empty_object(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+    llm._call_with_retry = lambda _params: iter(  # type: ignore[method-assign]
+        [_FakeChunk(tool_calls=[_fake_tool_call_delta("[]")])]
+    )
+
+    try:
+        llm.chat([{"role": "user", "content": "Hi"}])
+    except LLMToolArgumentsError as error:
+        assert error.code == "invalid_tool_arguments_shape"
+        assert error.error_type == "TypeError"
+    else:
+        raise AssertionError("tool arguments must be a JSON object")
+
+    llm._call_with_retry = lambda _params: iter(  # type: ignore[method-assign]
+        [_FakeChunk(tool_calls=[_fake_tool_call_delta("{}")])]
+    )
+    response = llm.chat([{"role": "user", "content": "Hi"}])
+    assert response.tool_calls[0].arguments == {}
+
+
+def test_llm_keeps_tool_argument_failure_when_terminal_telemetry_breaks(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    def stream():
+        yield _FakeChunk()
+
+        def fail_telemetry(**_kwargs) -> None:
+            raise RuntimeError("secondary telemetry failure")
+
+        llm._emit_operation_phase = fail_telemetry  # type: ignore[method-assign]
+        yield _FakeChunk(tool_calls=[_fake_tool_call_delta("not-json")])
+
+    llm._call_with_retry = lambda _params: stream()  # type: ignore[method-assign]
+
+    try:
+        llm.chat([{"role": "user", "content": "Hi"}])
+    except LLMToolArgumentsError as error:
+        assert error.code == "invalid_tool_arguments_json"
+        assert error.error_type == "JSONDecodeError"
+    else:
+        raise AssertionError("secondary telemetry must not replace primary failure")
 
 
 class _DeferredDispatchProbe(TransformHook[BeforeLLMRequestContext]):
