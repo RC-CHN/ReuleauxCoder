@@ -10,6 +10,7 @@ from reuleauxcoder.services.llm.client import LLM
 _LLM_RUNTIME_FIELDS = (
     "model",
     "api_key",
+    "provider",
     "base_url",
     "temperature",
     "max_tokens",
@@ -24,7 +25,18 @@ _LLM_RUNTIME_FIELDS = (
 
 def llm_runtime_kwargs(settings: Any, *, debug_trace: bool = False) -> dict[str, Any]:
     """Extract LLM constructor/reconfigure kwargs from a config/profile-like object."""
-    kwargs = {field: getattr(settings, field) for field in _LLM_RUNTIME_FIELDS}
+    kwargs = {
+        field: (
+            getattr(
+                settings,
+                "provider",
+                getattr(settings, "provider_family", "openai-compatible"),
+            )
+            if field == "provider"
+            else getattr(settings, field)
+        )
+        for field in _LLM_RUNTIME_FIELDS
+    }
     kwargs["debug_trace"] = debug_trace
     return kwargs
 

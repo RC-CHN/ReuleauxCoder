@@ -10,6 +10,7 @@ CONFIG_SCHEMA = {
             "profile_name": {
                 "model": "string (required)",
                 "api_key": "string (required)",
+                "provider": "string (default: openai-compatible; one of: openai-compatible, anthropic)",
                 "base_url": "string (optional)",
                 "max_tokens": "int (default: 4096)",
                 "temperature": "float (default: 0.0)",
@@ -37,6 +38,7 @@ CONFIG_SCHEMA = {
     "app": {
         "model": "string (legacy, auto-migrated)",
         "api_key": "string (legacy, auto-migrated)",
+        "provider": "string (legacy, auto-migrated)",
         "base_url": "string (legacy, auto-migrated)",
         "max_tokens": "int (legacy, auto-migrated)",
         "temperature": "float (legacy, auto-migrated)",
@@ -185,6 +187,7 @@ DEFAULT_ACTIVE_MODE = "coder"
 # Default values for configuration
 DEFAULTS = {
     "model": "gpt-4o",
+    "provider": "openai-compatible",
     "max_tokens": 4096,
     "temperature": 0.0,
     "max_context_tokens": 128_000,

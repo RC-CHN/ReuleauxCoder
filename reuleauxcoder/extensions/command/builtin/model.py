@@ -239,6 +239,7 @@ def _handle_set_main_model(command, ctx) -> CommandEffect:
     ctx.config.active_main_model_profile = profile_name
     ctx.config.model = profile.model
     ctx.config.api_key = profile.api_key
+    ctx.config.provider = getattr(profile, "provider", "openai-compatible")
     ctx.config.base_url = profile.base_url
     ctx.config.temperature = profile.temperature
     ctx.config.max_tokens = profile.max_tokens
@@ -323,6 +324,7 @@ def _build_model_profiles_view(config, runtime_state=None) -> ModelListViewModel
             ModelProfileViewModel(
                 name=name,
                 model=profile.model,
+                provider=getattr(profile, "provider", "openai-compatible"),
                 active_main=active_main == name,
                 active_sub=active_sub == name,
                 base_url=profile.base_url,

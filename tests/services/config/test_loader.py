@@ -96,6 +96,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
                     "main": {
                         "model": "gpt-main",
                         "api_key": "main-key",
+                        "provider": "anthropic",
                         "temperature": 0.1,
                         "preserve_reasoning_content": True,
                         "backfill_reasoning_content_for_tool_calls": True,
@@ -148,6 +149,8 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
 
     assert config.model == "gpt-main"
     assert config.api_key == "main-key"
+    assert config.provider == "anthropic"
+    assert config.model_profiles["sub"].provider == "openai-compatible"
     assert config.active_model_profile == "main"
     assert config.active_main_model_profile == "main"
     assert config.active_sub_model_profile == "sub"

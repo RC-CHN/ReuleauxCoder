@@ -53,6 +53,7 @@ class HelpViewModel:
 class ModelProfileViewModel:
     name: str
     model: str
+    provider: str
     active_main: bool
     active_sub: bool
     base_url: str | None
@@ -86,6 +87,7 @@ class ModelListViewModel:
                 {
                     "name": profile.name,
                     "model": profile.model,
+                    "provider": profile.provider,
                     "active": profile.active_main,
                     "active_main": profile.active_main,
                     "active_sub": profile.active_sub,

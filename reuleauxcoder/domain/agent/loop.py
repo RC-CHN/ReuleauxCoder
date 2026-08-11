@@ -26,7 +26,7 @@ from reuleauxcoder.domain.llm.context_messages import (
     normalize_provider_message_roles,
     synthetic_user_message,
 )
-from reuleauxcoder.services.llm.client import LLMRequestCancelled
+from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
 
 
 _SINGLE_SYSTEM_PROTOCOL_MARKER = "# Runtime Context Protocol"
@@ -751,8 +751,14 @@ class AgentLoop:
             history_version=self.agent.context.history_version,
             model_profile=model_profile
             or str(getattr(self.agent.llm, "model", "unknown")),
-            provider_family="openai-compatible",
-            request_mode="chat-completions",
+            provider_family=str(
+                getattr(self.agent.llm, "provider_family", "openai-compatible")
+            ),
+            request_mode=(
+                "messages"
+                if getattr(self.agent.llm, "provider_family", None) == "anthropic"
+                else "chat-completions"
+            ),
             request_settings={
                 "configured": self._wire_settings(),
                 "dispatched": request_settings or self._wire_settings(),

@@ -29,10 +29,25 @@ def test_model_profile_config_from_dict_uses_defaults() -> None:
     assert profile.name == "main"
     assert profile.model == "gpt-4o"
     assert profile.api_key == ""
+    assert profile.provider == "openai-compatible"
     assert profile.max_tokens == 4096
     assert profile.temperature == 0.0
     assert profile.preserve_reasoning_content is True
     assert profile.backfill_reasoning_content_for_tool_calls is False
+
+
+def test_model_profile_config_roundtrips_native_provider() -> None:
+    profile = ModelProfileConfig.from_dict(
+        "native",
+        {
+            "model": "claude-test",
+            "api_key": "key",
+            "provider": "anthropic",
+        },
+    )
+
+    assert profile.provider == "anthropic"
+    assert profile.to_dict()["provider"] == "anthropic"
 
 
 def test_model_profile_config_default_reasoning_effort_param() -> None:
@@ -103,6 +118,7 @@ def test_mode_config_from_dict_normalizes_invalid_fields() -> None:
 def test_config_validate_collects_multiple_errors() -> None:
     config = Config(
         api_key="",
+        provider="unsupported",
         max_tokens=0,
         temperature=3.0,
         tool_output_max_chars=0,
@@ -121,6 +137,7 @@ def test_config_validate_collects_multiple_errors() -> None:
                 name="bad",
                 model="gpt",
                 api_key="",
+                provider="unsupported",
                 max_tokens=0,
                 temperature=5.0,
                 max_context_tokens=0,
@@ -138,6 +155,11 @@ def test_config_validate_collects_multiple_errors() -> None:
     assert "api_key is required" in errors
     assert "max_tokens must be positive" in errors
     assert "temperature must be between 0 and 2" in errors
+    assert "provider must be openai-compatible or anthropic" in errors
+    assert (
+        "model_profiles[bad].provider must be openai-compatible or anthropic"
+        in errors
+    )
     assert "tool_output_max_chars must be positive" in errors
     assert "tool_output_max_lines must be positive" in errors
     assert "ui.max_preview_chars must be positive" in errors

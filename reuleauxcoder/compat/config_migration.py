@@ -28,6 +28,7 @@ def migrate_legacy_config(data: dict) -> tuple[dict, bool]:
                 "default": {
                     "model": app.get("model", "gpt-4o"),
                     "api_key": app.get("api_key", ""),
+                    "provider": app.get("provider", "openai-compatible"),
                     "base_url": app.get("base_url"),
                     "max_tokens": app.get("max_tokens", 4096),
                     "temperature": app.get("temperature", 0.0),
@@ -62,6 +63,7 @@ def migrate_legacy_config(data: dict) -> tuple[dict, bool]:
         legacy_keys = {
             "model",
             "api_key",
+            "provider",
             "base_url",
             "max_tokens",
             "temperature",

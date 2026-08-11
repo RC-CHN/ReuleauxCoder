@@ -22,6 +22,7 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
 )
 from reuleauxcoder.domain.llm.context_messages import normalize_provider_message_roles
+from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
@@ -34,15 +35,19 @@ from reuleauxcoder.services.llm.sanitizer import (
     DEFAULT_REASONING_REPLAY_PLACEHOLDER,
     sanitize_messages_for_llm,
 )
+from reuleauxcoder.services.llm.providers import (
+    ANTHROPIC_DEFAULT_BASE_URL,
+    AnthropicMessagesProvider,
+    OpenAICompatibleProvider,
+    ProviderAdapter,
+    close_provider,
+    normalize_provider_family,
+)
 
 
 MAX_DEBUG_CONTENT_CHARS = 400
 MAX_DEBUG_STREAM_EVENTS = 200
 LLM_MAX_ATTEMPTS = 3
-
-
-class LLMRequestCancelled(RuntimeError):
-    """Raised when a scoped Agent cancels an in-flight streamed request."""
 
 
 class LLMDispatchCallbackError(RuntimeError):
@@ -386,6 +391,7 @@ class LLM:
         model: str,
         api_key: str,
         base_url: Optional[str] = None,
+        provider: str = "openai-compatible",
         temperature: float = 0.0,
         max_tokens: int = 4096,
         preserve_reasoning_content: bool = True,
@@ -400,15 +406,24 @@ class LLM:
         ui_bus: UIEventBus | None = None,
     ):
         self.model = model
+        self.provider_family = normalize_provider_family(provider)
+        self.provider = self.provider_family
+        if self.provider_family not in {"openai-compatible", "anthropic"}:
+            raise ValueError(f"Unsupported model provider: {self.provider_family}")
+        effective_base_url = (
+            base_url
+            if base_url is not None or self.provider_family != "anthropic"
+            else ANTHROPIC_DEFAULT_BASE_URL
+        )
         # Retry ownership lives in _call_with_retry so attempts are observable
         # and cannot multiply with the SDK's own retry loop.
-        self.client = OpenAI(
+        self._provider_adapter = self._build_provider_adapter(
+            self.provider_family,
             api_key=api_key,
-            base_url=base_url,
-            max_retries=0,
+            base_url=effective_base_url,
         )
         self.api_key = api_key
-        self.base_url = base_url
+        self.base_url = effective_base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.preserve_reasoning_content = preserve_reasoning_content
@@ -425,6 +440,7 @@ class LLM:
         self.ui_bus = ui_bus
         self.last_dispatched_request: dict[str, Any] | None = None
         self.last_debug_trace_path: str | None = None
+        self.last_provider_cleanup_error_type: str | None = None
         self.performance_monitor: RuntimePerformanceMonitor | None = None
 
     def reconfigure(
@@ -433,6 +449,7 @@ class LLM:
         model: str,
         api_key: str,
         base_url: Optional[str],
+        provider: str | None = None,
         temperature: float,
         max_tokens: int,
         preserve_reasoning_content: bool | None = None,
@@ -450,14 +467,51 @@ class LLM:
         All optional fields are always applied, even when ``None``, so that
         switching model profiles fully resets reasoning/thinking state.
         """
-        self.model = model
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            max_retries=0,
+        provider_family = normalize_provider_family(
+            self.provider_family if provider is None else provider
         )
+        if provider_family not in {"openai-compatible", "anthropic"}:
+            raise ValueError(f"Unsupported model provider: {provider_family}")
+        effective_base_url = (
+            base_url
+            if base_url is not None or provider_family != "anthropic"
+            else ANTHROPIC_DEFAULT_BASE_URL
+        )
+        replacement = self._build_provider_adapter(
+            provider_family,
+            api_key=api_key,
+            base_url=effective_base_url,
+        )
+        previous = self._provider_adapter
+        self._provider_adapter = replacement
+        cleanup_error_type = close_provider(previous)
+        self.last_provider_cleanup_error_type = cleanup_error_type
+        if cleanup_error_type is not None:
+            monitor = self.performance_monitor
+            if monitor is not None:
+                try:
+                    monitor.record(
+                        "model",
+                        "provider_cleanup",
+                        0.0,
+                        status="error",
+                        attributes={"error_type": cleanup_error_type},
+                    )
+                except Exception:
+                    pass
+            try:
+                self._emit_debug(
+                    "[llm] previous provider cleanup failed",
+                    phase="provider_cleanup",
+                    error_type=cleanup_error_type,
+                )
+            except Exception:
+                pass
+        self.model = model
+        self.provider_family = provider_family
+        self.provider = provider_family
         self.api_key = api_key
-        self.base_url = base_url
+        self.base_url = effective_base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.preserve_reasoning_content = (
@@ -476,6 +530,40 @@ class LLM:
         self.reasoning_effort_param = reasoning_effort_param or "reasoning_effort"
         if debug_trace is not None:
             self.debug_trace = debug_trace
+
+    @staticmethod
+    def _build_provider_adapter(
+        family: str,
+        *,
+        api_key: str,
+        base_url: str | None,
+    ) -> ProviderAdapter:
+        if family == "anthropic":
+            return AnthropicMessagesProvider(
+                api_key=api_key,
+                base_url=base_url,
+            )
+        return OpenAICompatibleProvider(
+            OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                max_retries=0,
+            ),
+            (RateLimitError, APITimeoutError, APIConnectionError),
+        )
+
+    @property
+    def client(self) -> object:
+        """Compatibility access to the active adapter's concrete client."""
+        return self._provider_adapter.client
+
+    @client.setter
+    def client(self, value: object) -> None:
+        self._provider_adapter.client = value
+
+    def close(self) -> None:
+        """Release the active provider; runner cleanup owns failure isolation."""
+        self._provider_adapter.close()
 
     def _emit_debug(self, message: str, **data: Any) -> None:
         """Emit a debug UI event when a bus is attached."""
@@ -1053,7 +1141,7 @@ class LLM:
                         "preserve_reasoning_content": self.preserve_reasoning_content,
                     },
                     # Credential-free, hook-transformed request exactly as it
-                    # was handed to the OpenAI-compatible client. This is
+                    # was handed to the provider adapter. This is
                     # intentionally debug-only and never embedded in the
                     # append-only session ledger.
                     "dispatched_request": self.last_dispatched_request,
@@ -1197,8 +1285,10 @@ class LLM:
             if cancellation_event is not None and cancellation_event.is_set():
                 raise LLMRequestCancelled("LLM request cancelled before retry")
             try:
-                return self.client.chat.completions.create(**params)
-            except (RateLimitError, APITimeoutError, APIConnectionError) as error:
+                return self._provider_adapter.open_stream(params)
+            except Exception as error:
+                if not self._provider_adapter.is_retryable(error):
+                    raise
                 if cancellation_event is not None and cancellation_event.is_set():
                     raise LLMRequestCancelled("LLM request cancelled during retry")
                 if attempt == max_retries - 1:

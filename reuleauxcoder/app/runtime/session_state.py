@@ -523,6 +523,7 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
         agent.llm.reconfigure(
             model=profile.model,
             api_key=profile.api_key,
+            provider=getattr(profile, "provider", "openai-compatible"),
             base_url=profile.base_url,
             temperature=profile.temperature,
             max_tokens=profile.max_tokens,

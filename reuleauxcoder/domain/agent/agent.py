@@ -12,8 +12,8 @@ import uuid
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.approval import ApprovalProvider
+    from reuleauxcoder.domain.llm.protocols import LLMProtocol
     from reuleauxcoder.domain.process_manager import ProcessManager
-    from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.extensions.tools.base import Tool
     from reuleauxcoder.domain.config.models import Config
     from reuleauxcoder.domain.extensions import ToolExtensionRuntime
@@ -44,6 +44,7 @@ from reuleauxcoder.domain.plan import PlanController
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
+from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
 from reuleauxcoder.domain.llm.context_messages import (
     escape_context_attribute,
     escape_context_payload,
@@ -51,7 +52,6 @@ from reuleauxcoder.domain.llm.context_messages import (
     synthetic_user_message,
 )
 from reuleauxcoder.infrastructure.platform import get_platform_info
-from reuleauxcoder.services.llm.client import LLMRequestCancelled
 from reuleauxcoder.services.prompt.builder import system_prompt
 
 
@@ -112,7 +112,7 @@ class Agent:
 
     def __init__(
         self,
-        llm: LLM,
+        llm: LLMProtocol,
         tools: Optional[List[Tool]] = None,
         config: Config | None = None,
         max_context_tokens: int = 128_000,

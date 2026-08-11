@@ -61,6 +61,7 @@ class ModelProfileConfig:
     name: str
     model: str
     api_key: str
+    provider: str = "openai-compatible"
     base_url: Optional[str] = None
     max_tokens: int = 4096
     temperature: float = 0.0
@@ -79,6 +80,7 @@ class ModelProfileConfig:
         return {
             "model": self.model,
             "api_key": self.api_key,
+            "provider": self.provider,
             "base_url": self.base_url,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
@@ -100,6 +102,7 @@ class ModelProfileConfig:
             name=name,
             model=d.get("model", "gpt-4o"),
             api_key=d.get("api_key", ""),
+            provider=d.get("provider", "openai-compatible"),
             base_url=d.get("base_url"),
             max_tokens=d.get("max_tokens", 4096),
             temperature=d.get("temperature", 0.0),
@@ -241,6 +244,7 @@ class Config:
 
     model: str = "gpt-4o"
     api_key: str = ""
+    provider: str = "openai-compatible"
     base_url: Optional[str] = None
     max_tokens: int = 4096
     temperature: float = 0.0
@@ -322,6 +326,8 @@ class Config:
             errors.append("max_tokens must be positive")
         if self.temperature < 0 or self.temperature > 2:
             errors.append("temperature must be between 0 and 2")
+        if self.provider not in {"openai-compatible", "anthropic"}:
+            errors.append("provider must be openai-compatible or anthropic")
         if self.tool_output_max_chars < 1:
             errors.append("tool_output_max_chars must be positive")
         if self.tool_output_max_lines < 1:
@@ -373,6 +379,11 @@ class Config:
             if profile.temperature < 0 or profile.temperature > 2:
                 errors.append(
                     f"model_profiles[{name}].temperature must be between 0 and 2"
+                )
+            if profile.provider not in {"openai-compatible", "anthropic"}:
+                errors.append(
+                    f"model_profiles[{name}].provider must be "
+                    "openai-compatible or anthropic"
                 )
 
         if self.active_mode and self.active_mode not in self.modes:

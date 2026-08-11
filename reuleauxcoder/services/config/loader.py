@@ -47,6 +47,7 @@ class ConfigLoader:
     _LLM_PARAM_FIELDS = [
         "model",
         "api_key",
+        "provider",
         "base_url",
         "max_tokens",
         "temperature",
@@ -539,6 +540,7 @@ class ConfigLoader:
                     "default": {
                         "model": "gpt-4o",
                         "api_key": "your-api-key-here",
+                        "provider": "openai-compatible",
                         "base_url": "https://api.openai.com/v1",
                         "max_tokens": 4096,
                         "temperature": 0.0,

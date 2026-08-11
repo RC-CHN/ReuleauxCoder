@@ -214,6 +214,7 @@ def render_model_profiles_view(renderer, event) -> bool:
     )
     table.add_column("Profile")
     table.add_column("Route")
+    table.add_column("Provider")
     table.add_column("Model")
     table.add_column("Context")
     for profile in model.profiles:
@@ -228,6 +229,7 @@ def render_model_profiles_view(renderer, event) -> bool:
         table.add_row(
             profile.name,
             routes or "-",
+            profile.provider,
             profile.model,
             str(profile.max_context_tokens),
         )

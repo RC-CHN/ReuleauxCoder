@@ -430,6 +430,17 @@ class _HookAwareBudgetLLM(_BudgetLLM):
         return self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
 
 
+def test_request_envelope_records_native_provider_family_and_mode() -> None:
+    llm = _BudgetLLM()
+    llm.provider_family = "anthropic"
+    agent = Agent(llm=llm, tools=[])
+
+    assert agent._loop.run() == "done"
+    assert agent.replay_envelope is not None
+    assert agent.replay_envelope.provider_family == "anthropic"
+    assert agent.replay_envelope.request_mode == "messages"
+
+
 class _BudgetInjectionHook(TransformHook[BeforeLLMRequestContext]):
     def __init__(self) -> None:
         super().__init__(name="budget_injection")

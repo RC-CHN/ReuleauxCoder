@@ -48,6 +48,7 @@ def _build_ctx() -> SimpleNamespace:
         name="beta",
         model="model-beta",
         api_key="key-beta",
+        provider="anthropic",
         base_url="https://beta.example",
         max_tokens=8000,
         temperature=0.2,
@@ -121,6 +122,8 @@ def test_set_main_model_updates_global_and_runtime(monkeypatch) -> None:
     assert ctx.config.active_main_model_profile == "beta"
     assert ctx.config.active_model_profile == "beta"
     assert ctx.config.model == "model-beta"
+    assert ctx.config.provider == "anthropic"
+    assert ctx.agent.llm.provider == "anthropic"
     assert ctx.agent.active_main_model_profile == "beta"
     assert result.state["active_main_profile"] == "beta"
 

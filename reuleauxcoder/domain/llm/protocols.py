@@ -1,31 +1,37 @@
-"""LLM domain protocols - abstract interfaces for LLM providers."""
+"""Provider-neutral contracts consumed by the agent runtime."""
 
 from collections.abc import Callable
-from typing import Protocol, Optional
+from typing import Any, Protocol, runtime_checkable
+
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.domain.llm.models import LLMResponse
 
 
+@runtime_checkable
 class LLMProtocol(Protocol):
-    """Protocol defining the interface for LLM implementations."""
+    """Exact model-client surface used by ``Agent`` and ``AgentLoop``."""
 
     model: str
+    provider_family: str
+    max_tokens: int
+    debug_trace: bool
+    last_dispatched_request: dict[str, Any] | None
+    last_debug_trace_path: str | None
 
     def chat(
         self,
         messages: list[dict],
-        tools: Optional[list[dict]] = None,
-        on_token: Optional[Callable[[str], None]] = None,
+        tools: list[dict] | None = None,
+        on_token: Callable[[str], None] | None = None,
+        on_reasoning_token: Callable[[str], None] | None = None,
+        hook_registry: Any | None = None,
+        session_id: str | None = None,
+        trace_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        cancellation_event: CancellationSignal | None = None,
+        max_output_tokens: int | None = None,
     ) -> LLMResponse:
-        """Send messages and receive a response.
-
-        Args:
-            messages: List of message dictionaries
-            tools: Optional list of tool schemas
-            on_token: Optional callback invoked for each streamed text chunk
-
-        Returns:
-            LLMResponse with content, tool calls, and token counts
-        """
+        """Dispatch one fully prepared provider request."""
         ...
 
 

@@ -809,6 +809,7 @@ def _model_view_payload() -> object:
                 ModelProfileViewModel(
                     name="haiku",
                     model="claude-haiku",
+                    provider="anthropic",
                     active_main=False,
                     active_sub=True,
                     base_url=None,
@@ -820,6 +821,7 @@ def _model_view_payload() -> object:
                 ModelProfileViewModel(
                     name="sonnet",
                     model="claude-sonnet",
+                    provider="anthropic",
                     active_main=True,
                     active_sub=False,
                     base_url=None,
