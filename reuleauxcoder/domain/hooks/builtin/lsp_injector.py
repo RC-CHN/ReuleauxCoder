@@ -11,6 +11,7 @@ The LspManager reference is bound through the agent's scoped hook registry.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -24,8 +25,14 @@ from reuleauxcoder.domain.hooks.runtime_overlay import (
     inject_runtime_overlay_region,
 )
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext
+from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
+    render_diagnostic_outcomes,
+    safe_observer_error_type,
+)
 from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
 from reuleauxcoder.interfaces.events import UIEventKind
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -86,7 +93,12 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             session_generation=context.session_generation,
             session_id=context.session_id,
         )
-        if not batches:
+        failure_outcomes = manager.pending_diagnostic_failure_outcomes_for_owner(
+            agent_id=context.agent_id,
+            session_generation=context.session_generation,
+            session_id=context.session_id,
+        )
+        if not batches and not failure_outcomes:
             return context
         blocks = [batch.block for batch in batches]
         consumer_id = (
@@ -110,7 +122,8 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             max_diagnostics=manager.config.max_diagnostics,
             include_warnings=manager.config.include_warnings,
         )
-        if rendered is None:
+        rendered_failures = render_diagnostic_outcomes(failure_outcomes)
+        if rendered is None and rendered_failures is None:
             for batch in batches:
                 manager.acknowledge_diagnostic_batch(
                     batch.batch_id,
@@ -126,10 +139,20 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         # Keep generated diagnostics in their own untrusted-data region before
         # the trusted runtime instruction. The final overlay is volatile by
         # design, so this does not invalidate any earlier stable prefix.
+        rendered_parts: list[str] = []
+        if rendered is not None:
+            rendered_parts.append(rendered)
+        if rendered_failures is not None:
+            rendered_parts.append(
+                "<lsp_diagnostic_outcomes>\n"
+                f"{rendered_failures}\n"
+                "</lsp_diagnostic_outcomes>"
+            )
+        rendered_payload = "\n\n".join(rendered_parts)
         injection = (
             "[LSP DIAGNOSTICS]\n"
             '<lsp_diagnostics trust="untrusted_data">\n'
-            f"{rendered}\n"
+            f"{rendered_payload}\n"
             "</lsp_diagnostics>\n"
         )
         if not inject_runtime_overlay_region(context.messages, injection):
@@ -149,15 +172,18 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             ):
                 return
             carried_forward_ids = {
-                batch.batch_id
-                for batch in batches
-                if batch.route.turn_id is not None
+                result.batch_id
+                for result in (*batches, *failure_outcomes)
+                if result.route.turn_id is not None
                 and context.turn_id is not None
-                and batch.route.turn_id != context.turn_id
+                and result.route.turn_id != context.turn_id
             }
+            result_ids = tuple(
+                result.batch_id for result in (*batches, *failure_outcomes)
+            )
             try:
                 acknowledged = manager.acknowledge_diagnostic_batches(
-                    tuple(batch.batch_id for batch in batches),
+                    result_ids,
                     consumer_id=consumer_id,
                     carried_forward_ids=carried_forward_ids,
                 )
@@ -168,12 +194,18 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
                 remove_injection()
                 ui_bus = getattr(manager, "ui_bus", None)
                 if ui_bus is not None:
-                    ui_bus.warning(
-                        "LSP diagnostics omitted because another request "
-                        "already committed the same batch",
-                        kind=UIEventKind.SYSTEM,
-                        batch_count=len(batches),
-                    )
+                    try:
+                        ui_bus.warning(
+                            "LSP diagnostics omitted because another request "
+                            "already committed the same batch",
+                            kind=UIEventKind.SYSTEM,
+                            batch_count=len(result_ids),
+                        )
+                    except Exception as error:
+                        logger.warning(
+                            "LSP diagnostics race UI observer failed: error_type=%s",
+                            safe_observer_error_type(error),
+                        )
                 return
 
             # Emit feedback only after the same payload crosses the dispatch
@@ -187,10 +219,16 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             if warn_count:
                 parts.append(f"{warn_count} warning{'s' if warn_count != 1 else ''}")
             if parts:
-                ui_bus.info(
-                    f"LSP: {', '.join(parts)} injected",
-                    kind=UIEventKind.SYSTEM,
-                )
+                try:
+                    ui_bus.info(
+                        f"LSP: {', '.join(parts)} injected",
+                        kind=UIEventKind.SYSTEM,
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "LSP diagnostics UI observer failed: error_type=%s",
+                        safe_observer_error_type(error),
+                    )
 
         context.defer_until_dispatch(commit_injection)
 

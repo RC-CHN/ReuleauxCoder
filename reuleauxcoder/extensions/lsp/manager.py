@@ -66,6 +66,10 @@ from reuleauxcoder.extensions.lsp.diagnostics import (
     DiagnosticRoute,
     DiagnosticRouteFilter,
 )
+from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
+    DiagnosticOutcome,
+    DiagnosticOutcomeStatus,
+)
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
     LspServerLaunch,
@@ -327,8 +331,11 @@ class LspManager:
         self._next_work_sequence = 0
 
         # Routed results.  Clean publishes are retained as empty batches until
-        # the owning consumer acknowledges them.
+        # the owning consumer acknowledges them.  Non-published terminal
+        # outcomes live separately: a timeout/failure must remain visible but
+        # must never clear or replace the last published document state.
         self._diagnostic_batches: dict[str, DiagnosticBatch] = {}
+        self._diagnostic_failure_outcomes: dict[str, DiagnosticOutcome] = {}
         self._pending_diagnostic_requests: set[str] = set()
         self._acknowledged_batches: dict[str, str] = {}
         self._latest_diagnostic_sequence: dict[
@@ -343,6 +350,7 @@ class LspManager:
             "overwritten": 0,
             "capacity_evicted": 0,
             "stale_discarded": 0,
+            **{f"outcome_{status.value}": 0 for status in DiagnosticOutcomeStatus},
         }
 
         # Lock (RLock for reentrancy in health_check)
@@ -655,6 +663,24 @@ class LspManager:
             )
             fallback.failure_facts = facts
             return fallback
+
+    def _diagnostic_failure_facts(
+        self,
+        error: Exception,
+        key: TransportKey | None,
+        *,
+        phase: str,
+    ) -> LspFailureFacts:
+        """Freeze the same safe facts used by active tools for diagnostics."""
+        frozen = self._freeze_failure(error, key, phase=phase)
+        facts = getattr(frozen, "failure_facts", None)
+        if isinstance(facts, LspFailureFacts):
+            return facts
+        return self._capture_failure_facts(
+            key,
+            phase=phase,
+            error_type=type(error).__name__,
+        )
 
     def transport_status_for_file(self, file_path: Path) -> LspTransportStatus | None:
         """Resolve a privileged raw slot, initially ``unstarted g0``."""
@@ -1073,8 +1099,17 @@ class LspManager:
                     ),
                 )
             self._tool_queue.clear()
+            for request in self._diagnostics_queue:
+                self._complete_diagnostic_request_locked(
+                    request,
+                    status=DiagnosticOutcomeStatus.CANCELLED,
+                    failure=self._diagnostic_failure_facts(
+                        LspRequestCancelled("LSP manager shutting down"),
+                        request.transport_key,
+                        phase="shutdown",
+                    ),
+                )
             self._diagnostics_queue.clear()
-            self._pending_diagnostic_requests.clear()
             self._diagnostic_batches.clear()
             self._acknowledged_batches.clear()
             self._latest_diagnostic_sequence.clear()
@@ -1166,16 +1201,6 @@ class LspManager:
                     self._advance_session_generation_locked(
                         route.agent_id, route.session_generation
                     )
-            owner = self._diagnostic_owner(route)
-            overwritten = [
-                current_id
-                for current_id, pending in self._diagnostic_batches.items()
-                if self._diagnostic_owner(pending.route) == owner
-                and pending.route.file_path == path
-            ]
-            for current_id in overwritten:
-                self._diagnostic_batches.pop(current_id, None)
-            self._diagnostic_batch_metrics["overwritten"] += len(overwritten)
             self._next_diagnostic_sequence += 1
             request_sequence = self._next_diagnostic_sequence
             self._next_work_sequence += 1
@@ -1188,8 +1213,8 @@ class LspManager:
             )
             self._latest_diagnostic_sequence[key] = request_sequence
             batch_id = uuid.uuid4().hex
-            superseded_ids = {
-                item.batch_id
+            superseded = tuple(
+                item
                 for item in self._diagnostics_queue
                 if (
                     item.route.agent_id,
@@ -1198,13 +1223,18 @@ class LspManager:
                     item.route.file_path,
                 )
                 == key
-            }
+            )
+            superseded_ids = {item.batch_id for item in superseded}
             self._diagnostics_queue = [
                 item
                 for item in self._diagnostics_queue
                 if item.batch_id not in superseded_ids
             ]
-            self._pending_diagnostic_requests.difference_update(superseded_ids)
+            for item in superseded:
+                self._complete_diagnostic_request_locked(
+                    item,
+                    status=DiagnosticOutcomeStatus.STALE_DISCARDED,
+                )
             queue_depth = len(self._tool_queue) + len(self._diagnostics_queue) + 1
             self._diagnostics_queue.append(
                 DiagnosticRequest(
@@ -1239,25 +1269,40 @@ class LspManager:
     ) -> None:
         self._prune_expired_diagnostic_batches_locked()
         self._session_generations[agent_id] = generation
-        stale_request_ids = {
-            request.batch_id
+        stale_requests = tuple(
+            request
             for request in self._diagnostics_queue
             if self._is_older_generation(request.route, agent_id, generation)
-        }
+        )
+        stale_request_ids = {request.batch_id for request in stale_requests}
         self._diagnostics_queue = [
             request
             for request in self._diagnostics_queue
             if request.batch_id not in stale_request_ids
         ]
-        self._pending_diagnostic_requests.difference_update(stale_request_ids)
-        previous_batch_count = len(self._diagnostic_batches)
+        for request in stale_requests:
+            self._complete_diagnostic_request_locked(
+                request,
+                status=DiagnosticOutcomeStatus.STALE_DISCARDED,
+            )
+        previous_result_ids = set(self._diagnostic_batches) | set(
+            self._diagnostic_failure_outcomes
+        )
         self._diagnostic_batches = {
             batch_id: batch
             for batch_id, batch in self._diagnostic_batches.items()
             if not self._is_older_generation(batch.route, agent_id, generation)
         }
-        self._diagnostic_batch_metrics["stale_discarded"] += previous_batch_count - len(
-            self._diagnostic_batches
+        self._diagnostic_failure_outcomes = {
+            batch_id: outcome
+            for batch_id, outcome in self._diagnostic_failure_outcomes.items()
+            if not self._is_older_generation(outcome.route, agent_id, generation)
+        }
+        retained_result_ids = set(self._diagnostic_batches) | set(
+            self._diagnostic_failure_outcomes
+        )
+        self._diagnostic_batch_metrics["stale_discarded"] += len(
+            previous_result_ids - retained_result_ids
         )
         self._latest_diagnostic_sequence = {
             key: sequence
@@ -1304,6 +1349,23 @@ class LspManager:
                 return None
             return ()
 
+    def diagnostic_request_outcome(self, batch_id: str) -> DiagnosticOutcome | None:
+        """Return a typed terminal outcome, or ``None`` while still pending.
+
+        Published results are projected from the legacy batch store.  Failed,
+        timed-out, stale and cancelled results are retained independently so
+        they cannot be mistaken for a clean publish.
+        """
+        with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
+            batch = self._diagnostic_batches.get(batch_id)
+            if batch is not None:
+                return DiagnosticOutcome.from_batch(batch)
+            outcome = self._diagnostic_failure_outcomes.get(batch_id)
+            if outcome is not None:
+                return outcome
+            return None
+
     def pending_diagnostic_batches_for_owner(
         self,
         *,
@@ -1321,6 +1383,23 @@ class LspManager:
                 if self._diagnostic_owner(batch.route) == owner
             )
 
+    def pending_diagnostic_failure_outcomes_for_owner(
+        self,
+        *,
+        agent_id: str | None,
+        session_generation: int | None,
+        session_id: str | None,
+    ) -> tuple[DiagnosticOutcome, ...]:
+        """Return unacknowledged non-published outcomes for one session owner."""
+        owner = (agent_id, session_generation, session_id)
+        with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
+            return tuple(
+                outcome
+                for outcome in self._diagnostic_failure_outcomes.values()
+                if self._diagnostic_owner(outcome.route) == owner
+            )
+
     def acknowledge_diagnostic_batch(
         self,
         batch_id: str,
@@ -1330,7 +1409,9 @@ class LspManager:
     ) -> bool:
         """Acknowledge exactly one batch, preventing a second consumer."""
         with self._lock:
-            if self._diagnostic_batches.pop(batch_id, None) is None:
+            batch = self._diagnostic_batches.pop(batch_id, None)
+            outcome = self._diagnostic_failure_outcomes.pop(batch_id, None)
+            if batch is None and outcome is None:
                 return False
             self._record_acknowledgement(batch_id, consumer_id)
             if carried_forward:
@@ -1344,15 +1425,19 @@ class LspManager:
         consumer_id: str,
         carried_forward_ids: set[str] | None = None,
     ) -> bool:
-        """Atomically acknowledge an exact rendered batch set."""
+        """Atomically acknowledge an exact rendered terminal-result set."""
         carried = carried_forward_ids or set()
         with self._lock:
+            available_ids = set(self._diagnostic_batches) | set(
+                self._diagnostic_failure_outcomes
+            )
             if len(set(batch_ids)) != len(batch_ids) or any(
-                batch_id not in self._diagnostic_batches for batch_id in batch_ids
+                batch_id not in available_ids for batch_id in batch_ids
             ):
                 return False
             for batch_id in batch_ids:
-                self._diagnostic_batches.pop(batch_id)
+                self._diagnostic_batches.pop(batch_id, None)
+                self._diagnostic_failure_outcomes.pop(batch_id, None)
                 self._record_acknowledgement(batch_id, consumer_id)
                 if batch_id in carried:
                     self._diagnostic_batch_metrics["carried_forward"] += 1
@@ -1376,6 +1461,7 @@ class LspManager:
             )
             for batch in selected:
                 self._diagnostic_batches.pop(batch.batch_id, None)
+                self._diagnostic_failure_outcomes.pop(batch.batch_id, None)
                 self._record_acknowledgement(batch.batch_id, consumer_id)
             return selected
 
@@ -1537,6 +1623,16 @@ class LspManager:
                         ),
                     )
                 self._tool_queue.clear()
+                for request in self._diagnostics_queue:
+                    self._complete_diagnostic_request_locked(
+                        request,
+                        status=DiagnosticOutcomeStatus.CANCELLED,
+                        failure=self._diagnostic_failure_facts(
+                            LspRequestCancelled("LSP worker stopped"),
+                            request.transport_key,
+                            phase="shutdown",
+                        ),
+                    )
                 self._diagnostics_queue.clear()
             active_tasks = tuple(active.task for active in active_work)
             self._cancel_tasks_once(active_tasks)
@@ -1544,7 +1640,6 @@ class LspManager:
                 await asyncio.gather(*active_tasks, return_exceptions=True)
             with self._lock:
                 self._active_work.clear()
-                self._pending_diagnostic_requests.clear()
             try:
                 self._last_shutdown_completed = await self._shutdown_clients_async(
                     deadline_at=self._shutdown_deadline_at
@@ -1967,24 +2062,28 @@ class LspManager:
         *,
         transport_key: TransportKey | None = None,
     ) -> None:
-        """Process a fire-and-forget diagnostics request."""
+        """Process diagnostics and retain exactly one typed terminal outcome."""
         file_path = request.route.file_path
         lang = detect_language(file_path)
-        if lang is None:
-            return
         resolved_transport_key = (
             transport_key
             or request.transport_key
-            or self._transport_key(lang, file_path)
+            or (self._transport_key(lang, file_path) if lang is not None else None)
         )
         total_status = "ok"
         total_attributes: dict[str, PerformanceValue] = {
             "work_kind": "diagnostics",
             "document_committed": request.document_committed,
         }
+        failure_phase = "availability"
+        terminal_status: DiagnosticOutcomeStatus | None = None
+        terminal_batch: DiagnosticBatch | None = None
+        terminal_failure: LspFailureFacts | None = None
         self._record_queue_wait(request, transport_key=resolved_transport_key)
 
         try:
+            if lang is None:
+                raise LspClientError("Unsupported diagnostics language")
             server = await self._get_or_create_server(
                 lang,
                 file_path,
@@ -1993,6 +2092,12 @@ class LspManager:
             if server is None:
                 total_status = "unavailable"
                 total_attributes["outcome"] = "server_unavailable"
+                terminal_status = DiagnosticOutcomeStatus.SERVER_UNAVAILABLE
+                terminal_failure = self._diagnostic_failure_facts(
+                    LspServerUnavailable("LSP server unavailable"),
+                    resolved_transport_key,
+                    phase=failure_phase,
+                )
                 return
 
             baseline_generation = server.diagnostics_generation(file_path)
@@ -2001,6 +2106,7 @@ class LspManager:
             # A successful mutation is authoritative even when the filesystem
             # timestamp has not advanced (coarse or preserved mtimes). Always
             # send the committed on-disk content before didSave.
+            failure_phase = "document_sync"
             sync_started_at = time.monotonic()
             sync_status = "skipped"
             sync_attributes: dict[str, PerformanceValue] = {
@@ -2077,6 +2183,7 @@ class LspManager:
                 )
 
             # Wait for diagnostics
+            failure_phase = "diagnostics_wait"
             wait_started_at = time.monotonic()
             wait_status = "ok"
             wait_attributes: dict[str, PerformanceValue] = {
@@ -2114,13 +2221,19 @@ class LspManager:
                 # is safer than clearing diagnostics from a previous version.
                 total_status = "timeout"
                 total_attributes["outcome"] = "timeout"
+                terminal_status = DiagnosticOutcomeStatus.TIMED_OUT
+                terminal_failure = self._diagnostic_failure_facts(
+                    LspRequestTimedOut("LSP diagnostics publish timed out"),
+                    resolved_transport_key,
+                    phase=failure_phase,
+                )
                 return
 
             block = DiagnosticBlock(
                 file_path=self._relativize_path(file_path),
                 items=diagnostics,
             )
-            batch = DiagnosticBatch(
+            terminal_batch = DiagnosticBatch(
                 batch_id=request.batch_id,
                 route=request.route,
                 request_sequence=request.request_sequence,
@@ -2129,61 +2242,126 @@ class LspManager:
                 block=block,
                 created_at=self._diagnostic_clock(),
             )
-            accepted = False
-            with self._lock:
-                # A slower obsolete request must not overwrite a newer batch.
-                route_key = (
-                    request.route.agent_id,
-                    request.route.session_generation,
-                    request.route.session_id,
-                    file_path,
-                )
-                if (
-                    not self._abort_current
-                    and self._latest_diagnostic_sequence.get(route_key)
-                    == request.request_sequence
-                    and self._route_generation_is_current(request.route)
-                ):
-                    self._store_diagnostic_batch_locked(batch)
-                    accepted = True
-                else:
-                    self._diagnostic_batch_metrics["stale_discarded"] += 1
-            if accepted:
-                total_attributes["outcome"] = "published"
-                total_attributes["diagnostic_count"] = len(diagnostics)
-                total_attributes["diagnostic_generation"] = diagnostic_generation
-                self._publish_diagnostic_event(batch)
-            else:
-                total_status = "cancelled"
-                total_attributes["outcome"] = "stale_discarded"
+            terminal_status = (
+                DiagnosticOutcomeStatus.PUBLISHED_NONEMPTY
+                if diagnostics
+                else DiagnosticOutcomeStatus.PUBLISHED_CLEAN
+            )
+            total_attributes["outcome"] = terminal_status.value
+            total_attributes["diagnostic_count"] = len(diagnostics)
+            total_attributes["diagnostic_generation"] = diagnostic_generation
 
         except asyncio.CancelledError as error:
             total_status = "cancelled"
             total_attributes["error_type"] = type(error).__name__
+            total_attributes["outcome"] = "cancelled"
+            terminal_status = DiagnosticOutcomeStatus.CANCELLED
+            terminal_failure = self._diagnostic_failure_facts(
+                LspRequestCancelled("LSP diagnostics request cancelled"),
+                resolved_transport_key,
+                phase=failure_phase,
+            )
             raise
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             total_status = self._performance_status(e)
             total_attributes["error_type"] = type(e).__name__
             logger.warning(
                 "LSP diagnostics transport error: language=%s error_type=%s",
-                lang.name,
+                lang.name if lang is not None else "unknown",
                 type(e).__name__,
             )
-            self._on_transport_error(
-                lang,
-                file_path,
-                type(e).__name__,
-                transport_key=resolved_transport_key,
+            if lang is not None:
+                self._on_transport_error(
+                    lang,
+                    file_path,
+                    type(e).__name__,
+                    transport_key=resolved_transport_key,
+                )
+            terminal_status = DiagnosticOutcomeStatus.ERROR
+            total_attributes["outcome"] = terminal_status.value
+            terminal_failure = self._diagnostic_failure_facts(
+                e,
+                resolved_transport_key,
+                phase=failure_phase,
             )
         except Exception as e:
             total_status = self._performance_status(e)
             total_attributes["error_type"] = type(e).__name__
             logger.warning(
                 "LSP diagnostics request failed: language=%s error_type=%s",
-                lang.name,
+                lang.name if lang is not None else "unknown",
                 type(e).__name__,
             )
+            if isinstance(e, (LspRequestTimedOut, asyncio.TimeoutError)):
+                terminal_status = DiagnosticOutcomeStatus.TIMED_OUT
+            elif isinstance(e, LspServerUnavailable):
+                terminal_status = DiagnosticOutcomeStatus.SERVER_UNAVAILABLE
+            else:
+                terminal_status = DiagnosticOutcomeStatus.ERROR
+            total_attributes["outcome"] = terminal_status.value
+            terminal_failure = self._diagnostic_failure_facts(
+                e,
+                resolved_transport_key,
+                phase=failure_phase,
+            )
         finally:
+            if terminal_status is None:
+                terminal_status = DiagnosticOutcomeStatus.ERROR
+                total_status = "error"
+                total_attributes["outcome"] = terminal_status.value
+                terminal_failure = self._diagnostic_failure_facts(
+                    LspClientError("Diagnostics request ended without a result"),
+                    resolved_transport_key,
+                    phase=failure_phase,
+                )
+
+            completed = False
+            published_batch: DiagnosticBatch | None = None
+            with self._lock:
+                if terminal_status in {
+                    DiagnosticOutcomeStatus.PUBLISHED_NONEMPTY,
+                    DiagnosticOutcomeStatus.PUBLISHED_CLEAN,
+                }:
+                    route_key = (
+                        request.route.agent_id,
+                        request.route.session_generation,
+                        request.route.session_id,
+                        file_path,
+                    )
+                    if (
+                        self._abort_current
+                        or self._latest_diagnostic_sequence.get(route_key)
+                        != request.request_sequence
+                        or not self._route_generation_is_current(request.route)
+                    ):
+                        terminal_status = DiagnosticOutcomeStatus.STALE_DISCARDED
+                        terminal_batch = None
+                        total_status = "cancelled"
+                        total_attributes["outcome"] = terminal_status.value
+                        self._diagnostic_batch_metrics["stale_discarded"] += 1
+                completed = self._complete_diagnostic_request_locked(
+                    request,
+                    status=terminal_status,
+                    batch=terminal_batch,
+                    failure=terminal_failure,
+                )
+                if completed and terminal_status in {
+                    DiagnosticOutcomeStatus.PUBLISHED_NONEMPTY,
+                    DiagnosticOutcomeStatus.PUBLISHED_CLEAN,
+                }:
+                    published_batch = terminal_batch
+
+            if published_batch is not None:
+                # Runtime event delivery is an observer.  Its own failure is
+                # isolated and cannot rewrite the already committed primary
+                # diagnostics outcome.
+                try:
+                    self._publish_diagnostic_event(published_batch)
+                except Exception as error:
+                    logger.warning(
+                        "Runtime diagnostics observer failed: error_type=%s",
+                        type(error).__name__,
+                    )
             self._record_lsp_performance(
                 "total",
                 started_at=request.enqueued_at,
@@ -2191,8 +2369,6 @@ class LspManager:
                 transport_key=resolved_transport_key,
                 attributes=total_attributes,
             )
-            with self._lock:
-                self._pending_diagnostic_requests.discard(request.batch_id)
 
     def _route_generation_is_current(self, route: DiagnosticRoute) -> bool:
         if route.agent_id is None or route.session_generation is None:
@@ -2220,6 +2396,55 @@ class LspManager:
     def _diagnostic_owner(route: DiagnosticRoute) -> DiagnosticOwnerKey:
         return route.agent_id, route.session_generation, route.session_id
 
+    def _complete_diagnostic_request_locked(
+        self,
+        request: DiagnosticRequest,
+        *,
+        status: DiagnosticOutcomeStatus,
+        batch: DiagnosticBatch | None = None,
+        failure: LspFailureFacts | None = None,
+    ) -> bool:
+        """Atomically move one accepted request from pending to one terminal."""
+        if request.batch_id not in self._pending_diagnostic_requests:
+            return False
+
+        if status in {
+            DiagnosticOutcomeStatus.PUBLISHED_NONEMPTY,
+            DiagnosticOutcomeStatus.PUBLISHED_CLEAN,
+        }:
+            if batch is None:
+                raise ValueError("published diagnostic outcome requires a batch")
+            self._store_diagnostic_batch_locked(batch)
+        else:
+            if batch is not None:
+                raise ValueError("failed diagnostic outcome cannot carry a batch")
+            self._store_diagnostic_failure_outcome_locked(
+                DiagnosticOutcome(
+                    batch_id=request.batch_id,
+                    route=request.route,
+                    request_sequence=request.request_sequence,
+                    status=status,
+                    created_at=self._diagnostic_clock(),
+                    failure=failure,
+                )
+            )
+
+        self._pending_diagnostic_requests.remove(request.batch_id)
+        self._diagnostic_batch_metrics[f"outcome_{status.value}"] += 1
+        return True
+
+    def _store_diagnostic_failure_outcome_locked(
+        self, outcome: DiagnosticOutcome
+    ) -> None:
+        """Retain a real failure without changing published document state."""
+        if outcome.is_published:
+            raise ValueError("published outcomes belong in the diagnostic batch store")
+        self._prune_expired_diagnostic_batches_locked()
+        self._diagnostic_failure_outcomes[outcome.batch_id] = outcome
+        self._bound_diagnostic_results_for_owner_locked(
+            self._diagnostic_owner(outcome.route)
+        )
+
     def _store_diagnostic_batch_locked(self, batch: DiagnosticBatch) -> None:
         """Store the newest document state and bound one owner's backlog."""
         self._prune_expired_diagnostic_batches_locked()
@@ -2236,33 +2461,60 @@ class LspManager:
         self._diagnostic_batch_metrics["overwritten"] += len(overwritten)
 
         self._diagnostic_batches[batch.batch_id] = batch
-        owned = sorted(
+        self._bound_diagnostic_results_for_owner_locked(owner)
+
+    def _bound_diagnostic_results_for_owner_locked(
+        self, owner: DiagnosticOwnerKey
+    ) -> None:
+        published = sorted(
             (
-                pending
-                for pending in self._diagnostic_batches.values()
-                if self._diagnostic_owner(pending.route) == owner
-            ),
-            key=lambda pending: (
-                pending.created_at,
-                pending.request_sequence,
-                pending.batch_id,
-            ),
+                batch.created_at,
+                batch.request_sequence,
+                batch.batch_id,
+            )
+            for batch in self._diagnostic_batches.values()
+            if self._diagnostic_owner(batch.route) == owner
         )
-        overflow = len(owned) - MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER
-        for pending in owned[: max(0, overflow)]:
-            self._diagnostic_batches.pop(pending.batch_id, None)
-        self._diagnostic_batch_metrics["capacity_evicted"] += max(0, overflow)
+        failed = sorted(
+            (
+                outcome.created_at,
+                outcome.request_sequence,
+                outcome.batch_id,
+            )
+            for outcome in self._diagnostic_failure_outcomes.values()
+            if self._diagnostic_owner(outcome.route) == owner
+        )
+        overflow = (
+            len(published) + len(failed) - MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER
+        )
+        # A failure is observation, not a new document state.  Prefer evicting
+        # old failure observations so their arrival cannot clear the last
+        # successfully published diagnostics for a document.
+        evicted = (failed + published)[: max(0, overflow)]
+        for _, _, batch_id in evicted:
+            self._diagnostic_batches.pop(batch_id, None)
+            self._diagnostic_failure_outcomes.pop(batch_id, None)
+        self._diagnostic_batch_metrics["capacity_evicted"] += len(evicted)
 
     def _prune_expired_diagnostic_batches_locked(self) -> None:
         cutoff = self._diagnostic_clock() - DIAGNOSTIC_BATCH_TTL_SECONDS
-        expired = [
+        expired_batches = [
             batch_id
             for batch_id, batch in self._diagnostic_batches.items()
             if batch.created_at <= cutoff
         ]
-        for batch_id in expired:
+        expired_outcomes = [
+            batch_id
+            for batch_id, outcome in self._diagnostic_failure_outcomes.items()
+            if outcome.created_at <= cutoff
+        ]
+        for batch_id in expired_batches:
             self._diagnostic_batches.pop(batch_id, None)
-        self._diagnostic_batch_metrics["expired"] += len(expired)
+        for batch_id in expired_outcomes:
+            self._diagnostic_failure_outcomes.pop(batch_id, None)
+        self._diagnostic_batch_metrics["expired"] += len(expired_batches) + len(
+            expired_outcomes
+        )
 
     def _record_acknowledgement(self, batch_id: str, consumer_id: str) -> None:
         self._acknowledged_batches[batch_id] = consumer_id

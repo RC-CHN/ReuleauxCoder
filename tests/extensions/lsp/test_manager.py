@@ -1100,7 +1100,7 @@ class TestDiagnosticBatchBounds:
         assert manager.pending_diagnostic_batches() == (new,)
         assert manager.diagnostic_batch_metrics()["overwritten"] == 1
 
-    def test_enqueue_discards_pending_state_for_same_document(
+    def test_enqueue_preserves_published_state_until_new_publish(
         self, manager: LspManager
     ) -> None:
         manager._diagnostic_clock = lambda: 1000.0
@@ -1114,8 +1114,8 @@ class TestDiagnosticBatchBounds:
         )
 
         assert queued is not None
-        assert manager.pending_diagnostic_batches() == ()
-        assert manager.diagnostic_batch_metrics()["overwritten"] == 1
+        assert manager.pending_diagnostic_batches() == (old,)
+        assert manager.diagnostic_batch_metrics()["overwritten"] == 0
 
     def test_capacity_evicts_only_oldest_batch_for_same_owner(
         self, manager: LspManager
@@ -1387,7 +1387,7 @@ class TestSessionGenerationWatermark:
         assert manager._diagnostics_queue == []
         assert manager.pending_diagnostic_batches() == ()
         assert manager.enqueue_diagnostics(path, route=old_route) is None
-        assert manager.diagnostic_batch_metrics()["stale_discarded"] == 1
+        assert manager.diagnostic_batch_metrics()["stale_discarded"] == 2
 
     def test_inflight_old_generation_cannot_publish_after_reset(
         self, manager: LspManager, tmp_path: Path

@@ -11,6 +11,7 @@ AFTER_TOOL_EXECUTE transform:
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -24,11 +25,18 @@ from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.agent.tool_outcome import ToolDiagnostic
 from reuleauxcoder.domain.hooks.types import AfterToolExecuteContext
 from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
+from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
+    DiagnosticOutcome,
+    render_diagnostic_outcomes,
+    safe_observer_error_type,
+)
 from reuleauxcoder.interfaces.events import UIEventKind
 
 EDIT_TOOLS = frozenset({"edit_file", "write_file"})
 _DIAGNOSTICS_POLL_DEADLINE = 2.5  # seconds — short poll for instant feedback
 _DIAGNOSTICS_POLL_INTERVAL = 0.1
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_file_path(tool_name: str, arguments: dict) -> str | None:
@@ -130,12 +138,56 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
         #    model sees them immediately.
         deadline = time.monotonic() + _DIAGNOSTICS_POLL_DEADLINE
         batches = ()
+        terminal_outcome: DiagnosticOutcome | None = None
         while time.monotonic() < deadline:
             result = self.lsp_manager.diagnostic_request_result(batch_id)
             if result is not None:
                 batches = result
+                terminal_outcome = self.lsp_manager.diagnostic_request_outcome(batch_id)
                 break
             time.sleep(_DIAGNOSTICS_POLL_INTERVAL)
+
+        if terminal_outcome is not None and not terminal_outcome.is_published:
+            rendered_outcome = render_diagnostic_outcomes((terminal_outcome,))
+            if rendered_outcome is not None:
+                previous_outcome = context.outcome
+                previous_result = context.result
+                model_text = previous_outcome.model_text
+                projected = (
+                    f"{model_text}\n\n[LSP DIAGNOSTICS OUTCOME]\n{rendered_outcome}"
+                    if model_text
+                    else f"[LSP DIAGNOSTICS OUTCOME]\n{rendered_outcome}"
+                )
+                context.outcome = replace(
+                    previous_outcome,
+                    model_content=projected,
+                    metadata={
+                        **dict(previous_outcome.metadata),
+                        "lsp_diagnostic_outcome_ids": (terminal_outcome.batch_id,),
+                    },
+                )
+                context.result = context.outcome.model_text
+                try:
+                    acknowledged = self.lsp_manager.acknowledge_diagnostic_batch(
+                        terminal_outcome.batch_id,
+                        consumer_id=f"lsp-edit:{tool_call.id}",
+                    )
+                except Exception as error:
+                    # A bookkeeping observer fault must not turn a successful
+                    # edit into a fatal tool failure.  Restore the projection
+                    # so the retained outcome remains available for retry.
+                    context.outcome = previous_outcome
+                    context.result = previous_result
+                    logger.warning(
+                        "LSP diagnostic outcome acknowledgement failed: error_type=%s",
+                        safe_observer_error_type(error),
+                    )
+                else:
+                    if not acknowledged:
+                        # Another consumer won the exact outcome.  Avoid
+                        # claiming duplicate delivery in this tool result.
+                        context.outcome = previous_outcome
+                        context.result = previous_result
 
         if batches:
             blocks = [batch.block for batch in batches]
@@ -192,16 +244,33 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
                         f"{warn_count} warning{'s' if warn_count != 1 else ''}"
                     )
                 if parts:
-                    ui_bus.info(
-                        f"LSP: {', '.join(parts)} after {tool_call.name}",
-                        kind=UIEventKind.SYSTEM,
-                    )
+                    try:
+                        ui_bus.info(
+                            f"LSP: {', '.join(parts)} after {tool_call.name}",
+                            kind=UIEventKind.SYSTEM,
+                        )
+                    except Exception as error:
+                        # UI feedback is a secondary observer.  Diagnostics
+                        # already projected for the agent remain successful and
+                        # are acknowledged below; the observer fault is still
+                        # recorded without crashing the edit result.
+                        logger.warning(
+                            "LSP edit diagnostics UI observer failed: error_type=%s",
+                            safe_observer_error_type(error),
+                        )
 
-            # The batch remains retryable until ToolOutcome and UI processing
-            # have succeeded. Empty/filtered batches are complete observations.
-            for batch in batches:
-                self.lsp_manager.acknowledge_diagnostic_batch(
-                    batch.batch_id,
+            # Claim the exact projected set atomically.  A bookkeeping fault
+            # must not crash a successful edit or pretend the batches were
+            # consumed; they remain available to the request-time injector.
+            batch_ids = tuple(batch.batch_id for batch in batches)
+            try:
+                self.lsp_manager.acknowledge_diagnostic_batches(
+                    batch_ids,
                     consumer_id=f"lsp-edit:{tool_call.id}",
+                )
+            except Exception as error:
+                logger.warning(
+                    "LSP edit diagnostics acknowledgement failed: error_type=%s",
+                    safe_observer_error_type(error),
                 )
         return context

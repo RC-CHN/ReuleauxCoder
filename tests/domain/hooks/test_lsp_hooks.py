@@ -623,7 +623,7 @@ class TestLspEditObserverDedup:
         remaining = mgr.pending_diagnostic_batches()
         assert [batch.block.file_path for batch in remaining] == ["/tmp/other.py"]
 
-    def test_ui_failure_keeps_batch_retryable(self) -> None:
+    def test_ui_failure_does_not_crash_delivered_diagnostics(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
         from reuleauxcoder.extensions.lsp.registry import LanguageId
 
@@ -651,13 +651,55 @@ class TestLspEditObserverDedup:
             outcome=ToolOutcome(content="edited"),
         )
 
-        with pytest.raises(RuntimeError, match="ui failed"):
-            hook.run(context)
+        hook.run(context)
 
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
+
+    def test_ack_failure_keeps_projected_batch_retryable_and_secret_safe(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+        from reuleauxcoder.extensions.lsp.registry import LanguageId
+
+        mgr = _make_manager()
+        with mgr._lock:
+            mgr._availability[LanguageId.PYTHON] = True
+        _complete_enqueued_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="/tmp/test.py",
+                items=[Diagnostic(line=1, character=1, message="err")],
+            ),
+        )
+        mgr.acknowledge_diagnostic_batches = MagicMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("SENTINEL_ACK_SECRET")
+        )
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id="1",
+                name="edit_file",
+                arguments={"file_path": "/tmp/test.py"},
+            ),
+            outcome=ToolOutcome(content="edited"),
+        )
+
+        LspEditObserverHook(lsp_manager=mgr).run(context)
+
+        assert context.outcome is not None
+        assert [item.message for item in context.outcome.diagnostics] == ["err"]
+        assert "err" in context.outcome.model_text
         assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
             "batch-1"
         ]
         assert mgr.diagnostic_batch_acknowledgement("batch-1") is None
+        mgr.acknowledge_diagnostic_batches.assert_called_once_with(
+            ("batch-1",),
+            consumer_id="lsp-edit:1",
+        )
+        assert "error_type=RuntimeError" in caplog.text
+        assert "SENTINEL_ACK_SECRET" not in caplog.text
 
 
 # === LspDiagnosticsInjectorHook scoped dedup ===
@@ -896,13 +938,13 @@ class TestLspDiagnosticsInjectorDedup:
         assert len(mgr.pending_diagnostic_batches()) == 1
         assert mgr.diagnostic_batch_acknowledgement("batch-false") is None
 
-    def test_injector_ui_failure_is_reported_after_dispatched_batch_is_acked(
-        self,
+    def test_injector_ui_failure_is_isolated_after_dispatched_batch_is_acked(
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
 
         ui_bus = MagicMock()
-        ui_bus.info.side_effect = RuntimeError("ui failed")
+        ui_bus.info.side_effect = RuntimeError("SENTINEL_UI_SECRET")
         mgr = _make_manager()
         mgr.ui_bus = ui_bus
         _publish_batch(
@@ -928,14 +970,50 @@ class TestLspDiagnosticsInjectorDedup:
 
         failures = context._commit_dispatch_callbacks()
 
-        assert len(failures) == 1
-        assert isinstance(failures[0], RuntimeError)
-        assert str(failures[0]) == "ui failed"
+        assert failures == ()
         assert mgr.pending_diagnostic_batches() == ()
         assert mgr.diagnostic_batch_acknowledgement("batch-ui") == (
             "lsp-inject:unknown:unknown:unknown"
         )
         ui_bus.info.assert_called_once()
+        assert "error_type=RuntimeError" in caplog.text
+        assert "SENTINEL_UI_SECRET" not in caplog.text
+
+    def test_ack_race_ui_warning_failure_is_isolated_and_secret_safe(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        ui_bus = MagicMock()
+        ui_bus.warning.side_effect = RuntimeError("SENTINEL_WARNING_SECRET")
+        mgr = _make_manager()
+        mgr.ui_bus = ui_bus
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="test.py",
+                items=[Diagnostic(line=1, character=1, message="err")],
+            ),
+            batch_id="batch-race-ui",
+        )
+        mgr.acknowledge_diagnostic_batches = MagicMock(  # type: ignore[method-assign]
+            return_value=False
+        )
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+        )
+
+        LspDiagnosticsInjectorHook(lsp_manager=mgr).run(context)
+
+        assert context._commit_dispatch_callbacks() == ()
+        assert "[LSP DIAGNOSTICS]" not in context.messages[0]["content"]
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-race-ui"
+        ]
+        ui_bus.warning.assert_called_once()
+        assert "error_type=RuntimeError" in caplog.text
+        assert "SENTINEL_WARNING_SECRET" not in caplog.text
 
     def test_ack_failure_is_reported_and_diagnostics_are_removed_from_wire(
         self,
