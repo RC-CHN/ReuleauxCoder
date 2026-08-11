@@ -823,6 +823,27 @@ class LspManager:
                 self._diagnostic_batch_metrics["carried_forward"] += 1
             return True
 
+    def acknowledge_diagnostic_batches(
+        self,
+        batch_ids: tuple[str, ...],
+        *,
+        consumer_id: str,
+        carried_forward_ids: set[str] | None = None,
+    ) -> bool:
+        """Atomically acknowledge an exact rendered batch set."""
+        carried = carried_forward_ids or set()
+        with self._lock:
+            if len(set(batch_ids)) != len(batch_ids) or any(
+                batch_id not in self._diagnostic_batches for batch_id in batch_ids
+            ):
+                return False
+            for batch_id in batch_ids:
+                self._diagnostic_batches.pop(batch_id)
+                self._record_acknowledgement(batch_id, consumer_id)
+                if batch_id in carried:
+                    self._diagnostic_batch_metrics["carried_forward"] += 1
+            return True
+
     def consume_diagnostic_batches(
         self,
         *,

@@ -402,6 +402,54 @@ class TestLspDiagnosticsInjectorBasic:
         assert result.messages[0]["content"].index("err") < result.messages[0][
             "content"
         ].index("<runtime_instruction>")
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-1"
+        ]
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") is None
+
+        assert context._commit_dispatch_callbacks() == ()
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") == (
+            "lsp-inject:unknown:unknown:unknown"
+        )
+
+    def test_only_atomic_ack_winner_keeps_diagnostics_in_wire_payload(self) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        mgr = _make_manager()
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="test.py",
+                items=[Diagnostic(line=1, character=1, message="err")],
+            ),
+            batch_id="batch-race",
+        )
+        hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
+        winner = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            turn_id="winner",
+            messages=[_execution_state_tail()],
+        )
+        loser = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            turn_id="loser",
+            messages=[_execution_state_tail()],
+        )
+
+        hook.run(winner)
+        hook.run(loser)
+        assert "[LSP DIAGNOSTICS]" in winner.messages[0]["content"]
+        assert "[LSP DIAGNOSTICS]" in loser.messages[0]["content"]
+
+        assert winner._commit_dispatch_callbacks() == ()
+        assert loser._commit_dispatch_callbacks() == ()
+
+        assert "[LSP DIAGNOSTICS]" in winner.messages[0]["content"]
+        assert "[LSP DIAGNOSTICS]" not in loser.messages[0]["content"]
+        assert mgr.diagnostic_batch_acknowledgement("batch-race") == (
+            "lsp-inject:unknown:unknown:winner"
+        )
 
     def test_invalid_tail_does_not_consume_diagnostics(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, DiagnosticBlock
@@ -423,6 +471,32 @@ class TestLspDiagnosticsInjectorBasic:
         hook.run(context)
         assert len(mgr.pending_diagnostic_batches()) == 1
         assert mgr.diagnostic_batch_acknowledgement("batch-1") is None
+
+    def test_later_transform_removal_does_not_ack_diagnostics(self) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        mgr = _make_manager()
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="test.py",
+                items=[Diagnostic(line=1, character=1, message="err")],
+            ),
+            batch_id="batch-removed",
+        )
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+        )
+
+        LspDiagnosticsInjectorHook(lsp_manager=mgr).run(context)
+        context.messages[:] = [_execution_state_tail()]
+
+        assert context._commit_dispatch_callbacks() == ()
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-removed"
+        ]
+        assert mgr.diagnostic_batch_acknowledgement("batch-removed") is None
 
 
 class TestLspDiagnosticsInjectorCreateFromConfig:
@@ -633,8 +707,17 @@ class TestLspDiagnosticsInjectorDedup:
         # Injection happened
         assert "[LSP DIAGNOSTICS]" in result.messages[0]["content"]
         assert "err" in result.messages[0]["content"]
-        # Queue drained
+        # Transforming the payload alone does not claim the batch.
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-1"
+        ]
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") is None
+
+        assert context._commit_dispatch_callbacks() == ()
         assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") == (
+            "lsp-inject:unknown:unknown:unknown"
+        )
 
     def test_carries_prior_turn_batch_for_exact_session_owner(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
@@ -670,6 +753,13 @@ class TestLspDiagnosticsInjectorDedup:
         hook.run(context)
 
         assert "late" in context.messages[0]["content"]
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-late"
+        ]
+        assert mgr.diagnostic_batch_acknowledgement("batch-late") is None
+        assert mgr.diagnostic_batch_metrics()["carried_forward"] == 0
+
+        assert context._commit_dispatch_callbacks() == ()
         assert mgr.pending_diagnostic_batches() == ()
         assert mgr.diagnostic_batch_acknowledgement("batch-late") == (
             "lsp-inject:parent:2:turn-2"
@@ -763,13 +853,19 @@ class TestLspDiagnosticsInjectorDedup:
             messages=[_execution_state_tail()],
         )
         hook.run(context)
-        hook.run(context)
 
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-retry"
+        ]
+        assert mgr.diagnostic_batch_acknowledgement("batch-retry") is None
+
+        assert context._commit_dispatch_callbacks() == ()
         assert mgr.pending_diagnostic_batches() == ()
         assert mgr.diagnostic_batch_acknowledgement("batch-retry") == (
             "lsp-inject:unknown:unknown:unknown"
         )
         assert mgr.diagnostic_batch_metrics()["carried_forward"] == 0
+        assert context._commit_dispatch_callbacks() == ()
 
     def test_failed_overlay_write_does_not_ack(self, monkeypatch) -> None:
         from reuleauxcoder.domain.hooks.builtin import lsp_injector
@@ -800,7 +896,9 @@ class TestLspDiagnosticsInjectorDedup:
         assert len(mgr.pending_diagnostic_batches()) == 1
         assert mgr.diagnostic_batch_acknowledgement("batch-false") is None
 
-    def test_injector_ui_failure_does_not_ack(self) -> None:
+    def test_injector_ui_failure_is_reported_after_dispatched_batch_is_acked(
+        self,
+    ) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
 
         ui_bus = MagicMock()
@@ -816,16 +914,60 @@ class TestLspDiagnosticsInjectorDedup:
             batch_id="batch-ui",
         )
 
-        with pytest.raises(RuntimeError, match="ui failed"):
-            LspDiagnosticsInjectorHook(lsp_manager=mgr).run(
-                BeforeLLMRequestContext(
-                    hook_point=HookPoint.BEFORE_LLM_REQUEST,
-                    messages=[_execution_state_tail()],
-                )
-            )
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+        )
+        LspDiagnosticsInjectorHook(lsp_manager=mgr).run(context)
 
-        assert len(mgr.pending_diagnostic_batches()) == 1
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-ui"
+        ]
         assert mgr.diagnostic_batch_acknowledgement("batch-ui") is None
+        ui_bus.info.assert_not_called()
+
+        failures = context._commit_dispatch_callbacks()
+
+        assert len(failures) == 1
+        assert isinstance(failures[0], RuntimeError)
+        assert str(failures[0]) == "ui failed"
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-ui") == (
+            "lsp-inject:unknown:unknown:unknown"
+        )
+        ui_bus.info.assert_called_once()
+
+    def test_ack_failure_is_reported_and_diagnostics_are_removed_from_wire(
+        self,
+    ) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        mgr = _make_manager()
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="test.py",
+                items=[Diagnostic(line=1, character=1, message="err")],
+            ),
+            batch_id="batch-ack-failure",
+        )
+        mgr.acknowledge_diagnostic_batches = MagicMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("ack failed")
+        )
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+        )
+
+        LspDiagnosticsInjectorHook(lsp_manager=mgr).run(context)
+        failures = context._commit_dispatch_callbacks()
+
+        assert len(failures) == 1
+        assert str(failures[0]) == "ack failed"
+        assert "[LSP DIAGNOSTICS]" not in context.messages[0]["content"]
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-ack-failure"
+        ]
 
     def test_filtered_warning_is_terminally_acknowledged(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import (

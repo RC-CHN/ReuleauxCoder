@@ -553,6 +553,12 @@ def test_python_document_commit_produces_real_diagnostics_batch(
         LspDiagnosticsInjectorHook(lsp_manager=manager).run(context)
 
         assert "[LSP DIAGNOSTICS]" in context.messages[0]["content"]
+        assert [batch.batch_id for batch in manager.pending_diagnostic_batches()] == [
+            batch_id
+        ]
+        assert manager.diagnostic_batch_acknowledgement(batch_id) is None
+
+        assert context._commit_dispatch_callbacks() == ()
         assert manager.pending_diagnostic_batches() == ()
         assert manager.diagnostic_batch_acknowledgement(batch_id) == (
             "lsp-inject:parent:0:next-turn"

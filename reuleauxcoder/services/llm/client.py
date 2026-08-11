@@ -17,6 +17,8 @@ from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.hooks.types import (
     AfterLLMResponseContext,
     BeforeLLMRequestContext,
+    HookDiagnostic,
+    HookKind,
     HookPoint,
 )
 from reuleauxcoder.domain.llm.context_messages import normalize_provider_message_roles
@@ -475,6 +477,8 @@ class LLM:
         active_phase: str | None = None
         active_phase_started = operation_started_monotonic
         active_phase_attempt: int | None = None
+        phase_lifecycle_lock = threading.RLock()
+        operation_terminal = False
 
         def report_phase(
             phase: str,
@@ -554,18 +558,40 @@ class LLM:
                 metadata=event_metadata,
             )
 
+        def finish_operation(
+            phase: str,
+            *,
+            status: str,
+            detail: str | None = None,
+            error_type: str | None = None,
+        ) -> None:
+            nonlocal operation_terminal
+            with phase_lifecycle_lock:
+                if operation_terminal:
+                    return
+                operation_terminal = True
+                report_phase(
+                    phase,
+                    status=status,
+                    detail=detail,
+                    error_type=error_type,
+                )
+
         def retry_observer(
             attempt: int,
             maximum: int,
             wait: float,
             error: BaseException,
         ) -> None:
-            report_phase(
-                "retry_backoff",
-                detail=f"{type(error).__name__}; waiting {wait:.0f}s",
-                attempt=attempt,
-                max_attempts=maximum,
-            )
+            with phase_lifecycle_lock:
+                if operation_terminal:
+                    return
+                report_phase(
+                    "retry_backoff",
+                    detail=f"{type(error).__name__}; waiting {wait:.0f}s",
+                    attempt=attempt,
+                    max_attempts=maximum,
+                )
 
         report_phase("request_build")
         self.last_dispatched_request = None
@@ -648,27 +674,37 @@ class LLM:
             metadata=dict(metadata or {}),
         )
 
-        if hook_registry is not None:
-            guard_decisions = hook_registry.run_guards(
-                HookPoint.BEFORE_LLM_REQUEST, before_context
-            )
-            denied = next((d for d in guard_decisions if not d.allowed), None)
-            if denied is not None:
-                raise RuntimeError(denied.reason or "LLM request blocked by guard hook")
-            before_context = hook_registry.run_transforms(
-                HookPoint.BEFORE_LLM_REQUEST, before_context
-            )
-            hook_registry.run_observers(HookPoint.BEFORE_LLM_REQUEST, before_context)
+        try:
+            if hook_registry is not None:
+                guard_decisions = hook_registry.run_guards(
+                    HookPoint.BEFORE_LLM_REQUEST, before_context
+                )
+                denied = next((d for d in guard_decisions if not d.allowed), None)
+                if denied is not None:
+                    raise RuntimeError(
+                        denied.reason or "LLM request blocked by guard hook"
+                    )
+                before_context = hook_registry.run_transforms(
+                    HookPoint.BEFORE_LLM_REQUEST, before_context
+                )
+                hook_registry.run_observers(
+                    HookPoint.BEFORE_LLM_REQUEST, before_context
+                )
 
-        # Narrow back from HookContext — run_transforms preserves the
-        # same type, but the type system doesn't track that invariant.
-        before_context = cast(BeforeLLMRequestContext, before_context)
-        params = dict(before_context.request_params)
-        # Use messages from the transform chain so hooks like
-        # ProjectContextHook can inject additional context.
-        params["messages"] = normalize_provider_message_roles(
-            before_context.messages
-        )
+            # Narrow back from HookContext — run_transforms preserves the same
+            # type, but the type system doesn't track that invariant.
+            before_context = cast(BeforeLLMRequestContext, before_context)
+        except LLMRequestCancelled:
+            finish_operation("cancelled", status="cancelled")
+            raise
+        except Exception as error:
+            finish_operation(
+                "failed",
+                status="failed",
+                detail=str(error)[:160] or type(error).__name__,
+                error_type=type(error).__name__,
+            )
+            raise
 
         debug_stream_events: list[dict[str, Any]] = []
         debug_stream_options_enabled = False
@@ -676,15 +712,49 @@ class LLM:
         try:
             if cancellation_event is not None and cancellation_event.is_set():
                 raise LLMRequestCancelled("LLM request cancelled before dispatch")
+            has_dispatch_effects = before_context._has_dispatch_callbacks()
+            for error in before_context._commit_dispatch_callbacks():
+                diagnostic = HookDiagnostic(
+                    hook_name="deferred_dispatch",
+                    hook_point=HookPoint.BEFORE_LLM_REQUEST,
+                    hook_kind=HookKind.OBSERVER,
+                    message=f"{type(error).__name__}: {str(error)[:160]}",
+                    severity="warning",
+                )
+                if hook_registry is not None:
+                    hook_registry.report_diagnostic(diagnostic)
+                else:
+                    self._emit_debug(
+                        f"[hooks] {diagnostic.message}",
+                        error_type=type(error).__name__,
+                    )
+            if before_context._consume_dispatch_payload_changed():
+                refresh_budget = getattr(
+                    hook_registry,
+                    "refresh_final_request_budget",
+                    None,
+                )
+                if callable(refresh_budget):
+                    refresh_budget(before_context)
+            params = dict(before_context.request_params)
+            # Freeze messages only after dispatch callbacks have atomically
+            # claimed or removed their final-payload contribution.
+            params["messages"] = normalize_provider_message_roles(
+                before_context.messages
+            )
+            provider_attempts = 1 if has_dispatch_effects else LLM_MAX_ATTEMPTS
+            retry_cancellation = None if has_dispatch_effects else cancellation_event
             # stream_options is an OpenAI extension
             try:
                 params["stream_options"] = {"include_usage": True}
-                report_phase(
-                    "connect", attempt=1, max_attempts=LLM_MAX_ATTEMPTS
-                )
+                self.last_dispatched_request = canonicalize_request_params(params)
+                report_phase("connect", attempt=1, max_attempts=provider_attempts)
                 stream = _cancellable_stream_open(
                     lambda: self._call_with_retry_observed(
-                        params, retry_observer
+                        params,
+                        retry_observer,
+                        cancellation_event=retry_cancellation,
+                        max_attempts=provider_attempts,
                     ),
                     cancellation_event,
                 )
@@ -694,23 +764,28 @@ class LLM:
             except Exception as error:
                 if not _stream_options_unsupported(error):
                     raise
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise LLMRequestCancelled(
+                        "LLM request cancelled before fallback dispatch"
+                    )
                 params.pop("stream_options", None)
+                self.last_dispatched_request = canonicalize_request_params(params)
                 report_phase(
                     "connect",
                     detail="retrying without stream usage extension",
                     attempt=1,
-                    max_attempts=LLM_MAX_ATTEMPTS,
+                    max_attempts=provider_attempts,
                 )
                 stream = _cancellable_stream_open(
                     lambda: self._call_with_retry_observed(
-                        params, retry_observer
+                        params,
+                        retry_observer,
+                        cancellation_event=retry_cancellation,
+                        max_attempts=provider_attempts,
                     ),
                     cancellation_event,
                 )
             report_phase("await_first_chunk")
-            # This is the exact hook-transformed payload accepted by the client,
-            # retained without credentials for request-boundary audit/replay.
-            self.last_dispatched_request = canonicalize_request_params(params)
 
             # Accumulate response
             content_parts: list[str] = []
@@ -924,13 +999,13 @@ class LLM:
 
             # Narrow back from HookContext (same reasoning as above).
             after_context = cast(AfterLLMResponseContext, after_context)
-            report_phase("completed", status="completed")
+            finish_operation("completed", status="completed")
             return after_context.response or response
         except LLMRequestCancelled:
-            report_phase("cancelled", status="cancelled")
+            finish_operation("cancelled", status="cancelled")
             raise
         except Exception as e:
-            report_phase(
+            finish_operation(
                 "failed",
                 status="failed",
                 detail=str(e)[:160] or type(e).__name__,
@@ -957,11 +1032,19 @@ class LLM:
         self,
         params: dict,
         on_retry: Callable[[int, int, float, BaseException], None],
+        *,
+        cancellation_event: CancellationSignal | None,
+        max_attempts: int,
     ) -> Any:
         """Keep test/provider overrides compatible while observing core retries."""
         call = self._call_with_retry
         if getattr(call, "__func__", None) is LLM._call_with_retry:
-            return call(params, on_retry=on_retry)
+            return call(
+                params,
+                max_retries=max_attempts,
+                on_retry=on_retry,
+                cancellation_event=cancellation_event,
+            )
         return call(params)
 
     def _call_with_retry(
@@ -970,15 +1053,29 @@ class LLM:
         max_retries: int = LLM_MAX_ATTEMPTS,
         *,
         on_retry: Callable[[int, int, float, BaseException], None] | None = None,
+        cancellation_event: CancellationSignal | None = None,
     ) -> Any:
         """Retry on transient errors with exponential backoff."""
         for attempt in range(max_retries):
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise LLMRequestCancelled("LLM request cancelled before retry")
             try:
                 return self.client.chat.completions.create(**params)
             except (RateLimitError, APITimeoutError, APIConnectionError) as error:
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise LLMRequestCancelled("LLM request cancelled during retry")
                 if attempt == max_retries - 1:
                     raise
                 wait = 2**attempt
                 if on_retry is not None:
                     on_retry(attempt + 2, max_retries, wait, error)
-                time.sleep(wait)
+                deadline = time.monotonic() + wait
+                while True:
+                    if cancellation_event is not None and cancellation_event.is_set():
+                        raise LLMRequestCancelled(
+                            "LLM request cancelled during retry backoff"
+                        )
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(_CANCELLATION_POLL_SECONDS, remaining))

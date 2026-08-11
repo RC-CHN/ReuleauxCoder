@@ -2,7 +2,12 @@ import pytest
 
 from reuleauxcoder.domain.hooks.base import GuardHook, ObserverHook, TransformHook
 from reuleauxcoder.domain.hooks.registry import HookRegistry
-from reuleauxcoder.domain.hooks.types import GuardDecision, HookContext, HookPoint
+from reuleauxcoder.domain.hooks.types import (
+    BeforeLLMRequestContext,
+    GuardDecision,
+    HookContext,
+    HookPoint,
+)
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
@@ -59,6 +64,11 @@ class FailingObserver(ObserverHook[HookContext]):
 class MutatingObserver(ObserverHook[HookContext]):
     def run(self, context) -> None:
         context.metadata["mutated"] = True
+
+
+class MutatingTupleToolObserver(ObserverHook[HookContext]):
+    def run(self, context) -> None:
+        context.payload["request_params"]["tools"][0]["function"]["name"] = "mutated"
 
 
 def test_hook_registry_register_list_and_unregister() -> None:
@@ -191,6 +201,30 @@ def test_hook_registry_run_observers_fail_open() -> None:
     assert diagnostics[0].message == "boom"
 
 
+def test_diagnostic_sink_failure_is_recorded_without_escaping() -> None:
+    def fail_sink(_diagnostic) -> None:
+        raise RuntimeError("diagnostic relay unavailable")
+
+    registry = HookRegistry(diagnostic_sink=fail_sink)
+    registry.register(
+        HookPoint.AFTER_LLM_RESPONSE,
+        FailingObserver(name="bad"),
+    )
+
+    diagnostics = registry.run_observers(
+        HookPoint.AFTER_LLM_RESPONSE,
+        HookContext(hook_point=HookPoint.AFTER_LLM_RESPONSE),
+    )
+
+    assert len(diagnostics) == 1
+    stored = registry.drain_diagnostics()
+    assert [diagnostic.hook_name for diagnostic in stored] == [
+        "bad",
+        "diagnostic_sink",
+    ]
+    assert "diagnostic relay unavailable" in stored[-1].message
+
+
 def test_observer_receives_immutable_snapshot_and_failure_is_observable() -> None:
     emitted = []
     registry = HookRegistry(diagnostic_sink=emitted.append)
@@ -210,6 +244,69 @@ def test_observer_receives_immutable_snapshot_and_failure_is_observable() -> Non
     assert diagnostics[0].hook_name == "mutator"
     assert registry.drain_diagnostics() == diagnostics
     assert registry.drain_diagnostics() == ()
+
+
+def test_observer_cannot_mutate_tool_dict_nested_in_tuple() -> None:
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        MutatingTupleToolObserver(name="tuple_mutator"),
+    )
+    tool = {"function": {"name": "stable"}}
+    context = BeforeLLMRequestContext(
+        hook_point=HookPoint.BEFORE_LLM_REQUEST,
+        request_params={"tools": (tool,)},
+    )
+
+    diagnostics = registry.run_observers(HookPoint.BEFORE_LLM_REQUEST, context)
+
+    assert tool["function"]["name"] == "stable"
+    assert len(diagnostics) == 1
+    assert diagnostics[0].hook_name == "tuple_mutator"
+
+
+def test_replacement_transform_preserves_deferred_dispatch_callbacks() -> None:
+    calls: list[tuple[str, BeforeLLMRequestContext]] = []
+
+    class Defer(TransformHook[BeforeLLMRequestContext]):
+        def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
+            context.defer_until_dispatch(
+                lambda dispatched: calls.append(("deferred", dispatched))
+            )
+            return context
+
+    class Replace(TransformHook[BeforeLLMRequestContext]):
+        def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
+            replacement = BeforeLLMRequestContext(
+                hook_point=context.hook_point,
+                request_params=dict(context.request_params),
+                messages=[dict(message) for message in context.messages],
+            )
+            replacement.defer_until_dispatch(
+                lambda dispatched: calls.append(("replacement", dispatched))
+            )
+            return replacement
+
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        Defer(name="defer", priority=10),
+    )
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        Replace(name="replace", priority=0),
+    )
+    original = BeforeLLMRequestContext(
+        hook_point=HookPoint.BEFORE_LLM_REQUEST,
+        messages=[{"role": "user", "content": "payload"}],
+    )
+
+    transformed = registry.run_transforms(HookPoint.BEFORE_LLM_REQUEST, original)
+
+    assert transformed is not original
+    assert transformed._commit_dispatch_callbacks() == ()
+    assert calls == [("deferred", transformed), ("replacement", transformed)]
+    assert original._commit_dispatch_callbacks() == ()
 
 
 def test_hook_registry_clone_is_isolated_copy() -> None:

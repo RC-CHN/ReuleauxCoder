@@ -16,6 +16,7 @@ from reuleauxcoder.domain.hooks.base import (
     TransformHook,
 )
 from reuleauxcoder.domain.hooks.types import (
+    BeforeLLMRequestContext,
     GuardDecision,
     HookContext,
     HookContextSnapshot,
@@ -87,6 +88,23 @@ class HookRegistry:
         self._diagnostics.clear()
         return diagnostics
 
+    def report_diagnostic(self, diagnostic: HookDiagnostic) -> None:
+        """Publish a non-fatal hook-runtime failure to the owning Agent."""
+        self._diagnostics.append(diagnostic)
+        if self._diagnostic_sink is not None:
+            try:
+                self._diagnostic_sink(diagnostic)
+            except Exception as error:
+                self._diagnostics.append(
+                    HookDiagnostic(
+                        hook_name="diagnostic_sink",
+                        hook_point=diagnostic.hook_point,
+                        hook_kind=HookKind.OBSERVER,
+                        message=f"{type(error).__name__}: {error}",
+                        severity="warning",
+                    )
+                )
+
     def bind_runtime_service(self, name: str, service: Any | None) -> None:
         """Bind one scoped service without exposing registry internals."""
         for hooks in self._hooks.values():
@@ -140,6 +158,10 @@ class HookRegistry:
                 )
                 self._report_failure(hook, hook_point, HookKind.TRANSFORM, error)
                 raise error
+            if result is not current and isinstance(current, BeforeLLMRequestContext):
+                current._transfer_dispatch_callbacks_to(
+                    cast(BeforeLLMRequestContext, result)
+                )
             current = result
         return current
 
@@ -247,6 +269,8 @@ class HookRegistry:
                 "turn_id",
                 "trace_id",
                 "metadata",
+                "_dispatch_callbacks",
+                "_dispatch_payload_changed",
             }
         }
         return HookContextSnapshot(
@@ -266,9 +290,9 @@ class HookRegistry:
             return MappingProxyType(
                 {key: cls._freeze(item) for key, item in value.items()}
             )
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return tuple(cls._freeze(item) for item in value)
-        if isinstance(value, set):
+        if isinstance(value, (set, frozenset)):
             return frozenset(cls._freeze(item) for item in value)
         return value
 
@@ -286,7 +310,5 @@ class HookRegistry:
             message=str(error),
             severity="error" if hook_kind is not HookKind.OBSERVER else "warning",
         )
-        self._diagnostics.append(diagnostic)
-        if self._diagnostic_sink is not None:
-            self._diagnostic_sink(diagnostic)
+        self.report_diagnostic(diagnostic)
         return diagnostic

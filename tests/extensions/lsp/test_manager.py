@@ -511,6 +511,45 @@ class TestDiagnosticBatchConsumption:
             "batch-1", consumer_id="consumer-2"
         )
 
+    def test_acknowledge_rendered_batch_set_is_atomic(
+        self, manager: LspManager
+    ) -> None:
+        route = DiagnosticRoute(file_path=Path("/tmp/test.py"), agent_id="agent-1")
+
+        def publish(batch_id: str) -> DiagnosticBatch:
+            batch = DiagnosticBatch(
+                batch_id=batch_id,
+                route=route,
+                request_sequence=1,
+                document_version=1,
+                diagnostic_generation=1,
+                block=DiagnosticBlock(file_path="test.py", items=[]),
+            )
+            manager._diagnostic_batches[batch_id] = batch
+            return batch
+
+        first = publish("first")
+        second = publish("second")
+
+        assert not manager.acknowledge_diagnostic_batches(
+            (first.batch_id, first.batch_id),
+            consumer_id="duplicate",
+        )
+        assert not manager.acknowledge_diagnostic_batches(
+            (first.batch_id, "missing"),
+            consumer_id="loser",
+        )
+        assert manager.pending_diagnostic_batches() == (first, second)
+        assert manager.acknowledge_diagnostic_batches(
+            (first.batch_id, second.batch_id),
+            consumer_id="winner",
+            carried_forward_ids={first.batch_id},
+        )
+        assert manager.pending_diagnostic_batches() == ()
+        assert manager.diagnostic_batch_acknowledgement(first.batch_id) == "winner"
+        assert manager.diagnostic_batch_acknowledgement(second.batch_id) == "winner"
+        assert manager.diagnostic_batch_metrics()["carried_forward"] == 1
+
     def test_route_filter_isolates_agent_generation_turn_and_two_files(
         self, manager: LspManager
     ) -> None:

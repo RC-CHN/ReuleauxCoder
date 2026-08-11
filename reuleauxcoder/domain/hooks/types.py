@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
@@ -71,6 +71,56 @@ class BeforeLLMRequestContext(HookContext):
     messages: list[dict[str, Any]] = field(default_factory=list)
     tools: list[dict[str, Any]] = field(default_factory=list)
     model: str | None = None
+    _dispatch_callbacks: list[Callable[[BeforeLLMRequestContext], None]] = field(
+        default_factory=list,
+        repr=False,
+    )
+    _dispatch_payload_changed: bool = field(default=False, init=False, repr=False)
+
+    def defer_until_dispatch(
+        self,
+        callback: Callable[[BeforeLLMRequestContext], None],
+    ) -> None:
+        """Commit a transform side effect at the final provider handoff."""
+        self._dispatch_callbacks.append(callback)
+
+    def _transfer_dispatch_callbacks_to(
+        self,
+        target: BeforeLLMRequestContext,
+    ) -> None:
+        """Preserve deferred state when a transform replaces its context."""
+        if target is self:
+            return
+        if self._dispatch_callbacks:
+            callbacks = tuple(self._dispatch_callbacks)
+            self._dispatch_callbacks.clear()
+            target._dispatch_callbacks[0:0] = callbacks
+        if self._dispatch_payload_changed:
+            target._dispatch_payload_changed = True
+            self._dispatch_payload_changed = False
+
+    def _commit_dispatch_callbacks(self) -> tuple[Exception, ...]:
+        callbacks = tuple(self._dispatch_callbacks)
+        self._dispatch_callbacks.clear()
+        failures: list[Exception] = []
+        for callback in callbacks:
+            try:
+                callback(self)
+            except Exception as error:
+                failures.append(error)
+        return tuple(failures)
+
+    def _has_dispatch_callbacks(self) -> bool:
+        return bool(self._dispatch_callbacks)
+
+    def mark_dispatch_payload_changed(self) -> None:
+        """Request one final estimate refresh after a callback edits payload."""
+        self._dispatch_payload_changed = True
+
+    def _consume_dispatch_payload_changed(self) -> bool:
+        changed = self._dispatch_payload_changed
+        self._dispatch_payload_changed = False
+        return changed
 
 
 @dataclass(slots=True)

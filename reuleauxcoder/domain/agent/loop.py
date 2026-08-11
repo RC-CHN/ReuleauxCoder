@@ -7,7 +7,7 @@ import platform
 import json
 import inspect
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.agent.agent import Agent
@@ -20,6 +20,7 @@ from reuleauxcoder.domain.context.replay import (
     RequestEnvelope,
     content_hash,
 )
+from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.domain.llm.context_messages import (
     mark_synthetic_user_message,
     normalize_provider_message_roles,
@@ -29,6 +30,120 @@ from reuleauxcoder.services.llm.client import LLMRequestCancelled
 
 
 _SINGLE_SYSTEM_PROTOCOL_MARKER = "# Runtime Context Protocol"
+
+
+class _RequestTokenBudgetExhausted(RuntimeError):
+    """Raised after request hooks make a payload exceed the remaining budget."""
+
+
+class _DispatchPayloadContractViolation(RuntimeError):
+    """Raised when a callback marked as shrinking a request instead grows it."""
+
+
+class _FinalRequestBudget:
+    """Apply the token budget at the final before-request hook boundary."""
+
+    def __init__(
+        self,
+        agent: "Agent",
+        *,
+        preliminary_max_output_tokens: int | None,
+    ) -> None:
+        self._agent = agent
+        self._preliminary_max_output_tokens = preliminary_max_output_tokens
+        self._requested_output_ceiling: int | None = None
+        self.local_request_estimate: int | None = None
+
+    def apply(self, context: BeforeLLMRequestContext) -> None:
+        estimate = self.refresh_estimate(context)
+
+        if self._agent.max_total_tokens is None:
+            return
+        remaining = (
+            self._agent.max_total_tokens
+            - self._agent.state.total_prompt_tokens
+            - self._agent.state.total_completion_tokens
+            - estimate
+        )
+        if remaining <= 0:
+            raise _RequestTokenBudgetExhausted
+
+        transformed_limit = context.request_params.get("max_tokens")
+        if transformed_limit == self._preliminary_max_output_tokens:
+            transformed_limit = getattr(self._agent.llm, "max_tokens", remaining)
+        requested = (
+            remaining if transformed_limit is None else max(1, int(transformed_limit))
+        )
+        self._requested_output_ceiling = requested
+        context.request_params["max_tokens"] = min(requested, remaining)
+
+    def refresh_estimate(self, context: BeforeLLMRequestContext) -> int:
+        """Refresh calibration after a dispatch callback only shrinks payload."""
+        messages = normalize_provider_message_roles(context.messages)
+        context.messages = messages
+        request_tools = context.request_params.get("tools")
+        tools = (
+            list(request_tools) if isinstance(request_tools, (list, tuple)) else None
+        )
+        estimate = self._agent.context.estimate_request_tokens(messages, tools)
+        self.local_request_estimate = estimate
+        return estimate
+
+    def refresh_after_dispatch(self, context: BeforeLLMRequestContext) -> None:
+        """Rebudget after a deferred callback removes part of the payload."""
+        previous_estimate = self.local_request_estimate
+        estimate = self.refresh_estimate(context)
+        if previous_estimate is not None and estimate > previous_estimate:
+            raise _DispatchPayloadContractViolation(
+                "dispatch callback marked the request as reduced, "
+                "but its token estimate increased"
+            )
+        if (
+            self._agent.max_total_tokens is None
+            or self._requested_output_ceiling is None
+        ):
+            return
+        remaining = (
+            self._agent.max_total_tokens
+            - self._agent.state.total_prompt_tokens
+            - self._agent.state.total_completion_tokens
+            - estimate
+        )
+        if remaining <= 0:
+            raise _RequestTokenBudgetExhausted
+        context.request_params["max_tokens"] = min(
+            self._requested_output_ceiling,
+            remaining,
+        )
+
+
+class _BudgetingHookRegistry:
+    """Delegate hooks once, then budget their final before-request payload."""
+
+    def __init__(self, registry: Any, budget: _FinalRequestBudget) -> None:
+        self._registry = registry
+        self._budget = budget
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._registry, name)
+
+    def run_guards(self, hook_point: HookPoint, context: Any):
+        return self._registry.run_guards(hook_point, context)
+
+    def run_transforms(self, hook_point: HookPoint, context: Any):
+        transformed = self._registry.run_transforms(hook_point, context)
+        if hook_point is HookPoint.BEFORE_LLM_REQUEST:
+            self._budget.apply(cast(BeforeLLMRequestContext, transformed))
+        return transformed
+
+    def run_observers(self, hook_point: HookPoint, context: Any):
+        return self._registry.run_observers(hook_point, context)
+
+    def refresh_final_request_budget(
+        self,
+        context: BeforeLLMRequestContext,
+    ) -> None:
+        self._budget.refresh_after_dispatch(context)
 
 
 class AgentLoop:
@@ -424,6 +539,45 @@ class AgentLoop:
                 canonical_request_payload=canonical_request_payload,
             )
 
+    def _record_dispatched_request_envelope(
+        self,
+        fallback_messages: list[dict],
+        fallback_tools: list[dict],
+        *,
+        attempt_id: str,
+    ) -> None:
+        """Record the exact hook-transformed request accepted by the client."""
+        dispatched = getattr(self.agent.llm, "last_dispatched_request", None)
+        if not isinstance(dispatched, dict):
+            self._record_request_envelopes(
+                fallback_messages,
+                fallback_tools,
+                attempt_id=attempt_id,
+            )
+            return
+
+        actual_messages = [
+            dict(message) for message in dispatched.get("messages") or []
+        ]
+        actual_tools = [dict(tool) for tool in dispatched.get("tools") or []]
+        if not actual_messages:
+            actual_messages = fallback_messages
+        actual_settings = {
+            key: value
+            for key, value in dispatched.items()
+            if key not in {"model", "messages", "tools"}
+        }
+        self._record_request_envelopes(
+            actual_messages,
+            actual_tools,
+            attempt_id=attempt_id,
+            request_settings=actual_settings,
+            model_profile=str(
+                dispatched.get("model") or getattr(self.agent.llm, "model", "unknown")
+            ),
+            canonical_request_payload=dispatched,
+        )
+
     def _record_request_envelopes_unmeasured(
         self,
         request_messages: list[dict],
@@ -629,12 +783,14 @@ class AgentLoop:
                     - self.agent.state.total_completion_tokens
                     - local_request_estimate
                 )
-                if remaining <= 0:
-                    return None
                 max_output_tokens = min(
-                    int(getattr(self.agent.llm, "max_tokens", remaining)),
-                    remaining,
+                    int(getattr(self.agent.llm, "max_tokens", max(1, remaining))),
+                    max(1, remaining),
                 )
+            final_budget = _FinalRequestBudget(
+                self.agent,
+                preliminary_max_output_tokens=max_output_tokens,
+            )
 
             baseline_epoch = self.agent.round_interrupt_epoch()
             cancellation = CancellationView(
@@ -660,7 +816,10 @@ class AgentLoop:
                     tools=request_tools,
                     on_token=_on_token,
                     on_reasoning_token=_on_reasoning,
-                    hook_registry=self.agent.hook_registry,
+                    hook_registry=_BudgetingHookRegistry(
+                        self.agent.hook_registry,
+                        final_budget,
+                    ),
                     session_id=getattr(self.agent, "current_session_id", None),
                     trace_id=attempt_id.replace(":", "_"),
                     metadata={
@@ -677,6 +836,35 @@ class AgentLoop:
                     cancellation_event=cancellation,
                     max_output_tokens=max_output_tokens,
                 )
+            except _DispatchPayloadContractViolation as error:
+                self.agent.state.total_model_calls -= 1
+                self.agent.history_ledger.append(
+                    "request_attempt_rejected",
+                    {
+                        "attempt_id": attempt_id,
+                        "round_index": round_num,
+                        "reason": "dispatch_payload_contract_violation",
+                        "error": str(error),
+                    },
+                    agent_id=self.agent.agent_id,
+                    turn_id=self.agent._current_turn_id,
+                    api_round_id=attempt_id,
+                )
+                raise
+            except _RequestTokenBudgetExhausted:
+                self.agent.state.total_model_calls -= 1
+                self.agent.history_ledger.append(
+                    "request_attempt_rejected",
+                    {
+                        "attempt_id": attempt_id,
+                        "round_index": round_num,
+                        "reason": "token_budget_exhausted",
+                    },
+                    agent_id=self.agent.agent_id,
+                    turn_id=self.agent._current_turn_id,
+                    api_round_id=attempt_id,
+                )
+                return None
             except LLMRequestCancelled:
                 interrupt_epoch = self.agent.round_interrupt_epoch()
                 self.agent.history_ledger.append(
@@ -709,36 +897,14 @@ class AgentLoop:
                     )
                 continue
 
-            dispatched = getattr(self.agent.llm, "last_dispatched_request", None)
-            if isinstance(dispatched, dict):
-                actual_messages = [
-                    dict(message) for message in dispatched.get("messages") or []
-                ]
-                actual_tools = [dict(tool) for tool in dispatched.get("tools") or []]
-                if not actual_messages:
-                    actual_messages = request_messages
-                actual_settings = {
-                    key: value
-                    for key, value in dispatched.items()
-                    if key not in {"model", "messages", "tools"}
-                }
-                self._record_request_envelopes(
-                    actual_messages,
-                    actual_tools,
-                    attempt_id=attempt_id,
-                    request_settings=actual_settings,
-                    model_profile=str(
-                        dispatched.get("model")
-                        or getattr(self.agent.llm, "model", "unknown")
-                    ),
-                    canonical_request_payload=dispatched,
-                )
-            else:
-                self._record_request_envelopes(
-                    request_messages,
-                    request_tools,
-                    attempt_id=attempt_id,
-                )
+            if final_budget.local_request_estimate is not None:
+                local_request_estimate = final_budget.local_request_estimate
+
+            self._record_dispatched_request_envelope(
+                request_messages,
+                request_tools,
+                attempt_id=attempt_id,
+            )
             return (
                 resp,
                 streamed_output,
@@ -1001,12 +1167,14 @@ class AgentLoop:
                     - self.agent.state.total_completion_tokens
                     - summary_local_request
                 )
-                if remaining <= 0:
-                    return "(sub-agent token budget exhausted before final handoff)"
                 summary_max_output_tokens = min(
-                    int(getattr(self.agent.llm, "max_tokens", remaining)),
-                    remaining,
+                    int(getattr(self.agent.llm, "max_tokens", max(1, remaining))),
+                    max(1, remaining),
                 )
+            final_budget = _FinalRequestBudget(
+                self.agent,
+                preliminary_max_output_tokens=summary_max_output_tokens,
+            )
             baseline_epoch = self.agent.round_interrupt_epoch()
             cancellation = CancellationView(
                 self.agent._stop_event,
@@ -1033,7 +1201,10 @@ class AgentLoop:
                     cancellation_event=cancellation,
                     on_token=_on_summary_token,
                     on_reasoning_token=_on_summary_reasoning,
-                    hook_registry=self.agent.hook_registry,
+                    hook_registry=_BudgetingHookRegistry(
+                        self.agent.hook_registry,
+                        final_budget,
+                    ),
                     session_id=getattr(self.agent, "current_session_id", None),
                     trace_id=attempt_id.replace(":", "_"),
                     metadata={
@@ -1050,6 +1221,37 @@ class AgentLoop:
                     },
                     max_output_tokens=summary_max_output_tokens,
                 )
+            except _DispatchPayloadContractViolation as error:
+                self.agent.state.total_model_calls -= 1
+                self.agent.history_ledger.append(
+                    "request_attempt_rejected",
+                    {
+                        "attempt_id": attempt_id,
+                        "round_index": self.agent.max_rounds,
+                        "summary_phase": True,
+                        "reason": "dispatch_payload_contract_violation",
+                        "error": str(error),
+                    },
+                    agent_id=self.agent.agent_id,
+                    turn_id=self.agent._current_turn_id,
+                    api_round_id=attempt_id,
+                )
+                raise
+            except _RequestTokenBudgetExhausted:
+                self.agent.state.total_model_calls -= 1
+                self.agent.history_ledger.append(
+                    "request_attempt_rejected",
+                    {
+                        "attempt_id": attempt_id,
+                        "round_index": self.agent.max_rounds,
+                        "summary_phase": True,
+                        "reason": "token_budget_exhausted",
+                    },
+                    agent_id=self.agent.agent_id,
+                    turn_id=self.agent._current_turn_id,
+                    api_round_id=attempt_id,
+                )
+                return "(sub-agent token budget exhausted before final handoff)"
             except LLMRequestCancelled:
                 interrupt_epoch = self.agent.round_interrupt_epoch()
                 self.agent.history_ledger.append(
@@ -1082,7 +1284,9 @@ class AgentLoop:
                         interrupt_epoch=interrupt_epoch,
                     )
                 continue
-            self._record_request_envelopes(
+            if final_budget.local_request_estimate is not None:
+                summary_local_request = final_budget.local_request_estimate
+            self._record_dispatched_request_envelope(
                 summary_messages,
                 [],
                 attempt_id=attempt_id,

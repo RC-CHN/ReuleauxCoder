@@ -68,10 +68,11 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         rather than prepended at index 0, so that prompt-cache prefixes are not
         invalidated by fresh diagnostics after a session resume.
         """
-        if self.lsp_manager is None:
+        manager = self.lsp_manager
+        if manager is None:
             return context
 
-        if not self.lsp_manager.enabled:
+        if not manager.enabled:
             return context
 
         # Never claim a batch unless there is a valid request-time overlay to
@@ -80,7 +81,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if not has_runtime_overlay_tail(context.messages):
             return context
 
-        batches = self.lsp_manager.pending_diagnostic_batches_for_owner(
+        batches = manager.pending_diagnostic_batches_for_owner(
             agent_id=context.agent_id,
             session_generation=context.session_generation,
             session_id=context.session_id,
@@ -106,12 +107,12 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
 
         rendered = render_blocks(
             blocks,
-            max_diagnostics=self.lsp_manager.config.max_diagnostics,
-            include_warnings=self.lsp_manager.config.include_warnings,
+            max_diagnostics=manager.config.max_diagnostics,
+            include_warnings=manager.config.include_warnings,
         )
         if rendered is None:
             for batch in batches:
-                self.lsp_manager.acknowledge_diagnostic_batch(
+                manager.acknowledge_diagnostic_batch(
                     batch.batch_id,
                     consumer_id=f"lsp-filtered:{consumer_id}",
                     carried_forward=(
@@ -134,9 +135,52 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if not inject_runtime_overlay_region(context.messages, injection):
             return context
 
-        # Emit a compact UI feedback panel
-        ui_bus = getattr(self.lsp_manager, "ui_bus", None)
-        if ui_bus is not None:
+        def commit_injection(dispatched: BeforeLLMRequestContext) -> None:
+            def remove_injection() -> None:
+                for message in dispatched.messages:
+                    content = message.get("content")
+                    if isinstance(content, str) and injection in content:
+                        message["content"] = content.replace(injection, "", 1)
+                        dispatched.mark_dispatch_payload_changed()
+
+            if not any(
+                injection in str(message.get("content") or "")
+                for message in dispatched.messages
+            ):
+                return
+            carried_forward_ids = {
+                batch.batch_id
+                for batch in batches
+                if batch.route.turn_id is not None
+                and context.turn_id is not None
+                and batch.route.turn_id != context.turn_id
+            }
+            try:
+                acknowledged = manager.acknowledge_diagnostic_batches(
+                    tuple(batch.batch_id for batch in batches),
+                    consumer_id=consumer_id,
+                    carried_forward_ids=carried_forward_ids,
+                )
+            except Exception:
+                remove_injection()
+                raise
+            if not acknowledged:
+                remove_injection()
+                ui_bus = getattr(manager, "ui_bus", None)
+                if ui_bus is not None:
+                    ui_bus.warning(
+                        "LSP diagnostics omitted because another request "
+                        "already committed the same batch",
+                        kind=UIEventKind.SYSTEM,
+                        batch_count=len(batches),
+                    )
+                return
+
+            # Emit feedback only after the same payload crosses the dispatch
+            # boundary; a failed final budget must remain invisible/retryable.
+            ui_bus = getattr(manager, "ui_bus", None)
+            if ui_bus is None:
+                return
             parts: list[str] = []
             if err_count:
                 parts.append(f"{err_count} error{'s' if err_count != 1 else ''}")
@@ -148,15 +192,6 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
                     kind=UIEventKind.SYSTEM,
                 )
 
-        for batch in batches:
-            self.lsp_manager.acknowledge_diagnostic_batch(
-                batch.batch_id,
-                consumer_id=consumer_id,
-                carried_forward=(
-                    batch.route.turn_id is not None
-                    and context.turn_id is not None
-                    and batch.route.turn_id != context.turn_id
-                ),
-            )
+        context.defer_until_dispatch(commit_injection)
 
         return context

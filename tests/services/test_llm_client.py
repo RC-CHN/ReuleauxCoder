@@ -1,8 +1,12 @@
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import reuleauxcoder.services.llm.client as llm_client_module
+from reuleauxcoder.domain.hooks.base import TransformHook
+from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.domain.llm.models import (
     EMPTY_ASSISTANT_CONTENT_PLACEHOLDER,
     LLMResponse,
@@ -449,6 +453,226 @@ class _FakeChunk:
         self.choices = [_FakeChoice(_FakeDelta(content=content))]
 
 
+class _DeferredDispatchProbe(TransformHook[BeforeLLMRequestContext]):
+    def __init__(self, callback) -> None:
+        super().__init__(name="deferred_dispatch_probe")
+        self._callback = callback
+
+    def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
+        context.defer_until_dispatch(self._callback)
+        return context
+
+
+class _RejectingRequestTransform(TransformHook[BeforeLLMRequestContext]):
+    def run(self, context: BeforeLLMRequestContext) -> BeforeLLMRequestContext:
+        del context
+        raise RuntimeError("request rejected after build")
+
+
+def test_llm_commits_deferred_callback_once_before_provider_handoff() -> None:
+    events: list[str] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(lambda _context: events.append("callback")),
+    )
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    def open_stream(_params):
+        events.append("stream_opened")
+        return iter([_FakeChunk(content="ok")])
+
+    llm._call_with_retry = open_stream  # type: ignore[method-assign]
+
+    response = llm.chat(
+        [{"role": "user", "content": "Hi"}],
+        hook_registry=registry,
+    )
+
+    assert response.content == "ok"
+    assert events == ["callback", "stream_opened"]
+
+
+def test_llm_keeps_dispatch_commit_when_provider_open_fails_after_handoff(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    callbacks: list[str] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(lambda _context: callbacks.append("callback")),
+    )
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    def fail_open(_params):
+        raise RuntimeError("provider stream open failed")
+
+    llm._call_with_retry = fail_open  # type: ignore[method-assign]
+
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            hook_registry=registry,
+        )
+    except RuntimeError as error:
+        assert str(error) == "provider stream open failed"
+    else:
+        raise AssertionError("provider stream open failure must propagate")
+
+    assert callbacks == ["callback"]
+
+
+def test_deferred_dispatch_failure_is_visible_without_crashing_request() -> None:
+    registry = HookRegistry()
+
+    def fail(_context: BeforeLLMRequestContext) -> None:
+        raise RuntimeError("secondary dispatch feedback failed")
+
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(fail),
+    )
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+    llm._call_with_retry = lambda _params: iter(  # type: ignore[method-assign]
+        [_FakeChunk(content="ok")]
+    )
+
+    response = llm.chat(
+        [{"role": "user", "content": "Hi"}],
+        hook_registry=registry,
+    )
+
+    assert response.content == "ok"
+    diagnostics = registry.drain_diagnostics()
+    assert len(diagnostics) == 1
+    assert diagnostics[0].hook_name == "deferred_dispatch"
+    assert diagnostics[0].severity == "warning"
+    assert "secondary dispatch feedback failed" in diagnostics[0].message
+
+
+def test_deferred_dispatch_effect_disables_ambiguous_provider_retry(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    class TransientConnectionError(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        llm_client_module,
+        "APIConnectionError",
+        TransientConnectionError,
+    )
+    attempts: list[int] = []
+    callbacks: list[str] = []
+
+    def create(**_params):
+        attempts.append(len(attempts) + 1)
+        raise TransientConnectionError("ambiguous provider failure")
+
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(lambda _context: callbacks.append("committed")),
+    )
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+    llm.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            hook_registry=registry,
+        )
+    except TransientConnectionError as error:
+        assert str(error) == "ambiguous provider failure"
+    else:
+        raise AssertionError("provider failure must propagate")
+
+    assert attempts == [1]
+    assert callbacks == ["committed"]
+
+
+def test_cancel_after_dispatch_commit_still_hands_payload_to_provider() -> None:
+    cancellation = threading.Event()
+    provider_called = threading.Event()
+    callback_calls: list[str] = []
+    registry = HookRegistry()
+
+    def commit(_context: BeforeLLMRequestContext) -> None:
+        callback_calls.append("committed")
+        cancellation.set()
+
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(commit),
+    )
+    llm = LLM(model="demo-model", api_key="sk-test-12345678")
+
+    def create(**_params):
+        provider_called.set()
+        return iter([_FakeChunk(content="ignored")])
+
+    llm.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            hook_registry=registry,
+            cancellation_event=cancellation,
+        )
+    except LLMRequestCancelled:
+        pass
+    else:
+        raise AssertionError("post-commit cancellation must detach the consumer")
+
+    assert callback_calls == ["committed"]
+    assert provider_called.wait(timeout=1)
+
+
+def test_llm_request_transform_rejection_terminates_operation_telemetry() -> None:
+    bus = UIEventBus()
+    seen: list[OperationPhaseChanged] = []
+
+    def capture(event) -> None:
+        if isinstance(event.payload, RuntimeEventPayload) and isinstance(
+            event.payload.event.payload, OperationPhaseChanged
+        ):
+            seen.append(event.payload.event.payload)
+
+    bus.subscribe(capture, replay_history=False)
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _RejectingRequestTransform(name="reject_request"),
+    )
+    llm = LLM(model="demo-model", api_key="sk-test-12345678", ui_bus=bus)
+    llm.performance_monitor = RuntimePerformanceMonitor()
+
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            hook_registry=registry,
+        )
+    except RuntimeError as error:
+        assert str(error) == "request rejected after build"
+    else:
+        raise AssertionError("request transform rejection must propagate")
+
+    assert [event.phase for event in seen] == ["request_build", "failed"]
+    assert seen[-1].status == "failed"
+    samples = llm.performance_monitor.snapshot()
+    assert [sample.name for sample in samples] == [
+        "request_build",
+        "request_total",
+    ]
+    assert [sample.status for sample in samples] == ["error", "error"]
+
+
 def test_llm_disables_sdk_retries_on_create_and_reconfigure(monkeypatch) -> None:
     client_options: list[dict] = []
 
@@ -496,6 +720,12 @@ def test_llm_does_not_retry_without_stream_options_on_transport_error(
 def test_llm_retries_without_stream_options_only_when_provider_rejects_it() -> None:
     llm = LLM(model="demo-model", api_key="sk-test-12345678")
     attempts: list[bool] = []
+    callbacks: list[str] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(lambda _context: callbacks.append("committed")),
+    )
 
     class UnsupportedStreamOptionsError(RuntimeError):
         status_code = 400
@@ -511,10 +741,14 @@ def test_llm_retries_without_stream_options_only_when_provider_rejects_it() -> N
 
     llm._call_with_retry = open_stream  # type: ignore[method-assign]
 
-    response = llm.chat([{"role": "user", "content": "Hi"}])
+    response = llm.chat(
+        [{"role": "user", "content": "Hi"}],
+        hook_registry=registry,
+    )
 
     assert response.content == "fallback"
     assert attempts == [True, False]
+    assert callbacks == ["committed"]
 
 
 def test_llm_emits_non_replayable_request_phases() -> None:
@@ -645,6 +879,12 @@ def test_llm_cancel_drops_slow_stream_open_and_discards_late_result() -> None:
     cancellation = threading.Event()
     release_open = threading.Event()
     late_stream_closed = threading.Event()
+    callbacks: list[str] = []
+    registry = HookRegistry()
+    registry.register(
+        HookPoint.BEFORE_LLM_REQUEST,
+        _DeferredDispatchProbe(lambda _context: callbacks.append("committed")),
+    )
     llm = LLM(model="demo-model", api_key="sk-test-12345678")
 
     class LateStream:
@@ -667,6 +907,7 @@ def test_llm_cancel_drops_slow_stream_open_and_discards_late_result() -> None:
         llm.chat(
             [{"role": "user", "content": "Hi"}],
             cancellation_event=cancellation,
+            hook_registry=registry,
         )
     except LLMRequestCancelled:
         pass
@@ -675,13 +916,82 @@ def test_llm_cancel_drops_slow_stream_open_and_discards_late_result() -> None:
     elapsed = time.monotonic() - started
 
     assert elapsed < 1.0
-    assert llm.last_dispatched_request is None
+    assert llm.last_dispatched_request is not None
+    assert callbacks == ["committed"]
 
     # The abandoned provider call may return later, but it never transfers
     # ownership back to this turn and is closed by its detached worker.
     release_open.set()
     assert late_stream_closed.wait(timeout=1)
-    assert llm.last_dispatched_request is None
+    assert llm.last_dispatched_request is not None
+    # Once the final payload is handed to the provider SDK, its irreversible
+    # side effects stay committed even if the local consumer is abandoned.
+    assert callbacks == ["committed"]
+
+
+def test_cancelled_detached_retry_cannot_revive_terminal_operation(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    class TransientConnectionError(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        llm_client_module,
+        "APIConnectionError",
+        TransientConnectionError,
+    )
+    cancellation = threading.Event()
+    create_started = threading.Event()
+    release_create = threading.Event()
+    create_failed = threading.Event()
+    attempts: list[int] = []
+    bus = UIEventBus()
+    seen: list[OperationPhaseChanged] = []
+
+    def capture(event) -> None:
+        if isinstance(event.payload, RuntimeEventPayload) and isinstance(
+            event.payload.event.payload, OperationPhaseChanged
+        ):
+            seen.append(event.payload.event.payload)
+
+    def create(**_params):
+        attempts.append(len(attempts) + 1)
+        create_started.set()
+        release_create.wait(timeout=5)
+        create_failed.set()
+        raise TransientConnectionError("late transient failure")
+
+    bus.subscribe(capture, replay_history=False)
+    llm = LLM(model="demo-model", api_key="sk-test-12345678", ui_bus=bus)
+    llm.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    def cancel_after_open_starts() -> None:
+        assert create_started.wait(timeout=1)
+        cancellation.set()
+
+    threading.Thread(target=cancel_after_open_starts, daemon=True).start()
+    try:
+        llm.chat(
+            [{"role": "user", "content": "Hi"}],
+            cancellation_event=cancellation,
+        )
+    except LLMRequestCancelled:
+        pass
+    else:
+        raise AssertionError("cancelled dispatch must raise LLMRequestCancelled")
+
+    terminal_phases = [event.phase for event in seen]
+    assert terminal_phases[-1] == "cancelled"
+    release_create.set()
+    assert create_failed.wait(timeout=1)
+    time.sleep(0.1)
+
+    assert attempts == [1]
+    assert [event.phase for event in seen] == terminal_phases
 
 
 def test_llm_cancel_does_not_wait_for_slow_stream_close() -> None:
