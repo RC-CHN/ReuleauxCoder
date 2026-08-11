@@ -46,6 +46,9 @@ from reuleauxcoder.extensions.lsp.client import (
     LspClientError,
     LspRequestCancelled,
     LspRequestTimedOut,
+    LspServerError,
+    LspServerUnavailable,
+    LspStderrCapture,
     MAX_LSP_FILE_SIZE_BYTES,
 )
 from reuleauxcoder.extensions.lsp.config import LspConfig
@@ -80,6 +83,7 @@ MISSING_COMMAND_TTL_SECONDS = 30.0
 DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
 MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER = 32
 MAX_TRANSPORT_STATE_HISTORY = 256
+MAX_LSP_STDERR_RECORDS = 16
 _LSP_PERFORMANCE_ATTRIBUTE_KEYS = frozenset(
     {
         "language",
@@ -139,8 +143,51 @@ class LspTransportStatus:
     updated_at_monotonic: float
     launcher: str | None = None
     error_type: str | None = None
-    error_message: str | None = None
+    error_phase: str | None = None
+    protocol_error_code: int | None = None
+    return_code: int | None = None
+    stderr_ref: str | None = None
     retry_at_monotonic: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LspStderrReference:
+    """Content-free metadata for one opaque in-memory stderr reference."""
+
+    ref: str
+    total_bytes: int
+    truncated: bool
+    tail_available: bool
+    finalized: bool
+    read_error_type: str | None = None
+    cleanup_operation: str | None = None
+    cleanup_error_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LspTransportStatusView:
+    """Default-deny transport projection safe for UI and model diagnostics."""
+
+    language: str
+    root_hash: str
+    state: LspTransportState
+    generation: int
+    launcher: str | None = None
+    error_phase: str | None = None
+    error_type: str | None = None
+    protocol_error_code: int | None = None
+    return_code: int | None = None
+    retry_at_monotonic: float | None = None
+    stderr: LspStderrReference | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LspStderrRecord:
+    ref: str
+    transport_key: TransportKey
+    generation: int
+    capture_id: int
+    capture: LspStderrCapture
 
 
 @dataclass
@@ -222,6 +269,8 @@ class LspManager:
         self._transport_state_history: deque[LspTransportStatus] = deque(
             maxlen=MAX_TRANSPORT_STATE_HISTORY
         )
+        self._stderr_records: dict[str, _LspStderrRecord] = {}
+        self._stderr_ref_by_owner: dict[tuple[TransportKey, int, int], str] = {}
         self._next_transport_state_sequence = 0
         self._transport_state_clock: Callable[[], float] = time.monotonic
         self._availability: dict[LanguageId, bool] = {}
@@ -293,24 +342,24 @@ class LspManager:
         """Return secret-free transport and pending-batch ownership diagnostics."""
         with self._lock:
             self._prune_expired_diagnostic_batches_locked()
-            transports = tuple(
-                sorted(
-                    self._describe_transport_status(status)
-                    for status in self._transport_statuses.values()
-                )
-            )
+            statuses = tuple(self._transport_statuses.values())
             pending = tuple(
                 sorted(
-                    f"pending:{batch.route.agent_id or '-'}:"
-                    f"g{batch.route.session_generation}:"
-                    f"{batch.route.file_path}"
+                    f"pending:g{batch.route.session_generation}:"
+                    f"file={self._workspace_identifier(batch.route.file_path)}"
                     for batch in self._diagnostic_batches.values()
                 )
             )
+        transports = tuple(
+            sorted(
+                self._describe_transport_status(self._transport_status_view(status))
+                for status in statuses
+            )
+        )
         return (*transports, *pending)
 
     def transport_statuses(self) -> tuple[LspTransportStatus, ...]:
-        """Return an immutable, stable-order snapshot of all resolved slots."""
+        """Return privileged raw slots; UI/model code must use status views."""
         with self._lock:
             return tuple(
                 sorted(
@@ -322,8 +371,110 @@ class LspManager:
                 )
             )
 
+    def transport_status_views(self) -> tuple[LspTransportStatusView, ...]:
+        """Return a stable default-deny projection without paths or raw errors."""
+        with self._lock:
+            statuses = tuple(self._transport_statuses.values())
+        views = tuple(self._transport_status_view(status) for status in statuses)
+        return tuple(
+            sorted(
+                views,
+                key=lambda view: (view.language, view.root_hash),
+            )
+        )
+
+    def stderr_reference(self, ref: str) -> LspStderrReference | None:
+        """Resolve content-free metadata; raw stderr is deliberately unavailable."""
+        with self._lock:
+            record = self._stderr_records.get(ref)
+        if record is None:
+            return None
+        try:
+            return self._stderr_reference_from_record(record)
+        except Exception as error:
+            logger.warning(
+                "LSP stderr metadata snapshot failed: error_type=%s",
+                type(error).__name__,
+            )
+            return LspStderrReference(
+                ref=ref,
+                total_bytes=0,
+                truncated=False,
+                tail_available=False,
+                finalized=True,
+                read_error_type=type(error).__name__,
+            )
+
+    def describe_failure_for_file(
+        self,
+        file_path: Path,
+        *,
+        phase: str,
+        error_type: str,
+        protocol_error_code: int | None = None,
+    ) -> str:
+        """Build a model-safe failure fact without external error text."""
+        path = self._canonicalize_path(file_path)
+        language = detect_language(path)
+        status: LspTransportStatus | None = None
+        if language is not None:
+            key = self._transport_key(language, path)
+            with self._lock:
+                status = self._transport_statuses.get(key)
+        view = self._transport_status_view(status) if status is not None else None
+        resolved_phase = view.error_phase if view is not None else None
+        resolved_error_type = view.error_type if view is not None else None
+        fields = [
+            f"phase={self._safe_fact(resolved_phase or phase, 'unknown')}",
+            f"error_type={self._safe_fact(resolved_error_type or error_type, 'Error')}",
+        ]
+        if view is not None:
+            fields.extend(
+                (
+                    f"state={view.state.value}",
+                    f"generation={view.generation}",
+                    f"root_hash={view.root_hash}",
+                )
+            )
+            if view.launcher:
+                fields.append(f"launcher={view.launcher}")
+            protocol_error_code = (
+                view.protocol_error_code
+                if view.protocol_error_code is not None
+                else protocol_error_code
+            )
+            if view.return_code is not None:
+                fields.append(f"return_code={view.return_code}")
+            if view.retry_at_monotonic is not None:
+                fields.append("retry_scheduled=true")
+            if view.stderr is not None:
+                fields.append(f"stderr_ref={view.stderr.ref}")
+                fields.append(f"stderr_bytes={view.stderr.total_bytes}")
+                if view.stderr.truncated:
+                    fields.append("stderr_truncated=true")
+                if not view.stderr.finalized:
+                    fields.append("stderr_pending=true")
+                if view.stderr.read_error_type is not None:
+                    fields.append(
+                        "stderr_read_error_type="
+                        f"{self._safe_fact(view.stderr.read_error_type, 'Error')}"
+                    )
+                if view.stderr.cleanup_error_type is not None:
+                    if view.stderr.cleanup_operation is not None:
+                        fields.append(
+                            "stderr_cleanup_operation="
+                            f"{self._safe_fact(view.stderr.cleanup_operation, 'cleanup')}"
+                        )
+                    fields.append(
+                        "stderr_cleanup_error_type="
+                        f"{self._safe_fact(view.stderr.cleanup_error_type, 'Error')}"
+                    )
+        if protocol_error_code is not None:
+            fields.append(f"protocol_error_code={protocol_error_code}")
+        return "LSP request failed (" + ", ".join(fields) + ")"
+
     def transport_status_for_file(self, file_path: Path) -> LspTransportStatus | None:
-        """Resolve a supported file to its slot, initially ``unstarted g0``."""
+        """Resolve a privileged raw slot, initially ``unstarted g0``."""
         path = self._canonicalize_path(file_path)
         language = detect_language(path)
         if not self._config.enabled or language is None:
@@ -332,7 +483,7 @@ class LspManager:
         return self._ensure_transport_status(key)
 
     def transport_state_history(self) -> tuple[LspTransportStatus, ...]:
-        """Return the bounded transition history, oldest first."""
+        """Return privileged raw transition history, oldest first."""
         with self._lock:
             return tuple(self._transport_state_history)
 
@@ -349,8 +500,7 @@ class LspManager:
             found = self._command_lookup(lookup_target) is not None
 
             lang_name = get_language_id_string(lang)
-            full_cmd = f"{cmd} {' '.join(args)}".strip()
-            details = full_cmd
+            details = f"launcher={self._launcher_name(cmd)} arg_count={len(args)}"
             report.languages.append((lang_name, found, details))
             report.total += 1
             if found:
@@ -449,8 +599,11 @@ class LspManager:
                 status=status,
                 attributes=details,
             )
-        except Exception:
-            logger.debug("LSP performance sample failed", exc_info=True)
+        except Exception as error:
+            logger.warning(
+                "LSP performance sample failed: error_type=%s",
+                type(error).__name__,
+            )
 
     @staticmethod
     def _performance_status(error: BaseException) -> str:
@@ -463,6 +616,143 @@ class LspManager:
     @staticmethod
     def _workspace_identifier(root: Path) -> str:
         return hashlib.sha256(os.fsencode(root)).hexdigest()[:12]
+
+    @staticmethod
+    def _safe_fact(value: str, fallback: str) -> str:
+        """Keep externally visible failure fields content-free and bounded."""
+        safe = "".join(
+            character
+            for character in value
+            if character.isascii()
+            and (character.isalnum() or character in {"_", "-", "."})
+        )[:64]
+        return safe or fallback
+
+    def _retain_client_stderr(
+        self,
+        key: TransportKey,
+        generation: int,
+        client: LspClient,
+    ) -> str | None:
+        try:
+            capture = getattr(client, "stderr_capture", None)
+        except Exception as error:
+            logger.warning(
+                "LSP stderr capture retention failed: error_type=%s",
+                type(error).__name__,
+            )
+            return None
+        if not isinstance(capture, LspStderrCapture):
+            return None
+        owner = (key, generation, id(capture))
+        with self._lock:
+            ref = self._stderr_ref_by_owner.get(owner)
+            if ref is not None and ref in self._stderr_records:
+                return ref
+            try:
+                ref = f"lspstderr_{uuid.uuid4().hex}"
+            except Exception as error:
+                logger.warning(
+                    "LSP stderr reference allocation failed: error_type=%s",
+                    type(error).__name__,
+                )
+                return None
+            self._stderr_records[ref] = _LspStderrRecord(
+                ref=ref,
+                transport_key=key,
+                generation=generation,
+                capture_id=id(capture),
+                capture=capture,
+            )
+            self._stderr_ref_by_owner[owner] = ref
+            while len(self._stderr_records) > MAX_LSP_STDERR_RECORDS:
+                stale_ref = next(iter(self._stderr_records))
+                stale = self._stderr_records.pop(stale_ref)
+                stale_owner = (
+                    stale.transport_key,
+                    stale.generation,
+                    stale.capture_id,
+                )
+                if self._stderr_ref_by_owner.get(stale_owner) == stale_ref:
+                    self._stderr_ref_by_owner.pop(stale_owner, None)
+            return ref
+
+    @staticmethod
+    def _record_client_cleanup_error(
+        client: LspClient,
+        operation: str,
+        error: BaseException,
+    ) -> None:
+        """Retain a secondary cleanup fault without masking the primary failure."""
+        try:
+            capture = getattr(client, "stderr_capture", None)
+            if isinstance(capture, LspStderrCapture):
+                capture.record_cleanup_error(operation, error)
+        except Exception as observation_error:
+            logger.warning(
+                "LSP cleanup-failure observation failed: error_type=%s",
+                type(observation_error).__name__,
+            )
+
+    @staticmethod
+    def _stderr_reference_from_record(
+        record: _LspStderrRecord,
+    ) -> LspStderrReference:
+        metadata = record.capture.metadata()
+        return LspStderrReference(
+            ref=record.ref,
+            total_bytes=metadata.total_bytes,
+            truncated=metadata.truncated,
+            tail_available=metadata.tail_available,
+            finalized=metadata.finalized,
+            read_error_type=metadata.read_error_type,
+            cleanup_operation=metadata.cleanup_operation,
+            cleanup_error_type=metadata.cleanup_error_type,
+        )
+
+    def _transport_status_view(
+        self,
+        status: LspTransportStatus,
+    ) -> LspTransportStatusView:
+        stderr = (
+            self.stderr_reference(status.stderr_ref)
+            if status.stderr_ref is not None
+            else None
+        )
+        if status.stderr_ref is not None and stderr is None:
+            stderr = LspStderrReference(
+                ref=status.stderr_ref,
+                total_bytes=0,
+                truncated=False,
+                tail_available=False,
+                finalized=True,
+                read_error_type="ReferenceExpired",
+            )
+        return LspTransportStatusView(
+            language=get_language_id_string(status.language),
+            root_hash=self._workspace_identifier(status.workspace_root),
+            state=status.state,
+            generation=status.generation,
+            launcher=(
+                self._safe_fact(status.launcher, "configured-launcher")
+                if status.launcher is not None
+                else None
+            ),
+            error_phase=(
+                self._safe_fact(status.error_phase, "unknown")
+                if status.error_phase is not None
+                else None
+            ),
+            error_type=(
+                self._safe_fact(status.error_type, "Error")
+                if status.error_type is not None
+                else None
+            ),
+            protocol_error_code=status.protocol_error_code,
+            return_code=status.return_code,
+            retry_at_monotonic=status.retry_at_monotonic,
+            stderr=stderr,
+        )
 
     @staticmethod
     def _request_kind(method: str) -> str:
@@ -593,9 +883,12 @@ class LspManager:
                 self._last_shutdown_completed = asyncio.run(
                     self._shutdown_clients_async(deadline_at=deadline_at)
                 )
-            except Exception:
+            except Exception as error:
                 self._last_shutdown_completed = False
-                logger.exception("LSP fallback shutdown failed")
+                logger.warning(
+                    "LSP fallback shutdown failed: error_type=%s",
+                    type(error).__name__,
+                )
         return (
             self._worker_thread is None
             and not self._transports
@@ -1015,9 +1308,12 @@ class LspManager:
                     deadline_at=self._shutdown_deadline_at
                     or time.monotonic() + WORKER_SHUTDOWN_TIMEOUT
                 )
-            except Exception:
+            except Exception as error:
                 self._last_shutdown_completed = False
-                logger.exception("LSP worker shutdown failed")
+                logger.warning(
+                    "LSP worker shutdown failed: error_type=%s",
+                    type(error).__name__,
+                )
             with self._lock:
                 self._worker_loop = None
                 self._worker_wakeup = None
@@ -1114,7 +1410,10 @@ class LspManager:
             return
         error = task.exception()
         if error is not None:
-            logger.error("Unhandled LSP worker task error: %s", error)
+            logger.error(
+                "Unhandled LSP worker task error: error_type=%s",
+                type(error).__name__,
+            )
 
     def _wake_worker(self) -> None:
         with self._lock:
@@ -1220,9 +1519,7 @@ class LspManager:
             transport_key=key,
         )
         if server is None:
-            raise LspClientError(
-                f"No LSP server available for {get_language_id_string(req.language_id)}"
-            )
+            raise LspServerUnavailable("LSP server unavailable")
 
         # Document sync before query (if needed)
         if req.needs_sync:
@@ -1264,7 +1561,12 @@ class LspManager:
             except Exception as e:
                 sync_status = self._performance_status(e)
                 sync_attributes["error_type"] = type(e).__name__
-                logger.debug("LSP sync error (swallowed): %s", e)
+                logger.warning(
+                    "LSP tool document sync failed: language=%s error_type=%s",
+                    get_language_id_string(req.language_id),
+                    type(e).__name__,
+                )
+                raise
             except BaseException as error:
                 sync_status = self._performance_status(error)
                 sync_attributes["error_type"] = type(error).__name__
@@ -1439,7 +1741,13 @@ class LspManager:
                         except Exception as error:
                             sync_status = self._performance_status(error)
                             sync_attributes["error_type"] = type(error).__name__
-                            logger.debug("LSP sync error (swallowed): %s", error)
+                            logger.warning(
+                                "LSP diagnostics document sync failed: "
+                                "language=%s error_type=%s",
+                                get_language_id_string(lang),
+                                type(error).__name__,
+                            )
+                            raise
 
                 # A successful file mutation is one ordered operation:
                 # synchronize the committed content, then notify save, then
@@ -1457,7 +1765,11 @@ class LspManager:
             except Exception as e:
                 sync_status = self._performance_status(e)
                 sync_attributes["error_type"] = type(e).__name__
-                logger.debug("LSP sync error (swallowed): %s", e)
+                logger.warning(
+                    "LSP diagnostics sync phase failed: language=%s error_type=%s",
+                    get_language_id_string(lang),
+                    type(e).__name__,
+                )
                 raise
             except BaseException as error:
                 sync_status = self._performance_status(error)
@@ -1560,17 +1872,25 @@ class LspManager:
         except (BrokenPipeError, ConnectionResetError, OSError) as e:
             total_status = self._performance_status(e)
             total_attributes["error_type"] = type(e).__name__
-            logger.warning("LSP transport error for %s: %s", lang.name, e)
+            logger.warning(
+                "LSP diagnostics transport error: language=%s error_type=%s",
+                lang.name,
+                type(e).__name__,
+            )
             self._on_transport_error(
                 lang,
                 file_path,
-                str(e),
+                type(e).__name__,
                 transport_key=resolved_transport_key,
             )
         except Exception as e:
             total_status = self._performance_status(e)
             total_attributes["error_type"] = type(e).__name__
-            logger.debug("LSP diagnostics error (swallowed): %s", e)
+            logger.warning(
+                "LSP diagnostics request failed: language=%s error_type=%s",
+                lang.name,
+                type(e).__name__,
+            )
         finally:
             self._record_lsp_performance(
                 "total",
@@ -1696,8 +2016,11 @@ class LspManager:
                     correlation_id=batch.route.tool_call_id or batch.batch_id,
                 )
             )
-        except Exception:
-            logger.exception("Runtime diagnostics event sink failed")
+        except Exception as error:
+            logger.warning(
+                "Runtime diagnostics event sink failed: error_type=%s",
+                type(error).__name__,
+            )
 
     # === Internal: Server Lifecycle ===
 
@@ -1718,9 +2041,9 @@ class LspManager:
         count = self._re_spawn_counts.get(key, 0)
         if count >= MAX_RESPWANS:
             logger.error(
-                "LSP server for %s at %s failed %d times — disabled for this workspace",
+                "LSP respawn limit reached: language=%s root_hash=%s limit=%d",
                 lang.name,
-                key[1],
+                self._workspace_identifier(key[1]),
                 MAX_RESPWANS,
             )
             status = self._ensure_transport_status(key)
@@ -1729,7 +2052,7 @@ class LspManager:
                 status.generation,
                 LspTransportState.ERROR,
                 error_type="RespawnLimitReached",
-                error_message=f"transport failed {MAX_RESPWANS} times",
+                error_phase="restart",
             )
             return None
 
@@ -1744,7 +2067,7 @@ class LspManager:
                     status.generation,
                     LspTransportState.ERROR,
                     error_type="RespawnLimitReached",
-                    error_message=f"transport failed {MAX_RESPWANS} times",
+                    error_phase="restart",
                 )
                 return None
 
@@ -1784,7 +2107,7 @@ class LspManager:
                     LspTransportState.ERROR,
                     command=cmd,
                     error_type="LauncherNotFound",
-                    error_message=f"launcher not found: {self._launcher_name(cmd)}",
+                    error_phase="availability",
                     retry_at=cached_retry_at,
                 )
             return None
@@ -1793,9 +2116,9 @@ class LspManager:
         found, retry_at = self._lookup_command_availability(key, cmd)
         if not found:
             logger.info(
-                "LSP command unavailable for %s: %s",
+                "LSP command unavailable: language=%s launcher=%s",
                 get_language_id_string(lang),
-                cmd,
+                self._launcher_name(cmd),
             )
             self._transition_transport(
                 key,
@@ -1803,7 +2126,7 @@ class LspManager:
                 LspTransportState.ERROR,
                 command=cmd,
                 error_type="LauncherNotFound",
-                error_message=f"launcher not found: {self._launcher_name(cmd)}",
+                error_phase="availability",
                 retry_at=retry_at,
             )
             return None
@@ -1826,6 +2149,7 @@ class LspManager:
             ),
         )
 
+        failure_phase = "spawn"
         try:
             cold_start = generation == 1
             await self._observe_lsp_phase(
@@ -1842,6 +2166,7 @@ class LspManager:
             ):
                 await self._close_transport_observed(key, client, graceful=False)
                 return None
+            failure_phase = "initialize"
             await self._observe_lsp_phase(
                 "initialize",
                 client.initialize(init_opts),
@@ -1873,17 +2198,32 @@ class LspManager:
                 )
             else:
                 await self._close_transport_observed(key, client, graceful=False)
+                stderr_ref = self._retain_client_stderr(key, generation, client)
                 self._transition_transport(
                     key,
                     generation,
                     LspTransportState.ERROR,
                     command=cmd,
                     error_type="StartCancelled",
-                    error_message="transport start cancelled",
+                    error_phase=failure_phase,
+                    stderr_ref=stderr_ref,
                 )
             raise
         except Exception as e:
-            await self._close_transport_observed(key, client, graceful=False)
+            try:
+                await self._close_transport_observed(key, client, graceful=False)
+            except Exception as cleanup_error:
+                self._record_client_cleanup_error(
+                    client,
+                    "manager_start_cleanup_failed",
+                    cleanup_error,
+                )
+                logger.warning(
+                    "LSP failed-start cleanup failed: language=%s error_type=%s",
+                    lang.name,
+                    type(cleanup_error).__name__,
+                )
+            stderr_ref = self._retain_client_stderr(key, generation, client)
             logger.warning(
                 "Failed to start LSP server: language=%s launcher=%s "
                 "arg_count=%d error_type=%s",
@@ -1900,7 +2240,9 @@ class LspManager:
                 LspTransportState.ERROR,
                 command=cmd,
                 error_type=type(e).__name__,
-                error_message=str(e),
+                error_phase=failure_phase,
+                protocol_error_code=(e.code if isinstance(e, LspServerError) else None),
+                stderr_ref=stderr_ref,
             )
             return None
 
@@ -1926,9 +2268,10 @@ class LspManager:
             return None
 
         logger.info(
-            "LSP server ready (async): lang=%s, root=%s",
+            "LSP server ready: language=%s root_hash=%s generation=%d",
             get_language_id_string(lang),
-            root,
+            self._workspace_identifier(root),
+            generation,
         )
         return client
 
@@ -1999,17 +2342,31 @@ class LspManager:
                 )
         try:
             await self._close_transport_observed(key, client)
-        except Exception:
-            logger.exception("LSP transport discard failed")
+        except Exception as error:
+            self._record_client_cleanup_error(
+                client,
+                "manager_discard_failed",
+                error,
+            )
+            logger.warning(
+                "LSP transport discard failed: error_type=%s",
+                type(error).__name__,
+            )
         finally:
             if generation is not None:
                 if client.is_alive:
+                    stderr_ref = self._retain_client_stderr(
+                        key,
+                        generation,
+                        client,
+                    )
                     self._transition_transport(
                         key,
                         generation,
                         LspTransportState.ERROR,
                         error_type="ShutdownIncomplete",
-                        error_message="transport remained alive after discard",
+                        error_phase="shutdown",
+                        stderr_ref=stderr_ref,
                     )
                 else:
                     self._transition_transport(
@@ -2087,12 +2444,18 @@ class LspManager:
     ) -> None:
         for key, client in clients.items():
             if client.is_alive:
+                stderr_ref = self._retain_client_stderr(
+                    key,
+                    generations[key],
+                    client,
+                )
                 self._transition_transport(
                     key,
                     generations[key],
                     LspTransportState.ERROR,
                     error_type="ShutdownIncomplete",
-                    error_message="transport remained alive after shutdown deadline",
+                    error_phase="shutdown",
+                    stderr_ref=stderr_ref,
                 )
             else:
                 self._transition_transport(
@@ -2106,61 +2469,120 @@ class LspManager:
         key: TransportKey,
         client: LspClient,
         generation: int,
-        reason: str,
+        _reason: str,
         returncode: int | None,
     ) -> None:
         """Accept an unexpected exit only from the current ready generation."""
+        failure_type = self._runtime_failure_type(_reason, returncode)
         changed = False
+        refined = False
         with self._lock:
             status = self._transport_statuses.get(key)
-            if (
+            current_generation = (
                 self._transports.get(key) is client
                 and status is not None
                 and status.generation == generation
-                and status.state is LspTransportState.READY
-            ):
-                message = reason
-                if returncode is not None:
-                    message += f" (return code {returncode})"
+            )
+            if current_generation and status.state is LspTransportState.READY:
+                stderr_ref = self._retain_client_stderr(
+                    key,
+                    generation,
+                    client,
+                )
                 self._record_transport_status_locked(
                     key,
                     state=LspTransportState.ERROR,
                     generation=generation,
                     launcher=status.launcher,
-                    error_type=(
-                        "ProcessExited" if returncode is not None else "TransportClosed"
-                    ),
-                    error_message=" ".join(message.split())[:512],
+                    error_type=failure_type,
+                    error_phase="runtime",
+                    return_code=returncode,
+                    stderr_ref=stderr_ref,
                 )
                 changed = True
+            elif (
+                current_generation
+                and status.state is LspTransportState.ERROR
+                and status.return_code is None
+                and returncode is not None
+            ):
+                self._record_transport_status_locked(
+                    key,
+                    state=LspTransportState.ERROR,
+                    generation=generation,
+                    launcher=status.launcher,
+                    error_type=status.error_type,
+                    error_phase=status.error_phase,
+                    protocol_error_code=status.protocol_error_code,
+                    return_code=returncode,
+                    stderr_ref=status.stderr_ref,
+                    retry_at=status.retry_at_monotonic,
+                )
+                changed = True
+                refined = True
         if changed:
             logger.warning(
-                "LSP transport exited: language=%s root=%s generation=%d reason=%s",
+                "LSP transport exited: language=%s root_hash=%s "
+                "generation=%d error_type=%s return_code=%s refined=%s",
                 get_language_id_string(key[0]),
-                key[1],
+                self._workspace_identifier(key[1]),
                 generation,
-                reason,
+                status.error_type if refined else failure_type,
+                returncode,
+                refined,
             )
+
+    @classmethod
+    def _runtime_failure_type(
+        cls,
+        reason: str,
+        returncode: int | None,
+    ) -> str:
+        """Classify client-owned reason strings without projecting their text."""
+        prefixes = (
+            ("stderr reader failed:", "StderrReader"),
+            ("response reader error:", "ResponseReader"),
+            ("server response write failed:", "ServerResponseWrite"),
+        )
+        for prefix, label in prefixes:
+            if reason.startswith(prefix):
+                cause = cls._safe_fact(reason.removeprefix(prefix), "Error")
+                return f"{label}{cause}"[:64]
+        if returncode is not None:
+            return "ProcessExited"
+        return "TransportClosed"
 
     def _on_transport_error(
         self,
         lang: LanguageId,
         file_path: Path,
-        reason: str,
+        error_type: str,
         *,
         transport_key: TransportKey | None = None,
     ) -> None:
         """Mark the current file transport as errored after an I/O failure."""
         key = transport_key or self._transport_key(lang, file_path)
         status = self._ensure_transport_status(key)
+        with self._lock:
+            client = self._transports.get(key)
+        stderr_ref = (
+            self._retain_client_stderr(key, status.generation, client)
+            if client is not None
+            else None
+        )
         self._transition_transport(
             key,
             status.generation,
             LspTransportState.ERROR,
-            error_type="TransportIOError",
-            error_message=reason,
+            error_type=self._safe_fact(error_type, "TransportIOError"),
+            error_phase="runtime",
+            stderr_ref=stderr_ref,
         )
-        logger.warning("LSP transport for %s marked dead: %s", lang.name, reason)
+        logger.warning(
+            "LSP transport marked dead: language=%s error_type=%s",
+            lang.name,
+            self._safe_fact(error_type, "TransportIOError"),
+        )
 
     # === Internal: Document Sync ===
 
@@ -2253,7 +2675,10 @@ class LspManager:
         *,
         command: str | None = None,
         error_type: str | None = None,
-        error_message: str | None = None,
+        error_phase: str | None = None,
+        protocol_error_code: int | None = None,
+        return_code: int | None = None,
+        stderr_ref: str | None = None,
         retry_at: float | None = None,
     ) -> bool:
         """CAS one transition; stale generation completions are rejected."""
@@ -2268,18 +2693,23 @@ class LspManager:
             )
             if state is not LspTransportState.ERROR:
                 error_type = None
-                error_message = None
+                error_phase = None
+                protocol_error_code = None
+                return_code = None
+                stderr_ref = None
                 retry_at = None
-            bounded_message = (
-                " ".join(error_message.split())[:512]
-                if error_message is not None
-                else None
-            )
+            elif stderr_ref is None:
+                # Reclassification within one failed generation must not lose
+                # the only correlation to that process's bounded stderr.
+                stderr_ref = current.stderr_ref
             if (
                 current.state is state
                 and current.launcher == launcher
                 and current.error_type == error_type
-                and current.error_message == bounded_message
+                and current.error_phase == error_phase
+                and current.protocol_error_code == protocol_error_code
+                and current.return_code == return_code
+                and current.stderr_ref == stderr_ref
                 and current.retry_at_monotonic == retry_at
             ):
                 return True
@@ -2289,7 +2719,10 @@ class LspManager:
                 generation=generation,
                 launcher=launcher,
                 error_type=error_type,
-                error_message=bounded_message,
+                error_phase=error_phase,
+                protocol_error_code=protocol_error_code,
+                return_code=return_code,
+                stderr_ref=stderr_ref,
                 retry_at=retry_at,
             )
             return True
@@ -2302,7 +2735,10 @@ class LspManager:
         generation: int,
         launcher: str | None = None,
         error_type: str | None = None,
-        error_message: str | None = None,
+        error_phase: str | None = None,
+        protocol_error_code: int | None = None,
+        return_code: int | None = None,
+        stderr_ref: str | None = None,
         retry_at: float | None = None,
     ) -> LspTransportStatus:
         self._next_transport_state_sequence += 1
@@ -2315,27 +2751,56 @@ class LspManager:
             updated_at_monotonic=self._transport_state_clock(),
             launcher=launcher,
             error_type=error_type,
-            error_message=error_message,
+            error_phase=error_phase,
+            protocol_error_code=protocol_error_code,
+            return_code=return_code,
+            stderr_ref=stderr_ref,
             retry_at_monotonic=retry_at,
         )
         self._transport_statuses[key] = status
         self._transport_state_history.append(status)
         return status
 
-    @staticmethod
-    def _launcher_name(command: str) -> str:
-        return (Path(command).name or command)[:128]
+    @classmethod
+    def _launcher_name(cls, command: str) -> str:
+        return cls._safe_fact(
+            Path(command).name or "configured-launcher",
+            "configured-launcher",
+        )
 
     @staticmethod
-    def _describe_transport_status(status: LspTransportStatus) -> str:
+    def _describe_transport_status(status: LspTransportStatusView) -> str:
         description = (
-            f"{get_language_id_string(status.language)}:"
-            f"{status.workspace_root}:g{status.generation}:{status.state.value}"
+            f"{status.language}:root={status.root_hash}:"
+            f"g{status.generation}:{status.state.value}"
         )
         if status.launcher:
             description += f":launcher={status.launcher}"
+        if status.error_phase:
+            description += f":phase={status.error_phase}"
         if status.error_type:
             description += f":error={status.error_type}"
+        if status.protocol_error_code is not None:
+            description += f":protocol_code={status.protocol_error_code}"
+        if status.return_code is not None:
+            description += f":return_code={status.return_code}"
+        if status.retry_at_monotonic is not None:
+            description += ":retry_scheduled=true"
+        if status.stderr is not None:
+            description += (
+                f":stderr={status.stderr.ref}"
+                f":stderr_bytes={status.stderr.total_bytes}"
+                f":stderr_truncated={str(status.stderr.truncated).lower()}"
+                f":stderr_pending={str(not status.stderr.finalized).lower()}"
+            )
+            if status.stderr.read_error_type is not None:
+                description += f":stderr_read_error={status.stderr.read_error_type}"
+            if status.stderr.cleanup_operation is not None:
+                description += f":stderr_cleanup={status.stderr.cleanup_operation}"
+            if status.stderr.cleanup_error_type is not None:
+                description += (
+                    f":stderr_cleanup_error={status.stderr.cleanup_error_type}"
+                )
         return description
 
     def _command_available(self, key: TransportKey, command: str) -> bool:

@@ -21,7 +21,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,15 @@ class LspClientError(Exception):
     """Raised when the LSP client encounters a fatal error."""
 
 
+class LspServerError(LspClientError):
+    """A server-declared JSON-RPC error without its untrusted message text."""
+
+    def __init__(self, code: int | None) -> None:
+        self.code = code
+        rendered = str(code) if code is not None else "unknown"
+        super().__init__(f"LSP server returned error code {rendered}")
+
+
 class LspRequestTimedOut(LspClientError):
     """Raised when an end-to-end LSP operation exhausts its deadline."""
 
@@ -62,19 +71,40 @@ class LspRequestCancelled(LspClientError):
     """Raised when the caller abandons an in-flight LSP operation."""
 
 
+class LspServerUnavailable(LspClientError):
+    """Raised when no usable transport can serve the requested file."""
+
+
 @dataclass(frozen=True, slots=True)
 class LspStderrSnapshot:
     """Raw in-memory stderr state; callers must sanitize before projection."""
 
-    text: str
+    text: str = field(repr=False)
     total_bytes: int
     truncated: bool
-    read_error: str | None = None
-    cleanup_error: str | None = None
+    finalized: bool
+    read_error: str | None = field(default=None, repr=False)
+    cleanup_error: str | None = field(default=None, repr=False)
+    read_error_type: str | None = None
+    cleanup_operation: str | None = None
+    cleanup_error_type: str | None = None
 
 
-class _BoundedStderrCapture:
-    """Drain all bytes while retaining only an exact bounded suffix."""
+@dataclass(frozen=True, slots=True)
+class LspStderrMetadata:
+    """Content-free stderr counters safe for ordinary projections."""
+
+    total_bytes: int
+    truncated: bool
+    tail_available: bool
+    finalized: bool
+    read_error_type: str | None = None
+    cleanup_operation: str | None = None
+    cleanup_error_type: str | None = None
+
+
+class LspStderrCapture:
+    """Raw live capture handle; never serialize this object or its snapshots."""
 
     def __init__(self, max_bytes: int = LSP_STDERR_TAIL_BYTES) -> None:
         self._max_bytes = max_bytes
@@ -82,6 +112,10 @@ class _BoundedStderrCapture:
         self._total_bytes = 0
         self._read_error: str | None = None
         self._cleanup_error: str | None = None
+        self._read_error_type: str | None = None
+        self._cleanup_operation: str | None = None
+        self._cleanup_error_type: str | None = None
+        self._finalized = False
         self._lock = threading.Lock()
 
     def append(self, chunk: bytes) -> None:
@@ -97,18 +131,37 @@ class _BoundedStderrCapture:
     def record_error(self, error: BaseException | str) -> None:
         if isinstance(error, BaseException):
             detail = f"{type(error).__name__}: {error}"
+            error_type = type(error).__name__
         else:
             detail = error
+            error_type = "StderrDrainIncomplete"
         bounded = " ".join(detail.split())[:256] or "stderr reader failed"
         with self._lock:
             if self._read_error is None:
                 self._read_error = bounded
+                self._read_error_type = error_type
 
     def record_cleanup_error(self, operation: str, error: BaseException) -> None:
-        bounded = f"{operation}: {type(error).__name__}"[:128]
+        safe_operation = (
+            "".join(
+                character
+                for character in operation
+                if character.isascii()
+                and (character.isalnum() or character in {"_", "-"})
+            )[:64]
+            or "stderr_cleanup"
+        )
+        bounded = f"{safe_operation}: {type(error).__name__}"[:128]
         with self._lock:
             if self._cleanup_error is None:
                 self._cleanup_error = bounded
+                self._cleanup_operation = safe_operation
+                self._cleanup_error_type = type(error).__name__
+
+    def mark_finalized(self) -> None:
+        """Mark that no further stderr bytes can be captured."""
+        with self._lock:
+            self._finalized = True
 
     def snapshot(self) -> LspStderrSnapshot:
         with self._lock:
@@ -116,13 +169,35 @@ class _BoundedStderrCapture:
             total_bytes = self._total_bytes
             read_error = self._read_error
             cleanup_error = self._cleanup_error
+            read_error_type = self._read_error_type
+            cleanup_operation = self._cleanup_operation
+            cleanup_error_type = self._cleanup_error_type
+            finalized = self._finalized
         return LspStderrSnapshot(
             text=raw.decode("utf-8", errors="replace"),
             total_bytes=total_bytes,
             truncated=total_bytes > len(raw),
+            finalized=finalized,
             read_error=read_error,
             cleanup_error=cleanup_error,
+            read_error_type=read_error_type,
+            cleanup_operation=cleanup_operation,
+            cleanup_error_type=cleanup_error_type,
         )
+
+    def metadata(self) -> LspStderrMetadata:
+        """Read counters and typed failures without copying or decoding raw text."""
+        with self._lock:
+            retained_bytes = len(self._tail)
+            return LspStderrMetadata(
+                total_bytes=self._total_bytes,
+                truncated=self._total_bytes > retained_bytes,
+                tail_available=retained_bytes > 0,
+                finalized=self._finalized,
+                read_error_type=self._read_error_type,
+                cleanup_operation=self._cleanup_operation,
+                cleanup_error_type=self._cleanup_error_type,
+            )
 
 
 class LspClient:
@@ -143,12 +218,13 @@ class LspClient:
         self._closing = False
         self._transport_failed = False
         self._exit_reported = False
+        self._reported_returncode: int | None = None
         self._request_id: int = 0
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._initialized: bool = False
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
-        self._stderr_capture = _BoundedStderrCapture()
+        self._stderr_capture = LspStderrCapture()
         self._process_wait_task: asyncio.Task[None] | None = None
         self._server_response_tasks: set[asyncio.Task[None]] = set()
         self._stdin_write_lock = asyncio.Lock()
@@ -181,6 +257,11 @@ class LspClient:
         """Return the bounded raw tail without placing it in model context."""
         return self._stderr_capture.snapshot()
 
+    @property
+    def stderr_capture(self) -> LspStderrCapture:
+        """Return the live raw capture for manager-owned opaque references."""
+        return self._stderr_capture
+
     # === Spawn & Initialize ===
 
     async def spawn(self, cmd: str, args: list[str]) -> None:
@@ -188,14 +269,15 @@ class LspClient:
         self._closing = False
         self._transport_failed = False
         self._exit_reported = False
-        stderr_capture = _BoundedStderrCapture()
+        self._reported_returncode = None
+        stderr_capture = LspStderrCapture()
         self._stderr_capture = stderr_capture
         full_args = [cmd] + args
         logger.info(
-            "Spawning LSP server: %s (lang=%s, root=%s)",
-            " ".join(full_args),
+            "Spawning LSP server: launcher=%s arg_count=%d lang=%s",
+            Path(cmd).name or "configured-launcher",
+            len(args),
             self._language_id_string,
-            self._workspace_root,
         )
 
         try:
@@ -207,12 +289,16 @@ class LspClient:
                 cwd=str(self._workspace_root),
             )
         except FileNotFoundError:
+            stderr_capture.mark_finalized()
             raise LspClientError(
-                f"LSP server command not found: {cmd}. "
-                f"Make sure the language toolchain is installed."
-            )
+                "LSP launcher was not found "
+                f"(launcher={Path(cmd).name or 'configured-launcher'})"
+            ) from None
         except OSError as e:
-            raise LspClientError(f"Failed to spawn LSP server {cmd}: {e}")
+            stderr_capture.mark_finalized()
+            raise LspClientError(
+                f"LSP launcher failed to start (error_type={type(e).__name__})"
+            ) from e
 
         # Drain stderr independently so a noisy server cannot block its own
         # protocol loop when the OS pipe buffer fills.
@@ -276,9 +362,8 @@ class LspClient:
 
         self._initialized = True
         logger.info(
-            "LSP server initialized: lang=%s, server=%s",
+            "LSP server initialized: lang=%s",
             self._language_id_string,
-            capabilities.get("serverInfo", {}).get("name", "unknown"),
         )
         return capabilities
 
@@ -544,7 +629,7 @@ class LspClient:
     async def _settle_stderr_task(
         self,
         task: asyncio.Task[None] | None,
-        capture: _BoundedStderrCapture,
+        capture: LspStderrCapture,
         *,
         deadline_at: float,
     ) -> None:
@@ -649,11 +734,12 @@ class LspClient:
     async def _drain_stderr(
         self,
         process: asyncio.subprocess.Process,
-        capture: _BoundedStderrCapture,
+        capture: LspStderrCapture,
     ) -> None:
         """Continuously drain stderr without parsing lines or blocking stdout."""
         stderr = process.stderr
         if stderr is None:
+            capture.mark_finalized()
             return
         try:
             while chunk := await stderr.read(_STDERR_READ_BYTES):
@@ -687,22 +773,35 @@ class LspClient:
                 self._language_id_string,
                 type(error).__name__,
             )
+        finally:
+            capture.mark_finalized()
 
     def _report_transport_failure(self, reason: str, returncode: int | None) -> None:
-        """Fail pending work and notify the manager exactly once."""
+        """Notify once, plus one later refinement from unknown to known exit code."""
         bounded_reason = " ".join(reason.split())[:256] or "transport closed"
         self._transport_failed = True
         self._fail_all_pending(bounded_reason)
-        if self._closing or self._exit_reported:
+        if self._closing:
+            return
+        is_returncode_refinement = (
+            self._exit_reported
+            and self._reported_returncode is None
+            and returncode is not None
+        )
+        if self._exit_reported and not is_returncode_refinement:
             return
         self._exit_reported = True
+        self._reported_returncode = returncode
         callback = self._on_unexpected_exit
         if callback is None:
             return
         try:
             callback(self, bounded_reason, returncode)
-        except Exception:
-            logger.exception("LSP unexpected-exit callback failed")
+        except Exception as error:
+            logger.warning(
+                "LSP unexpected-exit callback failed: error_type=%s",
+                type(error).__name__,
+            )
 
     async def _read_responses(self) -> None:
         """Continuously read JSON-RPC messages from the server's stdout.
@@ -758,14 +857,21 @@ class LspClient:
 
                 try:
                     body = json.loads(body_bytes.decode("utf-8"))
-                except json.JSONDecodeError as e:
-                    logger.warning("Failed to parse LSP message: %s", e)
+                except json.JSONDecodeError as error:
+                    logger.warning(
+                        "Failed to parse LSP message: lang=%s error_type=%s",
+                        self._language_id_string,
+                        type(error).__name__,
+                    )
                     continue
 
                 self._dispatch_message(body)
         except Exception as error:
             failure_reason = f"response reader error: {type(error).__name__}"
-            logger.debug("LSP response reader stopped: %s", error)
+            logger.debug(
+                "LSP response reader stopped: error_type=%s",
+                type(error).__name__,
+            )
         finally:
             if failure_reason is not None:
                 # Give asyncio's subprocess transport one event-loop turn to
@@ -795,10 +901,9 @@ class LspClient:
             if future is not None and not future.done():
                 if "error" in message:
                     err = message["error"]
+                    code = err.get("code")
                     future.set_exception(
-                        LspClientError(
-                            f"LSP error {err.get('code')}: {err.get('message')}"
-                        )
+                        LspServerError(code if isinstance(code, int) else None)
                     )
                 else:
                     future.set_result(message.get("result"))
@@ -819,8 +924,8 @@ class LspClient:
             and published_version < current_version
         ):
             logger.debug(
-                "Ignoring stale diagnostics for %s at version %s (current %s)",
-                uri,
+                "Ignoring stale diagnostics: lang=%s version=%s current=%s",
+                self._language_id_string,
                 published_version,
                 current_version,
             )

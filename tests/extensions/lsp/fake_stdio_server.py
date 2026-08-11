@@ -21,8 +21,10 @@ class FakeLspServer:
         block_method: str | None,
         block_until: Path | None,
         initialize_behavior: str,
+        initialize_error_message: str,
         shutdown_behavior: str,
         stderr_bytes: int,
+        stderr_text: str | None,
     ) -> None:
         self.mode = mode
         self.log_path = log_path
@@ -30,8 +32,10 @@ class FakeLspServer:
         self.block_method = block_method
         self.block_until = block_until
         self.initialize_behavior = initialize_behavior
+        self.initialize_error_message = initialize_error_message
         self.shutdown_behavior = shutdown_behavior
         self.stderr_bytes = stderr_bytes
+        self.stderr_text = stderr_text
         self.documents: dict[str, dict[str, Any]] = {}
         self.result_versions: dict[str, int] = {}
         self.result_ids: dict[str, str] = {}
@@ -76,7 +80,7 @@ class FakeLspServer:
                             "id": message["id"],
                             "error": {
                                 "code": -32002,
-                                "message": "deterministic initialize failure",
+                                "message": self.initialize_error_message,
                             },
                         },
                         method="response:initialize:error",
@@ -145,6 +149,10 @@ class FakeLspServer:
                 self._respond(message, None)
 
     def _emit_stderr(self) -> None:
+        if self.stderr_text is not None:
+            sys.stderr.write(self.stderr_text)
+            sys.stderr.flush()
+            return
         if self.stderr_bytes <= 0:
             return
         prefix = b"FAKE_STDERR_BEGIN\n"
@@ -309,11 +317,16 @@ def main() -> None:
         default="normal",
     )
     parser.add_argument(
+        "--initialize-error-message",
+        default="deterministic initialize failure",
+    )
+    parser.add_argument(
         "--shutdown-behavior",
         choices=("normal", "hang"),
         default="normal",
     )
     parser.add_argument("--stderr-bytes", type=int, default=0)
+    parser.add_argument("--stderr-text")
     args = parser.parse_args()
     if (args.block_method is None) != (args.block_until is None):
         parser.error("--block-method and --block-until must be used together")
@@ -324,8 +337,10 @@ def main() -> None:
         block_method=args.block_method,
         block_until=args.block_until,
         initialize_behavior=args.initialize_behavior,
+        initialize_error_message=args.initialize_error_message,
         shutdown_behavior=args.shutdown_behavior,
         stderr_bytes=max(0, args.stderr_bytes),
+        stderr_text=args.stderr_text,
     ).run()
 
 

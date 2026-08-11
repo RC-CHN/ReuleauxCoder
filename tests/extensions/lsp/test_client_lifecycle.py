@@ -17,6 +17,7 @@ from reuleauxcoder.extensions.lsp.client import (
     LspClient,
     LspClientError,
     LspRequestTimedOut,
+    LspServerError,
 )
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import LspManager
@@ -278,6 +279,7 @@ def test_large_stderr_is_drained_and_retains_exact_bounded_suffix(
     assert snapshot.truncated is True
     assert snapshot.text.encode("utf-8") == expected_tail
     assert snapshot.read_error is None
+    assert snapshot.finalized is True
     assert client._stderr_task is None
     assert stderr_task.done()
     assert not stderr_task.cancelled()
@@ -304,6 +306,57 @@ def test_stderr_snapshot_decodes_split_utf8_only_after_eof(tmp_path: Path) -> No
     assert client.stderr_snapshot.text == "no-newline:中"
     assert client.stderr_snapshot.total_bytes == len("no-newline:中".encode())
     assert client.stderr_snapshot.read_error is None
+
+
+def test_json_rpc_error_drops_untrusted_message_but_preserves_code(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "credential=server-error-must-not-leak"
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> LspServerError:
+        pending = asyncio.get_running_loop().create_future()
+        client._pending[7] = pending
+        client._dispatch_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "error": {
+                    "code": -32002,
+                    "message": secret,
+                    "data": {"detail": secret},
+                },
+            }
+        )
+        with pytest.raises(LspServerError) as raised:
+            await pending
+        return raised.value
+
+    with caplog.at_level("DEBUG"):
+        error = asyncio.run(run())
+
+    assert error.code == -32002
+    assert "-32002" in str(error)
+    assert secret not in repr((error, caplog.text))
+
+
+def test_transport_failure_reports_one_returncode_refinement(tmp_path: Path) -> None:
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+
+    client._report_transport_failure("server stdout closed", None)
+    client._report_transport_failure("process exited", 23)
+    client._report_transport_failure("process exited", 23)
+
+    assert [(reason, code) for _, reason, code in callbacks] == [
+        ("server stdout closed", None),
+        ("process exited", 23),
+    ]
 
 
 def test_abort_drains_through_kill_then_bounds_missing_stderr_eof(
@@ -578,7 +631,9 @@ def test_shutdown_hang_is_force_closed_within_total_deadline(tmp_path: Path) -> 
     _assert_pid_exits(pid)
 
 
-def test_unexpected_exit_callback_is_once_per_process(tmp_path: Path) -> None:
+def test_unexpected_exit_callback_allows_one_returncode_refinement(
+    tmp_path: Path,
+) -> None:
     log_path = tmp_path / "unexpected-exit.jsonl"
     callbacks: list[tuple[LspClient, str, int | None]] = []
     client = LspClient(
@@ -600,11 +655,16 @@ def test_unexpected_exit_callback_is_once_per_process(tmp_path: Path) -> None:
         await asyncio.sleep(0)
 
         assert not client.is_alive
-        assert len(callbacks) == 1
+        assert 1 <= len(callbacks) <= 2
         assert callbacks[0][0] is client
         assert callbacks[0][1]
+        assert callbacks[-1][2] is not None
+        if len(callbacks) == 2:
+            assert callbacks[0][2] is None
+        callback_count = len(callbacks)
         await client.abort()
-        assert len(callbacks) == 1
+        await asyncio.sleep(0)
+        assert len(callbacks) == callback_count
         return process.pid
 
     pid = asyncio.run(run())

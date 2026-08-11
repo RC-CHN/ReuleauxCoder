@@ -441,7 +441,7 @@ class TestSendRequestSyncValidation:
         manager = LspManager(LspConfig(enabled=True), workspace_cwd=Path("/tmp"))
         manager._availability[LanguageId.PYTHON] = False
         try:
-            with pytest.raises(LspClientError, match="No LSP server available"):
+            with pytest.raises(LspClientError, match="LSP server unavailable"):
                 manager.send_request_sync(
                     Path("/tmp/test.py"),
                     "textDocument/definition",
@@ -1056,6 +1056,8 @@ class TestDiagnosticReplacement:
         path = tmp_path / "main.py"
         path.write_text("x = 1")
         server = MagicMock()
+        server.did_open = AsyncMock()
+        server.did_change = AsyncMock()
         server.diagnostics_generation.side_effect = [1, 2]
         server.diagnostic_document_version.return_value = 2
         server.wait_for_diagnostics = AsyncMock(return_value=[])
@@ -1162,6 +1164,8 @@ class TestDiagnosticReplacement:
         path = tmp_path / "main.py"
         path.write_text("x = 1")
         server = MagicMock()
+        server.did_open = AsyncMock()
+        server.did_change = AsyncMock()
         server.diagnostics_generation.return_value = 8
         server.wait_for_diagnostics = AsyncMock(return_value=[])
         manager._get_or_create_server = AsyncMock(return_value=server)

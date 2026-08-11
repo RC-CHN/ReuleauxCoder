@@ -166,20 +166,22 @@ class LspTool(Tool):
             )
         except LspRequestCancelled as e:
             return _lsp_failure(
-                str(e),
+                "LSP request cancelled; "
+                + _safe_failure_message(manager, path, "request", e),
                 status=ToolOutcomeStatus.CANCELLED,
                 error_kind=ToolErrorKind.INTERRUPTED,
             )
         except LspRequestTimedOut as e:
             return _lsp_failure(
-                str(e),
+                "LSP request timed out; "
+                + _safe_failure_message(manager, path, "request", e),
                 status=ToolOutcomeStatus.TIMED_OUT,
                 error_kind=ToolErrorKind.INTERRUPTED,
             )
         except LspClientError as e:
-            return _lsp_failure(f"LSP server for this file type is not responding: {e}")
+            return _lsp_failure(_safe_failure_message(manager, path, "request", e))
         except Exception as e:
-            return _lsp_failure(f"LSP request failed: {e}")
+            return _lsp_failure(_safe_failure_message(manager, path, "request", e))
 
         # 7. Format result
         try:
@@ -196,7 +198,7 @@ class LspTool(Tool):
                     operation, format_document_symbols(raw, file_path=str(path))
                 )
         except Exception as e:
-            return _lsp_failure(f"Failed to format LSP result: {e}")
+            return _lsp_failure(_safe_failure_message(manager, path, "format", e))
 
         return _lsp_failure(f"Unknown operation: {operation}")
 
@@ -226,6 +228,58 @@ def _lsp_failure(
         error_kind=error_kind,
         metadata={"effect_class": "read"},
     )
+
+
+def _safe_failure_message(
+    manager: Any,
+    path: Path,
+    phase: str,
+    error: BaseException,
+) -> str:
+    """Project only typed failure facts into the model-visible outcome."""
+    safe_phase = _safe_failure_fact(phase, "unknown")
+    safe_error_type = _safe_failure_fact(type(error).__name__, "Error")
+    describe = getattr(manager, "describe_failure_for_file", None)
+    protocol_code = getattr(error, "code", None)
+    if not isinstance(protocol_code, int):
+        protocol_code = None
+    if callable(describe):
+        try:
+            return str(
+                describe(
+                    path,
+                    phase=phase,
+                    error_type=type(error).__name__,
+                    protocol_error_code=protocol_code,
+                )
+            )
+        except Exception as projection_error:
+            projection_error_type = _safe_failure_fact(
+                type(projection_error).__name__,
+                "Error",
+            )
+            return (
+                "LSP request failed "
+                f"(phase={safe_phase}, error_type={safe_error_type}, "
+                "failure_projection_error_type="
+                f"{projection_error_type})"
+            )
+    code_fact = (
+        f", protocol_error_code={protocol_code}" if protocol_code is not None else ""
+    )
+    return (
+        "LSP request failed "
+        f"(phase={safe_phase}, error_type={safe_error_type}{code_fact})"
+    )
+
+
+def _safe_failure_fact(value: str, fallback: str) -> str:
+    safe = "".join(
+        character
+        for character in value
+        if character.isascii() and (character.isalnum() or character in {"_", "-", "."})
+    )[:64]
+    return safe or fallback
 
 
 # ── internal helpers ───────────────────────────────────────────────────────
