@@ -3087,6 +3087,8 @@ class LspManager:
             ("stderr reader failed:", "StderrReader"),
             ("response reader error:", "ResponseReader"),
             ("server response write failed:", "ServerResponseWrite"),
+            ("protocol write failed:", "ProtocolWrite"),
+            ("protocol message error:", "ProtocolMessage"),
         )
         for prefix, label in prefixes:
             if reason.startswith(prefix):

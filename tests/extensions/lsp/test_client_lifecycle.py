@@ -14,6 +14,7 @@ import pytest
 
 from reuleauxcoder.extensions.lsp.client import (
     LSP_STDERR_TAIL_BYTES,
+    MAX_LSP_MESSAGE_BYTES,
     LspClient,
     LspClientError,
     LspRequestTimedOut,
@@ -156,6 +157,34 @@ def test_write_failure_removes_pending_request(tmp_path: Path) -> None:
         asyncio.run(client._send_request("test/write", {}, timeout=1.0))
 
     assert client._pending == {}
+
+
+def test_protocol_write_failure_marks_transport_failed_and_kills_process_safely(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+    stdin = MagicMock()
+    stdin.write.side_effect = BrokenPipeError("credential=write-must-not-leak")
+    process = MagicMock(stdin=stdin, returncode=None)
+    client._process = process
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(BrokenPipeError):
+            asyncio.run(client.send_notification("test/write", {}))
+
+    assert client._transport_failed is True
+    assert not client.is_usable
+    process.kill.assert_called_once_with()
+    assert [(reason, returncode) for _, reason, returncode in callbacks] == [
+        ("protocol write failed: BrokenPipeError", None)
+    ]
+    assert "credential=write-must-not-leak" not in repr((callbacks, caplog.text))
 
 
 def test_timeout_removes_pending_request(tmp_path: Path) -> None:
@@ -339,6 +368,197 @@ def test_json_rpc_error_drops_untrusted_message_but_preserves_code(
     assert error.code == -32002
     assert "-32002" in str(error)
     assert secret not in repr((error, caplog.text))
+
+
+@pytest.mark.parametrize("unsafe_code", [True, 2**63, -(2**63), "credential=code"])
+def test_json_rpc_error_rejects_unbounded_or_non_integer_code(
+    tmp_path: Path,
+    unsafe_code: object,
+) -> None:
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    async def run() -> LspServerError:
+        pending = asyncio.get_running_loop().create_future()
+        client._pending[7] = pending
+        client._dispatch_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "error": {"code": unsafe_code},
+            }
+        )
+        with pytest.raises(LspServerError) as raised:
+            await pending
+        return raised.value
+
+    error = asyncio.run(run())
+
+    assert error.code is None
+    assert str(unsafe_code) not in str(error)
+
+
+def _protocol_frame(body: bytes, *headers: bytes) -> bytes:
+    return b"\r\n".join((*headers, b"", b"")) + body
+
+
+def _sized_protocol_frame(body: bytes) -> bytes:
+    return _protocol_frame(
+        body,
+        b"Content-Length: " + str(len(body)).encode("ascii"),
+    )
+
+
+_PROTOCOL_SECRET = b"credential=protocol-frame-must-not-leak"
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_error_type"),
+    [
+        pytest.param(
+            _protocol_frame(b"", b"X-Debug: " + _PROTOCOL_SECRET),
+            "LspProtocolFramingError",
+            id="missing-content-length",
+        ),
+        pytest.param(
+            _protocol_frame(b"", b"Content-Length: " + _PROTOCOL_SECRET),
+            "LspProtocolFramingError",
+            id="invalid-content-length",
+        ),
+        pytest.param(
+            _protocol_frame(
+                b"{}",
+                b"Content-Length: 2",
+                b"Content-Length: 2",
+                b"X-Debug: " + _PROTOCOL_SECRET,
+            ),
+            "LspProtocolFramingError",
+            id="duplicate-content-length",
+        ),
+        pytest.param(
+            _protocol_frame(
+                b"",
+                f"Content-Length: {MAX_LSP_MESSAGE_BYTES + 1}".encode("ascii"),
+                b"X-Debug: " + _PROTOCOL_SECRET,
+            ),
+            "LspProtocolFramingError",
+            id="oversized-content-length",
+        ),
+        pytest.param(
+            _sized_protocol_frame(b"\xff" + _PROTOCOL_SECRET),
+            "LspProtocolDecodeError",
+            id="invalid-utf8",
+        ),
+        pytest.param(
+            _sized_protocol_frame(b'{"debug":"' + _PROTOCOL_SECRET + b'"} trailing'),
+            "LspProtocolDecodeError",
+            id="invalid-json",
+        ),
+        pytest.param(
+            _sized_protocol_frame(
+                json.dumps([_PROTOCOL_SECRET.decode("ascii")]).encode("utf-8")
+            ),
+            "LspProtocolMessageError",
+            id="non-object-json",
+        ),
+        pytest.param(
+            _sized_protocol_frame(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 41,
+                        "error": _PROTOCOL_SECRET.decode("ascii"),
+                    }
+                ).encode("utf-8")
+            ),
+            "LspProtocolMessageError",
+            id="malformed-error-object",
+        ),
+        pytest.param(
+            _sized_protocol_frame(b'{"jsonrpc":"2.0","id":41}'),
+            "LspProtocolMessageError",
+            id="missing-result-and-error",
+        ),
+        pytest.param(
+            _sized_protocol_frame(
+                b'{"jsonrpc":"2.0","id":41,"result":null,"error":{}}'
+            ),
+            "LspProtocolMessageError",
+            id="result-and-error",
+        ),
+        pytest.param(
+            _sized_protocol_frame(b'{"jsonrpc":"2.0","id":true,"result":null}'),
+            "LspProtocolMessageError",
+            id="boolean-response-id",
+        ),
+        pytest.param(
+            _sized_protocol_frame(b'{"jsonrpc":"2.0","id":41.0,"result":null}'),
+            "LspProtocolMessageError",
+            id="float-response-id",
+        ),
+        pytest.param(
+            _sized_protocol_frame(b'{"jsonrpc":"1.0","id":41,"result":null}'),
+            "LspProtocolMessageError",
+            id="invalid-jsonrpc-version",
+        ),
+        pytest.param(
+            _sized_protocol_frame(b'{"jsonrpc":"2.0","id":41,"result":NaN}'),
+            "LspProtocolDecodeError",
+            id="non-finite-json-number",
+        ),
+        pytest.param(
+            _sized_protocol_frame(
+                b'{"jsonrpc":"2.0","method":"textDocument/'
+                b'publishDiagnostics","params":[]}'
+            ),
+            "LspProtocolMessageError",
+            id="invalid-diagnostics-params",
+        ),
+    ],
+)
+def test_invalid_protocol_message_fails_transport_and_pending_safely(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    frame: bytes,
+    expected_error_type: str,
+) -> None:
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+
+    async def run() -> tuple[LspClientError, MagicMock]:
+        stdout = asyncio.StreamReader()
+        process = MagicMock(stdout=stdout, returncode=None)
+        client._process = process
+        pending = asyncio.get_running_loop().create_future()
+        client._pending[41] = pending
+        stdout.feed_data(frame)
+
+        await asyncio.wait_for(client._read_responses(), timeout=0.5)
+
+        assert pending.done()
+        error = pending.exception()
+        assert isinstance(error, LspClientError)
+        return error, process
+
+    with caplog.at_level("DEBUG"):
+        pending_error, process = asyncio.run(run())
+
+    expected_reason = f"response reader error: {expected_error_type}"
+    assert client._transport_failed is True
+    assert client.is_alive
+    assert not client.is_usable
+    assert client._pending == {}
+    process.kill.assert_called_once_with()
+    assert str(pending_error) == expected_reason
+    assert [(reason, returncode) for _, reason, returncode in callbacks] == [
+        (expected_reason, None)
+    ]
+    assert _PROTOCOL_SECRET.decode("ascii") not in repr(
+        (pending_error, callbacks, caplog.text)
+    )
 
 
 def test_transport_failure_reports_one_returncode_refinement(tmp_path: Path) -> None:

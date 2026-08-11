@@ -189,8 +189,8 @@ class LspServerError(LspClientError):
     """A server-declared JSON-RPC error without its untrusted message text."""
 
     def __init__(self, code: int | None) -> None:
-        self.code = code
-        rendered = str(code) if code is not None else "unknown"
+        self.code = _safe_protocol_error_code(code)
+        rendered = str(self.code) if self.code is not None else "unknown"
         super().__init__(f"LSP server returned error code {rendered}")
 
 
@@ -659,7 +659,13 @@ class LspClient:
         timeout: float = REQUEST_TIMEOUT,
     ) -> Any:
         """Send a synchronous LSP request and wait for the response."""
-        return await self._send_request(method, params, timeout=timeout)
+        result = await self._send_request(method, params, timeout=timeout)
+        try:
+            self._validate_active_result(method, result)
+        except LspProtocolMessageError as error:
+            self._report_protocol_message_failure(error)
+            raise
+        return result
 
     async def send_notification(
         self,
@@ -894,8 +900,21 @@ class LspClient:
             process = self._process
             if process is None or process.stdin is None:
                 raise LspClientError("LSP server not running")
-            process.stdin.write(frame)
-            await process.stdin.drain()
+            try:
+                process.stdin.write(frame)
+                await process.stdin.drain()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._report_transport_failure(
+                    f"protocol write failed: {type(error).__name__}",
+                    process.returncode,
+                )
+                self._force_kill_failed_process(
+                    process,
+                    operation="protocol_write_force_kill_failed",
+                )
+                raise
 
     # === Internal: Response Reader ===
 
@@ -1009,6 +1028,10 @@ class LspClient:
                     header_bytes = await stdout.readuntil(b"\r\n\r\n")
                 except asyncio.CancelledError:
                     return
+                except asyncio.LimitOverrunError as error:
+                    raise LspProtocolFramingError(
+                        "LSP response header exceeds the stream bound"
+                    ) from error
                 except asyncio.IncompleteReadError:
                     failure_reason = "server stdout closed"
                     logger.debug(
@@ -1017,18 +1040,33 @@ class LspClient:
                     )
                     return
 
-                header = header_bytes[:-4].decode("utf-8", errors="replace")
-                content_length = 0
+                try:
+                    header = header_bytes[:-4].decode("ascii")
+                except UnicodeDecodeError as error:
+                    raise LspProtocolFramingError(
+                        "LSP response header is not ASCII"
+                    ) from error
+                content_lengths: list[int] = []
                 for hdr_line in header.split("\r\n"):
                     if hdr_line.lower().startswith("content-length:"):
                         try:
-                            content_length = int(hdr_line.split(":", 1)[1].strip())
-                        except ValueError:
-                            pass
+                            content_lengths.append(
+                                int(hdr_line.split(":", 1)[1].strip())
+                            )
+                        except ValueError as error:
+                            raise LspProtocolFramingError(
+                                "LSP response Content-Length is invalid"
+                            ) from error
 
-                if content_length <= 0:
-                    logger.debug("Skipping LSP message with missing Content-Length")
-                    continue
+                if len(content_lengths) != 1:
+                    raise LspProtocolFramingError(
+                        "LSP response must contain one Content-Length"
+                    )
+                content_length = content_lengths[0]
+                if not 0 < content_length <= MAX_LSP_MESSAGE_BYTES:
+                    raise LspProtocolFramingError(
+                        "LSP response Content-Length is outside the safe bound"
+                    )
 
                 try:
                     body_bytes = await stdout.readexactly(content_length)
@@ -1043,14 +1081,18 @@ class LspClient:
                     return
 
                 try:
-                    body = json.loads(body_bytes.decode("utf-8"))
-                except json.JSONDecodeError as error:
-                    logger.warning(
-                        "Failed to parse LSP message: lang=%s error_type=%s",
-                        self._language_id_string,
-                        type(error).__name__,
+                    body = json.loads(
+                        body_bytes.decode("utf-8"),
+                        parse_constant=_reject_nonfinite_json,
                     )
-                    continue
+                except (UnicodeDecodeError, ValueError) as error:
+                    raise LspProtocolDecodeError(
+                        "LSP response body is not valid UTF-8 JSON"
+                    ) from error
+                if not isinstance(body, dict):
+                    raise LspProtocolMessageError(
+                        "LSP response body must be a JSON object"
+                    )
 
                 self._dispatch_message(body)
         except Exception as error:
@@ -1068,45 +1110,124 @@ class LspClient:
                     failure_reason,
                     process.returncode,
                 )
+                self._force_kill_failed_process(
+                    process,
+                    operation="response_reader_force_kill_failed",
+                )
+
+    def _force_kill_failed_process(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        operation: str,
+    ) -> None:
+        """Best-effort containment after a fatal transport/protocol failure."""
+        if self._closing or process.returncode is not None:
+            return
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        except Exception as cleanup_error:
+            self._stderr_capture.record_cleanup_error(operation, cleanup_error)
+            logger.warning(
+                "Failed to kill LSP after transport failure: "
+                "lang=%s operation=%s error_type=%s",
+                self._language_id_string,
+                operation,
+                type(cleanup_error).__name__,
+            )
+
+    def _report_protocol_message_failure(
+        self,
+        error: LspProtocolMessageError,
+    ) -> None:
+        process = self._process
+        returncode = process.returncode if process is not None else None
+        self._report_transport_failure(
+            f"protocol message error: {type(error).__name__}",
+            returncode,
+        )
+        if process is not None:
+            self._force_kill_failed_process(
+                process,
+                operation="protocol_message_force_kill_failed",
+            )
 
     def _dispatch_message(self, message: dict[str, Any]) -> None:
         """Route an incoming JSON-RPC message."""
+        if message.get("jsonrpc") != LSP_PROTOCOL_VERSION:
+            raise LspProtocolMessageError("LSP message has an invalid jsonrpc version")
+
+        has_id = "id" in message
         req_id = message.get("id")
+        has_method = "method" in message
         method = message.get("method")
 
-        if req_id is not None and isinstance(method, str):
+        if has_method:
+            if not isinstance(method, str) or not method:
+                raise LspProtocolMessageError("LSP method must be a non-empty string")
+            if "result" in message or "error" in message:
+                raise LspProtocolMessageError(
+                    "LSP request or notification cannot contain a response payload"
+                )
+            if not has_id:
+                if method == "textDocument/publishDiagnostics":
+                    params = message.get("params", {})
+                    if not isinstance(params, dict):
+                        raise LspProtocolMessageError(
+                            "LSP diagnostics params must be a JSON object"
+                        )
+                    self._handle_publish_diagnostics(params)
+                return
+            if not (type(req_id) is int or isinstance(req_id, str)):
+                raise LspProtocolMessageError("LSP server request id is invalid")
+            params = message.get("params", {})
+            if not isinstance(params, dict):
+                raise LspProtocolMessageError(
+                    "LSP server request params must be a JSON object"
+                )
             self._handle_server_request(
                 req_id,
                 method,
-                message.get("params", {}),
+                params,
             )
             return
 
-        if req_id is not None:
-            # Response to a request
-            future = self._pending.pop(req_id, None)
-            if future is not None and not future.done():
-                if "error" in message:
-                    err = message["error"]
-                    code = err.get("code")
-                    future.set_exception(
-                        LspServerError(code if isinstance(code, int) else None)
-                    )
-                else:
-                    future.set_result(message.get("result"))
+        if not has_id or type(req_id) is not int:
+            raise LspProtocolMessageError("LSP response id must be an integer")
+        has_error = "error" in message
+        has_result = "result" in message
+        if has_error == has_result:
+            raise LspProtocolMessageError(
+                "LSP response must contain exactly one of result or error"
+            )
+        if has_error and not isinstance(message["error"], dict):
+            raise LspProtocolMessageError("LSP response error must be a JSON object")
+
+        future = self._pending.get(req_id)
+        if future is None or future.done():
+            return
+        self._pending.pop(req_id, None)
+        if has_error:
+            code = _safe_protocol_error_code(message["error"].get("code"))
+            future.set_exception(LspServerError(code))
         else:
-            # Notification
-            method = message.get("method", "")
-            if method == "textDocument/publishDiagnostics":
-                self._handle_publish_diagnostics(message.get("params", {}))
+            future.set_result(message["result"])
 
     def _handle_publish_diagnostics(self, params: dict[str, Any]) -> None:
         """Process a textDocument/publishDiagnostics notification."""
-        uri = params.get("uri", "")
+        uri = params.get("uri")
+        if not isinstance(uri, str) or not uri:
+            raise LspProtocolMessageError(
+                "LSP diagnostics uri must be a non-empty string"
+            )
         published_version = params.get("version")
+        if published_version is not None and type(published_version) is not int:
+            raise LspProtocolMessageError("LSP diagnostics version must be an integer")
         current_version = self._document_versions.get(uri, 0)
         if (
-            isinstance(published_version, int)
+            type(published_version) is int
             and current_version
             and published_version < current_version
         ):
@@ -1117,7 +1238,7 @@ class LspClient:
                 current_version,
             )
             return
-        diagnostics_raw = params.get("diagnostics", [])
+        diagnostics_raw = params.get("diagnostics")
 
         items = self._decode_diagnostics(diagnostics_raw)
 
@@ -1128,7 +1249,7 @@ class LspClient:
         self._diagnostics_snapshots[uri] = items
         self._diagnostic_generations[uri] = self._diagnostic_generations.get(uri, 0) + 1
         self._diagnostic_document_versions[uri] = (
-            published_version if isinstance(published_version, int) else current_version
+            published_version if type(published_version) is int else current_version
         )
 
     async def _pull_document_diagnostics(self, file_path: Path) -> None:
@@ -1141,19 +1262,31 @@ class LspClient:
         result = await self._send_request(
             "textDocument/diagnostic", params, timeout=REQUEST_TIMEOUT
         )
+        try:
+            self._store_pull_diagnostics_result(uri, result)
+        except LspProtocolMessageError as error:
+            self._report_protocol_message_failure(error)
+            raise
+
+    def _store_pull_diagnostics_result(self, uri: str, result: object) -> None:
+        """Validate and store one method-specific pull diagnostics payload."""
         if not isinstance(result, dict):
-            return
+            raise LspProtocolMessageError(
+                "LSP pull diagnostics result must be a JSON object"
+            )
         kind = result.get("kind")
         if kind == "unchanged":
             items = list(self._diagnostics_snapshots.get(uri, []))
         elif kind == "full":
-            raw_items = result.get("items", [])
-            if not isinstance(raw_items, list):
-                return
+            raw_items = result.get("items")
             items = self._decode_diagnostics(raw_items)
         else:
-            return
+            raise LspProtocolMessageError("LSP pull diagnostics kind is invalid")
         result_id = result.get("resultId")
+        if result_id is not None and not isinstance(result_id, str):
+            raise LspProtocolMessageError(
+                "LSP pull diagnostics resultId must be a string"
+            )
         if isinstance(result_id, str):
             self._diagnostic_result_ids[uri] = result_id
         self._diagnostics_buffer[uri] = items
@@ -1161,22 +1294,140 @@ class LspClient:
         self._diagnostic_generations[uri] = self._diagnostic_generations.get(uri, 0) + 1
         self._diagnostic_document_versions[uri] = self._document_versions.get(uri, 0)
 
-    @staticmethod
-    def _decode_diagnostics(diagnostics_raw: list[dict[str, Any]]) -> list[Diagnostic]:
+    @classmethod
+    def _decode_diagnostics(
+        cls,
+        diagnostics_raw: object,
+    ) -> list[Diagnostic]:
+        if not isinstance(diagnostics_raw, list):
+            raise LspProtocolMessageError("LSP diagnostics must be a JSON array")
         items: list[Diagnostic] = []
         for diagnostic in diagnostics_raw:
-            rng = diagnostic.get("range", {})
-            start = rng.get("start", {})
+            if not isinstance(diagnostic, dict):
+                raise LspProtocolMessageError(
+                    "LSP diagnostic item must be a JSON object"
+                )
+            rng = diagnostic.get("range")
+            if not cls._valid_range(rng):
+                raise LspProtocolMessageError("LSP diagnostic range is invalid")
+            assert isinstance(rng, dict)
+            start = rng.get("start")
+            assert isinstance(start, dict)
+            line = start.get("line")
+            character = start.get("character")
+            message = diagnostic.get("message")
+            severity = diagnostic.get("severity", SEVERITY_ERROR)
+            code = diagnostic.get("code")
+            if (
+                type(line) is not int
+                or line < 0
+                or type(character) is not int
+                or character < 0
+                or not isinstance(message, str)
+                or type(severity) is not int
+                or severity not in {1, 2, 3, 4}
+                or not (code is None or isinstance(code, str) or type(code) is int)
+            ):
+                raise LspProtocolMessageError(
+                    "LSP diagnostic item contains an invalid field"
+                )
             items.append(
                 Diagnostic(
-                    line=start.get("line", 0) + 1,
-                    character=start.get("character", 0) + 1,
-                    message=diagnostic.get("message", ""),
-                    severity=diagnostic.get("severity", SEVERITY_ERROR),
-                    code=diagnostic.get("code"),
+                    line=line + 1,
+                    character=character + 1,
+                    message=message,
+                    severity=severity,
+                    code=str(code) if code is not None else None,
                 )
             )
         return items
+
+    @classmethod
+    def _validate_active_result(cls, method: str, result: object) -> None:
+        if method == "textDocument/definition":
+            if result is None:
+                return
+            locations = result if isinstance(result, list) else [result]
+            if not all(cls._valid_location(item) for item in locations):
+                raise LspProtocolMessageError(
+                    "LSP definition result contains an invalid location"
+                )
+        elif method == "textDocument/references":
+            if result is None:
+                return
+            if not isinstance(result, list) or not all(
+                cls._valid_location(item, allow_link=False) for item in result
+            ):
+                raise LspProtocolMessageError(
+                    "LSP references result contains an invalid location"
+                )
+        elif method == "textDocument/documentSymbol":
+            if result is None:
+                return
+            if not isinstance(result, list) or not cls._valid_symbols(result):
+                raise LspProtocolMessageError(
+                    "LSP documentSymbol result contains an invalid symbol"
+                )
+
+    @classmethod
+    def _valid_location(cls, value: object, *, allow_link: bool = True) -> bool:
+        if not isinstance(value, dict):
+            return False
+        if isinstance(value.get("uri"), str) and bool(value["uri"]):
+            return cls._valid_range(value.get("range"))
+        if (
+            allow_link
+            and isinstance(value.get("targetUri"), str)
+            and bool(value["targetUri"])
+        ):
+            return cls._valid_range(value.get("targetRange")) and cls._valid_range(
+                value.get("targetSelectionRange")
+            )
+        return False
+
+    @classmethod
+    def _valid_range(cls, value: object) -> bool:
+        if not isinstance(value, dict):
+            return False
+        return cls._valid_position(value.get("start")) and cls._valid_position(
+            value.get("end")
+        )
+
+    @staticmethod
+    def _valid_position(value: object) -> bool:
+        return (
+            isinstance(value, dict)
+            and type(value.get("line")) is int
+            and value["line"] >= 0
+            and type(value.get("character")) is int
+            and value["character"] >= 0
+        )
+
+    @classmethod
+    def _valid_symbols(cls, values: list[object]) -> bool:
+        for value in values:
+            if not isinstance(value, dict):
+                return False
+            if (
+                not isinstance(value.get("name"), str)
+                or type(value.get("kind")) is not int
+            ):
+                return False
+            location = value.get("location")
+            if location is not None:
+                if not cls._valid_location(location, allow_link=False):
+                    return False
+            elif not (
+                cls._valid_range(value.get("range"))
+                and cls._valid_range(value.get("selectionRange"))
+            ):
+                return False
+            children = value.get("children")
+            if children is not None and (
+                not isinstance(children, list) or not cls._valid_symbols(children)
+            ):
+                return False
+        return True
 
     def _handle_server_request(
         self, request_id: int | str, method: str, params: dict[str, Any]

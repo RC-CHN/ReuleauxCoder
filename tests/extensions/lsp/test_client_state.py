@@ -4,9 +4,11 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
-from reuleauxcoder.extensions.lsp.client import LspClient
+import pytest
+
+from reuleauxcoder.extensions.lsp.client import LspClient, LspProtocolMessageError
 from reuleauxcoder.extensions.lsp.registry import LanguageId
 
 
@@ -71,7 +73,10 @@ def test_publish_diagnostics_replaces_and_empty_clears(tmp_path: Path) -> None:
         "uri": uri,
         "diagnostics": [
             {
-                "range": {"start": {"line": 0, "character": 1}},
+                "range": {
+                    "start": {"line": 0, "character": 1},
+                    "end": {"line": 0, "character": 2},
+                },
                 "message": "old",
                 "severity": 1,
             }
@@ -113,7 +118,10 @@ def test_wait_for_diagnostics_rejects_preexisting_stale_batch(tmp_path: Path) ->
             "uri": uri,
             "diagnostics": [
                 {
-                    "range": {"start": {"line": 0, "character": 0}},
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 1},
+                    },
                     "message": "stale",
                 }
             ],
@@ -129,7 +137,10 @@ def test_wait_for_diagnostics_rejects_preexisting_stale_batch(tmp_path: Path) ->
                     "uri": uri,
                     "diagnostics": [
                         {
-                            "range": {"start": {"line": 1, "character": 0}},
+                            "range": {
+                                "start": {"line": 1, "character": 0},
+                                "end": {"line": 1, "character": 1},
+                            },
                             "message": "fresh",
                         }
                     ],
@@ -171,7 +182,10 @@ def test_wait_without_baseline_consumes_already_published_batch(tmp_path: Path) 
             "uri": path.resolve().as_uri(),
             "diagnostics": [
                 {
-                    "range": {"start": {"line": 0, "character": 0}},
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 1},
+                    },
                     "message": "ready",
                 }
             ],
@@ -197,7 +211,10 @@ def test_pull_diagnostics_full_and_unchanged_track_fresh_versions(
                 "resultId": "result-1",
                 "items": [
                     {
-                        "range": {"start": {"line": 1, "character": 2}},
+                        "range": {
+                            "start": {"line": 1, "character": 2},
+                            "end": {"line": 1, "character": 3},
+                        },
                         "message": "broken",
                         "severity": 1,
                     }
@@ -227,6 +244,90 @@ def test_pull_diagnostics_full_and_unchanged_track_fresh_versions(
     assert client.diagnostic_document_version(path) == 2
     second_params = client._send_request.await_args_list[1].args[1]
     assert second_params["previousResultId"] == "result-1"
+
+
+def test_document_sync_does_not_inline_pull_diagnostics(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    path = tmp_path / "main.py"
+    client._supports_pull_diagnostics = True
+    client._send_notification = AsyncMock()
+    client._send_request = AsyncMock(side_effect=RuntimeError("pull failed"))
+
+    asyncio.run(client.did_open(path, "value = 1"))
+
+    assert client.document_version(path) == 1
+    client._send_notification.assert_awaited_once()
+    client._send_request.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        None,
+        {},
+        {"kind": "unknown"},
+        {"kind": "full", "items": {}},
+        {"kind": "full", "items": [{}]},
+        {"kind": "unchanged", "resultId": 7},
+    ],
+)
+def test_malformed_pull_diagnostics_fails_transport(
+    tmp_path: Path,
+    result: object,
+) -> None:
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+    client._supports_pull_diagnostics = True
+    client._send_request = AsyncMock(return_value=result)
+    process = MagicMock(returncode=None)
+    client._process = process
+
+    with pytest.raises(LspProtocolMessageError):
+        asyncio.run(client._pull_document_diagnostics(tmp_path / "main.py"))
+
+    assert not client.is_usable
+    process.kill.assert_called_once_with()
+    assert [(reason, returncode) for _, reason, returncode in callbacks] == [
+        ("protocol message error: LspProtocolMessageError", None)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "result"),
+    [
+        ("textDocument/definition", {}),
+        ("textDocument/definition", [None]),
+        ("textDocument/references", {}),
+        ("textDocument/references", [{"uri": "file:///tmp/main.py"}]),
+        ("textDocument/documentSymbol", {}),
+        ("textDocument/documentSymbol", [{}]),
+    ],
+)
+def test_malformed_active_result_fails_transport(
+    tmp_path: Path,
+    method: str,
+    result: object,
+) -> None:
+    callbacks: list[tuple[LspClient, str, int | None]] = []
+    client = LspClient(
+        LanguageId.PYTHON,
+        tmp_path,
+        on_unexpected_exit=lambda *event: callbacks.append(event),
+    )
+    client._send_request = AsyncMock(return_value=result)
+    process = MagicMock(returncode=None)
+    client._process = process
+
+    with pytest.raises(LspProtocolMessageError):
+        asyncio.run(client.send_request(method, {}))
+
+    assert not client.is_usable
+    process.kill.assert_called_once_with()
+    assert callbacks[0][1] == "protocol message error: LspProtocolMessageError"
 
 
 def test_initialize_detects_pull_diagnostic_capability(tmp_path: Path) -> None:
