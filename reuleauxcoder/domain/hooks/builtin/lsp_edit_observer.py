@@ -131,8 +131,7 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
         deadline = time.monotonic() + _DIAGNOSTICS_POLL_DEADLINE
         batches = ()
         while time.monotonic() < deadline:
-            batches = self.lsp_manager.consume_diagnostic_batches(
-                consumer_id=f"lsp-edit:{tool_call.id}",
+            batches = self.lsp_manager.pending_diagnostic_batches(
                 batch_id=batch_id,
             )
             if batches:
@@ -198,4 +197,12 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
                         f"LSP: {', '.join(parts)} after {tool_call.name}",
                         kind=UIEventKind.SYSTEM,
                     )
+
+            # The batch remains retryable until ToolOutcome and UI processing
+            # have succeeded. Empty/filtered batches are complete observations.
+            for batch in batches:
+                self.lsp_manager.acknowledge_diagnostic_batch(
+                    batch.batch_id,
+                    consumer_id=f"lsp-edit:{tool_call.id}",
+                )
         return context

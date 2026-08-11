@@ -1,9 +1,10 @@
 """LSP diagnostics injector hook — appends diagnostics before LLM requests.
 
 BEFORE_LLM_REQUEST transform:
-- Drains accumulated diagnostics blocks from LspManager
+- Peeks at accumulated diagnostics blocks owned by the current session
 - Renders them as XML diagnostics blocks
-- Prepends a synthetic user message to the message list
+- Injects an untrusted diagnostics region into the request-time overlay
+- Acknowledges batches only after the request payload was updated successfully
 
 The LspManager reference is bound through the agent's scoped hook registry.
 """
@@ -23,10 +24,7 @@ from reuleauxcoder.domain.hooks.runtime_overlay import (
     inject_runtime_overlay_region,
 )
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext
-from reuleauxcoder.extensions.lsp.diagnostics import (
-    DiagnosticRouteFilter,
-    render_blocks,
-)
+from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
 from reuleauxcoder.interfaces.events import UIEventKind
 
 
@@ -82,22 +80,19 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if not has_runtime_overlay_tail(context.messages):
             return context
 
-        batches = self.lsp_manager.consume_diagnostic_batches(
-            consumer_id=(
-                f"lsp-inject:{context.agent_id or 'unknown'}:"
-                f"{context.session_generation if context.session_generation is not None else 'unknown'}:"
-                f"{context.turn_id or 'unknown'}"
-            ),
-            route=DiagnosticRouteFilter(
-                agent_id=context.agent_id,
-                session_generation=context.session_generation,
-                session_id=context.session_id,
-                turn_id=context.turn_id,
-            ),
+        batches = self.lsp_manager.pending_diagnostic_batches_for_owner(
+            agent_id=context.agent_id,
+            session_generation=context.session_generation,
+            session_id=context.session_id,
         )
         if not batches:
             return context
         blocks = [batch.block for batch in batches]
+        consumer_id = (
+            f"lsp-inject:{context.agent_id or 'unknown'}:"
+            f"{context.session_generation if context.session_generation is not None else 'unknown'}:"
+            f"{context.turn_id or 'unknown'}"
+        )
 
         # Count errors / warnings for UI feedback
         err_count = 0
@@ -115,6 +110,16 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             include_warnings=self.lsp_manager.config.include_warnings,
         )
         if rendered is None:
+            for batch in batches:
+                self.lsp_manager.acknowledge_diagnostic_batch(
+                    batch.batch_id,
+                    consumer_id=f"lsp-filtered:{consumer_id}",
+                    carried_forward=(
+                        batch.route.turn_id is not None
+                        and context.turn_id is not None
+                        and batch.route.turn_id != context.turn_id
+                    ),
+                )
             return context
 
         # Keep generated diagnostics in their own untrusted-data region before
@@ -126,7 +131,8 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             f"{rendered}\n"
             "</lsp_diagnostics>\n"
         )
-        inject_runtime_overlay_region(context.messages, injection)
+        if not inject_runtime_overlay_region(context.messages, injection):
+            return context
 
         # Emit a compact UI feedback panel
         ui_bus = getattr(self.lsp_manager, "ui_bus", None)
@@ -141,5 +147,16 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
                     f"LSP: {', '.join(parts)} injected",
                     kind=UIEventKind.SYSTEM,
                 )
+
+        for batch in batches:
+            self.lsp_manager.acknowledge_diagnostic_batch(
+                batch.batch_id,
+                consumer_id=consumer_id,
+                carried_forward=(
+                    batch.route.turn_id is not None
+                    and context.turn_id is not None
+                    and batch.route.turn_id != context.turn_id
+                ),
+            )
 
         return context

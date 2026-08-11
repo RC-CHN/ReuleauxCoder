@@ -26,7 +26,9 @@ from reuleauxcoder.domain.runtime.events import (
 from reuleauxcoder.extensions.lsp.client import LspClientError
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import (
+    DIAGNOSTIC_BATCH_TTL_SECONDS,
     MAX_RESPWANS,
+    MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER,
     DiagnosticRequest,
     LspManager,
 )
@@ -408,6 +410,177 @@ class TestDiagnosticBatchConsumption:
             "subagent",
         }
 
+    def test_exact_owner_selection_crosses_turn_but_not_session(
+        self, manager: LspManager
+    ) -> None:
+        def publish(batch_id: str, *, session_id: str, turn_id: str) -> None:
+            route = DiagnosticRoute(
+                file_path=Path(f"/tmp/{batch_id}.py"),
+                agent_id="parent",
+                session_generation=2,
+                session_id=session_id,
+                turn_id=turn_id,
+            )
+            manager._diagnostic_batches[batch_id] = DiagnosticBatch(
+                batch_id=batch_id,
+                route=route,
+                request_sequence=1,
+                document_version=1,
+                diagnostic_generation=1,
+                block=DiagnosticBlock(file_path=str(route.file_path), items=[]),
+            )
+
+        publish("same-owner", session_id="session-a", turn_id="turn-1")
+        publish("other-session", session_id="session-b", turn_id="turn-2")
+
+        selected = manager.pending_diagnostic_batches_for_owner(
+            agent_id="parent",
+            session_generation=2,
+            session_id="session-a",
+        )
+
+        assert [batch.batch_id for batch in selected] == ["same-owner"]
+
+
+class TestDiagnosticBatchBounds:
+    @staticmethod
+    def _batch(
+        batch_id: str,
+        *,
+        path: str,
+        sequence: int,
+        created_at: float,
+        session_id: str = "session",
+    ) -> DiagnosticBatch:
+        route = DiagnosticRoute(
+            file_path=Path(path),
+            agent_id="parent",
+            session_generation=2,
+            session_id=session_id,
+            turn_id="origin",
+        )
+        return DiagnosticBatch(
+            batch_id=batch_id,
+            route=route,
+            request_sequence=sequence,
+            document_version=sequence,
+            diagnostic_generation=sequence,
+            block=DiagnosticBlock(file_path=path, items=[]),
+            created_at=created_at,
+        )
+
+    def test_ttl_prunes_once_at_the_boundary(self, manager: LspManager) -> None:
+        manager._diagnostic_clock = lambda: 1000.0
+        expired = self._batch(
+            "expired",
+            path="/tmp/expired.py",
+            sequence=1,
+            created_at=1000.0 - DIAGNOSTIC_BATCH_TTL_SECONDS,
+        )
+        current = self._batch(
+            "current",
+            path="/tmp/current.py",
+            sequence=2,
+            created_at=1000.0 - DIAGNOSTIC_BATCH_TTL_SECONDS + 0.001,
+        )
+        manager._diagnostic_batches = {
+            expired.batch_id: expired,
+            current.batch_id: current,
+        }
+
+        assert manager.pending_diagnostic_batches() == (current,)
+        assert manager.pending_diagnostic_batches() == (current,)
+        assert manager.diagnostic_batch_metrics()["expired"] == 1
+
+    def test_ack_succeeds_after_peek_crosses_ttl_boundary(
+        self, manager: LspManager
+    ) -> None:
+        now = [1000.0]
+        manager._diagnostic_clock = lambda: now[0]
+        batch = self._batch(
+            "injected",
+            path="/tmp/injected.py",
+            sequence=1,
+            created_at=701.0,
+        )
+        manager._diagnostic_batches[batch.batch_id] = batch
+
+        assert manager.pending_diagnostic_batches() == (batch,)
+        now[0] = 1002.0
+
+        assert manager.acknowledge_diagnostic_batch(
+            batch.batch_id,
+            consumer_id="successful-injector",
+        )
+        assert manager.diagnostic_batch_metrics()["expired"] == 0
+
+    def test_new_document_state_overwrites_pending_batch(
+        self, manager: LspManager
+    ) -> None:
+        manager._diagnostic_clock = lambda: 1000.0
+        old = self._batch(
+            "old", path="/tmp/main.py", sequence=1, created_at=900.0
+        )
+        new = self._batch(
+            "new", path="/tmp/main.py", sequence=2, created_at=901.0
+        )
+
+        with manager._lock:
+            manager._store_diagnostic_batch_locked(old)
+            manager._store_diagnostic_batch_locked(new)
+
+        assert manager.pending_diagnostic_batches() == (new,)
+        assert manager.diagnostic_batch_metrics()["overwritten"] == 1
+
+    def test_enqueue_discards_pending_state_for_same_document(
+        self, manager: LspManager
+    ) -> None:
+        manager._diagnostic_clock = lambda: 1000.0
+        manager._availability[LanguageId.PYTHON] = True
+        old = self._batch(
+            "old", path="/tmp/main.py", sequence=1, created_at=900.0
+        )
+        manager._diagnostic_batches[old.batch_id] = old
+
+        queued = manager.enqueue_diagnostics(
+            Path("/tmp/main.py"),
+            route=old.route,
+        )
+
+        assert queued is not None
+        assert manager.pending_diagnostic_batches() == ()
+        assert manager.diagnostic_batch_metrics()["overwritten"] == 1
+
+    def test_capacity_evicts_only_oldest_batch_for_same_owner(
+        self, manager: LspManager
+    ) -> None:
+        manager._diagnostic_clock = lambda: 1000.0
+        other = self._batch(
+            "other-owner",
+            path="/tmp/other.py",
+            sequence=1,
+            created_at=900.0,
+            session_id="other-session",
+        )
+        with manager._lock:
+            manager._store_diagnostic_batch_locked(other)
+            for index in range(MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER + 1):
+                manager._store_diagnostic_batch_locked(
+                    self._batch(
+                        f"batch-{index}",
+                        path=f"/tmp/file-{index}.py",
+                        sequence=index + 1,
+                        created_at=900.0 + index,
+                    )
+                )
+
+        ids = {batch.batch_id for batch in manager.pending_diagnostic_batches()}
+        assert "batch-0" not in ids
+        assert "batch-1" in ids
+        assert "other-owner" in ids
+        assert len(ids) == MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER + 1
+        assert manager.diagnostic_batch_metrics()["capacity_evicted"] == 1
+
 
 class TestWorkerQueueOrdering:
     def test_pop_removes_exactly_one_queue_item(self, manager: LspManager) -> None:
@@ -513,6 +686,27 @@ class TestWorkerQueueOrdering:
         assert manager._diagnostics_queue[0].route.file_path == path
         assert manager._diagnostics_queue[0].request_sequence == 3
 
+    def test_same_agent_generation_and_file_keeps_sessions_independent(
+        self, manager: LspManager
+    ) -> None:
+        manager._availability[LanguageId.PYTHON] = True
+        path = Path("/tmp/session.py")
+        for session_id in ("session-a", "session-b"):
+            manager.enqueue_diagnostics(
+                path,
+                route=DiagnosticRoute(
+                    file_path=path,
+                    agent_id="parent",
+                    session_generation=2,
+                    session_id=session_id,
+                ),
+            )
+
+        assert len(manager._diagnostics_queue) == 2
+        assert {
+            request.route.session_id for request in manager._diagnostics_queue
+        } == {"session-a", "session-b"}
+
 
 class TestSessionGenerationWatermark:
     def test_advance_evicts_old_queue_and_batches_and_rejects_old_enqueue(
@@ -541,6 +735,7 @@ class TestSessionGenerationWatermark:
         assert manager._diagnostics_queue == []
         assert manager.pending_diagnostic_batches() == ()
         assert manager.enqueue_diagnostics(path, route=old_route) is None
+        assert manager.diagnostic_batch_metrics()["stale_discarded"] == 1
 
     def test_inflight_old_generation_cannot_publish_after_reset(
         self, manager: LspManager, tmp_path: Path

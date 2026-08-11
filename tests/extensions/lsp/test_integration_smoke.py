@@ -29,7 +29,7 @@ from reuleauxcoder.domain.hooks.builtin.lsp_injector import (
     LspDiagnosticsInjectorHook,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
-from reuleauxcoder.domain.hooks.types import HookPoint
+from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.extensions.lsp.registry import (
     LanguageId,
     get_language_id_string,
@@ -530,6 +530,33 @@ def test_python_document_commit_produces_real_diagnostics_batch(
         assert len(batches) == 1
         assert batches[0].block.items
         assert batches[0].route.tool_call_id == "edit"
+
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        '<execution_state plan_revision="0">\n'
+                        '<execution_data trust="untrusted_data">\n{}\n'
+                        "</execution_data>\n"
+                        "<runtime_instruction>Continue.</runtime_instruction>\n"
+                        "</execution_state>"
+                    ),
+                }
+            ],
+            agent_id="parent",
+            session_generation=0,
+            session_id="session",
+            turn_id="next-turn",
+        )
+        LspDiagnosticsInjectorHook(lsp_manager=manager).run(context)
+
+        assert "[LSP DIAGNOSTICS]" in context.messages[0]["content"]
+        assert manager.pending_diagnostic_batches() == ()
+        assert manager.diagnostic_batch_acknowledgement(batch_id) == (
+            "lsp-inject:parent:0:next-turn"
+        )
     finally:
         manager.shutdown_all()
 

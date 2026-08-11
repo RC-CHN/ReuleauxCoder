@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import (
     EDIT_TOOLS,
     LspEditObserverHook,
@@ -497,6 +499,42 @@ class TestLspEditObserverDedup:
         remaining = mgr.pending_diagnostic_batches()
         assert [batch.block.file_path for batch in remaining] == ["/tmp/other.py"]
 
+    def test_ui_failure_keeps_batch_retryable(self) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+        from reuleauxcoder.extensions.lsp.registry import LanguageId
+
+        ui_bus = MagicMock()
+        ui_bus.info.side_effect = RuntimeError("ui failed")
+        mgr = _make_manager()
+        mgr.ui_bus = ui_bus
+        with mgr._lock:
+            mgr._availability[LanguageId.PYTHON] = True
+        _complete_enqueued_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="/tmp/test.py",
+                items=[Diagnostic(line=1, character=1, message="err")],
+            ),
+        )
+        hook = LspEditObserverHook(lsp_manager=mgr)
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            tool_call=ToolCall(
+                id="1",
+                name="edit_file",
+                arguments={"file_path": "/tmp/test.py"},
+            ),
+            outcome=ToolOutcome(content="edited"),
+        )
+
+        with pytest.raises(RuntimeError, match="ui failed"):
+            hook.run(context)
+
+        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
+            "batch-1"
+        ]
+        assert mgr.diagnostic_batch_acknowledgement("batch-1") is None
+
 
 # === LspDiagnosticsInjectorHook scoped dedup ===
 
@@ -547,3 +585,232 @@ class TestLspDiagnosticsInjectorDedup:
         assert "err" in result.messages[0]["content"]
         # Queue drained
         assert mgr.pending_diagnostic_batches() == ()
+
+    def test_carries_prior_turn_batch_for_exact_session_owner(self) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        mgr = _make_manager()
+        block = DiagnosticBlock(
+            file_path="/tmp/test.py",
+            items=[Diagnostic(line=1, character=1, message="late")],
+        )
+        _publish_batch(
+            mgr,
+            block,
+            batch_id="batch-late",
+            route=DiagnosticRoute(
+                file_path=Path("/tmp/test.py"),
+                agent_id="parent",
+                session_generation=2,
+                session_id="session",
+                turn_id="turn-1",
+                tool_call_id="edit-1",
+            ),
+        )
+        hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+            agent_id="parent",
+            session_generation=2,
+            session_id="session",
+            turn_id="turn-2",
+        )
+
+        hook.run(context)
+
+        assert "late" in context.messages[0]["content"]
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-late") == (
+            "lsp-inject:parent:2:turn-2"
+        )
+        assert mgr.diagnostic_batch_metrics()["carried_forward"] == 1
+
+    def test_different_agent_generation_or_session_never_crosses_owner(self) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        mgr = _make_manager()
+        routes = (
+            DiagnosticRoute(
+                file_path=Path("/tmp/agent.py"),
+                agent_id="child",
+                session_generation=2,
+                session_id="session",
+            ),
+            DiagnosticRoute(
+                file_path=Path("/tmp/generation.py"),
+                agent_id="parent",
+                session_generation=1,
+                session_id="session",
+            ),
+            DiagnosticRoute(
+                file_path=Path("/tmp/session.py"),
+                agent_id="parent",
+                session_generation=2,
+                session_id="other-session",
+            ),
+        )
+        for index, route in enumerate(routes):
+            _publish_batch(
+                mgr,
+                DiagnosticBlock(
+                    file_path=str(route.file_path),
+                    items=[Diagnostic(line=1, character=1, message=str(index))],
+                ),
+                batch_id=f"batch-{index}",
+                route=route,
+            )
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+            agent_id="parent",
+            session_generation=2,
+            session_id="session",
+            turn_id="turn",
+        )
+
+        LspDiagnosticsInjectorHook(lsp_manager=mgr).run(context)
+
+        assert "[LSP DIAGNOSTICS]" not in context.messages[0]["content"]
+        assert len(mgr.pending_diagnostic_batches()) == 3
+
+    def test_injection_error_does_not_ack_and_retry_acks_once(
+        self, monkeypatch
+    ) -> None:
+        from reuleauxcoder.domain.hooks.builtin import lsp_injector
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        mgr = _make_manager()
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="/tmp/test.py",
+                items=[Diagnostic(line=1, character=1, message="retry")],
+            ),
+            batch_id="batch-retry",
+        )
+        hook = LspDiagnosticsInjectorHook(lsp_manager=mgr)
+        original = lsp_injector.inject_runtime_overlay_region
+
+        def fail(_messages, _injection):
+            raise RuntimeError("inject failed")
+
+        monkeypatch.setattr(lsp_injector, "inject_runtime_overlay_region", fail)
+        with pytest.raises(RuntimeError, match="inject failed"):
+            hook.run(
+                BeforeLLMRequestContext(
+                    hook_point=HookPoint.BEFORE_LLM_REQUEST,
+                    messages=[_execution_state_tail()],
+                )
+            )
+
+        assert len(mgr.pending_diagnostic_batches()) == 1
+        assert mgr.diagnostic_batch_acknowledgement("batch-retry") is None
+
+        monkeypatch.setattr(lsp_injector, "inject_runtime_overlay_region", original)
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+        )
+        hook.run(context)
+        hook.run(context)
+
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-retry") == (
+            "lsp-inject:unknown:unknown:unknown"
+        )
+        assert mgr.diagnostic_batch_metrics()["carried_forward"] == 0
+
+    def test_failed_overlay_write_does_not_ack(self, monkeypatch) -> None:
+        from reuleauxcoder.domain.hooks.builtin import lsp_injector
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        mgr = _make_manager()
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="/tmp/test.py",
+                items=[Diagnostic(line=1, character=1, message="retry")],
+            ),
+            batch_id="batch-false",
+        )
+        monkeypatch.setattr(
+            lsp_injector,
+            "inject_runtime_overlay_region",
+            lambda _messages, _injection: False,
+        )
+
+        LspDiagnosticsInjectorHook(lsp_manager=mgr).run(
+            BeforeLLMRequestContext(
+                hook_point=HookPoint.BEFORE_LLM_REQUEST,
+                messages=[_execution_state_tail()],
+            )
+        )
+
+        assert len(mgr.pending_diagnostic_batches()) == 1
+        assert mgr.diagnostic_batch_acknowledgement("batch-false") is None
+
+    def test_injector_ui_failure_does_not_ack(self) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+        ui_bus = MagicMock()
+        ui_bus.info.side_effect = RuntimeError("ui failed")
+        mgr = _make_manager()
+        mgr.ui_bus = ui_bus
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="/tmp/test.py",
+                items=[Diagnostic(line=1, character=1, message="retry")],
+            ),
+            batch_id="batch-ui",
+        )
+
+        with pytest.raises(RuntimeError, match="ui failed"):
+            LspDiagnosticsInjectorHook(lsp_manager=mgr).run(
+                BeforeLLMRequestContext(
+                    hook_point=HookPoint.BEFORE_LLM_REQUEST,
+                    messages=[_execution_state_tail()],
+                )
+            )
+
+        assert len(mgr.pending_diagnostic_batches()) == 1
+        assert mgr.diagnostic_batch_acknowledgement("batch-ui") is None
+
+    def test_filtered_warning_is_terminally_acknowledged(self) -> None:
+        from reuleauxcoder.extensions.lsp.diagnostics import (
+            Diagnostic,
+            SEVERITY_WARNING,
+        )
+
+        mgr = LspManager(
+            LspConfig(enabled=True, include_warnings=False),
+            workspace_cwd=Path("/tmp"),
+        )
+        _publish_batch(
+            mgr,
+            DiagnosticBlock(
+                file_path="/tmp/test.py",
+                items=[
+                    Diagnostic(
+                        line=1,
+                        character=1,
+                        message="warning",
+                        severity=SEVERITY_WARNING,
+                    )
+                ],
+            ),
+            batch_id="batch-filtered",
+        )
+        context = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            messages=[_execution_state_tail()],
+        )
+
+        LspDiagnosticsInjectorHook(lsp_manager=mgr).run(context)
+
+        assert "[LSP DIAGNOSTICS]" not in context.messages[0]["content"]
+        assert mgr.pending_diagnostic_batches() == ()
+        assert mgr.diagnostic_batch_acknowledgement("batch-filtered").startswith(
+            "lsp-filtered:"
+        )

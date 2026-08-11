@@ -67,10 +67,9 @@ class DiagnosticBlock:
 class DiagnosticRoute:
     """Ownership coordinates for one diagnostics request.
 
-    Optional values describe an explicitly unknown boundary; they are never
-    treated as wildcards when two concrete routes are compared.  Keeping the
-    coordinates on the batch prevents a late worker result from leaking into
-    another agent, session generation, turn, tool call, or document.
+    Agent, session generation and session identify the consumer boundary.
+    Turn and tool call identify where the diagnostics originated; they remain
+    provenance when a late batch is carried into a later turn.
     """
 
     file_path: Path

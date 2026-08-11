@@ -16,6 +16,7 @@ import concurrent.futures
 import logging
 import shutil
 import threading
+import time
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -61,7 +62,10 @@ WORKER_SHUTDOWN_TIMEOUT = (
 )
 _WORKER_POLL_INTERVAL = 0.1
 SPAWN_TIMEOUT = 30.0
+DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
+MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER = 32
 TransportKey = tuple[LanguageId, Path]
+DiagnosticOwnerKey = tuple[str | None, int | None, str | None]
 
 
 @dataclass
@@ -134,10 +138,18 @@ class LspManager:
         self._diagnostic_batches: dict[str, DiagnosticBatch] = {}
         self._acknowledged_batches: dict[str, str] = {}
         self._latest_diagnostic_sequence: dict[
-            tuple[str | None, int | None, Path], int
+            tuple[str | None, int | None, str | None, Path], int
         ] = {}
         self._session_generations: dict[str, int] = {}
         self._next_diagnostic_sequence = 0
+        self._diagnostic_clock: Callable[[], float] = time.time
+        self._diagnostic_batch_metrics: dict[str, int] = {
+            "carried_forward": 0,
+            "expired": 0,
+            "overwritten": 0,
+            "capacity_evicted": 0,
+            "stale_discarded": 0,
+        }
 
         # Lock (RLock for reentrancy in health_check)
         self._lock: threading.RLock = threading.RLock()
@@ -164,6 +176,7 @@ class LspManager:
     def describe_scopes(self) -> tuple[str, ...]:
         """Return secret-free transport and pending-batch ownership diagnostics."""
         with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
             transports = tuple(
                 sorted(
                     f"{get_language_id_string(language)}:{root}"
@@ -295,6 +308,7 @@ class LspManager:
             route = replace(route, file_path=path)
 
         with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
             if route.agent_id is not None and route.session_generation is not None:
                 current_generation = self._session_generations.get(route.agent_id)
                 if (
@@ -309,9 +323,24 @@ class LspManager:
                     self._advance_session_generation_locked(
                         route.agent_id, route.session_generation
                     )
+            owner = self._diagnostic_owner(route)
+            overwritten = [
+                current_id
+                for current_id, pending in self._diagnostic_batches.items()
+                if self._diagnostic_owner(pending.route) == owner
+                and pending.route.file_path == path
+            ]
+            for current_id in overwritten:
+                self._diagnostic_batches.pop(current_id, None)
+            self._diagnostic_batch_metrics["overwritten"] += len(overwritten)
             self._next_diagnostic_sequence += 1
             request_sequence = self._next_diagnostic_sequence
-            key = (route.agent_id, route.session_generation, path)
+            key = (
+                route.agent_id,
+                route.session_generation,
+                route.session_id,
+                path,
+            )
             self._latest_diagnostic_sequence[key] = request_sequence
             batch_id = uuid.uuid4().hex
             self._diagnostics_queue = [
@@ -320,6 +349,7 @@ class LspManager:
                 if (
                     item.route.agent_id,
                     item.route.session_generation,
+                    item.route.session_id,
                     item.route.file_path,
                 )
                 != key
@@ -352,17 +382,22 @@ class LspManager:
     def _advance_session_generation_locked(
         self, agent_id: str, generation: int
     ) -> None:
+        self._prune_expired_diagnostic_batches_locked()
         self._session_generations[agent_id] = generation
         self._diagnostics_queue = [
             request
             for request in self._diagnostics_queue
             if not self._is_older_generation(request.route, agent_id, generation)
         ]
+        previous_batch_count = len(self._diagnostic_batches)
         self._diagnostic_batches = {
             batch_id: batch
             for batch_id, batch in self._diagnostic_batches.items()
             if not self._is_older_generation(batch.route, agent_id, generation)
         }
+        self._diagnostic_batch_metrics["stale_discarded"] += (
+            previous_batch_count - len(self._diagnostic_batches)
+        )
         self._latest_diagnostic_sequence = {
             key: sequence
             for key, sequence in self._latest_diagnostic_sequence.items()
@@ -387,6 +422,7 @@ class LspManager:
     ) -> tuple[DiagnosticBatch, ...]:
         """Return matching unacknowledged batches without consuming them."""
         with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
             return tuple(
                 batch
                 for current_id, batch in self._diagnostic_batches.items()
@@ -394,12 +430,37 @@ class LspManager:
                 and (route is None or self._route_matches(batch.route, route))
             )
 
-    def acknowledge_diagnostic_batch(self, batch_id: str, *, consumer_id: str) -> bool:
+    def pending_diagnostic_batches_for_owner(
+        self,
+        *,
+        agent_id: str | None,
+        session_generation: int | None,
+        session_id: str | None,
+    ) -> tuple[DiagnosticBatch, ...]:
+        """Return batches for one exact session owner, across origin turns."""
+        owner = (agent_id, session_generation, session_id)
+        with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
+            return tuple(
+                batch
+                for batch in self._diagnostic_batches.values()
+                if self._diagnostic_owner(batch.route) == owner
+            )
+
+    def acknowledge_diagnostic_batch(
+        self,
+        batch_id: str,
+        *,
+        consumer_id: str,
+        carried_forward: bool = False,
+    ) -> bool:
         """Acknowledge exactly one batch, preventing a second consumer."""
         with self._lock:
             if self._diagnostic_batches.pop(batch_id, None) is None:
                 return False
             self._record_acknowledgement(batch_id, consumer_id)
+            if carried_forward:
+                self._diagnostic_batch_metrics["carried_forward"] += 1
             return True
 
     def consume_diagnostic_batches(
@@ -411,6 +472,7 @@ class LspManager:
     ) -> tuple[DiagnosticBatch, ...]:
         """Atomically select and acknowledge matching batches."""
         with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
             selected = tuple(
                 batch
                 for current_id, batch in self._diagnostic_batches.items()
@@ -426,6 +488,12 @@ class LspManager:
         """Return the consumer which acknowledged a batch, if any."""
         with self._lock:
             return self._acknowledged_batches.get(batch_id)
+
+    def diagnostic_batch_metrics(self) -> dict[str, int]:
+        """Return bounded-delivery counters for diagnostics batches."""
+        with self._lock:
+            self._prune_expired_diagnostic_batches_locked()
+            return dict(self._diagnostic_batch_metrics)
 
     # === Active Tools (synchronous bridge) ===
 
@@ -632,6 +700,7 @@ class LspManager:
                 document_version=server.diagnostic_document_version(file_path),
                 diagnostic_generation=diagnostic_generation,
                 block=block,
+                created_at=self._diagnostic_clock(),
             )
             accepted = False
             with self._lock:
@@ -639,6 +708,7 @@ class LspManager:
                 key = (
                     request.route.agent_id,
                     request.route.session_generation,
+                    request.route.session_id,
                     file_path,
                 )
                 if self._latest_diagnostic_sequence.get(
@@ -646,8 +716,10 @@ class LspManager:
                 ) == request.request_sequence and self._route_generation_is_current(
                     request.route
                 ):
-                    self._diagnostic_batches[batch.batch_id] = batch
+                    self._store_diagnostic_batch_locked(batch)
                     accepted = True
+                else:
+                    self._diagnostic_batch_metrics["stale_discarded"] += 1
             if accepted:
                 self._publish_diagnostic_event(batch)
 
@@ -678,6 +750,54 @@ class LspManager:
             if expected is not None and getattr(actual, name) != expected:
                 return False
         return True
+
+    @staticmethod
+    def _diagnostic_owner(route: DiagnosticRoute) -> DiagnosticOwnerKey:
+        return route.agent_id, route.session_generation, route.session_id
+
+    def _store_diagnostic_batch_locked(self, batch: DiagnosticBatch) -> None:
+        """Store the newest document state and bound one owner's backlog."""
+        self._prune_expired_diagnostic_batches_locked()
+        owner = self._diagnostic_owner(batch.route)
+
+        overwritten = [
+            batch_id
+            for batch_id, pending in self._diagnostic_batches.items()
+            if self._diagnostic_owner(pending.route) == owner
+            and pending.route.file_path == batch.route.file_path
+        ]
+        for batch_id in overwritten:
+            self._diagnostic_batches.pop(batch_id, None)
+        self._diagnostic_batch_metrics["overwritten"] += len(overwritten)
+
+        self._diagnostic_batches[batch.batch_id] = batch
+        owned = sorted(
+            (
+                pending
+                for pending in self._diagnostic_batches.values()
+                if self._diagnostic_owner(pending.route) == owner
+            ),
+            key=lambda pending: (
+                pending.created_at,
+                pending.request_sequence,
+                pending.batch_id,
+            ),
+        )
+        overflow = len(owned) - MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER
+        for pending in owned[: max(0, overflow)]:
+            self._diagnostic_batches.pop(pending.batch_id, None)
+        self._diagnostic_batch_metrics["capacity_evicted"] += max(0, overflow)
+
+    def _prune_expired_diagnostic_batches_locked(self) -> None:
+        cutoff = self._diagnostic_clock() - DIAGNOSTIC_BATCH_TTL_SECONDS
+        expired = [
+            batch_id
+            for batch_id, batch in self._diagnostic_batches.items()
+            if batch.created_at <= cutoff
+        ]
+        for batch_id in expired:
+            self._diagnostic_batches.pop(batch_id, None)
+        self._diagnostic_batch_metrics["expired"] += len(expired)
 
     def _record_acknowledgement(self, batch_id: str, consumer_id: str) -> None:
         self._acknowledged_batches[batch_id] = consumer_id
