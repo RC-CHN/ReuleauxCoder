@@ -212,6 +212,150 @@ def test_session_listing_uses_directory_metadata_without_full_restore(
     assert listed[0].preview == "metadata only"
 
 
+def test_session_projection_serves_repeated_inventory_without_manifest_scan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    writer = SessionStore(tmp_path)
+    session_id = writer.save(
+        messages=[{"role": "user", "content": "indexed"}],
+        model="model",
+    )
+    assert [item.id for item in writer.list()] == [session_id]
+    assert writer.session_projection_path.exists()
+
+    reader = SessionStore(tmp_path)
+    monkeypatch.setattr(
+        reader,
+        "_scan_inventory",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("healthy projection must avoid manifest scan")
+        ),
+    )
+
+    inventory = reader.list_result(fingerprint="local")
+
+    assert [item.id for item in inventory.sessions] == [session_id]
+    assert inventory.issues == ()
+
+
+def test_ready_session_projection_is_updated_after_authoritative_save(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = SessionStore(tmp_path)
+    first_id = store.save(
+        messages=[{"role": "user", "content": "first"}],
+        model="m1",
+    )
+    store.list()
+    second_id = store.save(
+        messages=[{"role": "user", "content": "second"}],
+        model="m2",
+    )
+
+    reader = SessionStore(tmp_path)
+    monkeypatch.setattr(
+        reader,
+        "_scan_inventory",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("save should update the ready projection")
+        ),
+    )
+
+    assert {item.id for item in reader.list(fingerprint=None)} == {
+        first_id,
+        second_id,
+    }
+
+
+def test_corrupt_session_projection_rebuilds_without_touching_authority(
+    tmp_path: Path,
+) -> None:
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[{"role": "user", "content": "authoritative"}],
+        model="model",
+    )
+    store.list()
+    manifest_path = tmp_path / session_id / "manifest.json"
+    replay_path = tmp_path / session_id / "replay.json"
+    manifest_before = manifest_path.read_bytes()
+    replay_before = replay_path.read_bytes()
+    store.session_projection_path.write_bytes(b"not-a-sqlite-database")
+
+    repaired = SessionStore(tmp_path)
+    inventory = repaired.list_result(fingerprint="local")
+
+    assert [item.id for item in inventory.sessions] == [session_id]
+    assert any(
+        issue.phase == "session_projection"
+        and issue.ref == "session_index"
+        for issue in inventory.issues
+    )
+    assert manifest_path.read_bytes() == manifest_before
+    assert replay_path.read_bytes() == replay_before
+    assert repaired.session_projection_path.read_bytes().startswith(b"SQLite format 3")
+
+
+def test_projection_update_failure_does_not_fail_save_and_is_reported_later(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = SessionStore(tmp_path)
+    store.save(
+        messages=[{"role": "user", "content": "seed"}],
+        model="model",
+    )
+    store.list()
+
+    monkeypatch.setattr(
+        store._projection,
+        "upsert",
+        lambda _row: (_ for _ in ()).throw(RuntimeError("index-content-secret")),
+    )
+    saved_id = store.save(
+        messages=[{"role": "user", "content": "still durable"}],
+        model="model",
+    )
+
+    assert (tmp_path / saved_id / "manifest.json").exists()
+    assert (tmp_path / saved_id / "replay.json").exists()
+    inventory = SessionStore(tmp_path).list_result(fingerprint="local")
+    assert saved_id in {item.id for item in inventory.sessions}
+    issue = next(
+        issue
+        for issue in inventory.issues
+        if issue.phase == "session_projection"
+    )
+    assert issue.error_type == "RuntimeError"
+    assert issue.ref == "session_index"
+    assert "index-content-secret" not in issue.render()
+
+
+def test_session_projection_summary_uses_derived_counters(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    store.save(
+        messages=[{"role": "user", "content": "one"}],
+        model="m1",
+        total_prompt_tokens=10,
+        total_completion_tokens=4,
+    )
+    store.save(
+        messages=[{"role": "user", "content": "two"}],
+        model="m2",
+        total_prompt_tokens=20,
+        total_completion_tokens=6,
+    )
+
+    summary = store.projection_summary()
+
+    assert summary is not None
+    assert summary.session_count == 2
+    assert summary.prompt_tokens == 30
+    assert summary.completion_tokens == 10
+    assert summary.event_count == 4
+    assert summary.request_count == 0
+    assert summary.checkpoint_count == 0
+
+
 @pytest.mark.parametrize(
     "unsafe_preview",
     [42, "x" * 121, "unsafe\npreview", "unsafe\u202epreview"],

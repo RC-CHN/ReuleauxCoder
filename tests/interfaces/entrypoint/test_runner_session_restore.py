@@ -14,12 +14,23 @@ from reuleauxcoder.infrastructure.persistence.session_store import (
     SessionRestoreError,
     SessionStore,
 )
+from reuleauxcoder.infrastructure.persistence.session_projection import (
+    INDEX_DIRECTORY_NAME,
+)
 from reuleauxcoder.interfaces.entrypoint.runner import (
     AppDependencies,
     AppOptions,
     AppRunner,
 )
 from reuleauxcoder.interfaces.events import UIEventBus, UIEventKind, UIEventLevel
+
+
+def _session_entry_names(path: Path) -> set[str]:
+    return {
+        entry.name
+        for entry in path.iterdir()
+        if entry.name != INDEX_DIRECTORY_NAME
+    }
 
 
 class FakeLLM:
@@ -399,7 +410,7 @@ def test_explicit_resume_propagates_safe_canonical_failure_without_new_session(
     assert error.ref == "replay"
     assert sentinel not in str(error)
     assert getattr(agent, "current_session_id", None) is None
-    assert {path.name for path in tmp_path.iterdir()} == {session_id}
+    assert _session_entry_names(tmp_path) == {session_id}
 
 
 def test_explicit_resume_missing_fails_without_generating_new_session(
@@ -456,7 +467,7 @@ def test_auto_resume_selected_session_disappearing_is_terminal(
     assert raised.value.error_type == "FileNotFoundError"
     assert raised.value.ref == "session"
     assert getattr(agent, "current_session_id", None) is None
-    assert {path.name for path in tmp_path.iterdir()} == {session_id}
+    assert _session_entry_names(tmp_path) == {session_id}
 
 
 def test_auto_resume_propagates_corrupt_manifest_instead_of_clean_start(
@@ -480,7 +491,7 @@ def test_auto_resume_propagates_corrupt_manifest_instead_of_clean_start(
     assert raised.value.phase == "manifest_decode"
     assert sentinel not in str(raised.value)
     assert getattr(agent, "current_session_id", None) is None
-    assert {path.name for path in tmp_path.iterdir()} == {session_id}
+    assert _session_entry_names(tmp_path) == {session_id}
 
 
 def test_auto_resume_marks_history_corruption_as_degraded(
@@ -574,7 +585,7 @@ def test_missing_persisted_approval_action_cannot_inherit_allow_default(
     assert raised.value.error_type == "SessionRuntimeStateValidationError"
     assert getattr(agent, "session_approval_rules", ()) == ()
     assert getattr(agent, "current_session_id", None) is None
-    assert {path.name for path in tmp_path.iterdir()} == {session_id}
+    assert _session_entry_names(tmp_path) == {session_id}
 
 
 def test_invalid_persisted_plan_fails_before_mutating_live_agent(

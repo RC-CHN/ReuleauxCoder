@@ -42,6 +42,13 @@ from reuleauxcoder.domain.session.models import (
     is_safe_session_preview,
 )
 from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
+from reuleauxcoder.infrastructure.persistence.session_projection import (
+    INDEX_DIRECTORY_NAME,
+    SessionInventoryProjection,
+    SessionProjectionError,
+    SessionProjectionRow,
+    SessionProjectionSummary,
+)
 
 DEFAULT_SESSION_FINGERPRINT = "local"
 
@@ -198,6 +205,18 @@ def _safe_error_type(error: BaseException) -> str:
 
 def _is_valid_token_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _bounded_projection_count(value: object) -> int:
+    if not _is_valid_token_count(value):
+        return 0
+    return min(int(value), _MAX_PERSISTED_COUNTER)
+
+
+def _bounded_projection_length(value: object) -> int:
+    if not isinstance(value, list | tuple):
+        return 0
+    return min(len(value), _MAX_PERSISTED_COUNTER)
 
 
 class _RestoreIssueCollector:
@@ -367,6 +386,7 @@ class LatestSessionResult:
 class _InventoryScan:
     ranked_sessions: tuple[tuple[tuple[int, float, str], SessionMetadata], ...]
     failures: tuple[_InventoryFailure, ...]
+    projection_rows: tuple[SessionProjectionRow, ...] = ()
 
     @property
     def issues(self) -> tuple[SessionRestoreIssue, ...]:
@@ -442,6 +462,8 @@ class SessionStore:
         self._progress = progress
         self._lock = threading.RLock()
         self._write_cursors: dict[str, _DirectoryWriteCursor] = {}
+        self._projection = SessionInventoryProjection(self._sessions_dir)
+        self._projection_issue: SessionRestoreIssue | None = None
 
     @property
     def sessions_dir(self) -> Path:
@@ -560,6 +582,215 @@ class SessionStore:
             self._progress(message)
         except Exception:
             pass
+
+    @property
+    def session_projection_path(self) -> Path:
+        """Return the disposable SQLite projection path for diagnostics."""
+        return self._projection.database_path
+
+    def _record_projection_failure(self, error: BaseException) -> None:
+        error_type = (
+            error.error_type
+            if isinstance(error, SessionProjectionError)
+            else _safe_error_type(error)
+        )
+        self._projection_issue = SessionRestoreIssue(
+            phase="session_projection",
+            error_type=error_type,
+            ref="session_index",
+        )
+        self._report_progress(
+            "Session query projection degraded "
+            f"(error_type={error_type}); authoritative artifacts remain available."
+        )
+        try:
+            self._projection.retain_failure(error_type)
+        except BaseException:
+            return
+
+    def _consume_projection_failure(self) -> None:
+        try:
+            error_type = self._projection.consume_failure()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._record_projection_failure(error)
+            return
+        if error_type is not None:
+            self._projection_issue = SessionRestoreIssue(
+                phase="session_projection",
+                error_type=error_type,
+                ref="session_index",
+            )
+
+    def _reset_projection_after_failure(self) -> None:
+        try:
+            self._projection.reset()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._record_projection_failure(error)
+
+    def _begin_projection_update(self) -> bool:
+        try:
+            return self._projection.mark_dirty()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._record_projection_failure(error)
+            self._reset_projection_after_failure()
+            return False
+
+    def _finish_projection_update(
+        self,
+        session: Session,
+        *,
+        projection_was_ready: bool,
+    ) -> None:
+        if not projection_was_ready:
+            return
+        manifest_path = self._get_session_directory(session.id) / "manifest.json"
+        metadata = SessionMetadata(
+            id=session.id,
+            model=session.model,
+            saved_at=session.saved_at,
+            preview=session.get_preview(),
+            fingerprint=session.fingerprint,
+        )
+        try:
+            rank = self._metadata_rank(metadata, manifest_path, ref="manifest")
+            self._projection.upsert(
+                SessionProjectionRow(
+                    metadata=metadata,
+                    rank_mtime_ns=rank[0],
+                    rank_saved_at=rank[1],
+                    source_kind="manifest",
+                    source_mtime_ns=rank[0],
+                    prompt_tokens=session.total_prompt_tokens,
+                    completion_tokens=session.total_completion_tokens,
+                    event_count=len(session.history_events),
+                    request_count=len(session.request_envelopes),
+                    checkpoint_count=len(session.checkpoints),
+                )
+            )
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._record_projection_failure(error)
+            self._reset_projection_after_failure()
+
+    def _with_projection_issue(self, scan: _InventoryScan) -> _InventoryScan:
+        issue = self._projection_issue
+        if issue is None:
+            return scan
+        self._projection_issue = None
+        return replace(
+            scan,
+            failures=scan.failures
+            + (
+                _InventoryFailure(
+                    issue=issue,
+                    rank=(-1, float("-inf"), "session_index"),
+                    blocking=False,
+                ),
+            ),
+        )
+
+    def _inventory_scan(
+        self,
+        *,
+        fingerprint: str | None,
+        limit: int,
+    ) -> _InventoryScan:
+        self._consume_projection_failure()
+        try:
+            projected = self._projection.query(
+                fingerprint=fingerprint,
+                limit=limit,
+            )
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._record_projection_failure(error)
+            self._reset_projection_after_failure()
+            projected = None
+        if projected is not None:
+            try:
+                for row in projected:
+                    self._validate_metadata(row.metadata, ref="manifest")
+                    self._parse_saved_at(row.metadata.saved_at, ref="manifest")
+                    if (
+                        row.rank_mtime_ns < 0
+                        or not math.isfinite(row.rank_saved_at)
+                        or any(
+                            value < 0 or value > _MAX_PERSISTED_COUNTER
+                            for value in (
+                                row.prompt_tokens,
+                                row.completion_tokens,
+                                row.event_count,
+                                row.request_count,
+                                row.checkpoint_count,
+                            )
+                        )
+                    ):
+                        raise ValueError("invalid session projection row")
+            except KeyboardInterrupt:
+                raise
+            except BaseException:
+                self._record_projection_failure(
+                    SessionProjectionError("ProjectionRowValidationError")
+                )
+                self._reset_projection_after_failure()
+                projected = None
+        if projected is not None:
+            return self._with_projection_issue(
+                _InventoryScan(
+                    ranked_sessions=tuple(
+                        (
+                            (
+                                row.rank_mtime_ns,
+                                row.rank_saved_at,
+                                row.metadata.id,
+                            ),
+                            row.metadata,
+                        )
+                        for row in projected
+                    ),
+                    failures=(),
+                    projection_rows=projected,
+                )
+            )
+
+        scan = self._scan_inventory(fingerprint=fingerprint)
+        if self._ensure_sessions_root(create=False) is None:
+            return self._with_projection_issue(scan)
+        if scan.failures:
+            self._reset_projection_after_failure()
+        else:
+            try:
+                self._report_progress("Rebuilding session query projection...")
+                self._projection.replace(scan.projection_rows)
+            except KeyboardInterrupt:
+                raise
+            except BaseException as error:
+                self._record_projection_failure(error)
+                self._reset_projection_after_failure()
+        return self._with_projection_issue(scan)
+
+    def projection_summary(self) -> SessionProjectionSummary | None:
+        """Return aggregate counters when the clean projection is available."""
+        with self._lock:
+            scan = self._inventory_scan(fingerprint=None, limit=1)
+            if any(failure.blocking for failure in scan.failures):
+                return None
+            try:
+                return self._projection.summary()
+            except KeyboardInterrupt:
+                raise
+            except BaseException as error:
+                self._record_projection_failure(error)
+                self._reset_projection_after_failure()
+                return None
 
     def _ensure_message_token_counts(
         self,
@@ -800,11 +1031,16 @@ class SessionStore:
                     error_type=error.error_type,
                     ref="session",
                 ) from None
+            projection_was_ready = self._begin_projection_update()
             self._write_session_directory(
                 session,
                 incremental=incremental,
                 events_already_persisted=events_already_persisted,
                 additional_events=(exit_events if events_already_persisted else ()),
+            )
+            self._finish_projection_update(
+                session,
+                projection_was_ready=projection_was_ready,
             )
             return session_id
 
@@ -1023,9 +1259,9 @@ class SessionStore:
         *,
         fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT,
     ) -> SessionInventoryResult:
-        """Return sessions and diagnostics from one immutable scan."""
+        """Return sessions and diagnostics from one projection generation."""
         with self._lock:
-            scan = self._scan_inventory(fingerprint=fingerprint)
+            scan = self._inventory_scan(fingerprint=fingerprint, limit=limit)
             selected = tuple(metadata for _, metadata in scan.ranked_sessions[:limit])
             return SessionInventoryResult(sessions=selected, issues=scan.issues)
 
@@ -1036,6 +1272,7 @@ class SessionStore:
             return _InventoryScan((), ())
 
         ranked_sessions: list[tuple[tuple[int, float, str], SessionMetadata]] = []
+        projection_rows: list[SessionProjectionRow] = []
         failures: list[_InventoryFailure] = []
         seen_ids: set[str] = set()
         canonical_keys: set[str] = set()
@@ -1180,6 +1417,8 @@ class SessionStore:
                 continue
             if not stat.S_ISDIR(entry_status.st_mode):
                 continue
+            if entry.name == INDEX_DIRECTORY_NAME:
+                continue
             manifest_path = entry / "manifest.json"
             if not _is_safe_session_id(entry.name):
                 canonical_keys.add(entry.name)
@@ -1212,7 +1451,9 @@ class SessionStore:
                 continue
             canonical_keys.add(entry.name)
             try:
-                metadata, metadata_issues = self._load_directory_metadata(entry)
+                metadata, metadata_issues, manifest = self._load_directory_metadata(
+                    entry
+                )
             except SessionRestoreError as error:
                 record_failure(error, source_path=manifest_path)
                 continue
@@ -1232,6 +1473,30 @@ class SessionStore:
                         blocking=False,
                     )
                 )
+            projection_rows.append(
+                SessionProjectionRow(
+                    metadata=metadata,
+                    rank_mtime_ns=rank[0],
+                    rank_saved_at=rank[1],
+                    source_kind="manifest",
+                    source_mtime_ns=rank[0],
+                    prompt_tokens=_bounded_projection_count(
+                        manifest.get("total_prompt_tokens")
+                    ),
+                    completion_tokens=_bounded_projection_count(
+                        manifest.get("total_completion_tokens")
+                    ),
+                    event_count=_bounded_projection_count(
+                        manifest.get("event_count")
+                    ),
+                    request_count=_bounded_projection_length(
+                        manifest.get("request_ids")
+                    ),
+                    checkpoint_count=_bounded_projection_length(
+                        manifest.get("checkpoint_ids")
+                    ),
+                )
+            )
             seen_ids.add(metadata.id)
             if fingerprint is None or metadata.fingerprint == fingerprint:
                 ranked_sessions.append((rank, metadata))
@@ -1277,12 +1542,34 @@ class SessionStore:
                         blocking=False,
                     )
                 )
+            projection_rows.append(
+                SessionProjectionRow(
+                    metadata=metadata,
+                    rank_mtime_ns=rank[0],
+                    rank_saved_at=rank[1],
+                    source_kind="legacy",
+                    source_mtime_ns=rank[0],
+                    prompt_tokens=_bounded_projection_count(
+                        session.total_prompt_tokens
+                    ),
+                    completion_tokens=_bounded_projection_count(
+                        session.total_completion_tokens
+                    ),
+                    event_count=len(session.history_events),
+                    request_count=len(session.request_envelopes),
+                    checkpoint_count=len(session.checkpoints),
+                )
+            )
             seen_ids.add(metadata.id)
             if fingerprint is None or metadata.fingerprint == fingerprint:
                 ranked_sessions.append((rank, metadata))
 
         ranked_sessions.sort(key=lambda item: item[0], reverse=True)
-        return _InventoryScan(tuple(ranked_sessions), tuple(failures))
+        return _InventoryScan(
+            tuple(ranked_sessions),
+            tuple(failures),
+            tuple(projection_rows),
+        )
 
     def get_latest(
         self, *, fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT
@@ -1295,7 +1582,7 @@ class SessionStore:
     ) -> LatestSessionResult:
         """Select latest metadata and diagnostics without a last-scan race."""
         with self._lock:
-            scan = self._scan_inventory(fingerprint=fingerprint)
+            scan = self._inventory_scan(fingerprint=fingerprint, limit=1)
         latest_rank, latest = (
             scan.ranked_sessions[0]
             if scan.ranked_sessions
@@ -1883,7 +2170,7 @@ class SessionStore:
     def _load_directory_metadata(
         self,
         directory: Path,
-    ) -> tuple[SessionMetadata, tuple[SessionRestoreIssue, ...]]:
+    ) -> tuple[SessionMetadata, tuple[SessionRestoreIssue, ...], dict]:
         manifest_path = directory / "manifest.json"
         manifest = self._read_json_artifact(manifest_path, ref="manifest")
         issues = self._validate_canonical_manifest(
@@ -1898,7 +2185,7 @@ class SessionStore:
             preview=manifest.get("preview", ""),
             fingerprint=manifest.get("fingerprint", DEFAULT_SESSION_FINGERPRINT),
         )
-        return metadata, issues
+        return metadata, issues, manifest
 
     def _atomic_write_json(self, path: Path, payload: dict, *, ref: str) -> None:
         try:

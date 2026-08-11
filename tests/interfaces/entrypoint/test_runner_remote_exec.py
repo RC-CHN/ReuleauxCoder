@@ -27,6 +27,9 @@ from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+from reuleauxcoder.infrastructure.persistence.session_projection import (
+    INDEX_DIRECTORY_NAME,
+)
 from reuleauxcoder.interfaces.entrypoint.runner import (
     AppDependencies,
     AppOptions,
@@ -35,6 +38,14 @@ from reuleauxcoder.interfaces.entrypoint.runner import (
 
 
 _URLOPEN = request.build_opener(request.ProxyHandler({})).open
+
+
+def _session_entry_names(path: Path) -> set[str]:
+    return {
+        entry.name
+        for entry in path.iterdir()
+        if entry.name != INDEX_DIRECTORY_NAME
+    }
 
 
 def _free_port() -> int:
@@ -648,7 +659,7 @@ class TestRunnerRemoteExec:
             assert sentinel not in str(error)
             assert not any(event["type"] == "chat_end" for event in events)
             assert chat_calls == []
-            assert {path.name for path in sessions_dir.iterdir()} == {session_id}
+            assert _session_entry_names(sessions_dir) == {session_id}
         finally:
             runner.cleanup(ctx.agent)
 
@@ -721,7 +732,7 @@ class TestRunnerRemoteExec:
             assert error["payload"]["ref"] == "session"
             assert not any(event["type"] == "chat_end" for event in events)
             assert chat_calls == []
-            assert {path.name for path in sessions_dir.iterdir()} == {session_id}
+            assert _session_entry_names(sessions_dir) == {session_id}
         finally:
             runner.cleanup(ctx.agent)
 
