@@ -93,6 +93,7 @@ class DiagnosticRequest:
     batch_id: str
     route: DiagnosticRoute
     request_sequence: int
+    document_committed: bool = False
 
 
 class LspManager:
@@ -127,8 +128,6 @@ class LspManager:
         # Queues
         self._diagnostics_queue: list[DiagnosticRequest] = []
         self._tool_queue: list[ToolRequest] = []
-        self._notification_queue: list[tuple[str, Path]] = []
-        # ("did_save", file_path)
 
         # Routed results.  Clean publishes are retained as empty batches until
         # the owning consumer acknowledges them.
@@ -245,7 +244,6 @@ class LspManager:
                     )
             self._tool_queue.clear()
             self._diagnostics_queue.clear()
-            self._notification_queue.clear()
             self._diagnostic_batches.clear()
             self._acknowledged_batches.clear()
             self._latest_diagnostic_sequence.clear()
@@ -276,11 +274,14 @@ class LspManager:
         file_path: Path,
         *,
         route: DiagnosticRoute | None = None,
+        document_committed: bool = False,
     ) -> str | None:
         """Enqueue diagnostics and return the future batch identity.
 
         Stale rejection uses a manager-owned monotonic sequence because round
         numbers are not unique across multiple edits in one LLM response.
+        ``document_committed`` keeps document sync, didSave, and diagnostics in
+        one ordered worker item after a successful file mutation.
         """
         if not self._enabled_for_file(file_path):
             return None
@@ -326,6 +327,7 @@ class LspManager:
                     batch_id=batch_id,
                     route=route,
                     request_sequence=request_sequence,
+                    document_committed=document_committed,
                 )
             )
 
@@ -471,19 +473,6 @@ class LspManager:
         except concurrent.futures.TimeoutError:
             raise LspClientError(f"LSP request '{method}' timed out after {timeout}s")
 
-    # === Notifications (fire-and-forget) ===
-
-    def notify_did_save(self, file_path: Path) -> None:
-        """Enqueue a didSave notification.  Returns immediately."""
-        if not self._enabled_for_file(file_path):
-            return
-
-        with self._lock:
-            self._notification_queue.append(("did_save", file_path))
-
-        with self._request_condition:
-            self._request_condition.notify()
-
     # === Internal: Worker Thread ===
 
     def _worker_entry(self) -> None:
@@ -501,8 +490,6 @@ class LspManager:
                     await self._handle_tool_request(work)
                 elif kind == "diagnostics":
                     await self._handle_diagnostics_request(work)
-                elif kind == "notification":
-                    await self._handle_notification(*work)
                 else:
                     # No work — poll briefly, then check again.
                     # Using asyncio.sleep avoids blocking the event loop
@@ -522,8 +509,6 @@ class LspManager:
                 return "tool", self._tool_queue.pop(0)
             if self._diagnostics_queue:
                 return "diagnostics", self._diagnostics_queue.pop(0)
-            if self._notification_queue:
-                return "notification", self._notification_queue.pop(0)
         return None, None
 
     async def _handle_tool_request(self, req: ToolRequest) -> None:
@@ -611,6 +596,13 @@ class LspManager:
                             self._last_sync_time[key] = file_path.stat().st_mtime
                     except Exception as e:
                         logger.debug("LSP sync error (swallowed): %s", e)
+
+            # A successful file mutation is one ordered operation: synchronize
+            # the committed content, then notify save, then observe diagnostics.
+            # Keeping these steps in this request prevents queue priority from
+            # moving diagnostics ahead of didSave.
+            if request.document_committed:
+                await server.did_save(file_path)
 
             # Wait for diagnostics
             diagnostics = await server.wait_for_diagnostics(
@@ -728,24 +720,6 @@ class LspManager:
             )
         except Exception:
             logger.exception("Runtime diagnostics event sink failed")
-
-    async def _handle_notification(
-        self,
-        kind: str,
-        file_path: Path,
-    ) -> None:
-        """Process a fire-and-forget notification (didSave, etc.)."""
-        lang = detect_language(file_path)
-        if lang is None:
-            return
-
-        try:
-            server = self._transports.get(self._transport_key(lang, file_path))
-            if server and server.is_alive and server.is_initialized:
-                if kind == "did_save":
-                    await server.did_save(file_path)
-        except Exception as e:
-            logger.debug("LSP notification error (swallowed): %s", e)
 
     # === Internal: Server Lifecycle ===
 

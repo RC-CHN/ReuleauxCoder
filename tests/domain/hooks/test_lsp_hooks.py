@@ -70,8 +70,9 @@ def _publish_batch(
 def _complete_enqueued_batch(mgr: LspManager, block: DiagnosticBlock) -> None:
     """Make the edit hook observe a worker result for its exact request ID."""
 
-    def enqueue(file_path: Path, *, route=None):
+    def enqueue(file_path: Path, *, route=None, document_committed=False):
         assert route is not None
+        assert document_committed is True
         batch_id = f"batch-{route.tool_call_id}"
         _publish_batch(mgr, block, batch_id=batch_id, route=route)
         return batch_id
@@ -179,7 +180,7 @@ class TestLspEditObserverBasic:
         )
         hook.run(context)
 
-    def test_enqueues_notification_for_edit_tools(self) -> None:
+    def test_enqueues_atomic_document_commit_for_edit_tools(self) -> None:
         mgr = _make_manager()
         from reuleauxcoder.extensions.lsp.registry import LanguageId
 
@@ -187,7 +188,6 @@ class TestLspEditObserverBasic:
             mgr._availability[LanguageId.PYTHON] = True
 
         hook = LspEditObserverHook(lsp_manager=mgr)
-        assert len(mgr._notification_queue) == 0
         context = AfterToolExecuteContext(
             hook_point=HookPoint.AFTER_TOOL_EXECUTE,
             tool_call=ToolCall(
@@ -198,9 +198,10 @@ class TestLspEditObserverBasic:
             outcome=ToolOutcome(content="wrote"),
         )
         hook.run(context)
-        assert len(mgr._notification_queue) == 1
-        kind, path = mgr._notification_queue[0]
-        assert kind == "did_save"
+        assert len(mgr._diagnostics_queue) == 1
+        request = mgr._diagnostics_queue[0]
+        assert request.route.file_path == Path("/tmp/test.py")
+        assert request.document_committed is True
 
     def test_failed_edit_does_not_notify_or_enqueue(self) -> None:
         mgr = _make_manager()
@@ -221,7 +222,6 @@ class TestLspEditObserverBasic:
 
         hook.run(context)
 
-        assert len(mgr._notification_queue) == 0
         assert len(mgr._diagnostics_queue) == 0
 
     def test_all_edit_tools_are_handled(self) -> None:

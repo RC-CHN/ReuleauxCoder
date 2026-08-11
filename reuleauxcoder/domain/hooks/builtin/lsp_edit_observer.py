@@ -3,8 +3,8 @@
 AFTER_TOOL_EXECUTE transform:
 - Detects edit_file / write_file tool calls
 - Extracts edited file paths
-- Enqueues diagnostics request (fire-and-forget)
-- Sends didSave notification (fire-and-forget)
+- Enqueues one ordered document-commit diagnostics request
+- The worker synchronizes content, sends didSave, then observes diagnostics
 - Polls briefly for diagnostics and appends them to the tool result so the
   model sees any errors immediately (no one-turn delay).
 """
@@ -102,10 +102,8 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
 
         path = Path(file_path)
 
-        # 1. Notify LSP server that the file was saved
-        self.lsp_manager.notify_did_save(path)
-
-        # 2. Enqueue diagnostics request (fire-and-forget)
+        # Enqueue one ordered commit request. The LSP worker synchronizes the
+        # document, sends didSave, and only then observes diagnostics.
         route = DiagnosticRoute(
             file_path=path,
             agent_id=context.agent_id,
@@ -114,11 +112,15 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
             turn_id=context.turn_id,
             tool_call_id=tool_call.id,
         )
-        batch_id = self.lsp_manager.enqueue_diagnostics(path, route=route)
+        batch_id = self.lsp_manager.enqueue_diagnostics(
+            path,
+            route=route,
+            document_committed=True,
+        )
         if batch_id is None:
             return context
 
-        # 3. Short synchronous poll — if the worker has already produced
+        # Short synchronous poll — if the worker has already produced
         #    diagnostics, append them directly to the tool result so the
         #    model sees them immediately.
         deadline = time.monotonic() + _DIAGNOSTICS_POLL_DEADLINE

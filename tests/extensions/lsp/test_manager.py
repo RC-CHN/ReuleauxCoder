@@ -409,20 +409,6 @@ class TestDiagnosticBatchConsumption:
         }
 
 
-class TestNotifyDidSave:
-    def test_enqueues_notification(self, manager: LspManager) -> None:
-        manager._config.enabled = True
-        with manager._lock:
-            manager._availability[LanguageId.PYTHON] = True
-
-        assert len(manager._notification_queue) == 0
-        manager.notify_did_save(Path("/tmp/test.py"))
-        assert len(manager._notification_queue) == 1
-        kind, path = manager._notification_queue[0]
-        assert kind == "did_save"
-        assert path == Path("/tmp/test.py")
-
-
 class TestWorkerQueueOrdering:
     def test_pop_removes_exactly_one_queue_item(self, manager: LspManager) -> None:
         tool = object()
@@ -433,15 +419,46 @@ class TestWorkerQueueOrdering:
             request_sequence=1,
         )
         manager._diagnostics_queue.append(request)
-        manager._notification_queue.append(("did_save", Path("/tmp/a.py")))
 
         assert manager._pop_next_work() == ("tool", tool)
         assert len(manager._diagnostics_queue) == 1
-        assert len(manager._notification_queue) == 1
         assert manager._pop_next_work()[0] == "diagnostics"
-        assert len(manager._notification_queue) == 1
-        assert manager._pop_next_work()[0] == "notification"
         assert manager._pop_next_work() == (None, None)
+
+    def test_document_commit_syncs_then_saves_then_waits(
+        self, manager: LspManager, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        path = tmp_path / "main.py"
+        path.write_text("x = 1", encoding="utf-8")
+        manager._availability[LanguageId.PYTHON] = True
+        calls: list[str] = []
+        server = MagicMock()
+        server.diagnostics_generation.side_effect = [0, 1]
+        server.diagnostic_document_version.return_value = 1
+
+        async def did_open(_path, _content):
+            calls.append("did_open")
+
+        async def did_save(_path):
+            calls.append("did_save")
+
+        async def wait_for_diagnostics(*_args, **_kwargs):
+            calls.append("wait_for_diagnostics")
+            return [Diagnostic(line=1, character=1, message="saved")]
+
+        server.did_open.side_effect = did_open
+        server.did_save.side_effect = did_save
+        server.wait_for_diagnostics.side_effect = wait_for_diagnostics
+        manager._get_or_create_server = AsyncMock(return_value=server)
+
+        batch_id = manager.enqueue_diagnostics(path, document_committed=True)
+        request = manager._diagnostics_queue.pop()
+        asyncio.run(manager._handle_diagnostics_request(request))
+
+        assert calls == ["did_open", "did_save", "wait_for_diagnostics"]
+        assert manager.pending_diagnostic_batches(batch_id=batch_id)
 
     def test_enqueue_replaces_older_pending_request_for_same_owner_and_file(
         self, manager: LspManager

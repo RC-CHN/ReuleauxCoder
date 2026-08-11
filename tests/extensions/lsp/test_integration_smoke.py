@@ -485,3 +485,53 @@ def test_python_parent_transport_remains_owned_while_subagent_scope_is_omitted(
 
     assert manager._worker_thread is None
     assert manager._transports == {}
+
+
+def test_python_document_commit_produces_real_diagnostics_batch(
+    tmp_path: Path,
+) -> None:
+    """Exercise the ordered sync -> didSave -> diagnostics manager path."""
+
+    path = tmp_path / "committed.py"
+    path.write_text("def committed(:\n    pass\n", encoding="utf-8")
+    manager = LspManager(
+        LspConfig(enabled=True, poll_timeout_ms=20_000),
+        workspace_cwd=tmp_path,
+    )
+    report = manager.health_check()
+    if not any(
+        name == "python" and available for name, available, _details in report.languages
+    ):
+        pytest.skip("Python language server is not available")
+
+    manager.start_worker()
+    try:
+        batch_id = manager.enqueue_diagnostics(
+            path,
+            route=DiagnosticRoute(
+                file_path=path,
+                agent_id="parent",
+                session_generation=0,
+                session_id="session",
+                turn_id="turn",
+                tool_call_id="edit",
+            ),
+            document_committed=True,
+        )
+        assert batch_id is not None
+
+        deadline = time.monotonic() + 30
+        batches = ()
+        while time.monotonic() < deadline and not batches:
+            batches = manager.pending_diagnostic_batches(batch_id=batch_id)
+            if not batches:
+                time.sleep(0.1)
+
+        assert len(batches) == 1
+        assert batches[0].block.items
+        assert batches[0].route.tool_call_id == "edit"
+    finally:
+        manager.shutdown_all()
+
+    assert manager._worker_thread is None
+    assert manager._transports == {}
