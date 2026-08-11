@@ -34,6 +34,7 @@ from reuleauxcoder.app.runtime.session_state import (
     get_session_fingerprint,
     restore_config_runtime_defaults,
 )
+from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.infrastructure.persistence.session_store import (
     SessionRestoreError,
     SessionStore,
@@ -61,6 +62,64 @@ class SaveSessionCommand:
 @dataclass(frozen=True, slots=True)
 class NewSessionCommand:
     current_session_id: str | None = None
+
+
+def _record_session_observer_failure(ctx, phase: str, ref: str, error) -> None:
+    if isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+        request_stop = getattr(ctx.agent, "request_stop", None)
+        if callable(request_stop):
+            try:
+                request_stop()
+            except BaseException:
+                pass
+    error_type = type(error).__name__
+    if (
+        not error_type
+        or len(error_type) > 64
+        or not error_type.isascii()
+        or not error_type.replace("_", "").isalnum()
+    ):
+        error_type = "Exception"
+    recorder = getattr(ctx.agent, "record_runtime_issue", None)
+    try:
+        if callable(recorder) and recorder(phase, error_type, ref) is not False:
+            return
+    except BaseException:
+        pass
+    try:
+        Agent.record_runtime_issue(ctx.agent, phase, error_type, ref)
+    except BaseException:
+        ctx.agent._control_plane_recovery_required = True
+
+
+def _observe_session_callback(ctx, phase: str, ref: str, callback, *args, **kwargs):
+    if not callable(callback):
+        return None
+    try:
+        return callback(*args, **kwargs)
+    except BaseException as error:
+        _record_session_observer_failure(ctx, phase, ref, error)
+        return None
+
+
+def _settle_current_session(ctx, store, session_id: str | None, fingerprint: str):
+    """Save once: settle a live callback, or fall back to an explicit snapshot."""
+    callback = getattr(ctx.agent, "_session_persist_callback", None)
+    unbind = getattr(ctx.agent, "unbind_session_persistence", None)
+    if callback is not None and callable(unbind):
+        unbind()
+        return session_id
+    return store.save(
+        ctx.agent.messages,
+        getattr(ctx.agent.llm, "model", ctx.config.model),
+        session_id,
+        total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
+        total_completion_tokens=ctx.agent.state.total_completion_tokens,
+        active_mode=getattr(ctx.agent, "active_mode", None),
+        runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
+        fingerprint=fingerprint,
+        **build_session_persistence_kwargs(ctx.agent),
+    )
 
 
 def _parse_list_sessions(user_input: str, parse_ctx):
@@ -165,11 +224,12 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     session_id = command.target
+    inventory_issues = ()
     if command.target.isdecimal():
         position = int(command.target)
         inventory = store.list_result(limit=20, fingerprint=fingerprint)
         sessions = inventory.sessions
-        _report_session_inventory(ctx, inventory.issues)
+        inventory_issues = _report_session_inventory(ctx, inventory.issues)
         if position < 1 or position > len(sessions):
             ctx.effect.error(
                 f"Session number {position} is not available; use /session to list.",
@@ -180,7 +240,7 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
     elif command.target == "latest":
         inventory = store.get_latest_result(fingerprint=fingerprint)
         latest = inventory.session
-        _report_session_inventory(ctx, inventory.issues)
+        inventory_issues = _report_session_inventory(ctx, inventory.issues)
         if latest is None:
             ctx.effect.error(
                 f"No saved sessions for fingerprint: {fingerprint}",
@@ -216,32 +276,51 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
         and ctx.agent.messages
         and ctx.config.session_auto_save
     ):
-        saved_id = store.save(
-            ctx.agent.messages,
-            getattr(ctx.agent.llm, "model", ctx.config.model),
+        saved_id = _settle_current_session(
+            ctx,
+            store,
             current_session_id,
-            total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
-            total_completion_tokens=ctx.agent.state.total_completion_tokens,
-            active_mode=getattr(ctx.agent, "active_mode", None),
-            runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
-            fingerprint=fingerprint,
-            **build_session_persistence_kwargs(ctx.agent),
+            fingerprint,
         )
-        ctx.agent.lifecycle.session_saved(saved_id)
+        _observe_session_callback(
+            ctx,
+            "session_saved_observer",
+            "lifecycle",
+            ctx.agent.lifecycle.session_saved,
+            saved_id,
+        )
+
+    # A filesystem preflight failure still belongs to the old live session.
+    events_path = store.get_session_events_path(session_id)
+    exit_time = _observe_session_callback(
+        ctx,
+        "session_metadata_observer",
+        "exit_time",
+        store.get_exit_time,
+        loaded.messages,
+    )
 
     apply_session_runtime_state(loaded, ctx.config, ctx.agent)
+    ctx.agent.session_inventory_issues = tuple(inventory_issues)
     ctx.agent.session_fingerprint = loaded.fingerprint
-    ctx.agent.lifecycle.session_started(session_id, reason="restore")
-    bind_session_persistence(
+    bind_issue = bind_session_persistence(
         ctx.config,
         ctx.agent,
         store,
         session_id,
         fingerprint=loaded.fingerprint,
+        events_path=events_path,
+    )
+    _observe_session_callback(
+        ctx,
+        "session_started_observer",
+        "lifecycle",
+        ctx.agent.lifecycle.session_started,
+        session_id,
+        reason="restore",
     )
 
     runtime = loaded.runtime_state
-    exit_time = store.get_exit_time(loaded.messages)
     restore_issues = tuple(getattr(loaded, "restore_issues", ()))
     for issue in restore_issues:
         ctx.effect.warning(
@@ -252,34 +331,53 @@ def _handle_resume_session(command, ctx) -> CommandEffect:
             ref=issue.ref,
             count=issue.count,
         )
-    restored_notice = ctx.effect.warning if restore_issues else ctx.effect.success
+    if bind_issue is not None:
+        ctx.effect.warning(
+            "Session restored, but persistence is unavailable "
+            f"({bind_issue.render()}).",
+            kind=UIEventKind.SESSION,
+            phase=bind_issue.phase,
+            error_type=bind_issue.error_type,
+            ref=bind_issue.ref,
+        )
+    restored_notice = (
+        ctx.effect.warning if restore_issues or bind_issue else ctx.effect.success
+    )
     restored_notice(
         (
             f"Resumed session with degraded recovery: {session_id}"
-            if restore_issues
+            if restore_issues or bind_issue
             else f"Resumed session: {session_id}"
         ),
         kind=UIEventKind.SESSION,
         session_id=session_id,
     )
-    transcript = SessionResumeViewModel(
-        session_id=session_id,
-        model=runtime.model or loaded.model,
-        saved_at=loaded.saved_at,
-        active_mode=runtime.active_mode,
-        entries=tuple(
-            SessionTranscriptEntryViewModel(
-                role=entry["role"], content=entry["content"]
-            )
-            for entry in loaded.get_recent_conversation(max_user_turns=3)
-        ),
-    )
-    ctx.effect.open_view(
-        transcript.view_type,
-        title="Recent Session Context",
-        view_model=transcript,
-        reuse_key=transcript.view_type,
-    )
+    try:
+        transcript = SessionResumeViewModel(
+            session_id=session_id,
+            model=runtime.model or loaded.model,
+            saved_at=loaded.saved_at,
+            active_mode=runtime.active_mode,
+            entries=tuple(
+                SessionTranscriptEntryViewModel(
+                    role=entry["role"], content=entry["content"]
+                )
+                for entry in loaded.get_recent_conversation(max_user_turns=3)
+            ),
+        )
+        ctx.effect.open_view(
+            transcript.view_type,
+            title="Recent Session Context",
+            view_model=transcript,
+            reuse_key=transcript.view_type,
+        )
+    except BaseException as error:
+        _record_session_observer_failure(
+            ctx,
+            "session_view_observer",
+            "recent_conversation",
+            error,
+        )
 
     return ctx.effect.finish(
         control="continue",
@@ -303,7 +401,13 @@ def _handle_save_session(command, ctx) -> CommandEffect:
         fingerprint=fingerprint,
         **build_session_persistence_kwargs(ctx.agent),
     )
-    ctx.agent.lifecycle.session_saved(session_id)
+    _observe_session_callback(
+        ctx,
+        "session_saved_observer",
+        "lifecycle",
+        ctx.agent.lifecycle.session_saved,
+        session_id,
+    )
     ctx.effect.success(
         f"Session saved: {session_id}", kind=UIEventKind.SESSION, session_id=session_id
     )
@@ -324,24 +428,26 @@ def _handle_new_session(command, ctx) -> CommandEffect:
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
     previous_session_id = command.current_session_id
     if ctx.agent.messages and ctx.config.session_auto_save:
-        sid = store.save(
-            ctx.agent.messages,
-            getattr(ctx.agent.llm, "model", ctx.config.model),
+        sid = _settle_current_session(
+            ctx,
+            store,
             previous_session_id,
-            total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
-            total_completion_tokens=ctx.agent.state.total_completion_tokens,
-            active_mode=getattr(ctx.agent, "active_mode", None),
-            runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
-            fingerprint=fingerprint,
-            **build_session_persistence_kwargs(ctx.agent),
+            fingerprint,
         )
         previous_session_id = sid
-        ctx.agent.lifecycle.session_saved(sid)
+        _observe_session_callback(
+            ctx,
+            "session_saved_observer",
+            "lifecycle",
+            ctx.agent.lifecycle.session_saved,
+            sid,
+        )
         ctx.effect.info(
             f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid
         )
 
     new_session_id = store.generate_session_id()
+    events_path = store.get_session_events_path(new_session_id)
     unbind = getattr(ctx.agent, "unbind_session_persistence", None)
     if callable(unbind):
         unbind()
@@ -351,18 +457,32 @@ def _handle_new_session(command, ctx) -> CommandEffect:
         start_new_history()
     restore_config_runtime_defaults(ctx.config, ctx.agent)
     ctx.agent.session_fingerprint = fingerprint
-    ctx.agent.lifecycle.session_started(new_session_id, reason="new")
-    bind_session_persistence(
+    bind_issue = bind_session_persistence(
         ctx.config,
         ctx.agent,
         store,
         new_session_id,
         fingerprint=fingerprint,
+        events_path=events_path,
     )
-    ctx.effect.success(
-        f"Started a new conversation: {new_session_id}",
+    _observe_session_callback(
+        ctx,
+        "session_started_observer",
+        "lifecycle",
+        ctx.agent.lifecycle.session_started,
+        new_session_id,
+        reason="new",
+    )
+    notice = ctx.effect.warning if bind_issue is not None else ctx.effect.success
+    notice(
+        (
+            f"Started a new conversation without persistence: {new_session_id}"
+            if bind_issue is not None
+            else f"Started a new conversation: {new_session_id}"
+        ),
         kind=UIEventKind.SESSION,
         session_id=new_session_id,
+        persistence_issue=(bind_issue.to_dict() if bind_issue is not None else None),
     )
     if previous_session_id:
         ctx.effect.info(

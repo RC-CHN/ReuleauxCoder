@@ -65,6 +65,8 @@ def test_status_perf_exposes_ui_queue_pressure() -> None:
             "must_deliver_waits": 2,
             "must_deliver_timeouts": 1,
             "closed_dropped": 4,
+            "stale_generation_dropped": 5,
+            "stale_incident_dropped": 6,
         },
     )
     effect = CommandEffect()
@@ -83,6 +85,8 @@ def test_status_perf_exposes_ui_queue_pressure() -> None:
     assert "must_deliver_waits=2" in detail
     assert "must_deliver_timeouts=1" in detail
     assert "closed_dropped=4" in detail
+    assert "stale_generation_dropped=5" in detail
+    assert "stale_incident_dropped=6" in detail
 
 
 def test_status_perf_exposes_secret_free_lsp_phase_details() -> None:

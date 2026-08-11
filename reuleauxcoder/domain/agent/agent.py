@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
+import inspect
 import threading
 import time
 import uuid
@@ -190,6 +191,7 @@ class Agent:
         self._runtime_issue_lock = threading.Lock()
         self._runtime_issue_counts: dict[tuple[str, str, str], int] = {}
         self._runtime_issue_overflow = 0
+        self._stale_agent_event_dropped = 0
 
         # Mode state
         self.available_modes: dict[str, ModeConfig] = dict(available_modes or {})
@@ -221,6 +223,7 @@ class Agent:
         self._resume_runtime_descriptor_hash: str | None = None
         self.plan_controller = PlanController(self)
         self._session_persist_callback = None
+        self._session_persist_accepts_deferred: bool | None = None
         self._control_plane_recovery_required = False
         for tool in self.tools:
             backend = getattr(tool, "backend", None)
@@ -364,28 +367,60 @@ class Agent:
             self.persist_runtime_snapshot(deferred=True)
 
     def bind_session_persistence(self, *, events_path, callback) -> None:
+        accepts_deferred = self._persistence_callback_accepts_deferred(callback)
+        if accepts_deferred is None:
+            raise TypeError("persistence callback signature is unavailable")
         self.history_ledger.bind_context(
             session_id=getattr(self, "current_session_id", None),
             agent_id=self.agent_id,
         )
         self.history_ledger.bind_jsonl(events_path)
         self._session_persist_callback = callback
+        self._session_persist_accepts_deferred = accepts_deferred
 
     def unbind_session_persistence(self) -> None:
-        flush = getattr(self._session_persist_callback, "flush", None)
-        if callable(flush):
-            flush()
-        self._session_persist_callback = None
+        callback = self._session_persist_callback
+        settle = getattr(callback, "close", None)
+        if not callable(settle):
+            settle = getattr(callback, "flush", None)
+        if callable(settle):
+            settle()
         self.history_ledger.unbind_jsonl()
+        self._session_persist_callback = None
+        self._session_persist_accepts_deferred = None
+
+    @staticmethod
+    def _persistence_callback_accepts_deferred(callback) -> bool | None:
+        """Inspect callback capability before invocation; never retry by outcome."""
+        try:
+            parameters = inspect.signature(callback).parameters.values()
+        except (TypeError, ValueError):
+            return None
+        return any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or (
+                parameter.name == "deferred"
+                and parameter.kind
+                in {
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                }
+            )
+            for parameter in parameters
+        )
 
     def persist_runtime_snapshot(self, *, deferred: bool = False) -> None:
         callback = self._session_persist_callback
         if callable(callback):
-            try:
+            accepts_deferred = self._session_persist_accepts_deferred
+            if accepts_deferred is None:
+                accepts_deferred = self._persistence_callback_accepts_deferred(callback)
+                if accepts_deferred is None:
+                    raise TypeError("persistence callback signature is unavailable")
+                self._session_persist_accepts_deferred = accepts_deferred
+            if deferred and accepts_deferred:
                 callback(deferred=deferred)
-            except TypeError as error:
-                if "deferred" not in str(error):
-                    raise
+            else:
                 callback()
 
     def recover_control_plane_if_required(self) -> bool:
@@ -394,22 +429,56 @@ class Agent:
             return True
         self.plan_controller.recover_from_ledger()
         callback = self._session_persist_callback
+        if not callable(callback):
+            return False
         try:
-            if callable(callback):
-                callback()
-        except Exception:
+            callback()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            if isinstance(error, (SystemExit, GeneratorExit)):
+                self.request_stop()
+            self._record_control_recovery_issue(error, "control_plane_recovery")
+            return False
+        try:
+            self.history_ledger.append(
+                "control_state_recovered",
+                {
+                    "plan_revision": self.plan_controller.state.revision,
+                    "progress_revision": self.plan_controller.progress.revision,
+                },
+                agent_id=self.agent_id,
+                turn_id=self._current_turn_id,
+            )
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            if isinstance(error, (SystemExit, GeneratorExit)):
+                self.request_stop()
+            self._record_control_recovery_issue(error, "history_ledger")
             return False
         self._control_plane_recovery_required = False
-        self.history_ledger.append(
-            "control_state_recovered",
-            {
-                "plan_revision": self.plan_controller.state.revision,
-                "progress_revision": self.plan_controller.progress.revision,
-            },
-            agent_id=self.agent_id,
-            turn_id=self._current_turn_id,
-        )
         return True
+
+    def _record_control_recovery_issue(
+        self, error: BaseException, ref: str
+    ) -> None:
+        error_type = self._safe_runtime_issue_field(type(error).__name__, "Exception")
+        try:
+            if self.record_runtime_issue("session_snapshot", error_type, ref) is not False:
+                return
+        except BaseException as recorder_error:
+            if isinstance(
+                recorder_error, (KeyboardInterrupt, SystemExit, GeneratorExit)
+            ):
+                self.request_stop()
+        try:
+            Agent.record_runtime_issue(self, "session_snapshot", error_type, ref)
+        except BaseException as fallback_error:
+            if isinstance(
+                fallback_error, (KeyboardInterrupt, SystemExit, GeneratorExit)
+            ):
+                self.request_stop()
 
     def _replace_context_messages(
         self,
@@ -501,6 +570,8 @@ class Agent:
             return True
 
     def restore_history_runtime(self, session) -> None:
+        if self._session_persist_callback is not None:
+            self.unbind_session_persistence()
         self.history_ledger = HistoryLedger(
             getattr(session, "history_events", ()),
             next_seq_floor=getattr(session, "history_next_seq_floor", 0),
@@ -510,6 +581,7 @@ class Agent:
             performance_monitor=self.performance_monitor,
         )
         self._session_persist_callback = None
+        self._session_persist_accepts_deferred = None
         self.replay_envelope = getattr(session, "replay_envelope", None)
         self._restored_replay_envelope = self.replay_envelope
         self._resume_runtime_descriptor_hash = None
@@ -520,14 +592,24 @@ class Agent:
         behavior_projection_safe = getattr(
             session, "history_behavior_projection_safe", True
         ) and self.history_completeness != "degraded"
+        events = self.history_ledger.events
+        trusted_generation = max(
+            (event.session_generation for event in events),
+            default=0,
+        )
+        behavioral_events = tuple(
+            event
+            for event in events
+            if event.session_generation == trusted_generation
+        )
         self._recovered_discarded_steering_count = (
-            self._discard_recovered_steering_admissions()
+            self._discard_recovered_steering_admissions(behavioral_events)
             if behavior_projection_safe
             else 0
         )
         self.context.clear_usage_observations()
         for event in (
-            self.history_ledger.events[-100:] if behavior_projection_safe else ()
+            behavioral_events[-100:] if behavior_projection_safe else ()
         ):
             if event.kind != "usage_observed":
                 continue
@@ -556,23 +638,25 @@ class Agent:
         self._replace_context_messages(
             list(session.messages), reason="session resume", record=False
         )
-        events = self.history_ledger.events
         restorable_subagent_kinds = {
             "subagent_job_changed",
             "subagent_communication_queued",
             "subagent_communication_delivered",
         }
         if behavior_projection_safe and any(
-            event.kind in restorable_subagent_kinds for event in events
+            event.kind in restorable_subagent_kinds for event in behavioral_events
         ):
             from reuleauxcoder.extensions.subagent.manager import (
                 get_subagent_manager,
             )
 
             manager = get_subagent_manager(self)
-            manager.restore_from_history(self, events)
+            manager.restore_from_history(self, behavioral_events)
 
-    def _discard_recovered_steering_admissions(self) -> int:
+    def _discard_recovered_steering_admissions(
+        self,
+        events: tuple[HistoryEvent, ...] | None = None,
+    ) -> int:
         """Close admissions that crashed before a model-visible commit.
 
         ``message_committed`` carrying ``steering_id`` is the authoritative
@@ -581,7 +665,7 @@ class Agent:
         """
         admitted: dict[str, HistoryEvent] = {}
         terminal: set[str] = set()
-        for event in self.history_ledger.events:
+        for event in events if events is not None else self.history_ledger.events:
             steering_id = event.payload.get("steering_id")
             if not isinstance(steering_id, str) or not steering_id:
                 continue
@@ -612,6 +696,8 @@ class Agent:
         return count
 
     def start_new_history(self) -> None:
+        if self._session_persist_callback is not None:
+            self.unbind_session_persistence()
         self.history_ledger = HistoryLedger(
             generation=self.session_generation,
             session_id=getattr(self, "current_session_id", None),
@@ -624,6 +710,7 @@ class Agent:
         self.request_envelopes = []
         self.history_completeness = "complete"
         self._session_persist_callback = None
+        self._session_persist_accepts_deferred = None
         self.context.restore_replay_state(history_version=0, cache_epoch=0)
         self.plan_controller.reset()
 
@@ -1013,6 +1100,12 @@ class Agent:
             )
         return issues
 
+    @property
+    def stale_agent_event_dropped(self) -> int:
+        """Return the bounded count of old-generation live events rejected."""
+        with self._runtime_issue_lock:
+            return self._stale_agent_event_dropped
+
     def _emit_event(self, event: AgentEvent) -> None:
         """Emit an event to all handlers."""
         if event.agent_id is None:
@@ -1023,7 +1116,46 @@ class Agent:
             event.session_id = getattr(self, "current_session_id", None)
         if event.turn_id is None:
             event.turn_id = self._current_turn_id
-        self._record_runtime_fact(event)
+        stale = False
+        owned_event = event.agent_id == self.agent_id
+        with self._runtime_issue_lock:
+            if owned_event and event.session_generation < self.session_generation:
+                self._stale_agent_event_dropped = min(
+                    self._stale_agent_event_dropped + 1,
+                    _MAX_RUNTIME_ISSUE_COUNT,
+                )
+                stale = True
+            elif owned_event and event.session_generation > self.session_generation:
+                raise ValueError("agent event generation cannot be in the future")
+            else:
+                # Keep reset ordered after any correctness-relevant ledger fact.
+                self._record_runtime_fact(event)
+        if stale:
+            monitor = self.performance_monitor
+            try:
+                monitor.record(
+                    "agent_event",
+                    "stale_generation_drop",
+                    0.0,
+                    status="dropped",
+                    attributes={"event_count": self.stale_agent_event_dropped},
+                )
+            except KeyboardInterrupt:
+                raise
+            except BaseException as error:
+                try:
+                    Agent.record_runtime_issue(
+                        self,
+                        "agent_event_monitor",
+                        type(error).__name__,
+                        "stale_generation_drop",
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except BaseException:
+                    # Final non-recursive observer boundary for an expected drop.
+                    pass
+            return
         for handler in self._event_handlers:
             try:
                 handler(event)
@@ -1031,13 +1163,22 @@ class Agent:
                 raise
             except BaseException as error:
                 try:
-                    self.record_runtime_issue(
+                    accepted = self.record_runtime_issue(
                         "agent_event_delivery",
                         type(error).__name__,
                         "agent_event_subscriber",
-                        agent_id=event.agent_id,
+                        agent_id=self.agent_id,
                         session_generation=event.session_generation,
                     )
+                    if accepted is False:
+                        Agent.record_runtime_issue(
+                            self,
+                            "agent_event_delivery",
+                            type(error).__name__,
+                            "agent_event_subscriber",
+                            agent_id=self.agent_id,
+                            session_generation=event.session_generation,
+                        )
                 except KeyboardInterrupt:
                     raise
                 except BaseException as recorder_error:
@@ -1050,7 +1191,7 @@ class Agent:
                             "agent_event_delivery",
                             type(error).__name__,
                             "agent_event_subscriber",
-                            agent_id=event.agent_id,
+                            agent_id=self.agent_id,
                             session_generation=event.session_generation,
                         )
                         Agent.record_runtime_issue(
@@ -1058,7 +1199,7 @@ class Agent:
                             "runtime_issue_recorder",
                             type(recorder_error).__name__,
                             "agent_event_delivery",
-                            agent_id=event.agent_id,
+                            agent_id=self.agent_id,
                             session_generation=event.session_generation,
                         )
                     except KeyboardInterrupt:
@@ -1235,6 +1376,11 @@ class Agent:
             if t.name == name:
                 return t
         return None
+
+    def has_registered_tool(self, name: str) -> bool:
+        """Return whether the sealed registry contains a tool, ignoring scope."""
+        with self._tool_registry_lock:
+            return any(tool.name == name for tool in self.tools)
 
     @staticmethod
     def _format_subagent_job_message(job) -> tuple[str, bool]:

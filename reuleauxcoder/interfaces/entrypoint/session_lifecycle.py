@@ -289,6 +289,7 @@ def restore_session(
         )
 
     session_store = dependencies.create_session_store(sessions_dir)
+
     set_progress = getattr(session_store, "set_progress_callback", None)
     if callable(set_progress):
         observe_session_callback(
@@ -450,13 +451,24 @@ def restore_session(
             )
         current_session_id = session_store.generate_session_id()
         agent.current_session_id = current_session_id
-    bind_session_persistence(
+    bind_issue = bind_session_persistence(
         config,
         agent,
         session_store,
         current_session_id,
         fingerprint=getattr(agent, "session_fingerprint", None) or current_fingerprint,
     )
+    if bind_issue is not None:
+        report_ui(
+            ui_bus.warning,
+            "Session is active, but persistence is unavailable "
+            f"({bind_issue.render()}).",
+            kind=UIEventKind.SESSION,
+            phase=bind_issue.phase,
+            error_type=bind_issue.error_type,
+            ref=bind_issue.ref,
+        )
+        report_progress("Session persistence is unavailable; model requests are paused.")
     flush_runtime_issues()
 
     return current_session_id, session_exit_time, sessions_dir

@@ -48,7 +48,6 @@ from reuleauxcoder.domain.approval_preview import (
     capture_workspace_document,
     diff_approval_documents,
 )
-from reuleauxcoder.domain.runtime.serialization import tool_outcome_to_dict
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeToolExecuteContext,
@@ -57,9 +56,8 @@ from reuleauxcoder.domain.hooks.types import (
     HookKind,
     HookPoint,
 )
-from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 from reuleauxcoder.domain.workspace import WorkspaceRevision
-from reuleauxcoder.extensions.tools.base import InterruptMode
+from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
 
 
 _EXTERNAL_PATH_ARGUMENTS = {
@@ -72,14 +70,30 @@ _EXTERNAL_PATH_ARGUMENTS = {
     "write_file": "file_path",
 }
 _EXTERNAL_MUTATION_TOOLS = frozenset({"edit_file", "write_file"})
-_POST_EFFECT_FAILURE_LIMIT = 16
-_PENDING_BATCH_FAILURE_LIMIT = 8
-_BATCH_CONTEXT_PUBLISH_ATTEMPTS = 2
+_POST_EFFECT_FAILURE_LIMIT = 8
+_POST_EFFECT_FAILURE_COUNT_LIMIT = 1_000_000
+_PENDING_RUNTIME_FAILURE_LIMIT = 8
+_RUNTIME_FAILURE_PUBLISH_ATTEMPTS = 2
 _METADATA_MAX_DEPTH = 32
+_METADATA_MAX_CONTAINER_ITEMS = 8_192
+_METADATA_MAX_NODES = 16_384
+_METADATA_MAX_INT_BITS = 256
+_METADATA_MAX_STRING_BYTES = 1_048_576
+_METADATA_MAX_TOTAL_STRING_BYTES = 2_097_152
+_STRUCTURED_FACT_MAX_STRING_BYTES = 65_536
+_STRUCTURED_FACT_MAX_TOTAL_STRING_BYTES = 2_097_152
+_TOOL_DIAGNOSTIC_LIMIT = 512
+_TEXT_VALIDATION_CHUNK_CHARS = 65_536
 _FAILURE_FACT_KEYS = frozenset(
     {"failure_phase", "error_type", "effect_state", "completion_state", "retry_safety"}
 )
-_RUNTIME_METADATA_KEYS = _FAILURE_FACT_KEYS | {"post_effect_failures"}
+_RUNTIME_METADATA_KEYS = _FAILURE_FACT_KEYS | {
+    "post_effect_failures",
+    "reported_effect_state",
+}
+_REPORTED_EFFECT_STATES = frozenset(
+    {"not_started", "started", "completed", "unknown", "server_reported_failure"}
+)
 _VALID_TRUNCATION_STRATEGIES = frozenset(
     strategy.value for strategy in ToolRetentionStrategy
 )
@@ -98,7 +112,7 @@ class InvalidToolOutcomeProtocol(TypeError):
     pass
 
 
-class MissingRuntimeContextSink(RuntimeError):
+class MissingRuntimeIssueSink(RuntimeError):
     pass
 
 
@@ -111,8 +125,12 @@ def _tool_call_signature(tool_call: object) -> tuple[object, object, object]:
             raise TypeError
         if not isinstance(arguments, dict):
             raise TypeError
-        return tool_call_id, name, _snapshot_json_value(arguments)
-    except BaseException:
+        return (
+            _snapshot_json_value(tool_call_id),
+            _snapshot_json_value(name),
+            _snapshot_json_value(arguments),
+        )
+    except Exception:
         raise InvalidContextContributionResult from None
 
 
@@ -146,40 +164,136 @@ class _PostEffectFailureCollector:
     """Thread-safe aggregation with one deterministic bounded projection."""
 
     def __init__(self, *, limit: int = _POST_EFFECT_FAILURE_LIMIT) -> None:
-        self._limit = max(1, limit)
+        self._limit = max(2, limit)
         self._counts: dict[tuple[str, str], int] = {}
+        self._overflow_count = 0
         self._lock = Lock()
 
-    def record(self, phase: object, error_type: object) -> None:
+    def record(self, phase: object, error_type: object, *, count: int = 1) -> None:
         fact = (_safe_failure_phase(phase), _safe_failure_error_type(error_type))
+        safe_count = (
+            min(count, _POST_EFFECT_FAILURE_COUNT_LIMIT)
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0
+            else 1
+        )
         with self._lock:
-            self._counts[fact] = self._counts.get(fact, 0) + 1
+            current = self._counts.get(fact)
+            if current is not None:
+                self._counts[fact] = min(
+                    current + safe_count,
+                    _POST_EFFECT_FAILURE_COUNT_LIMIT,
+                )
+            elif len(self._counts) < self._limit - 1:
+                self._counts[fact] = safe_count
+            else:
+                largest = max(self._counts)
+                if fact < largest:
+                    omitted = self._counts.pop(largest)
+                    self._counts[fact] = safe_count
+                else:
+                    omitted = safe_count
+                self._overflow_count = min(
+                    self._overflow_count + omitted,
+                    _POST_EFFECT_FAILURE_COUNT_LIMIT,
+                )
+
+    def omit(self, count: int) -> None:
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            return
+        safe_count = min(count, _POST_EFFECT_FAILURE_COUNT_LIMIT)
+        with self._lock:
+            self._overflow_count = min(
+                self._overflow_count + safe_count,
+                _POST_EFFECT_FAILURE_COUNT_LIMIT,
+            )
 
     def snapshot(self) -> tuple[tuple[str, str, int], ...]:
         with self._lock:
-            ranked = sorted(
-                self._counts.items(),
-                key=lambda item: (-item[1], item[0]),
+            facts = tuple(
+                (phase, error_type, count)
+                for (phase, error_type), count in sorted(self._counts.items())
             )
-        selected = ranked[: self._limit]
-        facts = tuple(
-            (phase, error_type, count)
-            for (phase, error_type), count in sorted(selected)
-        )
-        overflow_count = sum(count for _, count in ranked[self._limit :])
+            overflow_count = self._overflow_count
+        if overflow_count:
+            facts += (("post_effect", "AdditionalFailuresOmitted", overflow_count),)
+        return facts
+
+    def drain(self) -> tuple[tuple[str, str, int], ...]:
+        with self._lock:
+            facts = tuple(
+                (phase, error_type, count)
+                for (phase, error_type), count in sorted(self._counts.items())
+            )
+            overflow_count = self._overflow_count
+            self._counts.clear()
+            self._overflow_count = 0
         if overflow_count:
             facts += (("post_effect", "AdditionalFailuresOmitted", overflow_count),)
         return facts
 
     def __bool__(self) -> bool:
         with self._lock:
-            return bool(self._counts)
+            return bool(self._counts or self._overflow_count)
+
+
+@dataclass(slots=True)
+class _SnapshotBudget:
+    nodes: int = 0
+    string_bytes: int = 0
+
+    def add_node(self) -> None:
+        self.nodes += 1
+        if self.nodes > _METADATA_MAX_NODES:
+            raise InvalidToolOutcomeProtocol
+
+    def add_string(self, value: str) -> str:
+        # UTF-8 uses at least one byte per code point. Reject obviously
+        # oversized input before allocating a second full-size buffer.
+        if len(value) > _METADATA_MAX_STRING_BYTES:
+            raise InvalidToolOutcomeProtocol
+        try:
+            encoded = value.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            raise InvalidToolOutcomeProtocol from None
+        size = len(encoded)
+        if size > _METADATA_MAX_STRING_BYTES:
+            raise InvalidToolOutcomeProtocol
+        self.string_bytes += size
+        if self.string_bytes > _METADATA_MAX_TOTAL_STRING_BYTES:
+            raise InvalidToolOutcomeProtocol
+        return value
+
+
+def _validate_unbounded_text(value: str) -> None:
+    """Validate retained output without allocating a second full-size buffer."""
+    try:
+        for offset in range(0, len(value), _TEXT_VALIDATION_CHUNK_CHARS):
+            value[offset : offset + _TEXT_VALIDATION_CHUNK_CHARS].encode(
+                "utf-8",
+                errors="strict",
+            )
+    except UnicodeEncodeError:
+        raise InvalidToolOutcomeProtocol from None
+
+
+def _validate_fact_text(value: str) -> int:
+    if len(value) > _STRUCTURED_FACT_MAX_STRING_BYTES:
+        raise InvalidToolOutcomeProtocol
+    try:
+        encoded = value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise InvalidToolOutcomeProtocol from None
+    size = len(encoded)
+    if size > _STRUCTURED_FACT_MAX_STRING_BYTES:
+        raise InvalidToolOutcomeProtocol
+    return size
 
 
 def _optional_int(value: object, *, nonnegative: bool = False) -> bool:
     return value is None or (
         isinstance(value, int)
         and not isinstance(value, bool)
+        and value.bit_length() <= _METADATA_MAX_INT_BITS
         and (not nonnegative or value >= 0)
     )
 
@@ -189,20 +303,27 @@ def _snapshot_json_value(
     *,
     depth: int = 0,
     trail: set[int] | None = None,
+    budget: _SnapshotBudget | None = None,
 ) -> object:
     """Copy extension-owned metadata into immutable, JSON-safe runtime data."""
     if depth > _METADATA_MAX_DEPTH:
         raise InvalidToolOutcomeProtocol
+    owned_budget = budget if budget is not None else _SnapshotBudget()
+    owned_budget.add_node()
     if isinstance(value, Enum):
-        return _snapshot_json_value(value.value, depth=depth, trail=trail)
+        return _snapshot_json_value(
+            value.value,
+            depth=depth,
+            trail=trail,
+            budget=owned_budget,
+        )
     if isinstance(value, str):
-        owned = str(value)
-        try:
-            owned.encode("utf-8", errors="strict")
-        except UnicodeEncodeError:
-            raise InvalidToolOutcomeProtocol from None
-        return owned
-    if value is None or isinstance(value, (bool, int)):
+        return owned_budget.add_string(str(value))
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value.bit_length() > _METADATA_MAX_INT_BITS:
+            raise InvalidToolOutcomeProtocol
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -219,30 +340,46 @@ def _snapshot_json_value(
     try:
         if isinstance(value, Mapping):
             copied: dict[str, object] = {}
-            for key, item in value.items():
+            for index, (key, item) in enumerate(value.items()):
+                if index >= _METADATA_MAX_CONTAINER_ITEMS:
+                    raise InvalidToolOutcomeProtocol
                 if not isinstance(key, str):
                     raise InvalidToolOutcomeProtocol
-                owned_key = cast(str, _snapshot_json_value(key))
+                owned_key = cast(
+                    str,
+                    _snapshot_json_value(
+                        key,
+                        depth=depth + 1,
+                        trail=owned_trail,
+                        budget=owned_budget,
+                    ),
+                )
                 copied[owned_key] = _snapshot_json_value(
                     item,
                     depth=depth + 1,
                     trail=owned_trail,
+                    budget=owned_budget,
                 )
             return MappingProxyType(copied)
-        return tuple(
-            _snapshot_json_value(item, depth=depth + 1, trail=owned_trail)
-            for item in value
-        )
+        copied_items: list[object] = []
+        for index, item in enumerate(value):
+            if index >= _METADATA_MAX_CONTAINER_ITEMS:
+                raise InvalidToolOutcomeProtocol
+            copied_items.append(
+                _snapshot_json_value(
+                    item,
+                    depth=depth + 1,
+                    trail=owned_trail,
+                    budget=owned_budget,
+                )
+            )
+        return tuple(copied_items)
     finally:
         owned_trail.remove(identity)
 
 
-def _check_tool_outcome_protocol(outcome: ToolOutcome) -> dict[str, object]:
-    """Reject malformed facts and produce the one JSON-safe source snapshot."""
-    try:
-        encoded = tool_outcome_to_dict(outcome)
-    except BaseException:
-        raise InvalidToolOutcomeProtocol from None
+def _check_tool_outcome_protocol(outcome: ToolOutcome) -> Mapping[str, object]:
+    """Reject malformed facts and snapshot only bounded runtime metadata."""
     diff, truncation, archive, retention = (
         outcome.diff,
         outcome.truncation,
@@ -268,6 +405,7 @@ def _check_tool_outcome_protocol(outcome: ToolOutcome) -> dict[str, object]:
         and (outcome.content is None or isinstance(outcome.content, str))
         and isinstance(outcome.stdout, str)
         and isinstance(outcome.stderr, str)
+        and (outcome.model_content is None or isinstance(outcome.model_content, str))
         and _optional_int(outcome.exit_code)
         and isinstance(outcome.metadata, Mapping)
         and (
@@ -278,12 +416,15 @@ def _check_tool_outcome_protocol(outcome: ToolOutcome) -> dict[str, object]:
             and outcome.duration_seconds >= 0
         )
         and (diff is None or isinstance(diff, ToolDiff))
-        and isinstance(outcome.diagnostics, tuple)
+        and type(outcome.diagnostics) is tuple
+        and len(outcome.diagnostics) <= _TOOL_DIAGNOSTIC_LIMIT
         and all(isinstance(item, ToolDiagnostic) for item in outcome.diagnostics)
         and (truncation is None or isinstance(truncation, ToolTruncation))
         and (archive is None or isinstance(archive, ToolArchiveReference))
         and isinstance(retention, ToolRetentionHint)
     )
+    if not valid:
+        raise InvalidToolOutcomeProtocol
     if diff is not None:
         valid &= (
             isinstance(diff.path, str)
@@ -305,8 +446,8 @@ def _check_tool_outcome_protocol(outcome: ToolOutcome) -> dict[str, object]:
             and isinstance(item.severity, str)
             and (
                 item.code is None
-                or isinstance(item.code, (str, int))
-                and not isinstance(item.code, bool)
+                or isinstance(item.code, str)
+                or (_optional_int(item.code) and item.code is not None)
             )
             and (item.source is None or isinstance(item.source, str))
             and _optional_int(item.end_line, nonnegative=True)
@@ -347,7 +488,41 @@ def _check_tool_outcome_protocol(outcome: ToolOutcome) -> dict[str, object]:
     )
     if not valid:
         raise InvalidToolOutcomeProtocol
-    return encoded
+
+    unbounded_text = [outcome.content, outcome.stdout, outcome.stderr]
+    if outcome.model_content is not None:
+        unbounded_text.append(outcome.model_content)
+    if diff is not None:
+        unbounded_text.append(diff.unified)
+    for value in unbounded_text:
+        if value is not None:
+            _validate_unbounded_text(value)
+
+    bounded_text = [outcome.summary]
+    if diff is not None:
+        bounded_text.append(diff.path)
+    for item in outcome.diagnostics:
+        bounded_text.extend(
+            (
+                item.path,
+                item.message,
+                item.severity,
+                item.code if isinstance(item.code, str) else None,
+                item.source,
+            )
+        )
+    if truncation is not None:
+        bounded_text.append(truncation.strategy)
+    if archive is not None:
+        bounded_text.extend((archive.path, archive.media_type, archive.checksum_sha256))
+    structured_string_bytes = 0
+    for value in bounded_text:
+        if value is not None:
+            structured_string_bytes += _validate_fact_text(value)
+            if structured_string_bytes > _STRUCTURED_FACT_MAX_TOTAL_STRING_BYTES:
+                raise InvalidToolOutcomeProtocol
+
+    return cast(Mapping[str, object], _snapshot_json_value(outcome.metadata))
 
 
 def _normalize_model_projection(value: object) -> str:
@@ -355,8 +530,8 @@ def _normalize_model_projection(value: object) -> str:
         raise InvalidToolResultProjection
     try:
         owned = str(value)
-        owned.encode("utf-8", errors="strict")
-    except BaseException:
+        _validate_unbounded_text(owned)
+    except Exception:
         raise InvalidToolResultProjection from None
     return owned
 
@@ -366,16 +541,14 @@ def _normalize_tool_outcome(outcome: ToolOutcome) -> ToolOutcome:
     if outcome.model_content is not None and not isinstance(outcome.model_content, str):
         raise InvalidToolResultProjection
     try:
-        encoded = _check_tool_outcome_protocol(outcome)
-        snapshot = cast(Mapping[str, object], _snapshot_json_value(encoded))
-        metadata = snapshot["metadata"]
+        metadata = _check_tool_outcome_protocol(outcome)
     except InvalidToolOutcomeProtocol:
         raise
-    except BaseException:
+    except Exception:
         raise InvalidToolOutcomeProtocol from None
     try:
         model_text = outcome.model_text
-    except BaseException:
+    except Exception:
         raise InvalidToolResultProjection from None
     model_text = _normalize_model_projection(model_text)
     try:
@@ -586,14 +759,30 @@ def _coerce_returned_outcome(
     error_type = (
         _safe_metadata_fact(normalized.metadata, "error_type") or "ToolReportedFailure"
     )
-    return _with_failure_facts(
+    reported_effect = normalized.metadata.get("effect_state")
+    reported_effect = (
+        reported_effect
+        if isinstance(reported_effect, str)
+        and reported_effect in _REPORTED_EFFECT_STATES
+        else None
+    )
+    denied = normalized.status is ToolOutcomeStatus.DENIED
+    projected = _with_failure_facts(
         normalized,
         phase=phase,
         error_type=error_type,
-        effect_state="started",
-        completion_state="completed",
+        effect_state="not_started" if denied else "unknown",
+        completion_state="not_started" if denied else "uncertain",
         retry_safety="do_not_retry_automatically",
         replace_existing=True,
+    )
+    if normalized.success or reported_effect is None:
+        return projected
+    return replace(
+        projected,
+        metadata=MappingProxyType(
+            {**projected.metadata, "reported_effect_state": reported_effect}
+        ),
     )
 
 
@@ -607,7 +796,7 @@ def _completed_result_failure(error: BaseException) -> ToolOutcome:
     message = (
         f"The tool returned, but its result {problem} "
         f"(phase={phase}, error_type={error_type}, "
-        "effect_state=completed, completion_state=completed, "
+        "effect_state=unknown, completion_state=uncertain, "
         "retry_safety=do_not_retry_automatically). Do not retry solely because "
         "the result "
         f"{('protocol validation' if protocol_failure else 'projection')} failed."
@@ -621,8 +810,8 @@ def _completed_result_failure(error: BaseException) -> ToolOutcome:
         metadata={
             "failure_phase": phase,
             "error_type": error_type,
-            "effect_state": "completed",
-            "completion_state": "completed",
+            "effect_state": "unknown",
+            "completion_state": "uncertain",
             "retry_safety": "do_not_retry_automatically",
         },
     )
@@ -635,9 +824,10 @@ def _record_hook_diagnostics(
     hook_point: HookPoint,
     default_phase: str,
 ) -> None:
-    if not isinstance(diagnostics, tuple):
+    if type(diagnostics) is not tuple:
         raise TypeError("observer diagnostics must be a tuple")
-    for diagnostic in diagnostics:
+    retained = diagnostics[: _POST_EFFECT_FAILURE_LIMIT - 1]
+    for diagnostic in retained:
         if (
             not isinstance(diagnostic, HookDiagnostic)
             or diagnostic.hook_point is not hook_point
@@ -651,6 +841,7 @@ def _record_hook_diagnostics(
             diagnostic.phase or default_phase,
             diagnostic.error_type,
         )
+    failures.omit(len(diagnostics) - len(retained))
 
 
 def _with_post_effect_failures(
@@ -694,13 +885,6 @@ class _PreEffectState:
     effect_started: bool = False
 
 
-@dataclass(slots=True)
-class _PendingBatchRuntimeFailure:
-    batch_id: int
-    tool_count: int
-    failures: _PostEffectFailureCollector
-
-
 class InvalidPreflightResult(RuntimeError):
     pass
 
@@ -736,7 +920,7 @@ def _validated_preflight_failure(value: object) -> ToolOutcome | None:
         raise InvalidPreflightResult
     try:
         normalized = _normalize_tool_outcome(value)
-    except BaseException:
+    except Exception:
         raise InvalidPreflightResult from None
     if normalized.success:
         raise InvalidPreflightResult
@@ -943,10 +1127,9 @@ class ToolExecutor:
 
     def __init__(self, agent: "Agent"):
         self.agent = agent
-        self._pending_batch_failure_lock = Lock()
-        self._pending_batch_failures: list[_PendingBatchRuntimeFailure] = []
-        self._next_batch_failure_id = 1
-        self._omitted_batch_failure_count = 0
+        self._pending_runtime_failures = _PostEffectFailureCollector(
+            limit=_PENDING_RUNTIME_FAILURE_LIMIT
+        )
 
     def _round_interrupt_epoch(self) -> int:
         read = getattr(self.agent, "round_interrupt_epoch", None)
@@ -1006,8 +1189,10 @@ class ToolExecutor:
 
     def _emit_batch_post_effect_diagnostic(
         self,
-        batch: _PendingBatchRuntimeFailure,
         failure: tuple[str, str, int],
+        failures: _PostEffectFailureCollector,
+        *,
+        tool_count: int,
     ) -> None:
         phase, error_type, count = failure
         try:
@@ -1019,8 +1204,7 @@ class ToolExecutor:
                     code="tool.post_effect_failure",
                     details={
                         "scope": "parallel_batch",
-                        "batch_id": batch.batch_id,
-                        "tool_count": batch.tool_count,
+                        "tool_count": tool_count,
                         "phase": phase,
                         "error_type": error_type,
                         "count": count,
@@ -1029,10 +1213,50 @@ class ToolExecutor:
             )
         except BaseException as error:
             self._capture_post_effect_failure(
-                batch.failures,
+                failures,
                 "post_effect_diagnostic",
                 error,
             )
+
+    def _retain_runtime_failures(
+        self,
+        facts: tuple[tuple[str, str, int], ...],
+    ) -> None:
+        for phase, error_type, count in facts:
+            if error_type == "AdditionalFailuresOmitted":
+                self._pending_runtime_failures.omit(count)
+            else:
+                self._pending_runtime_failures.record(
+                    phase,
+                    error_type,
+                    count=count,
+                )
+
+    def _publish_runtime_failures(
+        self,
+        facts: tuple[tuple[str, str, int], ...],
+    ) -> tuple[int, bool]:
+        published = 0
+        for index, (phase, error_type, count) in enumerate(facts):
+            try:
+                sink = getattr(self.agent, "record_runtime_issue", None)
+                if not callable(sink):
+                    raise MissingRuntimeIssueSink
+                accepted = sink(phase, error_type, "parallel_batch", count)
+                if accepted is False:
+                    raise MissingRuntimeIssueSink
+            except BaseException as error:
+                self._retain_runtime_failures(facts[index:])
+                sink_failures = _PostEffectFailureCollector()
+                self._capture_post_effect_failure(
+                    sink_failures,
+                    "runtime_issue_publish",
+                    error,
+                )
+                self._retain_runtime_failures(sink_failures.snapshot())
+                return published, True
+            published += 1
+        return published, False
 
     def _queue_batch_runtime_failure(
         self,
@@ -1043,122 +1267,28 @@ class ToolExecutor:
     ) -> None:
         failures = _PostEffectFailureCollector()
         self._capture_post_effect_failure(failures, phase, error)
-        with self._pending_batch_failure_lock:
-            batch_id = self._next_batch_failure_id
-            self._next_batch_failure_id += 1
-        batch = _PendingBatchRuntimeFailure(
-            batch_id=batch_id,
+        self._emit_batch_post_effect_diagnostic(
+            failures.snapshot()[0],
+            failures,
             tool_count=tool_count,
-            failures=failures,
         )
-        self._emit_batch_post_effect_diagnostic(batch, failures.snapshot()[0])
-        with self._pending_batch_failure_lock:
-            if len(self._pending_batch_failures) < _PENDING_BATCH_FAILURE_LIMIT:
-                self._pending_batch_failures.append(batch)
-            else:
-                self._omitted_batch_failure_count += 1
+        self._publish_runtime_failures(failures.snapshot())
 
-    def _acknowledge_batch_runtime_failures(
-        self,
-        batches: tuple[_PendingBatchRuntimeFailure, ...],
-        omitted_count: int,
-    ) -> None:
-        batch_ids = {batch.batch_id for batch in batches}
-        with self._pending_batch_failure_lock:
-            self._pending_batch_failures = [
-                batch
-                for batch in self._pending_batch_failures
-                if batch.batch_id not in batch_ids
-            ]
-            self._omitted_batch_failure_count = max(
-                0,
-                self._omitted_batch_failure_count - omitted_count,
-            )
-
-    def _flush_pending_batch_runtime_context_once(self) -> tuple[int, bool]:
-        with self._pending_batch_failure_lock:
-            batches = tuple(self._pending_batch_failures)
-            omitted_count = self._omitted_batch_failure_count
-        if not batches and not omitted_count:
-            return 0, False
-
-        lines = [
-            "[parallel batch runtime facts]",
-            "Completed tool outcomes remain authoritative. Do not retry any tool "
-            "solely because secondary batch processing failed.",
-            "delivery_semantics=at_least_once; batch_id identifies duplicate facts.",
-        ]
-        for batch in batches:
-            lines.append(f"batch_id={batch.batch_id} tool_count={batch.tool_count}")
-            lines.extend(
-                f"phase={phase} error_type={error_type} count={count}"
-                for phase, error_type, count in batch.failures.snapshot()
-            )
-        if omitted_count:
-            lines.append(f"additional_batches_omitted={omitted_count}")
-
-        message = None
-        try:
-            message = synthetic_user_message(
-                "runtime_context_update",
-                "\n".join(lines),
-                source="parallel_scheduler_cleanup",
-                attributes={"kind": "parallel_batch_runtime_failure"},
-            )
-            append_message = getattr(self.agent, "_append_message", None)
-            if not callable(append_message):
-                raise MissingRuntimeContextSink
-            append_message(message, source="parallel_scheduler_cleanup")
-        except BaseException as error:
-            committed = False
-            if message is not None:
-                try:
-                    committed = any(
-                        item is message for item in self.agent.state.messages
-                    )
-                except BaseException as commit_check_error:
-                    self._queue_batch_runtime_failure(
-                        "parallel_runtime_context_commit_check",
-                        commit_check_error,
-                        tool_count=0,
-                    )
-            # _append_message is ledger-first. If it failed after mutating the
-            # ledger but before state.messages, there is no transaction token
-            # to prove that partial commit. Retain and retry the diagnostic as
-            # explicitly at-least-once data; stable batch IDs expose any
-            # duplicate ledger records without repeating a tool effect.
-            if committed:
-                self._acknowledge_batch_runtime_failures(batches, omitted_count)
-            self._queue_batch_runtime_failure(
-                "parallel_runtime_context_publish",
-                error,
-                tool_count=0,
-            )
-            acknowledged = len(batches) + omitted_count if committed else 0
-            return acknowledged, True
-
-        self._acknowledge_batch_runtime_failures(batches, omitted_count)
-        return len(batches) + omitted_count, False
-
-    def flush_pending_batch_runtime_context(self) -> int | None:
-        """Return acknowledged facts, or ``None`` when continuation is unsafe."""
-        acknowledged = 0
-        for _ in range(_BATCH_CONTEXT_PUBLISH_ATTEMPTS):
-            published, failed = self._flush_pending_batch_runtime_context_once()
-            acknowledged += published
+    def flush_pending_runtime_issues(self) -> int | None:
+        """Publish retained safe facts before another model request."""
+        published = 0
+        for _ in range(_RUNTIME_FAILURE_PUBLISH_ATTEMPTS):
+            facts = self._pending_runtime_failures.drain()
+            if not facts:
+                return published
+            delivered, failed = self._publish_runtime_failures(facts)
+            published += delivered
             if not failed:
-                return acknowledged
+                return published
 
         stop_failures = _PostEffectFailureCollector()
         self._request_stop_safely(stop_failures)
-        if stop_failures:
-            failure = stop_failures.snapshot()[0]
-            batch = _PendingBatchRuntimeFailure(
-                batch_id=0,
-                tool_count=0,
-                failures=stop_failures,
-            )
-            self._emit_batch_post_effect_diagnostic(batch, failure)
+        self._retain_runtime_failures(stop_failures.snapshot())
         return None
 
     def _request_stop_safely(
@@ -1201,8 +1331,8 @@ class ToolExecutor:
                 outcome,
                 phase="tool_result",
                 error_type="ToolReportedFailure",
-                effect_state="started",
-                completion_state="completed",
+                effect_state="unknown",
+                completion_state="uncertain",
                 retry_safety="do_not_retry_automatically",
             )
             outcome = _with_canonical_failure_projection(outcome)
@@ -1348,6 +1478,7 @@ class ToolExecutor:
         tool_call = tc
         try:
             pre_effect.phase = "tool_call_snapshot"
+            _tool_call_signature(tc)
             tool_call = deepcopy(tc)
             _tool_call_signature(tool_call)
             outcome = self._execute_pipeline(
@@ -1477,14 +1608,31 @@ class ToolExecutor:
         pre_effect.phase = "tool_lookup"
         if resolution_error is not None:
             raise resolution_error
-        tool = (
+        resolved = (
             self.agent.get_tool(tc.name)
             if resolved_tool is _UNRESOLVED_TOOL
             else resolved_tool
         )
         pre_effect.phase = "tool_scope"
-        if tool is None:
+        if resolved is None:
+            has_registered_tool = getattr(self.agent, "has_registered_tool", None)
+            if (
+                callable(has_registered_tool)
+                and has_registered_tool(tc.name)
+                and not self.agent.is_tool_allowed_in_mode(tc.name)
+            ):
+                mode_name = self.agent.active_mode or "default"
+                message = (
+                    f"Tool '{tc.name}' is not available in current mode "
+                    f"'{mode_name}'"
+                )
+                return self._pre_effect_denial_outcome(
+                    message,
+                    phase="mode_policy",
+                    error_type="ToolModeDenied",
+                )
             return self._unknown_tool_outcome(tc.name)
+        tool = cast(Tool, resolved)
 
         pre_effect.phase = "mode_policy"
         if not self.agent.is_tool_allowed_in_mode(tc.name):
@@ -1971,6 +2119,8 @@ class ToolExecutor:
 
         pre_effect.phase = "execution_setup"
         tool_returned = False
+        raw_result: object = _UNRESOLVED_TOOL
+        execution_seconds = 0.0
         authoritative_outcome: ToolOutcome | None = None
         try:
             backend = getattr(tool, "backend", None)
@@ -2274,9 +2424,14 @@ class ToolExecutor:
             if not pre_effect.effect_started:
                 raise
 
-            result_failure = tool_returned and isinstance(
-                error,
-                (InvalidToolOutcomeProtocol, InvalidToolResultProjection),
+            if not isinstance(error, Exception):
+                self._request_stop_safely(failures)
+            result_failure = tool_returned and (
+                isinstance(
+                    error,
+                    (InvalidToolOutcomeProtocol, InvalidToolResultProjection),
+                )
+                or (authoritative_outcome is None and not isinstance(error, Exception))
             )
             if authoritative_outcome is None and tool_returned:
                 if result_failure:
@@ -2288,6 +2443,8 @@ class ToolExecutor:
                             execution_seconds,
                         )
                     except BaseException as result_error:
+                        if not isinstance(result_error, Exception):
+                            self._request_stop_safely(failures)
                         authoritative_outcome = _completed_result_failure(result_error)
             if authoritative_outcome is not None:
                 if not result_failure:
@@ -2297,8 +2454,6 @@ class ToolExecutor:
                         error,
                     )
                 return authoritative_outcome
-            if not isinstance(error, Exception):
-                self._request_stop_safely(failures)
             return self._execution_failure_outcome(pre_effect.phase, error)
 
     def execute_parallel(
@@ -2354,15 +2509,25 @@ class ToolExecutor:
                 ),
             )
 
-        def publish_uncertain_scheduler_failure(
+        def publish_scheduler_failure(
             index: int,
             error: BaseException,
             phase: str,
+            *,
+            effect_started: bool,
         ) -> str:
             failures = _PostEffectFailureCollector()
             if not isinstance(error, Exception):
                 self._request_stop_safely(failures)
-            outcome = self._execution_failure_outcome(phase, error)
+            outcome = (
+                self._execution_failure_outcome(phase, error)
+                if effect_started
+                else self._pre_effect_failure_outcome(
+                    phase,
+                    error,
+                    cancelled=isinstance(error, KeyboardInterrupt),
+                )
+            )
             if failures:
                 self._emit_post_effect_diagnostic(
                     tool_calls[index], failures.snapshot()[0], failures
@@ -2395,15 +2560,26 @@ class ToolExecutor:
             phase: str,
         ) -> str:
             if attempt.cancel():
-                return publish_uncertain_scheduler_failure(
+                return publish_scheduler_failure(
                     index,
                     boundary_error,
                     phase,
+                    effect_started=False,
                 )
+            self._queue_batch_runtime_failure(
+                phase,
+                boundary_error,
+                tool_count=1,
+            )
             try:
                 return attempt.result()
             except BaseException as error:
-                return publish_uncertain_scheduler_failure(index, error, phase)
+                return publish_scheduler_failure(
+                    index,
+                    error,
+                    phase,
+                    effect_started=True,
+                )
 
         index = 0
         while index < len(tool_calls):
@@ -2425,7 +2601,12 @@ class ToolExecutor:
                     entered_pool = pool.__enter__()
                 except BaseException as error:
                     for offset in range(index, end):
-                        results[offset] = execute_submitted(offset, error)
+                        results[offset] = publish_scheduler_failure(
+                            offset,
+                            error,
+                            "parallel_pool",
+                            effect_started=False,
+                        )
                     index = end
                     continue
 
@@ -2450,15 +2631,6 @@ class ToolExecutor:
                         )
                     except BaseException as error:
                         submit_error = error
-                        if not isinstance(error, Exception):
-                            stop_failures = _PostEffectFailureCollector()
-                            self._request_stop_safely(stop_failures)
-                            if stop_failures:
-                                self._emit_post_effect_diagnostic(
-                                    tool_calls[offset],
-                                    stop_failures.snapshot()[0],
-                                    stop_failures,
-                                )
                         results[offset] = settle_failed_attempt(
                             offset,
                             attempt,
@@ -2489,7 +2661,12 @@ class ToolExecutor:
 
                 if submit_error is not None:
                     for offset in range(next_offset, end):
-                        results[offset] = execute_submitted(offset, submit_error)
+                        results[offset] = publish_scheduler_failure(
+                            offset,
+                            submit_error,
+                            "parallel_submit",
+                            effect_started=False,
+                        )
                 if exit_error is not None:
                     self._queue_batch_runtime_failure(
                         "parallel_scheduler_cleanup",

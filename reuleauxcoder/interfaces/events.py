@@ -54,6 +54,7 @@ class ViewModelPort(Protocol):
 @dataclass(frozen=True, slots=True)
 class RuntimeEventPayload:
     event: RuntimeEvent
+    generation_owner_agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +111,19 @@ class RuntimeIssueSink(Protocol):
     ) -> object: ...
 
 
+class RuntimeIssueRoutingUnsupported(TypeError):
+    """The sink cannot safely accept an explicitly routed failure fact."""
+
+
+class UIEventDeliveryAck:
+    """Marker for a subscriber's authoritative UI delivery result."""
+
+    __slots__ = ()
+
+    accepted: bool
+    reason: object | None
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeIssueFact:
     """Bounded bus-local fallback retained while an owner sink is unavailable."""
@@ -132,7 +146,8 @@ def deliver_runtime_issue(
     agent_id: str | None = None,
     session_generation: int | None = None,
 ) -> object:
-    """Call a runtime-issue sink once, with routing when it supports it."""
+    """Call a sink once; explicit routes never degrade to an unrouted call."""
+    route_required = agent_id is not None or session_generation is not None
     try:
         parameters = inspect.signature(sink).parameters
         supports_routing = any(
@@ -142,7 +157,9 @@ def deliver_runtime_issue(
     except KeyboardInterrupt:
         raise
     except BaseException:
-        supports_routing = False
+        if route_required:
+            raise RuntimeIssueRoutingUnsupported from None
+        return sink(phase, error_type, ref, count)
     if supports_routing:
         return sink(
             phase,
@@ -152,6 +169,8 @@ def deliver_runtime_issue(
             agent_id=agent_id,
             session_generation=session_generation,
         )
+    if route_required:
+        raise RuntimeIssueRoutingUnsupported
     return sink(phase, error_type, ref, count)
 
 
@@ -271,7 +290,9 @@ class UIEventBus:
       ``drain()`` to dispatch them.  Used by TUI (cross-thread).
 
     Handlers are always called on the **draining thread** — never on the
-    emitting thread when queued. Handler return values are ignored.
+    emitting thread when queued. Ordinary return values are ignored; explicit
+    ``UIEventDeliveryAck`` values are aggregated for synchronous required
+    delivery.
     """
 
     def __init__(
@@ -362,20 +383,27 @@ class UIEventBus:
             for event in self._history:
                 self._invoke_handler(handler, event, ref="history_replay")
 
-    def emit(self, event: UIEvent) -> None:
+    def emit(self, event: UIEvent) -> UIEventDeliveryAck | None:
         payload = event.payload
-        if not (
-            isinstance(payload, RuntimeEventPayload)
-            and runtime_event_delivery_class(payload.event.payload)
-            is RuntimeEventDeliveryClass.TRANSIENT
-        ):
+        runtime_payload = (
+            payload.event.payload if isinstance(payload, RuntimeEventPayload) else None
+        )
+        replayable = not (
+            runtime_payload is not None
+            and (
+                isinstance(runtime_payload, OperationPhaseChanged)
+                or runtime_event_delivery_class(runtime_payload)
+                is RuntimeEventDeliveryClass.TRANSIENT
+            )
+        )
+        if replayable:
             self._history.append(event)
             if len(self._history) > self._max_history:
                 del self._history[: -self._max_history]
         if self._queue is not None:
             self._queue.put(event)
-        else:
-            self._dispatch(event)
+            return None
+        return self._dispatch(event)
 
     def drain(self) -> None:
         """Dequeue and dispatch all pending events (queued mode only).
@@ -392,10 +420,19 @@ class UIEventBus:
                 return
             self._dispatch(event)
 
-    def _dispatch(self, event: UIEvent) -> None:
+    def _dispatch(self, event: UIEvent) -> UIEventDeliveryAck | None:
         """Call every registered handler for *event*."""
+        accepted: UIEventDeliveryAck | None = None
+        rejected: UIEventDeliveryAck | None = None
         for handler in self._handlers:
-            self._invoke_handler(handler, event, ref="dispatch")
+            result = self._invoke_handler(handler, event, ref="dispatch")
+            if not isinstance(result, UIEventDeliveryAck):
+                continue
+            if result.accepted:
+                accepted = accepted or result
+            else:
+                rejected = rejected or result
+        return rejected or accepted
 
     def _invoke_handler(
         self,
@@ -403,13 +440,35 @@ class UIEventBus:
         event: UIEvent,
         *,
         ref: str,
-    ) -> None:
+    ) -> object | None:
         try:
-            handler(event)
+            return handler(event)
         except KeyboardInterrupt:
             raise
         except BaseException as error:
             self._record_subscriber_failure(error, event=event, ref=ref)
+            return None
+
+    def emit_required(self, event: UIEvent) -> UIEventDeliveryAck | None:
+        """Synchronously dispatch a required event and return an explicit ack."""
+        if self._queue is not None:
+            return None
+        return self._dispatch(event)
+
+    def report_runtime_issue(
+        self,
+        phase: str,
+        error_type: str,
+        ref: str,
+    ) -> None:
+        """Route one safe, unrouted interface failure through the default sink."""
+        fact = RuntimeIssueFact(phase, error_type, ref)
+        with self._subscriber_failure_lock:
+            sink = self._subscriber_failure_default_sink
+        if sink is None:
+            self._retain_subscriber_failure(fact)
+        else:
+            self._deliver_subscriber_failure(sink, fact, replay=True)
 
     @staticmethod
     def _subscriber_failure_route(
@@ -422,7 +481,7 @@ class UIEventBus:
         generation = runtime.session_generation
         if not isinstance(generation, int) or isinstance(generation, bool):
             generation = None
-        return runtime.agent_id, generation
+        return payload.generation_owner_agent_id or runtime.agent_id, generation
 
     def _record_subscriber_failure(
         self,
@@ -534,7 +593,9 @@ class UIEventBus:
                 )
             )
             self._pending_subscriber_failures = [
-                fact for fact in self._pending_subscriber_failures if fact not in pending
+                fact
+                for fact in self._pending_subscriber_failures
+                if fact not in pending
             ]
         for fact in pending:
             self._deliver_subscriber_failure(sink, fact, replay=False)
@@ -595,7 +656,10 @@ class UIEventBus:
             UIEvent(
                 message=event.kind.value,
                 kind=UIEventKind.AGENT,
-                payload=RuntimeEventPayload(event),
+                payload=RuntimeEventPayload(
+                    event,
+                    generation_owner_agent_id=event.agent_id,
+                ),
             )
         )
 
@@ -712,8 +776,11 @@ class UIEventBus:
             )
         )
 
-    def emit_interaction_prompt(self, request: InteractionRequest) -> None:
-        self.emit(
+    def emit_interaction_prompt(
+        self,
+        request: InteractionRequest,
+    ) -> UIEventDeliveryAck | None:
+        return self.emit_required(
             UIEvent.info(
                 request.title,
                 kind=UIEventKind.APPROVAL,
@@ -725,8 +792,14 @@ class UIEventBus:
 class AgentEventBridge:
     """Republish domain-level agent events onto the UI event bus."""
 
-    def __init__(self, bus: UIEventBus):
+    def __init__(
+        self,
+        bus: UIEventBus,
+        *,
+        generation_owner_agent_id: str | None = None,
+    ):
         self.bus = bus
+        self.generation_owner_agent_id = generation_owner_agent_id
 
     def on_agent_event(self, event: AgentEvent) -> None:
         """Translate an agent event into a UI event envelope."""
@@ -749,6 +822,11 @@ class AgentEventBridge:
                 message=event.event_type.value,
                 level=level,
                 kind=UIEventKind.AGENT,
-                payload=RuntimeEventPayload(runtime_event),
+                payload=RuntimeEventPayload(
+                    runtime_event,
+                    generation_owner_agent_id=(
+                        self.generation_owner_agent_id or runtime_event.agent_id
+                    ),
+                ),
             )
         )

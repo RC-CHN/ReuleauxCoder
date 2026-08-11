@@ -26,6 +26,10 @@ from reuleauxcoder.interfaces.tui.application import (
     MiniTUIApplication,
 )
 from reuleauxcoder.interfaces.tui.event_adapter import MiniTUIEventAdapter
+from reuleauxcoder.interfaces.tui.event_queue import (
+    EventPutFailureReason,
+    EventPutResult,
+)
 from reuleauxcoder.interfaces.tui.execution_panel import _execution_panel_rows
 from reuleauxcoder.interfaces.tui.formatting import (
     wrap_fragments as _wrap_fragments,
@@ -78,6 +82,12 @@ def _bare_app() -> MiniTUIApplication:
         invalidate=lambda: getattr(app, "invalidate", lambda: None)(),
     )
     return app
+
+
+def _acknowledged_interactor() -> MiniTUIInteractor:
+    bus = UIEventBus()
+    bus.subscribe(lambda _event: EventPutResult(True), replay_history=False)
+    return MiniTUIInteractor(bus)
 
 
 def test_event_adapter_projects_user_and_execution_state() -> None:
@@ -1933,7 +1943,7 @@ def test_child_internals_stay_out_of_transcript_but_approval_remains_visible() -
 def test_event_projection_failure_is_isolated_to_ui_diagnostic() -> None:
     adapter = MiniTUIEventAdapter()
     adapter.execution.apply = lambda _event: (_ for _ in ()).throw(
-        ValueError("bad projection")
+        ValueError("projection-secret")
     )
     runtime = agent_event_to_runtime_event(
         AgentEvent.chat_start("keep running"), agent_id="main"
@@ -1948,11 +1958,13 @@ def test_event_projection_failure_is_isolated_to_ui_diagnostic() -> None:
 
     rendered = "".join(text for _style, text in adapter.transcript_fragments())
 
-    assert "UI projection skipped: bad projection" in rendered
+    assert "keep running" in rendered
+    assert "UI projection failed in execution (ValueError)" in rendered
+    assert "projection-secret" not in rendered
 
 
 def test_interactor_blocks_worker_until_bottom_pane_response() -> None:
-    interactor = MiniTUIInteractor(UIEventBus())
+    interactor = _acknowledged_interactor()
     result = []
 
     worker = threading.Thread(
@@ -1970,8 +1982,42 @@ def test_interactor_blocks_worker_until_bottom_pane_response() -> None:
     assert result[0].approved
 
 
+def test_interactor_cancels_when_prompt_delivery_is_unconfirmed() -> None:
+    bus = UIEventBus()
+    interactor = MiniTUIInteractor(bus)
+
+    response = interactor.review(ReviewRequest("Edit", "diff"))
+
+    assert response.cancelled
+    assert response.reason == "interaction prompt delivery unconfirmed"
+    assert bus.subscriber_failure_snapshot()[-1].phase == "interaction_delivery"
+
+
+def test_interactor_cancels_when_prompt_delivery_is_rejected() -> None:
+    bus = UIEventBus()
+    bus.subscribe(
+        lambda _event: EventPutResult(
+            False,
+            reason=EventPutFailureReason.CLOSED,
+        ),
+        replay_history=False,
+    )
+    interactor = MiniTUIInteractor(bus)
+
+    response = interactor.review(ReviewRequest("Edit", "diff"))
+
+    assert response.cancelled
+    assert response.reason == "interaction prompt delivery closed"
+    fact = bus.subscriber_failure_snapshot()[-1]
+    assert (fact.phase, fact.error_type, fact.ref) == (
+        "interaction_delivery",
+        "EventRejected",
+        "closed",
+    )
+
+
 def test_interactor_cancel_resolves_protocol_response() -> None:
-    interactor = MiniTUIInteractor(UIEventBus())
+    interactor = _acknowledged_interactor()
     result = []
     request = ReviewRequest("Edit", "diff")
     worker = threading.Thread(target=lambda: result.append(interactor.review(request)))
@@ -1985,8 +2031,131 @@ def test_interactor_cancel_resolves_protocol_response() -> None:
     assert result[0].reason == "interaction cancelled"
 
 
+def test_interactor_cancels_when_prompt_delivery_is_closed() -> None:
+    incidents = []
+
+    def collect(phase, error_type, ref, count, **route) -> None:
+        incidents.append((phase, error_type, ref, count, route))
+
+    bus = UIEventBus()
+    bus.bind_subscriber_failure_sink(collect, agent_id="root", default=True)
+    adapter = MiniTUIEventAdapter(
+        root_agent_id="root",
+        session_generation=1,
+        incident_sink=collect,
+    )
+    adapter.close()
+    bus.subscribe(adapter.on_ui_event, replay_history=False)
+    interactor = MiniTUIInteractor(bus)
+
+    response = interactor.review(
+        ReviewRequest(
+            "Edit",
+            "diff",
+            deadline=time.monotonic() + 0.2,
+        )
+    )
+
+    assert response.cancelled is True
+    assert response.reason == "interaction prompt delivery closed"
+    assert [(phase, error_type, ref) for phase, error_type, ref, *_ in incidents] == [
+        ("ui_delivery", "EventRejected", "closed"),
+        ("interaction_delivery", "EventRejected", "closed"),
+    ]
+
+
+def test_interactor_cancels_when_prompt_delivery_times_out() -> None:
+    incidents = []
+
+    def collect(phase, error_type, ref, count, **route) -> None:
+        incidents.append((phase, error_type, ref, count, route))
+
+    bus = UIEventBus()
+    bus.bind_subscriber_failure_sink(collect, agent_id="root", default=True)
+    adapter = MiniTUIEventAdapter(
+        root_agent_id="root",
+        session_generation=1,
+        incident_sink=collect,
+        event_queue_capacity=2,
+        event_queue_control_reserve=1,
+        event_queue_must_deliver_timeout=0.01,
+    )
+    adapter.on_ui_event(UIEvent.info("first"))
+    adapter.on_ui_event(UIEvent.info("second"))
+    bus.subscribe(adapter.on_ui_event, replay_history=False)
+    interactor = MiniTUIInteractor(bus)
+
+    response = interactor.review(
+        ReviewRequest(
+            "Edit",
+            "diff",
+            deadline=time.monotonic() + 0.2,
+        )
+    )
+
+    assert response.cancelled is True
+    assert response.reason == "interaction prompt delivery control_timeout"
+    assert [(phase, error_type, ref) for phase, error_type, ref, *_ in incidents] == [
+        ("ui_delivery", "EventRejected", "control_timeout"),
+        ("interaction_delivery", "EventRejected", "control_timeout"),
+    ]
+
+
+def test_delivery_cancellation_survives_reporter_and_invalidator_failures() -> None:
+    bus = UIEventBus()
+    adapter = MiniTUIEventAdapter()
+    adapter.close()
+    bus.subscribe(adapter.on_ui_event, replay_history=False)
+    bus.report_runtime_issue = lambda *_facts: (_ for _ in ()).throw(
+        SystemExit("reporter-secret")
+    )
+    interactor = MiniTUIInteractor(bus)
+    interactor.bind_invalidator(
+        lambda: (_ for _ in ()).throw(GeneratorExit("invalidate-secret"))
+    )
+
+    response = interactor.review(ReviewRequest("Edit", "diff"))
+
+    assert response.cancelled is True
+    assert response.reason == "interaction prompt delivery closed"
+    assert interactor.active_request is None
+
+
+def test_interaction_delivery_keyboard_interrupt_clears_active_slot() -> None:
+    bus = UIEventBus()
+    bus.emit_interaction_prompt = lambda _request: (_ for _ in ()).throw(
+        KeyboardInterrupt()
+    )
+    interactor = MiniTUIInteractor(bus)
+
+    try:
+        interactor.review(ReviewRequest("Edit", "diff"))
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("KeyboardInterrupt must propagate")
+
+    assert interactor.active_request is None
+
+
+def test_interaction_invalidator_keyboard_interrupt_clears_active_slot() -> None:
+    interactor = _acknowledged_interactor()
+    interactor.bind_invalidator(
+        lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+
+    try:
+        interactor.review(ReviewRequest("Edit", "diff"))
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("KeyboardInterrupt must propagate")
+
+    assert interactor.active_request is None
+
+
 def test_unknown_review_input_does_not_resolve_request() -> None:
-    interactor = MiniTUIInteractor(UIEventBus())
+    interactor = _acknowledged_interactor()
     result = []
     request = ReviewRequest(
         "Edit",
@@ -2014,7 +2183,7 @@ def test_unknown_review_input_does_not_resolve_request() -> None:
 
 
 def test_review_session_scope_is_a_single_interaction_state_machine() -> None:
-    interactor = MiniTUIInteractor(UIEventBus())
+    interactor = _acknowledged_interactor()
     result = []
     request = ReviewRequest(
         "Edit",
@@ -2068,7 +2237,7 @@ def test_review_footer_shows_live_waiting_approval_count() -> None:
 
 
 def test_review_feedback_returns_user_text_without_rewriting() -> None:
-    interactor = MiniTUIInteractor(UIEventBus())
+    interactor = _acknowledged_interactor()
     result = []
     request = ReviewRequest("Edit", "Review diff")
     worker = threading.Thread(target=lambda: result.append(interactor.review(request)))
@@ -2213,6 +2382,65 @@ def test_terminal_resize_is_forwarded_to_visible_process_sessions() -> None:
             "owner_session_id": "session",
             "session_generation": 3,
         }
+    ]
+
+
+def test_before_render_reports_resize_failure_and_finishes_layout() -> None:
+    failures = []
+    app = _bare_app()
+    app.events = SimpleNamespace(
+        transcript_layout_rebased=lambda _width, scroll: (
+            SimpleNamespace(line_count=20),
+            scroll,
+        ),
+        report_projection_failure=lambda subsystem, error, **kwargs: failures.append(
+            (subsystem, type(error).__name__, kwargs)
+        ),
+    )
+    app.application = SimpleNamespace(
+        output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=80, rows=40))
+    )
+    app.transcript_control = SimpleNamespace(last_height=10)
+    app.transcript_pane = SimpleNamespace(vertical_scroll=0)
+    app._panel_height = lambda: 3
+    app._interaction_height = lambda: 2
+    app._last_terminal_rows = 24
+    app._last_terminal_columns = 80
+    app._transcript_scroll = 0
+    app._follow_transcript = True
+    app._sync_process_terminal_size = lambda *_args: (_ for _ in ()).throw(
+        SystemExit("resize-secret")
+    )
+
+    app._before_render(None)
+
+    assert failures == [
+        ("terminal_resize", "SystemExit", {"request_repaint": True})
+    ]
+    assert app._last_terminal_rows == 40
+    assert app.transcript_pane.vertical_scroll == 0
+
+
+def test_before_render_reports_output_failure_without_repaint_loop() -> None:
+    failures = []
+    app = _bare_app()
+    app.events = SimpleNamespace(
+        report_projection_failure=lambda subsystem, error, **kwargs: failures.append(
+            (subsystem, type(error).__name__, kwargs)
+        )
+    )
+    app.application = SimpleNamespace(
+        output=SimpleNamespace(
+            get_size=lambda: (_ for _ in ()).throw(
+                GeneratorExit("terminal-secret")
+            )
+        )
+    )
+
+    app._before_render(None)
+
+    assert failures == [
+        ("before_render", "GeneratorExit", {"request_repaint": False})
     ]
 
 

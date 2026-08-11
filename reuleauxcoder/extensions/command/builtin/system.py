@@ -354,6 +354,8 @@ def _performance_row(sample: PerformanceSample) -> PerformanceRowViewModel:
         "must_deliver_waits",
         "must_deliver_timeouts",
         "closed_dropped",
+        "stale_generation_dropped",
+        "stale_incident_dropped",
     )
     detail = " · ".join(
         f"{key}={attributes[key]}"

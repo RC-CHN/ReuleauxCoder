@@ -25,7 +25,12 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 from reuleauxcoder.domain.approval import ApprovalDecision, ApprovalSectionKind
 from reuleauxcoder.domain.extensions import HookExtensionAdapter
 from reuleauxcoder.domain.hooks import HookRegistry, ObserverHook
-from reuleauxcoder.domain.hooks.types import GuardDecision, HookPoint
+from reuleauxcoder.domain.hooks.types import (
+    GuardDecision,
+    HookDiagnostic,
+    HookKind,
+    HookPoint,
+)
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.domain.process import ProcessChunk, ProcessResult
 from reuleauxcoder.domain.runtime.serialization import tool_outcome_to_dict
@@ -92,6 +97,7 @@ class _AgentStub:
             ),
         )
         self.events = []
+        self.runtime_issues = []
 
     def get_tool(self, name: str):  # noqa: ARG002
         return self._tool
@@ -110,6 +116,15 @@ class _AgentStub:
 
     def _emit_event(self, event) -> None:
         self.events.append(event)
+
+    def record_runtime_issue(
+        self,
+        phase: str,
+        error_type: str,
+        ref: str,
+        count: int = 1,
+    ) -> None:
+        self.runtime_issues.append((phase, error_type, ref, count))
 
 
 class _MappedAgentStub(_AgentStub):
@@ -1003,6 +1018,75 @@ def test_post_completion_base_exceptions_preserve_primary_result(
     assert secret not in repr(agent.events)
 
 
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_result_projection_base_exception_is_paired_and_requests_stop(
+    error_type: type[BaseException],
+) -> None:
+    secret = f"result-projection-{error_type.__name__}-secret=must-not-leak"
+
+    class InterruptingText(str):
+        def __str__(self) -> str:
+            raise error_type(secret)
+
+    tool, calls = _outcome_tool(
+        ToolOutcome(
+            content="source result", model_content=InterruptingText("projection")
+        )
+    )
+    agent = _AgentStub(tool)
+    stop_event = _install_stop_controls(agent)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="interrupted-result-projection", name="effect_tool", arguments={})
+    )
+
+    outcome = agent.events[-1].tool_outcome
+    assert calls.count == 1
+    assert stop_event.is_set()
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.metadata["failure_phase"] == "result_projection"
+    assert outcome.metadata["error_type"] == error_type.__name__
+    assert outcome.metadata["effect_state"] == "unknown"
+    assert outcome.metadata["completion_state"] == "uncertain"
+    assert secret not in result
+    assert secret not in repr(agent.events)
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_after_projection_base_exception_preserves_result_and_requests_stop(
+    error_type: type[BaseException],
+) -> None:
+    secret = f"after-projection-{error_type.__name__}-secret=must-not-leak"
+
+    class InterruptingText(str):
+        def __str__(self) -> str:
+            raise error_type(secret)
+
+    tool, calls = _outcome_tool(ToolOutcome(content="effect committed"))
+    agent = _AgentStub(tool)
+    stop_event = _install_stop_controls(agent)
+
+    def transform(context):
+        context.result = InterruptingText("projection")
+        return context
+
+    agent.extension_runtime.process_tool_outcome = transform
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="interrupted-after-projection", name="effect_tool", arguments={})
+    )
+
+    outcome = agent.events[-1].tool_outcome
+    assert calls.count == 1
+    assert stop_event.is_set()
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert result.startswith("effect committed")
+    assert (
+        f"phase=after_tool_transform error_type={error_type.__name__} count=1" in result
+    )
+    assert secret not in result
+    assert secret not in repr(agent.events)
+
+
 def test_tool_type_error_remains_execution_failure_without_raw_exception_text() -> None:
     secret = "execution-secret=must-not-leak"
     calls = SimpleNamespace(count=0)
@@ -1068,12 +1152,12 @@ def test_invalid_return_projection_is_internal_and_not_safe_to_retry() -> None:
     assert outcome.metadata == {
         "failure_phase": "result_protocol",
         "error_type": "InvalidToolOutcomeProtocol",
-        "effect_state": "completed",
-        "completion_state": "completed",
+        "effect_state": "unknown",
+        "completion_state": "uncertain",
         "retry_safety": "do_not_retry_automatically",
     }
     assert "phase=result_protocol" in result
-    assert "effect_state=completed" in result
+    assert "effect_state=unknown" in result
     assert "Do not retry solely" in result
 
 
@@ -1094,12 +1178,12 @@ def test_invalid_structured_content_is_a_safe_protocol_failure() -> None:
     assert outcome.metadata == {
         "failure_phase": "result_protocol",
         "error_type": "InvalidToolOutcomeProtocol",
-        "effect_state": "completed",
-        "completion_state": "completed",
+        "effect_state": "unknown",
+        "completion_state": "uncertain",
         "retry_safety": "do_not_retry_automatically",
     }
     assert "phase=result_protocol" in result
-    assert "effect_state=completed" in result
+    assert "effect_state=unknown" in result
     assert "Do not retry solely" in result
 
 
@@ -1163,6 +1247,55 @@ def test_invalid_structured_content_is_a_safe_protocol_failure() -> None:
         pytest.param(
             ToolOutcome(
                 content="unsafe",
+                diagnostics=(
+                    ToolDiagnostic(
+                        path="file.py",
+                        line=1,
+                        character=1,
+                        message="message",
+                        severity="error",
+                        code=1 << tool_execution_module._METADATA_MAX_INT_BITS,
+                    ),
+                ),
+            ),
+            id="diagnostic-code-size",
+        ),
+        pytest.param(
+            ToolOutcome(
+                content="unsafe",
+                diagnostics=(
+                    ToolDiagnostic(
+                        path="file.py",
+                        line=1,
+                        character=1,
+                        message="message",
+                        severity="error",
+                    ),
+                )
+                * (tool_execution_module._TOOL_DIAGNOSTIC_LIMIT + 1),
+            ),
+            id="diagnostic-count",
+        ),
+        pytest.param(
+            ToolOutcome(
+                content="unsafe",
+                diagnostics=tuple(
+                    ToolDiagnostic(
+                        path="file.py",
+                        line=1,
+                        character=1,
+                        message="x"
+                        * tool_execution_module._STRUCTURED_FACT_MAX_STRING_BYTES,
+                        severity="error",
+                    )
+                    for _ in range(33)
+                ),
+            ),
+            id="diagnostic-total-string-bytes",
+        ),
+        pytest.param(
+            ToolOutcome(
+                content="unsafe",
                 model_content="bounded",
                 truncation=ToolTruncation(
                     original_chars=10,
@@ -1180,6 +1313,16 @@ def test_invalid_structured_content_is_a_safe_protocol_failure() -> None:
                 archive_reference=object(),
             ),
             id="archive",
+        ),
+        pytest.param(
+            ToolOutcome(
+                content="unsafe",
+                archive_reference=ToolArchiveReference(
+                    path="x"
+                    * (tool_execution_module._STRUCTURED_FACT_MAX_STRING_BYTES + 1)
+                ),
+            ),
+            id="archive-path-size",
         ),
         pytest.param(
             ToolOutcome(
@@ -1208,8 +1351,8 @@ def test_malformed_structured_outcome_is_never_authoritative(
     assert outcome.metadata == {
         "failure_phase": "result_protocol",
         "error_type": "InvalidToolOutcomeProtocol",
-        "effect_state": "completed",
-        "completion_state": "completed",
+        "effect_state": "unknown",
+        "completion_state": "uncertain",
         "retry_safety": "do_not_retry_automatically",
     }
     assert "phase=result_protocol" in result
@@ -1217,7 +1360,7 @@ def test_malformed_structured_outcome_is_never_authoritative(
     assert secret not in repr(agent.events)
 
 
-def test_invalid_model_content_is_a_projection_failure_after_completion() -> None:
+def test_invalid_model_content_is_a_projection_failure_after_tool_return() -> None:
     secret = "source-secret=must-not-leak"
     tool, calls = _outcome_tool(ToolOutcome(content=secret, model_content=object()))
     agent = _AgentStub(tool)
@@ -1233,8 +1376,8 @@ def test_invalid_model_content_is_a_projection_failure_after_completion() -> Non
     assert outcome.metadata == {
         "failure_phase": "result_projection",
         "error_type": "InvalidToolResultProjection",
-        "effect_state": "completed",
-        "completion_state": "completed",
+        "effect_state": "unknown",
+        "completion_state": "uncertain",
         "retry_safety": "do_not_retry_automatically",
     }
     assert "phase=result_projection" in result
@@ -1526,8 +1669,8 @@ def test_legacy_error_result_is_recorded_as_failure_with_business_detail() -> No
         "failure_phase": "execute",
         "error_type": "LegacyErrorResult",
         "error_detail_state": "unstructured_tool_error",
-        "effect_state": "started",
-        "completion_state": "completed",
+        "effect_state": "unknown",
+        "completion_state": "uncertain",
         "retry_safety": "do_not_retry_automatically",
     }
     assert agent.events[-1].tool_success is False
@@ -2121,6 +2264,47 @@ def test_invalid_observer_diagnostic_return_is_visible_and_non_fatal() -> None:
         {"phase": "after_tool_observer", "error_type": "TypeError", "count": 1},
     )
     assert "phase=after_tool_observer error_type=TypeError count=1" in result
+
+
+def test_observer_diagnostic_projection_is_bounded_and_counted() -> None:
+    tool = _PreEffectProbeTool()
+    agent = _AgentStub(tool)
+    diagnostic = HookDiagnostic(
+        hook_name="broken-observer",
+        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+        hook_kind=HookKind.OBSERVER,
+        message="safe",
+        error_type="RuntimeError",
+    )
+    diagnostic_count = tool_execution_module._POST_EFFECT_FAILURE_LIMIT + 100
+
+    def observe(point, context):  # noqa: ARG001
+        return (
+            (diagnostic,) * diagnostic_count
+            if point is HookPoint.AFTER_TOOL_EXECUTE
+            else ()
+        )
+
+    agent.extension_runtime.observe = observe
+    ToolExecutor(agent).execute(
+        ToolCall(id="bounded-observer-diagnostics", name=tool.name, arguments={})
+    )
+
+    outcome = agent.events[-1].tool_outcome
+    assert outcome.status is ToolOutcomeStatus.SUCCEEDED
+    assert outcome.metadata["post_effect_failures"] == (
+        {
+            "phase": "after_tool_observer",
+            "error_type": "RuntimeError",
+            "count": tool_execution_module._POST_EFFECT_FAILURE_LIMIT - 1,
+        },
+        {
+            "phase": "post_effect",
+            "error_type": "AdditionalFailuresOmitted",
+            "count": diagnostic_count
+            - (tool_execution_module._POST_EFFECT_FAILURE_LIMIT - 1),
+        },
+    )
 
 
 def test_approval_monitor_failure_is_visible_but_does_not_block_effect() -> None:
@@ -2733,52 +2917,56 @@ def test_post_effect_failure_collector_is_bounded_counted_and_sorted() -> None:
 
     assert collector.snapshot() == (
         ("a_phase", "AError", 101),
-        ("z_phase", "ZError", 101),
-        ("post_effect", "AdditionalFailuresOmitted", 7),
+        ("post_effect", "AdditionalFailuresOmitted", 108),
     )
 
 
-def test_pending_batch_runtime_failures_are_bounded_and_acknowledged() -> None:
+def test_parallel_runtime_failures_use_the_bounded_generic_issue_sink() -> None:
     agent = _AgentStub(_ShellToolStub())
-    agent.state.messages = []
-    agent._append_message = lambda message, *, source: agent.state.messages.append(
-        message
+    record_runtime_issue = agent.record_runtime_issue
+    agent.record_runtime_issue = lambda *args: (_ for _ in ()).throw(  # noqa: ARG005
+        RuntimeError("sink-secret")
     )
     executor = ToolExecutor(agent)
     overflow = 3
 
-    for _ in range(tool_execution_module._PENDING_BATCH_FAILURE_LIMIT + overflow):
+    for _ in range(tool_execution_module._PENDING_RUNTIME_FAILURE_LIMIT + overflow):
         executor._queue_batch_runtime_failure(
             "parallel_scheduler_cleanup",
             RuntimeError("secret"),
             tool_count=2,
         )
 
-    assert executor.flush_pending_batch_runtime_context() == (
-        tool_execution_module._PENDING_BATCH_FAILURE_LIMIT + overflow
-    )
-    assert executor.flush_pending_batch_runtime_context() == 0
-    assert len(agent.state.messages) == 1
-    content = agent.state.messages[0]["content"]
-    assert f"additional_batches_omitted={overflow}" in content
-    assert content.count("batch_id=") == (
-        tool_execution_module._PENDING_BATCH_FAILURE_LIMIT
-    )
-    assert "secret" not in content
+    agent.record_runtime_issue = record_runtime_issue
+    assert executor.flush_pending_runtime_issues() == 2
+    assert agent.runtime_issues == [
+        (
+            "parallel_scheduler_cleanup",
+            "RuntimeError",
+            "parallel_batch",
+            tool_execution_module._PENDING_RUNTIME_FAILURE_LIMIT + overflow,
+        ),
+        (
+            "runtime_issue_publish",
+            "RuntimeError",
+            "parallel_batch",
+            tool_execution_module._PENDING_RUNTIME_FAILURE_LIMIT + overflow,
+        ),
+    ]
+    assert "secret" not in repr((agent.events, agent.runtime_issues))
 
 
-def test_persistent_batch_context_failure_stops_before_an_uninformed_retry() -> None:
+def test_persistent_runtime_issue_sink_failure_stops_before_uninformed_retry() -> None:
     agent = _AgentStub(_ShellToolStub())
     stop_event = _install_stop_controls(agent)
-    agent.state.messages = []
-    append_attempts = 0
+    publish_attempts = 0
 
-    def fail_append(message, *, source):  # noqa: ARG001
-        nonlocal append_attempts
-        append_attempts += 1
+    def fail_publish(*args):  # noqa: ARG001
+        nonlocal publish_attempts
+        publish_attempts += 1
         raise RuntimeError("context-publish-secret")
 
-    agent._append_message = fail_append
+    agent.record_runtime_issue = fail_publish
     executor = ToolExecutor(agent)
     executor._queue_batch_runtime_failure(
         "parallel_scheduler_cleanup",
@@ -2787,10 +2975,9 @@ def test_persistent_batch_context_failure_stops_before_an_uninformed_retry() -> 
     )
 
     assert stop_event.is_set() is False
-    assert executor.flush_pending_batch_runtime_context() is None
-    assert append_attempts == tool_execution_module._BATCH_CONTEXT_PUBLISH_ATTEMPTS
+    assert executor.flush_pending_runtime_issues() is None
+    assert publish_attempts >= tool_execution_module._RUNTIME_FAILURE_PUBLISH_ATTEMPTS
     assert stop_event.is_set()
-    assert agent.state.messages == []
     assert "secret" not in repr(agent.events)
 
 
@@ -3096,13 +3283,11 @@ def test_parallel_submit_and_future_failures_never_reexecute_submitted_call(
         "unsubmitted-a",
         "unsubmitted-b",
     ]
-    assert outcomes["submitted"].metadata["effect_state"] == "started"
-    assert outcomes["submitted"].metadata["completion_state"] == "uncertain"
-    assert (
-        outcomes["submitted"].metadata["retry_safety"] == "do_not_retry_automatically"
-    )
-    assert outcomes["unsubmitted-a"].metadata["effect_state"] == "started"
-    assert outcomes["unsubmitted-a"].metadata["completion_state"] == "uncertain"
+    assert outcomes["submitted"].metadata["effect_state"] == "not_started"
+    assert outcomes["submitted"].metadata["completion_state"] == "not_started"
+    assert outcomes["submitted"].metadata["retry_safety"] == "safe_to_retry"
+    assert outcomes["unsubmitted-a"].metadata["effect_state"] == "not_started"
+    assert outcomes["unsubmitted-a"].metadata["completion_state"] == "not_started"
     assert outcomes["unsubmitted-b"].metadata["effect_state"] == "not_started"
     assert "phase=parallel_future" in results[0]
     assert "phase=parallel_submit" in results[1]
@@ -3171,6 +3356,9 @@ def test_parallel_submit_failure_after_callback_does_not_repeat_effect(
         "attempted",
         "never-submitted",
     ]
+    assert agent.runtime_issues == [
+        ("parallel_submit", "RuntimeError", "parallel_batch", 1)
+    ]
     assert "submit-after-callback-secret" not in repr((results, agent.events))
 
 
@@ -3238,20 +3426,16 @@ def test_parallel_pool_exit_failure_is_diagnostic_and_preserves_results(
         lambda **kwargs: pool,
     )
 
-    agent.state.messages = []
-    append_attempts = 0
-    ledger_attempts = []
+    publish_attempts = 0
 
-    def append_message(message, *, source):
-        nonlocal append_attempts
-        append_attempts += 1
-        assert source == "parallel_scheduler_cleanup"
-        ledger_attempts.append(message)
-        if append_attempts == 1:
+    def record_runtime_issue(phase, error_type, ref, count=1):
+        nonlocal publish_attempts
+        publish_attempts += 1
+        if publish_attempts == 1:
             raise RuntimeError("runtime-context-sink-secret")
-        agent.state.messages.append(message)
+        agent.runtime_issues.append((phase, error_type, ref, count))
 
-    agent._append_message = append_message
+    agent.record_runtime_issue = record_runtime_issue
     executor = ToolExecutor(agent)
     results = executor.execute_parallel(
         [
@@ -3282,39 +3466,35 @@ def test_parallel_pool_exit_failure_is_diagnostic_and_preserves_results(
     assert all(
         "post_effect_failures" not in event.tool_outcome.metadata for event in ends
     )
-    assert executor.flush_pending_batch_runtime_context() == 2
-    assert executor.flush_pending_batch_runtime_context() == 0
-    assert append_attempts == 2
-    assert len(ledger_attempts) == 2
-    assert all("batch_id=1" in message["content"] for message in ledger_attempts)
-    assert len(agent.state.messages) == 1
-    runtime_message = agent.state.messages[0]
-    runtime_content = runtime_message["content"]
-    assert runtime_message["role"] == "user"
-    assert runtime_message["_rc_synthetic_context"] == {
-        "tag": "runtime_context_update",
-        "source": "parallel_scheduler_cleanup",
-    }
-    assert "delivery_semantics=at_least_once" in runtime_content
+    expected_issue_count = 3 if diagnostic_sink_fails else 2
+    assert executor.flush_pending_runtime_issues() == expected_issue_count
+    assert executor.flush_pending_runtime_issues() == 0
+    assert publish_attempts == expected_issue_count + 1
     assert (
-        "phase=parallel_scheduler_cleanup error_type=GeneratorExit count=1"
-        in runtime_content
-    )
+        "parallel_scheduler_cleanup",
+        "GeneratorExit",
+        "parallel_batch",
+        1,
+    ) in agent.runtime_issues
     assert (
-        "phase=parallel_runtime_context_publish error_type=RuntimeError count=1"
-        in runtime_content
-    )
+        "runtime_issue_publish",
+        "RuntimeError",
+        "parallel_batch",
+        1,
+    ) in agent.runtime_issues
     if diagnostic_sink_fails:
         assert cleanup_diagnostics == []
         assert (
-            "phase=post_effect_diagnostic error_type=RuntimeError count=1"
-            in runtime_content
-        )
+            "post_effect_diagnostic",
+            "RuntimeError",
+            "parallel_batch",
+            1,
+        ) in agent.runtime_issues
     else:
         assert len(cleanup_diagnostics) == 1
         assert cleanup_diagnostics[0].data["details"]["error_type"] == "GeneratorExit"
         assert cleanup_diagnostics[0].data["details"]["scope"] == "parallel_batch"
-    exposed = repr((results, agent.events, agent.state.messages))
+    exposed = repr((results, agent.events, agent.runtime_issues))
     assert "pool-exit-secret" not in exposed
     assert diagnostic_secret not in exposed
     assert "runtime-context-sink-secret" not in exposed
@@ -3757,6 +3937,77 @@ def test_outcome_metadata_is_snapshotted_once_and_deeply_immutable() -> None:
     assert "metadata-read-twice-secret" not in repr(agent.events)
 
 
+@pytest.mark.parametrize(
+    "metadata_factory",
+    [
+        pytest.param(
+            lambda: {
+                "value": "x" * (tool_execution_module._METADATA_MAX_STRING_BYTES + 1)
+            },
+            id="string-bytes",
+        ),
+        pytest.param(
+            lambda: {
+                "values": list(
+                    range(tool_execution_module._METADATA_MAX_CONTAINER_ITEMS + 1)
+                )
+            },
+            id="container-items",
+        ),
+        pytest.param(
+            lambda: {
+                "values": [
+                    [0]
+                    for _ in range(tool_execution_module._METADATA_MAX_CONTAINER_ITEMS)
+                ]
+            },
+            id="nodes",
+        ),
+        pytest.param(
+            lambda: {
+                "values": [
+                    "x" * 699_051,
+                    "y" * 699_051,
+                    "z" * 699_051,
+                ]
+            },
+            id="total-string-bytes",
+        ),
+        pytest.param(
+            lambda: {"value": 1 << tool_execution_module._METADATA_MAX_INT_BITS},
+            id="integer-bits",
+        ),
+    ],
+)
+def test_metadata_resource_limits_fail_safely_after_the_tool_returns(
+    metadata_factory,
+) -> None:
+    tool, calls = _outcome_tool(
+        ToolOutcome(content="primary", metadata=metadata_factory())
+    )
+    agent = _AgentStub(tool)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="bounded-metadata", name="effect_tool", arguments={})
+    )
+    outcome = agent.events[-1].tool_outcome
+
+    assert calls.count == 1
+    assert outcome.metadata["failure_phase"] == "result_protocol"
+    assert outcome.metadata["effect_state"] == "unknown"
+    assert outcome.metadata["completion_state"] == "uncertain"
+    assert "primary" not in result
+
+
+def test_large_tool_content_is_not_subject_to_metadata_limits() -> None:
+    content = "x" * (tool_execution_module._METADATA_MAX_STRING_BYTES + 1)
+
+    assert (
+        tool_execution_module._check_tool_outcome_protocol(ToolOutcome(content=content))
+        == {}
+    )
+
+
 @pytest.mark.parametrize("invalid_value", [object(), "bad\ud800metadata"])
 def test_non_json_metadata_fails_after_effect_without_retrying(
     invalid_value: object,
@@ -3776,15 +4027,15 @@ def test_non_json_metadata_fails_after_effect_without_retrying(
 
     assert calls.count == 1
     assert outcome.status is ToolOutcomeStatus.FAILED
-    assert outcome.metadata["effect_state"] == "completed"
-    assert outcome.metadata["completion_state"] == "completed"
+    assert outcome.metadata["effect_state"] == "unknown"
+    assert outcome.metadata["completion_state"] == "uncertain"
     assert outcome.metadata["retry_safety"] == "do_not_retry_automatically"
     assert "phase=result_protocol" in result
     assert "object at" not in result
     result.encode("utf-8", errors="strict")
 
 
-def test_lone_surrogate_tool_output_is_a_completed_protocol_failure() -> None:
+def test_lone_surrogate_tool_output_is_an_uncertain_protocol_failure() -> None:
     unsafe = "raw\ud800tool-output"
     tool, calls = _outcome_tool(ToolOutcome(content=unsafe))
     agent = _AgentStub(tool)
@@ -3796,7 +4047,7 @@ def test_lone_surrogate_tool_output_is_a_completed_protocol_failure() -> None:
 
     assert calls.count == 1
     assert outcome.metadata["failure_phase"] == "result_protocol"
-    assert outcome.metadata["completion_state"] == "completed"
+    assert outcome.metadata["completion_state"] == "uncertain"
     assert unsafe not in result
     result.encode("utf-8", errors="strict")
 
@@ -3895,11 +4146,11 @@ def test_runtime_failure_projection_cannot_be_suppressed_by_forged_marker() -> N
     assert result.count("[tool outcome facts]") == 2
     assert result.endswith(
         "status=failed phase=business_rule error_type=BusinessRejected "
-        "effect_state=started completion_state=completed "
+        "effect_state=unknown completion_state=uncertain "
         "retry_safety=do_not_retry_automatically"
     )
-    assert outcome.metadata["effect_state"] == "started"
-    assert outcome.metadata["completion_state"] == "completed"
+    assert outcome.metadata["effect_state"] == "unknown"
+    assert outcome.metadata["completion_state"] == "uncertain"
     assert outcome.metadata["retry_safety"] == "do_not_retry_automatically"
 
 
@@ -3962,13 +4213,14 @@ def test_failed_tool_runtime_metadata_is_rebuilt_without_forged_diagnostics() ->
     assert outcome.metadata["stable"] == "tool-owned"
     assert outcome.metadata["failure_phase"] == "business_rule"
     assert outcome.metadata["error_type"] == "BusinessRejected"
-    assert outcome.metadata["effect_state"] == "started"
-    assert outcome.metadata["completion_state"] == "completed"
+    assert outcome.metadata["effect_state"] == "unknown"
+    assert outcome.metadata["completion_state"] == "uncertain"
     assert outcome.metadata["retry_safety"] == "do_not_retry_automatically"
+    assert outcome.metadata["reported_effect_state"] == "not_started"
     assert "post_effect_failures" not in outcome.metadata
 
 
-def test_returned_failure_cannot_claim_an_effect_was_not_started() -> None:
+def test_returned_unknown_effect_is_never_narrowed_to_completed() -> None:
     tool, calls = _outcome_tool(
         ToolOutcome(
             status=ToolOutcomeStatus.FAILED,
@@ -3977,7 +4229,7 @@ def test_returned_failure_cannot_claim_an_effect_was_not_started() -> None:
             metadata={
                 "failure_phase": "business_rule",
                 "error_type": "BusinessRejected",
-                "effect_state": "not_started",
+                "effect_state": "unknown",
                 "completion_state": "not_started",
                 "retry_safety": "safe_to_retry",
             },
@@ -3993,9 +4245,10 @@ def test_returned_failure_cannot_claim_an_effect_was_not_started() -> None:
     assert calls.count == 1
     assert outcome.metadata["failure_phase"] == "business_rule"
     assert outcome.metadata["error_type"] == "BusinessRejected"
-    assert outcome.metadata["effect_state"] == "started"
-    assert outcome.metadata["completion_state"] == "completed"
+    assert outcome.metadata["effect_state"] == "unknown"
+    assert outcome.metadata["completion_state"] == "uncertain"
     assert outcome.metadata["retry_safety"] == "do_not_retry_automatically"
+    assert outcome.metadata["reported_effect_state"] == "unknown"
 
 
 def test_secondary_failure_survives_a_later_primary_pre_effect_failure() -> None:

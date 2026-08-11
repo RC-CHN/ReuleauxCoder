@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import itertools
 import socket
 import threading
 import time
@@ -18,6 +19,7 @@ from reuleauxcoder.domain.config.models import (
     RemoteExecConfig,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
+from reuleauxcoder.domain.runtime.events import ErrorOccurred, RuntimeEvent
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.extensions.lifecycle import LifecycleCoordinator
 from reuleauxcoder.domain.approval import ApprovalRequest
@@ -80,6 +82,8 @@ class FakeContext:
 
 
 class FakeAgent:
+    _ids = itertools.count()
+
     def __init__(self, llm: FakeLLM, chat_behavior=None) -> None:
         self.llm = llm
         self.tools = []
@@ -102,7 +106,7 @@ class FakeAgent:
         self.hook_registry = HookRegistry()
         self.lifecycle = LifecycleCoordinator(self.hook_registry)
         self._event_handlers = []
-        self.agent_id = "fake-agent"
+        self.agent_id = f"fake-agent-{next(self._ids)}"
         self.session_generation = 0
         self.current_session_id = "fake-session"
         self._current_turn_id = "fake-turn"
@@ -111,6 +115,7 @@ class FakeAgent:
         )
         self._stop_requested = False
         self.approval_provider = None
+        self.runtime_issues = []
         self._chat_behavior = chat_behavior or (lambda _agent, prompt: f"ok:{prompt}")
 
     def register_hook(self, hook_point, hook) -> None:
@@ -134,6 +139,26 @@ class FakeAgent:
 
     def request_stop(self) -> None:
         self._stop_requested = True
+
+    def record_runtime_issue(
+        self,
+        phase: str,
+        error_type: str,
+        ref: str,
+        count: int = 1,
+        *,
+        agent_id: str | None = None,
+        session_generation: int | None = None,
+    ) -> bool:
+        if agent_id is not None and agent_id != self.agent_id:
+            return False
+        if (
+            session_generation is not None
+            and session_generation != self.session_generation
+        ):
+            return False
+        self.runtime_issues.append((phase, error_type, ref, count))
+        return True
 
     def chat(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
@@ -226,6 +251,24 @@ class TestRunnerRemoteExec:
         assert {"configuration", "model_client", "session_restore", "total"} <= (
             startup_names
         )
+        ctx.ui_bus.subscribe(
+            lambda _event: (_ for _ in ()).throw(SystemExit("renderer-secret")),
+            replay_history=False,
+        )
+        ctx.ui_bus.emit_runtime(
+            RuntimeEvent(
+                payload=ErrorOccurred("event-secret"),
+                agent_id=ctx.agent.agent_id,
+                session_generation=ctx.agent.session_generation,
+            )
+        )
+        issue = ctx.agent.runtime_issue_snapshot()[-1]
+        assert (issue.phase, issue.error_type, issue.ref) == (
+            "ui_subscriber",
+            "SystemExit",
+            "dispatch",
+        )
+        assert "secret" not in repr(issue)
         runner.cleanup(ctx.agent)
         assert runner._git_monitor is None
 
@@ -328,6 +371,35 @@ class TestRunnerRemoteExec:
         # no peers connected, cleanup should still complete without error
         runner.cleanup(ctx.agent)
         assert runner._relay_server is None
+
+    def test_cleanup_failure_is_visible_and_does_not_skip_later_resources(
+        self, tmp_path: Path
+    ) -> None:
+        config = Config(remote_exec=RemoteExecConfig(enabled=True, host_mode=True))
+        runner = AppRunner(
+            options=AppOptions(),
+            dependencies=AppDependencies(load_config=lambda _: config),
+        )
+        ctx = runner.initialize()
+        settled = []
+        runner._remote_chat_cleanup = lambda: (_ for _ in ()).throw(
+            RuntimeError("cleanup-secret")
+        )
+        runner._mcp_manager = SimpleNamespace(stop=lambda: settled.append("mcp"))
+
+        runner.cleanup(ctx.agent)
+
+        assert settled == ["mcp"]
+        assert ("stop_remote_chat", "RuntimeError", 1) in (
+            runner._last_cleanup_failures
+        )
+        assert any(
+            issue.phase == "shutdown"
+            and issue.error_type == "RuntimeError"
+            and issue.ref == "stop_remote_chat"
+            for issue in ctx.agent.runtime_issue_snapshot()
+        )
+        assert "cleanup-secret" not in repr(runner._last_cleanup_failures)
 
     def test_runner_preserves_context_config_on_agent(self, tmp_path: Path) -> None:
         config = Config(
@@ -448,6 +520,66 @@ class TestRunnerRemoteExec:
                 event for event in second_events if event["type"] == "chat_end"
             ][-1]
             assert second_end["payload"]["response"] == "call:2"
+        finally:
+            runner.cleanup(ctx.agent)
+
+    def test_shared_ui_bus_routes_peer_failures_and_unbinds_disposed_peer(
+        self, tmp_path: Path
+    ) -> None:
+        port = _free_port()
+
+        def chat_behavior(agent: FakeAgent, _prompt: str) -> str:
+            agent.llm.ui_bus.emit_runtime(
+                RuntimeEvent(
+                    payload=ErrorOccurred("peer-event-secret"),
+                    agent_id=agent.agent_id,
+                    session_generation=agent.session_generation,
+                )
+            )
+            return f"{agent.agent_id}:{len(agent.runtime_issues)}"
+
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{port}",
+            session_dir=tmp_path / "sessions",
+            chat_behavior=chat_behavior,
+        )
+        ctx = runner.initialize()
+        try:
+            assert runner._relay_server is not None
+            assert runner._relay_http_service is not None
+            ctx.ui_bus.subscribe(
+                lambda _event: (_ for _ in ()).throw(
+                    SystemExit("renderer-secret")
+                ),
+                replay_history=False,
+            )
+            _, peer_token = _register_peer(
+                runner._relay_http_service.base_url,
+                runner._relay_server.issue_bootstrap_token(ttl_sec=60),
+                str(tmp_path),
+            )
+            _, body = _json_request(
+                "POST",
+                f"{runner._relay_http_service.base_url}/remote/chat",
+                {"peer_token": peer_token, "prompt": "route"},
+            )
+            peer_agent_id, issue_count = body["response"].rsplit(":", 1)
+
+            assert issue_count == "1"
+            assert ctx.agent.runtime_issues == []
+
+            runner._remote_chat_cleanup()
+            ctx.ui_bus.emit_runtime(
+                RuntimeEvent(
+                    payload=ErrorOccurred("late-peer-event-secret"),
+                    agent_id=peer_agent_id,
+                    session_generation=0,
+                )
+            )
+            pending = ctx.ui_bus.subscriber_failure_snapshot()
+            assert pending[-1].agent_id == peer_agent_id
+            assert ctx.agent.runtime_issues == []
+            assert "secret" not in repr(pending)
         finally:
             runner.cleanup(ctx.agent)
 

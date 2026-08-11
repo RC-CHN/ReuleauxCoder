@@ -35,21 +35,27 @@ from reuleauxcoder.interfaces.tui.event_queue import (
 def _runtime_event(
     payload,
     *,
+    agent_id: str = "root",
+    generation_owner_agent_id: str | None = None,
     turn_id: str = "turn-1",
     correlation_id: str | None = "attempt-1",
+    session_generation: int = 1,
 ) -> UIEvent:
     runtime = RuntimeEvent(
         payload=payload,
-        agent_id="root",
+        agent_id=agent_id,
         session_id="session",
-        session_generation=1,
+        session_generation=session_generation,
         turn_id=turn_id,
         correlation_id=correlation_id,
     )
     return UIEvent.info(
         runtime.kind.value,
         kind=UIEventKind.AGENT,
-        payload=RuntimeEventPayload(runtime),
+        payload=RuntimeEventPayload(
+            runtime,
+            generation_owner_agent_id=generation_owner_agent_id,
+        ),
     )
 
 
@@ -359,6 +365,114 @@ def test_transient_rejection_reports_capacity_reason() -> None:
 
     assert result.accepted is False
     assert result.reason is EventPutFailureReason.TRANSIENT_CAPACITY
+
+
+def test_generation_floor_discards_queued_and_late_stale_runtime_events() -> None:
+    queue = BoundedUIEventQueue(capacity=4, control_reserve=1)
+    queue.put(_runtime_event(TurnStarted("old"), session_generation=1))
+    queue.put(UIEvent.info("unrouted"))
+
+    assert queue.advance_generation(2) == 1
+    stale = queue.put(_runtime_event(TurnStarted("late-old"), session_generation=1))
+    current = queue.put(_runtime_event(TurnStarted("current"), session_generation=2))
+
+    assert stale.accepted is False
+    assert stale.reason is EventPutFailureReason.STALE_GENERATION
+    assert current.accepted is True
+    assert queue.stats().stale_generation_dropped == 2
+    assert [event.message for event in queue.drain()] == ["unrouted", "turn_started"]
+
+
+def test_generation_floor_rejects_event_drained_just_before_advance() -> None:
+    queue = BoundedUIEventQueue(capacity=4, control_reserve=1)
+    queue.put(_runtime_event(TurnStarted("old"), session_generation=1))
+    drained = queue.drain()
+
+    queue.advance_generation(2)
+
+    assert queue.reject_stale(drained[0]) is True
+    assert queue.stats().stale_generation_dropped == 1
+
+
+def test_root_generation_floor_does_not_drop_independent_peer_events() -> None:
+    queue = BoundedUIEventQueue(
+        capacity=4,
+        control_reserve=1,
+        generation_agent_id="root",
+    )
+    queue.put(_runtime_event(TurnStarted("old-root"), session_generation=1))
+    queue.put(
+        _runtime_event(
+            TurnStarted("current-peer"),
+            agent_id="peer",
+            session_generation=1,
+        )
+    )
+
+    assert queue.advance_generation(2) == 1
+    late_peer = queue.put(
+        _runtime_event(
+            TurnStarted("late-peer"),
+            agent_id="peer",
+            session_generation=1,
+        )
+    )
+
+    assert late_peer.accepted is True
+    assert [event.payload.event.agent_id for event in queue.drain()] == [
+        "peer",
+        "peer",
+    ]
+
+
+def test_root_generation_floor_drops_old_child_owned_by_root() -> None:
+    queue = BoundedUIEventQueue(
+        capacity=4,
+        control_reserve=1,
+        generation_agent_id="root",
+    )
+    queue.put(
+        _runtime_event(
+            TurnStarted("old-child"),
+            agent_id="sa_child",
+            generation_owner_agent_id="root",
+            session_generation=1,
+        )
+    )
+
+    assert queue.advance_generation(2) == 1
+    late_child = queue.put(
+        _runtime_event(
+            TurnStarted("late-child"),
+            agent_id="sa_child",
+            generation_owner_agent_id="root",
+            session_generation=1,
+        )
+    )
+
+    assert late_child.reason is EventPutFailureReason.STALE_GENERATION
+    assert queue.drain() == []
+
+
+def test_coalescing_preserves_child_generation_owner() -> None:
+    queue = BoundedUIEventQueue(
+        capacity=4,
+        control_reserve=1,
+        generation_agent_id="root",
+    )
+    for text in ("first", "second"):
+        queue.put(
+            _runtime_event(
+                AssistantContentDelta(text),
+                agent_id="sa_child",
+                generation_owner_agent_id="root",
+                session_generation=1,
+            )
+        )
+
+    assert queue.stats().coalesced == 1
+    assert queue.advance_generation(2) == 1
+    assert queue.drain() == []
 
 
 def test_concurrent_transient_producers_remain_bounded_and_controls_arrive() -> None:

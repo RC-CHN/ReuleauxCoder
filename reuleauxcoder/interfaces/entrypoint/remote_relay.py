@@ -208,7 +208,13 @@ def bind_remote_chat_handler(
             )
         command_bus.subscribe(renderer.on_ui_event, replay_history=False)
         return PeerPresentation(
-            console, renderer, command_bus, AgentEventBridge(command_bus)
+            console,
+            renderer,
+            command_bus,
+            AgentEventBridge(
+                command_bus,
+                generation_owner_agent_id=presentation_agent.agent_id,
+            ),
         )
 
     def _connection_marker(peer_id: str) -> str:
@@ -301,7 +307,7 @@ def bind_remote_chat_handler(
         peer_agent.session_fingerprint = fingerprint
 
         def _cache_created_agent(reason: str) -> Agent:
-            bind_session_persistence(
+            bind_issue = bind_session_persistence(
                 peer_config,
                 peer_agent,
                 session_store,
@@ -323,9 +329,22 @@ def bind_remote_chat_handler(
             )
             peer_agent.lifecycle.session_started(
                 peer_agent.current_session_id,
-                reason=reason,
+                reason=(f"{reason}_persistence_unavailable" if bind_issue else reason),
                 metadata={"peer_id": peer_id},
             )
+            if bind_issue is not None:
+                observe_session_callback(
+                    ui_bus.warning if ui_bus is not None else None,
+                    "Remote session is active, but persistence is unavailable "
+                    f"({bind_issue.render()}).",
+                    kind=UIEventKind.SESSION,
+                    phase=bind_issue.phase,
+                    error_type=bind_issue.error_type,
+                    ref=bind_issue.ref,
+                    agent=peer_agent,
+                    diagnostic_phase="persistence_observer",
+                    diagnostic_ref="ui_bus",
+                )
             return peer_agent
 
         latest_result = session_store.get_latest_result(fingerprint=fingerprint)
@@ -366,6 +385,7 @@ def bind_remote_chat_handler(
                 else "remote_restore"
             )
 
+        new_session_id = session_store.generate_session_id()
         restore_config_runtime_defaults(peer_config, peer_agent)
         peer_agent.session_inventory_issues = inventory_issues
         for issue in inventory_issues:
@@ -381,7 +401,7 @@ def bind_remote_chat_handler(
                 diagnostic_phase="inventory_observer",
                 diagnostic_ref="ui_bus",
             )
-        peer_agent.current_session_id = session_store.generate_session_id()
+        peer_agent.current_session_id = new_session_id
         return _cache_created_agent("remote_new")
 
     def _save_peer_session(peer_agent: Agent, peer_id: str) -> None:
@@ -403,20 +423,123 @@ def bind_remote_chat_handler(
             **build_session_persistence_kwargs(peer_agent),
         )
         peer_agent.current_session_id = sid
-        peer_agent.lifecycle.session_saved(sid)
+
+        # Lifecycle delivery observes a completed save. It cannot turn that
+        # durable success into a failed save (or cause the caller to retry it).
+        try:
+            peer_agent.lifecycle.session_saved(sid)
+        except BaseException as error:
+            _request_peer_stop(peer_agent, error)
+            _record_peer_runtime_issue(
+                peer_agent,
+                "session_saved_observer",
+                _safe_peer_error_type(error),
+                "lifecycle",
+            )
+
+    def _safe_peer_error_type(error: BaseException) -> str:
+        name = type(error).__name__
+        if (
+            name
+            and len(name) <= 64
+            and name.isascii()
+            and name.replace("_", "").isalnum()
+        ):
+            return name
+        return "Exception"
+
+    def _request_peer_stop(peer_agent: Agent, error: BaseException) -> None:
+        if not isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            return
+        try:
+            peer_agent.request_stop()
+        except BaseException:
+            peer_agent._control_plane_recovery_required = True
+
+    def _record_peer_runtime_issue(
+        peer_agent: Agent,
+        phase: str,
+        error_type: str,
+        ref: str,
+    ) -> None:
+        recorder_error: BaseException | None = None
+        recorder = getattr(peer_agent, "record_runtime_issue", None)
+        if callable(recorder):
+            try:
+                recorder(phase, error_type, ref)
+                return
+            except BaseException as error:
+                recorder_error = error
+                _request_peer_stop(peer_agent, error)
+        try:
+            Agent.record_runtime_issue(peer_agent, phase, error_type, ref)
+            if recorder_error is not None:
+                Agent.record_runtime_issue(
+                    peer_agent,
+                    "runtime_issue_recorder",
+                    _safe_peer_error_type(recorder_error),
+                    ref,
+                )
+        except BaseException as error:
+            _request_peer_stop(peer_agent, error)
+            peer_agent._control_plane_recovery_required = True
+
+    def _persistence_error_payload(peer_agent: Agent, error: BaseException) -> dict:
+        if isinstance(error, SessionRestoreError):
+            phase = error.phase
+            error_type = error.error_type
+            ref = error.ref
+        else:
+            phase = "session_save"
+            error_type = _safe_peer_error_type(error)
+            ref = "session"
+        _record_peer_runtime_issue(peer_agent, phase, error_type, ref)
+        return {
+            "message": (
+                "Session persistence failed "
+                f"(phase={phase}, error_type={error_type}, ref={ref})"
+            ),
+            "code": "session_persistence_failed",
+            "phase": phase,
+            "error_type": error_type,
+            "ref": ref,
+        }
+
+    def _save_peer_session_once(peer_agent: Agent, peer_id: str) -> dict | None:
+        try:
+            _save_peer_session(peer_agent, peer_id)
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            _request_peer_stop(peer_agent, error)
+            return _persistence_error_payload(peer_agent, error)
+        return None
 
     def _chat(peer_id: str, prompt: str) -> ChatResponse:
         try:
             peer_agent = _create_peer_agent(peer_id)
         except SessionRestoreError as error:
             return ChatResponse(response="", error=str(error))
+        chat_error: Exception | None = None
+        response = ""
         try:
             response = peer_agent.chat(prompt)
-            _save_peer_session(peer_agent, peer_id)
-            return ChatResponse(response=response)
-        except Exception as exc:
-            _save_peer_session(peer_agent, peer_id)
-            return ChatResponse(response="", error=str(exc))
+        except Exception as error:
+            chat_error = error
+        persistence_error = _save_peer_session_once(peer_agent, peer_id)
+        if chat_error is not None:
+            message = str(chat_error)
+            if persistence_error is not None:
+                message += f"\n{persistence_error['message']}"
+            return ChatResponse(response="", error=message)
+        return ChatResponse(
+            response=response,
+            error=(
+                str(persistence_error["message"])
+                if persistence_error is not None
+                else None
+            ),
+        )
 
     def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
         try:
@@ -447,26 +570,40 @@ def bind_remote_chat_handler(
         ansi_console = presentation.console
         renderer = presentation.renderer
 
+        def _flush_output() -> None:
+            rendered = export_remote_console(ansi_console)
+            if rendered:
+                remote_session.append_event(
+                    "output", {"format": "terminal", "content": rendered}
+                )
+
         if prompt.strip().startswith("/") and config is not None:
-            command_result = handle_command(
-                prompt.strip(),
-                peer_agent,
-                config,
-                getattr(peer_agent, "current_session_id", None),
-                presentation.ui_bus,
-                REMOTE_CLI_PROFILE,
-                action_registry,
-                sessions_dir,
-                skills_service,
-            )
+            try:
+                command_result = handle_command(
+                    prompt.strip(),
+                    peer_agent,
+                    config,
+                    getattr(peer_agent, "current_session_id", None),
+                    presentation.ui_bus,
+                    REMOTE_CLI_PROFILE,
+                    action_registry,
+                    sessions_dir,
+                    skills_service,
+                )
+            except Exception as command_error:
+                _flush_output()
+                persistence_error = _save_peer_session_once(peer_agent, peer_id)
+                remote_session.append_event(
+                    "error", {"message": str(command_error)}
+                )
+                if persistence_error is not None:
+                    remote_session.append_event("error", persistence_error)
+                remote_session.append_event("chat_end", {"response": ""})
+                return
             if command_result["action"] != "chat":
                 peer_agent.current_session_id = command_result["session_id"]
 
-                rendered = export_remote_console(ansi_console)
-                if rendered:
-                    remote_session.append_event(
-                        "output", {"format": "terminal", "content": rendered}
-                    )
+                _flush_output()
 
                 if command_result["action"] == "exit":
                     remote_session.append_event(
@@ -476,16 +613,11 @@ def bind_remote_chat_handler(
                             "content": "Exit command received. Use Ctrl+C to terminate remote peer.\n",
                         },
                     )
-                _save_peer_session(peer_agent, peer_id)
+                persistence_error = _save_peer_session_once(peer_agent, peer_id)
+                if persistence_error is not None:
+                    remote_session.append_event("error", persistence_error)
                 remote_session.append_event("chat_end", {"response": ""})
                 return
-
-        def _flush_output() -> None:
-            rendered = export_remote_console(ansi_console)
-            if rendered:
-                remote_session.append_event(
-                    "output", {"format": "terminal", "content": rendered}
-                )
 
         class _RemoteUIInteractor:
             def notify(self, event) -> None:
@@ -623,14 +755,20 @@ def bind_remote_chat_handler(
             peer_agent, make_approval_handler(interaction_coordinator)
         )
         try:
-            result = peer_agent.chat(prompt)
+            result = ""
+            chat_error: Exception | None = None
+            try:
+                result = peer_agent.chat(prompt)
+            except Exception as error:
+                chat_error = error
             _flush_output()
-            _save_peer_session(peer_agent, peer_id)
-            remote_session.append_event("chat_end", {"response": result})
-        except Exception as exc:
-            _flush_output()
-            _save_peer_session(peer_agent, peer_id)
-            remote_session.append_event("error", {"message": str(exc)})
+            persistence_error = _save_peer_session_once(peer_agent, peer_id)
+            if chat_error is not None:
+                remote_session.append_event("error", {"message": str(chat_error)})
+            if persistence_error is not None:
+                remote_session.append_event("error", persistence_error)
+            if chat_error is None:
+                remote_session.append_event("chat_end", {"response": result})
         finally:
             interaction_coordinator.shutdown(reason="remote chat closed")
             peer_agent.approval_provider = previous_approval

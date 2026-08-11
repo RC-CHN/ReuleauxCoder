@@ -16,9 +16,19 @@ from reuleauxcoder.interfaces.events import (
     UIEventBus,
     UIEventKind,
     UIEventLevel,
+    UIEventDeliveryAck,
     RuntimeEventPayload,
+    RuntimeIssueFact,
+    RuntimeIssueRoutingUnsupported,
     ViewEventPayload,
+    deliver_runtime_issue,
 )
+
+
+class _DeliveryAck(UIEventDeliveryAck):
+    def __init__(self, accepted: bool, reason: str | None = None) -> None:
+        self.accepted = accepted
+        self.reason = reason
 
 
 def test_ui_event_factory_methods_set_level_and_kind() -> None:
@@ -75,6 +85,31 @@ def test_ui_event_bus_rejects_non_positive_history_limit() -> None:
         raise AssertionError("non-positive history limit must be rejected")
 
 
+def test_required_dispatch_uses_only_explicit_ack_and_rejection_wins() -> None:
+    bus = UIEventBus()
+    accepted = _DeliveryAck(True)
+    rejected = _DeliveryAck(False, "closed")
+    bus.subscribe(lambda _event: True, replay_history=False)
+    bus.subscribe(lambda _event: accepted, replay_history=False)
+    bus.subscribe(lambda _event: rejected, replay_history=False)
+
+    result = bus.emit_required(UIEvent.info("required"))
+
+    assert result is rejected
+    assert bus.history_snapshot() == ()
+
+
+def test_required_dispatch_on_queued_bus_does_not_fake_or_enqueue_ack() -> None:
+    event_queue: queue.Queue = queue.Queue()
+    bus = UIEventBus(event_queue=event_queue)
+    bus.subscribe(lambda _event: _DeliveryAck(True), replay_history=False)
+
+    result = bus.emit_required(UIEvent.info("required"))
+
+    assert result is None
+    assert event_queue.empty()
+
+
 def test_running_operation_phases_are_delivered_but_not_replayed() -> None:
     bus = UIEventBus()
     seen = []
@@ -94,8 +129,10 @@ def test_running_operation_phases_are_delivered_but_not_replayed() -> None:
     assert bus.history_snapshot() == ()
 
 
-def test_terminal_operation_phases_are_replayed() -> None:
+def test_terminal_operation_phases_are_delivered_but_not_replayed() -> None:
     bus = UIEventBus()
+    seen = []
+    bus.subscribe(seen.append, replay_history=False)
 
     bus.emit_operation_phase(
         operation_id="request-1",
@@ -104,10 +141,10 @@ def test_terminal_operation_phases_are_replayed() -> None:
         status="completed",
     )
 
-    history = bus.history_snapshot()
-    assert len(history) == 1
-    assert isinstance(history[0].payload, RuntimeEventPayload)
-    assert history[0].payload.event.payload.status == "completed"
+    assert len(seen) == 1
+    assert isinstance(seen[0].payload, RuntimeEventPayload)
+    assert seen[0].payload.event.payload.status == "completed"
+    assert bus.history_snapshot() == ()
 
 
 def test_ui_event_bus_emit_ignores_handler_exceptions() -> None:
@@ -282,6 +319,90 @@ def test_ui_event_bus_discards_route_rejected_stale_failure_as_metric() -> None:
     assert bus.subscriber_failure_snapshot() == ()
 
 
+def test_explicit_route_never_degrades_to_legacy_sink_call() -> None:
+    calls = []
+
+    def legacy_sink(phase, error_type, ref, count) -> None:
+        calls.append((phase, error_type, ref, count))
+
+    bus = UIEventBus()
+    bus.bind_subscriber_failure_sink(legacy_sink, agent_id="root")
+    bus.subscribe(
+        lambda _event: (_ for _ in ()).throw(RuntimeError("subscriber-secret")),
+        replay_history=False,
+    )
+
+    bus.emit_runtime(
+        RuntimeEvent(
+            payload=ErrorOccurred("event-secret"),
+            agent_id="root",
+            session_generation=2,
+        )
+    )
+
+    assert calls == []
+    pending = bus.subscriber_failure_snapshot()
+    assert [fact.error_type for fact in pending] == [
+        "RuntimeError",
+        "RuntimeIssueRoutingUnsupported",
+    ]
+    assert all(fact.agent_id == "root" for fact in pending)
+    assert all(fact.session_generation == 2 for fact in pending)
+
+
+def test_uninspectable_sink_is_not_called_for_explicit_route() -> None:
+    class UninspectableSink:
+        called = False
+
+        @property
+        def __signature__(self):
+            raise SystemExit("signature-secret")
+
+        def __call__(self, *_facts) -> None:
+            self.called = True
+
+    sink = UninspectableSink()
+
+    with pytest.raises(RuntimeIssueRoutingUnsupported):
+        deliver_runtime_issue(
+            sink,
+            "ui_subscriber",
+            "RuntimeError",
+            "dispatch",
+            agent_id="root",
+            session_generation=2,
+        )
+
+    assert sink.called is False
+
+
+def test_ui_event_bus_pending_fallback_is_bounded_and_count_saturates() -> None:
+    bus = UIEventBus()
+    bus._retain_subscriber_failure(
+        RuntimeIssueFact(
+            "ui_subscriber",
+            "RuntimeError",
+            "dispatch",
+            count=2_000_000,
+        )
+    )
+    for index in range(20):
+        bus._retain_subscriber_failure(
+            RuntimeIssueFact(
+                "ui_subscriber",
+                f"Failure{index}",
+                "dispatch",
+            )
+        )
+
+    pending = bus.subscriber_failure_snapshot()
+
+    assert len(pending) == 8
+    assert pending[0].count == 1_000_000
+    assert pending[-1].error_type == "Overflow"
+    assert pending[-1].count == 14
+
+
 def test_ui_event_bus_keyboard_interrupt_propagates() -> None:
     bus = UIEventBus()
     bus.subscribe(
@@ -332,6 +453,59 @@ def test_agent_event_bridge_maps_error_to_error_level() -> None:
     assert isinstance(event.payload, RuntimeEventPayload)
     assert isinstance(event.payload.event.payload, ErrorOccurred)
     assert event.payload.event.payload.message == "boom"
+
+
+def test_agent_event_bridge_marks_child_generation_owner() -> None:
+    bus = UIEventBus()
+    seen = []
+    bus.subscribe(lambda event: seen.append(event), replay_history=False)
+    child_event = AgentEvent.chat_start("child")
+    child_event.agent_id = "sa_child"
+    child_event.session_generation = 3
+
+    AgentEventBridge(
+        bus,
+        generation_owner_agent_id="root",
+    ).on_agent_event(child_event)
+
+    payload = seen[0].payload
+    assert isinstance(payload, RuntimeEventPayload)
+    assert payload.event.agent_id == "sa_child"
+    assert payload.generation_owner_agent_id == "root"
+
+
+def test_child_subscriber_failure_routes_to_generation_owner() -> None:
+    bus = UIEventBus()
+    root_incidents = []
+    bus.bind_subscriber_failure_sink(
+        lambda phase, error_type, ref, count, **route: root_incidents.append(
+            (phase, error_type, ref, count, route)
+        ),
+        agent_id="root",
+    )
+    bus.subscribe(
+        lambda _event: (_ for _ in ()).throw(SystemExit("subscriber-secret")),
+        replay_history=False,
+    )
+    child_event = AgentEvent.chat_start("child-secret")
+    child_event.agent_id = "sa_child"
+    child_event.session_generation = 3
+
+    AgentEventBridge(
+        bus,
+        generation_owner_agent_id="root",
+    ).on_agent_event(child_event)
+
+    assert root_incidents == [
+        (
+            "ui_subscriber",
+            "SystemExit",
+            "dispatch",
+            1,
+            {"agent_id": "root", "session_generation": 3},
+        )
+    ]
+    assert bus.subscriber_failure_snapshot() == ()
 
 
 def test_agent_event_bridge_maps_tool_events_to_debug_level() -> None:

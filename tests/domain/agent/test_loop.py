@@ -41,6 +41,7 @@ class _AgentStub:
             progress=ProgressState(),
         )
         self._subagent_manager = None
+        self.runtime_issues = ()
 
     def get_active_mode_config(self):
         return self.available_modes[self.active_mode]
@@ -53,6 +54,9 @@ class _AgentStub:
 
     def suggest_modes_for_tool(self, _tool_name: str):
         return []
+
+    def runtime_issue_snapshot(self):
+        return self.runtime_issues
 
 
 def test_system_prompt_no_longer_contains_runtime_environment_block() -> None:
@@ -84,6 +88,171 @@ def test_agent_loop_appends_ephemeral_runtime_context_at_tail() -> None:
     assert '"shell":"bash"' in messages[-1]["content"]
 
 
+def test_runtime_tail_exposes_safe_session_restore_issues_to_model() -> None:
+    agent = _AgentStub()
+    sentinel = "damaged-history-content-must-not-leak"
+    agent.session_restore_issues = (
+        SimpleNamespace(
+            phase="history_decode",
+            error_type="JSONDecodeError",
+            ref="history_ledger",
+            count=3,
+            raw_error=sentinel,
+        ),
+        SimpleNamespace(
+            phase=f"history:{sentinel}",
+            error_type=sentinel,
+            ref=f"../{sentinel}",
+        ),
+    )
+    agent.session_inventory_issues = (
+        SimpleNamespace(
+            phase="manifest_decode",
+            error_type="JSONDecodeError",
+            ref="manifest",
+            count=2,
+        ),
+    )
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert '"session_restore":{"status":"degraded"' in content
+    assert '"phase":"history_decode"' in content
+    assert '"error_type":"JSONDecodeError"' in content
+    assert '"ref":"history_ledger"' in content
+    assert '"count":3' in content
+    assert '"phase":"restore"' in content
+    assert '"error_type":"Exception"' in content
+    assert '"ref":"session_artifact"' in content
+    assert '"session_inventory":{"status":"degraded"' in content
+    assert '"phase":"manifest_decode"' in content
+    assert '"ref":"manifest","count":2' in content
+    assert sentinel not in content
+
+
+def test_runtime_tail_exposes_non_consuming_content_free_runtime_incidents() -> None:
+    agent = _AgentStub()
+    sentinel = "subscriber-message-must-not-leak"
+    agent.runtime_issues = (
+        SimpleNamespace(
+            phase="ui_subscriber",
+            error_type="SystemExit",
+            ref="dispatch",
+            count=3,
+            raw_error=sentinel,
+        ),
+        SimpleNamespace(
+            phase=f"ui:{sentinel}",
+            error_type=sentinel,
+            ref=f"../{sentinel}",
+        ),
+    )
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+
+    first = loop._full_messages()[-1]["content"]
+    second = loop._full_messages()[-1]["content"]
+
+    assert '"runtime_incidents":{"status":"degraded"' in first
+    assert '"phase":"ui_subscriber"' in first
+    assert '"error_type":"SystemExit"' in first
+    assert '"ref":"dispatch"' in first
+    assert '"count":3' in first
+    assert '"phase":"runtime"' in first
+    assert '"error_type":"Exception"' in first
+    assert '"ref":"observer"' in first
+    assert sentinel not in first
+    assert '"runtime_incidents":{"status":"degraded"' in second
+
+
+def test_runtime_tail_isolates_runtime_incident_snapshot_base_exception() -> None:
+    class BrokenSnapshotAgent(_AgentStub):
+        def runtime_issue_snapshot(self):
+            raise GeneratorExit("snapshot-secret")
+
+    loop = AgentLoop(BrokenSnapshotAgent(), prompt_fn=system_prompt, shell_name="bash")
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert '"phase":"runtime_issue_snapshot"' in content
+    assert '"error_type":"GeneratorExit"' in content
+    assert '"ref":"agent_state"' in content
+    assert "snapshot-secret" not in content
+
+
+def test_runtime_tail_snapshot_keyboard_interrupt_propagates() -> None:
+    class InterruptedSnapshotAgent(_AgentStub):
+        def runtime_issue_snapshot(self):
+            raise KeyboardInterrupt
+
+    loop = AgentLoop(
+        InterruptedSnapshotAgent(), prompt_fn=system_prompt, shell_name="bash"
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        loop._full_messages()
+
+
+def test_runtime_tail_reports_directory_listing_base_exception(monkeypatch) -> None:
+    loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
+    monkeypatch.setattr(
+        loop,
+        "_dir_listing",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            GeneratorExit("directory-secret")
+        ),
+    )
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert '"phase":"runtime_context"' in content
+    assert '"error_type":"GeneratorExit"' in content
+    assert '"ref":"directory_listing"' in content
+    assert "directory-secret" not in content
+
+
+def test_runtime_tail_directory_listing_keyboard_interrupt_propagates(
+    monkeypatch,
+) -> None:
+    loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
+    monkeypatch.setattr(
+        loop,
+        "_dir_listing",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        loop._full_messages()
+
+
+def test_runtime_tail_reports_working_directory_base_exception(monkeypatch) -> None:
+    loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
+    monkeypatch.setattr(
+        "reuleauxcoder.domain.agent.loop.os.getcwd",
+        lambda: (_ for _ in ()).throw(SystemExit("cwd-secret")),
+    )
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert '"working_directory":null' in content
+    assert '"ref":"working_directory"' in content
+    assert '"error_type":"SystemExit"' in content
+    assert "cwd-secret" not in content
+
+
+def test_runtime_tail_working_directory_keyboard_interrupt_propagates(
+    monkeypatch,
+) -> None:
+    loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
+    monkeypatch.setattr(
+        "reuleauxcoder.domain.agent.loop.os.getcwd",
+        lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        loop._full_messages()
+
+
 def test_agent_loop_runtime_working_directory_override() -> None:
     agent = _AgentStub()
     agent.runtime_working_directory = "/tmp/remote-workspace"
@@ -110,6 +279,32 @@ def test_runtime_tail_uses_bound_two_scope_notes_store() -> None:
     assert "Global notes" in content
     assert "wn_one" in content
     assert "gn_one" in content
+
+
+def test_runtime_tail_reports_notes_store_base_exception_without_content() -> None:
+    agent = _AgentStub()
+    agent.notes_store = SimpleNamespace(
+        render=lambda **_kwargs: (_ for _ in ()).throw(
+            SystemExit("notes-secret")
+        )
+    )
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+
+    content = loop._full_messages()[-1]["content"]
+
+    assert "Notes unavailable: SystemExit" in content
+    assert "notes-secret" not in content
+
+
+def test_runtime_tail_notes_store_keyboard_interrupt_propagates() -> None:
+    agent = _AgentStub()
+    agent.notes_store = SimpleNamespace(
+        render=lambda **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+
+    with pytest.raises(KeyboardInterrupt):
+        loop._full_messages()
 
 
 def test_runtime_tail_honors_notes_inject_false() -> None:
@@ -811,7 +1006,9 @@ def test_subagent_round_limit_returns_tool_free_partial_handoff() -> None:
             self.calls.append(kwargs)
             if len(self.calls) == 1:
                 return LLMResponse(
-                    tool_calls=[ToolCall(id="missing", name="unknown", arguments={})]
+                    tool_calls=[
+                        ToolCall(id="missing", name="unknown", arguments={})
+                    ]
                 )
             return LLMResponse(
                 content="Found two relevant tests; one count remains incomplete."
@@ -841,9 +1038,7 @@ def test_round_limit_summary_honours_immediate_steering_attempts() -> None:
             self.calls.append(kwargs)
             if len(self.calls) == 1:
                 return LLMResponse(
-                    tool_calls=[
-                        ToolCall(id="missing", name="unknown", arguments={})
-                    ]
+                    tool_calls=[ToolCall(id="missing", name="unknown", arguments={})]
                 )
             if len(self.calls) == 2:
                 kwargs["on_token"]("partial handoff")
@@ -949,7 +1144,7 @@ def test_configured_approval_provider_does_not_serialize_unreviewed_tools() -> N
             self.parallel_calls.append(tuple(call.id for call in tool_calls))
             return ["one-result", "two-result"]
 
-        def flush_pending_batch_runtime_context(self):
+        def flush_pending_runtime_issues(self):
             self.flush_snapshots.append(
                 tuple(
                     (message.get("role"), message.get("tool_call_id"))
@@ -974,7 +1169,7 @@ def test_configured_approval_provider_does_not_serialize_unreviewed_tools() -> N
     assert executor.flush_snapshots == [(), (("tool", "first"), ("tool", "second"))]
 
 
-def test_unpublished_batch_runtime_facts_stop_before_the_next_model_request() -> None:
+def test_unpublished_runtime_facts_stop_before_the_next_model_request() -> None:
     class _NeverCalledLLM(_BudgetLLM):
         def chat(self, **kwargs):  # noqa: ARG002
             raise AssertionError("model must not run without pending runtime facts")
@@ -982,14 +1177,12 @@ def test_unpublished_batch_runtime_facts_stop_before_the_next_model_request() ->
     class _BlockedExecutor:
         flush_calls = 0
 
-        def flush_pending_batch_runtime_context(self):
+        def flush_pending_runtime_issues(self):
             self.flush_calls += 1
             return None
 
     executor = _BlockedExecutor()
     agent = Agent(llm=_NeverCalledLLM(), tools=[], executor=executor)
 
-    assert agent._loop.run() == (
-        "(stopped: parallel batch runtime facts could not be published)"
-    )
+    assert agent._loop.run() == "(stopped: runtime failure facts could not be published)"
     assert executor.flush_calls == 1

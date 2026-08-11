@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Any, Literal
 
-from reuleauxcoder.interfaces.events import UIEvent
+from reuleauxcoder.interfaces.events import UIEvent, UIEventDeliveryAck
 from reuleauxcoder.interfaces.interactions import (
     ChooseOneRequest,
     ChooseOneResponse,
@@ -176,6 +176,39 @@ class MiniTUIInteractor:
     def bind_invalidator(self, callback) -> None:
         self._invalidate = callback
 
+    @staticmethod
+    def _safe_error_type(error: BaseException) -> str:
+        name = type(error).__name__
+        if (
+            name
+            and len(name) <= 64
+            and name.isascii()
+            and name.replace("_", "").isalnum()
+        ):
+            return name
+        return "Exception"
+
+    def _report_runtime_issue(self, phase: str, error_type: str, ref: str) -> None:
+        try:
+            self.ui_bus.report_runtime_issue(phase, error_type, ref)
+        except KeyboardInterrupt:
+            raise
+        except BaseException:
+            # The bus fallback is the final non-recursive observer boundary.
+            pass
+
+    def _request_invalidate(self) -> None:
+        try:
+            self._invalidate()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            self._report_runtime_issue(
+                "interaction_invalidate",
+                self._safe_error_type(error),
+                "callback",
+            )
+
     def notify(self, event: UIEvent) -> None:
         self.ui_bus.emit(event)
 
@@ -229,7 +262,7 @@ class MiniTUIInteractor:
                 self._condition.notify_all()
                 resolved = True
         if transitioned or resolved:
-            self._invalidate()
+            self._request_invalidate()
         return True
 
     def move_review_selection(self, delta: int) -> bool:
@@ -245,7 +278,7 @@ class MiniTUIInteractor:
                 self._review_state.selected_index + delta
             ) % len(request.grant_options)
             self._review_state = ReviewInteractionState("scope", index)
-        self._invalidate()
+        self._request_invalidate()
         return True
 
     def back_review(self) -> bool:
@@ -256,7 +289,7 @@ class MiniTUIInteractor:
             ):
                 return False
             self._review_state = ReviewInteractionState()
-        self._invalidate()
+        self._request_invalidate()
         return True
 
     def cancel(self, request_id: str) -> None:
@@ -268,7 +301,7 @@ class MiniTUIInteractor:
             self._active = None
             self._review_state = ReviewInteractionState()
             self._condition.notify_all()
-        self._invalidate()
+        self._request_invalidate()
 
     def cancel_active(self, reason: str = "interaction interrupted") -> bool:
         with self._condition:
@@ -279,7 +312,7 @@ class MiniTUIInteractor:
             self._active = None
             self._review_state = ReviewInteractionState()
             self._condition.notify_all()
-        self._invalidate()
+        self._request_invalidate()
         return True
 
     def _ask(self, request):
@@ -289,8 +322,73 @@ class MiniTUIInteractor:
             self._active = request
             self._response = None
             self._review_state = ReviewInteractionState()
-        self.ui_bus.emit_interaction_prompt(request)
-        self._invalidate()
+        delivery_error_type: str | None = None
+        try:
+            delivery = self.ui_bus.emit_interaction_prompt(request)
+        except KeyboardInterrupt:
+            with self._condition:
+                if self._active is request:
+                    self._active = None
+                    self._review_state = ReviewInteractionState()
+                    self._condition.notify_all()
+            raise
+        except BaseException as error:
+            delivery = None
+            delivery_error_type = self._safe_error_type(error)
+        try:
+            delivery_accepted = (
+                isinstance(delivery, UIEventDeliveryAck)
+                and delivery.accepted is True
+            )
+        except KeyboardInterrupt:
+            with self._condition:
+                if self._active is request:
+                    self._active = None
+                    self._review_state = ReviewInteractionState()
+                    self._condition.notify_all()
+            raise
+        except BaseException as error:
+            delivery_accepted = False
+            delivery_error_type = self._safe_error_type(error)
+        if not delivery_accepted:
+            if delivery_error_type is not None:
+                reason = "failed"
+                error_type = delivery_error_type
+            elif isinstance(delivery, UIEventDeliveryAck):
+                raw_reason = getattr(delivery.reason, "value", delivery.reason)
+                reason = (
+                    raw_reason
+                    if isinstance(raw_reason, str)
+                    and raw_reason in {"closed", "control_timeout"}
+                    else "rejected"
+                )
+                error_type = "EventRejected"
+            else:
+                reason = "unconfirmed"
+                error_type = "DeliveryUnconfirmed"
+            with self._condition:
+                if self._active is request:
+                    self._active = None
+                    self._review_state = ReviewInteractionState()
+                    self._response = cancelled_response(
+                        request,
+                        f"interaction prompt delivery {reason}",
+                    )
+                    self._condition.notify_all()
+            self._report_runtime_issue(
+                "interaction_delivery",
+                error_type,
+                reason,
+            )
+        try:
+            self._request_invalidate()
+        except KeyboardInterrupt:
+            with self._condition:
+                if self._active is request:
+                    self._active = None
+                    self._review_state = ReviewInteractionState()
+                    self._condition.notify_all()
+            raise
         with self._condition:
             while self._active is request:
                 timeout = 0.1

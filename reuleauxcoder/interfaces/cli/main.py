@@ -163,7 +163,9 @@ def main():
 
         event_adapter = MiniTUIEventAdapter(
             root_agent_id=ctx.agent.agent_id,
+            session_generation=ctx.agent.session_generation,
             performance_monitor=getattr(ctx.agent, "performance_monitor", None),
+            incident_sink=getattr(ctx.agent, "record_runtime_issue", None),
         )
         if ctx.current_session_id and ctx.agent.messages:
             from reuleauxcoder.domain.session.models import Session
@@ -184,7 +186,10 @@ def main():
         ctx.agent.approval_provider = build_runtime_approval_provider(
             ctx.agent, make_approval_handler(interaction_coordinator)
         )
-        bridge = AgentEventBridge(ctx.ui_bus)
+        bridge = AgentEventBridge(
+            ctx.ui_bus,
+            generation_owner_agent_id=ctx.agent.agent_id,
+        )
         ctx.agent.add_event_handler(bridge.on_agent_event)
         startup_events = ctx.ui_bus.history_snapshot()
         ctx.ui_bus.subscribe(event_adapter.on_ui_event, replay_history=False)
@@ -350,7 +355,10 @@ def main():
     )
 
     # Add CLI renderer and bridge agent events onto the UI bus
-    bridge = AgentEventBridge(ctx.ui_bus)
+    bridge = AgentEventBridge(
+        ctx.ui_bus,
+        generation_owner_agent_id=ctx.agent.agent_id,
+    )
     ctx.agent.add_event_handler(bridge.on_agent_event)
 
     # Check for API key

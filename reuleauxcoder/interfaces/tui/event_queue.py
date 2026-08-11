@@ -22,6 +22,7 @@ from reuleauxcoder.interfaces.events import (
     RemoteStreamPayload,
     RuntimeEventPayload,
     UIEvent,
+    UIEventDeliveryAck,
 )
 
 
@@ -33,6 +34,7 @@ DEFAULT_EVENT_QUEUE_CAPACITY = 256
 DEFAULT_CONTROL_RESERVE = 32
 DEFAULT_MUST_DELIVER_TIMEOUT_SECONDS = 0.1
 DEFAULT_MAX_COALESCED_CHARS = 64 * 1024
+_MAX_STALE_GENERATION_DROPS = 1_000_000
 
 _TEXT_RUNTIME_PAYLOADS = (
     AssistantContentDelta,
@@ -57,15 +59,21 @@ class EventQueueStats:
     must_deliver_waits: int
     must_deliver_timeouts: int
     closed_dropped: int
+    stale_generation_dropped: int
     closed: bool
 
     @property
     def dropped(self) -> int:
-        return self.transient_dropped + self.must_deliver_timeouts + self.closed_dropped
+        return (
+            self.transient_dropped
+            + self.must_deliver_timeouts
+            + self.closed_dropped
+            + self.stale_generation_dropped
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class EventPutResult:
+class EventPutResult(UIEventDeliveryAck):
     accepted: bool
     wake_consumer: bool = False
     coalesced: bool = False
@@ -78,6 +86,7 @@ class EventPutFailureReason(str, Enum):
     CLOSED = "closed"
     CONTROL_TIMEOUT = "control_timeout"
     TRANSIENT_CAPACITY = "transient_capacity"
+    STALE_GENERATION = "stale_generation"
 
 
 class BoundedUIEventQueue:
@@ -98,6 +107,7 @@ class BoundedUIEventQueue:
         control_reserve: int = DEFAULT_CONTROL_RESERVE,
         must_deliver_timeout: float = DEFAULT_MUST_DELIVER_TIMEOUT_SECONDS,
         max_coalesced_chars: int = DEFAULT_MAX_COALESCED_CHARS,
+        generation_agent_id: str | None = None,
     ) -> None:
         if capacity < 2:
             raise ValueError("event queue capacity must be at least 2")
@@ -124,6 +134,9 @@ class BoundedUIEventQueue:
         self._must_deliver_waits = 0
         self._must_deliver_timeouts = 0
         self._closed_dropped = 0
+        self._stale_generation_dropped = 0
+        self._minimum_generation: int | None = None
+        self._generation_agent_id = generation_agent_id
 
     def put(
         self,
@@ -137,6 +150,15 @@ class BoundedUIEventQueue:
             if self._closed:
                 self._closed_dropped += 1
                 return EventPutResult(False, reason=EventPutFailureReason.CLOSED)
+            if self._is_stale_generation_locked(event):
+                self._stale_generation_dropped = min(
+                    self._stale_generation_dropped + 1,
+                    _MAX_STALE_GENERATION_DROPS,
+                )
+                return EventPutResult(
+                    False,
+                    reason=EventPutFailureReason.STALE_GENERATION,
+                )
             if transient:
                 return self._put_transient_locked(event)
 
@@ -185,6 +207,58 @@ class BoundedUIEventQueue:
             self._closed = True
             self._condition.notify_all()
 
+    def advance_generation(self, generation: int) -> int:
+        """Raise the local route floor and discard queued events below it."""
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            raise TypeError("session generation must be an integer")
+        with self._condition:
+            if (
+                self._minimum_generation is not None
+                and generation < self._minimum_generation
+            ):
+                raise ValueError("session generation cannot move backwards")
+            self._minimum_generation = generation
+            retained = deque(
+                event
+                for event in self._events
+                if not self._is_stale_generation_locked(event)
+            )
+            dropped = len(self._events) - len(retained)
+            if not dropped:
+                return 0
+            self._events = retained
+            self._transient_depth = sum(
+                _is_transient_event(event) for event in retained
+            )
+            self._stale_generation_dropped = min(
+                self._stale_generation_dropped + dropped,
+                _MAX_STALE_GENERATION_DROPS,
+            )
+            self._condition.notify_all()
+            return dropped
+
+    def reject_stale(self, event: UIEvent) -> bool:
+        """Account for an event drained just before the route floor advanced."""
+        with self._condition:
+            stale = self._is_stale_generation_locked(event)
+            if stale:
+                self._stale_generation_dropped = min(
+                    self._stale_generation_dropped + 1,
+                    _MAX_STALE_GENERATION_DROPS,
+                )
+            return stale
+
+    def _is_stale_generation_locked(self, event: UIEvent) -> bool:
+        generation_owner_agent_id, generation = _event_route(event)
+        if generation is None or self._minimum_generation is None:
+            return False
+        if self._generation_agent_id is not None and generation_owner_agent_id not in {
+            None,
+            self._generation_agent_id,
+        }:
+            return False
+        return generation < self._minimum_generation
+
     def stats(self) -> EventQueueStats:
         with self._condition:
             return EventQueueStats(
@@ -201,6 +275,7 @@ class BoundedUIEventQueue:
                 must_deliver_waits=self._must_deliver_waits,
                 must_deliver_timeouts=self._must_deliver_timeouts,
                 closed_dropped=self._closed_dropped,
+                stale_generation_dropped=self._stale_generation_dropped,
                 closed=self._closed,
             )
 
@@ -271,6 +346,19 @@ def _runtime_payload(event: UIEvent):
     if not isinstance(envelope, RuntimeEventPayload):
         return None
     return envelope.event.payload
+
+
+def _event_route(event: UIEvent) -> tuple[str | None, int | None]:
+    envelope = event.payload
+    if not isinstance(envelope, RuntimeEventPayload):
+        return None, None
+    generation = envelope.event.session_generation
+    if not isinstance(generation, int) or isinstance(generation, bool):
+        generation = None
+    return (
+        envelope.generation_owner_agent_id or envelope.event.agent_id,
+        generation,
+    )
 
 
 def _is_transient_event(event: UIEvent) -> bool:
@@ -364,7 +452,10 @@ def _merge_transient(
             text=combined[-max_chars:],
         )
         runtime = replace(current_runtime, payload=payload)
-        return replace(current, payload=RuntimeEventPayload(runtime)), truncated
+        return replace(
+            current,
+            payload=replace(current_envelope, event=runtime),
+        ), truncated
     if isinstance(previous_payload, ProcessSessionChanged) and isinstance(
         current_payload, ProcessSessionChanged
     ):
@@ -386,7 +477,10 @@ def _merge_transient(
             ),
         )
         runtime = replace(current_runtime, payload=payload)
-        return replace(current, payload=RuntimeEventPayload(runtime)), truncated
+        return replace(
+            current,
+            payload=replace(current_envelope, event=runtime),
+        ), truncated
     return current, False
 
 
@@ -432,7 +526,10 @@ def _bound_transient(event: UIEvent, *, max_chars: int) -> tuple[UIEvent, bool]:
     if not truncated:
         return event, False
     return (
-        replace(event, payload=RuntimeEventPayload(replace(runtime, payload=bounded))),
+        replace(
+            event,
+            payload=replace(payload, event=replace(runtime, payload=bounded)),
+        ),
         True,
     )
 

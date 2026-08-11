@@ -97,6 +97,7 @@ class AppRunner:
         self._agent: Agent | None = None
         self._ui_bus: UIEventBus | None = None
         self._remote_chat_cleanup: Callable[[], None] | None = None
+        self._last_cleanup_failures: tuple[tuple[str, str, int], ...] = ()
         self._extension_manager = ExtensionManager()
         self._extension_manager.register(
             ExtensionDefinition(
@@ -138,7 +139,9 @@ class AppRunner:
             ui_bus.bind_subscriber_failure_sink(
                 record_runtime_issue,
                 agent_id=agent.agent_id,
-                default=True,
+                # A host-mode bus is shared by independently owned peer
+                # runtimes, so unrouted UI failures must remain unattributed.
+                default=not config.remote_exec.host_mode,
             )
         bind_performance = getattr(agent, "bind_performance_monitor", None)
         if callable(bind_performance):
@@ -501,9 +504,15 @@ class AppRunner:
         *,
         progress: Callable[[str], None] | None = None,
     ) -> None:
-        """Clean up resources (MCP connections, remote relay, etc.)."""
+        """Settle every owned resource while retaining safe failure facts."""
         shutdown_id = f"shutdown-{uuid.uuid4().hex}"
         shutdown_started_monotonic = time.monotonic()
+        agent = agent or self._agent
+        ui_reporter = self._ui_bus
+        progress_reporter = progress
+        failures: dict[tuple[str, str], int] = {}
+        issue_sink_available = True
+        interrupted: KeyboardInterrupt | None = None
         phase_by_message = {
             "Closing pending interactions...": "stop_interactions",
             "Stopping remote chat handler...": "stop_remote_chat",
@@ -517,59 +526,136 @@ class AppRunner:
             "Releasing workspace monitors...": "release_monitors",
         }
 
-        def report(message: str) -> None:
-            if self._ui_bus is not None:
-                phase = phase_by_message.get(message)
-                if phase is not None:
-                    self._ui_bus.emit_operation_phase(
-                        operation_id=shutdown_id,
-                        operation="shutdown",
-                        phase=phase,
-                        started_at=time.time(),
-                        cancelable=True,
-                        agent_id=getattr(agent or self._agent, "agent_id", None),
-                        session_generation=getattr(
-                            agent or self._agent, "session_generation", None
-                        ),
-                        session_id=getattr(
-                            agent or self._agent, "current_session_id", None
-                        ),
-                    )
-            if progress is None:
+        def retain_failure(ref: str, error_type: str) -> None:
+            nonlocal issue_sink_available, interrupted
+            key = (ref, error_type)
+            if key in failures:
+                failures[key] = min(failures[key] + 1, 1_000_000)
+            elif len(failures) < 15:
+                failures[key] = 1
+            else:
+                overflow_key = ("cleanup_capacity", "Overflow")
+                failures[overflow_key] = min(
+                    failures.get(overflow_key, 0) + 1,
+                    1_000_000,
+                )
+            if not issue_sink_available or agent is None:
+                return
+            record = getattr(agent, "record_runtime_issue", None)
+            if not callable(record):
+                issue_sink_available = False
                 return
             try:
-                progress(message)
-            except Exception:
-                pass
+                record(
+                    "shutdown",
+                    error_type,
+                    ref,
+                    agent_id=getattr(agent, "agent_id", None),
+                    session_generation=getattr(agent, "session_generation", None),
+                )
+            except KeyboardInterrupt as error:
+                issue_sink_available = False
+                if interrupted is None:
+                    interrupted = error
+                sink_key = ("runtime_issue_sink", "KeyboardInterrupt")
+                failures[sink_key] = min(failures.get(sink_key, 0) + 1, 1_000_000)
+            except BaseException as error:
+                issue_sink_available = False
+                error_name = type(error).__name__
+                sink_key = ("runtime_issue_sink", error_name)
+                failures[sink_key] = min(failures.get(sink_key, 0) + 1, 1_000_000)
 
-        agent = agent or self._agent
+        def settle(ref: str, action: Callable[[], Any]) -> tuple[bool, Any]:
+            nonlocal interrupted
+            try:
+                return True, action()
+            except KeyboardInterrupt as error:
+                retain_failure(ref, "KeyboardInterrupt")
+                if interrupted is None:
+                    interrupted = error
+            except BaseException as error:
+                error_type = type(error).__name__
+                if (
+                    not error_type
+                    or len(error_type) > 64
+                    or not error_type.isascii()
+                    or not error_type.replace("_", "").isalnum()
+                ):
+                    error_type = "BaseException"
+                retain_failure(ref, error_type)
+            return False, None
+
+        def report(message: str) -> None:
+            nonlocal ui_reporter, progress_reporter
+            if ui_reporter is not None:
+                phase = phase_by_message.get(message)
+                if phase is not None:
+                    emitted, _ = settle(
+                        "shutdown_ui_phase",
+                        lambda: ui_reporter.emit_operation_phase(
+                            operation_id=shutdown_id,
+                            operation="shutdown",
+                            phase=phase,
+                            started_at=time.time(),
+                            cancelable=True,
+                            agent_id=getattr(agent, "agent_id", None),
+                            session_generation=getattr(
+                                agent, "session_generation", None
+                            ),
+                            session_id=getattr(agent, "current_session_id", None),
+                        ),
+                    )
+                    if not emitted:
+                        ui_reporter = None
+            if progress_reporter is not None:
+                reported, _ = settle(
+                    "shutdown_progress",
+                    lambda: progress_reporter(message),
+                )
+                if not reported:
+                    progress_reporter = None
+
         if agent is not None:
             discard_steering = getattr(
                 agent, "discard_pending_user_steering", None
             )
             if callable(discard_steering):
-                discard_steering(reason="session_exit")
+                settle(
+                    "discard_user_steering",
+                    lambda: discard_steering(reason="session_exit"),
+                )
             report("Closing pending interactions...")
             shutdown_interactions = getattr(
                 getattr(agent, "ui_interactor", None), "shutdown", None
             )
             if callable(shutdown_interactions):
-                shutdown_interactions(reason="application shutdown")
-        if self._remote_chat_cleanup is not None:
+                settle(
+                    "stop_interactions",
+                    lambda: shutdown_interactions(reason="application shutdown"),
+                )
+        remote_chat_cleanup = self._remote_chat_cleanup
+        self._remote_chat_cleanup = None
+        if remote_chat_cleanup is not None:
             report("Stopping remote chat handler...")
-            self._remote_chat_cleanup()
-            self._remote_chat_cleanup = None
+            settle("stop_remote_chat", remote_chat_cleanup)
         if agent is not None:
             subagent_manager = getattr(agent, "_subagent_manager", None)
             if subagent_manager is not None:
                 report("Stopping sub-agent workers...")
                 # Jobs receive their cancellation signal above. Do not let an
                 # uncooperative provider/tool hold the foreground exit path.
-                subagent_manager.shutdown(wait=False)
-        if self._process_manager is not None:
+                settle(
+                    "stop_subagents",
+                    lambda: subagent_manager.shutdown(wait=False),
+                )
+        process_manager = self._process_manager
+        self._process_manager = None
+        if process_manager is not None:
             report("Stopping shell process sessions...")
-            process_report = self._process_manager.shutdown()
-            if progress is not None and any(
+            process_stopped, process_report = settle(
+                "stop_processes", process_manager.shutdown
+            )
+            if process_stopped and process_report is not None and any(
                 (
                     process_report.total,
                     process_report.already_exited,
@@ -589,76 +675,167 @@ class AppRunner:
                     f"{process_report.reap_timeouts} reap timeout(s))."
                 )
             if agent is not None:
-                agent.process_manager = None
-                agent.hook_registry.bind_runtime_service("process_manager", None)
-            self._process_manager = None
-        report("Disposing runtime extensions...")
-        extension_diagnostics = self._extension_manager.dispose_all()
-        if self._ui_bus is not None:
-            for diagnostic in extension_diagnostics:
-                self._ui_bus.warning(
-                    f"Extension {diagnostic.extension_id} {diagnostic.phase} failed: "
-                    f"{diagnostic.message}"
+                def detach_process_manager() -> None:
+                    agent.process_manager = None
+
+                settle(
+                    "detach_process_manager",
+                    detach_process_manager,
                 )
-        if self._relay_http_service is not None:
+                settle(
+                    "unbind_process_manager",
+                    lambda: agent.hook_registry.bind_runtime_service(
+                        "process_manager", None
+                    ),
+                )
+        report("Disposing runtime extensions...")
+        extensions_disposed, extension_diagnostics = settle(
+            "dispose_extensions", self._extension_manager.dispose_all
+        )
+        if extensions_disposed:
+            for diagnostic in extension_diagnostics:
+                retain_failure("dispose_extension", "ExtensionDisposeError")
+                if ui_reporter is not None:
+                    emitted, _ = settle(
+                        "shutdown_ui_warning",
+                        lambda diagnostic=diagnostic: ui_reporter.warning(
+                            f"Extension {diagnostic.extension_id} "
+                            f"{diagnostic.phase} failed: {diagnostic.message}"
+                        ),
+                    )
+                    if not emitted:
+                        ui_reporter = None
+        relay_http_service = self._relay_http_service
+        self._relay_http_service = None
+        if relay_http_service is not None:
             report("Stopping remote relay HTTP service...")
-            artifact_provider = getattr(
-                self._relay_http_service, "artifact_provider", None
+            artifact_resolved, artifact_provider = settle(
+                "resolve_remote_artifacts",
+                lambda: getattr(relay_http_service, "artifact_provider", None),
             )
-            build_dir = (
-                getattr(artifact_provider, "_build_dir", None)
-                if artifact_provider is not None
-                else None
-            )
-            self._relay_http_service.stop()
-            self._relay_http_service = None
+            build_dir = None
+            if artifact_resolved and artifact_provider is not None:
+                _, build_dir = settle(
+                    "resolve_remote_artifacts",
+                    lambda: getattr(artifact_provider, "_build_dir", None),
+                )
+            settle("stop_remote_http", relay_http_service.stop)
             if isinstance(build_dir, Path):
-                shutil.rmtree(build_dir, ignore_errors=True)
-        if self._relay_server is not None:
+                settle(
+                    "remove_remote_artifacts",
+                    lambda: shutil.rmtree(build_dir) if build_dir.exists() else None,
+                )
+        relay_server = self._relay_server
+        self._relay_server = None
+        if relay_server is not None:
             report("Stopping remote relay peers...")
-            for peer in self._relay_server.registry.list_online():
-                try:
-                    self._relay_server.request_cleanup(peer.peer_id, timeout_sec=5)
-                except Exception:
-                    pass
-            self._relay_server.stop()
-            self._relay_server = None
-        if self._mcp_manager:
+            peers_listed, peers = settle(
+                "list_remote_peers", relay_server.registry.list_online
+            )
+            if peers_listed:
+                for peer in peers:
+                    peer_resolved, peer_id = settle(
+                        "resolve_remote_peer", lambda peer=peer: peer.peer_id
+                    )
+                    if peer_resolved:
+                        settle(
+                            "cleanup_remote_peer",
+                            lambda peer_id=peer_id: relay_server.request_cleanup(
+                                peer_id, timeout_sec=5
+                            ),
+                        )
+            settle("stop_remote_relay", relay_server.stop)
+        mcp_manager = self._mcp_manager
+        self._mcp_manager = None
+        if mcp_manager is not None:
             report("Disconnecting MCP servers...")
-            self._mcp_manager.stop()
-            self._mcp_manager = None
-        if self._lsp_manager:
+            settle("disconnect_mcp", mcp_manager.stop)
+        lsp_manager = self._lsp_manager
+        self._lsp_manager = None
+        if lsp_manager is not None:
             report("Stopping language servers...")
-            if self._agent is not None:
-                self._agent.hook_registry.bind_runtime_service("lsp_manager", None)
-                for tool in self._agent.tools:
+            if agent is not None:
+                settle(
+                    "unbind_lsp_manager",
+                    lambda: agent.hook_registry.bind_runtime_service(
+                        "lsp_manager", None
+                    ),
+                )
+                for tool in agent.tools:
                     bind = getattr(tool, "bind_lsp_manager", None)
                     if callable(bind):
-                        bind(None)
-            self._lsp_manager.shutdown_all()
-            self._lsp_manager = None
-            if self._agent is not None:
-                self._agent.lsp_manager = None
-        if self._agent is not None:
+                        settle(
+                            "detach_lsp_tool",
+                            lambda bind=bind: bind(None),
+                        )
+            settle("stop_lsp", lsp_manager.shutdown_all)
+            if agent is not None:
+                def detach_lsp_manager() -> None:
+                    agent.lsp_manager = None
+
+                settle(
+                    "detach_lsp_manager",
+                    detach_lsp_manager,
+                )
+        if agent is not None:
             report("Releasing workspace monitors...")
-            self._agent.hook_registry.bind_runtime_service("git_monitor", None)
-            self._agent.git_monitor = None
+            settle(
+                "unbind_git_monitor",
+                lambda: agent.hook_registry.bind_runtime_service(
+                    "git_monitor", None
+                ),
+            )
+
+            def detach_git_monitor() -> None:
+                agent.git_monitor = None
+
+            settle(
+                "detach_git_monitor",
+                detach_git_monitor,
+            )
         self._git_monitor = None
         elapsed = time.monotonic() - shutdown_started_monotonic
-        if self._ui_bus is not None:
-            self._ui_bus.emit_operation_phase(
-                operation_id=shutdown_id,
-                operation="shutdown",
-                phase="completed",
-                status="completed",
-                elapsed_ms=int(elapsed * 1000),
-                agent_id=getattr(agent, "agent_id", None),
-                session_generation=getattr(agent, "session_generation", None),
-                session_id=getattr(agent, "current_session_id", None),
+        failure_total = sum(failures.values())
+        if ui_reporter is not None:
+            final_status = "failed" if failure_total else "completed"
+            first_error_type = next(iter(failures), (None, None))[1]
+            emitted, _ = settle(
+                "shutdown_ui_final",
+                lambda: ui_reporter.emit_operation_phase(
+                    operation_id=shutdown_id,
+                    operation="shutdown",
+                    phase=final_status,
+                    status=final_status,
+                    detail=(
+                        f"{failure_total} cleanup failure(s)"
+                        if failure_total
+                        else None
+                    ),
+                    elapsed_ms=int(elapsed * 1000),
+                    error_type=first_error_type,
+                    agent_id=getattr(agent, "agent_id", None),
+                    session_generation=getattr(agent, "session_generation", None),
+                    session_id=getattr(agent, "current_session_id", None),
+                ),
             )
-        report(f"Background services stopped in {elapsed:.1f}s.")
+            if not emitted:
+                ui_reporter = None
+        failure_total = sum(failures.values())
+        if failure_total:
+            report(
+                "Background service cleanup finished with "
+                f"{failure_total} failure(s) in {elapsed:.1f}s."
+            )
+        else:
+            report(f"Background services stopped in {elapsed:.1f}s.")
+        self._last_cleanup_failures = tuple(
+            (ref, error_type, count)
+            for (ref, error_type), count in failures.items()
+        )
         self._agent = None
         self._ui_bus = None
+        if interrupted is not None:
+            raise interrupted
 
     def _init_mcp(
         self, mcp_servers: list[Any], agent: Agent, ui_bus: UIEventBus

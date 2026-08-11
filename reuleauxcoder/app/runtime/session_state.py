@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import threading
+import time
 
 from reuleauxcoder.app.runtime.approval import (
     merge_approval_config,
@@ -15,7 +16,11 @@ from reuleauxcoder.domain.config.models import (
     ApprovalRuleConfig,
     Config,
 )
-from reuleauxcoder.domain.session.models import Session, SessionRuntimeState
+from reuleauxcoder.domain.session.models import (
+    Session,
+    SessionRestoreIssue,
+    SessionRuntimeState,
+)
 from reuleauxcoder.infrastructure.persistence.session_store import (
     DEFAULT_SESSION_FINGERPRINT,
 )
@@ -27,8 +32,17 @@ _LIVE_SNAPSHOT_DELAY_SECONDS = 0.15
 class _LiveSessionPersistence:
     """Coalesce full snapshots while the append-only ledger stays durable."""
 
-    def __init__(self, persist, *, delay: float = _LIVE_SNAPSHOT_DELAY_SECONDS):
+    def __init__(
+        self,
+        persist,
+        *,
+        incident_sink=None,
+        stop_sink=None,
+        delay: float = _LIVE_SNAPSHOT_DELAY_SECONDS,
+    ):
         self._persist = persist
+        self._incident_sink = incident_sink
+        self._stop_sink = stop_sink
         self._delay = max(0.0, delay)
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
@@ -40,21 +54,32 @@ class _LiveSessionPersistence:
         if not deferred:
             self.flush()
             return
+        scheduling_error: BaseException | None = None
         with self._lock:
             if self._closed:
                 return
             self._generation += 1
             generation = self._generation
             if self._timer is not None:
-                self._timer.cancel()
-            timer = threading.Timer(
-                self._delay,
-                self._run_deferred,
-                args=(generation,),
-            )
-            timer.daemon = True
-            self._timer = timer
-            timer.start()
+                try:
+                    self._timer.cancel()
+                except BaseException as error:
+                    scheduling_error = error
+            try:
+                timer = threading.Timer(
+                    self._delay,
+                    self._run_deferred,
+                    args=(generation,),
+                )
+                timer.daemon = True
+                self._timer = timer
+                timer.start()
+            except BaseException as error:
+                self._timer = None
+                scheduling_error = error
+        if scheduling_error is not None:
+            # Scheduling observes an already committed ledger/message mutation.
+            self._record_failure(scheduling_error)
 
     def _run_deferred(self, generation: int) -> None:
         with self._lock:
@@ -67,10 +92,31 @@ class _LiveSessionPersistence:
                     return
             try:
                 self._persist()
-            except Exception:
+            except BaseException as error:
                 # The event itself was fsync'd before this best-effort snapshot.
                 # A later forced flush or restore-tail reconstruction recovers.
+                self._record_failure(error)
                 return
+
+    def _record_failure(self, error: BaseException) -> None:
+        if isinstance(
+            error, (KeyboardInterrupt, SystemExit, GeneratorExit)
+        ) and callable(self._stop_sink):
+            try:
+                self._stop_sink()
+            except BaseException:
+                pass
+        if not callable(self._incident_sink):
+            return
+        try:
+            self._incident_sink(
+                "session_snapshot",
+                _safe_persistence_error_type(error),
+                "session_persistence",
+            )
+        except BaseException:
+            # This is the final non-recursive diagnostic boundary.
+            pass
 
     def flush(self) -> None:
         with self._lock:
@@ -81,12 +127,106 @@ class _LiveSessionPersistence:
             if timer is not None:
                 timer.cancel()
         with self._write_lock:
-            self._persist()
+            try:
+                self._persist()
+            except BaseException as error:
+                self._record_failure(error)
+                raise
 
     def close(self) -> None:
         self.flush()
         with self._lock:
             self._closed = True
+
+
+def _safe_persistence_error_type(error: BaseException) -> str:
+    name = type(error).__name__
+    if name and len(name) <= 64 and name.isascii() and name.replace("_", "").isalnum():
+        return name
+    return "Exception"
+
+
+def _request_cooperative_stop(agent: Agent, error: BaseException) -> None:
+    if not isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+        return
+    request_stop = getattr(agent, "request_stop", None)
+    if not callable(request_stop):
+        return
+    try:
+        request_stop()
+    except BaseException:
+        # The bounded incident fallback below remains the durable diagnostic.
+        pass
+
+
+def _retain_persistence_incident(
+    agent: Agent,
+    phase: str,
+    error_type: str,
+    ref: str,
+) -> None:
+    """Retain an observer failure even when the public incident sink is broken."""
+    recorder = getattr(agent, "record_runtime_issue", None)
+    recorder_error: BaseException | None = None
+    if callable(recorder):
+        try:
+            if recorder(phase, error_type, ref) is not False:
+                return
+            recorder_error = RuntimeError("runtime issue recorder rejected incident")
+        except BaseException as error:
+            recorder_error = error
+            _request_cooperative_stop(agent, error)
+    try:
+        # Bypass an overridden public recorder without recursively emitting.
+        Agent.record_runtime_issue(agent, phase, error_type, ref)
+        if recorder_error is not None:
+            Agent.record_runtime_issue(
+                agent,
+                "runtime_issue_recorder",
+                _safe_persistence_error_type(recorder_error),
+                ref,
+            )
+        return
+    except BaseException as fallback_error:
+        _request_cooperative_stop(agent, fallback_error)
+
+    # Last-resort fact carrier used by the model-facing session issue projection.
+    # Preserve existing restore degradation instead of rewriting the primary facts.
+    try:
+        existing = tuple(getattr(agent, "session_restore_issues", ()))
+        original = SessionRestoreIssue(
+            phase=phase,
+            error_type=error_type,
+            ref=ref,
+        )
+        recorder_issue = SessionRestoreIssue(
+            phase="runtime_issue_recorder",
+            error_type=(
+                _safe_persistence_error_type(recorder_error)
+                if recorder_error is not None
+                else "RuntimeIssueRecorderError"
+            ),
+            ref="session_persistence",
+        )
+        agent.session_restore_issues = (*existing, original, recorder_issue)
+    except BaseException as final_error:
+        _request_cooperative_stop(agent, final_error)
+        agent._control_plane_recovery_required = True
+
+
+def _record_persistence_bind_failure(
+    agent: Agent,
+    error: BaseException,
+) -> SessionRestoreIssue:
+    """Retain one post-switch bind failure without pretending to roll back."""
+    issue = SessionRestoreIssue(
+        phase="session_persistence_bind",
+        error_type=_safe_persistence_error_type(error),
+        ref="history_ledger",
+    )
+    agent._control_plane_recovery_required = True
+    _retain_persistence_incident(agent, issue.phase, issue.error_type, issue.ref)
+    return issue
 
 
 def get_session_fingerprint(config: Config, agent: Agent) -> str:
@@ -126,19 +266,20 @@ def bind_session_persistence(
     session_id: str,
     *,
     fingerprint: str,
-) -> None:
+    events_path=None,
+) -> SessionRestoreIssue | None:
     """Bind live ledger fsync and replay snapshots to the active session."""
-    agent.current_session_id = session_id
-    ledger = getattr(agent, "history_ledger", None)
-    bind_context = getattr(ledger, "bind_context", None)
-    if callable(bind_context):
-        bind_context(
-            session_id=session_id,
-            agent_id=getattr(agent, "agent_id", None),
-        )
     bind = getattr(agent, "bind_session_persistence", None)
     if not callable(bind):
-        return
+        agent.current_session_id = session_id
+        ledger = getattr(agent, "history_ledger", None)
+        bind_context = getattr(ledger, "bind_context", None)
+        if callable(bind_context):
+            bind_context(
+                session_id=session_id,
+                agent_id=getattr(agent, "agent_id", None),
+            )
+        return None
 
     def persist_snapshot() -> None:
         context_lock = getattr(agent, "_context_revision_lock", None)
@@ -169,23 +310,67 @@ def bind_session_persistence(
         if monitor is None:
             persist_snapshot()
             return
-        with monitor.measure(
-            "persistence",
-            "session_snapshot",
-            attributes={
-                "session_id": session_id,
-                "incremental": True,
-            },
-        ):
+        started = time.monotonic()
+        status = "error"
+        try:
             persist_snapshot()
+            status = "ok"
+        finally:
+            try:
+                monitor.record(
+                    "persistence",
+                    "session_snapshot",
+                    (time.monotonic() - started) * 1000,
+                    status=status,
+                    attributes={
+                        "session_id": session_id,
+                        "incremental": True,
+                    },
+                )
+            except BaseException as error:
+                # Monitoring is an observer. It may request cooperative stop,
+                # but it cannot rewrite the persistence outcome.
+                _request_cooperative_stop(agent, error)
+                _retain_persistence_incident(
+                    agent,
+                    "persistence_monitor",
+                    _safe_persistence_error_type(error),
+                    "session_snapshot",
+                )
 
-    resolve_events_path = getattr(store, "get_session_events_path", None)
-    events_path = (
-        resolve_events_path(session_id)
-        if callable(resolve_events_path)
-        else store.sessions_dir / session_id / "events.jsonl"
-    )
-    bind(events_path=events_path, callback=_LiveSessionPersistence(persist))
+    # Resolve and validate the filesystem target before changing live identity.
+    if events_path is None:
+        resolve_events_path = getattr(store, "get_session_events_path", None)
+        events_path = (
+            resolve_events_path(session_id)
+            if callable(resolve_events_path)
+            else store.sessions_dir / session_id / "events.jsonl"
+        )
+    agent.current_session_id = session_id
+    ledger = getattr(agent, "history_ledger", None)
+    bind_context = getattr(ledger, "bind_context", None)
+    try:
+        if callable(bind_context):
+            bind_context(
+                session_id=session_id,
+                agent_id=getattr(agent, "agent_id", None),
+            )
+        bind(
+            events_path=events_path,
+            callback=_LiveSessionPersistence(
+                persist,
+                incident_sink=lambda phase, error_type, ref: (
+                    _retain_persistence_incident(agent, phase, error_type, ref)
+                ),
+                stop_sink=getattr(agent, "request_stop", None),
+            ),
+        )
+    except KeyboardInterrupt as error:
+        _record_persistence_bind_failure(agent, error)
+        raise
+    except BaseException as error:
+        return _record_persistence_bind_failure(agent, error)
+    return None
 
 
 def get_runtime_approval_config(config: Config, agent: Agent) -> ApprovalConfig:

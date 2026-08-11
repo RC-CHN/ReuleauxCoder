@@ -515,6 +515,12 @@ class MiniTUIApplication:
                 self.current_session_id != previous_session_id
                 or self.agent.session_generation != previous_generation
             )
+            if result["action"] == "continue" and session_changed:
+                self.events.restore_control_state(
+                    self.agent.plan_controller.state,
+                    self.agent.plan_controller.progress,
+                    session_id=self.current_session_id,
+                )
             if (
                 result.get("action_id") == "sessions.new"
                 and result["action"] == "continue"
@@ -524,12 +530,6 @@ class MiniTUIApplication:
                 self._follow_transcript = True
                 self._transcript_scroll = 0
                 self.transcript_pane.vertical_scroll = 0
-            if result["action"] == "continue" and session_changed:
-                self.events.restore_control_state(
-                    self.agent.plan_controller.state,
-                    self.agent.plan_controller.progress,
-                    session_id=self.current_session_id,
-                )
             if result["action"] == "exit":
                 drain_deferred = False
                 self._clear_deferred_commands()
@@ -910,6 +910,28 @@ class MiniTUIApplication:
             # Minimal/dumb outputs can omit raw terminal control support.
             return
 
+    def _report_ui_projection_failure(
+        self,
+        subsystem: str,
+        error: BaseException,
+        *,
+        request_repaint: bool = True,
+    ) -> None:
+        reporter = getattr(self.events, "report_projection_failure", None)
+        if not callable(reporter):
+            return
+        try:
+            reporter(
+                subsystem,
+                error,
+                request_repaint=request_repaint,
+            )
+        except KeyboardInterrupt:
+            raise
+        except BaseException:
+            # Final UI observer boundary; never cover the original render fault.
+            return
+
     def _before_render(self, _app) -> None:
         """Clamp scrolling and follow new output only while tail-follow is on."""
         try:
@@ -926,7 +948,12 @@ class MiniTUIApplication:
                 != getattr(self, "_last_terminal_columns", size.columns)
             )
             if resized:
-                self._sync_process_terminal_size(size.rows, size.columns)
+                try:
+                    self._sync_process_terminal_size(size.rows, size.columns)
+                except KeyboardInterrupt:
+                    raise
+                except BaseException as error:
+                    self._report_ui_projection_failure("terminal_resize", error)
             viewport = max(
                 1,
                 (
@@ -946,8 +973,15 @@ class MiniTUIApplication:
                 if self._transcript_scroll >= maximum:
                     self._follow_transcript = True
             self.transcript_pane.vertical_scroll = self._transcript_scroll
-        except Exception:
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
             # Rendering must stay available on minimal/dumb terminal outputs.
+            self._report_ui_projection_failure(
+                "before_render",
+                error,
+                request_repaint=False,
+            )
             return
 
     def _sync_process_terminal_size(self, rows: int, columns: int) -> None:

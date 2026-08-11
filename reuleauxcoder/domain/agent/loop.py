@@ -162,10 +162,10 @@ class AgentLoop:
         self._tool_schema_cache_key: tuple | None = None
         self._tool_schema_cache: tuple[dict, ...] = ()
 
-    def _flush_batch_runtime_context(self) -> bool:
+    def _flush_runtime_issues(self) -> bool:
         flush = getattr(
             self.agent._executor,
-            "flush_pending_batch_runtime_context",
+            "flush_pending_runtime_issues",
             None,
         )
         return not callable(flush) or flush() is not None
@@ -229,21 +229,120 @@ class AgentLoop:
             return None
         return (len(entries), "\n".join(lines))
 
+    @staticmethod
+    def _safe_issue_field(value: object, fallback: str) -> str:
+        """Keep diagnostic facts bounded and incapable of carrying content."""
+        if not isinstance(value, str):
+            return fallback
+        if not value or len(value) > 64 or not value.isascii():
+            return fallback
+        if not value.replace("_", "").isalnum():
+            return fallback
+        return value
+
+    def _safe_issue_data(
+        self,
+        raw_issues: object,
+        *,
+        phase_fallback: str,
+        ref_fallback: str,
+    ) -> list[dict[str, object]]:
+        if not isinstance(raw_issues, (list, tuple)):
+            return []
+        facts: list[dict[str, object]] = []
+        for issue in raw_issues[:8]:
+            fact: dict[str, object] = {
+                "phase": self._safe_issue_field(
+                    getattr(issue, "phase", None), phase_fallback
+                ),
+                "error_type": self._safe_issue_field(
+                    getattr(issue, "error_type", None), "Exception"
+                ),
+                "ref": self._safe_issue_field(
+                    getattr(issue, "ref", None), ref_fallback
+                ),
+            }
+            count = getattr(issue, "count", 0)
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                fact["count"] = min(count, 1_000_000)
+            facts.append(fact)
+        return facts
+
+    def _safe_session_issue_data(self, attribute: str) -> list[dict[str, object]]:
+        return self._safe_issue_data(
+            getattr(self.agent, attribute, ()),
+            phase_fallback="restore",
+            ref_fallback="session_artifact",
+        )
+
+    def _safe_runtime_issue_data(self) -> list[dict[str, object]]:
+        snapshot = getattr(self.agent, "runtime_issue_snapshot", None)
+        if not callable(snapshot):
+            return []
+        try:
+            raw_issues = snapshot()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            return [
+                {
+                    "phase": "runtime_issue_snapshot",
+                    "error_type": self._safe_issue_field(
+                        type(error).__name__, "Exception"
+                    ),
+                    "ref": "agent_state",
+                    "count": 1,
+                }
+            ]
+        return self._safe_issue_data(
+            raw_issues,
+            phase_fallback="runtime",
+            ref_fallback="observer",
+        )
+
     def _runtime_tail_message(self) -> dict:
         """Build a bounded ephemeral execution overlay appended only at send time."""
         uname = platform.uname()
-        runtime_cwd = (
-            getattr(self.agent, "runtime_working_directory", None) or os.getcwd()
-        )
         now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         now_local = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
         directory: list[str] = []
-        try:
-            listing = self._dir_listing(runtime_cwd, max_entries=30)
-            if listing:
-                directory = [line.strip() for line in listing[1].splitlines()]
-        except Exception:
-            pass
+        runtime_context_issues: list[dict[str, object]] = []
+        runtime_cwd = getattr(self.agent, "runtime_working_directory", None)
+        if not runtime_cwd:
+            try:
+                runtime_cwd = os.getcwd()
+            except KeyboardInterrupt:
+                raise
+            except BaseException as error:
+                runtime_cwd = None
+                runtime_context_issues.append(
+                    {
+                        "phase": "runtime_context",
+                        "error_type": self._safe_issue_field(
+                            type(error).__name__, "Exception"
+                        ),
+                        "ref": "working_directory",
+                        "count": 1,
+                    }
+                )
+        if runtime_cwd is not None:
+            try:
+                listing = self._dir_listing(runtime_cwd, max_entries=30)
+                if listing:
+                    directory = [line.strip() for line in listing[1].splitlines()]
+            except KeyboardInterrupt:
+                raise
+            except BaseException as error:
+                runtime_context_issues.append(
+                    {
+                        "phase": "runtime_context",
+                        "error_type": self._safe_issue_field(
+                            type(error).__name__, "Exception"
+                        ),
+                        "ref": "directory_listing",
+                        "count": 1,
+                    }
+                )
         notes_text = self._render_notes(max_chars=1_200)
 
         plan = self.agent.plan_controller.state
@@ -310,6 +409,26 @@ class AgentLoop:
                 "notes": notes_text,
             },
         }
+        restore_issues = self._safe_session_issue_data("session_restore_issues")
+        if restore_issues:
+            data["session_restore"] = {
+                "status": "degraded",
+                "issues": restore_issues,
+            }
+        inventory_issues = self._safe_session_issue_data("session_inventory_issues")
+        if inventory_issues:
+            data["session_inventory"] = {
+                "status": "degraded",
+                "issues": inventory_issues,
+            }
+        runtime_issues = (
+            runtime_context_issues + self._safe_runtime_issue_data()
+        )[:8]
+        if runtime_issues:
+            data["runtime_incidents"] = {
+                "status": "degraded",
+                "issues": runtime_issues,
+            }
         encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
         encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e")
         if len(encoded) > 7_000:
@@ -349,8 +468,11 @@ class AgentLoop:
         try:
             rendered = render(max_chars=max_chars)
             return rendered if isinstance(rendered, str) else ""
-        except Exception as exc:
-            return f"Notes unavailable: {type(exc).__name__}"
+        except KeyboardInterrupt:
+            raise
+        except BaseException as error:
+            error_type = self._safe_issue_field(type(error).__name__, "Exception")
+            return f"Notes unavailable: {error_type}"
 
     def _full_messages(self) -> list[dict]:
         monitor = getattr(self.agent, "performance_monitor", None)
@@ -927,10 +1049,10 @@ class AgentLoop:
         self.round_limit_reached = False
         self.agent.report_operation_phase("mcp_wait")
         self.agent.seal_startup_capabilities()
+        if not self._flush_runtime_issues():
+            return "(stopped: runtime failure facts could not be published)"
         if self.agent.stop_requested():
             return "(stopped by cancellation request)"
-        if not self._flush_batch_runtime_context():
-            return "(stopped: parallel batch runtime facts could not be published)"
         # Compress if needed
         self.agent.report_operation_phase("context_prepare")
         self.agent.maybe_compress_context(
@@ -1105,8 +1227,8 @@ class AgentLoop:
                         source="tool_result",
                     )
 
-            if not self._flush_batch_runtime_context():
-                return "(stopped: parallel batch runtime facts could not be published)"
+            if not self._flush_runtime_issues():
+                return "(stopped: runtime failure facts could not be published)"
 
             if self.agent._park_request is not None:
                 request_id = self.agent._park_request.get("guidance_request_id", "-")
