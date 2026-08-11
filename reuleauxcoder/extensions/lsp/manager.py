@@ -909,7 +909,11 @@ class LspManager:
 
         try:
             await self._do_spawn(client, cmd, args, init_opts)
+        except asyncio.CancelledError:
+            await client.abort()
+            raise
         except Exception as e:
+            await client.abort()
             logger.warning(
                 "Failed to spawn LSP server (async) for %s (%s %s): %s",
                 lang.name,

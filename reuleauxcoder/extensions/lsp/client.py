@@ -34,6 +34,7 @@ MAX_LSP_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 # Default timeouts
 INITIALIZE_TIMEOUT = 30.0  # seconds — initial indexing can be slow
 REQUEST_TIMEOUT = 10.0  # seconds — per-request timeout for active tools
+ABORT_TIMEOUT = 1.0
 
 # LSP protocol version
 LSP_PROTOCOL_VERSION = "2.0"
@@ -327,16 +328,36 @@ class LspClient:
             await process.wait()
         finally:
             self._fail_all_pending("LSP server shut down")
-            self._process = None
-            self._reader_task = None
-            self._initialized = False
-            self._diagnostics_buffer.clear()
-            self._diagnostics_snapshots.clear()
-            self._diagnostic_generations.clear()
-            self._diagnostic_document_versions.clear()
-            self._diagnostic_result_ids.clear()
-            self._document_versions.clear()
-            self._supports_pull_diagnostics = False
+            self._reset_runtime_state()
+
+    async def abort(self) -> None:
+        """Force-close a failed or cancelled transport without an LSP handshake."""
+        process = self._process
+        reader_task = self._reader_task
+
+        if reader_task is not None:
+            reader_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await reader_task
+
+        if process is not None and process.stdin is not None:
+            with suppress(Exception):
+                process.stdin.close()
+                await process.stdin.wait_closed()
+
+        if process is not None and process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=ABORT_TIMEOUT)
+            except asyncio.TimeoutError:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                with suppress(Exception):
+                    await process.wait()
+
+        self._fail_all_pending("LSP server aborted")
+        self._reset_runtime_state()
 
     # === Internal: Request/Response ===
 
@@ -596,6 +617,18 @@ class LspClient:
                 # "Future exception was never retrieved".
                 future.exception()
         self._pending.clear()
+
+    def _reset_runtime_state(self) -> None:
+        self._process = None
+        self._reader_task = None
+        self._initialized = False
+        self._diagnostics_buffer.clear()
+        self._diagnostics_snapshots.clear()
+        self._diagnostic_generations.clear()
+        self._diagnostic_document_versions.clear()
+        self._diagnostic_result_ids.clear()
+        self._document_versions.clear()
+        self._supports_pull_diagnostics = False
 
     # === Helpers ===
 

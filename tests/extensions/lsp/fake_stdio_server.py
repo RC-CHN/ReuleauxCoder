@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -17,10 +18,12 @@ class FakeLspServer:
         mode: str,
         log_path: Path,
         first_save_gate: Path | None,
+        initialize_behavior: str,
     ) -> None:
         self.mode = mode
         self.log_path = log_path
         self.first_save_gate = first_save_gate
+        self.initialize_behavior = initialize_behavior
         self.documents: dict[str, dict[str, Any]] = {}
         self.result_versions: dict[str, int] = {}
         self.result_ids: dict[str, str] = {}
@@ -28,6 +31,7 @@ class FakeLspServer:
         self.trace_sequence = 0
 
     def run(self) -> None:
+        self._log(direction="state", method="server_started", pid=os.getpid())
         while message := self._read_message():
             method = message.get("method")
             trace = self._request_trace(message)
@@ -38,6 +42,22 @@ class FakeLspServer:
                 **trace,
             )
             if method == "initialize":
+                if self.initialize_behavior == "hang":
+                    self._log(direction="state", method="initialize_hanging")
+                    continue
+                if self.initialize_behavior == "error":
+                    self._send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message["id"],
+                            "error": {
+                                "code": -32002,
+                                "message": "deterministic initialize failure",
+                            },
+                        },
+                        method="response:initialize:error",
+                    )
+                    continue
                 capabilities: dict[str, Any] = {
                     "textDocumentSync": {
                         "openClose": True,
@@ -240,11 +260,17 @@ def main() -> None:
     parser.add_argument("--mode", choices=("save-only", "push", "pull"), required=True)
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--block-first-save-until", type=Path)
+    parser.add_argument(
+        "--initialize-behavior",
+        choices=("normal", "error", "hang"),
+        default="normal",
+    )
     args = parser.parse_args()
     FakeLspServer(
         mode=args.mode,
         log_path=args.log,
         first_save_gate=args.block_first_save_until,
+        initialize_behavior=args.initialize_behavior,
     ).run()
 
 
