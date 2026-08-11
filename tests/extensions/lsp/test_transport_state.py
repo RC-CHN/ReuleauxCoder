@@ -209,7 +209,7 @@ def test_state_history_is_bounded_and_scope_projection_is_secret_free(
     assert current.generation == MAX_TRANSPORT_STATE_HISTORY + 10
     assert len(scopes) == 1
     assert f"g{current.generation}:error" in scopes[0]
-    assert "launcher=fake-lsp" in scopes[0]
+    assert "launcher=configured-launcher" in scopes[0]
     assert "InitializeError" in scopes[0]
     assert "credential=" not in scopes[0]
     assert "/private/credential-bin" not in scopes[0]
@@ -337,7 +337,7 @@ def test_missing_launcher_negative_cache_reuses_generation_then_retries(
         assert missing is not None
         assert missing.state is LspTransportState.ERROR
         assert missing.generation == 1
-        assert missing.launcher == Path(sys.executable).name
+        assert missing.launcher == "configured-launcher"
         assert missing.error_type == "LauncherNotFound"
         assert missing.error_phase == "availability"
         assert missing.retry_at_monotonic == pytest.approx(

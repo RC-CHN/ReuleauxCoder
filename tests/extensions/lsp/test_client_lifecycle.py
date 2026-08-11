@@ -8,7 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -157,6 +157,27 @@ def test_write_failure_removes_pending_request(tmp_path: Path) -> None:
         asyncio.run(client._send_request("test/write", {}, timeout=1.0))
 
     assert client._pending == {}
+
+
+def test_custom_launcher_name_is_not_exposed_on_spawn_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "credential-launcher-must-not-leak"
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    with (
+        patch(
+            "reuleauxcoder.extensions.lsp.client.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=FileNotFoundError(secret)),
+        ),
+        caplog.at_level("INFO"),
+        pytest.raises(LspClientError) as raised,
+    ):
+        asyncio.run(client.spawn(f"/private/{secret}", []))
+
+    assert "launcher=configured-launcher" in str(raised.value)
+    assert secret not in repr((raised.value, caplog.text))
 
 
 def test_protocol_write_failure_marks_transport_failed_and_kills_process_safely(

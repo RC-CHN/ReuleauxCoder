@@ -96,6 +96,7 @@ DIAGNOSTIC_BATCH_TTL_SECONDS = 300.0
 MAX_PENDING_DIAGNOSTIC_BATCHES_PER_OWNER = 32
 MAX_TRANSPORT_STATE_HISTORY = 256
 MAX_LSP_STDERR_RECORDS = 16
+_KNOWN_LAUNCHER_NAMES = frozenset({"npx", "rust-analyzer", "gopls", "clangd", "node"})
 _LSP_PERFORMANCE_ATTRIBUTE_KEYS = frozenset(
     {
         "language",
@@ -3390,12 +3391,10 @@ class LspManager:
         self._transport_state_history.append(status)
         return status
 
-    @classmethod
-    def _launcher_name(cls, command: str) -> str:
-        return cls._safe_fact(
-            Path(command).name or "configured-launcher",
-            "configured-launcher",
-        )
+    @staticmethod
+    def _launcher_name(command: str) -> str:
+        name = Path(command).name
+        return name if name in _KNOWN_LAUNCHER_NAMES else "configured-launcher"
 
     @staticmethod
     def _describe_transport_status(status: LspTransportStatusView) -> str:

@@ -458,7 +458,7 @@ class LspClient:
         full_args = [cmd] + args
         logger.info(
             "Spawning LSP server: launcher=%s arg_count=%d lang=%s",
-            Path(cmd).name or "configured-launcher",
+            _safe_launcher_name(cmd),
             len(args),
             self._language_id_string,
         )
@@ -474,8 +474,7 @@ class LspClient:
         except FileNotFoundError:
             stderr_capture.mark_finalized()
             raise LspClientError(
-                "LSP launcher was not found "
-                f"(launcher={Path(cmd).name or 'configured-launcher'})"
+                f"LSP launcher was not found (launcher={_safe_launcher_name(cmd)})"
             ) from None
         except OSError as e:
             stderr_capture.mark_finalized()
