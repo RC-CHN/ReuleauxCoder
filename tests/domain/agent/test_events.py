@@ -31,6 +31,18 @@ def test_agent_event_tool_call_end_preserves_full_result() -> None:
     assert event.correlation_id == "call-1"
 
 
+def test_agent_event_infers_failure_from_legacy_error_result() -> None:
+    event = AgentEvent.tool_call_end(
+        "legacy", "Error: required path is missing", tool_call_id="call-error"
+    )
+
+    assert event.tool_success is False
+    assert event.tool_outcome is not None
+    assert event.tool_outcome.metadata["error_type"] == "LegacyErrorResult"
+    assert "details=unstructured_tool_error" in event.tool_result
+    assert "Error: required path is missing" in event.tool_result
+
+
 def test_agent_event_subagent_completed_contains_payload() -> None:
     event = AgentEvent.subagent_completed(
         job_id="job-1",

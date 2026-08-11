@@ -17,6 +17,7 @@ from reuleauxcoder import __version__
 from reuleauxcoder.extensions.mcp.models import (
     MCPRequestHandle,
     MCPRequestState,
+    MCPToolCallResult,
     MCPToolInfo,
 )
 from reuleauxcoder.infrastructure.platform import get_platform_info
@@ -52,6 +53,34 @@ class MCPToolRequestCancelled(MCPRequestError):
     def __init__(self, request_id: int):
         super().__init__(f"MCP tools/call request {request_id} was cancelled")
         self.request_id = request_id
+
+
+_TOOL_RESULT_PROTOCOL_CODES = frozenset(
+    {
+        "result_not_object",
+        "is_error_not_boolean",
+        "content_not_array",
+        "content_item_not_object",
+        "text_content_invalid",
+        "resource_content_invalid",
+        "image_content_invalid",
+        "audio_content_invalid",
+        "unsupported_content_type",
+    }
+)
+
+
+class MCPToolResultProtocolError(MCPRequestError):
+    """A settled ``tools/call`` response violated the result schema."""
+
+    def __init__(self, code: str, *, request_id: int):
+        super().__init__("MCP tools/call result violated the protocol schema")
+        self.code = (
+            code if code in _TOOL_RESULT_PROTOCOL_CODES else "invalid_tool_result"
+        )
+        self.request_id = (
+            request_id if type(request_id) is int and request_id >= 0 else 0
+        )
 
 
 class MCPClient:
@@ -241,7 +270,7 @@ class MCPClient:
         *,
         cancellation_signal: "CancellationSignal | None" = None,
         _retry: bool = False,
-    ) -> str:
+    ) -> str | MCPToolCallResult:
         if not self._initialized:
             # Try reconnect once if not initialized
             if not _retry:
@@ -281,37 +310,8 @@ class MCPClient:
                 handle,
                 cancellation_signal=cancellation_signal,
             )
-            if not result:
-                return (
-                    "Error: MCP tool returned no response. Its side effects are "
-                    "unknown; inspect server state before deciding whether to retry."
-                )
-
-            content = result.get("content", [])
-            if not content:
-                return "(no output)"
-
-            text_parts = []
-            for item in content:
-                if item.get("type") == "text":
-                    text_parts.append(item.get("text", ""))
-                elif item.get("type") == "resource":
-                    resource = item.get("resource", {})
-                    text_parts.append(f"[Resource: {resource.get('uri', 'unknown')}]")
-                elif item.get("type") == "image":
-                    mime_type = item.get("mimeType", "unknown")
-                    data = item.get("data", "")
-                    text_parts.append(f"[Image: {mime_type}, {len(data)} chars base64]")
-                elif item.get("type") == "audio":
-                    mime_type = item.get("mimeType", "unknown")
-                    data = item.get("data", "")
-                    text_parts.append(f"[Audio: {mime_type}, {len(data)} chars base64]")
-
-            result_text = "\n".join(text_parts)
-            if result.get("isError"):
-                return f"Error: {result_text}"
-            return result_text or "(no output)"
-        except MCPRequestNotDispatched as e:
+            return _parse_tool_call_result(result, request_id=handle.request_id)
+        except MCPRequestNotDispatched:
             # A retry is safe only while the transport proves no bytes were
             # accepted for this request.
             if not _retry and not (
@@ -324,7 +324,8 @@ class MCPClient:
                         cancellation_signal=cancellation_signal,
                         _retry=True,
                     )
-            return f"Error calling MCP tool before dispatch: {e}"
+            raise
+
     async def _request(self, method: str, params: dict) -> MCPRequestHandle:
         if not self._writer or not self._reader:
             raise MCPRequestNotDispatched("MCP transport is not connected")
@@ -543,3 +544,73 @@ class MCPClient:
                         request_id=handle.request_id,
                     )
                 handle.future.set_exception(pending_error)
+
+
+def _parse_tool_call_result(
+    result: object,
+    *,
+    request_id: int,
+) -> MCPToolCallResult:
+    """Validate and project one MCP ``CallToolResult`` without guessing shapes."""
+    if not isinstance(result, dict):
+        raise MCPToolResultProtocolError("result_not_object", request_id=request_id)
+
+    raw_is_error = result.get("isError", False)
+    if type(raw_is_error) is not bool:
+        raise MCPToolResultProtocolError("is_error_not_boolean", request_id=request_id)
+
+    if "content" not in result or not isinstance(result["content"], list):
+        raise MCPToolResultProtocolError("content_not_array", request_id=request_id)
+    content = result["content"]
+
+    text_parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            raise MCPToolResultProtocolError(
+                "content_item_not_object", request_id=request_id
+            )
+        item_type = item.get("type")
+        if item_type == "text":
+            text = item.get("text")
+            if not isinstance(text, str):
+                raise MCPToolResultProtocolError(
+                    "text_content_invalid", request_id=request_id
+                )
+            text_parts.append(text)
+        elif item_type == "resource":
+            resource = item.get("resource")
+            if not isinstance(resource, dict) or not isinstance(
+                resource.get("uri"), str
+            ):
+                raise MCPToolResultProtocolError(
+                    "resource_content_invalid", request_id=request_id
+                )
+            text_parts.append(f"[Resource: {resource['uri']}]")
+        elif item_type in {"image", "audio"}:
+            mime_type = item.get("mimeType")
+            data = item.get("data")
+            if not isinstance(mime_type, str) or not isinstance(data, str):
+                raise MCPToolResultProtocolError(
+                    f"{item_type}_content_invalid", request_id=request_id
+                )
+            label = "Image" if item_type == "image" else "Audio"
+            text_parts.append(f"[{label}: {mime_type}, {len(data)} chars base64]")
+        else:
+            raise MCPToolResultProtocolError(
+                "unsupported_content_type", request_id=request_id
+            )
+
+    if raw_is_error:
+        # CallToolResult content is the protocol-defined business-error channel
+        # intended for the model. Host exceptions never enter this value.
+        return MCPToolCallResult(
+            content="\n".join(text_parts) or "(no error details)",
+            is_error=True,
+            request_id=request_id,
+            error_content_items=len(content),
+        )
+    return MCPToolCallResult(
+        content="\n".join(text_parts) or "(no output)",
+        is_error=False,
+        request_id=request_id,
+    )

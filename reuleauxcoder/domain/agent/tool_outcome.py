@@ -205,12 +205,40 @@ class ToolOutcome:
         cls,
         result: str,
         *,
-        success: bool = True,
+        success: bool | None = None,
         error_kind: ToolErrorKind | None = None,
     ) -> "ToolOutcome":
-        """Single compatibility boundary for string-returning tools."""
+        """Single compatibility boundary for string-returning tools.
+
+        Historically, string-only tools reported failures with an ``Error:``
+        prefix.  Treat that established wire shape as a failure unless the
+        caller explicitly supplies ``success=True``.  The original text remains
+        model-visible because it is the legacy Tool API's expected business
+        error channel.  Host adapters must project caught exceptions into safe,
+        typed outcomes before reaching this compatibility boundary.
+        """
         if not isinstance(result, str):
             raise TypeError("legacy tool result must be a string")
+        inferred_legacy_failure = success is None and result.startswith("Error:")
+        if inferred_legacy_failure:
+            safe_message = (
+                "Tool execution failed "
+                "(phase=execute, error_type=LegacyErrorResult, "
+                "details=unstructured_tool_error)."
+            )
+            return cls(
+                status=ToolOutcomeStatus.FAILED,
+                summary="Tool execution failed",
+                content=f"{safe_message}\n\n{result}",
+                error_kind=error_kind or ToolErrorKind.EXECUTION,
+                metadata={
+                    "failure_phase": "execute",
+                    "error_type": "LegacyErrorResult",
+                    "error_detail_state": "unstructured_tool_error",
+                },
+            )
+        if success is None:
+            success = True
         status = ToolOutcomeStatus.SUCCEEDED
         if not success:
             if error_kind is ToolErrorKind.DENIED:

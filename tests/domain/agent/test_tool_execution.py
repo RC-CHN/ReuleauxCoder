@@ -207,6 +207,32 @@ def test_structured_failure_status_is_preserved_without_string_guessing() -> Non
     assert agent.events[-1].tool_outcome is failure
 
 
+def test_legacy_error_result_is_recorded_as_failure_with_business_detail() -> None:
+    tool = SimpleNamespace(
+        name="legacy",
+        execute=lambda **kwargs: "Error: required path is missing",
+        preflight_validate=lambda arguments, **kwargs: None,
+        schema=lambda: {"type": "function", "function": {"name": "legacy"}},
+    )
+    agent = _AgentStub(tool)
+
+    result = ToolExecutor(agent).execute(
+        ToolCall(id="legacy-failed", name="legacy", arguments={})
+    )
+
+    outcome = agent.events[-1].tool_outcome
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.error_kind is ToolErrorKind.EXECUTION
+    assert outcome.metadata == {
+        "failure_phase": "execute",
+        "error_type": "LegacyErrorResult",
+        "error_detail_state": "unstructured_tool_error",
+    }
+    assert agent.events[-1].tool_success is False
+    assert "error_type=LegacyErrorResult" in result
+    assert "Error: required path is missing" in result
+
+
 def test_missing_required_arguments_are_rejected_before_execution(tmp_path) -> None:
     target = tmp_path / "should-not-exist.txt"
     tool = WriteFileTool()

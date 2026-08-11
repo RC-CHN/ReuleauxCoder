@@ -36,6 +36,26 @@ class MCPRequestHandle:
     cancellation_sent: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class MCPToolCallResult:
+    """Protocol facts returned by one settled ``tools/call`` request."""
+
+    content: str
+    is_error: bool
+    request_id: int
+    error_content_items: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.content, str):
+            raise TypeError("content must be a string")
+        if type(self.is_error) is not bool:
+            raise TypeError("is_error must be a boolean")
+        if type(self.request_id) is not int or self.request_id < 0:
+            raise ValueError("request_id must be a non-negative integer")
+        if type(self.error_content_items) is not int or self.error_content_items < 0:
+            raise ValueError("error_content_items must be a non-negative integer")
+
+
 @dataclass(slots=True)
 class MCPServerStatus:
     """Structured status snapshot for one configured MCP server."""

@@ -94,7 +94,7 @@ class AgentEvent:
         tool_name: str,
         result: str,
         *,
-        success: bool = True,
+        success: bool | None = None,
         tool_call_id: str | None = None,
         outcome: ToolOutcome | None = None,
     ) -> "AgentEvent":
@@ -104,7 +104,7 @@ class AgentEvent:
             event_type=AgentEventType.TOOL_CALL_END,
             correlation_id=tool_call_id,
             tool_name=tool_name,
-            tool_result=result,
+            tool_result=(effective_outcome.model_text if outcome is None else result),
             tool_success=effective_outcome.success,
             tool_outcome=effective_outcome,
         )

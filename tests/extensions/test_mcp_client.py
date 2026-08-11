@@ -11,9 +11,14 @@ from reuleauxcoder.extensions.mcp.adapter import MCPTool
 from reuleauxcoder.extensions.mcp.client import (
     MCPClient,
     MCPRequestTransportLost,
+    MCPToolResultProtocolError,
     MCPToolRequestCancelled,
 )
-from reuleauxcoder.extensions.mcp.models import MCPToolInfo
+from reuleauxcoder.extensions.mcp.models import (
+    MCPRequestHandle,
+    MCPToolCallResult,
+    MCPToolInfo,
+)
 
 
 class _Writer:
@@ -123,6 +128,251 @@ def test_mcp_response_already_settled_wins_over_cancel_signal() -> None:
     asyncio.run(scenario())
 
 
+def test_mcp_client_preserves_server_reported_error_identity() -> None:
+    class _Client(MCPClient):
+        def is_connected(self) -> bool:
+            return True
+
+        async def _request(self, method, params):  # noqa: ARG002
+            return MCPRequestHandle(
+                request_id=37,
+                method="tools/call",
+                future=asyncio.get_running_loop().create_future(),
+            )
+
+        async def _await_request(self, handle, **kwargs):  # noqa: ARG002
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Invalid argument: path is required",
+                    }
+                ],
+                "isError": True,
+            }
+
+    async def scenario() -> None:
+        config = SimpleNamespace(
+            name="test", command="test", args=[], env={}, cwd=None
+        )
+        client = _Client(config)
+        client._initialized = True
+
+        result = await client.call_tool("mutate", {})
+
+        assert result == MCPToolCallResult(
+            content="Invalid argument: path is required",
+            is_error=True,
+            request_id=37,
+            error_content_items=1,
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        (None, "result_not_object"),
+        ({}, "content_not_array"),
+        ({"content": [], "isError": "true"}, "is_error_not_boolean"),
+        ({"content": "not-an-array"}, "content_not_array"),
+        ({"content": [42]}, "content_item_not_object"),
+        (
+            {"content": [{"type": "text", "text": 42}]},
+            "text_content_invalid",
+        ),
+        (
+            {"content": [{"type": "future-content"}]},
+            "unsupported_content_type",
+        ),
+    ],
+)
+def test_mcp_client_rejects_malformed_tool_result(payload, code) -> None:
+    class _Client(MCPClient):
+        def is_connected(self) -> bool:
+            return True
+
+        async def _request(self, method, params):  # noqa: ARG002
+            return MCPRequestHandle(
+                request_id=38,
+                method="tools/call",
+                future=asyncio.get_running_loop().create_future(),
+            )
+
+        async def _await_request(self, handle, **kwargs):  # noqa: ARG002
+            return payload
+
+    async def scenario() -> None:
+        config = SimpleNamespace(
+            name="test", command="test", args=[], env={}, cwd=None
+        )
+        client = _Client(config)
+        client._initialized = True
+
+        with pytest.raises(MCPToolResultProtocolError) as raised:
+            await client.call_tool("mutate", {})
+
+        assert raised.value.code == code
+        assert raised.value.request_id == 38
+
+    asyncio.run(scenario())
+
+
+def test_mcp_adapter_projects_reported_error_as_safe_failure() -> None:
+    business_error = "Invalid argument: path is required"
+
+    class _Client:
+        async def call_tool(self, *_args, **_kwargs):
+            return MCPToolCallResult(
+                content=business_error,
+                is_error=True,
+                request_id=41,
+                error_content_items=1,
+            )
+
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_loop)
+    thread.start()
+    assert ready.wait(timeout=2)
+    try:
+        tool = MCPTool(
+            _Client(),
+            MCPToolInfo(
+                name="mutate",
+                description="Mutate",
+                input_schema={"type": "object"},
+                server_name="test",
+            ),
+            loop,
+        )
+        outcome = tool.execute()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.metadata == {
+        "failure_phase": "tool_result",
+        "error_type": "MCPToolReportedError",
+        "mcp_request_id": 41,
+        "effect_state": "server_reported_failure",
+        "error_detail_state": "server_error_content",
+        "error_content_items": 1,
+    }
+    assert "error_type=MCPToolReportedError" in outcome.model_text
+    assert "request_id=41" in outcome.model_text
+    assert "details=server_error_content" in outcome.model_text
+    assert business_error in outcome.model_text
+    assert business_error in outcome.display_text
+
+
+def test_mcp_adapter_projects_protocol_error_as_safe_failure() -> None:
+    secret = "SENTINEL_PROTOCOL_SECRET"
+
+    class _Client:
+        async def call_tool(self, *_args, **_kwargs):
+            raise MCPToolResultProtocolError(secret, request_id=43)
+
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_loop)
+    thread.start()
+    assert ready.wait(timeout=2)
+    try:
+        tool = MCPTool(
+            _Client(),
+            MCPToolInfo(
+                name="mutate",
+                description="Mutate",
+                input_schema={"type": "object"},
+                server_name="test",
+            ),
+            loop,
+        )
+        outcome = tool.execute()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.metadata == {
+        "failure_phase": "tool_result_protocol",
+        "error_type": "MCPToolResultProtocolError",
+        "protocol_error_code": "invalid_tool_result",
+        "mcp_request_id": 43,
+        "effect_state": "unknown",
+    }
+    assert "error_type=MCPToolResultProtocolError" in outcome.model_text
+    assert "protocol_error_code=invalid_tool_result" in outcome.model_text
+    assert secret not in outcome.model_text
+    assert secret not in outcome.display_text
+    assert secret not in repr(outcome.metadata)
+
+
+def test_mcp_adapter_rejects_unknown_result_type_as_safe_failure() -> None:
+    secret = "SENTINEL_ADAPTER_RESULT_SECRET"
+
+    class _Client:
+        async def call_tool(self, *_args, **_kwargs):
+            return {"unexpected": secret}
+
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_loop)
+    thread.start()
+    assert ready.wait(timeout=2)
+    try:
+        tool = MCPTool(
+            _Client(),
+            MCPToolInfo(
+                name="mutate",
+                description="Mutate",
+                input_schema={"type": "object"},
+                server_name="test",
+            ),
+            loop,
+        )
+        outcome = tool.execute()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+
+    assert outcome.status is ToolOutcomeStatus.FAILED
+    assert outcome.metadata == {
+        "failure_phase": "adapter_result",
+        "error_type": "MCPAdapterResultType",
+        "effect_state": "unknown",
+    }
+    assert "phase=adapter_result" in outcome.model_text
+    assert "error_type=MCPAdapterResultType" in outcome.model_text
+    assert secret not in outcome.model_text
+    assert secret not in outcome.display_text
+    assert secret not in repr(outcome.metadata)
+
+
 def test_in_flight_tool_transport_loss_is_not_retried() -> None:
     class _Client(MCPClient):
         reconnect_calls = 0
@@ -190,14 +440,22 @@ def test_mcp_adapter_reports_cancelled_with_unknown_effect_state() -> None:
         loop.close()
 
     assert outcome.status is ToolOutcomeStatus.CANCELLED
-    assert outcome.metadata["effect_state"] == "unknown"
+    assert outcome.metadata == {
+        "failure_phase": "request_wait",
+        "error_type": "MCPToolRequestCancelled",
+        "effect_state": "unknown",
+        "mcp_request_id": 42,
+    }
+    assert "error_type=MCPToolRequestCancelled" in outcome.model_text
     assert "do not blindly repeat" in outcome.model_text
 
 
 def test_mcp_adapter_reports_lost_in_flight_result_as_unknown() -> None:
+    secret = "SENTINEL_TRANSPORT_SECRET"
+
     class _Client:
         async def call_tool(self, *_args, **_kwargs):
-            raise MCPRequestTransportLost("connection lost", request_id=17)
+            raise MCPRequestTransportLost(secret, request_id=17)
 
     loop = asyncio.new_event_loop()
     ready = threading.Event()
@@ -229,8 +487,13 @@ def test_mcp_adapter_reports_lost_in_flight_result_as_unknown() -> None:
 
     assert outcome.status is ToolOutcomeStatus.FAILED
     assert outcome.metadata == {
+        "failure_phase": "transport",
+        "error_type": "MCPRequestTransportLost",
         "effect_state": "unknown",
-        "mcp_server": "test",
         "mcp_request_id": 17,
     }
+    assert "error_type=MCPRequestTransportLost" in outcome.model_text
     assert "operation may have completed" in outcome.model_text
+    assert secret not in outcome.model_text
+    assert secret not in outcome.display_text
+    assert secret not in repr(outcome.metadata)
