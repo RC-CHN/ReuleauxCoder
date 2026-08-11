@@ -25,7 +25,7 @@ from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
 from reuleauxcoder.extensions.tools.builtin.grep import GrepTool
 from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
-from reuleauxcoder.extensions.tools.builtin.lsp import LspTool
+from reuleauxcoder.extensions.tools.builtin.lsp import LspStatusTool, LspTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellSessionTool, ShellTool
 from reuleauxcoder.extensions.tools.builtin.subagent_control import (
@@ -65,6 +65,7 @@ def _parent_with_all_tools():
             GlobTool(),
             GrepTool(),
             LspTool(),
+            LspStatusTool(),
             WriteFileTool(),
             EditFileTool(),
             ShellTool(),
@@ -83,7 +84,7 @@ def test_child_capability_matrix_has_read_baseline_without_recursion_or_plan() -
     execute = {tool.name for tool in _filter_subagent_tools(parent, "execute")}
     verify = {tool.name for tool in _filter_subagent_tools(parent, "verify")}
 
-    baseline = {"read_file", "list_file", "glob", "grep", "lsp"}
+    baseline = {"read_file", "list_file", "glob", "grep", "lsp", "lsp_status"}
     controls = {"report_progress", "report_to_parent", "request_guidance"}
     assert explore == baseline | controls
     assert execute == baseline | {

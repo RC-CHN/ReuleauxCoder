@@ -2108,13 +2108,21 @@ def _filter_subagent_tools(parent_agent, mode: str):
     )
 
     mode_allowlist = {
-        "explore": {"read_file", "list_file", "glob", "grep", "lsp"},
+        "explore": {
+            "read_file",
+            "list_file",
+            "glob",
+            "grep",
+            "lsp",
+            "lsp_status",
+        },
         "execute": {
             "read_file",
             "list_file",
             "glob",
             "grep",
             "lsp",
+            "lsp_status",
             "edit_file",
             "write_file",
             "shell",
@@ -2126,6 +2134,7 @@ def _filter_subagent_tools(parent_agent, mode: str):
             "glob",
             "grep",
             "lsp",
+            "lsp_status",
             "shell",
             "shell_session",
         },

@@ -14,7 +14,9 @@ from reuleauxcoder.interfaces.interactions import (
     UIInteractor,
 )
 
-_READ_ONLY_TOOLS = frozenset({"read_file", "list_file", "glob", "grep", "lsp"})
+_READ_ONLY_TOOLS = frozenset(
+    {"read_file", "list_file", "glob", "grep", "lsp", "lsp_status"}
+)
 
 
 def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:

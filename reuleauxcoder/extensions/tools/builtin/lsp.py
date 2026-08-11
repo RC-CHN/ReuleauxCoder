@@ -8,6 +8,7 @@ thread.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -18,7 +19,12 @@ from reuleauxcoder.extensions.lsp.client import (
     LspRequestTimedOut,
     render_lsp_failure,
 )
-from reuleauxcoder.extensions.lsp.manager import LspManager
+from reuleauxcoder.extensions.lsp.manager import (
+    LspManager,
+    LspStatusSnapshot,
+    LspStatusTransportSnapshot,
+    LspTransportState,
+)
 from reuleauxcoder.extensions.lsp.tool_helpers import (
     format_document_symbols,
     format_locations,
@@ -37,10 +43,29 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 
 _OPERATIONS = frozenset({"goToDefinition", "findReferences", "documentSymbol"})
 
-# ── tool ───────────────────────────────────────────────────────────────────
+# ── tools ──────────────────────────────────────────────────────────────────
 
 
-class LspTool(Tool):
+class _BoundLspTool(Tool):
+    """Share instance-scoped manager binding without a process-global registry."""
+
+    parallel_safe: ClassVar[bool] = True
+    effect_class: ClassVar[str] = "read_only_internal"
+
+    def __init__(self, backend: Any = None, *, lsp_manager: LspManager | None = None):
+        super().__init__(backend=backend)
+        self.lsp_manager = lsp_manager
+
+    def bind_lsp_manager(self, manager: LspManager | None) -> None:
+        self.lsp_manager = manager
+
+    def clone_for_scope(self, scope: str) -> "_BoundLspTool":
+        clone_backend = getattr(self.backend, "clone_for_scope", None)
+        backend = clone_backend(scope) if callable(clone_backend) else self.backend
+        return type(self)(backend=backend, lsp_manager=self.lsp_manager)
+
+
+class LspTool(_BoundLspTool):
     """Single tool that dispatches LSP operations.
 
     Supported operations:
@@ -50,7 +75,6 @@ class LspTool(Tool):
     """
 
     name: ClassVar[str] = "lsp"
-    parallel_safe: ClassVar[bool] = True
     interrupt_mode: ClassVar[InterruptMode] = InterruptMode.CANCEL_WITH_PARTIAL
     description: ClassVar[str] = (
         "Interact with Language Server Protocol (LSP) servers for code intelligence.\n"
@@ -92,18 +116,6 @@ class LspTool(Tool):
         },
         "required": ["operation", "filePath", "line", "character"],
     }
-
-    def __init__(self, backend: Any = None, *, lsp_manager: LspManager | None = None):
-        super().__init__(backend=backend)
-        self.lsp_manager = lsp_manager
-
-    def bind_lsp_manager(self, manager: LspManager | None) -> None:
-        self.lsp_manager = manager
-
-    def clone_for_scope(self, scope: str) -> "LspTool":
-        clone_backend = getattr(self.backend, "clone_for_scope", None)
-        backend = clone_backend(scope) if callable(clone_backend) else self.backend
-        return LspTool(backend=backend, lsp_manager=self.lsp_manager)
 
     def execute(
         self,
@@ -203,6 +215,78 @@ class LspTool(Tool):
         return _lsp_failure(f"Unknown operation: {operation}")
 
 
+class LspStatusTool(_BoundLspTool):
+    """Report current lazy LSP state without probing or starting a server."""
+
+    name: ClassVar[str] = "lsp_status"
+    description: ClassVar[str] = (
+        "Show configured LSP languages, current transport states, and bounded "
+        "availability/diagnostic counters. This is observational: it does not "
+        "probe PATH or start a language server."
+    )
+    parameters: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+
+    def execute(self) -> ToolOutcome:
+        manager = self.lsp_manager
+        if manager is None:
+            payload = {
+                "manager_bound": False,
+                "state": "unavailable",
+            }
+            return ToolOutcome(
+                summary="LSP infrastructure is unavailable",
+                content=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                metadata={"operation": "status", "manager_bound": False},
+            )
+
+        snapshot = _validated_status_snapshot(manager.status_snapshot())
+
+        payload = {
+            "availability_metrics": dict(snapshot.availability_metrics),
+            "configured_languages": list(snapshot.configured_languages),
+            "diagnostic_batch_metrics": dict(snapshot.diagnostic_batch_metrics),
+            "enabled": snapshot.enabled,
+            "manager_bound": True,
+            "transports": [
+                {
+                    "error_phase": transport.error_phase,
+                    "error_type": transport.error_type,
+                    "generation": transport.generation,
+                    "language": transport.language,
+                    "protocol_error_code": transport.protocol_error_code,
+                    "retry_scheduled": transport.retry_scheduled,
+                    "return_code": transport.return_code,
+                    "root_hash": transport.root_hash,
+                    "state": transport.state.value,
+                }
+                for transport in snapshot.transports
+            ],
+        }
+        return ToolOutcome(
+            summary=(
+                f"LSP status: {len(snapshot.configured_languages)} configured "
+                f"language(s), {len(snapshot.transports)} transport(s)"
+            ),
+            content=json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            metadata={
+                "operation": "status",
+                "manager_bound": True,
+                "enabled": snapshot.enabled,
+                "configured_language_count": len(snapshot.configured_languages),
+                "transport_count": len(snapshot.transports),
+            },
+        )
+
+
 def _lsp_success(operation: str, content: str) -> ToolOutcome:
     first_line = next(
         (line.strip().rstrip(":") for line in content.splitlines() if line.strip()),
@@ -269,6 +353,89 @@ def _safe_failure_fact(value: str, fallback: str) -> str:
         if character.isascii() and (character.isalnum() or character in {"_", "-", "."})
     )[:64]
     return safe or fallback
+
+
+def _validated_status_snapshot(value: object) -> LspStatusSnapshot:
+    if type(value) is not LspStatusSnapshot or type(value.enabled) is not bool:
+        raise TypeError("LSP status provider returned an invalid projection")
+    languages = value.configured_languages
+    if (
+        not isinstance(languages, tuple)
+        or any(not _is_status_fact(language) for language in languages)
+        or len(set(languages)) != len(languages)
+        or tuple(sorted(languages)) != languages
+    ):
+        raise TypeError("LSP status provider returned an invalid projection")
+
+    transports = value.transports
+    if not isinstance(transports, tuple):
+        raise TypeError("LSP status provider returned an invalid projection")
+    identities: set[tuple[str, str]] = set()
+    for transport in transports:
+        if not _valid_status_transport(transport):
+            raise TypeError("LSP status provider returned an invalid projection")
+        identity = (transport.language, transport.root_hash)
+        if identity in identities:
+            raise TypeError("LSP status provider returned an invalid projection")
+        identities.add(identity)
+    if (
+        tuple(sorted(transports, key=lambda item: (item.language, item.root_hash)))
+        != transports
+    ):
+        raise TypeError("LSP status provider returned an invalid projection")
+
+    if not _valid_counter_items(value.availability_metrics) or not _valid_counter_items(
+        value.diagnostic_batch_metrics
+    ):
+        raise TypeError("LSP status provider returned an invalid projection")
+    return value
+
+
+def _valid_status_transport(value: object) -> bool:
+    if type(value) is not LspStatusTransportSnapshot:
+        return False
+    return (
+        _is_status_fact(value.language)
+        and len(value.root_hash) == 12
+        and all(character in "0123456789abcdef" for character in value.root_hash)
+        and isinstance(value.state, LspTransportState)
+        and type(value.generation) is int
+        and value.generation >= 0
+        and (value.error_phase is None or _is_status_fact(value.error_phase))
+        and (value.error_type is None or _is_status_fact(value.error_type))
+        and _is_status_code(value.protocol_error_code)
+        and _is_status_code(value.return_code)
+        and type(value.retry_scheduled) is bool
+    )
+
+
+def _valid_counter_items(value: object) -> bool:
+    if not isinstance(value, tuple) or len(value) > 64:
+        return False
+    keys: list[str] = []
+    for item in value:
+        if not isinstance(item, tuple) or len(item) != 2:
+            return False
+        key, count = item
+        if not _is_status_fact(key) or type(count) is not int or count < 0:
+            return False
+        keys.append(key)
+    return len(set(keys)) == len(keys) and tuple(sorted(value)) == value
+
+
+def _is_status_fact(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 64
+        and value.isascii()
+        and all(
+            character.isalnum() or character in {"_", "-", "."} for character in value
+        )
+    )
+
+
+def _is_status_code(value: object) -> bool:
+    return value is None or (type(value) is int and -(2**31) <= value <= 2**31 - 1)
 
 
 # ── internal helpers ───────────────────────────────────────────────────────

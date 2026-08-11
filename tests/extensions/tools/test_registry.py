@@ -18,6 +18,7 @@ EXPECTED_BUILTIN_TOOL_NAMES = (
     "artifact_read",
     "list_file",
     "lsp",
+    "lsp_status",
     "write_note",
     "edit_note",
     "delete_note",

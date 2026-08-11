@@ -134,6 +134,12 @@ The `lsp` tool provides read-only code intelligence:
 - `findReferences` — find all references to a symbol across the codebase
 - `documentSymbol` — list all symbols (functions, classes, variables) in a file
 
+The argument-free `lsp_status` tool reports configured languages, current
+transport states, and bounded availability/diagnostic counters without probing
+PATH or starting a server. Its single in-memory snapshot exposes only hashed
+workspace identities and typed state; launcher commands, paths, and stderr
+references are never included.
+
 All LSP operations are read-only and do **not** require approval.
 
 ## Commands

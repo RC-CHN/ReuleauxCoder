@@ -196,6 +196,32 @@ class LspTransportStatusView:
 
 
 @dataclass(frozen=True, slots=True)
+class LspStatusTransportSnapshot:
+    """Model-safe state for one transport, without launch or path identity."""
+
+    language: str
+    root_hash: str
+    state: LspTransportState
+    generation: int
+    error_phase: str | None = None
+    error_type: str | None = None
+    protocol_error_code: int | None = None
+    return_code: int | None = None
+    retry_scheduled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class LspStatusSnapshot:
+    """One immutable, side-effect-free operational status projection."""
+
+    enabled: bool
+    configured_languages: tuple[str, ...]
+    transports: tuple[LspStatusTransportSnapshot, ...]
+    availability_metrics: tuple[tuple[str, int], ...]
+    diagnostic_batch_metrics: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _LspStderrRecord:
     ref: str
     transport_key: TransportKey
@@ -381,6 +407,44 @@ class LspManager:
     @property
     def enabled(self) -> bool:
         return self._config.enabled
+
+    def status_snapshot(self) -> LspStatusSnapshot:
+        """Copy current status once without probing, pruning, or retaining data."""
+        with self._lock:
+            configured_languages = self.configured_languages()
+            transports: list[LspStatusTransportSnapshot] = []
+            for status in self._transport_statuses.values():
+                transports.append(
+                    LspStatusTransportSnapshot(
+                        language=get_language_id_string(status.language),
+                        root_hash=self._workspace_identifier(status.workspace_root),
+                        state=status.state,
+                        generation=status.generation,
+                        error_phase=(
+                            self._safe_fact(status.error_phase, "unknown")
+                            if status.error_phase is not None
+                            else None
+                        ),
+                        error_type=(
+                            self._safe_fact(status.error_type, "Error")
+                            if status.error_type is not None
+                            else None
+                        ),
+                        protocol_error_code=status.protocol_error_code,
+                        return_code=status.return_code,
+                        retry_scheduled=status.retry_at_monotonic is not None,
+                    )
+                )
+            transports.sort(key=lambda item: (item.language, item.root_hash))
+            return LspStatusSnapshot(
+                enabled=self._config.enabled,
+                configured_languages=tuple(sorted(configured_languages)),
+                transports=tuple(transports),
+                availability_metrics=tuple(sorted(self._availability_metrics.items())),
+                diagnostic_batch_metrics=tuple(
+                    sorted(self._diagnostic_batch_metrics.items())
+                ),
+            )
 
     def describe_scopes(self) -> tuple[str, ...]:
         """Return secret-free transport and pending-batch ownership diagnostics."""

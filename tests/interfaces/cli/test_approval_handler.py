@@ -45,6 +45,15 @@ def test_cli_handler_forwards_shared_typed_preview_without_rebuilding() -> None:
     assert pending.decision.reviewed is True
 
 
+def test_cli_handler_describes_lsp_status_as_read_only() -> None:
+    pending = PendingApproval(ApprovalRequest(tool_name="lsp_status"))
+    interactor = _ReviewInteractor()
+
+    make_approval_handler(interactor)(pending)
+
+    assert interactor.request.summary == "Read-only workspace access."
+
+
 def test_cli_handler_maps_opaque_session_scope_back_to_domain_grant() -> None:
     grant = ApprovalGrantCandidate(
         id="exact",
