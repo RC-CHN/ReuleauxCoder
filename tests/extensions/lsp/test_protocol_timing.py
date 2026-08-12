@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -17,6 +16,7 @@ from reuleauxcoder.extensions.tools.builtin.lsp import (
     LspDiagnosticsTool,
     LspRestartTool,
 )
+from tests.process_helpers import process_is_alive as _pid_alive
 
 FAKE_SERVER = Path(__file__).with_name("fake_stdio_server.py")
 
@@ -57,16 +57,6 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("timed out waiting for deterministic LSP event")
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _manager(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
-import os
 import sys
 import threading
 import time
@@ -22,6 +21,7 @@ from reuleauxcoder.extensions.lsp.client import (
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.manager import LspManager, ToolRequest
 from reuleauxcoder.extensions.lsp.registry import LanguageId
+from tests.process_helpers import process_is_alive as _pid_alive
 
 FAKE_SERVER = Path(__file__).with_name("fake_stdio_server.py")
 
@@ -153,16 +153,6 @@ def _events(log_path: Path) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     return events
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _wait_for_pid_exit(pid: int) -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -26,6 +25,7 @@ from reuleauxcoder.extensions.lsp.manager import (
     ToolRequest,
 )
 from reuleauxcoder.extensions.lsp.registry import LanguageId
+from tests.process_helpers import process_is_alive as _pid_alive
 
 FAKE_SERVER = Path(__file__).with_name("fake_stdio_server.py")
 
@@ -97,16 +97,6 @@ def _server_pids(log_path: Path) -> list[int]:
         for event in _events(log_path)
         if event["method"] == "server_started"
     ]
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _assert_pid_exits(pid: int) -> None:
