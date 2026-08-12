@@ -14,6 +14,7 @@ and only need to implement their own UI-specific rendering.
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -87,6 +88,8 @@ class AppRunner:
         self.options = options or AppOptions()
         self.dependencies = dependencies or AppDependencies()
         self._startup_progress = startup_progress
+        self._startup_progress_issue_lock = threading.Lock()
+        self._startup_progress_issues: dict[tuple[str, str, str], int] = {}
         self._performance_monitor = RuntimePerformanceMonitor()
         self._mcp_manager: MCPManager | None = None
         self._relay_server: RelayServer | None = None
@@ -151,6 +154,7 @@ class AppRunner:
             agent.hook_registry.set_performance_monitor(self._performance_monitor)
             setattr(llm, "performance_monitor", self._performance_monitor)
         self._agent = agent
+        self._flush_startup_progress_issues(agent)
         self._bind_remote_chat_handler(agent, action_registry)
         self._report_startup("Discovering skills...")
         with self._performance_monitor.measure("startup", "skills"):
@@ -229,10 +233,96 @@ class AppRunner:
         if self._startup_progress is not None:
             try:
                 self._startup_progress(message)
-            except Exception:
+            except Exception as error:
                 # Progress reporting is advisory and must never make startup
                 # fail when an embedding UI callback is unavailable.
-                pass
+                self._record_startup_progress_issue(type(error).__name__)
+
+    def _record_startup_progress_issue(self, error_type: str) -> None:
+        safe_error = (
+            error_type
+            if error_type
+            and len(error_type) <= 64
+            and error_type.isascii()
+            and error_type.replace("_", "").isalnum()
+            else "Exception"
+        )
+        agent = self._agent
+        record = getattr(agent, "record_runtime_issue", None)
+        if callable(record):
+            try:
+                if record("startup_progress", safe_error, "callback") is not False:
+                    return
+            except Exception as sink_error:
+                self._retain_startup_progress_issue(
+                    "startup_progress_sink",
+                    type(sink_error).__name__,
+                    "delivery",
+                )
+        self._retain_startup_progress_issue(
+            "startup_progress",
+            safe_error,
+            "callback",
+        )
+
+    def _retain_startup_progress_issue(
+        self,
+        phase: str,
+        error_type: str,
+        ref: str,
+        count: int = 1,
+    ) -> None:
+        safe_error = (
+            error_type
+            if error_type
+            and len(error_type) <= 64
+            and error_type.isascii()
+            and error_type.replace("_", "").isalnum()
+            else "Exception"
+        )
+        key = (phase, safe_error, ref)
+        with self._startup_progress_issue_lock:
+            self._startup_progress_issues[key] = min(
+                self._startup_progress_issues.get(key, 0) + max(1, count),
+                1_000_000,
+            )
+
+    def _flush_startup_progress_issues(self, agent: Agent) -> None:
+        record = getattr(agent, "record_runtime_issue", None)
+        if not callable(record):
+            return
+        with self._startup_progress_issue_lock:
+            pending = tuple(self._startup_progress_issues.items())
+            self._startup_progress_issues.clear()
+        undelivered: dict[tuple[str, str, str], int] = {}
+        sink_failures: dict[str, int] = {}
+        for (phase, error_type, ref), count in pending:
+            try:
+                accepted = record(
+                    phase,
+                    error_type,
+                    ref,
+                    count,
+                )
+            except Exception as error:
+                accepted = False
+                safe_error = type(error).__name__
+                sink_failures[safe_error] = sink_failures.get(safe_error, 0) + 1
+            if accepted is False:
+                undelivered[(phase, error_type, ref)] = count
+        if undelivered or sink_failures:
+            with self._startup_progress_issue_lock:
+                for key, count in undelivered.items():
+                    self._startup_progress_issues[key] = min(
+                        self._startup_progress_issues.get(key, 0) + count,
+                        1_000_000,
+                    )
+                for error_type, count in sink_failures.items():
+                    key = ("startup_progress_sink", error_type, "delivery")
+                    self._startup_progress_issues[key] = min(
+                        self._startup_progress_issues.get(key, 0) + count,
+                        1_000_000,
+                    )
 
     def _build_core(
         self,
