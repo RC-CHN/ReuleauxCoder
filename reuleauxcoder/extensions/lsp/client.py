@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 from collections.abc import Callable
@@ -49,6 +50,11 @@ MAX_LSP_MESSAGE_BYTES = 16 * 1024 * 1024
 _MIN_PROTOCOL_ERROR_CODE = -(2**31)
 _MAX_PROTOCOL_ERROR_CODE = 2**31 - 1
 _KNOWN_LAUNCHER_NAMES = frozenset({"npx", "rust-analyzer", "gopls", "clangd", "node"})
+_CREATE_NEW_PROCESS_GROUP = getattr(
+    subprocess,
+    "CREATE_NEW_PROCESS_GROUP",
+    0x00000200,
+)
 
 # LSP protocol version
 LSP_PROTOCOL_VERSION = "2.0"
@@ -464,12 +470,18 @@ class LspClient:
         )
 
         try:
+            process_options: dict[str, object]
+            if os.name == "nt":
+                process_options = {"creationflags": _CREATE_NEW_PROCESS_GROUP}
+            else:
+                process_options = {"start_new_session": True}
             self._process = await asyncio.create_subprocess_exec(
                 *full_args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._workspace_root),
+                **process_options,
             )
         except FileNotFoundError:
             stderr_capture.mark_finalized()

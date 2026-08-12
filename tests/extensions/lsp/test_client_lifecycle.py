@@ -180,6 +180,44 @@ def test_custom_launcher_name_is_not_exposed_on_spawn_failure(
     assert secret not in repr((raised.value, caplog.text))
 
 
+@pytest.mark.parametrize(
+    ("platform_name", "expected_option"),
+    (
+        ("nt", {"creationflags": 0x00000200}),
+        ("posix", {"start_new_session": True}),
+    ),
+)
+def test_spawn_isolates_lsp_process_group(
+    tmp_path: Path,
+    platform_name: str,
+    expected_option: dict[str, object],
+) -> None:
+    process = MagicMock()
+    spawn = AsyncMock(return_value=process)
+    client = LspClient(LanguageId.PYTHON, tmp_path)
+
+    def discard_task(coroutine):
+        coroutine.close()
+        return MagicMock()
+
+    with (
+        patch("reuleauxcoder.extensions.lsp.client.os.name", platform_name),
+        patch(
+            "reuleauxcoder.extensions.lsp.client.asyncio.create_subprocess_exec",
+            new=spawn,
+        ),
+        patch(
+            "reuleauxcoder.extensions.lsp.client.asyncio.create_task",
+            side_effect=discard_task,
+        ),
+    ):
+        asyncio.run(client.spawn("configured-launcher", []))
+
+    _, kwargs = spawn.await_args
+    for key, value in expected_option.items():
+        assert kwargs[key] == value
+
+
 def test_protocol_write_failure_marks_transport_failed_and_kills_process_safely(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
