@@ -6,9 +6,19 @@ import pytest
 
 from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.extensions.lsp.diagnostics import (
+    Diagnostic,
     DiagnosticBatch,
     DiagnosticBlock,
     DiagnosticRoute,
+)
+from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
+    DiagnosticOutcome,
+    DiagnosticOutcomeStatus,
+)
+from reuleauxcoder.extensions.lsp.client import (
+    LspFailureFacts,
+    LspRequestCancelled,
+    LspRequestTimedOut,
 )
 from reuleauxcoder.extensions.lsp.manager import (
     LspManager,
@@ -17,7 +27,10 @@ from reuleauxcoder.extensions.lsp.manager import (
     LspTransportState,
 )
 from reuleauxcoder.extensions.lsp.registry import LanguageId
-from reuleauxcoder.extensions.tools.builtin.lsp import LspStatusTool
+from reuleauxcoder.extensions.tools.builtin.lsp import (
+    LspDiagnosticsTool,
+    LspStatusTool,
+)
 
 
 def _status_snapshot() -> LspStatusSnapshot:
@@ -164,6 +177,128 @@ def test_lsp_status_schema_is_closed_and_argument_free() -> None:
         "properties": {},
         "additionalProperties": False,
     }
+
+
+class _DiagnosticsManager:
+    def __init__(self, outcome: DiagnosticOutcome | BaseException) -> None:
+        self.outcome = outcome
+        self.path = None
+        self.cancellation = None
+        self.acknowledged = None
+
+    def request_diagnostics_sync(self, path, *, cancellation=None):
+        self.path = path
+        self.cancellation = cancellation
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+    def acknowledge_diagnostic_batch(self, batch_id, *, consumer_id):
+        self.acknowledged = (batch_id, consumer_id)
+        return True
+
+
+def _diagnostic_outcome(path: Path, *, clean: bool = False) -> DiagnosticOutcome:
+    block = DiagnosticBlock(
+        file_path=path.name,
+        items=(
+            []
+            if clean
+            else [Diagnostic(line=2, character=3, message="broken <value>")]
+        ),
+    )
+    return DiagnosticOutcome(
+        batch_id="batch-1",
+        route=DiagnosticRoute(file_path=path),
+        request_sequence=1,
+        status=(
+            DiagnosticOutcomeStatus.PUBLISHED_CLEAN
+            if clean
+            else DiagnosticOutcomeStatus.PUBLISHED_NONEMPTY
+        ),
+        created_at=1.0,
+        document_version=4,
+        diagnostic_generation=7,
+        block=block,
+    )
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_lsp_diagnostics_renders_and_acknowledges_typed_publish(
+    tmp_path: Path,
+    clean: bool,
+) -> None:
+    source = tmp_path / "demo.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = _DiagnosticsManager(_diagnostic_outcome(source, clean=clean))
+
+    outcome = LspDiagnosticsTool(lsp_manager=manager).execute(filePath=str(source))
+
+    assert outcome.success
+    assert manager.path == source
+    assert manager.acknowledged == ("batch-1", "lsp_diagnostics")
+    assert outcome.metadata == {
+        "operation": "diagnostics",
+        "diagnostic_status": (
+            "published_clean" if clean else "published_nonempty"
+        ),
+        "batch_id": "batch-1",
+        "diagnostic_count": 0 if clean else 1,
+        "document_version": 4,
+        "diagnostic_generation": 7,
+        "acknowledged": True,
+    }
+    if clean:
+        assert "published clean" in outcome.model_text
+    else:
+        assert "ERROR [2:3] broken &lt;value&gt;" in outcome.model_text
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (LspRequestCancelled("cancelled"), "cancelled"),
+        (LspRequestTimedOut("timed out"), "timed_out"),
+    ],
+)
+def test_lsp_diagnostics_preserves_waiter_interrupt_status(
+    tmp_path: Path,
+    error: BaseException,
+    status: str,
+) -> None:
+    source = tmp_path / "demo.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = _DiagnosticsManager(error)
+
+    outcome = LspDiagnosticsTool(lsp_manager=manager).execute(filePath=str(source))
+
+    assert outcome.status.value == status
+    assert outcome.error_kind.value == "interrupted"
+    assert manager.acknowledged is None
+
+
+def test_lsp_diagnostics_preserves_typed_server_failure(tmp_path: Path) -> None:
+    source = tmp_path / "demo.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    terminal = DiagnosticOutcome(
+        batch_id="failed-batch",
+        route=DiagnosticRoute(file_path=source),
+        request_sequence=1,
+        status=DiagnosticOutcomeStatus.SERVER_UNAVAILABLE,
+        created_at=1.0,
+        failure=LspFailureFacts(
+            phase="availability",
+            error_type="LspServerUnavailable",
+        ),
+    )
+    manager = _DiagnosticsManager(terminal)
+
+    outcome = LspDiagnosticsTool(lsp_manager=manager).execute(filePath=str(source))
+
+    assert not outcome.success
+    assert "status=server_unavailable" in outcome.model_text
+    assert "error_type=LspServerUnavailable" in outcome.model_text
+    assert manager.acknowledged == ("failed-batch", "lsp_diagnostics")
 
 
 class _CountingLock:

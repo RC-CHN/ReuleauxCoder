@@ -19,6 +19,12 @@ from reuleauxcoder.extensions.lsp.client import (
     LspRequestTimedOut,
     render_lsp_failure,
 )
+from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
+    DiagnosticOutcome,
+    DiagnosticOutcomeStatus,
+    render_diagnostic_outcome,
+)
+from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
 from reuleauxcoder.extensions.lsp.manager import (
     LspManager,
     LspStatusSnapshot,
@@ -285,6 +291,131 @@ class LspStatusTool(_BoundLspTool):
                 "transport_count": len(snapshot.transports),
             },
         )
+
+
+class LspDiagnosticsTool(_BoundLspTool):
+    """Request the current diagnostics for one document explicitly."""
+
+    name: ClassVar[str] = "lsp_diagnostics"
+    interrupt_mode: ClassVar[InterruptMode] = InterruptMode.CANCEL_WITH_PARTIAL
+    description: ClassVar[str] = (
+        "Request current LSP diagnostics for a file. The document is synced "
+        "before the server's pull result or next publish is observed. A timeout "
+        "is reported explicitly and is never treated as a clean diagnostic result."
+    )
+    parameters: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "filePath": {
+                "type": "string",
+                "description": "The absolute or workspace-relative file path.",
+            },
+        },
+        "required": ["filePath"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, *, filePath: str) -> ToolOutcome:
+        try:
+            _language, path = resolve_file_path(filePath)
+        except (FileNotFoundError, ValueError) as error:
+            return _lsp_failure(str(error))
+
+        manager = self.lsp_manager
+        if manager is None:
+            return _lsp_failure("LSP infrastructure is not available")
+
+        try:
+            outcome = manager.request_diagnostics_sync(
+                path,
+                cancellation=self.current_cancellation_signal(),
+            )
+        except LspRequestCancelled as error:
+            return _lsp_failure(
+                "LSP diagnostics request cancelled; "
+                + _safe_failure_message("diagnostics_wait", error),
+                status=ToolOutcomeStatus.CANCELLED,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        except LspRequestTimedOut as error:
+            return _lsp_failure(
+                "LSP diagnostics request timed out; "
+                + _safe_failure_message("diagnostics_wait", error),
+                status=ToolOutcomeStatus.TIMED_OUT,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        except LspClientError as error:
+            return _lsp_failure(_safe_failure_message("diagnostics", error))
+        except Exception as error:
+            return _lsp_failure(_safe_failure_message("diagnostics", error))
+
+        try:
+            result = _diagnostic_tool_outcome(outcome)
+        except Exception as error:
+            return _lsp_failure(_safe_failure_message("format", error))
+
+        acknowledged = manager.acknowledge_diagnostic_batch(
+            outcome.batch_id,
+            consumer_id="lsp_diagnostics",
+        )
+        return result.with_metadata(acknowledged=acknowledged)
+
+
+def _diagnostic_tool_outcome(outcome: DiagnosticOutcome) -> ToolOutcome:
+    metadata: dict[str, Any] = {
+        "operation": "diagnostics",
+        "diagnostic_status": outcome.status.value,
+        "batch_id": outcome.batch_id,
+    }
+    if outcome.is_published:
+        assert outcome.block is not None
+        metadata.update(
+            {
+                "diagnostic_count": len(outcome.block.items),
+                "document_version": outcome.document_version,
+                "diagnostic_generation": outcome.diagnostic_generation,
+            }
+        )
+        rendered = render_blocks(
+            [outcome.block],
+            max_diagnostics=len(outcome.block.items),
+            include_warnings=True,
+        )
+        if rendered is None:
+            rendered = (
+                "LSP diagnostics published clean "
+                f"(file={outcome.block.file_path}, "
+                f"document_version={outcome.document_version}, "
+                f"diagnostic_generation={outcome.diagnostic_generation})"
+            )
+        return ToolOutcome(
+            summary=(
+                "LSP diagnostics published: "
+                f"{len(outcome.block.items)} item(s)"
+            ),
+            content=rendered,
+            metadata=metadata,
+        )
+
+    rendered_failure = render_diagnostic_outcome(outcome) or (
+        f"LSP diagnostics ended (status={outcome.status.value})"
+    )
+    if outcome.status is DiagnosticOutcomeStatus.TIMED_OUT:
+        status = ToolOutcomeStatus.TIMED_OUT
+        error_kind = ToolErrorKind.INTERRUPTED
+    elif outcome.status is DiagnosticOutcomeStatus.CANCELLED:
+        status = ToolOutcomeStatus.CANCELLED
+        error_kind = ToolErrorKind.INTERRUPTED
+    else:
+        status = ToolOutcomeStatus.FAILED
+        error_kind = ToolErrorKind.EXECUTION
+    return ToolOutcome(
+        status=status,
+        summary=rendered_failure.splitlines()[0][:160],
+        content=rendered_failure,
+        error_kind=error_kind,
+        metadata=metadata,
+    )
 
 
 def _lsp_success(operation: str, content: str) -> ToolOutcome:

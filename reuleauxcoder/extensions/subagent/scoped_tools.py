@@ -9,7 +9,15 @@ from reuleauxcoder.extensions.tools.base import Tool, ToolResult
 
 
 READ_ONLY_BASELINE = frozenset(
-    {"read_file", "list_file", "glob", "grep", "lsp", "lsp_status"}
+    {
+        "read_file",
+        "list_file",
+        "glob",
+        "grep",
+        "lsp",
+        "lsp_status",
+        "lsp_diagnostics",
+    }
 )
 EFFECTFUL_REASON_TOOLS = frozenset({"write_file", "edit_file", "shell"})
 EFFECT_CLASSES = {

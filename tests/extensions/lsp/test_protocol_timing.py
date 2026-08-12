@@ -12,6 +12,7 @@ from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
 from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.extensions.lsp.registry import LanguageId
+from reuleauxcoder.extensions.tools.builtin.lsp import LspDiagnosticsTool
 
 FAKE_SERVER = Path(__file__).with_name("fake_stdio_server.py")
 
@@ -137,6 +138,41 @@ def test_save_only_server_publishes_after_sync_then_save(tmp_path: Path) -> None
         manager.shutdown_all()
     assert manager._worker_thread is None
     assert manager._transports == {}
+
+
+def test_explicit_diagnostics_tool_observes_real_stdio_publish(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("# FAKE_LSP_ERROR: explicit tool\n", encoding="utf-8")
+    log_path = tmp_path / "explicit-tool.jsonl"
+    manager = _manager(tmp_path, log_path, mode="push")
+    try:
+        outcome = LspDiagnosticsTool(lsp_manager=manager).execute(
+            filePath=str(path)
+        )
+
+        assert outcome.success
+        assert "ERROR [1:1] explicit tool" in outcome.model_text
+        assert outcome.metadata["diagnostic_status"] == "published_nonempty"
+        assert outcome.metadata["diagnostic_count"] == 1
+        assert outcome.metadata["acknowledged"] is True
+        assert manager.pending_diagnostic_batches() == ()
+        protocol = [
+            event["method"]
+            for event in _events(log_path)
+            if event["method"]
+            in {
+                "textDocument/didOpen",
+                "textDocument/publishDiagnostics",
+            }
+        ]
+        assert protocol == [
+            "textDocument/didOpen",
+            "textDocument/publishDiagnostics",
+        ]
+    finally:
+        manager.shutdown_all()
 
 
 def test_push_on_change_is_observed_after_document_commit(tmp_path: Path) -> None:

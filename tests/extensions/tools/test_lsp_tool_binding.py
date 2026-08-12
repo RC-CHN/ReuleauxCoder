@@ -2,10 +2,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from reuleauxcoder.extensions.tools.builtin.lsp import LspStatusTool, LspTool
+from reuleauxcoder.extensions.tools.builtin.lsp import (
+    LspDiagnosticsTool,
+    LspStatusTool,
+    LspTool,
+)
 
 
-@pytest.mark.parametrize("tool_type", [LspTool, LspStatusTool])
+@pytest.mark.parametrize("tool_type", [LspTool, LspStatusTool, LspDiagnosticsTool])
 def test_lsp_tools_hold_instance_scoped_managers(tool_type) -> None:
     first_manager = MagicMock()
     second_manager = MagicMock()
@@ -22,7 +26,7 @@ def test_lsp_tools_hold_instance_scoped_managers(tool_type) -> None:
     assert second.lsp_manager is second_manager
 
 
-@pytest.mark.parametrize("tool_type", [LspTool, LspStatusTool])
+@pytest.mark.parametrize("tool_type", [LspTool, LspStatusTool, LspDiagnosticsTool])
 def test_lsp_tool_scope_clone_keeps_manager_without_sharing_instance(tool_type) -> None:
     manager = MagicMock()
     original = tool_type(lsp_manager=manager)

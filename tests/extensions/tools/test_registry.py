@@ -19,6 +19,7 @@ EXPECTED_BUILTIN_TOOL_NAMES = (
     "list_file",
     "lsp",
     "lsp_status",
+    "lsp_diagnostics",
     "write_note",
     "edit_note",
     "delete_note",

@@ -1541,6 +1541,73 @@ class LspManager:
             self._prune_expired_diagnostic_batches_locked()
             return dict(self._diagnostic_batch_metrics)
 
+    def request_diagnostics_sync(
+        self,
+        file_path: Path,
+        *,
+        timeout: float = 10.0,
+        cancellation: CancellationSignal | None = None,
+    ) -> DiagnosticOutcome:
+        """Wait for one explicit diagnostics request without a second I/O path.
+
+        The worker still owns document sync, pull/publish waiting, and the typed
+        terminal outcome.  A caller timeout or cancellation only detaches this
+        waiter; the accepted request remains observable through the bounded
+        outcome store instead of being rewritten as a clean publish.
+        """
+        if timeout <= 0:
+            raise ValueError("LSP diagnostics timeout must be positive")
+        deadline_at = time.monotonic() + timeout
+        path = self._canonicalize_path(file_path)
+        language = detect_language(path)
+        if language is None:
+            raise LspClientError(f"No LSP support for file type: {path.suffix}")
+        key = self._transport_key(language, path)
+        if cancellation is not None and cancellation.is_set():
+            raise self._freeze_failure(
+                LspRequestCancelled("LSP diagnostics request was cancelled"),
+                key,
+                phase="queue",
+            )
+
+        batch_id = self.enqueue_diagnostics(
+            path,
+            route=DiagnosticRoute(file_path=path),
+        )
+        if batch_id is None:
+            raise self._freeze_failure(
+                LspServerUnavailable("LSP diagnostics request was not accepted"),
+                key,
+                phase="queue",
+            )
+
+        while True:
+            outcome = self.diagnostic_request_outcome(batch_id)
+            if outcome is not None:
+                return outcome
+            if cancellation is not None and cancellation.is_set():
+                outcome = self.diagnostic_request_outcome(batch_id)
+                if outcome is not None:
+                    return outcome
+                raise self._freeze_failure(
+                    LspRequestCancelled("LSP diagnostics request was cancelled"),
+                    key,
+                    phase="diagnostics_wait",
+                )
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                outcome = self.diagnostic_request_outcome(batch_id)
+                if outcome is not None:
+                    return outcome
+                raise self._freeze_failure(
+                    LspRequestTimedOut(
+                        f"LSP diagnostics request timed out after {timeout:g}s total"
+                    ),
+                    key,
+                    phase="diagnostics_wait",
+                )
+            time.sleep(min(_TOOL_REQUEST_POLL_INTERVAL, remaining))
+
     # === Active Tools (synchronous bridge) ===
 
     def send_request_sync(

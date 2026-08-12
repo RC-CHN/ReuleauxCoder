@@ -2115,6 +2115,7 @@ def _filter_subagent_tools(parent_agent, mode: str):
             "grep",
             "lsp",
             "lsp_status",
+            "lsp_diagnostics",
         },
         "execute": {
             "read_file",
@@ -2123,6 +2124,7 @@ def _filter_subagent_tools(parent_agent, mode: str):
             "grep",
             "lsp",
             "lsp_status",
+            "lsp_diagnostics",
             "edit_file",
             "write_file",
             "shell",
@@ -2135,6 +2137,7 @@ def _filter_subagent_tools(parent_agent, mode: str):
             "grep",
             "lsp",
             "lsp_status",
+            "lsp_diagnostics",
             "shell",
             "shell_session",
         },
