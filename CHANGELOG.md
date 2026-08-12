@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-08-12
+
+- Added a provider-neutral model boundary and a native Anthropic Messages/SSE transport with typed tool, thinking, usage, protocol and transport handling.
+- Reworked LSP lifecycle and diagnostics around per-transport concurrency, generation-safe state, bounded end-to-end deadlines, exact document synchronization, late diagnostic carry-forward, stderr/performance telemetry, and explicit `lsp_diagnostics` and scoped `lsp_restart` tools.
+- Added generation-safe MCP runtime slots, connect/reconnect single-flight, truthful disconnect/EOF state, dynamic `tools/list_changed` reconciliation, atomic Agent catalog updates, refresh/renew telemetry, and bounded process-tree cleanup.
+- Added bounded/coalescing TUI event delivery and generation-safe asynchronous transcript resize prewarming with cache and latency observations.
+- Added a rebuildable SQLite session inventory projection with crash-window dirty markers, freshness validation, automatic corruption recovery, and fast aggregate queries while retaining ledger/replay files as authority.
+- Preserved safe failure facts across hooks, tools, LSP, MCP, startup callbacks, session restore and UI observers so primary failures remain explicit and only secondary runtime-crashing failures are isolated.
+
 ## 0.6.3 - 2026-08-01
 
 - Prevented startup and session-restore stalls by lazily initializing the tokenizer, reporting vocabulary-load progress, bounding tokenizer setup time, and falling back to a deterministic character/word estimate with conservative handling for long unbroken text when exact counting is unavailable.
