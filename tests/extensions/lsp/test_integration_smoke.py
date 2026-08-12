@@ -221,6 +221,10 @@ async def _run_diagnostic_case(
                 )
             raise
         await client.did_open(file_path, case.content)
+        # Native TypeScript 7 advertises pull diagnostics instead of sending
+        # publishDiagnostics notifications.  Exercise the same refresh path as
+        # the runtime; this remains a no-op for push-only language servers.
+        await client.refresh_diagnostics(file_path)
         return await _collect_non_empty_diagnostics(
             client,
             file_path,

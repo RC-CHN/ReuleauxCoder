@@ -213,7 +213,7 @@ class TestLspEditObserverBasic:
         hook.run(context)
         assert len(mgr._diagnostics_queue) == 1
         request = mgr._diagnostics_queue[0]
-        assert request.route.file_path == Path("/tmp/test.py")
+        assert request.route.file_path == Path("/tmp/test.py").resolve()
         assert request.document_committed is True
 
     def test_missing_launcher_completes_without_waiting_for_poll_deadline(
@@ -287,7 +287,9 @@ class TestLspEditObserverBasic:
         hook.run(context)
 
         assert len(mgr._diagnostics_queue) == 1
-        assert mgr._diagnostics_queue[0].route.file_path == Path("/tmp/canonical.py")
+        assert mgr._diagnostics_queue[0].route.file_path == Path(
+            "/tmp/canonical.py"
+        ).resolve()
 
     def test_failed_edit_does_not_notify_or_enqueue(self) -> None:
         mgr = _make_manager()
