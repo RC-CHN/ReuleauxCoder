@@ -714,8 +714,8 @@ class TestLazyCommandAvailability:
         launch_command = "node_modules/.bin/lsp"
         first_key = (LanguageId.PYTHON, Path("/workspace/first").resolve())
         second_key = (LanguageId.PYTHON, Path("/workspace/second").resolve())
-        first_command = "/workspace/first/node_modules/.bin/lsp"
-        second_command = "/workspace/second/node_modules/.bin/lsp"
+        first_command = str((first_key[1] / launch_command).resolve())
+        second_command = str((second_key[1] / launch_command).resolve())
         resolved = {
             first_command: None,
             second_command: second_command,
@@ -757,11 +757,14 @@ class TestLazyCommandAvailability:
         missing_root = tmp_path / "missing"
         for directory in (app_cwd, available_root, missing_root):
             directory.mkdir()
-        for directory in (app_cwd, available_root):
-            executable = directory / "fake-lsp"
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o755)
         monkeypatch.chdir(app_cwd)
+        available_command = str((available_root / "fake-lsp").resolve())
+        lookup = MagicMock(
+            side_effect=lambda command: (
+                command if command == available_command else None
+            )
+        )
+        manager._command_lookup = lookup
         with manager._lock:
             manager._availability.pop(LanguageId.PYTHON)
 
@@ -771,6 +774,10 @@ class TestLazyCommandAvailability:
         assert not manager._command_available(
             (LanguageId.PYTHON, missing_root), "./fake-lsp"
         )
+        assert [call.args[0] for call in lookup.call_args_list] == [
+            available_command,
+            str((missing_root / "fake-lsp").resolve()),
+        ]
 
 
 class TestRelativizePath:
@@ -1334,7 +1341,7 @@ class TestWorkerQueueOrdering:
         manager.enqueue_diagnostics(path)
 
         assert len(manager._diagnostics_queue) == 1
-        assert manager._diagnostics_queue[0].route.file_path == path
+        assert manager._diagnostics_queue[0].route.file_path == path.resolve()
         assert manager._diagnostics_queue[0].request_sequence == 3
 
     def test_same_agent_generation_and_file_keeps_sessions_independent(

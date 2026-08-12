@@ -634,16 +634,42 @@ def test_session_id_mapping_is_injective_for_remote_and_underscore_ids(
         session_id=underscore_id,
     )
 
-    assert store.get_session_events_path(remote_id).parent == tmp_path / remote_id
-    assert store.get_session_events_path(underscore_id).parent == (
-        tmp_path / underscore_id
-    )
+    remote_directory = store.get_session_events_path(remote_id).parent
+    underscore_directory = store.get_session_events_path(underscore_id).parent
+    assert remote_directory != tmp_path / remote_id
+    assert ":" not in remote_directory.name
+    assert underscore_directory == tmp_path / underscore_id
+    assert remote_directory != underscore_directory
     assert {item.id for item in store.list(fingerprint="local")} == {
         remote_id,
         underscore_id,
     }
     assert store.load(remote_id).messages[0]["content"] == "remote"  # type: ignore[union-attr]
     assert store.load(underscore_id).messages[0]["content"] == "underscore"  # type: ignore[union-attr]
+
+
+def test_windows_reserved_session_id_uses_portable_directory(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+
+    store.save(
+        messages=[{"role": "user", "content": "portable"}],
+        model="model",
+        session_id="con",
+    )
+
+    directory = store.get_session_events_path("con").parent
+    assert directory != tmp_path / "con"
+    assert store.load("con").messages[0]["content"] == "portable"  # type: ignore[union-attr]
+
+
+def test_windows_unsafe_legacy_session_path_is_not_probed(monkeypatch) -> None:
+    from reuleauxcoder.infrastructure.persistence import session_paths
+
+    monkeypatch.setattr(session_paths, "_ON_WINDOWS", True)
+
+    candidates = session_paths.session_path_candidates("remote:peer:session")
+    assert len(candidates) == 1
+    assert ":" not in candidates[0]
 
 
 @pytest.mark.parametrize(

@@ -49,6 +49,11 @@ from reuleauxcoder.infrastructure.persistence.session_projection import (
     SessionProjectionRow,
     SessionProjectionSummary,
 )
+from reuleauxcoder.infrastructure.persistence.session_paths import (
+    is_encoded_session_path_component,
+    session_path_candidates,
+    session_path_component,
+)
 
 DEFAULT_SESSION_FINGERPRINT = "local"
 
@@ -1420,7 +1425,10 @@ class SessionStore:
             if entry.name == INDEX_DIRECTORY_NAME:
                 continue
             manifest_path = entry / "manifest.json"
-            if not _is_safe_session_id(entry.name):
+            if not (
+                _is_safe_session_id(entry.name)
+                or is_encoded_session_path_component(entry.name)
+            ):
                 canonical_keys.add(entry.name)
                 record_failure(
                     SessionRestoreError(
@@ -1624,11 +1632,29 @@ class SessionStore:
     def _get_session_path(self, session_id: str) -> Path:
         """Map session ID to JSON file path."""
         self._require_safe_session_id(session_id)
-        return self._sessions_dir / f"{session_id}.json"
+        for component in session_path_candidates(session_id):
+            candidate = self._sessions_dir / f"{component}.json"
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return candidate
+            return candidate
+        return self._sessions_dir / f"{session_path_component(session_id)}.json"
 
     def _get_session_directory(self, session_id: str) -> Path:
         self._require_safe_session_id(session_id)
-        return self._sessions_dir / session_id
+        for component in session_path_candidates(session_id):
+            candidate = self._sessions_dir / component
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return candidate
+            return candidate
+        return self._sessions_dir / session_path_component(session_id)
 
     def get_session_events_path(self, session_id: str) -> Path:
         """Resolve the durable ledger with the same injective ID policy."""
@@ -2176,7 +2202,10 @@ class SessionStore:
         issues = self._validate_canonical_manifest(
             manifest,
             directory,
-            expected_session_id=directory.name,
+            # The manifest owns the business ID; the first validation clause
+            # verifies that its portable path mapping resolves to this exact
+            # directory.
+            expected_session_id=None,
         )
         metadata = SessionMetadata(
             id=manifest.get("id"),

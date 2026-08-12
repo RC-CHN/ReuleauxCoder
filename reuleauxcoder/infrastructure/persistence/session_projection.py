@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -11,6 +12,9 @@ import stat
 from typing import Iterable
 
 from reuleauxcoder.domain.session.models import SessionMetadata
+from reuleauxcoder.infrastructure.persistence.session_paths import (
+    session_path_candidates,
+)
 
 
 INDEX_DIRECTORY_NAME = ".inventory"
@@ -80,7 +84,7 @@ class SessionInventoryProjection:
             return None
         self._validate_index_paths(create=False)
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 meta = connection.execute(
                     "SELECT schema_version, root_mtime_ns, ready FROM metadata "
                     "WHERE singleton = 1"
@@ -121,7 +125,7 @@ class SessionInventoryProjection:
         self._validate_index_paths(create=True)
         materialized = tuple(rows)
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 self._ensure_schema(connection)
                 connection.execute("DELETE FROM sessions")
                 connection.executemany(_UPSERT_SQL, map(_row_to_sql, materialized))
@@ -137,7 +141,7 @@ class SessionInventoryProjection:
             return False
         self._validate_index_paths(create=False)
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 meta = connection.execute(
                     "SELECT schema_version, ready FROM metadata WHERE singleton = 1"
                 ).fetchone()
@@ -155,7 +159,7 @@ class SessionInventoryProjection:
     def upsert(self, row: SessionProjectionRow) -> None:
         self._validate_index_paths(create=False)
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 self._ensure_schema(connection)
                 connection.execute(_UPSERT_SQL, _row_to_sql(row))
                 self._write_metadata(connection, ready=1)
@@ -168,7 +172,7 @@ class SessionInventoryProjection:
         if rows is None:
             return None
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 values = connection.execute(
                     "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), "
                     "COALESCE(SUM(completion_tokens), 0), "
@@ -240,20 +244,23 @@ class SessionInventoryProjection:
         expected_mtime_ns = sql_row[8]
         if not _is_safe_id(session_id) or source_kind not in {"manifest", "legacy"}:
             raise SessionProjectionError("ProjectionRowValidationError")
-        source = (
-            self._sessions_dir / session_id / "manifest.json"
+        names = session_path_candidates(session_id)
+        sources = (
+            tuple(self._sessions_dir / name / "manifest.json" for name in names)
             if source_kind == "manifest"
-            else self._sessions_dir / f"{session_id}.json"
+            else tuple(self._sessions_dir / f"{name}.json" for name in names)
         )
-        try:
-            status = source.lstat()
-        except FileNotFoundError:
-            return False
-        except OSError as error:
-            raise SessionProjectionError(type(error).__name__) from None
-        if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode):
-            return False
-        return status.st_mtime_ns == int(expected_mtime_ns)
+        for source in sources:
+            try:
+                status = source.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise SessionProjectionError(type(error).__name__) from None
+            if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode):
+                return False
+            return status.st_mtime_ns == int(expected_mtime_ns)
+        return False
 
     def _validate_index_paths(
         self,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from pathlib import Path
@@ -315,9 +314,8 @@ def test_observation_metadata_failure_never_changes_operation_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager, monitor = _manager(tmp_path, mode="pull")
-    non_utf8_root = Path(os.fsdecode(b"/tmp/lsp-root-\xff"))
-    key = (LanguageId.PYTHON, non_utf8_root)
-    assert len(manager._workspace_identifier(non_utf8_root)) == 12
+    key = (LanguageId.PYTHON, tmp_path)
+    assert len(manager._workspace_identifier(tmp_path)) == 12
 
     def fail_metadata(_root: Path) -> str:
         raise UnicodeError("deterministic metadata failure")
