@@ -406,6 +406,59 @@ def test_in_flight_tool_transport_loss_is_not_retried() -> None:
     asyncio.run(scenario())
 
 
+def test_concurrent_reconnect_is_single_flight() -> None:
+    class _Client(MCPClient):
+        reconnect_once_calls = 0
+        gate: asyncio.Event
+
+        async def _reconnect_once(self) -> bool:
+            self.reconnect_once_calls += 1
+            await self.gate.wait()
+            return True
+
+    async def scenario() -> None:
+        config = SimpleNamespace(
+            name="test", command="test", args=[], env={}, cwd=None
+        )
+        client = _Client(config)
+        client.gate = asyncio.Event()
+        tasks = [asyncio.create_task(client.reconnect()) for _ in range(8)]
+        while client.reconnect_once_calls == 0:
+            await asyncio.sleep(0)
+
+        assert client.reconnect_once_calls == 1
+        client.gate.set()
+        assert await asyncio.gather(*tasks) == [True] * 8
+        assert client._reconnect_task is None
+
+    asyncio.run(scenario())
+
+
+def test_receive_eof_reports_safe_transport_state_once() -> None:
+    async def scenario() -> None:
+        config = SimpleNamespace(
+            name="test", command="test", args=[], env={}, cwd=None
+        )
+        observed: list[tuple[MCPClient, str]] = []
+        client = MCPClient(
+            config,
+            on_transport_closed=lambda current, error_type: observed.append(
+                (current, error_type)
+            ),
+        )
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        client._reader = reader
+        client._initialized = True
+
+        await client._receive_loop()
+
+        assert client._initialized is False
+        assert observed == [(client, "TransportEOF")]
+
+    asyncio.run(scenario())
+
+
 def test_mcp_adapter_reports_cancelled_with_unknown_effect_state() -> None:
     class _Client:
         async def call_tool(self, *_args, **_kwargs):

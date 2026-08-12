@@ -25,6 +25,28 @@ class MCPRequestState(str, Enum):
     SETTLED = "settled"
 
 
+class MCPRuntimeState(str, Enum):
+    """Observable lifecycle of one workspace-owned MCP server slot."""
+
+    UNSTARTED = "unstarted"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    DISCONNECTING = "disconnecting"
+    SUPPRESSED = "suppressed"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class MCPRuntimeStatus:
+    """Safe immutable snapshot of one per-manager MCP runtime slot."""
+
+    server_name: str
+    state: MCPRuntimeState
+    generation: int
+    tool_count: int
+    error_type: str | None = None
+
+
 @dataclass(slots=True)
 class MCPRequestHandle:
     """One request identity whose result/cancel race is owned by the MCP loop."""
@@ -65,6 +87,9 @@ class MCPServerStatus:
     runtime_connected: bool
     runtime_active: bool = False
     runtime_state: str = "unavailable"
+    generation: int = 0
+    tool_count: int = 0
+    error_type: str | None = None
 
 
 @dataclass(slots=True)
@@ -97,6 +122,11 @@ class MCPServersView:
                     "name": server.name,
                     "enabled": server.enabled,
                     "runtime_connected": server.runtime_connected,
+                    "runtime_active": server.runtime_active,
+                    "runtime_state": server.runtime_state,
+                    "generation": server.generation,
+                    "tool_count": server.tool_count,
+                    "error_type": server.error_type,
                 }
                 for server in self.servers
             ]

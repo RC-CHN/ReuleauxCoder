@@ -155,6 +155,12 @@ def command_panel_spec() -> CommandPanelSpec:
                 description=(
                     f"{'enabled' if server.enabled else 'disabled'}"
                     f" · {server.runtime_state}"
+                    f" · g{server.generation} · {server.tool_count} tools"
+                    + (
+                        f" · error={server.error_type}"
+                        if server.error_type is not None
+                        else ""
+                    )
                 ),
                 command=(
                     f"/mcp {'disable' if server.enabled else 'enable'} {server.name}"

@@ -6,6 +6,10 @@ from reuleauxcoder.extensions.mcp.runtime import (
     build_mcp_servers_view,
     toggle_mcp_server,
 )
+from reuleauxcoder.extensions.mcp.models import (
+    MCPRuntimeState,
+    MCPRuntimeStatus,
+)
 
 
 class _Store:
@@ -36,6 +40,7 @@ class _Manager:
         self.disconnect_result = disconnect_result
         self.connect_calls: list[str] = []
         self.disconnect_calls: list[str] = []
+        self.runtime_statuses: tuple[MCPRuntimeStatus, ...] = ()
 
     def connect_server(self, server: MCPServerConfig) -> bool:
         self.connect_calls.append(server.name)
@@ -120,3 +125,40 @@ def test_status_distinguishes_preference_connection_and_active_catalog() -> None
 
     states = {server.name: server.runtime_state for server in view.servers}
     assert states == {"active": "active", "late": "connected", "off": "disabled"}
+
+
+def test_status_uses_generation_slot_instead_of_guessing_connected_state() -> None:
+    config = Config(
+        mcp_servers=[MCPServerConfig(name="demo", command="fake", enabled=True)]
+    )
+    manager = _Manager(connected={"demo"}, active={"demo"})
+    manager.runtime_statuses = (
+        MCPRuntimeStatus(
+            server_name="demo",
+            state=MCPRuntimeState.ERROR,
+            generation=4,
+            tool_count=0,
+            error_type="TransportEOF",
+        ),
+    )
+
+    view = build_mcp_servers_view(config, _agent(manager))
+
+    assert view.servers[0].runtime_state == "error"
+    assert view.servers[0].generation == 4
+    assert view.servers[0].tool_count == 0
+    assert view.servers[0].error_type == "TransportEOF"
+    assert view.to_payload() == {
+        "servers": [
+            {
+                "name": "demo",
+                "enabled": True,
+                "runtime_connected": True,
+                "runtime_active": True,
+                "runtime_state": "error",
+                "generation": 4,
+                "tool_count": 0,
+                "error_type": "TransportEOF",
+            }
+        ]
+    }

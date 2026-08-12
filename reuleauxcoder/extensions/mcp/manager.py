@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future
+from dataclasses import dataclass, field
 import threading
 import time
 from typing import TYPE_CHECKING, Iterable
@@ -14,13 +15,26 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.extensions.mcp.adapter import MCPTool
 from reuleauxcoder.extensions.mcp.client import MCPClient
+from reuleauxcoder.extensions.mcp.models import MCPRuntimeState, MCPRuntimeStatus
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
+
+
+@dataclass(slots=True)
+class _MCPRuntimeSlot:
+    name: str
+    state: MCPRuntimeState = MCPRuntimeState.UNSTARTED
+    generation: int = 0
+    client: MCPClient | None = None
+    tools: tuple[MCPTool, ...] = ()
+    in_flight: Future[bool] | None = field(default=None, repr=False)
+    last_error_type: str | None = None
 
 
 class MCPManager:
     """Manages connections to multiple MCP servers and aggregates their tools."""
 
     _CONNECT_TIMEOUT_SECONDS = 30.0
+    _LOOP_WAKEUP_FALLBACK_SECONDS = 0.01
 
     def __init__(self, ui_bus: "UIEventBus | None" = None):
         self._ui_bus = ui_bus
@@ -28,6 +42,7 @@ class MCPManager:
         self._tools: list[MCPTool] = []
         self._server_tools: dict[str, tuple[MCPTool, ...]] = {}
         self._active_servers: set[str] = set()
+        self._runtime_slots: dict[str, _MCPRuntimeSlot] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = False
@@ -44,15 +59,14 @@ class MCPManager:
         self.performance_monitor: RuntimePerformanceMonitor | None = None
 
     def start(self):
-        if self._started:
-            return
-
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-        self._started = True
-
-        loop = self._loop
+        with self._state_lock:
+            if not self._started:
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(target=self._run_loop, daemon=True)
+                self._started = True
+                self._thread.start()
+            loop = self._loop
+        assert loop is not None
         while not loop.is_running():
             time.sleep(0.01)
 
@@ -61,6 +75,17 @@ class MCPManager:
         if loop is None:
             return
         asyncio.set_event_loop(loop)
+        # Some restricted runtimes deny writes to asyncio's internal
+        # socketpair. A bounded no-op tick keeps thread-safe submissions and
+        # stop requests observable without changing MCP operation ordering.
+        def wakeup_fallback() -> None:
+            if loop.is_running():
+                loop.call_later(
+                    self._LOOP_WAKEUP_FALLBACK_SECONDS,
+                    wakeup_fallback,
+                )
+
+        loop.call_later(self._LOOP_WAKEUP_FALLBACK_SECONDS, wakeup_fallback)
         loop.run_forever()
 
     def stop(self):
@@ -95,12 +120,35 @@ class MCPManager:
     @property
     def connected_servers(self) -> set[str]:
         with self._state_lock:
-            return set(self._clients.keys())
+            return {
+                name
+                for name, slot in self._runtime_slots.items()
+                if slot.state is MCPRuntimeState.CONNECTED
+                and slot.client is not None
+                and self._client_connected(slot.client)
+            }
 
     @property
     def active_servers(self) -> set[str]:
         with self._state_lock:
             return set(self._active_servers)
+
+    @property
+    def runtime_statuses(self) -> tuple[MCPRuntimeStatus, ...]:
+        """Return one immutable snapshot without probing or reconnecting."""
+        with self._state_lock:
+            return tuple(
+                MCPRuntimeStatus(
+                    server_name=slot.name,
+                    state=slot.state,
+                    generation=slot.generation,
+                    tool_count=len(slot.tools),
+                    error_type=slot.last_error_type,
+                )
+                for slot in sorted(
+                    self._runtime_slots.values(), key=lambda item: item.name
+                )
+            )
 
     @property
     def available_tool_count(self) -> int:
@@ -128,6 +176,114 @@ class MCPManager:
         if callable(emit):
             emit(message, kind=UIEventKind.MCP)
 
+    def _slot_locked(self, server_name: str) -> _MCPRuntimeSlot:
+        slot = self._runtime_slots.get(server_name)
+        if slot is None:
+            slot = _MCPRuntimeSlot(server_name)
+            self._runtime_slots[server_name] = slot
+        return slot
+
+    @staticmethod
+    def _safe_error_type(error: BaseException | str) -> str:
+        name = error if isinstance(error, str) else type(error).__name__
+        safe = "".join(
+            character
+            for character in name
+            if character.isascii()
+            and (character.isalnum() or character in {"_", "-", "."})
+        )[:64]
+        return safe or "Error"
+
+    @staticmethod
+    def _client_connected(client: MCPClient | None) -> bool:
+        if client is None:
+            return False
+        check = getattr(client, "is_connected", None)
+        if not callable(check):
+            return True
+        try:
+            return bool(check())
+        except Exception:
+            return False
+
+    def _rebuild_tools_locked(self) -> None:
+        if not self._initial_sealed:
+            return
+        ordered = list(self._initial_server_order)
+        ordered.extend(name for name in self._server_tools if name not in ordered)
+        self._tools = [
+            tool
+            for server_name in ordered
+            if server_name in self._active_servers
+            for tool in self._server_tools.get(server_name, ())
+        ]
+
+    def _remove_server_locked(self, server_name: str) -> None:
+        self._clients.pop(server_name, None)
+        self._server_tools.pop(server_name, None)
+        self._active_servers.discard(server_name)
+        self._rebuild_tools_locked()
+
+    def _activate_server_locked(
+        self,
+        server_name: str,
+        client: MCPClient,
+        tools: tuple[MCPTool, ...],
+        *,
+        activate_if_sealed: bool,
+    ) -> None:
+        self._clients[server_name] = client
+        self._server_tools[server_name] = tools
+        if self._initial_sealed and activate_if_sealed:
+            self._active_servers.add(server_name)
+            self._rebuild_tools_locked()
+        elif server_name not in self._initial_server_order:
+            self._initial_server_order = (*self._initial_server_order, server_name)
+
+    def _new_client(
+        self,
+        config: "MCPServerConfig",
+        generation: int,
+    ) -> MCPClient:
+        return MCPClient(
+            config,
+            ui_bus=self._ui_bus,
+            on_transport_closed=lambda client, error_type: (
+                self._on_transport_closed(
+                    config.name,
+                    generation,
+                    client,
+                    error_type,
+                )
+            ),
+        )
+
+    def _on_transport_closed(
+        self,
+        server_name: str,
+        generation: int,
+        client: MCPClient,
+        error_type: str,
+    ) -> None:
+        """Invalidate capability only for the current client generation."""
+        with self._state_lock:
+            slot = self._runtime_slots.get(server_name)
+            if (
+                slot is None
+                or slot.generation != generation
+                or slot.client is not client
+            ):
+                return
+            slot.state = MCPRuntimeState.ERROR
+            slot.last_error_type = self._safe_error_type(error_type)
+            slot.tools = ()
+            self._remove_server_locked(server_name)
+        self._emit(
+            "error",
+            f"MCP server '{server_name}' transport closed "
+            f"(generation={generation}, error_type={slot.last_error_type}).",
+        )
+
     def connect_servers_async(self, configs: Iterable["MCPServerConfig"]) -> None:
         """Discover initial MCP tools without blocking interface startup."""
         enabled = tuple(config for config in configs if getattr(config, "enabled", True))
@@ -140,6 +296,14 @@ class MCPManager:
             self._initial_failures.clear()
             self._initial_sealed = False
             self._initial_ready.clear()
+            generations: dict[str, int] = {}
+            for config in enabled:
+                slot = self._slot_locked(config.name)
+                slot.generation += 1
+                slot.state = MCPRuntimeState.CONNECTING
+                slot.last_error_type = None
+                slot.in_flight = Future()
+                generations[config.name] = slot.generation
         if not enabled:
             self._initial_ready.set()
             return
@@ -147,26 +311,36 @@ class MCPManager:
         self.start()
         assert self._loop is not None
         self._initial_future = asyncio.run_coroutine_threadsafe(
-            self._run_initial_discovery(enabled), self._loop
+            self._run_initial_discovery(enabled, generations), self._loop
         )
 
     async def _run_initial_discovery(
-        self, configs: tuple["MCPServerConfig", ...]
+        self,
+        configs: tuple["MCPServerConfig", ...],
+        generations: dict[str, int],
     ) -> None:
         task = asyncio.current_task()
         self._initial_task = task
         try:
-            await self._connect_initial_servers(configs)
+            await self._connect_initial_servers(configs, generations)
         finally:
             if self._initial_task is task:
                 self._initial_task = None
 
     async def _connect_initial_servers(
-        self, configs: tuple["MCPServerConfig", ...]
+        self,
+        configs: tuple["MCPServerConfig", ...],
+        generations: dict[str, int],
     ) -> None:
         try:
             await asyncio.gather(
-                *(self._connect_initial_server(config) for config in configs)
+                *(
+                    self._connect_initial_server(
+                        config,
+                        generations[config.name],
+                    )
+                    for config in configs
+                )
             )
         except asyncio.CancelledError:
             raise
@@ -196,38 +370,109 @@ class MCPManager:
         else:
             self._emit("success", f"MCP discovery ready ({connected} server(s)).")
 
-    async def _connect_initial_server(self, config: "MCPServerConfig") -> None:
+    async def _connect_initial_server(
+        self,
+        config: "MCPServerConfig",
+        generation: int,
+    ) -> None:
         started = time.monotonic()
         error_type: str | None = None
-        client = MCPClient(config, ui_bus=self._ui_bus)
+        client: MCPClient | None = None
+        success = False
         try:
+            client = self._new_client(config, generation)
             success = await asyncio.wait_for(
                 client.connect(), timeout=self._CONNECT_TIMEOUT_SECONDS
             )
         except asyncio.CancelledError:
-            await client.disconnect()
+            if client is not None:
+                await client.disconnect()
             raise
         except Exception as error:
-            error_type = type(error).__name__
+            error_type = self._safe_error_type(error)
             success = False
         try:
             if not success:
-                await client.disconnect()
+                if client is not None:
+                    await client.disconnect()
                 with self._state_lock:
                     self._initial_failures.add(config.name)
+                    slot = self._runtime_slots.get(config.name)
+                    if slot is not None and slot.generation == generation:
+                        slot.state = MCPRuntimeState.ERROR
+                        slot.last_error_type = error_type or "ConnectFailed"
                 return
 
+            assert client is not None
             assert self._loop is not None
             tools = tuple(MCPTool(client, info, self._loop) for info in client.tools)
             with self._state_lock:
-                suppressed = config.name in self._suppressed_servers
-            if suppressed:
+                slot = self._runtime_slots.get(config.name)
+                stale = (
+                    slot is None
+                    or slot.generation != generation
+                    or config.name in self._suppressed_servers
+                )
+            if stale:
                 await client.disconnect()
                 return
             with self._state_lock:
-                self._clients[config.name] = client
-                self._server_tools[config.name] = tools
+                slot = self._runtime_slots[config.name]
+                if slot.generation != generation:
+                    stale = True
+                else:
+                    stale = False
+                    slot.state = MCPRuntimeState.CONNECTED
+                    slot.client = client
+                    slot.tools = tools
+                    slot.last_error_type = None
+                    self._activate_server_locked(
+                        config.name,
+                        client,
+                        tools,
+                        activate_if_sealed=False,
+                    )
+            if stale:
+                await client.disconnect()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            error_type = self._safe_error_type(error)
+            success = False
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception as cleanup_error:
+                    self._emit(
+                        "error",
+                        f"MCP initial cleanup failed (server={config.name}, "
+                        f"generation={generation}, "
+                        f"error_type={self._safe_error_type(cleanup_error)}).",
+                    )
+            with self._state_lock:
+                self._initial_failures.add(config.name)
+                slot = self._runtime_slots.get(config.name)
+                if slot is not None and slot.generation == generation:
+                    slot.state = MCPRuntimeState.ERROR
+                    slot.client = None
+                    slot.tools = ()
+                    slot.last_error_type = error_type
+                    self._remove_server_locked(config.name)
         finally:
+            with self._state_lock:
+                slot = self._runtime_slots.get(config.name)
+                shared = (
+                    slot.in_flight
+                    if slot is not None and slot.generation == generation
+                    else None
+                )
+                current_success = bool(
+                    slot is not None
+                    and slot.generation == generation
+                    and slot.state is MCPRuntimeState.CONNECTED
+                )
+            if shared is not None and not shared.done():
+                shared.set_result(current_success)
             monitor = self.performance_monitor
             if monitor is not None:
                 monitor.record(
@@ -237,7 +482,9 @@ class MCPManager:
                     status="ok" if success else "error",
                     attributes={
                         "server_name": config.name,
-                        "tool_count": len(client.tools) if success else 0,
+                        "tool_count": (
+                            len(client.tools) if success and client is not None else 0
+                        ),
                         "error_type": error_type,
                     },
                 )
@@ -317,97 +564,237 @@ class MCPManager:
         if getattr(config, "enabled", True) is False:
             return False
 
+        loop = self._loop
+        if loop is None:
+            return False
+
         with self._state_lock:
-            existing = self._clients.get(config.name)
-            if existing is not None:
+            slot = self._slot_locked(config.name)
+            existing = slot.client
+            if (
+                slot.state is MCPRuntimeState.CONNECTED
+                and existing is not None
+                and self._client_connected(existing)
+            ):
                 self._suppressed_servers.discard(config.name)
-                tools = self._server_tools.get(config.name, ())
                 if self._initial_sealed:
-                    active_ids = {id(tool) for tool in self._tools}
-                    self._tools.extend(
-                        tool for tool in tools if id(tool) not in active_ids
-                    )
                     self._active_servers.add(config.name)
+                    self._rebuild_tools_locked()
                 elif config.name not in self._initial_server_order:
                     self._initial_server_order = (
                         *self._initial_server_order,
                         config.name,
                     )
                 return True
-
-        client = MCPClient(config, ui_bus=self._ui_bus)
-        loop = self._loop
-        if loop is None:
-            return False
-        future = asyncio.run_coroutine_threadsafe(
-            self._connect_runtime_client(client), loop
-        )
-        try:
-            success = future.result(timeout=self._CONNECT_TIMEOUT_SECONDS)
-        except Exception as e:
-            future.cancel()
-            if self._ui_bus:
-                from reuleauxcoder.interfaces.events import UIEventKind
-
-                self._ui_bus.error(f"Connection error: {e}", kind=UIEventKind.MCP)
-            return False
-
-        if success:
-            tools = tuple(MCPTool(client, info, loop) for info in client.tools)
-            with self._state_lock:
+            shared = slot.in_flight
+            if shared is None or shared.done():
+                previous = existing or self._clients.get(config.name)
+                slot.generation += 1
+                generation = slot.generation
+                slot.state = MCPRuntimeState.CONNECTING
+                slot.client = None
+                slot.tools = ()
+                slot.last_error_type = None
                 self._suppressed_servers.discard(config.name)
-                self._clients[config.name] = client
-                self._server_tools[config.name] = tools
-                if self._initial_sealed:
-                    self._tools.extend(tools)
-                    self._active_servers.add(config.name)
-                elif config.name not in self._initial_server_order:
-                    self._initial_server_order = (
-                        *self._initial_server_order,
-                        config.name,
-                    )
-        else:
-            future = asyncio.run_coroutine_threadsafe(client.disconnect(), loop)
-            try:
-                future.result(timeout=5.0)
-            except Exception:
-                pass
-
-        return success
-
-    async def _connect_runtime_client(self, client: MCPClient) -> bool:
+                self._remove_server_locked(config.name)
+                client = self._new_client(config, generation)
+                shared = asyncio.run_coroutine_threadsafe(
+                    self._connect_runtime_generation(
+                        config,
+                        generation,
+                        client,
+                        previous,
+                    ),
+                    loop,
+                )
+                slot.in_flight = shared
         try:
-            return await client.connect()
+            return shared.result(timeout=self._CONNECT_TIMEOUT_SECONDS)
+        except Exception as error:
+            self._emit(
+                "error",
+                f"MCP connection failed (server={config.name}, "
+                f"error_type={self._safe_error_type(error)}).",
+            )
+            return False
+
+    async def _connect_runtime_generation(
+        self,
+        config: "MCPServerConfig",
+        generation: int,
+        client: MCPClient,
+        previous: MCPClient | None,
+    ) -> bool:
+        started = time.monotonic()
+        success = False
+        error_type: str | None = None
+        try:
+            if previous is not None and previous is not client:
+                await previous.disconnect()
+            success = await client.connect()
         except asyncio.CancelledError:
             await client.disconnect()
             raise
+        except Exception as error:
+            error_type = self._safe_error_type(error)
+
+        loop = self._loop
+        tools = (
+            tuple(MCPTool(client, info, loop) for info in client.tools)
+            if success and loop is not None
+            else ()
+        )
+        with self._state_lock:
+            slot = self._runtime_slots.get(config.name)
+            current = (
+                slot is not None
+                and slot.generation == generation
+                and config.name not in self._suppressed_servers
+            )
+            if current and success:
+                slot.state = MCPRuntimeState.CONNECTED
+                slot.client = client
+                slot.tools = tools
+                slot.last_error_type = None
+                self._activate_server_locked(
+                    config.name,
+                    client,
+                    tools,
+                    activate_if_sealed=True,
+                )
+            elif current:
+                slot.state = MCPRuntimeState.ERROR
+                slot.client = None
+                slot.tools = ()
+                slot.last_error_type = error_type or "ConnectFailed"
+                self._remove_server_locked(config.name)
+        if not current or not success:
+            try:
+                await client.disconnect()
+            except Exception as cleanup_error:
+                self._emit(
+                    "error",
+                    f"MCP stale/failed client cleanup failed "
+                    f"(server={config.name}, generation={generation}, "
+                    f"error_type={self._safe_error_type(cleanup_error)}).",
+                )
+        outcome = bool(current and success)
+        monitor = self.performance_monitor
+        if monitor is not None:
+            monitor.record(
+                "mcp",
+                "runtime_connect",
+                (time.monotonic() - started) * 1000,
+                status="ok" if outcome else "error",
+                attributes={
+                    "server_name": config.name,
+                    "generation": generation,
+                    "tool_count": len(tools) if outcome else 0,
+                    "error_type": error_type,
+                },
+            )
+        return outcome
 
     def disconnect_server(self, server_name: str) -> bool:
         if not self._loop:
             return False
 
+        started = time.monotonic()
+
         with self._state_lock:
             self._suppressed_servers.add(server_name)
-            client = self._clients.get(server_name)
+            slot = self._slot_locked(server_name)
+            slot.generation += 1
+            generation = slot.generation
+            client = slot.client or self._clients.get(server_name)
+            previous_in_flight = slot.in_flight
+            slot.state = MCPRuntimeState.DISCONNECTING
+            slot.client = None
+            slot.tools = ()
+            slot.in_flight = None
+            slot.last_error_type = None
+            self._remove_server_locked(server_name)
+        if previous_in_flight is not None and not previous_in_flight.done():
+            previous_in_flight.cancel()
         if client is None:
+            with self._state_lock:
+                slot.state = MCPRuntimeState.SUPPRESSED
+            self._record_runtime_operation(
+                "runtime_disconnect",
+                started,
+                server_name=server_name,
+                generation=generation,
+                status="ok",
+                tool_count=0,
+            )
             return server_name in self._initial_server_order
 
         future = asyncio.run_coroutine_threadsafe(client.disconnect(), self._loop)
         try:
             future.result(timeout=5.0)
-        except Exception:
-            pass
+        except Exception as error:
+            with self._state_lock:
+                current = self._runtime_slots.get(server_name)
+                if current is not None and current.generation == generation:
+                    current.state = MCPRuntimeState.SUPPRESSED
+                    current.last_error_type = self._safe_error_type(error)
+            self._emit(
+                "error",
+                f"MCP disconnect cleanup failed (server={server_name}, "
+                f"generation={generation}, "
+                f"error_type={self._safe_error_type(error)}).",
+            )
+            self._record_runtime_operation(
+                "runtime_disconnect",
+                started,
+                server_name=server_name,
+                generation=generation,
+                status="error",
+                error_type=self._safe_error_type(error),
+                tool_count=0,
+            )
+            return False
 
         with self._state_lock:
-            self._clients.pop(server_name, None)
-            self._server_tools.pop(server_name, None)
-            self._active_servers.discard(server_name)
-            self._tools = [
-                tool
-                for tool in self._tools
-                if getattr(tool, "server_name", None) != server_name
-            ]
+            current = self._runtime_slots.get(server_name)
+            if current is not None and current.generation == generation:
+                current.state = MCPRuntimeState.SUPPRESSED
+        self._record_runtime_operation(
+            "runtime_disconnect",
+            started,
+            server_name=server_name,
+            generation=generation,
+            status="ok",
+            tool_count=0,
+        )
         return True
+
+    def _record_runtime_operation(
+        self,
+        name: str,
+        started: float,
+        *,
+        server_name: str,
+        generation: int,
+        status: str,
+        tool_count: int,
+        error_type: str | None = None,
+    ) -> None:
+        monitor = self.performance_monitor
+        if monitor is None:
+            return
+        monitor.record(
+            "mcp",
+            name,
+            (time.monotonic() - started) * 1000,
+            status=status,
+            attributes={
+                "server_name": server_name,
+                "generation": generation,
+                "tool_count": tool_count,
+                "error_type": error_type,
+            },
+        )
 
     def disconnect_all(self):
         loop = self._loop
@@ -420,7 +807,31 @@ class MCPManager:
                 initial_task.cancel()
                 await asyncio.gather(initial_task, return_exceptions=True)
             with self._state_lock:
-                clients = tuple(self._clients.values())
+                in_flight = tuple(
+                    slot.in_flight
+                    for slot in self._runtime_slots.values()
+                    if slot.in_flight is not None and not slot.in_flight.done()
+                )
+                clients = tuple(
+                    {
+                        id(client): client
+                        for client in (
+                            *self._clients.values(),
+                            *(
+                                slot.client
+                                for slot in self._runtime_slots.values()
+                                if slot.client is not None
+                            ),
+                        )
+                    }.values()
+                )
+            for runtime_future in in_flight:
+                runtime_future.cancel()
+            if in_flight:
+                await asyncio.gather(
+                    *(asyncio.wrap_future(item) for item in in_flight),
+                    return_exceptions=True,
+                )
             await asyncio.gather(
                 *(client.disconnect() for client in clients),
                 return_exceptions=True,
@@ -438,6 +849,13 @@ class MCPManager:
             self._tools.clear()
             self._active_servers.clear()
             self._suppressed_servers.clear()
+            for slot in self._runtime_slots.values():
+                slot.generation += 1
+                slot.state = MCPRuntimeState.UNSTARTED
+                slot.client = None
+                slot.tools = ()
+                slot.in_flight = None
+                slot.last_error_type = None
         self._initial_future = None
 
     def get_tool(self, name: str) -> MCPTool | None:

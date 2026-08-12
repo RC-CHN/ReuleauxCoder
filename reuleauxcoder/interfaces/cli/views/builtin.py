@@ -50,8 +50,13 @@ def render_mcp_servers_view(renderer, event) -> bool:
     lines = []
     for server in servers:
         enabled = "enabled" if server.enabled else "disabled"
-        connected = "connected" if server.runtime_connected else "disconnected"
-        lines.append(f"- **{server.name}**: {enabled}, runtime={connected}")
+        details = (
+            f"- **{server.name}**: {enabled}, runtime={server.runtime_state}, "
+            f"generation={server.generation}, tools={server.tool_count}"
+        )
+        if server.error_type is not None:
+            details += f", error_type={server.error_type}"
+        lines.append(details)
     renderer.console.print(Markdown("\n".join(lines)))
     return True
 

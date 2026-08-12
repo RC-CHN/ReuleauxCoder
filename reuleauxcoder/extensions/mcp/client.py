@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import shutil
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -86,7 +86,13 @@ class MCPToolResultProtocolError(MCPRequestError):
 class MCPClient:
     """Async client for communicating with an MCP server via stdio."""
 
-    def __init__(self, config, ui_bus: "UIEventBus | None" = None):
+    def __init__(
+        self,
+        config,
+        ui_bus: "UIEventBus | None" = None,
+        *,
+        on_transport_closed: Callable[[MCPClient, str], None] | None = None,
+    ):
         self.config = config
         self._ui_bus = ui_bus
         self._process: asyncio.subprocess.Process | None = None
@@ -97,6 +103,8 @@ class MCPClient:
         self._initialized = False
         self._pending_requests: dict[int, MCPRequestHandle] = {}
         self._receive_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task[bool] | None = None
+        self._on_transport_closed = on_transport_closed
 
     @property
     def tools(self) -> list[MCPToolInfo]:
@@ -200,7 +208,19 @@ class MCPClient:
         return True
 
     async def reconnect(self) -> bool:
-        """Disconnect and reconnect to the MCP server."""
+        """Share one reconnect attempt across concurrent pre-dispatch callers."""
+        task = self._reconnect_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._reconnect_once())
+            self._reconnect_task = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done() and self._reconnect_task is task:
+                self._reconnect_task = None
+
+    async def _reconnect_once(self) -> bool:
+        """Own one disconnect/connect renewal attempt."""
         self._emit("warning", f"Attempting to reconnect to '{self.config.name}'...")
         await self.disconnect()
         # Clear tools since they'll be re-fetched on connect
@@ -479,6 +499,7 @@ class MCPClient:
             return
 
         buffer = b""
+        unexpected_error_type: str | None = None
         try:
             while True:
                 chunk = await self._reader.read(4096)
@@ -520,9 +541,11 @@ class MCPClient:
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            unexpected_error_type = type(e).__name__
             self._emit("error", f"Receive error: {e}")
             self._fail_pending(MCPRequestTransportLost(str(e)))
         else:
+            unexpected_error_type = "TransportEOF"
             self._fail_pending(
                 MCPRequestTransportLost(
                     f"MCP server '{self.config.name}' closed its output stream"
@@ -530,6 +553,16 @@ class MCPClient:
             )
         finally:
             self._initialized = False
+            callback = self._on_transport_closed
+            if callback is not None and unexpected_error_type is not None:
+                try:
+                    callback(self, unexpected_error_type)
+                except Exception as error:
+                    self._emit(
+                        "error",
+                        "Transport-state observer failed "
+                        f"(error_type={type(error).__name__})",
+                    )
 
     def _fail_pending(self, error: MCPRequestError) -> None:
         pending = tuple(self._pending_requests.values())

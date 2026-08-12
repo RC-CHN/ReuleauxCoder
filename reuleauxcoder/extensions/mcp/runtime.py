@@ -7,6 +7,7 @@ from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
     WorkspaceConfigStore,
 )
 from reuleauxcoder.extensions.mcp.models import (
+    MCPRuntimeStatus,
     MCPServerStatus,
     MCPServersView,
     MCPToggleResult,
@@ -46,6 +47,11 @@ def build_mcp_servers_view(config, agent=None) -> MCPServersView:
     runtime_connected = set(getattr(manager, "connected_servers", set()) or set())
     runtime_active = set(getattr(manager, "active_servers", set()) or set())
     initial_state = str(getattr(manager, "initial_state", "idle"))
+    runtime_statuses = {
+        status.server_name: status
+        for status in (getattr(manager, "runtime_statuses", ()) or ())
+        if isinstance(status, MCPRuntimeStatus)
+    }
 
     return MCPServersView(
         servers=[
@@ -55,7 +61,9 @@ def build_mcp_servers_view(config, agent=None) -> MCPServersView:
                 runtime_connected=server.name in runtime_connected,
                 runtime_active=server.name in runtime_active,
                 runtime_state=(
-                    "connecting"
+                    runtime_statuses[server.name].state.value
+                    if server.name in runtime_statuses
+                    else "connecting"
                     if bool(getattr(server, "enabled", True))
                     and initial_state == "connecting"
                     and server.name not in runtime_connected
@@ -66,6 +74,21 @@ def build_mcp_servers_view(config, agent=None) -> MCPServersView:
                     else "disabled"
                     if not bool(getattr(server, "enabled", True))
                     else "unavailable"
+                ),
+                generation=(
+                    runtime_statuses[server.name].generation
+                    if server.name in runtime_statuses
+                    else 0
+                ),
+                tool_count=(
+                    runtime_statuses[server.name].tool_count
+                    if server.name in runtime_statuses
+                    else 0
+                ),
+                error_type=(
+                    runtime_statuses[server.name].error_type
+                    if server.name in runtime_statuses
+                    else None
                 ),
             )
             for server in servers
