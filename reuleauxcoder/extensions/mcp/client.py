@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 import shutil
+import signal
+import subprocess
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, cast
@@ -54,6 +56,19 @@ class MCPToolRequestCancelled(MCPRequestError):
     def __init__(self, request_id: int):
         super().__init__(f"MCP tools/call request {request_id} was cancelled")
         self.request_id = request_id
+
+
+class MCPDisconnectError(MCPRequestError):
+    """One or more bounded transport cleanup steps failed."""
+
+    def __init__(self, errors: list[BaseException]):
+        primary = errors[0] if errors else RuntimeError()
+        self.error_type = type(primary).__name__
+        self.failure_count = max(1, len(errors))
+        super().__init__(
+            "MCP transport cleanup failed "
+            f"(error_type={self.error_type}, failures={self.failure_count})"
+        )
 
 
 _TOOL_RESULT_PROTOCOL_CODES = frozenset(
@@ -152,6 +167,11 @@ class MCPClient:
         env.update(self.config.env)
 
         try:
+            process_options: dict[str, object]
+            if os.name == "nt":
+                process_options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            else:
+                process_options = {"start_new_session": True}
             self._process = await asyncio.create_subprocess_exec(
                 cmd,
                 *self.config.args,
@@ -160,6 +180,7 @@ class MCPClient:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=self.config.cwd,
+                **process_options,
             )
             self._reader = self._process.stdout
             self._writer = self._process.stdin
@@ -273,7 +294,21 @@ class MCPClient:
             self._emit("error", f"Failed to reconnect to '{self.config.name}'")
         return success
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
+        """Finish an owned cleanup once started, then preserve cancellation."""
+        cleanup = asyncio.create_task(self._disconnect_impl())
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _disconnect_impl(self) -> None:
+        cleanup_errors: list[BaseException] = []
         refresh_task = self._tools_refresh_task
         if refresh_task is not None and refresh_task is not asyncio.current_task():
             refresh_task.cancel()
@@ -300,8 +335,8 @@ class MCPClient:
         if writer is not None:
             try:
                 writer.close()
-            except Exception:
-                pass
+            except Exception as error:
+                cleanup_errors.append(error)
             wait_closed = getattr(writer, "wait_closed", None)
             if callable(wait_closed):
                 try:
@@ -309,25 +344,91 @@ class MCPClient:
                         cast(Awaitable[None], wait_closed()),
                         timeout=1.0,
                     )
-                except Exception:
-                    pass
+                except Exception as error:
+                    cleanup_errors.append(error)
 
         if process:
             try:
-                if process.returncode is None:
-                    process.terminate()
-                await asyncio.wait_for(process.wait(), timeout=2.0)
-            except Exception:
-                try:
-                    process.kill()
-                    await asyncio.wait_for(process.wait(), timeout=1.0)
-                except Exception:
-                    pass
+                await self._terminate_process_tree(process)
+            except Exception as error:
+                cleanup_errors.append(error)
 
         self._process = None
         self._reader = None
         self._writer = None
         self._initialized = False
+        if cleanup_errors:
+            raise MCPDisconnectError(cleanup_errors)
+
+    async def _terminate_process_tree(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        """Terminate the isolated MCP process tree within a bounded deadline."""
+        if os.name == "nt":
+            await self._terminate_windows_process_tree(process)
+            return
+        process_group = process.pid
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        await self._wait_for_parent(process, timeout=2.0)
+        if not _posix_process_group_alive(process_group):
+            return
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        await self._wait_for_parent(process, timeout=1.0)
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while _posix_process_group_alive(process_group):
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError("MCP process group did not exit after SIGKILL")
+            await asyncio.sleep(0.02)
+
+    @staticmethod
+    async def _wait_for_parent(
+        process: asyncio.subprocess.Process,
+        *,
+        timeout: float,
+    ) -> None:
+        if process.returncode is not None:
+            return
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return
+
+    @staticmethod
+    async def _terminate_windows_process_tree(
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        if process.returncode is not None:
+            return
+        taskkill = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(process.pid),
+            "/T",
+            "/F",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(taskkill.communicate(), timeout=2.0)
+        except asyncio.TimeoutError as error:
+            taskkill.kill()
+            await taskkill.wait()
+            raise TimeoutError("taskkill timed out") from error
+        if taskkill.returncode != 0 and process.returncode is None:
+            raise OSError(
+                "taskkill did not confirm MCP process-tree termination "
+                f"(exit_code={taskkill.returncode}, stderr_bytes={len(stderr)})"
+            )
+        await MCPClient._wait_for_parent(process, timeout=1.0)
+        if process.returncode is None:
+            raise TimeoutError("MCP process did not exit after taskkill")
 
     async def refresh_tools(self) -> tuple[MCPToolInfo, ...]:
         """Fetch and atomically replace the server's current tool snapshot."""
@@ -738,6 +839,16 @@ def _parse_tool_catalog(
             )
         )
     return tuple(tools)
+
+
+def _posix_process_group_alive(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _parse_tool_call_result(

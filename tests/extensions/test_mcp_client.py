@@ -1,5 +1,8 @@
 import asyncio
 import json
+import os
+from pathlib import Path
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -10,6 +13,7 @@ from reuleauxcoder.domain.agent.tool_outcome import ToolOutcomeStatus
 from reuleauxcoder.extensions.mcp.adapter import MCPTool
 from reuleauxcoder.extensions.mcp.client import (
     MCPClient,
+    MCPDisconnectError,
     MCPRequestTransportLost,
     MCPToolResultProtocolError,
     MCPToolRequestCancelled,
@@ -609,6 +613,90 @@ def test_tools_refresh_failure_is_observed_without_unhandled_task_error() -> Non
         assert client.tools == []
 
     asyncio.run(scenario())
+
+
+def test_disconnect_reports_cleanup_failure_after_clearing_runtime_state() -> None:
+    class _WriterWithBrokenClose(_Writer):
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    async def scenario() -> None:
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
+        client = MCPClient(config)
+        client._writer = _WriterWithBrokenClose()
+        client._reader = object()
+        client._initialized = True
+
+        with pytest.raises(MCPDisconnectError) as raised:
+            await client.disconnect()
+
+        assert raised.value.error_type == "OSError"
+        assert client._writer is None
+        assert client._reader is None
+        assert client._initialized is False
+
+    asyncio.run(scenario())
+
+
+def test_disconnect_finishes_owned_cleanup_before_propagating_cancel() -> None:
+    class _Client(MCPClient):
+        async def _disconnect_impl(self) -> None:
+            self.cleanup_started.set()
+            await self.cleanup_release.wait()
+            self.cleanup_finished = True
+
+    async def scenario() -> None:
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
+        client = _Client(config)
+        client.cleanup_started = asyncio.Event()
+        client.cleanup_release = asyncio.Event()
+        client.cleanup_finished = False
+
+        task = asyncio.create_task(client.disconnect())
+        await client.cleanup_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert task.done() is False
+
+        client.cleanup_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.cleanup_finished is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
+def test_disconnect_kills_signal_resistant_mcp_process_group(tmp_path: Path) -> None:
+    server = Path(__file__).with_name("fake_mcp_tree_server.py")
+    child_pid_path = tmp_path / "child.pid"
+
+    async def scenario() -> tuple[int, int]:
+        config = SimpleNamespace(
+            name="tree",
+            command=sys.executable,
+            args=[str(server), str(child_pid_path)],
+            env={},
+            cwd=str(tmp_path),
+        )
+        client = MCPClient(config)
+        assert await client.connect() is True
+        process = client._process
+        assert process is not None
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while not child_pid_path.exists():
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError("fake MCP child did not start")
+            await asyncio.sleep(0.01)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8"))
+
+        await client.disconnect()
+        return process.pid, child_pid
+
+    parent_pid, child_pid = asyncio.run(scenario())
+    for pid in (parent_pid, child_pid):
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 def test_mcp_adapter_reports_cancelled_with_unknown_effect_state() -> None:

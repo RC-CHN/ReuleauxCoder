@@ -551,3 +551,39 @@ def test_transport_eof_publishes_empty_catalog_and_runtime_issue(monkeypatch) ->
     finally:
         manager.disconnect_all()
         manager.stop()
+
+
+def test_disconnect_cleanup_failure_is_visible_and_not_reported_as_success(
+    monkeypatch,
+) -> None:
+    class _BrokenDisconnectClient(_FakeClient):
+        async def disconnect(self) -> None:
+            self.disconnected = True
+            raise OSError("cleanup failed")
+
+    monkeypatch.setattr(manager_module, "MCPClient", _BrokenDisconnectClient)
+    _BrokenDisconnectClient.delays = {}
+    _BrokenDisconnectClient.failures = set()
+    issues: list[tuple[str, str, str]] = []
+    manager = MCPManager()
+    manager.bind_runtime_observers(
+        runtime_issue_sink=lambda *issue: issues.append(issue)
+    )
+    manager.performance_monitor = RuntimePerformanceMonitor()
+
+    try:
+        assert manager.connect_server(_server("cleanup"))
+
+        assert manager.disconnect_server("cleanup") is False
+
+        status = manager.runtime_statuses[0]
+        assert status.state is MCPRuntimeState.SUPPRESSED
+        assert status.error_type == "OSError"
+        assert manager.tools == []
+        assert issues == [("mcp_disconnect_cleanup", "OSError", "server_cleanup")]
+        sample = manager.performance_monitor.snapshot(category="mcp")[-1]
+        assert sample.name == "runtime_disconnect"
+        assert sample.status == "error"
+    finally:
+        manager.disconnect_all()
+        manager.stop()

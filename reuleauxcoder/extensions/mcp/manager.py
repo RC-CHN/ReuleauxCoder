@@ -114,8 +114,17 @@ class MCPManager:
                 # Close async generators and shutdown default executor
                 self._loop.run_until_complete(self._loop.shutdown_asyncgens())
                 self._loop.close()
-            except Exception:
-                pass
+            except Exception as error:
+                error_type = self._safe_error_type(error)
+                self._emit(
+                    "error",
+                    f"MCP event-loop cleanup failed (error_type={error_type}).",
+                )
+                self._record_runtime_issue(
+                    "mcp_loop_cleanup",
+                    error_type,
+                    "runtime",
+                )
 
         self._loop = None
         self._thread = None
@@ -269,7 +278,9 @@ class MCPManager:
 
     @staticmethod
     def _safe_error_type(error: BaseException | str) -> str:
-        name = error if isinstance(error, str) else type(error).__name__
+        name = error if isinstance(error, str) else getattr(error, "error_type", None)
+        if not isinstance(name, str) or not name:
+            name = type(error).__name__
         safe = "".join(
             character
             for character in name
@@ -661,11 +672,17 @@ class MCPManager:
                 try:
                     await client.disconnect()
                 except Exception as cleanup_error:
+                    cleanup_error_type = self._safe_error_type(cleanup_error)
                     self._emit(
                         "error",
                         f"MCP initial cleanup failed (server={config.name}, "
                         f"generation={generation}, "
-                        f"error_type={self._safe_error_type(cleanup_error)}).",
+                        f"error_type={cleanup_error_type}).",
+                    )
+                    self._record_runtime_issue(
+                        "mcp_initial_cleanup",
+                        cleanup_error_type,
+                        config.name,
                     )
             with self._state_lock:
                 self._initial_failures.add(config.name)
@@ -898,11 +915,17 @@ class MCPManager:
             try:
                 await client.disconnect()
             except Exception as cleanup_error:
+                cleanup_error_type = self._safe_error_type(cleanup_error)
                 self._emit(
                     "error",
                     f"MCP stale/failed client cleanup failed "
                     f"(server={config.name}, generation={generation}, "
-                    f"error_type={self._safe_error_type(cleanup_error)}).",
+                    f"error_type={cleanup_error_type}).",
+                )
+                self._record_runtime_issue(
+                    "mcp_connect_cleanup",
+                    cleanup_error_type,
+                    config.name,
                 )
         outcome = bool(current and success)
         monitor = self.performance_monitor
@@ -963,16 +986,22 @@ class MCPManager:
         try:
             future.result(timeout=5.0)
         except Exception as error:
+            cleanup_error_type = self._safe_error_type(error)
             with self._state_lock:
                 current = self._runtime_slots.get(server_name)
                 if current is not None and current.generation == generation:
                     current.state = MCPRuntimeState.SUPPRESSED
-                    current.last_error_type = self._safe_error_type(error)
+                    current.last_error_type = cleanup_error_type
             self._emit(
                 "error",
                 f"MCP disconnect cleanup failed (server={server_name}, "
                 f"generation={generation}, "
-                f"error_type={self._safe_error_type(error)}).",
+                f"error_type={cleanup_error_type}).",
+            )
+            self._record_runtime_issue(
+                "mcp_disconnect_cleanup",
+                cleanup_error_type,
+                server_name,
             )
             self._record_runtime_operation(
                 "runtime_disconnect",
@@ -980,7 +1009,7 @@ class MCPManager:
                 server_name=server_name,
                 generation=generation,
                 status="error",
-                error_type=self._safe_error_type(error),
+                error_type=cleanup_error_type,
                 tool_count=0,
             )
             return False
@@ -1031,7 +1060,7 @@ class MCPManager:
         if loop is None or not loop.is_running():
             return
 
-        async def _disconnect():
+        async def _disconnect() -> tuple[tuple[str, str], ...]:
             initial_task = self._initial_task
             if initial_task is not None and initial_task is not asyncio.current_task():
                 initial_task.cancel()
@@ -1062,16 +1091,35 @@ class MCPManager:
                     *(asyncio.wrap_future(item) for item in in_flight),
                     return_exceptions=True,
                 )
-            await asyncio.gather(
+            results = await asyncio.gather(
                 *(client.disconnect() for client in clients),
                 return_exceptions=True,
+            )
+            return tuple(
+                (
+                    str(getattr(client.config, "name", "runtime")),
+                    self._safe_error_type(result),
+                )
+                for client, result in zip(clients, results, strict=True)
+                if isinstance(result, BaseException)
             )
 
         future = asyncio.run_coroutine_threadsafe(_disconnect(), loop)
         try:
-            future.result(timeout=5.0)
-        except Exception:
-            pass
+            cleanup_failures = future.result(timeout=5.0)
+        except Exception as error:
+            cleanup_failures = (("runtime", self._safe_error_type(error)),)
+        for server_name, error_type in cleanup_failures:
+            self._emit(
+                "error",
+                "MCP shutdown cleanup failed "
+                f"(server={server_name}, error_type={error_type}).",
+            )
+            self._record_runtime_issue(
+                "mcp_shutdown_cleanup",
+                error_type,
+                server_name,
+            )
 
         with self._state_lock:
             self._clients.clear()
