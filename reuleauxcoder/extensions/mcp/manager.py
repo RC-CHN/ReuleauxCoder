@@ -7,6 +7,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Iterable
 
 if TYPE_CHECKING:
@@ -15,7 +16,11 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.extensions.mcp.adapter import MCPTool
 from reuleauxcoder.extensions.mcp.client import MCPClient
-from reuleauxcoder.extensions.mcp.models import MCPRuntimeState, MCPRuntimeStatus
+from reuleauxcoder.extensions.mcp.models import (
+    MCPRuntimeState,
+    MCPRuntimeStatus,
+    MCPToolInfo,
+)
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
@@ -56,6 +61,9 @@ class MCPManager:
         self._initial_state = "idle"
         self._initial_outcome = "ready"
         self._initial_sealed = False
+        self._catalog_generation = 0
+        self._catalog_listener: Callable[[tuple[MCPTool, ...]], object] | None = None
+        self._runtime_issue_sink: Callable[[str, str, str], object] | None = None
         self.performance_monitor: RuntimePerformanceMonitor | None = None
 
     def start(self):
@@ -75,6 +83,7 @@ class MCPManager:
         if loop is None:
             return
         asyncio.set_event_loop(loop)
+
         # Some restricted runtimes deny writes to asyncio's internal
         # socketpair. A bounded no-op tick keeps thread-safe submissions and
         # stop requests observable without changing MCP operation ordering.
@@ -134,6 +143,11 @@ class MCPManager:
             return set(self._active_servers)
 
     @property
+    def catalog_generation(self) -> int:
+        with self._state_lock:
+            return self._catalog_generation
+
+    @property
     def runtime_statuses(self) -> tuple[MCPRuntimeStatus, ...]:
         """Return one immutable snapshot without probing or reconnecting."""
         with self._state_lock:
@@ -166,6 +180,76 @@ class MCPManager:
     def initial_state(self) -> str:
         with self._state_lock:
             return self._initial_state
+
+    def bind_runtime_observers(
+        self,
+        *,
+        catalog_listener: Callable[[tuple[MCPTool, ...]], object] | None = None,
+        runtime_issue_sink: Callable[[str, str, str], object] | None = None,
+    ) -> None:
+        """Bind owner-scoped sinks for dynamic catalog and failure facts."""
+        with self._state_lock:
+            self._catalog_listener = catalog_listener
+            self._runtime_issue_sink = runtime_issue_sink
+
+    @staticmethod
+    def _safe_runtime_ref(server_name: str) -> str:
+        suffix = "".join(
+            character if character.isascii() and character.isalnum() else "_"
+            for character in server_name
+        ).strip("_")[:48]
+        return f"server_{suffix or 'unknown'}"
+
+    def _record_runtime_issue(
+        self,
+        phase: str,
+        error_type: str,
+        server_name: str,
+    ) -> None:
+        sink = self._runtime_issue_sink
+        if sink is None:
+            return
+        try:
+            sink(
+                phase,
+                self._safe_error_type(error_type).replace("-", "_").replace(".", "_"),
+                self._safe_runtime_ref(server_name),
+            )
+        except Exception as error:
+            self._emit(
+                "error",
+                "MCP runtime-issue observer failed "
+                f"(error_type={self._safe_error_type(error)}).",
+            )
+
+    def _publish_catalog_snapshot(
+        self,
+        tools: tuple[MCPTool, ...],
+        *,
+        server_name: str,
+    ) -> None:
+        listener = self._catalog_listener
+        if listener is None:
+            return
+        try:
+            listener(tools)
+        except Exception as error:
+            error_type = self._safe_error_type(error)
+            self._emit(
+                "error",
+                f"MCP catalog observer failed (error_type={error_type}).",
+            )
+            self._record_runtime_issue(
+                "mcp_catalog_observer",
+                error_type,
+                server_name,
+            )
+
+    def _catalog_changed_locked(self) -> tuple[tuple[MCPTool, ...], int] | None:
+        if not self._initial_sealed:
+            return None
+        self._catalog_generation += 1
+        return tuple(self._tools), self._catalog_generation
 
     def _emit(self, level: str, message: str) -> None:
         if self._ui_bus is None:
@@ -248,15 +332,141 @@ class MCPManager:
         return MCPClient(
             config,
             ui_bus=self._ui_bus,
-            on_transport_closed=lambda client, error_type: (
-                self._on_transport_closed(
+            on_transport_closed=lambda client, error_type: self._on_transport_closed(
+                config.name,
+                generation,
+                client,
+                error_type,
+            ),
+            on_tools_changed=lambda client, tools, reason, error_type, elapsed_ms: (
+                self._on_tools_changed(
                     config.name,
                     generation,
                     client,
+                    tools,
+                    reason,
                     error_type,
+                    elapsed_ms,
                 )
             ),
         )
+
+    def _on_tools_changed(
+        self,
+        server_name: str,
+        generation: int,
+        client: MCPClient,
+        tool_infos: tuple[MCPToolInfo, ...] | None,
+        reason: str,
+        error_type: str | None,
+        elapsed_ms: float,
+    ) -> None:
+        """Generation-gate and atomically publish one capability change."""
+        safe_error = self._safe_error_type(error_type) if error_type else None
+        tools: tuple[MCPTool, ...] = ()
+        if tool_infos is not None:
+            loop = self._loop
+            if loop is None:
+                safe_error = "RuntimeLoopUnavailable"
+                tool_infos = None
+            else:
+                try:
+                    tools = tuple(MCPTool(client, info, loop) for info in tool_infos)
+                except Exception as error:
+                    safe_error = self._safe_error_type(error)
+                    tool_infos = None
+
+        with self._state_lock:
+            slot = self._runtime_slots.get(server_name)
+            if (
+                slot is None
+                or slot.generation != generation
+                or slot.client is not client
+                or server_name in self._suppressed_servers
+            ):
+                return
+            old_count = len(slot.tools)
+            if tool_infos is None:
+                slot.state = (
+                    MCPRuntimeState.ERROR
+                    if safe_error is not None
+                    else MCPRuntimeState.REFRESHING
+                )
+                slot.tools = ()
+                slot.last_error_type = safe_error
+                self._server_tools.pop(server_name, None)
+                self._active_servers.discard(server_name)
+                self._rebuild_tools_locked()
+                new_count = 0
+            else:
+                slot.state = MCPRuntimeState.CONNECTED
+                slot.tools = tools
+                slot.last_error_type = None
+                self._activate_server_locked(
+                    server_name,
+                    client,
+                    tools,
+                    activate_if_sealed=True,
+                )
+                new_count = len(tools)
+            catalog_update = self._catalog_changed_locked()
+
+        if catalog_update is not None:
+            snapshot, catalog_generation = catalog_update
+            self._publish_catalog_snapshot(snapshot, server_name=server_name)
+        else:
+            catalog_generation = self._catalog_generation
+
+        if elapsed_ms > 0 or safe_error is not None or tool_infos is not None:
+            monitor = self.performance_monitor
+            if monitor is not None:
+                try:
+                    monitor.record(
+                        "mcp",
+                        "runtime_renew" if reason == "renew" else "capability_refresh",
+                        max(0.0, elapsed_ms),
+                        status="error" if safe_error is not None else "ok",
+                        attributes={
+                            "server_name": server_name,
+                            "generation": generation,
+                            "catalog_generation": catalog_generation,
+                            "reason": reason,
+                            "old_tool_count": old_count,
+                            "tool_count": new_count,
+                            "error_type": safe_error,
+                        },
+                    )
+                except Exception as error:
+                    monitor_error_type = self._safe_error_type(error)
+                    self._emit(
+                        "error",
+                        "MCP performance observer failed "
+                        f"(error_type={monitor_error_type}).",
+                    )
+                    self._record_runtime_issue(
+                        "mcp_performance_observer",
+                        monitor_error_type,
+                        server_name,
+                    )
+        if safe_error is not None:
+            self._record_runtime_issue(
+                "mcp_capability_refresh",
+                safe_error,
+                server_name,
+            )
+            self._emit(
+                "error",
+                f"MCP capability refresh failed (server={server_name}, "
+                f"generation={generation}, catalog_generation={catalog_generation}, "
+                f"error_type={safe_error}).",
+            )
+        elif tool_infos is not None:
+            self._emit(
+                "info",
+                f"MCP capability catalog changed (server={server_name}, "
+                f"generation={generation}, catalog_generation={catalog_generation}, "
+                f"tools={old_count}->{new_count}, reason={reason}).",
+            )
 
     def _on_transport_closed(
         self,
@@ -278,15 +488,23 @@ class MCPManager:
             slot.last_error_type = self._safe_error_type(error_type)
             slot.tools = ()
             self._remove_server_locked(server_name)
+            catalog_update = self._catalog_changed_locked()
+            safe_error = slot.last_error_type
+        if catalog_update is not None:
+            snapshot, _ = catalog_update
+            self._publish_catalog_snapshot(snapshot, server_name=server_name)
+        self._record_runtime_issue("mcp_transport", safe_error, server_name)
         self._emit(
             "error",
             f"MCP server '{server_name}' transport closed "
-            f"(generation={generation}, error_type={slot.last_error_type}).",
+            f"(generation={generation}, error_type={safe_error}).",
         )
 
     def connect_servers_async(self, configs: Iterable["MCPServerConfig"]) -> None:
         """Discover initial MCP tools without blocking interface startup."""
-        enabled = tuple(config for config in configs if getattr(config, "enabled", True))
+        enabled = tuple(
+            config for config in configs if getattr(config, "enabled", True)
+        )
         with self._state_lock:
             if self._initial_state != "idle":
                 return
@@ -536,6 +754,7 @@ class MCPManager:
                 }
                 self._initial_sealed = True
                 self._initial_state = "sealed"
+                self._catalog_generation += 1
             tools = list(self._tools)
             outcome = self._initial_outcome
         self._emit(
@@ -662,12 +881,19 @@ class MCPManager:
                     tools,
                     activate_if_sealed=True,
                 )
+                catalog_update = self._catalog_changed_locked()
             elif current:
                 slot.state = MCPRuntimeState.ERROR
                 slot.client = None
                 slot.tools = ()
                 slot.last_error_type = error_type or "ConnectFailed"
                 self._remove_server_locked(config.name)
+                catalog_update = self._catalog_changed_locked()
+            else:
+                catalog_update = None
+        if catalog_update is not None:
+            snapshot, _ = catalog_update
+            self._publish_catalog_snapshot(snapshot, server_name=config.name)
         if not current or not success:
             try:
                 await client.disconnect()
@@ -714,6 +940,10 @@ class MCPManager:
             slot.in_flight = None
             slot.last_error_type = None
             self._remove_server_locked(server_name)
+            catalog_update = self._catalog_changed_locked()
+        if catalog_update is not None:
+            snapshot, _ = catalog_update
+            self._publish_catalog_snapshot(snapshot, server_name=server_name)
         if previous_in_flight is not None and not previous_in_flight.done():
             previous_in_flight.cancel()
         if client is None:

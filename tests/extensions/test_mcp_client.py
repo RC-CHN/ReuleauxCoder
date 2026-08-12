@@ -83,9 +83,7 @@ def test_mcp_cancel_does_not_wait_for_notification_backpressure() -> None:
                 await self.block.wait()
 
     async def scenario() -> None:
-        config = SimpleNamespace(
-            name="test", command="test", args=[], env={}, cwd=None
-        )
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
         client = MCPClient(config)
         writer = _BackpressuredWriter()
         client._writer = writer
@@ -116,13 +114,10 @@ def test_mcp_response_already_settled_wins_over_cancel_signal() -> None:
         handle.future.set_result({"content": []})
         cancellation.set()
 
-        assert (
-            await client._await_request(
-                handle,
-                cancellation_signal=cancellation,
-            )
-            == {"content": []}
-        )
+        assert await client._await_request(
+            handle,
+            cancellation_signal=cancellation,
+        ) == {"content": []}
         assert len(writer.writes) == 1
 
     asyncio.run(scenario())
@@ -152,9 +147,7 @@ def test_mcp_client_preserves_server_reported_error_identity() -> None:
             }
 
     async def scenario() -> None:
-        config = SimpleNamespace(
-            name="test", command="test", args=[], env={}, cwd=None
-        )
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
         client = _Client(config)
         client._initialized = True
 
@@ -204,9 +197,7 @@ def test_mcp_client_rejects_malformed_tool_result(payload, code) -> None:
             return payload
 
     async def scenario() -> None:
-        config = SimpleNamespace(
-            name="test", command="test", args=[], env={}, cwd=None
-        )
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
         client = _Client(config)
         client._initialized = True
 
@@ -385,9 +376,7 @@ def test_in_flight_tool_transport_loss_is_not_retried() -> None:
             return True
 
     async def scenario() -> None:
-        config = SimpleNamespace(
-            name="test", command="test", args=[], env={}, cwd=None
-        )
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
         client = _Client(config)
         client._initialized = True
         client._writer = _Writer()
@@ -417,9 +406,7 @@ def test_concurrent_reconnect_is_single_flight() -> None:
             return True
 
     async def scenario() -> None:
-        config = SimpleNamespace(
-            name="test", command="test", args=[], env={}, cwd=None
-        )
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
         client = _Client(config)
         client.gate = asyncio.Event()
         tasks = [asyncio.create_task(client.reconnect()) for _ in range(8)]
@@ -434,11 +421,66 @@ def test_concurrent_reconnect_is_single_flight() -> None:
     asyncio.run(scenario())
 
 
+def test_reconnect_invalidates_tools_before_transport_renewal() -> None:
+    class _Client(MCPClient):
+        async def disconnect(self) -> None:
+            self.disconnect_started.set()
+            await self.disconnect_release.wait()
+
+        async def connect(self) -> bool:
+            self._tools = [
+                MCPToolInfo(
+                    name="renewed",
+                    description="renewed",
+                    input_schema={"type": "object"},
+                    server_name=self.config.name,
+                )
+            ]
+            return True
+
+    async def scenario() -> None:
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
+        observed: list[tuple[tuple[str, ...] | None, str, str | None]] = []
+        client = _Client(
+            config,
+            on_tools_changed=lambda _client, tools, reason, error_type, _elapsed: (
+                observed.append(
+                    (
+                        tuple(info.name for info in tools)
+                        if tools is not None
+                        else None,
+                        reason,
+                        error_type,
+                    )
+                )
+            ),
+        )
+        client.disconnect_started = asyncio.Event()
+        client.disconnect_release = asyncio.Event()
+        client._tools = [
+            MCPToolInfo(
+                name="stale",
+                description="stale",
+                input_schema={"type": "object"},
+                server_name="test",
+            )
+        ]
+
+        task = asyncio.create_task(client.reconnect())
+        await client.disconnect_started.wait()
+        assert client.tools == []
+        assert observed == [(None, "renew", None)]
+
+        client.disconnect_release.set()
+        assert await task is True
+        assert observed[-1] == (("renewed",), "renew", None)
+
+    asyncio.run(scenario())
+
+
 def test_receive_eof_reports_safe_transport_state_once() -> None:
     async def scenario() -> None:
-        config = SimpleNamespace(
-            name="test", command="test", args=[], env={}, cwd=None
-        )
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
         observed: list[tuple[MCPClient, str]] = []
         client = MCPClient(
             config,
@@ -455,6 +497,116 @@ def test_receive_eof_reports_safe_transport_state_once() -> None:
 
         assert client._initialized is False
         assert observed == [(client, "TransportEOF")]
+
+    asyncio.run(scenario())
+
+
+def test_tools_list_changed_burst_is_coalesced_and_publishes_final_snapshot() -> None:
+    class _Client(MCPClient):
+        refresh_calls = 0
+        first_started: asyncio.Event
+        first_release: asyncio.Event
+
+        async def refresh_tools(self) -> tuple[MCPToolInfo, ...]:
+            self.refresh_calls += 1
+            if self.refresh_calls == 1:
+                self.first_started.set()
+                await self.first_release.wait()
+            tools = (
+                MCPToolInfo(
+                    name=f"tool_{self.refresh_calls}",
+                    description="dynamic",
+                    input_schema={"type": "object"},
+                    server_name=self.config.name,
+                ),
+            )
+            self._tools = list(tools)
+            return tools
+
+    async def scenario() -> None:
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
+        observed: list[tuple[tuple[str, ...] | None, str | None]] = []
+        client = _Client(
+            config,
+            on_tools_changed=lambda _client, tools, _reason, error_type, _elapsed: (
+                observed.append(
+                    (
+                        tuple(info.name for info in tools)
+                        if tools is not None
+                        else None,
+                        error_type,
+                    )
+                )
+            ),
+        )
+        client.first_started = asyncio.Event()
+        client.first_release = asyncio.Event()
+
+        client._queue_tools_refresh()
+        await client.first_started.wait()
+        for _ in range(8):
+            client._queue_tools_refresh()
+        client.first_release.set()
+        task = client._tools_refresh_task
+        assert task is not None
+        await task
+
+        assert client.refresh_calls == 2
+        assert observed[0] == (None, None)
+        assert observed[-1] == (("tool_2",), None)
+        assert [info.name for info in client.tools] == ["tool_2"]
+
+    asyncio.run(scenario())
+
+
+def test_receive_loop_recognizes_tools_list_changed_notification() -> None:
+    class _Client(MCPClient):
+        refresh_notifications = 0
+
+        def _queue_tools_refresh(self) -> None:
+            self.refresh_notifications += 1
+
+    async def scenario() -> None:
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
+        client = _Client(config)
+        reader = asyncio.StreamReader()
+        reader.feed_data(
+            b'{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n'
+        )
+        reader.feed_eof()
+        client._reader = reader
+
+        await client._receive_loop()
+
+        assert client.refresh_notifications == 1
+
+    asyncio.run(scenario())
+
+
+def test_tools_refresh_failure_is_observed_without_unhandled_task_error() -> None:
+    class _Client(MCPClient):
+        async def refresh_tools(self) -> tuple[MCPToolInfo, ...]:
+            raise ValueError("catalog unavailable")
+
+    async def scenario() -> None:
+        config = SimpleNamespace(name="test", command="test", args=[], env={}, cwd=None)
+        observed: list[tuple[tuple[MCPToolInfo, ...] | None, str | None]] = []
+        client = _Client(
+            config,
+            on_tools_changed=lambda _client, tools, _reason, error_type, _elapsed: (
+                observed.append((tools, error_type))
+            ),
+        )
+
+        client._queue_tools_refresh()
+        task = client._tools_refresh_task
+        assert task is not None
+        await task
+        await asyncio.sleep(0)
+
+        assert observed == [(None, None), (None, "ValueError")]
+        assert task.exception() is None
+        assert client.tools == []
 
     asyncio.run(scenario())
 

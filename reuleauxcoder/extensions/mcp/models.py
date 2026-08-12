@@ -31,6 +31,7 @@ class MCPRuntimeState(str, Enum):
     UNSTARTED = "unstarted"
     CONNECTING = "connecting"
     CONNECTED = "connected"
+    REFRESHING = "refreshing"
     DISCONNECTING = "disconnecting"
     SUPPRESSED = "suppressed"
     ERROR = "error"

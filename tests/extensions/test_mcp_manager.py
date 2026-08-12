@@ -15,11 +15,19 @@ class _FakeClient:
     delays: dict[str, float] = {}
     failures: set[str] = set()
 
-    def __init__(self, config, ui_bus=None, *, on_transport_closed=None) -> None:
+    def __init__(
+        self,
+        config,
+        ui_bus=None,
+        *,
+        on_transport_closed=None,
+        on_tools_changed=None,
+    ) -> None:
         self.config = config
         self.tools: list[MCPToolInfo] = []
         self.disconnected = False
         self.on_transport_closed = on_transport_closed
+        self.on_tools_changed = on_tools_changed
 
     async def connect(self) -> bool:
         await asyncio.sleep(self.delays.get(self.config.name, 0.0))
@@ -230,9 +238,7 @@ def test_stale_initial_connect_cannot_overwrite_reenabled_generation(
         assert current == reenabled
         assert manager._clients["race"] is second
         assert first.disconnected is True
-        assert [tool.name for tool in manager._server_tools["race"]] == [
-            "race_tool"
-        ]
+        assert [tool.name for tool in manager._server_tools["race"]] == ["race_tool"]
     finally:
         manager.disconnect_all()
         manager.stop()
@@ -348,6 +354,200 @@ def test_runtime_connect_disconnect_performance_has_generation_and_outcome(
             "server_name": "observed",
             "tool_count": 0,
         }
+    finally:
+        manager.disconnect_all()
+        manager.stop()
+
+
+def test_dynamic_capability_snapshot_replaces_agent_catalog(monkeypatch) -> None:
+    monkeypatch.setattr(manager_module, "MCPClient", _FakeClient)
+    _FakeClient.delays = {}
+    _FakeClient.failures = set()
+    published: list[tuple[str, ...]] = []
+    manager = MCPManager()
+    manager.bind_runtime_observers(
+        catalog_listener=lambda tools: published.append(
+            tuple(tool.name for tool in tools)
+        )
+    )
+    manager.performance_monitor = RuntimePerformanceMonitor()
+    server = _server("dynamic")
+
+    try:
+        assert manager.connect_server(server)
+        manager.seal_initial_catalog()
+        client = manager._clients["dynamic"]
+        generation = manager.runtime_statuses[0].generation
+        replacement = (
+            MCPToolInfo(
+                name="replacement",
+                description="new tool",
+                input_schema={"type": "object"},
+                server_name="dynamic",
+            ),
+        )
+
+        client.on_tools_changed(
+            client,
+            None,
+            "list_changed",
+            None,
+            0.0,
+        )
+        assert manager.runtime_statuses[0].state is MCPRuntimeState.REFRESHING
+        assert manager.tools == []
+        assert published[-1] == ()
+
+        client.on_tools_changed(
+            client,
+            replacement,
+            "list_changed",
+            None,
+            12.5,
+        )
+
+        status = manager.runtime_statuses[0]
+        assert status.generation == generation
+        assert status.state is MCPRuntimeState.CONNECTED
+        assert status.tool_count == 1
+        assert [tool.name for tool in manager.tools] == ["replacement"]
+        assert published[-1] == ("replacement",)
+        assert manager.catalog_generation == 3
+        sample = manager.performance_monitor.snapshot(category="mcp")[-1]
+        assert sample.name == "capability_refresh"
+        assert sample.status == "ok"
+        assert sample.attribute_map() == {
+            "catalog_generation": 3,
+            "error_type": None,
+            "generation": generation,
+            "old_tool_count": 0,
+            "reason": "list_changed",
+            "server_name": "dynamic",
+            "tool_count": 1,
+        }
+    finally:
+        manager.disconnect_all()
+        manager.stop()
+
+
+def test_dynamic_refresh_failure_removes_stale_tools_and_informs_agent(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "MCPClient", _FakeClient)
+    _FakeClient.delays = {}
+    _FakeClient.failures = set()
+    published: list[tuple[str, ...]] = []
+    issues: list[tuple[str, str, str]] = []
+    manager = MCPManager()
+    manager.bind_runtime_observers(
+        catalog_listener=lambda tools: published.append(
+            tuple(tool.name for tool in tools)
+        ),
+        runtime_issue_sink=lambda phase, error_type, ref: issues.append(
+            (phase, error_type, ref)
+        ),
+    )
+    manager.performance_monitor = RuntimePerformanceMonitor()
+
+    try:
+        assert manager.connect_server(_server("failing-server"))
+        manager.seal_initial_catalog()
+        client = manager._clients["failing-server"]
+        client.on_tools_changed(
+            client,
+            None,
+            "list_changed",
+            "MCPRequestTimeout",
+            31.0,
+        )
+
+        status = manager.runtime_statuses[0]
+        assert status.state is MCPRuntimeState.ERROR
+        assert status.error_type == "MCPRequestTimeout"
+        assert status.tool_count == 0
+        assert manager.tools == []
+        assert published[-1] == ()
+        assert issues == [
+            (
+                "mcp_capability_refresh",
+                "MCPRequestTimeout",
+                "server_failing_server",
+            )
+        ]
+        sample = manager.performance_monitor.snapshot(category="mcp")[-1]
+        assert sample.name == "capability_refresh"
+        assert sample.status == "error"
+        assert sample.attribute_map()["error_type"] == "MCPRequestTimeout"
+    finally:
+        manager.disconnect_all()
+        manager.stop()
+
+
+def test_old_generation_capability_callback_cannot_pollute_current_catalog(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "MCPClient", _FakeClient)
+    _FakeClient.delays = {}
+    _FakeClient.failures = set()
+    manager = MCPManager()
+
+    try:
+        server = _server("stale")
+        assert manager.connect_server(server)
+        manager.seal_initial_catalog()
+        old = manager._clients["stale"]
+        assert manager.disconnect_server("stale")
+        assert manager.connect_server(server)
+        current_generation = manager.runtime_statuses[0].generation
+        before = [tool.name for tool in manager.tools]
+
+        old.on_tools_changed(
+            old,
+            (
+                MCPToolInfo(
+                    name="stale_result",
+                    description="must be discarded",
+                    input_schema={"type": "object"},
+                    server_name="stale",
+                ),
+            ),
+            "list_changed",
+            None,
+            5.0,
+        )
+
+        assert manager.runtime_statuses[0].generation == current_generation
+        assert [tool.name for tool in manager.tools] == before
+        assert "stale_result" not in before
+    finally:
+        manager.disconnect_all()
+        manager.stop()
+
+
+def test_transport_eof_publishes_empty_catalog_and_runtime_issue(monkeypatch) -> None:
+    monkeypatch.setattr(manager_module, "MCPClient", _FakeClient)
+    _FakeClient.delays = {}
+    _FakeClient.failures = set()
+    published: list[tuple[str, ...]] = []
+    issues: list[tuple[str, str, str]] = []
+    manager = MCPManager()
+    manager.bind_runtime_observers(
+        catalog_listener=lambda tools: published.append(
+            tuple(tool.name for tool in tools)
+        ),
+        runtime_issue_sink=lambda *issue: issues.append(issue),
+    )
+
+    try:
+        assert manager.connect_server(_server("eof"))
+        manager.seal_initial_catalog()
+        client = manager._clients["eof"]
+
+        client.on_transport_closed(client, "TransportEOF")
+
+        assert manager.tools == []
+        assert published[-1] == ()
+        assert issues == [("mcp_transport", "TransportEOF", "server_eof")]
     finally:
         manager.disconnect_all()
         manager.stop()

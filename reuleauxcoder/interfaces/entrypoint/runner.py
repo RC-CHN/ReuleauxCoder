@@ -843,6 +843,12 @@ class AppRunner:
         """Initialize MCP manager and connect to servers."""
         manager = self.dependencies.create_mcp_manager(ui_bus)
         manager.performance_monitor = self._performance_monitor
+        bind_runtime_observers = getattr(manager, "bind_runtime_observers", None)
+        if callable(bind_runtime_observers):
+            bind_runtime_observers(
+                catalog_listener=agent.replace_mcp_tools,
+                runtime_issue_sink=agent.record_runtime_issue,
+            )
 
         enabled_servers = [s for s in mcp_servers if getattr(s, "enabled", True)]
         manager.connect_servers_async(enabled_servers)

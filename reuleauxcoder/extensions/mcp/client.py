@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import shutil
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, cast
 
@@ -92,6 +93,17 @@ class MCPClient:
         ui_bus: "UIEventBus | None" = None,
         *,
         on_transport_closed: Callable[[MCPClient, str], None] | None = None,
+        on_tools_changed: Callable[
+            [
+                MCPClient,
+                tuple[MCPToolInfo, ...] | None,
+                str,
+                str | None,
+                float,
+            ],
+            None,
+        ]
+        | None = None,
     ):
         self.config = config
         self._ui_bus = ui_bus
@@ -104,7 +116,10 @@ class MCPClient:
         self._pending_requests: dict[int, MCPRequestHandle] = {}
         self._receive_task: asyncio.Task | None = None
         self._reconnect_task: asyncio.Task[bool] | None = None
+        self._tools_refresh_task: asyncio.Task[None] | None = None
+        self._tools_refresh_dirty = False
         self._on_transport_closed = on_transport_closed
+        self._on_tools_changed = on_tools_changed
 
     @property
     def tools(self) -> list[MCPToolInfo]:
@@ -171,21 +186,7 @@ class MCPClient:
 
             await self._notify("notifications/initialized", {})
 
-            tools_request = await self._request("tools/list", {})
-            tools_result = await self._await_request(tools_request)
-            if tools_result and "tools" in tools_result:
-                for t in tools_result["tools"]:
-                    self._tools.append(
-                        MCPToolInfo(
-                            name=t["name"],
-                            description=t.get("description", ""),
-                            input_schema=t.get(
-                                "inputSchema", {"type": "object", "properties": {}}
-                            ),
-                            server_name=self.config.name,
-                            annotations=dict(t.get("annotations") or {}),
-                        )
-                    )
+            await self.refresh_tools()
 
             self._initialized = True
             self._emit(
@@ -221,18 +222,65 @@ class MCPClient:
 
     async def _reconnect_once(self) -> bool:
         """Own one disconnect/connect renewal attempt."""
+        started = time.monotonic()
         self._emit("warning", f"Attempting to reconnect to '{self.config.name}'...")
-        await self.disconnect()
-        # Clear tools since they'll be re-fetched on connect
         self._tools = []
-        success = await self.connect()
+        self._publish_tools_changed(
+            None,
+            reason="renew",
+            error_type=None,
+            elapsed_ms=0.0,
+        )
+        try:
+            await self.disconnect()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._publish_tools_changed(
+                None,
+                reason="renew",
+                error_type=type(error).__name__,
+                elapsed_ms=(time.monotonic() - started) * 1000,
+            )
+            raise
+        try:
+            success = await self.connect()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self._publish_tools_changed(
+                None,
+                reason="renew",
+                error_type=type(error).__name__,
+                elapsed_ms=(time.monotonic() - started) * 1000,
+            )
+            raise
         if success:
+            self._publish_tools_changed(
+                tuple(self._tools),
+                reason="renew",
+                error_type=None,
+                elapsed_ms=(time.monotonic() - started) * 1000,
+            )
             self._emit("success", f"Reconnected to '{self.config.name}'")
         else:
+            self._publish_tools_changed(
+                None,
+                reason="renew",
+                error_type="ConnectFailed",
+                elapsed_ms=(time.monotonic() - started) * 1000,
+            )
             self._emit("error", f"Failed to reconnect to '{self.config.name}'")
         return success
 
     async def disconnect(self):
+        refresh_task = self._tools_refresh_task
+        if refresh_task is not None and refresh_task is not asyncio.current_task():
+            refresh_task.cancel()
+            await asyncio.gather(refresh_task, return_exceptions=True)
+        self._tools_refresh_task = None
+        self._tools_refresh_dirty = False
+
         if self._receive_task:
             self._receive_task.cancel()
             try:
@@ -243,9 +291,7 @@ class MCPClient:
                 self._receive_task = None
 
         self._fail_pending(
-            MCPRequestTransportLost(
-                f"MCP server '{self.config.name}' disconnected"
-            )
+            MCPRequestTransportLost(f"MCP server '{self.config.name}' disconnected")
         )
 
         writer = self._writer
@@ -282,6 +328,90 @@ class MCPClient:
         self._reader = None
         self._writer = None
         self._initialized = False
+
+    async def refresh_tools(self) -> tuple[MCPToolInfo, ...]:
+        """Fetch and atomically replace the server's current tool snapshot."""
+        handle = await self._request("tools/list", {})
+        result = await self._await_request(handle)
+        tools = _parse_tool_catalog(result, server_name=self.config.name)
+        self._tools = list(tools)
+        return tools
+
+    def _queue_tools_refresh(self) -> None:
+        """Coalesce a notification burst into at most one follow-up refresh."""
+        self._tools_refresh_dirty = True
+        task = self._tools_refresh_task
+        if task is not None and not task.done():
+            return
+        self._tools = []
+        self._publish_tools_changed(
+            None,
+            reason="list_changed",
+            error_type=None,
+            elapsed_ms=0.0,
+        )
+        task = asyncio.create_task(self._run_tools_refresh())
+        self._tools_refresh_task = task
+        task.add_done_callback(self._tools_refresh_finished)
+
+    async def _run_tools_refresh(self) -> None:
+        while self._tools_refresh_dirty:
+            self._tools_refresh_dirty = False
+            started = time.monotonic()
+            try:
+                tools = await self.refresh_tools()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                if self._tools_refresh_dirty:
+                    continue
+                self._publish_tools_changed(
+                    None,
+                    reason="list_changed",
+                    error_type=type(error).__name__,
+                    elapsed_ms=(time.monotonic() - started) * 1000,
+                )
+            else:
+                if self._tools_refresh_dirty:
+                    continue
+                self._publish_tools_changed(
+                    tools,
+                    reason="list_changed",
+                    error_type=None,
+                    elapsed_ms=(time.monotonic() - started) * 1000,
+                )
+
+    def _tools_refresh_finished(self, task: asyncio.Task[None]) -> None:
+        if self._tools_refresh_task is task:
+            self._tools_refresh_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as error:
+            self._emit(
+                "error",
+                f"Tool-catalog refresh task failed (error_type={type(error).__name__})",
+            )
+
+    def _publish_tools_changed(
+        self,
+        tools: tuple[MCPToolInfo, ...] | None,
+        *,
+        reason: str,
+        error_type: str | None,
+        elapsed_ms: float,
+    ) -> None:
+        callback = self._on_tools_changed
+        if callback is None:
+            return
+        try:
+            callback(self, tools, reason, error_type, elapsed_ms)
+        except Exception as error:
+            self._emit(
+                "error",
+                f"Tool-catalog observer failed (error_type={type(error).__name__})",
+            )
 
     async def call_tool(
         self,
@@ -390,9 +520,7 @@ class MCPClient:
                 # duplicate future exception to avoid an unhandled warning.
                 future.exception()
             if was_dispatched:
-                raise MCPRequestTransportLost(
-                    str(e), request_id=request_id
-                ) from e
+                raise MCPRequestTransportLost(str(e), request_id=request_id) from e
             raise MCPRequestNotDispatched(str(e)) from e
         return handle
 
@@ -431,9 +559,7 @@ class MCPClient:
                 )
             await asyncio.sleep(0.05)
 
-    async def _cancel_request(
-        self, handle: MCPRequestHandle, *, reason: str
-    ) -> bool:
+    async def _cancel_request(self, handle: MCPRequestHandle, *, reason: str) -> bool:
         if handle.state is MCPRequestState.SETTLED or handle.future.done():
             return False
         current = self._pending_requests.get(handle.request_id)
@@ -538,6 +664,8 @@ class MCPClient:
                         data = params.get("data", "")
                         if level in ("error", "warning"):
                             self._emit(level, f"[{self.config.name}] {data}")
+                    elif message.get("method") == "notifications/tools/list_changed":
+                        self._queue_tools_refresh()
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -577,6 +705,39 @@ class MCPClient:
                         request_id=handle.request_id,
                     )
                 handle.future.set_exception(pending_error)
+
+
+def _parse_tool_catalog(
+    result: dict | None,
+    *,
+    server_name: str,
+) -> tuple[MCPToolInfo, ...]:
+    """Validate the bounded portion of a ``tools/list`` response we consume."""
+    if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+        raise MCPRequestError("MCP tools/list result violated the protocol schema")
+    tools: list[MCPToolInfo] = []
+    for raw in result["tools"]:
+        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
+            raise MCPRequestError("MCP tools/list result violated the protocol schema")
+        description = raw.get("description", "")
+        input_schema = raw.get("inputSchema", {"type": "object", "properties": {}})
+        annotations = raw.get("annotations") or {}
+        if (
+            not isinstance(description, str)
+            or not isinstance(input_schema, dict)
+            or not isinstance(annotations, dict)
+        ):
+            raise MCPRequestError("MCP tools/list result violated the protocol schema")
+        tools.append(
+            MCPToolInfo(
+                name=raw["name"],
+                description=description,
+                input_schema=input_schema,
+                server_name=server_name,
+                annotations=dict(annotations),
+            )
+        )
+    return tuple(tools)
 
 
 def _parse_tool_call_result(
