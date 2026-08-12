@@ -20,6 +20,7 @@ from reuleauxcoder.extensions.tools.builtin.history import (
 from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
 from reuleauxcoder.extensions.tools.builtin.lsp import (
     LspDiagnosticsTool,
+    LspRestartTool,
     LspStatusTool,
     LspTool,
 )
@@ -55,6 +56,7 @@ _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
     LspTool,
     LspStatusTool,
     LspDiagnosticsTool,
+    LspRestartTool,
     WriteNoteTool,
     EditNoteTool,
     DeleteNoteTool,

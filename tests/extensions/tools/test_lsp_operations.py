@@ -22,6 +22,7 @@ from reuleauxcoder.extensions.lsp.client import (
 )
 from reuleauxcoder.extensions.lsp.manager import (
     LspManager,
+    LspRestartResult,
     LspStatusSnapshot,
     LspStatusTransportSnapshot,
     LspTransportState,
@@ -29,6 +30,7 @@ from reuleauxcoder.extensions.lsp.manager import (
 from reuleauxcoder.extensions.lsp.registry import LanguageId
 from reuleauxcoder.extensions.tools.builtin.lsp import (
     LspDiagnosticsTool,
+    LspRestartTool,
     LspStatusTool,
 )
 
@@ -299,6 +301,86 @@ def test_lsp_diagnostics_preserves_typed_server_failure(tmp_path: Path) -> None:
     assert "status=server_unavailable" in outcome.model_text
     assert "error_type=LspServerUnavailable" in outcome.model_text
     assert manager.acknowledged == ("failed-batch", "lsp_diagnostics")
+
+
+class _RestartManager:
+    def __init__(self, result: LspRestartResult | BaseException) -> None:
+        self.result = result
+        self.path = None
+        self.cancellation = None
+
+    def restart_transport_sync(self, path, *, cancellation=None):
+        self.path = path
+        self.cancellation = cancellation
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
+def test_lsp_restart_reports_exact_generation_and_scope(tmp_path: Path) -> None:
+    source = tmp_path / "demo.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = _RestartManager(
+        LspRestartResult(
+            language="python",
+            root_hash="abc123abc123",
+            previous_state=LspTransportState.READY,
+            previous_generation=4,
+            state=LspTransportState.READY,
+            generation=5,
+            replaced_process=True,
+        )
+    )
+
+    outcome = LspRestartTool(lsp_manager=manager).execute(filePath=str(source))
+
+    assert outcome.success
+    assert manager.path == source
+    assert json.loads(outcome.model_text) == {
+        "generation": 5,
+        "language": "python",
+        "previous_generation": 4,
+        "previous_state": "ready",
+        "replaced_process": True,
+        "root_hash": "abc123abc123",
+        "state": "ready",
+    }
+    assert outcome.metadata == {
+        "operation": "restart",
+        "language": "python",
+        "root_hash": "abc123abc123",
+        "previous_generation": 4,
+        "generation": 5,
+        "replaced_process": True,
+    }
+    assert LspRestartTool.effect_class == "control_plane_internal"
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (LspRequestCancelled("cancelled"), "cancelled"),
+        (LspRequestTimedOut("timed out"), "timed_out"),
+    ],
+)
+def test_lsp_restart_preserves_interrupt_status(
+    tmp_path: Path,
+    error: BaseException,
+    status: str,
+) -> None:
+    source = tmp_path / "demo.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    outcome = LspRestartTool(lsp_manager=_RestartManager(error)).execute(
+        filePath=str(source)
+    )
+
+    assert outcome.status.value == status
+    assert outcome.error_kind.value == "interrupted"
+    assert outcome.metadata == {
+        "effect_class": "control_plane_internal",
+        "operation": "restart",
+    }
 
 
 class _CountingLock:

@@ -27,6 +27,7 @@ from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
 from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
 from reuleauxcoder.extensions.lsp.manager import (
     LspManager,
+    LspRestartResult,
     LspStatusSnapshot,
     LspStatusTransportSnapshot,
     LspTransportState,
@@ -359,6 +360,102 @@ class LspDiagnosticsTool(_BoundLspTool):
             consumer_id="lsp_diagnostics",
         )
         return result.with_metadata(acknowledged=acknowledged)
+
+
+class LspRestartTool(_BoundLspTool):
+    """Restart exactly one file's language/workspace transport."""
+
+    name: ClassVar[str] = "lsp_restart"
+    parallel_safe: ClassVar[bool] = True
+    effect_class: ClassVar[str] = "control_plane_internal"
+    interrupt_mode: ClassVar[InterruptMode] = InterruptMode.CANCEL_WITH_PARTIAL
+    description: ClassVar[str] = (
+        "Restart the LSP transport serving one file. The restart is serialized "
+        "with queries and diagnostics for that language/workspace, and succeeds "
+        "only after the replacement transport reaches ready."
+    )
+    parameters: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "filePath": {
+                "type": "string",
+                "description": "A file identifying the language/workspace transport.",
+            },
+        },
+        "required": ["filePath"],
+        "additionalProperties": False,
+    }
+
+    def execute(self, *, filePath: str) -> ToolOutcome:
+        try:
+            _language, path = resolve_file_path(filePath)
+        except (FileNotFoundError, ValueError) as error:
+            return _lsp_restart_failure(str(error))
+
+        manager = self.lsp_manager
+        if manager is None:
+            return _lsp_restart_failure("LSP infrastructure is not available")
+        try:
+            result = manager.restart_transport_sync(
+                path,
+                cancellation=self.current_cancellation_signal(),
+            )
+        except LspRequestCancelled as error:
+            return _lsp_restart_failure(
+                "LSP restart cancelled; " + _safe_failure_message("restart", error),
+                status=ToolOutcomeStatus.CANCELLED,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        except LspRequestTimedOut as error:
+            return _lsp_restart_failure(
+                "LSP restart timed out; " + _safe_failure_message("restart", error),
+                status=ToolOutcomeStatus.TIMED_OUT,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        except LspClientError as error:
+            return _lsp_restart_failure(_safe_failure_message("restart", error))
+        except Exception as error:
+            return _lsp_restart_failure(_safe_failure_message("restart", error))
+        return _lsp_restart_success(result)
+
+
+def _lsp_restart_success(result: LspRestartResult) -> ToolOutcome:
+    payload = {
+        "generation": result.generation,
+        "language": result.language,
+        "previous_generation": result.previous_generation,
+        "previous_state": result.previous_state.value,
+        "replaced_process": result.replaced_process,
+        "root_hash": result.root_hash,
+        "state": result.state.value,
+    }
+    return ToolOutcome(
+        summary=(
+            f"LSP restart ready: {result.language} generation {result.generation}"
+        ),
+        content=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        metadata={
+            "operation": "restart",
+            "language": result.language,
+            "root_hash": result.root_hash,
+            "previous_generation": result.previous_generation,
+            "generation": result.generation,
+            "replaced_process": result.replaced_process,
+        },
+    )
+
+
+def _lsp_restart_failure(
+    message: str,
+    *,
+    status: ToolOutcomeStatus = ToolOutcomeStatus.FAILED,
+    error_kind: ToolErrorKind = ToolErrorKind.EXECUTION,
+) -> ToolOutcome:
+    outcome = _lsp_failure(message, status=status, error_kind=error_kind)
+    return outcome.with_metadata(
+        operation="restart",
+        effect_class="control_plane_internal",
+    )
 
 
 def _diagnostic_tool_outcome(outcome: DiagnosticOutcome) -> ToolOutcome:

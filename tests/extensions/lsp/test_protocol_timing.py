@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -10,9 +11,12 @@ from typing import Any
 
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
-from reuleauxcoder.extensions.lsp.manager import LspManager
+from reuleauxcoder.extensions.lsp.manager import LspManager, LspTransportState
 from reuleauxcoder.extensions.lsp.registry import LanguageId
-from reuleauxcoder.extensions.tools.builtin.lsp import LspDiagnosticsTool
+from reuleauxcoder.extensions.tools.builtin.lsp import (
+    LspDiagnosticsTool,
+    LspRestartTool,
+)
 
 FAKE_SERVER = Path(__file__).with_name("fake_stdio_server.py")
 
@@ -53,6 +57,16 @@ def _wait_until(predicate, *, timeout: float = 5.0) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("timed out waiting for deterministic LSP event")
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _manager(
@@ -171,6 +185,74 @@ def test_explicit_diagnostics_tool_observes_real_stdio_publish(
             "textDocument/didOpen",
             "textDocument/publishDiagnostics",
         ]
+    finally:
+        manager.shutdown_all()
+
+
+def test_restart_tool_replaces_real_stdio_transport_and_advances_generation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    log_path = tmp_path / "restart-tool.jsonl"
+    manager = _manager(tmp_path, log_path, mode="push")
+    try:
+        assert manager.send_request_sync(path, "test/warm", {}) is None
+        first_pid = next(
+            int(event["pid"])
+            for event in _events(log_path)
+            if event["method"] == "server_started"
+        )
+
+        outcome = LspRestartTool(lsp_manager=manager).execute(filePath=str(path))
+
+        assert outcome.success
+        payload = json.loads(outcome.model_text)
+        assert payload["previous_state"] == "ready"
+        assert payload["previous_generation"] == 1
+        assert payload["state"] == "ready"
+        assert payload["generation"] == 2
+        assert payload["replaced_process"] is True
+        pids = [
+            int(event["pid"])
+            for event in _events(log_path)
+            if event["method"] == "server_started"
+        ]
+        assert len(pids) == 2
+        assert pids[1] != first_pid
+        _wait_until(lambda: not _pid_alive(first_pid))
+        assert manager.send_request_sync(path, "test/after-restart", {}) is None
+        assert manager.transport_status_for_file(path).generation == 2
+    finally:
+        manager.shutdown_all()
+
+
+def test_restart_tool_exposes_replacement_start_failure_without_fake_success(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    log_path = tmp_path / "restart-failure.jsonl"
+    manager = _manager(tmp_path, log_path, mode="push")
+    try:
+        assert manager.send_request_sync(path, "test/warm", {}) is None
+        override = manager.config.server_overrides["python"]
+        override.args = [
+            *_server_args("push", log_path),
+            "--initialize-behavior",
+            "error",
+        ]
+
+        outcome = LspRestartTool(lsp_manager=manager).execute(filePath=str(path))
+
+        assert not outcome.success
+        assert "phase=restart_start" in outcome.model_text
+        assert "transport_phase=initialize" in outcome.model_text
+        status = manager.transport_status_for_file(path)
+        assert status is not None
+        assert status.state is LspTransportState.ERROR
+        assert status.generation == 2
+        assert status.error_phase == "initialize"
     finally:
         manager.shutdown_all()
 

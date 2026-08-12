@@ -154,6 +154,14 @@ class _BrokenStderrCaptureClient:
         raise RuntimeError("credential=observation-must-not-mask-primary")
 
 
+class _RestartShutdownFailureClient:
+    is_usable = True
+    is_alive = True
+
+    async def shutdown(self, *, deadline_at=None) -> None:
+        raise RuntimeError("credential=restart-shutdown-secret")
+
+
 def test_supported_file_is_observable_as_unstarted_generation_zero(
     tmp_path: Path,
 ) -> None:
@@ -175,6 +183,37 @@ def test_supported_file_is_observable_as_unstarted_generation_zero(
     assert status.retry_at_monotonic is None
     assert manager.transport_statuses() == (status,)
     assert _states_for(manager, path) == [LspTransportState.UNSTARTED]
+
+
+def test_failed_restart_shutdown_retains_live_process_and_reports_error(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("value = 1\n", encoding="utf-8")
+    manager = LspManager(LspConfig(), workspace_cwd=tmp_path)
+    key = manager._transport_key(LanguageId.PYTHON, path)
+    client = _RestartShutdownFailureClient()
+    generation = manager._begin_transport_attempt(key, "fake-lsp")
+    manager._transports[key] = client  # type: ignore[assignment]
+    assert manager._transition_transport(
+        key,
+        generation,
+        LspTransportState.READY,
+    )
+    request = _tool_request(path)
+    request.transport_key = key
+
+    with pytest.raises(RuntimeError) as captured:
+        asyncio.run(manager._restart_transport_async(request, key))
+
+    assert manager._transports[key] is client
+    status = manager.transport_status_for_file(path)
+    assert status is not None
+    assert status.state is LspTransportState.ERROR
+    assert status.generation == generation
+    assert status.error_phase == "restart_shutdown"
+    assert status.error_type == "RuntimeError"
+    assert "credential=" not in captured.value.failure_facts.render()
 
 
 def test_state_history_is_bounded_and_scope_projection_is_secret_free(

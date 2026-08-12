@@ -206,6 +206,7 @@ DEFAULTS = {
         {"tool_name": "lsp", "action": "allow"},
         {"tool_name": "lsp_status", "action": "allow"},
         {"tool_name": "lsp_diagnostics", "action": "allow"},
+        {"tool_name": "lsp_restart", "action": "allow"},
         {"tool_name": "web_fetch", "action": "warn"},
         {"tool_name": "web_search", "action": "warn"},
         {"tool_name": "write_file", "action": "require_approval"},

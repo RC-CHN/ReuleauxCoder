@@ -120,10 +120,12 @@ _LSP_PERFORMANCE_ATTRIBUTE_KEYS = frozenset(
         "error_type",
     }
 )
+_INTERNAL_RESTART_METHOD = "reuleauxcoder/restart"
 _LSP_REQUEST_KINDS = {
     "textDocument/definition": "definition",
     "textDocument/references": "references",
     "textDocument/documentSymbol": "document_symbol",
+    _INTERNAL_RESTART_METHOD: "restart",
 }
 TransportKey = tuple[LanguageId, Path]
 AvailabilityCacheKey = tuple[TransportKey, str]
@@ -219,6 +221,19 @@ class LspStatusSnapshot:
     transports: tuple[LspStatusTransportSnapshot, ...]
     availability_metrics: tuple[tuple[str, int], ...]
     diagnostic_batch_metrics: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LspRestartResult:
+    """Model-safe result of one serialized transport restart."""
+
+    language: str
+    root_hash: str
+    previous_state: LspTransportState
+    previous_generation: int
+    state: LspTransportState
+    generation: int
+    replaced_process: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -1626,6 +1641,46 @@ class LspManager:
 
         Raises LspClientError on timeout or server error.
         """
+        return self._run_request_sync(
+            file_path,
+            method,
+            params,
+            timeout=timeout,
+            cancellation=cancellation,
+            needs_sync=True,
+        )
+
+    def restart_transport_sync(
+        self,
+        file_path: Path,
+        *,
+        timeout: float = 10.0,
+        cancellation: CancellationSignal | None = None,
+    ) -> LspRestartResult:
+        """Serialize a file transport restart with its normal work queue."""
+        result = self._run_request_sync(
+            file_path,
+            _INTERNAL_RESTART_METHOD,
+            {},
+            timeout=timeout,
+            cancellation=cancellation,
+            needs_sync=False,
+        )
+        if not isinstance(result, LspRestartResult):
+            raise TypeError("LSP restart returned an invalid result")
+        return result
+
+    def _run_request_sync(
+        self,
+        file_path: Path,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float,
+        cancellation: CancellationSignal | None,
+        needs_sync: bool,
+    ) -> Any:
+        """Submit one synchronous worker request under a caller-owned deadline."""
         if timeout <= 0:
             raise ValueError("LSP request timeout must be positive")
         path = self._canonicalize_path(file_path)
@@ -1655,7 +1710,7 @@ class LspManager:
             future=future,
             timeout_seconds=timeout,
             deadline_at=deadline_at,
-            needs_sync=True,
+            needs_sync=needs_sync,
             transport_key=key,
         )
 
@@ -2007,6 +2062,10 @@ class LspManager:
             or req.transport_key
             or self._transport_key(req.language_id, req.file_path)
         )
+        if req.method == _INTERNAL_RESTART_METHOD:
+            req.phase = "restart_shutdown"
+            return await self._restart_transport_async(req, key)
+
         req.phase = "availability"
         try:
             server = await self._get_or_create_server(
@@ -2019,6 +2078,7 @@ class LspManager:
             if frozen is error:
                 raise
             raise frozen from error
+
         if server is None:
             raise self._freeze_failure(
                 LspServerUnavailable("LSP server unavailable"),
@@ -2109,6 +2169,101 @@ class LspManager:
             if frozen is error:
                 raise
             raise frozen from error
+
+    async def _restart_transport_async(
+        self,
+        req: ToolRequest,
+        key: TransportKey,
+    ) -> LspRestartResult:
+        """Stop the current process, then start exactly one newer generation."""
+        with self._lock:
+            previous = self._ensure_transport_status_locked(key)
+            client = self._transports.pop(key, None)
+            if client is not None:
+                self._record_transport_status_locked(
+                    key,
+                    state=LspTransportState.STOPPING,
+                    generation=previous.generation,
+                    launcher=previous.launcher,
+                )
+
+        if client is not None:
+            try:
+                await self._close_transport_observed(
+                    key,
+                    client,
+                    deadline_at=req.deadline_at,
+                )
+                if client.is_alive:
+                    raise LspClientError("LSP restart could not stop old transport")
+            except BaseException as error:
+                self._record_client_cleanup_error(
+                    client,
+                    "manager_restart_shutdown_failed",
+                    error,
+                )
+                if client.is_alive:
+                    with self._lock:
+                        self._transports[key] = client
+                stderr_ref = self._retain_client_stderr(
+                    key,
+                    previous.generation,
+                    client,
+                )
+                self._transition_transport(
+                    key,
+                    previous.generation,
+                    LspTransportState.ERROR,
+                    error_type=type(error).__name__,
+                    error_phase="restart_shutdown",
+                    stderr_ref=stderr_ref,
+                )
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+                frozen = self._freeze_failure(
+                    error,
+                    key,
+                    phase="restart_shutdown",
+                )
+                if frozen is error:
+                    raise
+                raise frozen from error
+            self._transition_transport(
+                key,
+                previous.generation,
+                LspTransportState.STOPPED,
+            )
+
+        with self._lock:
+            self._re_spawn_counts[key] = 0
+        req.phase = "restart_start"
+        server = await self._spawn_async(
+            req.language_id,
+            req.file_path,
+            transport_key=key,
+        )
+        if server is None:
+            raise self._freeze_failure(
+                LspServerUnavailable("LSP restart failed to start new transport"),
+                key,
+                phase="restart_start",
+            )
+        current = self._ensure_transport_status(key)
+        if current.state is not LspTransportState.READY:
+            raise self._freeze_failure(
+                LspClientError("LSP restart did not reach ready state"),
+                key,
+                phase="restart_start",
+            )
+        return LspRestartResult(
+            language=get_language_id_string(key[0]),
+            root_hash=self._workspace_identifier(key[1]),
+            previous_state=previous.state,
+            previous_generation=previous.generation,
+            state=current.state,
+            generation=current.generation,
+            replaced_process=client is not None,
+        )
 
     def _timeout_error(self, req: ToolRequest) -> Exception:
         error = LspRequestTimedOut(
