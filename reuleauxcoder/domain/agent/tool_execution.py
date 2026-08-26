@@ -1820,6 +1820,9 @@ class ToolExecutor:
                     error_type="ApprovalProviderUnavailable",
                 )
             try:
+                # The arguments are canonical and identical across attempts;
+                # only the preview is refreshed when the file changes on disk.
+                approval_tool_args = deepcopy(tc.arguments)
                 for approval_attempt in range(3):
                     tool_source = str(
                         before_context.metadata.get("tool_source") or "unknown"
@@ -1847,7 +1850,7 @@ class ToolExecutor:
                     pre_effect.phase = "approval_request"
                     approval_request = ApprovalRequest(
                         tool_name=tc.name,
-                        tool_args=deepcopy(tc.arguments),
+                        tool_args=approval_tool_args,
                         tool_source=tool_source,
                         mcp_server=(
                             str(mcp_server) if mcp_server is not None else None
@@ -2078,7 +2081,10 @@ class ToolExecutor:
         ):
             raise InvalidContextContributionResult
         before_context = contributed_context
-        before_context.tool_call = deepcopy(tc)
+        # Restore the canonical tool call into the context. ``tc`` is already
+        # the pipeline's private snapshot, and the only consumer below is the
+        # observer hand-off, which deep-copies the whole context again.
+        before_context.tool_call = tc
         pre_effect.phase = "before_execute_observer"
         try:
             observer_diagnostics = self.agent.extension_runtime.observe(
@@ -2308,7 +2314,10 @@ class ToolExecutor:
                     session_generation=self.agent.session_generation,
                     session_id=self.agent.current_session_id,
                     turn_id=self.agent._current_turn_id,
-                    tool_call=deepcopy(tool_call),
+                    # No copy needed here: no extension code runs between this
+                    # construction and the transform/observer hand-offs below,
+                    # and each of those receives its own deep copy.
+                    tool_call=tool_call,
                     result=outcome.model_text,
                     outcome=outcome,
                     round_index=self.agent.state.current_round,
