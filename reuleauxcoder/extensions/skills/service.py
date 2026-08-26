@@ -48,9 +48,6 @@ class SkillsService:
         self._catalog_signature = ""
         self._last_reload = SkillReloadResult()
 
-    def discover(self) -> list[Skill]:
-        return list(self.reload().all_skills)
-
     def reload(self) -> SkillReloadResult:
         previous = self._skills
         previous_names = set(previous)
@@ -206,10 +203,6 @@ class SkillsService:
         self._disabled_names = restored
         self.reload()
         return True
-
-    @property
-    def last_reload(self) -> SkillReloadResult:
-        return self._last_reload
 
     @staticmethod
     def _signature(text: str) -> str:

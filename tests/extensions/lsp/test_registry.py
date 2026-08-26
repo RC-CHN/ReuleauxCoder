@@ -8,7 +8,6 @@ from reuleauxcoder.extensions.lsp.registry import (
     get_root_markers,
     get_server_command,
     resolve_server_launch,
-    iter_supported_extensions,
     iter_supported_languages,
     resolve_workspace_root,
 )
@@ -270,25 +269,6 @@ class TestWorkspaceRootResolution:
 
 
 class TestIterSupported:
-    def test_iter_supported_extensions_includes_all(self) -> None:
-        exts = iter_supported_extensions()
-        assert ".py" in exts
-        assert ".rs" in exts
-        assert ".go" in exts
-        assert ".ts" in exts
-        assert ".tsx" in exts
-        assert ".js" in exts
-        assert ".yaml" in exts
-        assert ".yml" in exts
-        assert ".sh" in exts
-        # All 9 language groups represented
-        language_sets = set()
-        for ext in exts:
-            lang = detect_language(f"file{ext}")
-            if lang:
-                language_sets.add(lang)
-        assert len(language_sets) == 9
-
     def test_iter_supported_languages(self) -> None:
         langs = iter_supported_languages()
         assert LanguageId.PYTHON in langs

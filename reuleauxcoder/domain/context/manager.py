@@ -1229,17 +1229,6 @@ class ContextManager:
         return UIEventKind.CONTEXT
 
     @staticmethod
-    def _flatten(messages: list[dict]) -> str:
-        """Flatten messages to string."""
-        parts = []
-        for m in messages:
-            role = m.get("role", "?")
-            text = m.get("content", "") or ""
-            if text:
-                parts.append(f"[{role}] {text[:400]}")
-        return "\n".join(parts)
-
-    @staticmethod
     def _extract_key_info(messages: list[dict]) -> str:
         """Fallback: extract file paths, errors, and decisions."""
         import re

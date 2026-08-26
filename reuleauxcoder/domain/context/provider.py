@@ -19,11 +19,3 @@ class ProviderContextCompactor(Protocol):
     def compact_tool_results(
         self, messages: list[dict], *, keep_recent_rounds: int
     ) -> ProviderCompactionResult | None: ...
-
-
-class NoopProviderContextCompactor:
-    def compact_tool_results(
-        self, messages: list[dict], *, keep_recent_rounds: int
-    ) -> ProviderCompactionResult | None:
-        del messages, keep_recent_rounds
-        return None

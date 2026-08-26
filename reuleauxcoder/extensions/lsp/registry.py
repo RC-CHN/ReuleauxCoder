@@ -274,11 +274,6 @@ def resolve_workspace_root(
     return Path(file_path).resolve().parent
 
 
-def iter_supported_extensions() -> list[str]:
-    """Return all supported file extensions (for documentation / error messages)."""
-    return sorted(_EXT_TO_LANGUAGE.keys())
-
-
 def iter_supported_languages() -> list[LanguageId]:
     """Return all supported language IDs."""
     return sorted(_SERVER_COMMANDS.keys(), key=lambda lid: lid.name)

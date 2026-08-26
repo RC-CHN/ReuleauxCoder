@@ -527,44 +527,6 @@ def _project_summary_message(message: dict) -> dict:
     return item
 
 
-def flatten_messages(messages: list[dict], truncate: int = 1200) -> str:
-    """Compatibility human projection used by diagnostics/tests."""
-    parts = []
-    for message in messages:
-        role = message.get("role", "?")
-        text = str(message.get("content") or "")
-        if text:
-            if len(text) > truncate:
-                half = truncate // 2
-                text = text[:half] + "\n…\n" + text[-half:]
-            parts.append(f"[{role}] {text}")
-    return "\n".join(parts)
-
-
-def extract_key_info(messages: list[dict]) -> str:
-    document = build_summary_document(messages)
-    parts = []
-    files = document["code_state"]["files_read"]
-    if files:
-        parts.append(f"Files touched: {', '.join(files[:20])}")
-    errors = document["errors_and_learning"]
-    if errors:
-        parts.append(f"Errors seen: {'; '.join(item['error'] for item in errors[:5])}")
-    decisions = document["decisions"]
-    if decisions:
-        parts.append(
-            f"Decisions: {'; '.join(item['decision'] for item in decisions[:3])}"
-        )
-    return "\n".join(parts) or "(no extractable context)"
-
-
-def build_summary_skeleton(messages: list[dict]) -> str:
-    """Compatibility name for the deterministic canonical document."""
-    return json.dumps(
-        build_summary_document(messages), ensure_ascii=False, sort_keys=True
-    )
-
-
 def _parse_summary(text: str) -> dict | None:
     try:
         value = json.loads(text.strip())

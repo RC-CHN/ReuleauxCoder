@@ -4,8 +4,6 @@ import threading
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.domain.context.summary import (
     build_summary_document,
-    extract_key_info,
-    flatten_messages,
     generate_summary,
     project_summary_input,
     validate_summary_document,
@@ -34,36 +32,6 @@ class DummyLLM:
 class FailingLLM:
     def chat(self, messages, **kwargs):
         raise RuntimeError("boom")
-
-
-def test_flatten_messages_truncates_and_formats_roles() -> None:
-    text = flatten_messages(
-        [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "x" * 10},
-            {"role": "tool", "content": ""},
-        ],
-        truncate=5,
-    )
-    assert text == "[user] hello\n[assistant] xx\n…\nxx"
-
-
-def test_extract_key_info_collects_files_errors_and_decisions() -> None:
-    summary = extract_key_info(
-        [
-            {"content": "Edited src/main.py and docs/readme.md"},
-            {"content": "Error: failed to parse config"},
-            {"content": "Decision: use planner mode"},
-        ]
-    )
-    assert "src/main.py" in summary
-    assert "docs/readme.md" in summary
-    assert "Error: failed to parse config" in summary
-    assert "Decision: use planner mode" in summary
-
-
-def test_extract_key_info_returns_fallback_when_nothing_found() -> None:
-    assert extract_key_info([{"content": "hello world"}]) == "(no extractable context)"
 
 
 def test_generate_summary_uses_llm_when_available() -> None:
