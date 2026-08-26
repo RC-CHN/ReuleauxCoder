@@ -235,8 +235,6 @@ class WorkspacePort(Protocol):
 
     def stat_entry(self, path: str | Path) -> WorkspaceEntry: ...
 
-    def write_text_atomic(self, path: str | Path, content: str) -> str: ...
-
     def write_text_verified(
         self,
         path: str | Path,
@@ -244,10 +242,6 @@ class WorkspacePort(Protocol):
         *,
         expected_revision: WorkspaceRevision | None = None,
     ) -> WorkspaceMutationResult: ...
-
-    def replace_exact_atomic(
-        self, path: str | Path, old: str, new: str
-    ) -> tuple[str, str]: ...
 
     def replace_exact_verified(
         self,

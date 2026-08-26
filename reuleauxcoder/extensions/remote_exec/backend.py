@@ -342,10 +342,6 @@ class RemoteWorkspacePort:
         item = self._request("fs.stat", path=str(path))["entry"]
         return _workspace_entry(item)
 
-    def write_text_atomic(self, path: str | Path, content: str) -> str:
-        result = self.write_text_verified(path, content)
-        return result.old_content or ""
-
     def write_text_verified(
         self,
         path: str | Path,
@@ -390,12 +386,6 @@ class RemoteWorkspacePort:
                 atomic_replace=True,
             ),
         )
-
-    def replace_exact_atomic(
-        self, path: str | Path, old: str, new: str
-    ) -> tuple[str, str]:
-        result = self.replace_exact_verified(path, old, new)
-        return result.old_content or "", result.new_content
 
     def replace_exact_verified(
         self,

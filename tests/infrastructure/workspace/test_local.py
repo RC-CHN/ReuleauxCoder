@@ -43,14 +43,14 @@ def test_exact_external_path_grant_is_scoped_and_does_not_widen_root(
     assert workspace.external_path(external) == external.resolve()
     assert workspace.external_path(root / "inside.txt") is None
     with pytest.raises(WorkspaceError) as before:
-        workspace.write_text_atomic(external, "outside")
+        workspace.write_text_verified(external, "outside")
     assert before.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
 
     with workspace.grant_external_path(external):
-        workspace.write_text_atomic(external, "outside")
+        workspace.write_text_verified(external, "outside")
         assert workspace.read_text(external) == "outside"
         with pytest.raises(WorkspaceError) as unrelated:
-            workspace.write_text_atomic(other, "not granted")
+            workspace.write_text_verified(other, "not granted")
         assert unrelated.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
 
     assert external.read_text() == "outside"
@@ -94,7 +94,7 @@ def test_atomic_write_returns_previous_content(tmp_path: Path) -> None:
     path = tmp_path / "file.txt"
     path.write_text("old")
 
-    previous = workspace.write_text_atomic("file.txt", "new")
+    previous = workspace.write_text_verified("file.txt", "new").old_content
 
     assert previous == "old"
     assert path.read_text() == "new"
@@ -105,7 +105,7 @@ def test_text_primitives_preserve_newline_bytes(tmp_path: Path) -> None:
     path = tmp_path / "file.txt"
     path.write_bytes(b"old\r\n")
 
-    previous = workspace.write_text_atomic("file.txt", "new\n")
+    previous = workspace.write_text_verified("file.txt", "new\n").old_content
 
     assert previous == "old\r\n"
     assert path.read_bytes() == b"new\n"
@@ -116,15 +116,15 @@ def test_exact_replace_is_atomic_and_requires_unique_match(tmp_path: Path) -> No
     path = tmp_path / "file.txt"
     path.write_text("one two")
 
-    old, new = workspace.replace_exact_atomic("file.txt", "two", "three")
+    result = workspace.replace_exact_verified("file.txt", "two", "three")
 
-    assert old == "one two"
-    assert new == "one three"
+    assert result.old_content == "one two"
+    assert result.new_content == "one three"
     assert path.read_text() == "one three"
 
     path.write_text("x x")
     with pytest.raises(WorkspaceError) as duplicate:
-        workspace.replace_exact_atomic("file.txt", "x", "y")
+        workspace.replace_exact_verified("file.txt", "x", "y")
     assert duplicate.value.code is WorkspaceErrorCode.NOT_UNIQUE
     assert path.read_text() == "x x"
 
