@@ -191,6 +191,10 @@ def test_shell_session_schema_bounds_model_supplied_input() -> None:
     assert '"executed": false' in rejected.model_text
 
 
+def test_shell_defaults_to_five_second_initial_yield() -> None:
+    assert ShellTool.parameters["properties"]["yield_ms"]["default"] == 5_000
+
+
 def test_rtk_configuration_never_rewrites_the_command(tmp_path: Path) -> None:
     process = RecordingProcessPort()
     tool = _tool(process, cwd=str(tmp_path))
