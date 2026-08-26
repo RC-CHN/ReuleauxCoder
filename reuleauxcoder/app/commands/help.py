@@ -38,19 +38,3 @@ def build_help_view(
             for feature_id, commands in sorted(grouped.items())
         )
     )
-
-
-def build_help_markdown(ui_profile: UIProfile, action_registry: ActionRegistry) -> str:
-    """Compatibility text projection; UI presenters should consume the model."""
-    view = build_help_view(ui_profile, action_registry)
-
-    lines: list[str] = ["**Commands:**"]
-    for section in view.sections:
-        lines.append("")
-        lines.append(f"**{section.feature_id}:**")
-        lines.extend(
-            f"- `{command.usage}` — {command.description}"
-            for command in section.commands
-        )
-
-    return "\n".join(lines)

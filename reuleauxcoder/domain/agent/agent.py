@@ -1342,11 +1342,6 @@ class Agent:
         """List registered hooks from the agent-scoped hook registry."""
         return self.hook_registry.list_hooks(hook_point)
 
-    def add_tools(self, tools: Iterable["Tool"]) -> None:
-        """Add additional tools."""
-        with self._tool_registry_lock:
-            self.tools.extend(tools)
-
     def replace_mcp_tools(self, tools: Iterable["Tool"]) -> None:
         """Atomically publish one sealed MCP capability snapshot."""
         with self._tool_registry_lock:

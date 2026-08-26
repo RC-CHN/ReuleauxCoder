@@ -53,8 +53,3 @@ class LLMResponse:
                 for tc in self.tool_calls
             ]
         return msg
-
-    @property
-    def total_tokens(self) -> int:
-        """Total tokens used in this response."""
-        return self.prompt_tokens + self.completion_tokens

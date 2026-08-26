@@ -157,10 +157,6 @@ def _build_mode_profiles_view(config, active_mode: str | None) -> ModesViewModel
     )
 
 
-def _build_mode_profiles_payload(config, active_mode: str | None) -> dict:
-    return _build_mode_profiles_view(config, active_mode).to_payload()
-
-
 def command_panel_spec() -> CommandPanelSpec:
     """Contribute the mode picker alongside the mode command feature."""
 

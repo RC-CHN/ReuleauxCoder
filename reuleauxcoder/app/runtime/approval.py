@@ -989,39 +989,4 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
     )
 
 
-def build_approval_markdown(view: ApprovalView) -> str:
-    """Render a readable markdown summary for CLI/text UIs."""
-    lines = [
-        f"**Approval default_mode:** `{view.default_mode}` _(source: {view.default_mode_source})_",
-        "",
-    ]
-    if not view.rules:
-        lines.append("> No approval rules configured.")
-    else:
-        lines.append("**Configured rules:**")
-        lines.append("")
-        for idx, rule in enumerate(view.rules, 1):
-            lines.append(
-                f"{idx}. `{rule.scope}` -> **{rule.action}** _(source: {rule.source})_"
-            )
-    if view.tool_policies:
-        lines.append("")
-        lines.append("**Effective tool policies (including implicit/default):**")
-        lines.append("")
-        for idx, policy in enumerate(view.tool_policies, 1):
-            lines.append(
-                f"{idx}. `{policy.tool_name}` [{policy.tool_source}] -> **{policy.action}** "
-                f"_(source: {policy.source}; matched: {policy.scope})_"
-            )
-    if view.effective_mcp_policies:
-        lines.append("")
-        lines.append("**MCP effective policy view:**")
-        lines.append("")
-        for item in view.effective_mcp_policies:
-            lines.append(f"- **{item.server_name}** -> `{item.action}`")
-            lines.append(f"  - source: {item.source}")
-            for tool in item.tools:
-                lines.append(
-                    f"  - tool `{tool.name}` -> `{tool.action}` ({tool.source})"
-                )
-    return "\n".join(lines)
+

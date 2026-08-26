@@ -348,11 +348,6 @@ def _build_model_profiles_view(config, runtime_state=None) -> ModelListViewModel
     )
 
 
-def _build_model_profiles_payload(config, runtime_state=None) -> dict:
-    """Serializable compatibility projection for callers outside presentation."""
-    return _build_model_profiles_view(config, runtime_state).to_payload()
-
-
 def command_panel_spec() -> CommandPanelSpec:
     """Contribute the two-level model routing picker with canonical commands."""
     slots = (

@@ -396,21 +396,6 @@ def ensure_message_token_counts(
     return total
 
 
-def estimate_tokens_tiktoken(
-    messages: list[dict], token_fudge_factor: float = 1.1
-) -> int:
-    """Estimate token count using per-message cached counts with tiktoken fallback."""
-    return ensure_message_token_counts(messages, token_fudge_factor=token_fudge_factor)
-
-
-def estimate_tokens_chars(messages: list[dict]) -> int:
-    """Estimate token count using chars/3 (fallback)."""
-    total = 0
-    for m in messages:
-        total += _estimate_message_tokens_chars(m)
-    return total
-
-
 def estimate_tokens(messages: list[dict], token_fudge_factor: float = 1.1) -> int:
     """Estimate token count for messages using cached message counts."""
     return ensure_message_token_counts(messages, token_fudge_factor=token_fudge_factor)

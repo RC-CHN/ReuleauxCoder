@@ -33,14 +33,3 @@ class Message:
             tool_calls=d.get("tool_calls"),
             tool_call_id=d.get("tool_call_id"),
         )
-
-
-def estimate_tokens(messages: list[dict]) -> int:
-    """Estimate token count for messages. ~3.5 chars/token for mixed en/zh content."""
-    total = 0
-    for m in messages:
-        if m.get("content"):
-            total += len(m["content"]) // 3
-        if m.get("tool_calls"):
-            total += len(str(m["tool_calls"])) // 3
-    return total
