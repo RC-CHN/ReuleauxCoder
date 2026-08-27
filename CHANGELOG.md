@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-08-27
+
+- Added a configurable OpenAI-compatible Responses request mode alongside the existing Chat Completions default, keeping canonical conversations local while rebuilding a stateless full request on every round.
+- Added native encrypted-reasoning and tool-call replay, streamed text/reasoning/refusal/tool-call normalization, cached-input usage reporting, and request-mode-aware model profile switching.
+- Added stable session prompt-cache keys and explicit or implicit cache policies that keep volatile execution overlays outside persisted history and after the stable cache boundary.
+- Reduced the initial shell yield to five seconds and removed redundant copies and legacy mutation paths from the agent and workspace pipelines.
+
 ## 0.7.0 - 2026-08-12
 
 - Added a provider-neutral model boundary and a native Anthropic Messages/SSE transport with typed tool, thinking, usage, protocol and transport handling.

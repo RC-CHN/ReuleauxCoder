@@ -4,7 +4,7 @@ This file describes the current repository, not a future design. Detailed design
 
 ## Current snapshot
 
-- Package version: `0.6.3`.
+- Package version: `0.8.0`.
 - Primary shipped interface: prompt_toolkit-owned interactive mini-TUI; Rich remains the append-only renderer for one-shot, non-TTY, server and remote-peer paths.
 - TUI status: the production CLI now owns a persistent viewport, but there is still no production Textual application.
 - Remote peer: `reuleauxcoder-agent/`, a CLI-only Go peer.
@@ -20,7 +20,7 @@ reuleauxcoder/
 ├── infrastructure/  # local workspace/process/storage/platform adapters
 ├── extensions/      # tools, commands, LSP, MCP, skills, subagent, remote exec
 ├── presentation/    # UI-neutral reducer, cells, policies and semantics
-├── interfaces/      # CLI adapter, interface ports, bootstrap
+├── interfaces/      # CLI/TUI adapters, interface ports, bootstrap
 └── compat/          # compatibility helpers
 
 reuleauxcoder-agent/
@@ -33,7 +33,7 @@ Layer rules:
 - Domain and presentation code must not import Rich, prompt_toolkit, Textual, or CLI view code.
 - Commands return `CommandEffect`, typed view models, interaction requests, and state changes; they do not construct Rich objects.
 - Tools use `WorkspacePort` and `ProcessPort` primitives. Platform-specific behavior belongs in local or remote adapters.
-- CLI and future TUI are adapters over the same runtime events, presentation semantics, command effects, and interaction ports.
+- CLI and TUI are adapters over the same runtime events, presentation semantics, command effects, and interaction ports.
 
 ## Agent and runtime
 
@@ -41,7 +41,19 @@ Layer rules:
 
 `domain/agent/loop.py` owns the LLM/tool round loop, context compression checks, runtime-tail context, token accounting, tool-call adjacency, and max-round handling.
 
-Provider requests use exactly one leading `system` message. Project context, summaries, resume/runtime updates, subagent data, diagnostics and the volatile execution state are application-generated synthetic `user` messages with reserved provenance tags documented by that fixed system prompt. The provider boundary fail-closes legacy or extension-injected later system messages into `<legacy_runtime_context>`. Only nested/standalone runtime-instruction regions receive runtime-control authority; file, tool, note, Git, LSP and delegated payloads remain untrusted data.
+Canonical provider messages use exactly one leading `system` message. Project context, summaries, resume/runtime updates, subagent data, diagnostics and the volatile execution state are application-generated synthetic `user` messages with reserved provenance tags documented by that fixed system prompt. The provider boundary fail-closes legacy or extension-injected later system messages into `<legacy_runtime_context>`. Only nested/standalone runtime-instruction regions receive runtime-control authority; file, tool, note, Git, LSP and delegated payloads remain untrusted data.
+
+## LLM providers and request modes
+
+`domain/llm/models.py` and `protocols.py` define the provider-neutral response and client surface. `services/llm/client.py` owns normalized streaming, retry/cancellation, tool argument parsing, usage accounting and runtime reconfiguration. `services/llm/providers.py` owns wire adapters. Supported provider/request-mode pairs are:
+
+- `openai-compatible` + `chat-completions` (the compatibility default);
+- `openai-compatible` + `responses` (explicit opt-in);
+- `anthropic` + `messages` (the Anthropic default and only valid mode).
+
+Omitting `request_mode` preserves the provider default for old configuration. Conversation history remains locally authoritative and provider-neutral. Responses mode does not chain upstream response IDs: every round rebuilds the full request, sends `store=false`, and retains Responses-native reasoning/function-call output items under assistant `provider_data` for exact replay. Other wire adapters ignore or strip that private field, so a saved conversation can switch request modes or providers without leaking unsupported wire data.
+
+The volatile execution overlay is rebuilt for each request and is never appended to canonical history. In Responses mode it is converted to a trailing `developer` input item after the stable conversation. A model/session-derived `prompt_cache_key` remains stable across rounds; explicit cache mode marks the last stable text or tool-output block as the cache breakpoint, while implicit mode delegates placement to the provider. Encrypted reasoning content is requested and replayed through `provider_data` rather than flattened into visible history.
 
 `domain/agent/tool_execution.py` is the shared tool pipeline:
 
@@ -82,9 +94,11 @@ Output retention is tool-directed through `ToolRetentionHint`: read uses head/an
 
 The CLI is split by responsibility:
 
-- `interfaces/cli/mini_tui.py`: prompt_toolkit viewport, bottom interaction focus and the shared-state adapter used for interactive TTYs.
-- `interfaces/cli/markdown_fragments.py`: retained Rich Markdown-to-prompt_toolkit fragments with committed-stream boundaries and width/revision caching.
-- `interfaces/cli/render.py`: event routing and compatibility entry points.
+- `interfaces/tui/application.py`: prompt_toolkit layout/lifecycle, viewport and bottom interaction focus for interactive TTYs.
+- `interfaces/tui/event_adapter.py` and `event_queue.py`: bounded, thread-safe projection of runtime/UI events into retained TUI state.
+- `interfaces/tui/virtual_transcript.py`, `transcript.py`, `markdown_fragments.py`, and `transcript_cache.py`: virtualized transcript layout, retained Markdown rendering and width/revision caching.
+- `interfaces/tui/input_router.py`, `interaction.py`, `selection_host.py`, `selection_panel.py`, and `command_popup.py`: keyboard routing and interactive panels.
+- `interfaces/cli/render.py`: append-only event routing and compatibility entry points.
 - `history.py`: immutable history rows.
 - `streaming.py`: assistant content streaming.
 - `activity.py`: THINK/TOOL activity and live tool tail.
@@ -111,7 +125,7 @@ Current CLI behavior:
 
 ## Commands and interactions
 
-`app/commands/` contains the registry, parser, help generation, typed effects and shared view models. Built-ins are registered from `extensions/command/builtin/` with `@register_command_module`.
+`app/commands/` contains the registry, parser, help generation, typed effects and shared view models. Built-ins expose explicit `register_actions` contributions under `extensions/command/builtin/`; `app/commands/loader.py` composes them in a stable order.
 
 Scope labels in help:
 
@@ -129,7 +143,7 @@ Canonical session command surface:
 - `/save`: save the current session.
 - `/new`: auto-save when configured, then create a clean session.
 
-Other command families include `/help`, `/model`, `/mode`, `/approval`, `/skills`, `/mcp`, `/agents`, `/thinking`, `/tokens`, `/config`, `/debug`, `/compact`, `/reset`, and `/quit`. `/jobs` remains a compatibility alias for `/agents`.
+Other command families include `/help`, `/model`, `/mode`, `/approval`, `/skills`, `/mcp`, `/agents`, `/ps`, `/thinking`, `/tokens`, `/config`, `/debug`, `/compact`, `/reset`, and `/quit`. `/jobs` remains a compatibility alias for `/agents`; `/processes` and `/stop` are compatibility aliases for the `/ps` process family.
 
 ## Sessions
 
@@ -167,7 +181,7 @@ Built-in hooks include tool policy, tool output truncation/archive, project cont
 
 `extensions/subagent/manager.py` owns the root-scoped asynchronous control plane: registration-before-submit, shared depth/concurrency limits, cumulative execution budgets, typed immediate-parent mailboxes, checkpoint resume, cancellation epochs, timeout, pruning and shutdown. Root tools are split into `spawn_agent`, `send_message`, `list_agents`, `wait_agent`, and `interrupt_agent`; spawn returns a job ID without waiting and the parent loop never implicitly waits. Child reports/progress are non-blocking; `request_guidance` checkpoints and parks the same job without occupying a worker slot. A valid directive resumes that job from an exact transcript prefix, including after process/session restore. Mailboxes persist queued/delivered watermarks and directives carry stable IDs. Execute completion is gated by an automatic verify job during the live runtime. Optional execute isolation uses retained git worktrees and requires explicit cleanup.
 
-Child model loops run in isolated spawn processes. They own no workspace/LSP/remote primitives: scoped tool calls cross typed IPC to the parent Tool Broker, which reuses the normal authorization/approval/backend path. Read/list/glob/grep/query-LSP form the approval-free child baseline; write/edit/shell inherit parent policy and require a child reason. Children never receive agent lifecycle or Plan writer tools, so delegation is non-recursive. Worker envelopes carry session/worker generation, cancellation epoch, sequence and payload hash. Large broker results are archived content-addressably and sent as a verified model projection plus `ToolResultRef`; cancellation quarantines late results, and an effectful call without a committed outcome becomes human-visible `indeterminate` rather than being retried.
+Child model loops run in isolated spawn processes. They own no workspace/LSP/remote primitives: scoped tool calls cross typed IPC to the parent Tool Broker, which reuses the normal authorization/approval/backend path. Read/list/glob/grep and the `lsp`, `lsp_status`, and `lsp_diagnostics` tools form the approval-free child baseline; write/edit/shell inherit parent policy and require a child reason. Children never receive agent lifecycle or Plan writer tools, so delegation is non-recursive. Worker envelopes carry session/worker generation, cancellation epoch, sequence and payload hash. Large broker results are archived content-addressably and sent as a verified model projection plus `ToolResultRef`; cancellation quarantines late results, and an effectful call without a committed outcome becomes human-visible `indeterminate` rather than being retried.
 
 `domain/context/rounds.py`, `budget.py`, `checkpoint.py`, `usage.py`, `replay.py`, and `provider.py` define protocol-safe API-round boundaries, actual-first usage calibration, canonical replay, versioned replacement history, and the provider cache-compaction extension boundary. At 60% request capacity, deterministic provider/tool-output snipping is evaluated without mutation and commits only when it reclaims at least 20% of total capacity; at 75%, snip and semantic summary are batched into one cache epoch targeting about 40%; 90% is emergency-only. Compression preserves tool-call/output adjacency and at least the five latest user turns. Partial and full-recovery summaries use a validated deterministic+LLM schema, bounded projection, independent output limits, and HistoryLedger provenance; legacy phase checkpoints remain readable. Checkpoints precede retained recent rounds and are persisted rather than regenerated on resume.
 
@@ -198,7 +212,9 @@ Interactive remote chat streams host-rendered output and forwards approvals to t
 
 ## Configuration
 
-Workspace config is `.rcoder/config.yaml`; user config is `~/.rcoder/config.yaml`. Major sections are `models`, `modes`, `approval`, `prompt`, `skills`, `mcp`, `context`, `session`, `tool_output`, `lsp`, `remote_exec`, and `cli`.
+Workspace config is `.rcoder/config.yaml`; user config is `~/.rcoder/config.yaml`. Runtime sections are `app`, `models`, `modes`, `approval`, `prompt`, `skills`, `mcp`, `context`, `session`, `tool_output`, `shell`, `web`, `lsp`, `remote_exec`, `ui`, and `cli`.
+
+LLM-wide defaults use `app.request_mode` and `app.responses`; a profile may override them with `models.profiles.<name>.request_mode` and `.responses`. Responses currently requires `state: local`; `cache.mode` is `explicit` by default and may be set to `implicit`. `/model` profile switching reconfigures the provider, request mode and Responses cache policy together.
 
 Use `/config` to inspect effective values and their sources. Session overrides layer over config defaults and must not silently rewrite persisted global settings.
 
@@ -209,7 +225,7 @@ Use `/config` to inspect effective values and their sources. Session overrides l
 - Keep model-context retention separate from human presentation folding.
 - Preserve event correlation and session generation across async work.
 - Long-lived resources need explicit scope, cancellation and disposal.
-- Do not add a second tool implementation to the peer or future TUI.
+- Do not add a second tool implementation to the peer or another interface adapter.
 - Use `rg` for search and `apply_patch` for hand edits.
 - Preserve unrelated user changes in a dirty worktree.
 
