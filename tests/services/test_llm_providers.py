@@ -8,7 +8,9 @@ import pytest
 
 from reuleauxcoder.domain.config.models import ModelProfileConfig
 from reuleauxcoder.domain.llm.protocols import LLMProtocol
+from reuleauxcoder.domain.runtime.events import OperationPhaseChanged
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
+from reuleauxcoder.interfaces.events import RuntimeEventPayload, UIEventBus
 from reuleauxcoder.services.llm.client import LLM
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
 from reuleauxcoder.services.llm.providers import (
@@ -475,6 +477,7 @@ def test_responses_mode_replays_local_history_and_normalizes_stream() -> None:
         model="gpt-5.6-luna",
         api_key="key",
         request_mode="responses",
+        responses_cache_mode="explicit",
         reasoning_effort="high",
     )
     llm.client = FakeClient()
@@ -566,6 +569,80 @@ def test_responses_mode_replays_local_history_and_normalizes_stream() -> None:
         cache_mode="explicit",
     )
     assert replayed[1:4] == provider_data["items"]
+
+
+def test_responses_defaults_to_implicit_cache_and_created_starts_streaming() -> None:
+    captured: dict = {}
+    phases: list[OperationPhaseChanged] = []
+    phase_before_second_event: list[str] = []
+    bus = UIEventBus()
+
+    def capture(event) -> None:
+        if isinstance(event.payload, RuntimeEventPayload) and isinstance(
+            event.payload.event.payload, OperationPhaseChanged
+        ):
+            phases.append(event.payload.event.payload)
+
+    bus.subscribe(capture, replay_history=False)
+
+    class FakeStream:
+        def __init__(self) -> None:
+            self.step = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self.step += 1
+            if self.step == 1:
+                return SimpleNamespace(type="response.created")
+            if self.step == 2:
+                phase_before_second_event.append(phases[-1].phase)
+                return SimpleNamespace(
+                    type="response.output_text.delta",
+                    delta="done",
+                )
+            raise StopIteration
+
+        def close(self) -> None:
+            return None
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeStream()
+
+    class FakeClient:
+        responses = FakeResponses()
+
+        def close(self) -> None:
+            return None
+
+    llm = LLM(
+        model="gpt-5.6-luna",
+        api_key="key",
+        request_mode="responses",
+        ui_bus=bus,
+    )
+    llm.client = FakeClient()
+    try:
+        response = llm.chat([{"role": "user", "content": "hello"}])
+    finally:
+        llm.close()
+
+    assert response.content == "done"
+    assert captured["extra_body"] == {
+        "prompt_cache_options": {"mode": "implicit"}
+    }
+    assert "prompt_cache_breakpoint" not in json.dumps(captured["input"])
+    assert phase_before_second_event == ["streaming"]
+    assert [phase.phase for phase in phases] == [
+        "request_build",
+        "connect",
+        "await_first_chunk",
+        "streaming",
+        "completed",
+    ]
 
 
 def test_unknown_provider_is_rejected_before_dispatch() -> None:

@@ -286,6 +286,7 @@ class _ResponsesStream(Iterator["_Chunk"]):
     def __init__(self, stream: Any) -> None:
         self._stream = stream
         self._events = iter(stream)
+        self._liveness_emitted = False
         self.provider_data: dict[str, Any] | None = None
 
     def __iter__(self) -> "_ResponsesStream":
@@ -297,6 +298,11 @@ class _ResponsesStream(Iterator["_Chunk"]):
             if event_type in {"error", "response.failed"}:
                 self.close()
                 raise ProviderProtocolError("openai-compatible", str(event_type))
+            if event_type in {"response.created", "response.in_progress"}:
+                if not self._liveness_emitted:
+                    self._liveness_emitted = True
+                    return _Chunk()
+                continue
             if event_type in {
                 "response.output_text.delta",
                 "response.refusal.delta",
