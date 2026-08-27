@@ -23,7 +23,12 @@ from urllib import request
 from urllib.error import HTTPError
 
 import pytest
-from reuleauxcoder.domain.process import ProcessCursor, ProcessState
+from reuleauxcoder.domain.process import (
+    ProcessCursor,
+    ProcessPort,
+    ProcessSnapshot,
+    ProcessState,
+)
 from reuleauxcoder.domain.process_manager import ProcessManager
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.protocol import (
@@ -111,6 +116,39 @@ def _shell_sleep_command(seconds: int) -> str:
     if os.name == "nt":
         return f"Start-Sleep -Seconds {seconds}"
     return f"sleep {seconds}"
+
+
+def _wait_for_process_exit(
+    process: ProcessPort,
+    session_id: str,
+    *,
+    timeout: float,
+) -> tuple[ProcessSnapshot, str, str]:
+    deadline = time.monotonic() + timeout
+    cursor = ProcessCursor()
+    stdout: list[str] = []
+    stderr: list[str] = []
+    snapshot: ProcessSnapshot | None = None
+    while (remaining := deadline - time.monotonic()) > 0:
+        snapshot = process.poll(
+            session_id,
+            cursor=cursor,
+            wait_ms=min(250, max(1, int(remaining * 1000))),
+        )
+        cursor = snapshot.cursor
+        stdout.append(snapshot.stdout)
+        stderr.append(snapshot.stderr)
+        if snapshot.state is ProcessState.EXITED:
+            return snapshot, "".join(stdout), "".join(stderr)
+
+    assert snapshot is not None
+    raise AssertionError(
+        f"remote process {session_id!r} did not exit within {timeout:g}s "
+        f"(state={snapshot.state.value!r}, "
+        f"termination_reason={snapshot.termination_reason!r}, "
+        f"exit_code={snapshot.exit_code!r}, stdout={''.join(stdout)!r}, "
+        f"stderr={''.join(stderr)!r})"
+    )
 
 
 class TestRemoteRelayHTTPService:
@@ -1343,27 +1381,18 @@ class TestRemoteRelayHTTPService:
             shell.bind_execution(tool_call_id="call", session_generation=0)
 
             process = backend.process
+            runtime_timeout = 10
             process_handle = process.start(
                 _shell_write_command("left && right"),
                 cwd=str(work_dir),
-                runtime_timeout=10,
+                runtime_timeout=runtime_timeout,
             )
-            cursor = ProcessCursor()
-            output = []
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                snapshot = process.poll(
-                    process_handle.session_id,
-                    cursor=cursor,
-                    wait_ms=100,
-                )
-                cursor = snapshot.cursor
-                output.append(snapshot.stdout)
-                if snapshot.state is ProcessState.EXITED:
-                    break
-            else:
-                raise AssertionError("resumable remote process did not exit")
-            assert "".join(output) == "left && right"
+            snapshot, stdout, _stderr = _wait_for_process_exit(
+                process,
+                process_handle.session_id,
+                timeout=runtime_timeout + 5,
+            )
+            assert stdout == "left && right"
             assert snapshot.exit_code == 0
             process.release(process_handle.session_id)
 
@@ -1378,16 +1407,11 @@ class TestRemoteRelayHTTPService:
                 running_handle.session_id,
                 reason="test_terminated",
             )
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                stopped = process.poll(
-                    running_handle.session_id,
-                    wait_ms=100,
-                )
-                if stopped.state is ProcessState.EXITED:
-                    break
-            else:
-                raise AssertionError("remote terminate did not stop the process")
+            stopped, _stdout, _stderr = _wait_for_process_exit(
+                process,
+                running_handle.session_id,
+                timeout=10,
+            )
             assert stopped.termination_reason == "test_terminated"
             process.release(running_handle.session_id)
 
