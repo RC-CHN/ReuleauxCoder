@@ -5,6 +5,7 @@ import json
 
 
 EMPTY_ASSISTANT_CONTENT_PLACEHOLDER = "[No assistant content returned.]"
+PROVIDER_DATA_KEY = "provider_data"
 
 
 @dataclass
@@ -26,6 +27,7 @@ class LLMResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_input_tokens: int | None = None
+    provider_data: dict | None = None
     tokens: list[str] = field(
         default_factory=list
     )  # Streamed tokens for event emission
@@ -52,4 +54,6 @@ class LLMResponse:
                 }
                 for tc in self.tool_calls
             ]
+        if self.provider_data is not None:
+            msg[PROVIDER_DATA_KEY] = self.provider_data
         return msg

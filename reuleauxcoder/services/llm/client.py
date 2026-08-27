@@ -39,9 +39,11 @@ from reuleauxcoder.services.llm.providers import (
     ANTHROPIC_DEFAULT_BASE_URL,
     AnthropicMessagesProvider,
     OpenAICompatibleProvider,
+    OpenAIResponsesProvider,
     ProviderAdapter,
     close_provider,
     normalize_provider_family,
+    normalize_request_mode,
 )
 
 
@@ -392,6 +394,9 @@ class LLM:
         api_key: str,
         base_url: Optional[str] = None,
         provider: str = "openai-compatible",
+        request_mode: str | None = None,
+        responses_state: str = "local",
+        responses_cache_mode: str = "explicit",
         temperature: float = 0.0,
         max_tokens: int = 4096,
         preserve_reasoning_content: bool = True,
@@ -410,6 +415,15 @@ class LLM:
         self.provider = self.provider_family
         if self.provider_family not in {"openai-compatible", "anthropic"}:
             raise ValueError(f"Unsupported model provider: {self.provider_family}")
+        self.request_mode = normalize_request_mode(
+            self.provider_family, request_mode
+        )
+        if responses_state != "local":
+            raise ValueError("responses_state must be local")
+        if responses_cache_mode not in {"implicit", "explicit"}:
+            raise ValueError("responses_cache_mode must be implicit or explicit")
+        self.responses_state = responses_state
+        self.responses_cache_mode = responses_cache_mode
         effective_base_url = (
             base_url
             if base_url is not None or self.provider_family != "anthropic"
@@ -419,6 +433,8 @@ class LLM:
         # and cannot multiply with the SDK's own retry loop.
         self._provider_adapter = self._build_provider_adapter(
             self.provider_family,
+            request_mode=self.request_mode,
+            responses_cache_mode=self.responses_cache_mode,
             api_key=api_key,
             base_url=effective_base_url,
         )
@@ -450,6 +466,9 @@ class LLM:
         api_key: str,
         base_url: Optional[str],
         provider: str | None = None,
+        request_mode: str | None = None,
+        responses_state: str = "local",
+        responses_cache_mode: str = "explicit",
         temperature: float,
         max_tokens: int,
         preserve_reasoning_content: bool | None = None,
@@ -472,6 +491,13 @@ class LLM:
         )
         if provider_family not in {"openai-compatible", "anthropic"}:
             raise ValueError(f"Unsupported model provider: {provider_family}")
+        effective_request_mode = normalize_request_mode(
+            provider_family, request_mode
+        )
+        if responses_state != "local":
+            raise ValueError("responses_state must be local")
+        if responses_cache_mode not in {"implicit", "explicit"}:
+            raise ValueError("responses_cache_mode must be implicit or explicit")
         effective_base_url = (
             base_url
             if base_url is not None or provider_family != "anthropic"
@@ -479,6 +505,8 @@ class LLM:
         )
         replacement = self._build_provider_adapter(
             provider_family,
+            request_mode=effective_request_mode,
+            responses_cache_mode=responses_cache_mode,
             api_key=api_key,
             base_url=effective_base_url,
         )
@@ -510,6 +538,9 @@ class LLM:
         self.model = model
         self.provider_family = provider_family
         self.provider = provider_family
+        self.request_mode = effective_request_mode
+        self.responses_state = responses_state
+        self.responses_cache_mode = responses_cache_mode
         self.api_key = api_key
         self.base_url = effective_base_url
         self.temperature = temperature
@@ -535,6 +566,8 @@ class LLM:
     def _build_provider_adapter(
         family: str,
         *,
+        request_mode: str,
+        responses_cache_mode: str,
         api_key: str,
         base_url: str | None,
     ) -> ProviderAdapter:
@@ -543,14 +576,19 @@ class LLM:
                 api_key=api_key,
                 base_url=base_url,
             )
-        return OpenAICompatibleProvider(
-            OpenAI(
-                api_key=api_key,
-                base_url=base_url,
-                max_retries=0,
-            ),
-            (RateLimitError, APITimeoutError, APIConnectionError),
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=0,
         )
+        retryable = (RateLimitError, APITimeoutError, APIConnectionError)
+        if request_mode == "responses":
+            return OpenAIResponsesProvider(
+                client,
+                retryable,
+                cache_mode=responses_cache_mode,
+            )
+        return OpenAICompatibleProvider(client, retryable)
 
     @property
     def client(self) -> object:
@@ -798,6 +836,11 @@ class LLM:
                 else self.max_tokens
             ),
         }
+        if self.request_mode == "responses":
+            if session_id:
+                params["_rc_session_id"] = session_id
+            if (metadata or {}).get("volatile_tail"):
+                params["_rc_volatile_tail_count"] = 1
         if self.reasoning_effort:
             # Resolve CLI label → API value via the reasoning_effort_values mapping.
             # Default mapping: {"low":"low","medium":"medium","high":"high"}
@@ -807,7 +850,12 @@ class LLM:
                 "high": "high",
             }
             api_value = mapping.get(self.reasoning_effort, self.reasoning_effort)
-            params[self.reasoning_effort_param] = api_value
+            effort_param = (
+                "reasoning_effort"
+                if self.request_mode == "responses"
+                else self.reasoning_effort_param
+            )
+            params[effort_param] = api_value
         elif self.thinking_enabled is not None:
             # Only send thinking via extra_body when reasoning_effort is *not*
             # being used — they are mutually exclusive mechanisms for the same
@@ -1093,6 +1141,7 @@ class LLM:
                 prompt_tokens=prompt_tok,
                 completion_tokens=completion_tok,
                 cached_input_tokens=cached_input_tok,
+                provider_data=getattr(stream, "provider_data", None),
                 tokens=tokens,
             )
 
@@ -1124,6 +1173,7 @@ class LLM:
                     "model": self.model,
                     "base_url": self.base_url,
                     "request": {
+                        "request_mode": self.request_mode,
                         "temperature": params.get("temperature"),
                         "max_tokens": params.get("max_tokens"),
                         "stream": params.get("stream"),

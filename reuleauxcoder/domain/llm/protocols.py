@@ -13,6 +13,7 @@ class LLMProtocol(Protocol):
 
     model: str
     provider_family: str
+    request_mode: str
     max_tokens: int
     debug_trace: bool
     last_dispatched_request: dict[str, Any] | None

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from hashlib import sha256
 from dataclasses import dataclass
 from typing import Any, Iterator, Protocol
 
 import httpx
+
+from reuleauxcoder.domain.llm.models import PROVIDER_DATA_KEY
 
 
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -82,7 +86,351 @@ class OpenAICompatibleProvider:
         self._client = value
 
     def open_stream(self, params: dict[str, Any]) -> Any:
-        return self._client.chat.completions.create(**params)
+        request = dict(params)
+        messages = request.get("messages")
+        if isinstance(messages, list):
+            request["messages"] = [
+                {
+                    key: value
+                    for key, value in message.items()
+                    if key != PROVIDER_DATA_KEY
+                }
+                for message in messages
+            ]
+        return self._client.chat.completions.create(**request)
+
+    def is_retryable(self, error: BaseException) -> bool:
+        return isinstance(error, self._retryable_errors)
+
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            close()
+
+
+def _responses_text_blocks(content: object) -> list[dict[str, Any]]:
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}]
+    if content is None:
+        return []
+    if not isinstance(content, list):
+        raise TypeError("responses message content must be text")
+    blocks: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            raise TypeError("responses adapter supports text content blocks only")
+        text = block.get("text")
+        if not isinstance(text, str):
+            raise TypeError("responses text content must be a string")
+        blocks.append({"type": "input_text", "text": text})
+    return blocks
+
+
+def _responses_input(
+    source: object,
+    *,
+    volatile_tail_count: int,
+    cache_mode: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(source, list):
+        raise TypeError("responses messages must be a list")
+    if not 0 <= volatile_tail_count <= len(source):
+        raise ValueError("responses volatile tail is invalid")
+
+    stable_message_count = len(source) - volatile_tail_count
+    items: list[dict[str, Any]] = []
+    stable_item_count = 0
+    for index, message in enumerate(source):
+        if not isinstance(message, dict):
+            raise TypeError("responses message must be an object")
+        role = message.get("role")
+        if role == "tool":
+            content = message.get("content")
+            if not isinstance(content, str):
+                raise TypeError("responses tool output must be text")
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(message.get("tool_call_id") or ""),
+                    "output": content,
+                }
+            )
+        elif role in {"system", "developer", "user", "assistant"}:
+            native_role = role
+            if index >= stable_message_count:
+                native_role = "developer"
+            provider_data = message.get(PROVIDER_DATA_KEY)
+            if (
+                role == "assistant"
+                and isinstance(provider_data, dict)
+                and provider_data.get("request_mode") == "responses"
+            ):
+                replay_items = provider_data.get("items")
+                if not isinstance(replay_items, list):
+                    raise TypeError("responses provider data items must be a list")
+                items.extend(deepcopy(replay_items))
+            else:
+                blocks = _responses_text_blocks(message.get("content"))
+                if blocks:
+                    items.append({"role": native_role, "content": blocks})
+                for call in message.get("tool_calls") or ():
+                    function = (
+                        call.get("function") if isinstance(call, dict) else None
+                    )
+                    if not isinstance(function, dict):
+                        raise TypeError(
+                            "responses tool call must be a function object"
+                        )
+                    arguments = function.get("arguments")
+                    if not isinstance(arguments, str):
+                        raise TypeError("responses tool arguments must be JSON text")
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": str(call.get("id") or ""),
+                            "name": str(function.get("name") or ""),
+                            "arguments": arguments,
+                        }
+                    )
+        else:
+            raise TypeError("responses message role is unsupported")
+        if index < stable_message_count:
+            stable_item_count = len(items)
+
+    if cache_mode == "explicit":
+        _mark_responses_cache_breakpoint(items[:stable_item_count])
+    return items
+
+
+def _mark_responses_cache_breakpoint(items: list[dict[str, Any]]) -> None:
+    for item in reversed(items):
+        content = item.get("content")
+        if isinstance(content, list):
+            for block in reversed(content):
+                if block.get("type") == "input_text":
+                    block["prompt_cache_breakpoint"] = {"mode": "explicit"}
+                    return
+        if item.get("type") == "function_call_output":
+            output = item.get("output")
+            if not isinstance(output, str):
+                raise TypeError("responses tool output must be text")
+            item["output"] = [
+                {
+                    "type": "input_text",
+                    "text": output,
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }
+            ]
+            return
+    raise ValueError("responses explicit cache mode requires stable text")
+
+
+def _responses_tools(source: object) -> list[dict[str, Any]]:
+    if source is None:
+        return []
+    if not isinstance(source, list):
+        raise TypeError("responses tools must be a list")
+    result: list[dict[str, Any]] = []
+    for tool in source:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict):
+            raise TypeError("responses tool schema must be a function object")
+        converted = {
+            "type": "function",
+            "name": str(function.get("name") or ""),
+            "parameters": function.get("parameters", {"type": "object"}),
+        }
+        for field in ("description", "strict"):
+            if field in function:
+                converted[field] = function[field]
+        result.append(converted)
+    return result
+
+
+def _responses_request(
+    params: dict[str, Any],
+    *,
+    cache_mode: str,
+) -> dict[str, Any]:
+    volatile_tail_count = int(params.get("_rc_volatile_tail_count") or 0)
+    request: dict[str, Any] = {
+        "model": str(params.get("model") or ""),
+        "input": _responses_input(
+            params.get("messages"),
+            volatile_tail_count=volatile_tail_count,
+            cache_mode=cache_mode,
+        ),
+        "max_output_tokens": int(params.get("max_tokens") or 4096),
+        "stream": True,
+        "store": False,
+        "include": ["reasoning.encrypted_content"],
+        "temperature": params.get("temperature"),
+        "extra_body": {"prompt_cache_options": {"mode": cache_mode}},
+    }
+    session_id = params.get("_rc_session_id")
+    if isinstance(session_id, str) and session_id:
+        cache_key = f"responses\0{request['model']}\0{session_id}".encode()
+        request["prompt_cache_key"] = sha256(cache_key).hexdigest()
+    tools = _responses_tools(params.get("tools"))
+    if tools:
+        request["tools"] = tools
+    effort = params.get("reasoning_effort")
+    if effort is not None:
+        request["reasoning"] = {"effort": effort}
+    if params.get("extra_body") is not None:
+        raise TypeError("responses request mode does not support thinking_enabled")
+    return request
+
+
+class _ResponsesStream(Iterator["_Chunk"]):
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._events = iter(stream)
+        self.provider_data: dict[str, Any] | None = None
+
+    def __iter__(self) -> "_ResponsesStream":
+        return self
+
+    def __next__(self) -> "_Chunk":
+        for event in self._events:
+            event_type = getattr(event, "type", None)
+            if event_type in {"error", "response.failed"}:
+                self.close()
+                raise ProviderProtocolError("openai-compatible", str(event_type))
+            if event_type in {
+                "response.output_text.delta",
+                "response.refusal.delta",
+            }:
+                return self._delta_chunk(content=getattr(event, "delta"))
+            if event_type in {
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_text.delta",
+            }:
+                return self._delta_chunk(reasoning=getattr(event, "delta"))
+            if event_type == "response.output_item.added":
+                item = getattr(event, "item")
+                if getattr(item, "type", None) == "function_call":
+                    return self._tool_chunk(
+                        int(getattr(event, "output_index")),
+                        tool_id=str(getattr(item, "call_id")),
+                        name=str(getattr(item, "name")),
+                    )
+            if event_type == "response.function_call_arguments.delta":
+                return self._tool_chunk(
+                    int(getattr(event, "output_index")),
+                    arguments=str(getattr(event, "delta")),
+                )
+            if event_type in {"response.completed", "response.incomplete"}:
+                response = getattr(event, "response")
+                self.provider_data = {
+                    "request_mode": "responses",
+                    "items": [
+                        self._serialize_item(item)
+                        for item in getattr(response, "output")
+                    ],
+                }
+                usage = getattr(response, "usage")
+                details = getattr(usage, "input_tokens_details", None)
+                cached = getattr(details, "cached_tokens", None)
+                return _Chunk(
+                    usage=_Usage(
+                        prompt_tokens=int(getattr(usage, "input_tokens")),
+                        completion_tokens=int(getattr(usage, "output_tokens")),
+                        cache_read_input_tokens=(
+                            int(cached) if cached is not None else None
+                        ),
+                    )
+                )
+        self.close()
+        raise StopIteration
+
+    @staticmethod
+    def _serialize_item(item: Any) -> dict[str, Any]:
+        if isinstance(item, dict):
+            return deepcopy(item)
+        dump = getattr(item, "model_dump", None)
+        if not callable(dump):
+            raise ProviderProtocolError("openai-compatible", "response.completed")
+        value = dump(mode="json", exclude_none=True)
+        if not isinstance(value, dict):
+            raise ProviderProtocolError("openai-compatible", "response.completed")
+        return value
+
+    @staticmethod
+    def _delta_chunk(
+        *,
+        content: str | None = None,
+        reasoning: str | None = None,
+    ) -> "_Chunk":
+        return _Chunk(
+            choices=(
+                _Choice(_Delta(content=content, reasoning_content=reasoning)),
+            )
+        )
+
+    @staticmethod
+    def _tool_chunk(
+        index: int,
+        *,
+        tool_id: str | None = None,
+        name: str | None = None,
+        arguments: str | None = None,
+    ) -> "_Chunk":
+        return _Chunk(
+            choices=(
+                _Choice(
+                    _Delta(
+                        tool_calls=(
+                            _ToolCallDelta(
+                                index=index,
+                                id=tool_id,
+                                function=_FunctionDelta(
+                                    name=name,
+                                    arguments=arguments,
+                                ),
+                            ),
+                        )
+                    )
+                ),
+            )
+        )
+
+    def close(self) -> None:
+        close = getattr(self._stream, "close", None)
+        if callable(close):
+            close()
+
+
+class OpenAIResponsesProvider:
+    """Adapter for stateless Responses requests with local history replay."""
+
+    family = "openai-compatible"
+    native = True
+
+    def __init__(
+        self,
+        client: object,
+        retryable_errors: tuple[type[BaseException], ...],
+        *,
+        cache_mode: str,
+    ) -> None:
+        self._client = client
+        self._retryable_errors = retryable_errors
+        self._cache_mode = cache_mode
+
+    @property
+    def client(self) -> object:
+        return self._client
+
+    @client.setter
+    def client(self, value: object) -> None:
+        self._client = value
+
+    def open_stream(self, params: dict[str, Any]) -> _ResponsesStream:
+        stream = self._client.responses.create(
+            **_responses_request(params, cache_mode=self._cache_mode)
+        )
+        return _ResponsesStream(stream)
 
     def is_retryable(self, error: BaseException) -> bool:
         return isinstance(error, self._retryable_errors)
@@ -515,3 +863,19 @@ def normalize_provider_family(value: object) -> str:
         "anthropic-messages": "anthropic",
     }
     return aliases.get(family, family)
+
+
+def normalize_request_mode(provider_family: str, value: object) -> str:
+    """Resolve the wire protocol independently from the provider family."""
+    default = "messages" if provider_family == "anthropic" else "chat-completions"
+    mode = str(value or default).strip().lower().replace("_", "-")
+    mode = {"chat": "chat-completions", "response": "responses"}.get(mode, mode)
+    supported = {
+        "anthropic": {"messages"},
+        "openai-compatible": {"chat-completions", "responses"},
+    }
+    if mode not in supported.get(provider_family, set()):
+        raise ValueError(
+            f"Unsupported request mode {mode!r} for provider {provider_family!r}"
+        )
+    return mode

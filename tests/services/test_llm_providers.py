@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -12,9 +13,12 @@ from reuleauxcoder.services.llm.client import LLM
 from reuleauxcoder.services.llm.factory import build_llm_from_settings
 from reuleauxcoder.services.llm.providers import (
     AnthropicMessagesProvider,
+    OpenAICompatibleProvider,
+    OpenAIResponsesProvider,
     ProviderHTTPError,
     ProviderProtocolError,
     ProviderTransportError,
+    _responses_input,
 )
 
 
@@ -379,6 +383,189 @@ def test_factory_selects_native_provider_without_opening_network() -> None:
         assert isinstance(llm.client, httpx.Client)
     finally:
         llm.client.close()
+
+
+def test_openai_compatible_defaults_to_chat_completions() -> None:
+    llm = LLM(model="gpt-4.1", api_key="key")
+    try:
+        assert llm.request_mode == "chat-completions"
+        assert isinstance(llm._provider_adapter, OpenAICompatibleProvider)
+    finally:
+        llm.close()
+
+
+def test_responses_mode_replays_local_history_and_normalizes_stream() -> None:
+    captured: dict = {}
+
+    class FakeStream:
+        def __init__(self) -> None:
+            usage = SimpleNamespace(
+                input_tokens=120,
+                output_tokens=9,
+                input_tokens_details=SimpleNamespace(cached_tokens=96),
+            )
+            output = [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "encrypted_content": "opaque-reasoning",
+                },
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "done"}],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_2",
+                    "name": "read_file",
+                    "arguments": '{"file_path":"README.md"}',
+                },
+            ]
+            self.events = iter(
+                [
+                    SimpleNamespace(
+                        type="response.reasoning_summary_text.delta",
+                        delta="plan",
+                    ),
+                    SimpleNamespace(
+                        type="response.output_text.delta",
+                        delta="done",
+                    ),
+                    SimpleNamespace(
+                        type="response.output_item.added",
+                        output_index=1,
+                        item=SimpleNamespace(
+                            type="function_call",
+                            call_id="call_2",
+                            name="read_file",
+                        ),
+                    ),
+                    SimpleNamespace(
+                        type="response.function_call_arguments.delta",
+                        output_index=1,
+                        delta='{"file_path":"README.md"}',
+                    ),
+                    SimpleNamespace(
+                        type="response.completed",
+                        response=SimpleNamespace(usage=usage, output=output),
+                    ),
+                ]
+            )
+
+        def __iter__(self):
+            return self.events
+
+        def close(self) -> None:
+            return None
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return FakeStream()
+
+    class FakeClient:
+        responses = FakeResponses()
+
+        def close(self) -> None:
+            return None
+
+    llm = LLM(
+        model="gpt-5.6-luna",
+        api_key="key",
+        request_mode="responses",
+        reasoning_effort="high",
+    )
+    llm.client = FakeClient()
+    try:
+        response = llm.chat(
+            [
+                {"role": "system", "content": "stable system"},
+                {"role": "user", "content": "read it"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"file_path":"pyproject.toml"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "tool output",
+                },
+                {"role": "user", "content": "dynamic execution overlay"},
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            session_id="session-1",
+            metadata={"volatile_tail": True},
+        )
+    finally:
+        llm.close()
+
+    assert isinstance(llm._provider_adapter, OpenAIResponsesProvider)
+    assert response.content == "done"
+    assert response.reasoning_content == "plan"
+    assert response.tool_calls[0].id == "call_2"
+    assert response.tool_calls[0].arguments == {"file_path": "README.md"}
+    assert response.prompt_tokens == 120
+    assert response.cached_input_tokens == 96
+    assert captured["store"] is False
+    assert captured["include"] == ["reasoning.encrypted_content"]
+    assert "previous_response_id" not in captured
+    assert captured["reasoning"] == {"effort": "high"}
+    assert captured["extra_body"] == {
+        "prompt_cache_options": {"mode": "explicit"}
+    }
+    assert len(captured["prompt_cache_key"]) == 64
+    assert captured["tools"] == [
+        {
+            "type": "function",
+            "name": "read_file",
+            "description": "Read a file",
+            "parameters": {"type": "object"},
+        }
+    ]
+    assert captured["input"][-2]["output"] == [
+        {
+            "type": "input_text",
+            "text": "tool output",
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }
+    ]
+    assert captured["input"][-1] == {
+        "role": "developer",
+        "content": [{"type": "input_text", "text": "dynamic execution overlay"}],
+    }
+    provider_data = response.message["provider_data"]
+    assert provider_data["items"][0]["encrypted_content"] == "opaque-reasoning"
+    replayed = _responses_input(
+        [
+            {"role": "system", "content": "stable system"},
+            response.message,
+            {"role": "user", "content": "next overlay"},
+        ],
+        volatile_tail_count=1,
+        cache_mode="explicit",
+    )
+    assert replayed[1:4] == provider_data["items"]
 
 
 def test_unknown_provider_is_rejected_before_dispatch() -> None:
