@@ -207,6 +207,7 @@ def test_parse_config_keeps_chat_completions_default_and_reads_responses() -> No
     )
 
     assert legacy.request_mode is None
+    assert legacy.responses.cache.mode == "implicit"
     assert responses.request_mode == "responses"
     assert responses.responses.cache.mode == "implicit"
 

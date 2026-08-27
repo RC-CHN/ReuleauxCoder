@@ -61,7 +61,7 @@ DEFAULT_REASONING_EFFORT_VALUES: dict[str, object] = {
 class ResponsesCacheConfig:
     """Prompt-cache policy for the Responses request mode."""
 
-    mode: Literal["implicit", "explicit"] = "explicit"
+    mode: Literal["implicit", "explicit"] = "implicit"
 
     @classmethod
     def from_dict(cls, value: object) -> "ResponsesCacheConfig":
@@ -70,7 +70,7 @@ class ResponsesCacheConfig:
         if not isinstance(value, dict):
             raise TypeError("responses.cache must be an object")
         data = value
-        return cls(mode=data.get("mode", "explicit"))
+        return cls(mode=data.get("mode", "implicit"))
 
 
 @dataclass(frozen=True, slots=True)

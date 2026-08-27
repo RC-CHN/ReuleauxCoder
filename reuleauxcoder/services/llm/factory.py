@@ -41,7 +41,7 @@ def llm_runtime_kwargs(settings: Any, *, debug_trace: bool = False) -> dict[str,
     responses = getattr(settings, "responses", None)
     cache = getattr(responses, "cache", None)
     kwargs["responses_state"] = getattr(responses, "state", "local")
-    kwargs["responses_cache_mode"] = getattr(cache, "mode", "explicit")
+    kwargs["responses_cache_mode"] = getattr(cache, "mode", "implicit")
     kwargs["debug_trace"] = debug_trace
     return kwargs
 

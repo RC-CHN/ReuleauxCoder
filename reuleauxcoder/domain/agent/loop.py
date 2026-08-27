@@ -193,7 +193,7 @@ class AgentLoop:
             "request_mode": getattr(llm, "request_mode", "chat-completions"),
             "responses_state": getattr(llm, "responses_state", "local"),
             "responses_cache_mode": getattr(
-                llm, "responses_cache_mode", "explicit"
+                llm, "responses_cache_mode", "implicit"
             ),
             "temperature": getattr(llm, "temperature", None),
             "max_tokens": getattr(llm, "max_tokens", None),

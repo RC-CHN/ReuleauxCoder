@@ -68,7 +68,7 @@ DEFAULTS = {
     "model": "gpt-4o",
     "provider": "openai-compatible",
     "request_mode": None,
-    "responses": {"state": "local", "cache": {"mode": "explicit"}},
+    "responses": {"state": "local", "cache": {"mode": "implicit"}},
     "max_tokens": 4096,
     "temperature": 0.0,
     "max_context_tokens": 128_000,

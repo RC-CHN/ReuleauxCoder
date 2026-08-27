@@ -33,6 +33,7 @@ def test_model_profile_config_from_dict_uses_defaults() -> None:
     assert profile.provider == "openai-compatible"
     assert profile.request_mode is None
     assert profile.responses == ResponsesConfig()
+    assert profile.responses.cache.mode == "implicit"
     assert profile.max_tokens == 4096
     assert profile.temperature == 0.0
     assert profile.preserve_reasoning_content is True
