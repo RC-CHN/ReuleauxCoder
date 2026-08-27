@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from hashlib import sha256
 from http import HTTPStatus
 import shutil
@@ -97,6 +98,19 @@ def _cleanup_provider_build_dir(provider: object) -> None:
     build_dir = getattr(provider, "_build_dir", None)
     if isinstance(build_dir, Path):
         subprocess.run(["rm", "-rf", str(build_dir)], check=False, timeout=30)
+
+
+def _shell_write_command(text: str) -> str:
+    if os.name == "nt":
+        escaped = text.replace("'", "''")
+        return f"[Console]::Out.Write('{escaped}')"
+    return f"printf '%s' {shlex.quote(text)}"
+
+
+def _shell_sleep_command(seconds: int) -> str:
+    if os.name == "nt":
+        return f"Start-Sleep -Seconds {seconds}"
+    return f"sleep {seconds}"
 
 
 class TestRemoteRelayHTTPService:
@@ -1330,7 +1344,7 @@ class TestRemoteRelayHTTPService:
 
             process = backend.process
             process_handle = process.start(
-                "printf '%s' 'left && right'",
+                _shell_write_command("left && right"),
                 cwd=str(work_dir),
                 runtime_timeout=10,
             )
@@ -1354,7 +1368,7 @@ class TestRemoteRelayHTTPService:
             process.release(process_handle.session_id)
 
             running_handle = process.start(
-                "sleep 30",
+                _shell_sleep_command(30),
                 cwd=str(work_dir),
                 runtime_timeout=60,
             )
@@ -1377,18 +1391,16 @@ class TestRemoteRelayHTTPService:
             assert stopped.termination_reason == "test_terminated"
             process.release(running_handle.session_id)
 
-            shell_result = shell.execute(command="printf 'hi-from-agent'")
+            shell_result = shell.execute(command=_shell_write_command("hi-from-agent"))
             assert "hi-from-agent" in shell_result.model_text
 
             timeout_started = time.monotonic()
-            timeout_result = shell.execute(command="sleep 10", timeout=1)
+            timeout_result = shell.execute(command=_shell_sleep_command(10), timeout=1)
             timeout_snapshot = cast(
                 dict[str, Any],
                 timeout_result.metadata["process_snapshot"],
             )
-            assert (
-                timeout_snapshot["termination_reason"] == "timeout"
-            )
+            assert timeout_snapshot["termination_reason"] == "timeout"
             assert time.monotonic() - timeout_started < 3
 
             cancellation = threading.Event()
@@ -1397,7 +1409,9 @@ class TestRemoteRelayHTTPService:
             cancel_started = time.monotonic()
             timer.start()
             try:
-                cancel_result = shell.execute(command="sleep 30", timeout=20)
+                cancel_result = shell.execute(
+                    command=_shell_sleep_command(30), timeout=20
+                )
             finally:
                 timer.cancel()
                 cancellation.clear()
@@ -1407,7 +1421,7 @@ class TestRemoteRelayHTTPService:
             assert (
                 "still-alive"
                 in ShellTool(backend=backend)
-                .execute(command="printf 'still-alive'")
+                .execute(command=_shell_write_command("still-alive"))
                 .model_text
             )
 
