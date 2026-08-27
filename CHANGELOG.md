@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.1 - 2026-08-27
+
+- Defaulted Responses prompt caching to implicit mode for broader model compatibility while retaining explicit cache breakpoints as an opt-in policy.
+- Fixed Responses stream lifecycle reporting so the TUI leaves its first-response waiting state as soon as a response starts.
+- Added independently configurable automatic snip, semantic-summary, and emergency-collapse strategies with global defaults, per-model overrides, runtime switching, session restore, and subagent inheritance.
+- Stabilized the cross-platform remote-process lifecycle integration test by waiting through the process deadline and relay grace period while preserving actionable terminal diagnostics.
+
 ## 0.8.0 - 2026-08-27
 
 - Added a configurable OpenAI-compatible Responses request mode alongside the existing Chat Completions default, keeping canonical conversations local while rebuilding a stateless full request on every round.
