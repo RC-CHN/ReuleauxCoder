@@ -29,6 +29,24 @@ models:
       preserve_reasoning_content: true
       backfill_reasoning_content_for_tool_calls: false
 
+    # Responses API keeps the canonical conversation locally and sends a
+    # stateless request on every round. Omitting request_mode keeps the legacy
+    # chat-completions default used by the profiles above.
+    gpt-5.6-luna-responses:
+      model: "gpt-5.6-luna"
+      api_key: "your-api-key-here"
+      provider: "openai-compatible"
+      request_mode: "responses"
+      base_url: "https://api.openai.com/v1"
+      max_tokens: 8192
+      temperature: 0.0
+      max_context_tokens: 128000
+      responses:
+        state: "local"
+        cache:
+          # The execution overlay is appended after this explicit breakpoint.
+          mode: "explicit"
+
     # Example DeepSeek reasoning profile for tool-calling workloads.
     deepseek-v4-pro:
       model: "deepseek-v4-pro"
