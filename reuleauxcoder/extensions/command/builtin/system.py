@@ -268,6 +268,7 @@ def _handle_tokens(command, ctx) -> CommandEffect:
             observation.actual_prompt_tokens if observation else None
         ),
         cached_input_tokens=(observation.cached_input_tokens if observation else None),
+        automatic_strategies=ctx.agent.context.automatic_strategies,
         snip_wall=thresholds["snip_wall"],
         semantic_wall=thresholds["semantic_wall"],
         snip_min_gain=thresholds["snip_min_gain"],

@@ -6,7 +6,12 @@ from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
     build_session_runtime_state,
 )
-from reuleauxcoder.domain.config.models import ApprovalConfig, ApprovalRuleConfig
+from reuleauxcoder.domain.config.models import (
+    ApprovalConfig,
+    ApprovalRuleConfig,
+    ContextConfig,
+    ContextStrategyOverrides,
+)
 
 
 class _FakeLLM:
@@ -18,6 +23,16 @@ class _FakeLLM:
     def reconfigure(self, **kwargs) -> None:
         self.reconfigured_with = kwargs
         self.model = kwargs.get("model", self.model)
+
+
+class _FakeContext:
+    def __init__(self) -> None:
+        self.max_tokens = 0
+        self.strategy_settings = None
+
+    def reconfigure(self, limit: int, **settings) -> None:
+        self.max_tokens = limit
+        self.strategy_settings = settings
 
 
 def _profile(name: str) -> SimpleNamespace:
@@ -36,6 +51,7 @@ def _profile(name: str) -> SimpleNamespace:
         reasoning_replay_mode=None,
         reasoning_replay_placeholder=None,
         max_context_tokens=100_000,
+        context=ContextStrategyOverrides(auto_snip=False),
     )
 
 
@@ -50,6 +66,8 @@ def _config() -> SimpleNamespace:
         active_mode=None,
         llm_debug_trace=False,
         approval=SimpleNamespace(default_mode="warn", rules=[]),
+        context=ContextConfig(auto_snip=True, auto_summarize=False),
+        max_context_tokens=128_000,
     )
 
 
@@ -68,7 +86,7 @@ def _agent(model: str = "base-model") -> SimpleNamespace:
         available_modes={},
         session_approval_rules=[],
         hook_registry=hook_registry,
-        context=SimpleNamespace(reconfigure=lambda limit: None),
+        context=_FakeContext(),
         plan_controller=SimpleNamespace(
             state=plan_state,
             progress=progress_state,
@@ -101,6 +119,12 @@ def test_runtime_state_round_trip_restores_switched_profile() -> None:
     assert restored.llm.reconfigured_with is not None
     assert restored.llm.reconfigured_with["api_key"] == "sk-test"
     assert restored.active_main_model_profile == "sonnet"
+    assert restored.context.max_tokens == 100_000
+    assert restored.context.strategy_settings == {
+        "auto_snip": False,
+        "auto_summarize": False,
+        "auto_collapse": True,
+    }
 
 
 def test_runtime_state_round_trip_restores_skills_disabled() -> None:

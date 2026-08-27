@@ -37,7 +37,7 @@ class FakeContext:
     def __init__(self) -> None:
         self.max_tokens = 64000
 
-    def reconfigure(self, max_tokens: int) -> None:
+    def reconfigure(self, max_tokens: int, **_strategy_settings) -> None:
         self.max_tokens = max_tokens
 
 

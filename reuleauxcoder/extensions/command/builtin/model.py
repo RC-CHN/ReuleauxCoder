@@ -27,6 +27,7 @@ from reuleauxcoder.app.commands.shared import (
 )
 from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
 from reuleauxcoder.app.runtime.session_state import build_session_runtime_state
+from reuleauxcoder.domain.config.models import resolve_context_strategies
 from reuleauxcoder.infrastructure.persistence.workspace_config_store import (
     WorkspaceConfigStore,
 )
@@ -171,7 +172,13 @@ def _apply_main_profile_to_runtime(ctx, profile_name: str, profile) -> None:
         profile,
         debug_trace=debug_trace,
     )
-    ctx.agent.context.reconfigure(profile.max_context_tokens)
+    ctx.agent.context.reconfigure(
+        profile.max_context_tokens,
+        **resolve_context_strategies(
+            ctx.config.context,
+            getattr(profile, "context", None),
+        ),
+    )
     ctx.agent.active_main_model_profile = profile_name
 
 
@@ -316,6 +323,10 @@ def _build_model_profiles_view(config, runtime_state=None) -> ModelListViewModel
     profile_items = []
     for name in sorted(profiles):
         profile = profiles[name]
+        strategy_settings = resolve_context_strategies(
+            config.context,
+            getattr(profile, "context", None),
+        )
         api_key = getattr(profile, "api_key", "")
         if api_key and len(api_key) >= 4:
             api_hint = f"...{api_key[-4:]}"
@@ -334,6 +345,11 @@ def _build_model_profiles_view(config, runtime_state=None) -> ModelListViewModel
                 max_tokens=profile.max_tokens,
                 temperature=profile.temperature,
                 max_context_tokens=profile.max_context_tokens,
+                automatic_strategies=tuple(
+                    key.removeprefix("auto_")
+                    for key, enabled in strategy_settings.items()
+                    if enabled
+                ),
                 api_key_hint=api_hint,
             )
         )

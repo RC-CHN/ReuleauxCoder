@@ -31,7 +31,7 @@ from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.cancellation import CancellationView
-from reuleauxcoder.domain.config.models import ModeConfig
+from reuleauxcoder.domain.config.models import ModeConfig, resolve_context_strategies
 from reuleauxcoder.domain.context.manager import ContextManager
 from reuleauxcoder.domain.hooks import (
     HookBase,
@@ -234,8 +234,18 @@ class Agent:
         # Context manager
         context_cfg = getattr(config, "context", None)
         if context_cfg:
+            profiles = getattr(config, "model_profiles", {}) or {}
+            active_profile_name = self.active_main_model_profile or getattr(
+                config, "active_model_profile", None
+            )
+            active_profile = profiles.get(active_profile_name)
+            strategies = resolve_context_strategies(
+                context_cfg,
+                getattr(active_profile, "context", None),
+            )
             self.context = ContextManager(
                 max_tokens=max_context_tokens,
+                **strategies,
                 snip_keep_recent_tools=context_cfg.snip_keep_recent_tools,
                 snip_threshold_chars=context_cfg.snip_threshold_chars,
                 snip_min_lines=context_cfg.snip_min_lines,

@@ -60,6 +60,7 @@ class ModelProfileViewModel:
     max_tokens: int
     temperature: float
     max_context_tokens: int
+    automatic_strategies: tuple[str, ...]
     api_key_hint: str
 
 
@@ -95,6 +96,7 @@ class ModelListViewModel:
                     "max_tokens": profile.max_tokens,
                     "temperature": profile.temperature,
                     "max_context_tokens": profile.max_context_tokens,
+                    "automatic_strategies": profile.automatic_strategies,
                     "api_key_hint": profile.api_key_hint,
                 }
                 for profile in self.profiles
@@ -176,6 +178,7 @@ class TokenUsageViewModel:
     message_count: int
     actual_prompt_tokens: int | None
     cached_input_tokens: int | None
+    automatic_strategies: tuple[str, ...]
     snip_wall: int
     semantic_wall: int
     snip_min_gain: int
@@ -197,6 +200,7 @@ class TokenUsageViewModel:
                 "message_count",
                 "actual_prompt_tokens",
                 "cached_input_tokens",
+                "automatic_strategies",
                 "snip_wall",
                 "semantic_wall",
                 "snip_min_gain",

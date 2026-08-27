@@ -2,6 +2,8 @@ from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
     Config,
+    ContextConfig,
+    ContextStrategyOverrides,
     DEFAULT_REASONING_EFFORT_VALUES,
     MCPServerConfig,
     ModeConfig,
@@ -9,7 +11,47 @@ from reuleauxcoder.domain.config.models import (
     RemoteExecConfig,
     ResponsesConfig,
     UIConfig,
+    resolve_context_strategies,
 )
+
+
+def test_context_config_enables_all_automatic_strategies_by_default() -> None:
+    context = ContextConfig()
+
+    assert context.auto_snip is True
+    assert context.auto_summarize is True
+    assert context.auto_collapse is True
+
+
+def test_model_context_strategy_overrides_roundtrip_and_inherit() -> None:
+    profile = ModelProfileConfig.from_dict(
+        "careful",
+        {
+            "context": {
+                "auto_snip": False,
+                "auto_collapse": True,
+            }
+        },
+    )
+    defaults = ContextConfig(
+        auto_snip=True,
+        auto_summarize=False,
+        auto_collapse=False,
+    )
+
+    assert profile.context == ContextStrategyOverrides(
+        auto_snip=False,
+        auto_collapse=True,
+    )
+    assert profile.to_dict()["context"] == {
+        "auto_snip": False,
+        "auto_collapse": True,
+    }
+    assert resolve_context_strategies(defaults, profile.context) == {
+        "auto_snip": False,
+        "auto_summarize": False,
+        "auto_collapse": True,
+    }
 
 
 def test_mcp_server_config_roundtrip() -> None:
@@ -34,6 +76,8 @@ def test_model_profile_config_from_dict_uses_defaults() -> None:
     assert profile.request_mode is None
     assert profile.responses == ResponsesConfig()
     assert profile.responses.cache.mode == "implicit"
+    assert profile.context == ContextStrategyOverrides()
+    assert "context" not in profile.to_dict()
     assert profile.max_tokens == 4096
     assert profile.temperature == 0.0
     assert profile.preserve_reasoning_content is True

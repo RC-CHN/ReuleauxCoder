@@ -816,6 +816,7 @@ def _model_view_payload() -> object:
                     max_tokens=4096,
                     temperature=0.5,
                     max_context_tokens=200000,
+                    automatic_strategies=("snip", "summarize", "collapse"),
                     api_key_hint="...key",
                 ),
                 ModelProfileViewModel(
@@ -828,6 +829,7 @@ def _model_view_payload() -> object:
                     max_tokens=8192,
                     temperature=1.0,
                     max_context_tokens=200000,
+                    automatic_strategies=("summarize", "collapse"),
                     api_key_hint="...key",
                 ),
             ),
@@ -1596,6 +1598,7 @@ def test_view_text_formats_help_sessions_jobs_tokens_and_config() -> None:
                 message_count=35,
                 actual_prompt_tokens=54000,
                 cached_input_tokens=12000,
+                automatic_strategies=("summarize", "collapse"),
                 snip_wall=60,
                 semantic_wall=75,
                 snip_min_gain=20,
@@ -1606,6 +1609,7 @@ def test_view_text_formats_help_sessions_jobs_tokens_and_config() -> None:
         )
     )
     assert "12,345" in tokens_text and "42%" in tokens_text
+    assert "Auto    summarize · collapse" in tokens_text
     assert "{" not in tokens_text
 
     jobs_text = _view_text(

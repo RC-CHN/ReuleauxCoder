@@ -15,7 +15,9 @@ from urllib import request
 from reuleauxcoder.domain.config.models import (
     Config,
     ContextConfig,
+    ContextStrategyOverrides,
     ModeConfig,
+    ModelProfileConfig,
     RemoteExecConfig,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
@@ -88,7 +90,7 @@ class FakeContext:
         self.max_tokens = 64000
         self._ui_bus = None
 
-    def reconfigure(self, max_tokens: int) -> None:
+    def reconfigure(self, max_tokens: int, **_strategy_settings) -> None:
         self.max_tokens = max_tokens
 
 
@@ -413,9 +415,19 @@ class TestRunnerRemoteExec:
         assert "cleanup-secret" not in repr(runner._last_cleanup_failures)
 
     def test_runner_preserves_context_config_on_agent(self, tmp_path: Path) -> None:
+        profile = ModelProfileConfig(
+            name="main",
+            model="model-main",
+            api_key="key",
+            context=ContextStrategyOverrides(auto_snip=False),
+        )
         config = Config(
             api_key="key",
+            model_profiles={"main": profile},
+            active_main_model_profile="main",
             context=ContextConfig(
+                auto_snip=True,
+                auto_summarize=False,
                 snip_keep_recent_tools=9,
                 snip_threshold_chars=3210,
                 snip_min_lines=8,
@@ -435,6 +447,7 @@ class TestRunnerRemoteExec:
             or getattr(ctx.agent, "config", None) == config
         )
         assert ctx.agent.max_context_tokens == config.max_context_tokens
+        assert ctx.agent.context.automatic_strategies == ("collapse",)
         runner.cleanup(ctx.agent)
 
     def test_server_mode_smoke_bootstrap_endpoint(self, tmp_path: Path) -> None:

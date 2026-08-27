@@ -222,6 +222,7 @@ def render_model_profiles_view(renderer, event) -> bool:
     table.add_column("Provider")
     table.add_column("Model")
     table.add_column("Context")
+    table.add_column("Auto compact")
     for profile in model.profiles:
         routes = "/".join(
             name
@@ -237,6 +238,7 @@ def render_model_profiles_view(renderer, event) -> bool:
             profile.provider,
             profile.model,
             str(profile.max_context_tokens),
+            "/".join(profile.automatic_strategies) or "off",
         )
     renderer.console.print(table)
     for diagnostic in model.diagnostics:
@@ -311,6 +313,10 @@ def render_token_usage_view(renderer, event) -> bool:
         table.add_row("Last actual prompt", str(model.actual_prompt_tokens))
     if model.cached_input_tokens is not None:
         table.add_row("Last cached input", str(model.cached_input_tokens))
+    table.add_row(
+        "Auto compression",
+        " · ".join(model.automatic_strategies) or "off",
+    )
     table.add_row(
         "Compression",
         (

@@ -68,6 +68,9 @@ def format_token_usage_view(model: TokenUsageViewModel) -> str:
         )
         lines.append(f"Actual  prompt {model.actual_prompt_tokens:,}{cached}")
     lines.append(
+        "Auto    " + (" · ".join(model.automatic_strategies) or "off")
+    )
+    lines.append(
         f"Walls   snip {model.snip_wall}% · semantic {model.semantic_wall}%"
         f" · min-gain {model.snip_min_gain}% · target {model.rewrite_target}%"
         f" · emergency {model.emergency_at}% · epoch {model.cache_epoch}"

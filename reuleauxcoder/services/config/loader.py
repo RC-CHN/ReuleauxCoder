@@ -446,6 +446,19 @@ class ConfigLoader:
                 system_append=str(prompt_config.get("system_append", "") or ""),
             ),
             context=ContextConfig(
+                auto_snip=bool(
+                    context_config.get("auto_snip", DEFAULTS["auto_snip"])
+                ),
+                auto_summarize=bool(
+                    context_config.get(
+                        "auto_summarize", DEFAULTS["auto_summarize"]
+                    )
+                ),
+                auto_collapse=bool(
+                    context_config.get(
+                        "auto_collapse", DEFAULTS["auto_collapse"]
+                    )
+                ),
                 snip_keep_recent_tools=context_config.get(
                     "snip_keep_recent_tools", DEFAULTS["snip_keep_recent_tools"]
                 ),

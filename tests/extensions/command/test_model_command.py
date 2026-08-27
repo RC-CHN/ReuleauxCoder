@@ -1,9 +1,12 @@
 from types import SimpleNamespace
+
 from reuleauxcoder.app.commands.models import CommandEffect
 
 from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     Config,
+    ContextConfig,
+    ContextStrategyOverrides,
     ModelProfileConfig,
 )
 from reuleauxcoder.extensions.command.builtin.model import (
@@ -34,6 +37,16 @@ class FakeLLM:
             setattr(self, key, value)
 
 
+class FakeContext:
+    def __init__(self) -> None:
+        self.max_tokens = 0
+        self.strategy_settings = {}
+
+    def reconfigure(self, max_tokens: int, **strategy_settings) -> None:
+        self.max_tokens = max_tokens
+        self.strategy_settings = strategy_settings
+
+
 def _build_ctx() -> SimpleNamespace:
     profile_a = ModelProfileConfig(
         name="alpha",
@@ -53,6 +66,7 @@ def _build_ctx() -> SimpleNamespace:
         max_tokens=8000,
         temperature=0.2,
         max_context_tokens=200000,
+        context=ContextStrategyOverrides(auto_snip=False),
     )
     config = Config(
         model="base-model",
@@ -63,15 +77,12 @@ def _build_ctx() -> SimpleNamespace:
         active_model_profile="alpha",
         active_sub_model_profile="alpha",
         max_context_tokens=64000,
+        context=ContextConfig(auto_snip=True, auto_summarize=False),
     )
     llm = FakeLLM()
     agent = SimpleNamespace(
         llm=llm,
-        context=SimpleNamespace(
-            reconfigure=lambda max_tokens: setattr(
-                agent.context, "max_tokens", max_tokens
-            )
-        ),
+        context=FakeContext(),
         active_main_model_profile="alpha",
         active_sub_model_profile="alpha",
         active_mode="coder",
@@ -89,8 +100,18 @@ def test_switch_model_is_session_scoped() -> None:
     assert ctx.agent.active_main_model_profile == "beta"
     assert ctx.config.active_main_model_profile == "alpha"
     assert ctx.config.active_model_profile == "alpha"
+    assert ctx.agent.context.max_tokens == 200000
+    assert ctx.agent.context.strategy_settings == {
+        "auto_snip": False,
+        "auto_summarize": False,
+        "auto_collapse": True,
+    }
     assert result.state["active_main_profile"] == "beta"
     assert result.state["active_sub_profile"] == "alpha"
+    beta = next(
+        profile for profile in result.state["profiles"] if profile["name"] == "beta"
+    )
+    assert beta["automatic_strategies"] == ("collapse",)
 
 
 def test_use_main_model_alias_switches_session_main_model() -> None:

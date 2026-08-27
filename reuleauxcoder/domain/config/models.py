@@ -96,6 +96,42 @@ class ResponsesConfig:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ContextStrategyOverrides:
+    """Optional model-profile overrides for automatic context compression."""
+
+    auto_snip: bool | None = None
+    auto_summarize: bool | None = None
+    auto_collapse: bool | None = None
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ContextStrategyOverrides":
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise TypeError("model profile context must be an object")
+        for name in ("auto_snip", "auto_summarize", "auto_collapse"):
+            setting = value.get(name)
+            if setting is not None and not isinstance(setting, bool):
+                raise TypeError(f"model profile context.{name} must be a boolean")
+        return cls(
+            auto_snip=value.get("auto_snip"),
+            auto_summarize=value.get("auto_summarize"),
+            auto_collapse=value.get("auto_collapse"),
+        )
+
+    def to_dict(self) -> dict[str, bool]:
+        return {
+            name: setting
+            for name, setting in (
+                ("auto_snip", self.auto_snip),
+                ("auto_summarize", self.auto_summarize),
+                ("auto_collapse", self.auto_collapse),
+            )
+            if setting is not None
+        }
+
+
 @dataclass
 class ModelProfileConfig:
     """Named model/runtime profile used by ``/model`` switching."""
@@ -118,10 +154,11 @@ class ModelProfileConfig:
     reasoning_replay_placeholder: Optional[str] = None
     reasoning_effort_values: Optional[dict[str, object]] = None
     reasoning_effort_param: str = "reasoning_effort"
+    context: ContextStrategyOverrides = field(default_factory=ContextStrategyOverrides)
 
     def to_dict(self) -> dict:
         """Convert to dictionary format for serialization."""
-        return {
+        data = {
             "model": self.model,
             "api_key": self.api_key,
             "provider": self.provider,
@@ -140,6 +177,10 @@ class ModelProfileConfig:
             "reasoning_effort_values": self.reasoning_effort_values,
             "reasoning_effort_param": self.reasoning_effort_param,
         }
+        context = self.context.to_dict()
+        if context:
+            data["context"] = context
+        return data
 
     @classmethod
     def from_dict(cls, name: str, d: dict) -> "ModelProfileConfig":
@@ -151,6 +192,7 @@ class ModelProfileConfig:
             provider=d.get("provider", "openai-compatible"),
             request_mode=d.get("request_mode"),
             responses=ResponsesConfig.from_dict(d.get("responses")),
+            context=ContextStrategyOverrides.from_dict(d.get("context")),
             base_url=d.get("base_url"),
             max_tokens=d.get("max_tokens", 4096),
             temperature=d.get("temperature", 0.0),
@@ -246,6 +288,9 @@ class PromptConfig:
 class ContextConfig:
     """Context compression configuration."""
 
+    auto_snip: bool = True
+    auto_summarize: bool = True
+    auto_collapse: bool = True
     snip_keep_recent_tools: int = 2  # number of recent agent rounds to protect
     snip_threshold_chars: int = 1500
     snip_min_lines: int = 6
@@ -255,6 +300,22 @@ class ContextConfig:
     fixed_prompt_tokens: int = 0
     tool_schema_tokens: int = 0
     safety_margin_tokens: int = 2048
+
+
+def resolve_context_strategies(
+    defaults: ContextConfig,
+    overrides: ContextStrategyOverrides | None = None,
+) -> dict[str, bool]:
+    """Resolve explicit profile values over the global context policy."""
+    overrides = overrides or ContextStrategyOverrides()
+    return {
+        name: default if override is None else override
+        for name, default, override in (
+            ("auto_snip", defaults.auto_snip, overrides.auto_snip),
+            ("auto_summarize", defaults.auto_summarize, overrides.auto_summarize),
+            ("auto_collapse", defaults.auto_collapse, overrides.auto_collapse),
+        )
+    }
 
 
 @dataclass

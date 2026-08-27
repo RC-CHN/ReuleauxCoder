@@ -478,6 +478,9 @@ class ContextManager:
         self,
         max_tokens: int = 128_000,
         ui_bus: "UIEventBus | None" = None,
+        auto_snip: bool = True,
+        auto_summarize: bool = True,
+        auto_collapse: bool = True,
         snip_keep_recent_tools: int = 2,
         snip_threshold_chars: int = 1500,
         snip_min_lines: int = 6,
@@ -491,6 +494,9 @@ class ContextManager:
     ):
         self.max_tokens = max_tokens
         self._ui_bus = ui_bus
+        self._auto_snip = auto_snip
+        self._auto_summarize = auto_summarize
+        self._auto_collapse = auto_collapse
         # Snip configuration
         self._snip_keep_recent_tools = snip_keep_recent_tools
         self._snip_threshold_chars = snip_threshold_chars
@@ -521,9 +527,22 @@ class ContextManager:
         """Get current locally-estimated context token count."""
         return estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
 
-    def reconfigure(self, max_tokens: int) -> None:
+    def reconfigure(
+        self,
+        max_tokens: int,
+        *,
+        auto_snip: bool | None = None,
+        auto_summarize: bool | None = None,
+        auto_collapse: bool | None = None,
+    ) -> None:
         """Update context budget and recompute layer thresholds."""
         self.max_tokens = max_tokens
+        if auto_snip is not None:
+            self._auto_snip = auto_snip
+        if auto_summarize is not None:
+            self._auto_summarize = auto_summarize
+        if auto_collapse is not None:
+            self._auto_collapse = auto_collapse
         self._budget = ContextBudget(
             model_window=max_tokens,
             reserved_output=self._budget.reserved_output,
@@ -569,6 +588,26 @@ class ContextManager:
             "snip_min_gain": self._snip_min_gain,
             "rewrite_target": self._rewrite_target,
             "emergency_at": self._emergency_at,
+        }
+
+    @property
+    def automatic_strategies(self) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name, enabled in (
+                ("snip", self._auto_snip),
+                ("summarize", self._auto_summarize),
+                ("collapse", self._auto_collapse),
+            )
+            if enabled
+        )
+
+    @property
+    def automatic_strategy_settings(self) -> dict[str, bool]:
+        return {
+            "auto_snip": self._auto_snip,
+            "auto_summarize": self._auto_summarize,
+            "auto_collapse": self._auto_collapse,
         }
 
     @property
@@ -671,33 +710,41 @@ class ContextManager:
         history_events: tuple | list = (),
         cancellation_event=None,
     ) -> bool:
-        """Commit one profitable snip or one semantic-wall rewrite epoch."""
+        """Commit one rewrite epoch using the enabled automatic strategies."""
         before_tokens = self.predict_request_tokens(messages)
-        if before_tokens < self._snip_wall:
+        snip_due = self._auto_snip and before_tokens >= self._snip_wall
+        semantic_due = (
+            self._auto_summarize and before_tokens >= self._semantic_wall
+        )
+        emergency_due = self._auto_collapse and before_tokens >= self._emergency_at
+        if not (snip_due or semantic_due or emergency_due):
             return False
 
         applied_layers: list[str] = []
         candidate = [dict(message) for message in messages]
-        if self._provider_compactor is not None:
-            provider_result = self._provider_compactor.compact_tool_results(
-                candidate, keep_recent_rounds=self._snip_keep_recent_tools
-            )
-            if provider_result is not None:
-                candidate = provider_result.messages
-                applied_layers.append("provider_tool_cache_compaction")
-        snipped = self._snip_tool_outputs(candidate)
-        if snipped:
-            applied_layers.append("snip_tool_outputs")
+        if snip_due:
+            if self._provider_compactor is not None:
+                provider_result = self._provider_compactor.compact_tool_results(
+                    candidate, keep_recent_rounds=self._snip_keep_recent_tools
+                )
+                if provider_result is not None:
+                    candidate = provider_result.messages
+                    applied_layers.append("provider_tool_cache_compaction")
+            if self._snip_tool_outputs(candidate):
+                applied_layers.append("snip_tool_outputs")
 
         candidate_prediction = self.predict_request_tokens(candidate)
         snip_gain = max(0, before_tokens - candidate_prediction)
-        semantic_due = before_tokens >= self._semantic_wall
-        if not semantic_due and snip_gain < self._snip_min_gain:
+        if (
+            not semantic_due
+            and not emergency_due
+            and snip_gain < self._snip_min_gain
+        ):
             return False
 
         trigger = (
             "emergency"
-            if before_tokens >= self._emergency_at
+            if emergency_due
             else "semantic_wall"
             if semantic_due
             else "profitable_snip"
@@ -709,7 +756,7 @@ class ContextManager:
             before_message_count=before_message_count,
             before_snapshot=before_snapshot,
             trigger=trigger,
-            snip_gain=snip_gain,
+            snip_gain=snip_gain if snip_due else None,
         )
 
         summarized = False
@@ -725,12 +772,17 @@ class ContextManager:
             if summarized:
                 applied_layers.append("partial_prefix")
 
-        if not summarized and snip_gain < self._snip_min_gain:
+        after_tokens = self.predict_request_tokens(candidate)
+        collapse_due = (
+            emergency_due
+            and after_tokens > self._emergency_at
+            and len(candidate) > 4
+        )
+        if not summarized and snip_gain < self._snip_min_gain and not collapse_due:
             self._emit_compression_skipped(trigger=trigger)
             return False
 
-        after_tokens = self.predict_request_tokens(candidate)
-        if after_tokens > self._emergency_at and len(candidate) > 4:
+        if collapse_due:
             self._hard_collapse(
                 candidate,
                 llm,

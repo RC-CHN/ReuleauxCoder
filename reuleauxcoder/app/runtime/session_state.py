@@ -15,6 +15,7 @@ from reuleauxcoder.domain.config.models import (
     ApprovalConfig,
     ApprovalRuleConfig,
     Config,
+    resolve_context_strategies,
 )
 from reuleauxcoder.domain.session.models import (
     Session,
@@ -435,9 +436,19 @@ def restore_config_runtime_defaults(config: Config, agent: Agent) -> None:
             profile,
             debug_trace=getattr(config, "llm_debug_trace", False),
         )
-        agent.context.reconfigure(profile.max_context_tokens)
+        agent.context.reconfigure(
+            profile.max_context_tokens,
+            **resolve_context_strategies(
+                config.context,
+                getattr(profile, "context", None),
+            ),
+        )
     else:
         agent.llm.debug_trace = getattr(config, "llm_debug_trace", False)
+        agent.context.reconfigure(
+            config.max_context_tokens,
+            **resolve_context_strategies(config.context),
+        )
     agent.active_main_model_profile = main_profile_name
     agent.active_sub_model_profile = getattr(config, "active_sub_model_profile", None)
     agent.session_approval_rules = []
@@ -525,7 +536,13 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
             profile,
             debug_trace=agent.llm.debug_trace,
         )
-        agent.context.reconfigure(profile.max_context_tokens)
+        agent.context.reconfigure(
+            profile.max_context_tokens,
+            **resolve_context_strategies(
+                config.context,
+                getattr(profile, "context", None),
+            ),
+        )
         agent.active_main_model_profile = main_profile
     elif runtime.model:
         agent.llm.model = runtime.model

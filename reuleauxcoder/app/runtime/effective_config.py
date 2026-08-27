@@ -22,6 +22,7 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
     runtime_mode = getattr(agent, "active_mode", None) or getattr(
         config, "active_mode", None
     )
+    context = config.context
     lsp = LspConfig.from_config(config)
 
     rows = (
@@ -76,6 +77,21 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
             "ui.reasoning_display",
             config.ui.reasoning_display,
             source("ui.reasoning_display"),
+        ),
+        EffectiveConfigRowViewModel(
+            "context.auto_snip",
+            str(context.auto_snip).lower(),
+            source("context.auto_snip"),
+        ),
+        EffectiveConfigRowViewModel(
+            "context.auto_summarize",
+            str(context.auto_summarize).lower(),
+            source("context.auto_summarize"),
+        ),
+        EffectiveConfigRowViewModel(
+            "context.auto_collapse",
+            str(context.auto_collapse).lower(),
+            source("context.auto_collapse"),
         ),
         EffectiveConfigRowViewModel(
             "tool_output.max_chars",

@@ -85,6 +85,47 @@ def test_merge_dicts_applies_partial_mcp_server_override() -> None:
     }
 
 
+def test_parse_config_reads_automatic_context_strategies() -> None:
+    config = ConfigLoader()._parse_config(
+        {
+            "context": {
+                "auto_snip": False,
+                "auto_summarize": True,
+                "auto_collapse": False,
+            }
+        }
+    )
+
+    assert config.context.auto_snip is False
+    assert config.context.auto_summarize is True
+    assert config.context.auto_collapse is False
+
+
+def test_parse_config_reads_model_context_strategy_overrides() -> None:
+    config = ConfigLoader()._parse_config(
+        {
+            "context": {
+                "auto_snip": True,
+                "auto_summarize": False,
+            },
+            "models": {
+                "active_main": "main",
+                "profiles": {
+                    "main": {
+                        "model": "gpt-main",
+                        "api_key": "key",
+                        "context": {"auto_snip": False},
+                    }
+                },
+            },
+        }
+    )
+
+    profile = config.model_profiles["main"]
+    assert profile.context.auto_snip is False
+    assert profile.context.auto_summarize is None
+
+
 def test_parse_config_selects_active_profiles_and_modes() -> None:
     loader = ConfigLoader()
     config = loader._parse_config(

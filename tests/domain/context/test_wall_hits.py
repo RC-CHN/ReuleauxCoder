@@ -86,7 +86,84 @@ def test_profitable_snip_commits_at_sixty_percent() -> None:
     assert "snip_tool_outputs" in checkpoint.strategy
 
 
-def test_semantic_wall_summarizes_and_keeps_five_recent_user_turns() -> None:
+def test_disabled_auto_snip_preserves_tool_output_at_sixty_percent() -> None:
+    manager = ContextManager(
+        max_tokens=10_000,
+        reserved_output_tokens=0,
+        safety_margin_tokens=0,
+        auto_snip=False,
+        snip_keep_recent_tools=1,
+    )
+    messages = _messages_with_old_tool_output()
+    _observe(manager, messages, actual=6_200, cached=4_500)
+    original = [dict(message) for message in messages]
+
+    assert manager.automatic_strategies == ("summarize", "collapse")
+    assert manager.maybe_compress(messages) is False
+    assert messages == original
+    assert manager.cache_epoch == 0
+
+
+def test_disabled_auto_strategies_do_not_block_forced_snip() -> None:
+    manager = ContextManager(
+        max_tokens=10_000,
+        reserved_output_tokens=0,
+        safety_margin_tokens=0,
+        auto_snip=False,
+        auto_summarize=False,
+        auto_collapse=False,
+        snip_keep_recent_tools=1,
+    )
+    messages = _messages_with_old_tool_output()
+    _observe(manager, messages, actual=9_500)
+
+    assert manager.automatic_strategies == ()
+    assert manager.maybe_compress(messages) is False
+    assert manager.force_compress(messages, "snip") is True
+    assert "context-snipped" in messages[2]["content"]
+
+
+def test_disabled_auto_summary_defers_rewrite_at_semantic_wall() -> None:
+    manager = ContextManager(
+        max_tokens=10_000,
+        reserved_output_tokens=0,
+        safety_margin_tokens=0,
+        auto_snip=False,
+        auto_summarize=False,
+    )
+    messages = [
+        {"role": role, "content": f"turn {index} " + "detail " * 40}
+        for index in range(8)
+        for role in ("user", "assistant")
+    ]
+    _observe(manager, messages, actual=8_000)
+    original = [dict(message) for message in messages]
+
+    assert manager.maybe_compress(messages) is False
+    assert messages == original
+
+
+def test_auto_collapse_can_run_without_snip_or_summary() -> None:
+    manager = ContextManager(
+        max_tokens=10_000,
+        reserved_output_tokens=0,
+        safety_margin_tokens=0,
+        auto_snip=False,
+        auto_summarize=False,
+    )
+    messages = [
+        {"role": role, "content": f"turn {index} " + "detail " * 40}
+        for index in range(8)
+        for role in ("user", "assistant")
+    ]
+    _observe(manager, messages, actual=9_500)
+
+    assert manager.maybe_compress(messages) is True
+    assert manager.checkpoints[-1].trigger == "emergency"
+    assert manager.checkpoints[-1].strategy == ("full_recovery",)
+
+
+def test_semantic_wall_summarizes_without_auto_snip_and_keeps_recent_turns() -> None:
     ui_bus = UIEventBus()
 
     class SummaryLLM:
@@ -116,6 +193,7 @@ def test_semantic_wall_summarizes_and_keeps_five_recent_user_turns() -> None:
         max_tokens=int(actual / 0.76),
         reserved_output_tokens=0,
         safety_margin_tokens=0,
+        auto_snip=False,
         summarize_keep_recent_turns=5,
         ui_bus=ui_bus,
     )
@@ -125,7 +203,7 @@ def test_semantic_wall_summarizes_and_keeps_five_recent_user_turns() -> None:
 
     checkpoint = manager.checkpoints[-1]
     assert checkpoint.trigger == "semantic_wall"
-    assert "partial_prefix" in checkpoint.strategy
+    assert checkpoint.strategy == ("partial_prefix",)
     assert messages[0]["role"] == "user"
     assert messages[0]["content"].startswith("<context_summary")
     remaining_users = [
