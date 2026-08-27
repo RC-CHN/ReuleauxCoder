@@ -17,6 +17,7 @@ import uuid
 from typing import Callable, Literal, TypedDict, cast
 
 from reuleauxcoder.domain.agent.events import AgentEvent
+from reuleauxcoder.domain.config.models import resolve_context_strategies
 from reuleauxcoder.services.llm.factory import llm_runtime_kwargs
 from reuleauxcoder.extensions.subagent.context import project_parent_context
 from reuleauxcoder.extensions.subagent.models import (
@@ -2100,6 +2101,23 @@ def _subagent_llm_kwargs(parent_agent, route: str | None) -> dict:
     return kwargs
 
 
+def _subagent_context_settings(
+    parent_agent, route: str | None
+) -> tuple[int, dict[str, bool]]:
+    settings, _profile_name = _resolve_subagent_settings(parent_agent, route)
+    max_context_tokens = int(
+        getattr(settings, "max_context_tokens", parent_agent.context.max_tokens)
+    )
+    config = getattr(parent_agent, "runtime_config", None)
+    context_config = getattr(config, "context", None)
+    if context_config is None:
+        return max_context_tokens, parent_agent.context.automatic_strategy_settings
+    return max_context_tokens, resolve_context_strategies(
+        context_config,
+        getattr(settings, "context", None),
+    )
+
+
 def _filter_subagent_tools(parent_agent, mode: str):
     from reuleauxcoder.extensions.tools.builtin.control import (
         ReportProgressTool,
@@ -2208,6 +2226,9 @@ def run_subagent_task(
     elif working_directory:
         _retarget_tools(sub_tools, Path(working_directory))
     child_agent_id = f"sa_{job_id or uuid.uuid4().hex[:12]}"
+    subagent_max_context, subagent_context_strategies = _subagent_context_settings(
+        parent_agent, model_profile_name
+    )
     broker_hooks = parent_agent.hook_registry.clone(scope="subagent")
     broker_hooks.bind_runtime_service(
         "lsp_manager", getattr(parent_agent, "lsp_manager", None)
@@ -2215,13 +2236,17 @@ def run_subagent_task(
     sub = Agent(
         llm=parent_agent.llm,
         tools=sub_tools,
-        max_context_tokens=parent_agent.context.max_tokens,
+        max_context_tokens=subagent_max_context,
         max_rounds=effective_max_rounds,
         max_tool_calls=max_tool_calls,
         max_total_tokens=max_tokens,
         hook_registry=broker_hooks,
         approval_provider=build_subagent_approval_provider(parent_agent, mode, task),
         agent_id=child_agent_id,
+    )
+    sub.context.reconfigure(
+        subagent_max_context,
+        **subagent_context_strategies,
     )
     sub.runtime_config = getattr(parent_agent, "runtime_config", None)
     sub.runtime_working_directory = (
@@ -2293,7 +2318,10 @@ def run_subagent_task(
             )
             for tool in sub_tools
         ),
-        max_context_tokens=parent_agent.context.max_tokens,
+        max_context_tokens=subagent_max_context,
+        auto_snip=subagent_context_strategies["auto_snip"],
+        auto_summarize=subagent_context_strategies["auto_summarize"],
+        auto_collapse=subagent_context_strategies["auto_collapse"],
         max_rounds=effective_max_rounds,
         max_tool_calls=max_tool_calls,
         max_tokens=max_tokens,

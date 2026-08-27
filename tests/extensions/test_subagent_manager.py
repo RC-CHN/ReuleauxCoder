@@ -5,7 +5,12 @@ from collections import deque
 
 import pytest
 
-from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
+from reuleauxcoder.domain.config.models import (
+    Config,
+    ContextConfig,
+    ContextStrategyOverrides,
+    ModelProfileConfig,
+)
 from reuleauxcoder.domain.history import HistoryLedger
 from reuleauxcoder.extensions.subagent.models import SubagentResult
 from reuleauxcoder.extensions.subagent.manager import (
@@ -13,6 +18,7 @@ from reuleauxcoder.extensions.subagent.manager import (
     SubagentJob,
     SubagentManager,
     _filter_subagent_tools,
+    _subagent_context_settings,
     _subagent_llm_kwargs,
 )
 
@@ -38,19 +44,32 @@ def test_subagent_worker_spec_uses_full_profile_runtime_settings() -> None:
         thinking_enabled=True,
         reasoning_replay_mode="tool_calls",
         reasoning_replay_placeholder="[PLACE_HOLDER]",
+        context=ContextStrategyOverrides(auto_snip=False),
     )
     config = Config(
         model_profiles={"sub-profile": sub_profile},
         active_main_model_profile="sub-profile",
         active_model_profile="sub-profile",
         active_sub_model_profile="sub-profile",
+        context=ContextConfig(auto_snip=True, auto_summarize=False),
     )
     parent_agent = SimpleNamespace(
         runtime_config=config,
         llm=_FakeParentLLM(),
+        context=SimpleNamespace(
+            max_tokens=64_000,
+            automatic_strategy_settings={
+                "auto_snip": True,
+                "auto_summarize": True,
+                "auto_collapse": True,
+            },
+        ),
     )
 
     settings = _subagent_llm_kwargs(parent_agent, None)
+    max_context_tokens, context_settings = _subagent_context_settings(
+        parent_agent, None
+    )
 
     assert settings["model"] == "deepseek-v4-pro"
     assert settings["api_key"] == "sub-key"
@@ -64,6 +83,12 @@ def test_subagent_worker_spec_uses_full_profile_runtime_settings() -> None:
     assert settings["reasoning_replay_mode"] == "tool_calls"
     assert settings["reasoning_replay_placeholder"] == "[PLACE_HOLDER]"
     assert settings["debug_trace"] is True
+    assert max_context_tokens == 128_000
+    assert context_settings == {
+        "auto_snip": False,
+        "auto_summarize": False,
+        "auto_collapse": True,
+    }
 
 
 # ---------------------------------------------------------------------------

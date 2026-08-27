@@ -67,6 +67,9 @@ class WorkerSpec:
     max_tool_calls: int | None
     max_tokens: int | None
     working_directory: str | None = None
+    auto_snip: bool = True
+    auto_summarize: bool = True
+    auto_collapse: bool = True
     replay_messages: tuple[dict[str, Any], ...] = ()
     resume_directives: tuple[str, ...] = ()
     initial_prompt_tokens: int = 0
@@ -115,6 +118,11 @@ class WorkerSpec:
             max_tool_calls=_optional_int(values, "max_tool_calls"),
             max_tokens=_optional_int(values, "max_tokens"),
             working_directory=_optional_str(values, "working_directory"),
+            auto_snip=_optional_bool(values, "auto_snip", default=True),
+            auto_summarize=_optional_bool(
+                values, "auto_summarize", default=True
+            ),
+            auto_collapse=_optional_bool(values, "auto_collapse", default=True),
             replay_messages=tuple(
                 _require_object(message, "replay message") for message in messages
             ),
@@ -233,6 +241,13 @@ def _optional_int(data: dict[str, Any], key: str) -> int | None:
     value = data.get(key)
     if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
         raise TypeError(f"{key} must be an integer or null")
+    return value
+
+
+def _optional_bool(data: dict[str, Any], key: str, *, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{key} must be a boolean")
     return value
 
 

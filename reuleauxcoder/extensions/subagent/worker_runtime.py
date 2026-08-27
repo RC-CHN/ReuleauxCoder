@@ -390,6 +390,12 @@ def worker_process_main(
             hook_registry=HookRegistry(),
             agent_id=spec.agent_id,
         )
+        child.context.reconfigure(
+            spec.max_context_tokens,
+            auto_snip=spec.auto_snip,
+            auto_summarize=spec.auto_summarize,
+            auto_collapse=spec.auto_collapse,
+        )
         child._stop_event = cancel
         child.current_session_id = spec.session_id
         child.session_generation = spec.session_generation
