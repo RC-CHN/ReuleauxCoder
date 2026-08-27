@@ -441,6 +441,18 @@ def test_request_envelope_records_native_provider_family_and_mode() -> None:
     assert agent.replay_envelope.request_mode == "messages"
 
 
+def test_request_envelope_records_responses_mode_and_volatile_tail() -> None:
+    llm = _BudgetLLM()
+    llm.provider_family = "openai-compatible"
+    llm.request_mode = "responses"
+    agent = Agent(llm=llm, tools=[])
+
+    assert agent._loop.run() == "done"
+    assert agent.replay_envelope is not None
+    assert agent.replay_envelope.request_mode == "responses"
+    assert llm.calls[0]["metadata"]["volatile_tail"] is True
+
+
 class _BudgetInjectionHook(TransformHook[BeforeLLMRequestContext]):
     def __init__(self) -> None:
         super().__init__(name="budget_injection")

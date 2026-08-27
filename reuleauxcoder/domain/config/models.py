@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 
+RequestMode = Literal["chat-completions", "responses", "messages"]
+
+
 @dataclass(frozen=True, slots=True)
 class ConfigDiagnostic:
     code: str
@@ -54,6 +57,45 @@ DEFAULT_REASONING_EFFORT_VALUES: dict[str, object] = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ResponsesCacheConfig:
+    """Prompt-cache policy for the Responses request mode."""
+
+    mode: Literal["implicit", "explicit"] = "explicit"
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ResponsesCacheConfig":
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise TypeError("responses.cache must be an object")
+        data = value
+        return cls(mode=data.get("mode", "explicit"))
+
+
+@dataclass(frozen=True, slots=True)
+class ResponsesConfig:
+    """Responses API state and cache policy."""
+
+    state: Literal["local"] = "local"
+    cache: ResponsesCacheConfig = field(default_factory=ResponsesCacheConfig)
+
+    def to_dict(self) -> dict:
+        return {"state": self.state, "cache": {"mode": self.cache.mode}}
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ResponsesConfig":
+        if value is None:
+            return cls()
+        if not isinstance(value, dict):
+            raise TypeError("responses must be an object")
+        data = value
+        return cls(
+            state=data.get("state", "local"),
+            cache=ResponsesCacheConfig.from_dict(data.get("cache")),
+        )
+
+
 @dataclass
 class ModelProfileConfig:
     """Named model/runtime profile used by ``/model`` switching."""
@@ -62,6 +104,8 @@ class ModelProfileConfig:
     model: str
     api_key: str
     provider: str = "openai-compatible"
+    request_mode: Optional[RequestMode] = None
+    responses: ResponsesConfig = field(default_factory=ResponsesConfig)
     base_url: Optional[str] = None
     max_tokens: int = 4096
     temperature: float = 0.0
@@ -81,6 +125,8 @@ class ModelProfileConfig:
             "model": self.model,
             "api_key": self.api_key,
             "provider": self.provider,
+            "request_mode": self.request_mode,
+            "responses": self.responses.to_dict(),
             "base_url": self.base_url,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
@@ -103,6 +149,8 @@ class ModelProfileConfig:
             model=d.get("model", "gpt-4o"),
             api_key=d.get("api_key", ""),
             provider=d.get("provider", "openai-compatible"),
+            request_mode=d.get("request_mode"),
+            responses=ResponsesConfig.from_dict(d.get("responses")),
             base_url=d.get("base_url"),
             max_tokens=d.get("max_tokens", 4096),
             temperature=d.get("temperature", 0.0),
@@ -245,6 +293,8 @@ class Config:
     model: str = "gpt-4o"
     api_key: str = ""
     provider: str = "openai-compatible"
+    request_mode: Optional[RequestMode] = None
+    responses: ResponsesConfig = field(default_factory=ResponsesConfig)
     base_url: Optional[str] = None
     max_tokens: int = 4096
     temperature: float = 0.0
@@ -328,6 +378,20 @@ class Config:
             errors.append("temperature must be between 0 and 2")
         if self.provider not in {"openai-compatible", "anthropic"}:
             errors.append("provider must be openai-compatible or anthropic")
+        if self.request_mode not in {None, "chat-completions", "responses", "messages"}:
+            errors.append(
+                "request_mode must be chat-completions, responses, or messages"
+            )
+        if self.provider == "anthropic" and self.request_mode not in {None, "messages"}:
+            errors.append("anthropic provider requires request_mode messages")
+        if self.provider == "openai-compatible" and self.request_mode == "messages":
+            errors.append(
+                "openai-compatible provider does not support request_mode messages"
+            )
+        if self.responses.state != "local":
+            errors.append("responses.state must be local")
+        if self.responses.cache.mode not in {"implicit", "explicit"}:
+            errors.append("responses.cache.mode must be implicit or explicit")
         if self.tool_output_max_chars < 1:
             errors.append("tool_output_max_chars must be positive")
         if self.tool_output_max_lines < 1:
@@ -384,6 +448,39 @@ class Config:
                 errors.append(
                     f"model_profiles[{name}].provider must be "
                     "openai-compatible or anthropic"
+                )
+            if profile.request_mode not in {
+                None,
+                "chat-completions",
+                "responses",
+                "messages",
+            }:
+                errors.append(
+                    f"model_profiles[{name}].request_mode must be "
+                    "chat-completions, responses, or messages"
+                )
+            if profile.provider == "anthropic" and profile.request_mode not in {
+                None,
+                "messages",
+            }:
+                errors.append(
+                    f"model_profiles[{name}] anthropic provider requires "
+                    "request_mode messages"
+                )
+            if (
+                profile.provider == "openai-compatible"
+                and profile.request_mode == "messages"
+            ):
+                errors.append(
+                    f"model_profiles[{name}] openai-compatible provider does not "
+                    "support request_mode messages"
+                )
+            if profile.responses.state != "local":
+                errors.append(f"model_profiles[{name}].responses.state must be local")
+            if profile.responses.cache.mode not in {"implicit", "explicit"}:
+                errors.append(
+                    f"model_profiles[{name}].responses.cache.mode must be "
+                    "implicit or explicit"
                 )
 
         if self.active_mode and self.active_mode not in self.modes:

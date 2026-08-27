@@ -240,6 +240,9 @@ def _handle_set_main_model(command, ctx) -> CommandEffect:
     ctx.config.model = profile.model
     ctx.config.api_key = profile.api_key
     ctx.config.provider = getattr(profile, "provider", "openai-compatible")
+    ctx.config.request_mode = getattr(profile, "request_mode", None)
+    if hasattr(profile, "responses"):
+        ctx.config.responses = profile.responses
     ctx.config.base_url = profile.base_url
     ctx.config.temperature = profile.temperature
     ctx.config.max_tokens = profile.max_tokens

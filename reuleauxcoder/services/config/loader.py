@@ -16,6 +16,7 @@ from reuleauxcoder.domain.config.models import (
     ModelProfileConfig,
     PromptConfig,
     RemoteExecConfig,
+    ResponsesConfig,
     SkillsConfig,
     UIConfig,
 )
@@ -48,6 +49,8 @@ class ConfigLoader:
         "model",
         "api_key",
         "provider",
+        "request_mode",
+        "responses",
         "base_url",
         "max_tokens",
         "temperature",
@@ -90,6 +93,8 @@ class ConfigLoader:
                 params[field] = DEFAULTS[field]
             else:
                 params[field] = None
+        if not isinstance(params["responses"], ResponsesConfig):
+            params["responses"] = ResponsesConfig.from_dict(params["responses"])
         return params
 
     def _load_yaml(self, path: Path) -> dict:

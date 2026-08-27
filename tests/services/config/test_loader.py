@@ -177,6 +177,40 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.ui.notification_threshold == "warning"
 
 
+def test_parse_config_keeps_chat_completions_default_and_reads_responses() -> None:
+    loader = ConfigLoader()
+    legacy = loader._parse_config(
+        {
+            "models": {
+                "profiles": {
+                    "main": {"model": "gpt-4.1", "api_key": "key"},
+                }
+            }
+        }
+    )
+    responses = loader._parse_config(
+        {
+            "models": {
+                "profiles": {
+                    "main": {
+                        "model": "gpt-5.6-luna",
+                        "api_key": "key",
+                        "request_mode": "responses",
+                        "responses": {
+                            "state": "local",
+                            "cache": {"mode": "implicit"},
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    assert legacy.request_mode is None
+    assert responses.request_mode == "responses"
+    assert responses.responses.cache.mode == "implicit"
+
+
 def test_parse_config_requires_explicit_auto_review_profile() -> None:
     loader = ConfigLoader()
     config = loader._parse_config(

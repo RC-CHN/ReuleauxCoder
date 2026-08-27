@@ -190,6 +190,11 @@ class AgentLoop:
         effort_value = effort_values.get(effort, effort) if effort else None
         return {
             "stream": True,
+            "request_mode": getattr(llm, "request_mode", "chat-completions"),
+            "responses_state": getattr(llm, "responses_state", "local"),
+            "responses_cache_mode": getattr(
+                llm, "responses_cache_mode", "explicit"
+            ),
             "temperature": getattr(llm, "temperature", None),
             "max_tokens": getattr(llm, "max_tokens", None),
             "reasoning_effort_param": getattr(
@@ -755,9 +760,14 @@ class AgentLoop:
                 getattr(self.agent.llm, "provider_family", "openai-compatible")
             ),
             request_mode=(
-                "messages"
-                if getattr(self.agent.llm, "provider_family", None) == "anthropic"
-                else "chat-completions"
+                getattr(
+                    self.agent.llm,
+                    "request_mode",
+                    "messages"
+                    if getattr(self.agent.llm, "provider_family", None)
+                    == "anthropic"
+                    else "chat-completions",
+                )
             ),
             request_settings={
                 "configured": self._wire_settings(),
@@ -968,6 +978,7 @@ class AgentLoop:
                         "pending_tool_calls": len(
                             self.agent._collect_pending_tool_calls()
                         ),
+                        "volatile_tail": True,
                     },
                     cancellation_event=cancellation,
                     max_output_tokens=max_output_tokens,
