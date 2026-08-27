@@ -201,6 +201,13 @@ known command if within edit distance ≤ 2.
 - `/thinking` shows reasoning content retained from the most recent turn. `/thinking inline` toggles inline streaming; the FORGE activity row advances as reasoning chunks arrive and remains in history. `/thinking effort` views or sets the session reasoning budget.
 - Subagents use bounded `minimal`, `recent`, or `full` parent-context projections and Codex-style asynchronous lifecycle controls: spawn returns immediately; the root can message, inspect, wait for activity, or interrupt a job. Children run in isolated processes, cannot recurse or edit the root Plan, and route scoped tools through the parent Tool Broker and approval path. Typed mailboxes, cumulative budgets, exact transcript checkpoints, cancellation epochs and late-result quarantine survive park/resume; `request_guidance` releases the worker slot and resumes the same job after parent/human guidance, including after session restore. Execute jobs retain automatic verification in the live runtime and may use isolated worktrees.
 
+Automatic context compression strategies can be controlled independently with
+`context.auto_snip`, `context.auto_summarize`, and `context.auto_collapse`.
+All default to `true`. A model profile may override any switch under
+`models.profiles.<name>.context`; omitted profile fields inherit the global
+policy. Disabling an automatic strategy does not disable its manual
+`/compact force <strategy>` command.
+
 Interactive TTYs use the mini-TUI; one-shot, redirected, server, and remote-peer
 paths stay append-only. The CLI keeps model output and human presentation limits
 separate: shell output uses a rolling five-line human tail while the agent retains

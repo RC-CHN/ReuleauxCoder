@@ -12,6 +12,10 @@ models:
       max_tokens: 4096
       temperature: 0.0
       max_context_tokens: 128000
+      # Optional automatic context-policy overrides; omitted fields inherit
+      # the global context section below.
+      # context:
+      #   auto_snip: false
       # Keep provider-returned reasoning_content in history for later rounds.
       preserve_reasoning_content: true
       # For stricter gateways, inject an empty reasoning_content on assistant tool-call
@@ -44,8 +48,8 @@ models:
       responses:
         state: "local"
         cache:
-          # The execution overlay is appended after this explicit breakpoint.
-          mode: "explicit"
+          # Implicit is the default; use explicit only on supporting models.
+          mode: "implicit"
 
     # Example DeepSeek reasoning profile for tool-calling workloads.
     deepseek-v4-pro:
@@ -113,6 +117,11 @@ approval:
 
 # Optional context compression settings. Omit to use defaults.
 # context:
+#   # Automatic strategies are independent; manual /compact force remains available.
+#   auto_snip: true
+#   auto_summarize: true
+#   auto_collapse: true
+#   # A models.profiles.<name>.context section may override any switch above.
 #   # Number of recent tool calls to protect from snipping.
 #   snip_keep_recent_tools: 5
 #   # Min content length (chars) to trigger tool output snip.
