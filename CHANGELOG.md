@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.8.2 - 2026-09-01
+
+- Fixed Responses fallback replay to encode assistant text as `output_text`, preventing invalid `input_text` payloads and intermittent HTTP 400 failures after context reconstruction.
+
 ## 0.8.1 - 2026-08-27
 
 - Defaulted Responses prompt caching to implicit mode for broader model compatibility while retaining explicit cache breakpoints as an opt-in policy.
