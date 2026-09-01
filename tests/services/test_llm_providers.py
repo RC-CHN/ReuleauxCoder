@@ -571,6 +571,28 @@ def test_responses_mode_replays_local_history_and_normalizes_stream() -> None:
     assert replayed[1:4] == provider_data["items"]
 
 
+def test_responses_fallback_replays_assistant_text_as_output() -> None:
+    replayed = _responses_input(
+        [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "previous answer"},
+        ],
+        volatile_tail_count=0,
+        cache_mode="implicit",
+    )
+
+    assert replayed == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "question"}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "previous answer"}],
+        },
+    ]
+
+
 def test_responses_defaults_to_implicit_cache_and_created_starts_streaming() -> None:
     captured: dict = {}
     phases: list[OperationPhaseChanged] = []

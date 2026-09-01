@@ -108,9 +108,12 @@ class OpenAICompatibleProvider:
             close()
 
 
-def _responses_text_blocks(content: object) -> list[dict[str, Any]]:
+def _responses_text_blocks(
+    content: object, *, role: str
+) -> list[dict[str, Any]]:
+    block_type = "output_text" if role == "assistant" else "input_text"
     if isinstance(content, str):
-        return [{"type": "input_text", "text": content}]
+        return [{"type": block_type, "text": content}]
     if content is None:
         return []
     if not isinstance(content, list):
@@ -122,7 +125,7 @@ def _responses_text_blocks(content: object) -> list[dict[str, Any]]:
         text = block.get("text")
         if not isinstance(text, str):
             raise TypeError("responses text content must be a string")
-        blocks.append({"type": "input_text", "text": text})
+        blocks.append({"type": block_type, "text": text})
     return blocks
 
 
@@ -170,7 +173,9 @@ def _responses_input(
                     raise TypeError("responses provider data items must be a list")
                 items.extend(deepcopy(replay_items))
             else:
-                blocks = _responses_text_blocks(message.get("content"))
+                blocks = _responses_text_blocks(
+                    message.get("content"), role=native_role
+                )
                 if blocks:
                     items.append({"role": native_role, "content": blocks})
                 for call in message.get("tool_calls") or ():
