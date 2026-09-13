@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from collections.abc import Mapping
 import concurrent.futures
-from dataclasses import dataclass, field
 import hashlib
 import threading
 import time
-from typing import Any
 import uuid
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
 
+from reuleauxcoder.app.ui_events import UIEventBus
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+    ToolRetentionHint,
+    ToolRetentionStrategy,
+)
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.domain.process import (
     MAX_PROCESS_INPUT_BYTES,
     ProcessCapacityError,
@@ -28,16 +37,10 @@ from reuleauxcoder.domain.process import (
     ProcessStreamHandler,
     ProcessStreamMode,
 )
-from reuleauxcoder.domain.agent.tool_outcome import (
-    ToolErrorKind,
-    ToolOutcome,
-    ToolOutcomeStatus,
-    ToolRetentionHint,
-    ToolRetentionStrategy,
-)
 from reuleauxcoder.domain.workspace import (
-    WorkspaceEntry,
+    DEFAULT_SEARCH_LIMITS,
     WorkspaceDocumentSnapshot,
+    WorkspaceEntry,
     WorkspaceError,
     WorkspaceErrorCode,
     WorkspaceGlobResult,
@@ -46,10 +49,10 @@ from reuleauxcoder.domain.workspace import (
     WorkspaceMutationResult,
     WorkspaceMutationVerification,
     WorkspaceRevision,
+    WorkspaceSearchLimits,
     WorkspaceSearchMatch,
     WorkspaceSearchResult,
     glob_paths_via_primitives,
-    search_text_via_primitives,
 )
 from reuleauxcoder.extensions.remote_exec.errors import (
     PeerNotFoundError,
@@ -62,8 +65,6 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
 )
 from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, ToolBackend
-from reuleauxcoder.app.ui_events import UIEventBus
-
 
 _REMOTE_PROCESS_START_ACK_SECONDS = 2
 _REMOTE_PROCESS_CONTROL_ACK_SECONDS = 2
@@ -86,7 +87,7 @@ class RemoteRelayToolBackend(ToolBackend):
         self.workspace = RemoteWorkspacePort(self)
         self.process = RemoteProcessPort(self)
 
-    def clone_for_scope(self, scope: str) -> "RemoteRelayToolBackend":
+    def clone_for_scope(self, scope: str) -> RemoteRelayToolBackend:
         """Rebuild remote adapters while sharing only the relay transport."""
         del scope
         context = ExecutionContext(
@@ -537,47 +538,29 @@ class RemoteWorkspacePort:
         return WorkspaceListResult(entries, truncated=bool(data.get("truncated")))
 
     def search_text(
-        self,
-        pattern: str,
-        path: str | Path,
-        *,
-        include: str | None = None,
-        exclude_dirs: tuple[str, ...] = (),
-        max_files: int = 5_000,
-        max_matches: int = 200,
+        self, pattern: str, path: str | Path, *,
+        include: str | None = None, exclude_dirs: tuple[str, ...] = (),
+        max_files: int = 5_000, max_matches: int = 200,
+        literal: bool = False, include_ignored: bool = False,
+        limits: WorkspaceSearchLimits = DEFAULT_SEARCH_LIMITS,
+        cancellation: CancellationSignal | None = None,
     ) -> WorkspaceSearchResult:
-        if self.backend.supports_capability(
-            "workspace.fs.search_text"
-        ) and _peer_literal_search_safe(pattern, include):
-            data = self._request(
-                "fs.search_text",
-                path=str(path),
-                pattern=pattern,
-                literal=True,
-                include=include,
-                exclude_dirs=list(exclude_dirs),
-                max_files=max_files,
-                max_matches=max_matches,
-            )
-            return WorkspaceSearchResult(
-                matches=tuple(
-                    WorkspaceSearchMatch(
-                        path=str(item["path"]),
-                        line_number=int(item["line_number"]),
-                        line=str(item["line"]),
-                    )
-                    for item in data.get("matches", [])
-                ),
-                truncated=bool(data.get("truncated")),
-            )
-        return search_text_via_primitives(
-            self,
-            pattern,
-            path,
-            include=include,
-            exclude_dirs=exclude_dirs,
-            max_files=max_files,
-            max_matches=max_matches,
+        if cancellation is not None and cancellation.is_set():
+            return WorkspaceSearchResult((), True, ("cancelled",))
+        self.backend.resolve_peer_id()
+        if not self.backend.supports_capability("workspace.fs.search_text.bounded"):
+            raise WorkspaceError(WorkspaceErrorCode.IO_ERROR,
+                                 "Remote grep requires an upgraded rcoder-peer with bounded search support")
+        data = self._request(
+            "fs.search_text", path=str(path), pattern=pattern, literal=literal,
+            include=include, exclude_dirs=list(exclude_dirs),
+            max_files=max_files, max_matches=max_matches,
+            include_ignored=include_ignored, limits=asdict(limits),
+        )
+        return WorkspaceSearchResult(
+            matches=tuple(WorkspaceSearchMatch(**item) for item in data["matches"]),
+            truncated=bool(data["truncated"]), reasons=tuple(data["reasons"]),
+            scanned_files=int(data["scanned_files"]), scanned_bytes=int(data["scanned_bytes"]),
         )
 
     def glob_paths(
@@ -624,20 +607,6 @@ def _workspace_entry(item: dict[str, Any]) -> WorkspaceEntry:
         size=int(item["size"]),
         mtime=float(item["mtime"]),
         mode=int(item["mode"]),
-    )
-
-
-def _peer_literal_search_safe(pattern: str, include: str | None) -> bool:
-    regex_metacharacters = frozenset(r".\^$*+?{}[]|()")
-    if any(character in regex_metacharacters for character in pattern):
-        return False
-    if include is None:
-        return True
-    return (
-        "/" not in include
-        and "\\" not in include
-        and "[" not in include
-        and "]" not in include
     )
 
 
@@ -901,7 +870,7 @@ class RemoteProcessPort:
             )
         return self._snapshot(entry, ProcessCursor())
 
-    def _terminate_entry(self, entry: "_RemoteProcessEntry", *, reason: str) -> bool:
+    def _terminate_entry(self, entry: _RemoteProcessEntry, *, reason: str) -> bool:
         if entry.state is ProcessState.EXITED:
             return True
         operation = (
@@ -1069,7 +1038,7 @@ class RemoteProcessPort:
 
     def _request(
         self,
-        entry: "_RemoteProcessEntry",
+        entry: _RemoteProcessEntry,
         operation: str,
         args: dict[str, Any],
         *,
@@ -1099,7 +1068,7 @@ class RemoteProcessPort:
         version = int(peer.meta.get("protocol_version", 1))
         return version >= 2 and capability in peer.capabilities
 
-    def _lookup(self, session_id: str) -> "_RemoteProcessEntry":
+    def _lookup(self, session_id: str) -> _RemoteProcessEntry:
         with self._lock:
             entry = self._entries.get(session_id)
         if entry is None:
@@ -1110,7 +1079,7 @@ class RemoteProcessPort:
 
     def _snapshot(
         self,
-        entry: "_RemoteProcessEntry",
+        entry: _RemoteProcessEntry,
         cursor: ProcessCursor,
         *,
         stdout: str = "",

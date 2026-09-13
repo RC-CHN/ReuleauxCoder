@@ -8,15 +8,10 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/RC-CHN/ReuleauxCoder/reuleauxcoder-agent/internal/protocol"
 )
-
-type scannedCandidate struct {
-	path string
-}
 
 func globEntries(root, pathValue string, args map[string]any) protocol.WorkspaceResult {
 	info, err := os.Lstat(root)
@@ -73,89 +68,6 @@ func globEntries(root, pathValue string, args map[string]any) protocol.Workspace
 		"match_count":       total,
 		"listing_truncated": truncated,
 	})
-}
-
-func searchText(root, pathValue string, args map[string]any) protocol.WorkspaceResult {
-	pattern, ok := args["pattern"].(string)
-	if !ok || pattern == "" {
-		return failure("invalid_path", "pattern must be a non-empty string")
-	}
-	literal, _ := args["literal"].(bool)
-	if !literal {
-		return failure("invalid_path", "regex pattern requires compatibility fallback")
-	}
-	include, _ := args["include"].(string)
-	if strings.ContainsAny(include, "/\\[]") {
-		return failure("invalid_path", "include pattern requires compatibility fallback")
-	}
-	maxFiles := intArg(args["max_files"], 5_000)
-	maxMatches := intArg(args["max_matches"], 200)
-	if maxFiles < 1 || maxMatches < 1 {
-		return failure("invalid_path", "max_files and max_matches must be positive")
-	}
-	excluded := stringSetArg(args["exclude_dirs"])
-	info, err := os.Lstat(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return failure("not_found", fmt.Sprintf("%s not found", pathValue))
-		}
-		return failure("io_error", err.Error())
-	}
-	candidates := make([]scannedCandidate, 0)
-	listingTruncated := false
-	if info.Mode().IsRegular() {
-		candidates = append(candidates, scannedCandidate{path: root})
-	} else if info.IsDir() {
-		candidateOverflow := false
-		var scanErr error
-		listingTruncated, scanErr = scanWorkspace(root, maxFiles*4, func(full, relative string, entry os.DirEntry) error {
-			if !entry.Type().IsRegular() {
-				return nil
-			}
-			for _, part := range strings.Split(filepath.ToSlash(relative), "/") {
-				if excluded[part] {
-					return nil
-				}
-			}
-			if include != "" && !portableBasenameMatch(entry.Name(), include) {
-				return nil
-			}
-			if len(candidates) >= maxFiles {
-				candidateOverflow = true
-				return nil
-			}
-			candidates = append(candidates, scannedCandidate{path: full})
-			return nil
-		})
-		if scanErr != nil {
-			return failure("io_error", scanErr.Error())
-		}
-		listingTruncated = listingTruncated || candidateOverflow
-	} else {
-		return failure("not_a_file", fmt.Sprintf("%s is not searchable", pathValue))
-	}
-
-	matches := make([]map[string]any, 0)
-	for _, candidate := range candidates {
-		content, readErr := os.ReadFile(candidate.path)
-		if readErr != nil {
-			continue
-		}
-		for lineNumber, line := range pythonSplitlines(string(content)) {
-			if !strings.Contains(line, pattern) {
-				continue
-			}
-			matches = append(matches, map[string]any{
-				"path":        candidate.path,
-				"line_number": lineNumber + 1,
-				"line":        strings.TrimRightFunc(line, unicode.IsSpace),
-			})
-			if len(matches) >= maxMatches {
-				return success(map[string]any{"matches": matches, "truncated": true})
-			}
-		}
-	}
-	return success(map[string]any{"matches": matches, "truncated": listingTruncated})
 }
 
 func scanWorkspace(root string, maxEntries int, visit func(string, string, os.DirEntry) error) (bool, error) {

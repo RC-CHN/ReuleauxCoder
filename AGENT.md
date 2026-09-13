@@ -89,6 +89,8 @@ Live session persistence writes the first snapshot synchronously so a new sessio
 - `infrastructure/process/local.py`: local subprocess adapter with concurrent stdout/stderr draining, cancellation, timeout, and partial-output preservation.
 - `extensions/remote_exec/backend.py`: remote tool backend that forwards the same workspace/process primitives.
 
+`grep` performs bounded streaming search with Git-owned ignore selection when available. Local matching uses timed Python-compatible regex; peers advertising `workspace.fs.search_text.bounded` perform Go regex matching remotely in one request. Older peers require an upgrade for grep; there is no per-file download fallback. Limits, syntax differences and benchmarks are documented in `docs/search.md`.
+
 Product tools in `extensions/tools/builtin/` compose those primitives. The Go peer does not own a second product-tool policy layer:
 
 - protocol v2 exposes workspace and process primitives;

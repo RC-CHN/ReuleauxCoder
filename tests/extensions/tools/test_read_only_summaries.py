@@ -60,3 +60,11 @@ def test_list_keeps_entries_for_model_but_summarizes_ui(tmp_path) -> None:
     assert outcome.summary == f"Listed 2 entries in {tmp_path}"
     assert "one.py" in outcome.model_text
     assert outcome.metadata["entry_count"] == 2
+
+
+def test_grep_exposes_partial_search_in_both_summary_and_content(tmp_path):
+    (tmp_path / "large.txt").write_text("needle\n" * 300)
+    outcome = GrepTool(backend=_backend(tmp_path)).execute("needle")
+    assert outcome.summary.endswith("(partial)")
+    assert "match_limit" in outcome.model_text
+    assert outcome.metadata["truncated"] is True

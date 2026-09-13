@@ -1,8 +1,11 @@
 from types import SimpleNamespace
 
+import pytest
+
 import reuleauxcoder.extensions.remote_exec.backend as backend_module
 from reuleauxcoder.domain.workspace import (
     WorkspaceEntry,
+    WorkspaceError,
     WorkspaceGlobResult,
     WorkspaceSearchMatch,
     WorkspaceSearchResult,
@@ -10,7 +13,6 @@ from reuleauxcoder.domain.workspace import (
 from reuleauxcoder.extensions.remote_exec.backend import (
     RemoteWorkspacePort,
     _peer_glob_safe,
-    _peer_literal_search_safe,
 )
 
 
@@ -21,6 +23,9 @@ class _Backend:
 
     def supports_capability(self, capability: str) -> bool:
         return capability in self.capabilities
+
+    def resolve_peer_id(self) -> str:
+        return "peer"
 
 
 def _entry() -> dict[str, object]:
@@ -62,9 +67,9 @@ def test_remote_glob_uses_single_peer_primitive_when_semantics_are_safe(
     assert [operation for operation, _arguments in requests] == ["fs.glob"]
 
 
-def test_remote_literal_search_uses_single_peer_primitive(monkeypatch) -> None:
+def test_remote_regex_search_uses_single_peer_primitive(monkeypatch) -> None:
     port = RemoteWorkspacePort(  # type: ignore[arg-type]
-        _Backend({"workspace.fs.search_text"})
+        _Backend({"workspace.fs.search_text.bounded"})
     )
     requests = []
 
@@ -79,11 +84,14 @@ def test_remote_literal_search_uses_single_peer_primitive(monkeypatch) -> None:
                 }
             ],
             "truncated": False,
+            "reasons": [],
+            "scanned_files": 1,
+            "scanned_bytes": 12,
         }
 
     monkeypatch.setattr(port, "_request", request)
 
-    result = port.search_text("class Agent", ".", include="*.py")
+    result = port.search_text(r"class\s+Agent", ".", include="src/**/*.py")
 
     assert result == WorkspaceSearchResult(
         matches=(
@@ -94,28 +102,27 @@ def test_remote_literal_search_uses_single_peer_primitive(monkeypatch) -> None:
             ),
         ),
         truncated=False,
+        scanned_files=1,
+        scanned_bytes=12,
     )
     assert [operation for operation, _arguments in requests] == ["fs.search_text"]
+    assert requests[0][1]["pattern"] == r"class\s+Agent"
+    assert requests[0][1]["literal"] is False
+    assert requests[0][1]["limits"]["max_scan_bytes"] > 0
 
 
-def test_unsafe_or_unadvertised_searches_keep_compatibility_fallback(
+def test_old_peer_requires_upgrade_for_search_but_keeps_glob_fallback(
     monkeypatch,
 ) -> None:
     port = RemoteWorkspacePort(_Backend(set()))  # type: ignore[arg-type]
     expected_glob = WorkspaceGlobResult((), 0)
-    expected_search = WorkspaceSearchResult(())
     monkeypatch.setattr(
         backend_module,
         "glob_paths_via_primitives",
         lambda *_args, **_kwargs: expected_glob,
     )
-    monkeypatch.setattr(
-        backend_module,
-        "search_text_via_primitives",
-        lambda *_args, **_kwargs: expected_search,
-    )
 
     assert port.glob_paths("**/*.py", ".") is expected_glob
-    assert port.search_text(r"class\s+Agent", ".") is expected_search
+    with pytest.raises(WorkspaceError, match="upgraded rcoder-peer"):
+        port.search_text(r"class\s+Agent", ".")
     assert _peer_glob_safe("src/[ab].py") is False
-    assert _peer_literal_search_safe(r"class\s+Agent", "*.py") is False

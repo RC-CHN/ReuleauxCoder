@@ -99,6 +99,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			"workspace.fs.stat", "workspace.fs.list", "workspace.fs.read_text",
 			"workspace.fs.snapshot_text",
 			"workspace.fs.glob", "workspace.fs.search_text",
+			"workspace.fs.search_text.bounded",
 			"workspace.fs.write_text_atomic", "workspace.fs.replace_exact_atomic",
 			"workspace.fs.write_text_verified", "workspace.fs.replace_exact_verified",
 		},
