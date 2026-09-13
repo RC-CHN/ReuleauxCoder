@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
-from collections.abc import Iterator
 import hashlib
 import os
-from pathlib import Path
-import re
 import stat
 import tempfile
-from fnmatch import translate as fnmatch_translate
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
 
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.domain.workspace import (
-    WorkspaceEntry,
+    DEFAULT_SEARCH_LIMITS,
     WorkspaceDocumentSnapshot,
+    WorkspaceEntry,
     WorkspaceError,
     WorkspaceErrorCode,
     WorkspaceGlobResult,
@@ -24,10 +24,11 @@ from reuleauxcoder.domain.workspace import (
     WorkspaceMutationResult,
     WorkspaceMutationVerification,
     WorkspaceRevision,
-    WorkspaceSearchMatch,
+    WorkspaceSearchLimits,
     WorkspaceSearchResult,
     compile_portable_glob,
 )
+from reuleauxcoder.infrastructure.workspace.search import search_text
 
 
 class LocalWorkspacePort:
@@ -274,9 +275,7 @@ class LocalWorkspacePort:
         for _attempt in range(3):
             snapshot = self.snapshot_text(path)
             if snapshot.content is None:
-                raise WorkspaceError(
-                    WorkspaceErrorCode.NOT_FOUND, f"{path} not found"
-                )
+                raise WorkspaceError(WorkspaceErrorCode.NOT_FOUND, f"{path} not found")
             occurrences = snapshot.content.count(old)
             if occurrences == 0:
                 raise WorkspaceError(
@@ -417,92 +416,29 @@ class LocalWorkspacePort:
         exclude_dirs: tuple[str, ...] = (),
         max_files: int = 5_000,
         max_matches: int = 200,
+        literal: bool = False,
+        include_ignored: bool = False,
+        limits: WorkspaceSearchLimits = DEFAULT_SEARCH_LIMITS,
+        cancellation: CancellationSignal | None = None,
     ) -> WorkspaceSearchResult:
-        try:
-            regex = re.compile(pattern)
-        except re.error as error:
-            raise WorkspaceError(
-                WorkspaceErrorCode.INVALID_PATH, f"invalid regex: {error}"
-            ) from error
-        if max_files < 1 or max_matches < 1:
-            raise WorkspaceError(
-                WorkspaceErrorCode.INVALID_PATH,
-                "max_files and max_matches must be positive",
-            )
-
-        base = self.stat_entry(path)
-        listing_truncated = False
-        if base.is_file:
-            files = [base]
-        elif base.is_dir:
-            excluded = set(exclude_dirs)
-            files: list[WorkspaceEntry] = []
-            candidate_overflow = False
-            simple_include = (
-                re.compile(fnmatch_translate(os.path.normcase(include)))
-                if include is not None and "/" not in include and "\\" not in include
-                else None
-            )
-
-            def collect(entry: os.DirEntry[str], relative_path: str) -> None:
-                nonlocal candidate_overflow
-                if not entry.is_file(follow_symlinks=False):
-                    return
-                if excluded.intersection(relative_path.split(os.sep)):
-                    return
-                if include is not None:
-                    if simple_include is not None:
-                        if (
-                            simple_include.fullmatch(os.path.normcase(entry.name))
-                            is None
-                        ):
-                            return
-                    elif not Path(relative_path).match(include):
-                        return
-                if len(files) >= max_files:
-                    candidate_overflow = True
-                    return
-                files.append(self._entry_from_dir_entry(entry, relative_path))
-
-            base_path = self.resolve(path)
-            listing_truncated = self._scan_entries(
-                base_path,
-                include_hidden=True,
-                max_entries=max_files * 4,
-                visit=collect,
-            )
-            listing_truncated = listing_truncated or candidate_overflow
-        else:
+        base = self.resolve(path)
+        entry = self.stat_entry(path)
+        if not entry.is_file and not entry.is_dir:
             raise WorkspaceError(
                 WorkspaceErrorCode.NOT_A_FILE, f"{path} is not searchable"
             )
-
-        matches: list[WorkspaceSearchMatch] = []
-        for entry in files:
-            try:
-                with open(
-                    entry.path,
-                    "r",
-                    encoding="utf-8",
-                    errors="replace",
-                    newline="",
-                ) as stream:
-                    text = stream.read()
-            except (FileNotFoundError, OSError):
-                continue
-            for line_number, line in enumerate(text.splitlines(), 1):
-                if not regex.search(line):
-                    continue
-                matches.append(
-                    WorkspaceSearchMatch(
-                        path=entry.path,
-                        line_number=line_number,
-                        line=line.rstrip(),
-                    )
-                )
-                if len(matches) >= max_matches:
-                    return WorkspaceSearchResult(tuple(matches), truncated=True)
-        return WorkspaceSearchResult(tuple(matches), truncated=listing_truncated)
+        return search_text(
+            base,
+            pattern,
+            include=include,
+            exclude_dirs=exclude_dirs,
+            max_files=max_files,
+            max_matches=max_matches,
+            literal=literal,
+            include_ignored=include_ignored,
+            limits=limits,
+            cancellation=cancellation,
+        )
 
     def glob_paths(
         self,

@@ -12,7 +12,6 @@ from reuleauxcoder.domain.workspace import (
     WorkspaceMutationReceipt,
     WorkspaceMutationVerification,
     glob_paths_via_primitives,
-    search_text_via_primitives,
 )
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
@@ -429,7 +428,7 @@ def test_optimized_glob_preserves_listing_truncation_order(tmp_path: Path) -> No
     assert optimized.listing_truncated is True
 
 
-def test_optimized_search_matches_primitive_reference_exactly(
+def test_search_preserves_hidden_files_and_python_line_separators(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "one.py").write_text("first\nneedle one\vneedle two\n")
@@ -449,22 +448,24 @@ def test_optimized_search_matches_primitive_reference_exactly(
     }
 
     optimized = workspace.search_text("needle", ".", **arguments)
-    reference = search_text_via_primitives(workspace, "needle", ".", **arguments)
+    assert sorted((Path(m.path).name, m.line_number, m.line) for m in optimized.matches) == [
+        ("one.py", 2, "needle one"), ("one.py", 3, "needle two"),
+        ("three.py", 1, "needle hidden"),
+    ]
+    assert optimized.reasons == ("match_limit",)
 
-    assert optimized == reference
 
-
-def test_optimized_single_file_search_matches_primitive_reference(
+def test_single_file_search_stops_at_match_limit(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "one.txt"
-    target.write_text("needle one\nneedle two\n")
+    target.write_bytes(b"needle one\nneedle two\n")
     workspace = LocalWorkspacePort(tmp_path)
 
     optimized = workspace.search_text("needle", target, max_matches=1)
-    reference = search_text_via_primitives(workspace, "needle", target, max_matches=1)
-
-    assert optimized == reference
+    assert [(m.line_number, m.line) for m in optimized.matches] == [(1, "needle one")]
+    assert optimized.scanned_bytes == len("needle one\n")
+    assert optimized.reasons == ("match_limit",)
 
 
 @pytest.mark.parametrize(

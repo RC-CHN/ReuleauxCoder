@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from fnmatch import translate as fnmatch_translate
 from functools import lru_cache
 from pathlib import Path
-import re
 from typing import Protocol
+
+from reuleauxcoder.domain.cancellation import CancellationSignal
 
 
 def _payload_int(value: object) -> int:
@@ -39,7 +41,7 @@ class WorkspaceError(Exception):
         code: WorkspaceErrorCode,
         message: str,
         *,
-        mutation_receipt: "WorkspaceMutationReceipt | None" = None,
+        mutation_receipt: WorkspaceMutationReceipt | None = None,
     ):
         super().__init__(message)
         self.code = code
@@ -64,7 +66,7 @@ class WorkspaceRevision:
     mtime_ns: int | None = None
     authoritative: bool = True
 
-    def same_content(self, other: "WorkspaceRevision") -> bool:
+    def same_content(self, other: WorkspaceRevision) -> bool:
         return (
             self.exists == other.exists
             and self.sha256 == other.sha256
@@ -85,7 +87,7 @@ class WorkspaceRevision:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "WorkspaceRevision":
+    def from_dict(cls, data: dict[str, object]) -> WorkspaceRevision:
         sha256 = data.get("sha256")
         mtime_ns = data.get("mtime_ns")
         return cls(
@@ -142,7 +144,7 @@ class WorkspaceMutationReceipt:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "WorkspaceMutationReceipt":
+    def from_dict(cls, data: dict[str, object]) -> WorkspaceMutationReceipt:
         before = data.get("before")
         observed_after = data.get("observed_after")
         expected_before = data.get("expected_before")
@@ -167,9 +169,7 @@ class WorkspaceMutationReceipt:
                 if isinstance(expected_before, dict)
                 else None
             ),
-            external_change_before_write=bool(
-                data.get("external_change_before_write")
-            ),
+            external_change_before_write=bool(data.get("external_change_before_write")),
         )
 
 
@@ -216,12 +216,41 @@ class WorkspaceSearchMatch:
     path: str
     line_number: int
     line: str
+    truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSearchLimits:
+    max_file_bytes: int = 2 * 1024 * 1024
+    max_scan_bytes: int = 32 * 1024 * 1024
+    max_line_chars: int = 2_000
+    max_output_chars: int = 32_000
+    timeout_sec: float = 5.0
+
+    def __post_init__(self) -> None:
+        if (
+            min(
+                self.max_file_bytes,
+                self.max_scan_bytes,
+                self.max_line_chars,
+                self.max_output_chars,
+                self.timeout_sec,
+            )
+            <= 0
+        ):
+            raise ValueError("search limits must be positive")
+
+
+DEFAULT_SEARCH_LIMITS = WorkspaceSearchLimits()
 
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSearchResult:
     matches: tuple[WorkspaceSearchMatch, ...]
     truncated: bool = False
+    reasons: tuple[str, ...] = ()
+    scanned_files: int = 0
+    scanned_bytes: int = 0
 
 
 class WorkspacePort(Protocol):
@@ -279,6 +308,10 @@ class WorkspacePort(Protocol):
         exclude_dirs: tuple[str, ...] = (),
         max_files: int = 5_000,
         max_matches: int = 200,
+        literal: bool = False,
+        include_ignored: bool = False,
+        limits: WorkspaceSearchLimits = DEFAULT_SEARCH_LIMITS,
+        cancellation: CancellationSignal | None = None,
     ) -> WorkspaceSearchResult: ...
 
 
