@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic, SEVERITY_ERROR
+from reuleauxcoder.extensions.lsp.diagnostics import SEVERITY_ERROR, Diagnostic
 from reuleauxcoder.extensions.lsp.registry import LanguageId, get_language_id_string
 
 logger = logging.getLogger(__name__)
@@ -404,6 +404,7 @@ class LspClient:
         self._server_response_tasks: set[asyncio.Task[None]] = set()
         self._stdin_write_lock = asyncio.Lock()
         self._diagnostics_buffer: dict[str, list[Diagnostic]] = {}
+        self._diagnostics_changed = asyncio.Event()
         self._diagnostics_snapshots: dict[str, list[Diagnostic]] = {}
         self._diagnostic_generations: dict[str, int] = {}
         self._diagnostic_document_versions: dict[str, int] = {}
@@ -622,11 +623,11 @@ class LspClient:
         *,
         after_generation: int | None = None,
     ) -> list[Diagnostic]:
-        """Poll for publishDiagnostics for a specific file.
+        """Wait for a fresh diagnostic generation without polling.
 
         Diagnostics arrive asynchronously via the _read_responses loop.
         This method waits for at least one publishDiagnostics notification
-        for the given file, or returns whatever has accumulated after timeout.
+        for the given file, or returns an empty list on timeout.
         """
         file_uri = self._file_uri(file_path)
         current_generation = self._diagnostic_generations.get(file_uri, 0)
@@ -639,13 +640,14 @@ class LspClient:
         else:
             baseline = after_generation
 
-        # Give the server a moment to publish
-        for _ in range(int(timeout * 10)):
-            await asyncio.sleep(0.1)
-            if self._diagnostic_generations.get(file_uri, 0) > baseline:
-                break
-
-        if self._diagnostic_generations.get(file_uri, 0) <= baseline:
+        try:
+            async with asyncio.timeout(timeout):
+                while self._diagnostic_generations.get(file_uri, 0) <= baseline:
+                    # Publishers and waiters run on the same event loop; no
+                    # publish can slip between the generation check and clear.
+                    self._diagnostics_changed.clear()
+                    await self._diagnostics_changed.wait()
+        except TimeoutError:
             return []
         return self._diagnostics_buffer.pop(file_uri, [])
 
@@ -1262,6 +1264,7 @@ class LspClient:
         self._diagnostic_document_versions[uri] = (
             published_version if type(published_version) is int else current_version
         )
+        self._diagnostics_changed.set()
 
     async def _pull_document_diagnostics(self, file_path: Path) -> None:
         if not self._supports_pull_diagnostics:
@@ -1304,6 +1307,7 @@ class LspClient:
         self._diagnostics_snapshots[uri] = items
         self._diagnostic_generations[uri] = self._diagnostic_generations.get(uri, 0) + 1
         self._diagnostic_document_versions[uri] = self._document_versions.get(uri, 0)
+        self._diagnostics_changed.set()
 
     @classmethod
     def _decode_diagnostics(

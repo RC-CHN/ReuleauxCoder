@@ -197,6 +197,71 @@ def test_wait_without_baseline_consumes_already_published_batch(tmp_path: Path) 
     assert [item.message for item in diagnostics] == ["ready"]
 
 
+def test_diagnostic_notifications_wake_matching_waiters_and_allow_cancellation(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    first_path, second_path = tmp_path / "first.py", tmp_path / "second.py"
+
+    async def run() -> None:
+        first = asyncio.create_task(client.wait_for_diagnostics(first_path, timeout=5))
+        second = asyncio.create_task(
+            client.wait_for_diagnostics(second_path, timeout=5)
+        )
+        await asyncio.sleep(0)
+
+        client._handle_publish_diagnostics(
+            {"uri": first_path.as_uri(), "diagnostics": []}
+        )
+        await asyncio.wait_for(first, timeout=1)
+        assert not second.done(), (
+            "a different file's notification must not satisfy the waiter"
+        )
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+
+        # Cancelling a waiter does not consume the next file's publication.
+        client._handle_publish_diagnostics(
+            {"uri": second_path.as_uri(), "diagnostics": []}
+        )
+        assert await client.wait_for_diagnostics(second_path, timeout=0) == []
+        assert second_path.as_uri() not in client._diagnostics_buffer
+
+    asyncio.run(run())
+
+
+def test_diagnostics_wait_uses_notifications_instead_of_timer_ticks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path)
+    path = tmp_path / "main.py"
+
+    async def run() -> None:
+        client._handle_publish_diagnostics({"uri": path.as_uri(), "diagnostics": []})
+        baseline = client.diagnostics_generation(path)
+        with monkeypatch.context() as patch:
+            # A diagnostic ready at entry should not wait for a polling tick.
+            patch.setattr(
+                asyncio,
+                "sleep",
+                AsyncMock(side_effect=AssertionError("unexpected polling")),
+            )
+            assert await client.wait_for_diagnostics(path) == []
+            # A later publication should wake the same waiter without a timer.
+            asyncio.get_running_loop().call_soon(
+                client._handle_publish_diagnostics,
+                {"uri": path.as_uri(), "diagnostics": []},
+            )
+            assert (
+                await client.wait_for_diagnostics(path, after_generation=baseline) == []
+            )
+        assert client.diagnostics_generation(path) == baseline + 1
+        assert path.as_uri() not in client._diagnostics_buffer
+
+    asyncio.run(run())
+
+
 def test_pull_diagnostics_full_and_unchanged_track_fresh_versions(
     tmp_path: Path,
 ) -> None:
