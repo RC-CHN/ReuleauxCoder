@@ -6,6 +6,7 @@ from reuleauxcoder.domain.config.models import Config, ConfigDiagnostic
 
 def test_effective_config_view_marks_session_overrides_and_sources() -> None:
     config = Config(
+        lsp={"max_injection_chars": 4000},
         active_main_model_profile="main",
         active_sub_model_profile="sub",
         active_mode="coder",
@@ -13,6 +14,7 @@ def test_effective_config_view_marks_session_overrides_and_sources() -> None:
             "models.active_main": "workspace",
             "models.active_sub": "global",
             "modes.active": "global",
+            "lsp.max_injection_chars": "workspace",
         },
         diagnostics=[
             ConfigDiagnostic(
@@ -39,6 +41,8 @@ def test_effective_config_view_marks_session_overrides_and_sources() -> None:
     assert rows["modes.active"].source == "session"
     assert rows["lsp.enabled"].source == "default"
     assert rows["lsp.typescript_mode"].value == "auto"
+    assert rows["lsp.max_injection_chars"].value == "4000"
+    assert rows["lsp.max_injection_chars"].source == "workspace"
     assert rows["context.auto_snip"].value == "true"
     assert rows["context.auto_summarize"].value == "true"
     assert rows["context.auto_collapse"].value == "true"

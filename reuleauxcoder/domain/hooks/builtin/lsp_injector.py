@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.config.models import Config
     from reuleauxcoder.extensions.lsp.manager import LspManager
 
+from reuleauxcoder.app.ui_events import UIEventKind
 from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.hooks.runtime_overlay import (
     has_runtime_overlay_tail,
@@ -26,11 +27,11 @@ from reuleauxcoder.domain.hooks.runtime_overlay import (
 )
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext
 from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
-    render_diagnostic_outcomes,
     safe_observer_error_type,
 )
-from reuleauxcoder.extensions.lsp.diagnostics import render_blocks
-from reuleauxcoder.app.ui_events import UIEventKind
+from reuleauxcoder.extensions.lsp.diagnostic_projection import (
+    project_diagnostic_results,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         self.lsp_manager = lsp_manager
 
     @classmethod
-    def create_from_config(cls, config: "Config") -> "LspDiagnosticsInjectorHook":
+    def create_from_config(cls, config: Config) -> LspDiagnosticsInjectorHook:
         """Create hook instance from config.  LspManager injected later."""
         return cls(lsp_manager=None, priority=100)
 
@@ -64,7 +65,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         if name == "lsp_manager":
             self.lsp_manager = service  # type: ignore[assignment]
 
-    def clone_for_scope(self, scope: str) -> "LspDiagnosticsInjectorHook":
+    def clone_for_scope(self, scope: str) -> LspDiagnosticsInjectorHook:
         manager = None if scope == "subagent" else self.lsp_manager
         return LspDiagnosticsInjectorHook(lsp_manager=manager, priority=self.priority)
 
@@ -100,30 +101,16 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         )
         if not batches and not failure_outcomes:
             return context
-        blocks = [batch.block for batch in batches]
         consumer_id = (
             f"lsp-inject:{context.agent_id or 'unknown'}:"
             f"{context.session_generation if context.session_generation is not None else 'unknown'}:"
             f"{context.turn_id or 'unknown'}"
         )
 
-        # Count errors / warnings for UI feedback
-        err_count = 0
-        warn_count = 0
-        for block in blocks:
-            for d in block.items:
-                if d.is_error:
-                    err_count += 1
-                elif d.is_warning:
-                    warn_count += 1
-
-        rendered = render_blocks(
-            blocks,
-            max_diagnostics=manager.config.max_diagnostics,
-            include_warnings=manager.config.include_warnings,
+        projection = project_diagnostic_results(
+            batches, failure_outcomes, manager.config
         )
-        rendered_failures = render_diagnostic_outcomes(failure_outcomes)
-        if rendered is None and rendered_failures is None:
+        if projection.text is None:
             for batch in batches:
                 manager.acknowledge_diagnostic_batch(
                     batch.batch_id,
@@ -139,22 +126,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
         # Keep generated diagnostics in their own untrusted-data region before
         # the trusted runtime instruction. The final overlay is volatile by
         # design, so this does not invalidate any earlier stable prefix.
-        rendered_parts: list[str] = []
-        if rendered is not None:
-            rendered_parts.append(rendered)
-        if rendered_failures is not None:
-            rendered_parts.append(
-                "<lsp_diagnostic_outcomes>\n"
-                f"{rendered_failures}\n"
-                "</lsp_diagnostic_outcomes>"
-            )
-        rendered_payload = "\n\n".join(rendered_parts)
-        injection = (
-            "[LSP DIAGNOSTICS]\n"
-            '<lsp_diagnostics trust="untrusted_data">\n'
-            f"{rendered_payload}\n"
-            "</lsp_diagnostics>\n"
-        )
+        injection = projection.text
         if not inject_runtime_overlay_region(context.messages, injection):
             return context
 
@@ -201,7 +173,7 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
                             kind=UIEventKind.SYSTEM,
                             batch_count=len(result_ids),
                         )
-                    except Exception as error:
+                    except Exception as error:  # noqa: BLE001 — UI subscribers do not own delivery
                         logger.warning(
                             "LSP diagnostics race UI observer failed: error_type=%s",
                             safe_observer_error_type(error),
@@ -213,18 +185,13 @@ class LspDiagnosticsInjectorHook(TransformHook[BeforeLLMRequestContext]):
             ui_bus = getattr(manager, "ui_bus", None)
             if ui_bus is None:
                 return
-            parts: list[str] = []
-            if err_count:
-                parts.append(f"{err_count} error{'s' if err_count != 1 else ''}")
-            if warn_count:
-                parts.append(f"{warn_count} warning{'s' if warn_count != 1 else ''}")
-            if parts:
+            if projection.summary:
                 try:
                     ui_bus.info(
-                        f"LSP: {', '.join(parts)} injected",
+                        f"LSP injected: {projection.summary}",
                         kind=UIEventKind.SYSTEM,
                     )
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001 — UI subscribers do not own delivery
                     logger.warning(
                         "LSP diagnostics UI observer failed: error_type=%s",
                         safe_observer_error_type(error),

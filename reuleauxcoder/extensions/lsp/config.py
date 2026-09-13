@@ -26,9 +26,18 @@ class LspConfig:
     enabled: bool = True
     poll_timeout_ms: int = 5000
     max_diagnostics: int = 20
+    max_injection_chars: int = 12_000
+    max_message_chars: int = 1_000
     include_warnings: bool = True
     typescript_mode: str = "auto"
     server_overrides: dict[str, LspServerOverride] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in ("poll_timeout_ms", "max_diagnostics", "max_message_chars"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"lsp.{name} must be positive")
+        if self.max_injection_chars < 512:
+            raise ValueError("lsp.max_injection_chars must be at least 512")
 
     def get_override(self, language_key: str) -> LspServerOverride | None:
         """Get the per-language override for a config key (e.g. 'python')."""
@@ -40,15 +49,26 @@ class LspConfig:
 
         Falls back to defaults if the [lsp] section is missing.
         """
+        defaults = cls()
         lsp_raw = getattr(config, "lsp", None)
         if lsp_raw is None:
-            return cls()
+            return defaults
 
-        enabled = bool(lsp_raw.get("enabled", True))
-        poll_timeout_ms = int(lsp_raw.get("poll_timeout_ms", 5000))
-        max_diagnostics = int(lsp_raw.get("max_diagnostics", 20))
-        include_warnings = bool(lsp_raw.get("include_warnings", True))
-        typescript_mode = str(lsp_raw.get("typescript_mode", "auto")).lower()
+        enabled = bool(lsp_raw.get("enabled", defaults.enabled))
+        poll_timeout_ms = int(lsp_raw.get("poll_timeout_ms", defaults.poll_timeout_ms))
+        max_diagnostics = int(lsp_raw.get("max_diagnostics", defaults.max_diagnostics))
+        max_injection_chars = int(
+            lsp_raw.get("max_injection_chars", defaults.max_injection_chars)
+        )
+        max_message_chars = int(
+            lsp_raw.get("max_message_chars", defaults.max_message_chars)
+        )
+        include_warnings = bool(
+            lsp_raw.get("include_warnings", defaults.include_warnings)
+        )
+        typescript_mode = str(
+            lsp_raw.get("typescript_mode", defaults.typescript_mode)
+        ).lower()
         if typescript_mode not in {"auto", "native", "legacy"}:
             raise ValueError("lsp.typescript_mode must be one of: auto, native, legacy")
 
@@ -67,6 +87,8 @@ class LspConfig:
             enabled=enabled,
             poll_timeout_ms=poll_timeout_ms,
             max_diagnostics=max_diagnostics,
+            max_injection_chars=max_injection_chars,
+            max_message_chars=max_message_chars,
             include_warnings=include_warnings,
             typescript_mode=typescript_mode,
             server_overrides=overrides,

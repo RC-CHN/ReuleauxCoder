@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from heapq import nsmallest
 from html import escape
 from pathlib import Path
 
@@ -105,6 +106,26 @@ class DiagnosticBatch:
     created_at: float = field(default_factory=time.time)
 
 
+def select_diagnostics(
+    block: DiagnosticBlock, *, max_diagnostics: int, include_warnings: bool
+) -> list[Diagnostic]:
+    """Select the most severe diagnostics before applying the per-file cap."""
+    items = (item for item in block.items if include_warnings or item.is_error)
+    return nsmallest(
+        max_diagnostics,
+        items,
+        key=lambda item: (item.severity, item.line, item.character),
+    )
+
+
+def render_diagnostic_line(diagnostic: Diagnostic) -> str:
+    message = escape(diagnostic.message.partition("\n")[0], quote=False)
+    return (
+        f"  {diagnostic.severity_label} "
+        f"[{diagnostic.line}:{diagnostic.character}] {message}"
+    )
+
+
 def render_blocks(
     blocks: list[DiagnosticBlock],
     *,
@@ -124,25 +145,15 @@ def render_blocks(
     parts: list[str] = []
 
     for block in blocks:
-        items = block.items
-        if not include_warnings:
-            items = [d for d in items if d.is_error]
-
+        items = select_diagnostics(
+            block, max_diagnostics=max_diagnostics, include_warnings=include_warnings
+        )
         if not items:
             continue
 
-        # Cap per file
-        items = items[:max_diagnostics]
-
-        # Sort: errors first, then by line
-        items = sorted(items, key=lambda d: (d.severity, d.line))
-
         file_path = escape(block.file_path, quote=True)
         lines: list[str] = [f'<diagnostics file="{file_path}">']
-        for d in items:
-            # Trim to first line for compactness
-            msg = escape(d.message.split("\n")[0], quote=False)
-            lines.append(f"  {d.severity_label} [{d.line}:{d.character}] {msg}")
+        lines.extend(render_diagnostic_line(d) for d in items)
         lines.append("</diagnostics>")
 
         parts.append("\n".join(lines))

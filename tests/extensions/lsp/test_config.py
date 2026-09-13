@@ -28,6 +28,8 @@ class TestLspConfigDefaults:
             "enabled": False,
             "poll_timeout_ms": 10000,
             "max_diagnostics": 10,
+            "max_injection_chars": 4000,
+            "max_message_chars": 500,
             "include_warnings": True,
             "typescript_mode": "native",
         }
@@ -35,6 +37,8 @@ class TestLspConfigDefaults:
         assert lsp.enabled is False
         assert lsp.poll_timeout_ms == 10000
         assert lsp.max_diagnostics == 10
+        assert lsp.max_injection_chars == 4000
+        assert lsp.max_message_chars == 500
         assert lsp.include_warnings is True
         assert lsp.typescript_mode == "native"
 
@@ -50,6 +54,21 @@ class TestLspConfigDefaults:
 
         with pytest.raises(ValueError, match="typescript_mode"):
             LspConfig.from_config(config)
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("max_diagnostics", -1),
+            ("max_message_chars", 0),
+            ("max_injection_chars", 511),
+            ("poll_timeout_ms", 0),
+        ],
+    )
+    def test_invalid_diagnostic_limits_are_rejected(
+        self, name: str, value: int
+    ) -> None:
+        with pytest.raises(ValueError, match=name):
+            LspConfig.from_config(Config(lsp={name: value}))
 
     def test_parse_server_overrides(self) -> None:
         config = Config()

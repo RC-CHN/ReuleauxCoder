@@ -6,16 +6,18 @@ LspDiagnosticsInjectorHook (BEFORE_LLM_REQUEST) with mocked LspManager.
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
+from reuleauxcoder.domain.agent.tool_outcome import (
+    ToolErrorKind,
+    ToolOutcome,
+    ToolOutcomeStatus,
+)
 from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import (
-    EDIT_TOOLS,
     LspEditObserverHook,
-    _extract_file_path,
 )
 from reuleauxcoder.domain.hooks.builtin.lsp_injector import (
     LspDiagnosticsInjectorHook,
@@ -24,11 +26,6 @@ from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeLLMRequestContext,
     HookPoint,
-)
-from reuleauxcoder.domain.agent.tool_outcome import (
-    ToolErrorKind,
-    ToolOutcome,
-    ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.lsp.config import LspConfig
@@ -102,220 +99,60 @@ def _execution_state_tail() -> dict:
 # === LspEditObserverHook ===
 
 
-class TestExtractFilePath:
-    def test_edit_file(self) -> None:
-        assert (
-            _extract_file_path("edit_file", {"file_path": "src/main.py"})
-            == "src/main.py"
-        )
+@pytest.mark.parametrize("tool_name", ["edit_file", "write_file"])
+def test_edits_queue_document_commit_without_waiting(tool_name: str) -> None:
+    from reuleauxcoder.extensions.lsp.registry import LanguageId
 
-    def test_write_file(self) -> None:
-        assert (
-            _extract_file_path("write_file", {"file_path": "/tmp/out.py"})
-            == "/tmp/out.py"
-        )
+    manager = _make_manager()
+    manager._availability[LanguageId.PYTHON] = True
+    original = ToolOutcome(
+        content="edited",
+        metadata={"resolved_path": "/tmp/canonical.py"},
+        model_content="edited with refreshed approval",
+    )
+    context = AfterToolExecuteContext(
+        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+        agent_id="agent",
+        session_generation=1,
+        session_id="session",
+        turn_id="turn",
+        tool_call=ToolCall(
+            id="edit", name=tool_name, arguments={"file_path": "relative.py"}
+        ),
+        outcome=original,
+    )
+    LspEditObserverHook(lsp_manager=manager).run(context)
 
-    def test_missing_key(self) -> None:
-        assert _extract_file_path("edit_file", {}) is None
+    assert context.outcome is original
+    assert len(manager._diagnostics_queue) == 1
+    request = manager._diagnostics_queue[0]
+    assert request.route == DiagnosticRoute(
+        file_path=Path("/tmp/canonical.py").resolve(),
+        agent_id="agent",
+        session_generation=1,
+        session_id="session",
+        turn_id="turn",
+        tool_call_id="edit",
+    )
+    assert request.document_committed
+    assert request.batch_id in manager._pending_diagnostic_requests
 
 
-class TestLspEditObserverBasic:
-    def test_returns_early_when_manager_none(self) -> None:
-        hook = LspEditObserverHook(lsp_manager=None)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1", name="edit_file", arguments={"file_path": "x.py"}
-            ),
-        )
-        # Should not raise
-        hook.run(context)
-
-    def test_returns_early_when_manager_disabled(self) -> None:
-        config = LspConfig(enabled=False)
-        mgr = LspManager(config, workspace_cwd=Path("/tmp"))
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1", name="edit_file", arguments={"file_path": "x.py"}
-            ),
-        )
-        # Should not enqueue
-        hook.run(context)
-        assert len(mgr._diagnostics_queue) == 0
-
-    def test_returns_early_when_no_tool_call(self) -> None:
-        mgr = _make_manager()
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=None,
-        )
-        hook.run(context)
-
-    def test_returns_early_for_non_edit_tools(self) -> None:
-        mgr = _make_manager()
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1", name="read_file", arguments={"file_path": "x.py"}
-            ),
-        )
-        hook.run(context)
-        assert len(mgr._diagnostics_queue) == 0
-
-    def test_enqueues_diagnostics_for_edit_tools(self) -> None:
-        mgr = _make_manager()
-        mgr.diagnostic_request_result = MagicMock(  # type: ignore[method-assign]
-            return_value=()
-        )
-        # Mark Python as available so enqueue passes the guard
-        from reuleauxcoder.extensions.lsp.registry import LanguageId
-
-        with mgr._lock:
-            mgr._availability[LanguageId.PYTHON] = True
-
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="edit_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(content="edited"),
-            round_index=1,
-        )
-        hook.run(context)
-
-    def test_enqueues_atomic_document_commit_for_edit_tools(self) -> None:
-        mgr = _make_manager()
-        mgr.diagnostic_request_result = MagicMock(  # type: ignore[method-assign]
-            return_value=()
-        )
-        from reuleauxcoder.extensions.lsp.registry import LanguageId
-
-        with mgr._lock:
-            mgr._availability[LanguageId.PYTHON] = True
-
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="write_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(content="wrote"),
-        )
-        hook.run(context)
-        assert len(mgr._diagnostics_queue) == 1
-        request = mgr._diagnostics_queue[0]
-        assert request.route.file_path == Path("/tmp/test.py").resolve()
-        assert request.document_committed is True
-
-    def test_missing_launcher_completes_without_waiting_for_poll_deadline(
-        self, tmp_path: Path
-    ) -> None:
-        path = tmp_path / "test.py"
-        path.write_text("value = 1\n", encoding="utf-8")
-        mgr = LspManager(LspConfig(enabled=True), workspace_cwd=tmp_path)
-        mgr._command_lookup = MagicMock(return_value=None)
-        batch_ids: list[str] = []
-        enqueue = mgr.enqueue_diagnostics
-
-        def capture_enqueue(*args, **kwargs):
-            batch_id = enqueue(*args, **kwargs)
-            assert batch_id is not None
-            batch_ids.append(batch_id)
-            return batch_id
-
-        mgr.enqueue_diagnostics = MagicMock(  # type: ignore[method-assign]
-            side_effect=capture_enqueue
-        )
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="missing-launcher",
-                name="edit_file",
-                arguments={"file_path": str(path)},
-            ),
-            outcome=ToolOutcome(content="edited"),
-        )
-
-        started_at = time.monotonic()
-        try:
-            result = hook.run(context)
-            elapsed = time.monotonic() - started_at
-        finally:
-            assert mgr.shutdown_all(timeout=1.0)
-
-        assert result is context
-        assert elapsed < 1.0
-        assert len(batch_ids) == 1
-        assert mgr.diagnostic_request_result(batch_ids[0]) == ()
-        mgr._command_lookup.assert_called_once()
-
-    def test_uses_resolved_outcome_path_for_document_commit(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "reuleauxcoder.domain.hooks.builtin.lsp_edit_observer._DIAGNOSTICS_POLL_DEADLINE",
-            0,
-        )
-        mgr = _make_manager()
-        from reuleauxcoder.extensions.lsp.registry import LanguageId
-
-        with mgr._lock:
-            mgr._availability[LanguageId.PYTHON] = True
-
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="edit_file",
-                arguments={"file_path": "relative.py"},
-            ),
-            outcome=ToolOutcome(
-                content="edited",
-                metadata={"resolved_path": "/tmp/canonical.py"},
-            ),
-        )
-
-        hook.run(context)
-
-        assert len(mgr._diagnostics_queue) == 1
-        assert mgr._diagnostics_queue[0].route.file_path == Path(
-            "/tmp/canonical.py"
-        ).resolve()
-
-    def test_failed_edit_does_not_notify_or_enqueue(self) -> None:
-        mgr = _make_manager()
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="failed",
-                name="edit_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(
-                status=ToolOutcomeStatus.FAILED,
-                content="edit failed",
-                error_kind=ToolErrorKind.EXECUTION,
-            ),
-        )
-
-        hook.run(context)
-
-        assert len(mgr._diagnostics_queue) == 0
-
-    def test_all_edit_tools_are_handled(self) -> None:
-        """Verify that the EDIT_TOOLS set covers all expected edit tools."""
-        for tool_name in EDIT_TOOLS:
-            assert _extract_file_path(tool_name, {"file_path": "f.py"}) == "f.py"
+def test_failed_edit_does_not_enqueue_diagnostics() -> None:
+    manager = _make_manager()
+    context = AfterToolExecuteContext(
+        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+        tool_call=ToolCall(
+            id="edit", name="edit_file", arguments={"file_path": "/tmp/test.py"}
+        ),
+        outcome=ToolOutcome(
+            status=ToolOutcomeStatus.FAILED,
+            content="edit failed",
+            error_kind=ToolErrorKind.EXECUTION,
+        ),
+    )
+    LspEditObserverHook(lsp_manager=manager).run(context)
+    assert manager._diagnostics_queue == []
 
 
 class TestLspEditObserverCreateFromConfig:
@@ -523,185 +360,47 @@ class TestLspDiagnosticsInjectorCreateFromConfig:
         assert cloned.lsp_manager is None
 
 
-# === LspEditObserverHook document-scoped consumption ===
+@pytest.mark.parametrize("model_content", [None, "edited with refreshed approval"])
+def test_ready_edit_diagnostics_have_one_delivery_path(
+    model_content: str | None,
+) -> None:
+    from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
 
+    manager = _make_manager()
+    block = DiagnosticBlock("/tmp/test.py", [Diagnostic(1, 1, "actual error")])
+    _complete_enqueued_batch(manager, block)
+    original = ToolOutcome(content="edited", model_content=model_content)
+    edit_context = AfterToolExecuteContext(
+        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+        tool_call=ToolCall(
+            id="1", name="edit_file", arguments={"file_path": "/tmp/test.py"}
+        ),
+        outcome=original,
+    )
+    LspEditObserverHook(lsp_manager=manager).run(edit_context)
+    assert edit_context.outcome is original
+    assert manager.diagnostic_batch_acknowledgement("batch-1") is None
 
-class TestLspEditObserverDedup:
-    def test_consumes_only_edited_file_after_injecting_diagnostics(self) -> None:
-        from reuleauxcoder.extensions.lsp.diagnostics import (
-            Diagnostic,
-            DiagnosticBlock,
-        )
-        from reuleauxcoder.extensions.lsp.registry import LanguageId
+    messages = [
+        {"role": "tool", "content": original.model_text},
+        _execution_state_tail(),
+    ]
+    request = BeforeLLMRequestContext(
+        hook_point=HookPoint.BEFORE_LLM_REQUEST, messages=messages
+    )
+    injector = LspDiagnosticsInjectorHook(lsp_manager=manager)
+    injector.run(request)
+    assert request.messages[0]["content"] == original.model_text
+    assert "actual error" in request.messages[-1]["content"]
+    assert manager.diagnostic_batch_acknowledgement("batch-1") is None
+    assert request._commit_dispatch_callbacks() == ()
+    assert manager.pending_diagnostic_batches() == ()
 
-        mgr = _make_manager()
-        with mgr._lock:
-            mgr._availability[LanguageId.PYTHON] = True
-
-        block = DiagnosticBlock(
-            file_path="/tmp/test.py",
-            items=[Diagnostic(line=1, character=1, message="err")],
-        )
-        _complete_enqueued_batch(mgr, block)
-
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="edit_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(content="edited"),
-            round_index=1,
-        )
-        hook.run(context)
-
-        assert context.outcome is not None
-        assert [item.message for item in context.outcome.diagnostics] == ["err"]
-        assert "err" in context.outcome.model_text
-        assert mgr.pending_diagnostic_batches() == ()
-        assert mgr.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
-
-    def test_empty_diagnostics_leave_no_results(self) -> None:
-        from reuleauxcoder.extensions.lsp.registry import LanguageId
-
-        mgr = _make_manager()
-        with mgr._lock:
-            mgr._availability[LanguageId.PYTHON] = True
-
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        _complete_enqueued_batch(
-            mgr,
-            DiagnosticBlock(file_path="/tmp/test.py", items=[]),
-        )
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="edit_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(content="edited"),
-            round_index=1,
-        )
-        hook.run(context)
-        assert mgr.pending_diagnostic_batches() == ()
-        assert mgr.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
-
-    def test_does_not_consume_other_file_batch(self) -> None:
-        from reuleauxcoder.extensions.lsp.diagnostics import (
-            Diagnostic,
-            DiagnosticBlock,
-        )
-
-        mgr = _make_manager()
-        edited = DiagnosticBlock(
-            file_path="/tmp/test.py",
-            items=[Diagnostic(line=1, character=1, message="edited")],
-        )
-        other = DiagnosticBlock(
-            file_path="/tmp/other.py",
-            items=[Diagnostic(line=1, character=1, message="other")],
-        )
-        _complete_enqueued_batch(mgr, edited)
-        _publish_batch(mgr, other, batch_id="batch-other")
-
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        tool_context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="edit_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(content="edited"),
-            round_index=1,
-        )
-        hook.run(tool_context)
-
-        assert tool_context.outcome is not None
-        assert [item.message for item in tool_context.outcome.diagnostics] == ["edited"]
-        remaining = mgr.pending_diagnostic_batches()
-        assert [batch.block.file_path for batch in remaining] == ["/tmp/other.py"]
-
-    def test_ui_failure_does_not_crash_delivered_diagnostics(self) -> None:
-        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
-        from reuleauxcoder.extensions.lsp.registry import LanguageId
-
-        ui_bus = MagicMock()
-        ui_bus.info.side_effect = RuntimeError("ui failed")
-        mgr = _make_manager()
-        mgr.ui_bus = ui_bus
-        with mgr._lock:
-            mgr._availability[LanguageId.PYTHON] = True
-        _complete_enqueued_batch(
-            mgr,
-            DiagnosticBlock(
-                file_path="/tmp/test.py",
-                items=[Diagnostic(line=1, character=1, message="err")],
-            ),
-        )
-        hook = LspEditObserverHook(lsp_manager=mgr)
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="edit_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(content="edited"),
-        )
-
-        hook.run(context)
-
-        assert mgr.pending_diagnostic_batches() == ()
-        assert mgr.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
-
-    def test_ack_failure_keeps_projected_batch_retryable_and_secret_safe(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
-        from reuleauxcoder.extensions.lsp.registry import LanguageId
-
-        mgr = _make_manager()
-        with mgr._lock:
-            mgr._availability[LanguageId.PYTHON] = True
-        _complete_enqueued_batch(
-            mgr,
-            DiagnosticBlock(
-                file_path="/tmp/test.py",
-                items=[Diagnostic(line=1, character=1, message="err")],
-            ),
-        )
-        mgr.acknowledge_diagnostic_batches = MagicMock(  # type: ignore[method-assign]
-            side_effect=RuntimeError("SENTINEL_ACK_SECRET")
-        )
-        context = AfterToolExecuteContext(
-            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-            tool_call=ToolCall(
-                id="1",
-                name="edit_file",
-                arguments={"file_path": "/tmp/test.py"},
-            ),
-            outcome=ToolOutcome(content="edited"),
-        )
-
-        LspEditObserverHook(lsp_manager=mgr).run(context)
-
-        assert context.outcome is not None
-        assert [item.message for item in context.outcome.diagnostics] == ["err"]
-        assert "err" in context.outcome.model_text
-        assert [batch.batch_id for batch in mgr.pending_diagnostic_batches()] == [
-            "batch-1"
-        ]
-        assert mgr.diagnostic_batch_acknowledgement("batch-1") is None
-        mgr.acknowledge_diagnostic_batches.assert_called_once_with(
-            ("batch-1",),
-            consumer_id="lsp-edit:1",
-        )
-        assert "error_type=RuntimeError" in caplog.text
-        assert "SENTINEL_ACK_SECRET" not in caplog.text
+    next_request = BeforeLLMRequestContext(
+        hook_point=HookPoint.BEFORE_LLM_REQUEST, messages=[_execution_state_tail()]
+    )
+    injector.run(next_request)
+    assert "actual error" not in next_request.messages[0]["content"]
 
 
 # === LspDiagnosticsInjectorHook scoped dedup ===
@@ -1051,8 +750,8 @@ class TestLspDiagnosticsInjectorDedup:
 
     def test_filtered_warning_is_terminally_acknowledged(self) -> None:
         from reuleauxcoder.extensions.lsp.diagnostics import (
-            Diagnostic,
             SEVERITY_WARNING,
+            Diagnostic,
         )
 
         mgr = LspManager(

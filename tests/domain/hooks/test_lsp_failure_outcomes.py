@@ -20,11 +20,11 @@ from reuleauxcoder.extensions.lsp.diagnostic_outcomes import (
     DiagnosticOutcome,
     DiagnosticOutcomeStatus,
 )
-from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
 from reuleauxcoder.extensions.lsp.diagnostics import (
     Diagnostic,
     DiagnosticBatch,
     DiagnosticBlock,
+    DiagnosticRoute,
 )
 from reuleauxcoder.extensions.lsp.manager import LspManager
 from reuleauxcoder.extensions.lsp.registry import LanguageId
@@ -78,7 +78,7 @@ def _execution_state_tail() -> dict[str, str]:
     }
 
 
-def test_edit_observer_returns_real_diagnostics_failure_to_agent() -> None:
+def test_edit_failure_is_delivered_by_request_injector() -> None:
     manager = _manager()
     route = DiagnosticRoute(
         file_path=Path("/tmp/main.py"),
@@ -109,15 +109,21 @@ def test_edit_observer_returns_real_diagnostics_failure_to_agent() -> None:
     LspEditObserverHook(lsp_manager=manager).run(context)
 
     assert context.outcome is not None
-    assert context.outcome.success
-    assert "edited" in context.outcome.model_text
-    assert "[LSP DIAGNOSTICS OUTCOME]" in context.outcome.model_text
-    assert "status=error" in context.outcome.model_text
-    assert "error_type=LspDocumentReadError" in context.outcome.model_text
-    assert manager.diagnostic_request_outcome(outcome.batch_id) is None
-    assert manager.diagnostic_batch_acknowledgement(outcome.batch_id) == (
-        "lsp-edit:edit-1"
+    assert context.outcome.model_text == "edited"
+    assert manager.diagnostic_batch_acknowledgement(outcome.batch_id) is None
+    request = BeforeLLMRequestContext(
+        hook_point=HookPoint.BEFORE_LLM_REQUEST,
+        messages=[_execution_state_tail()],
+        agent_id="agent",
+        session_generation=1,
+        session_id="session",
+        turn_id="turn",
     )
+    LspDiagnosticsInjectorHook(lsp_manager=manager).run(request)
+    assert "status=error" in request.messages[0]["content"]
+    assert "error_type=LspDocumentReadError" in request.messages[0]["content"]
+    assert request._commit_dispatch_callbacks() == ()
+    assert manager.diagnostic_request_outcome(outcome.batch_id) is None
 
 
 def test_late_failure_is_injected_and_acknowledged_only_after_dispatch() -> None:
@@ -154,36 +160,6 @@ def test_late_failure_is_injected_and_acknowledged_only_after_dispatch() -> None
         "lsp-inject:agent:1:next"
     )
     assert manager.diagnostic_batch_metrics()["carried_forward"] == 1
-
-
-def test_edit_observer_ack_fault_does_not_crash_or_claim_delivery() -> None:
-    manager = _manager()
-    route = DiagnosticRoute(file_path=Path("/tmp/main.py"), tool_call_id="edit-1")
-    outcome = _failure(manager, batch_id="retry-ack", route=route)
-    manager.enqueue_diagnostics = MagicMock(  # type: ignore[method-assign]
-        return_value=outcome.batch_id
-    )
-    acknowledge = manager.acknowledge_diagnostic_batch
-    manager.acknowledge_diagnostic_batch = MagicMock(  # type: ignore[method-assign]
-        side_effect=RuntimeError("secondary observer failure")
-    )
-    context = AfterToolExecuteContext(
-        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
-        tool_call=ToolCall(
-            id="edit-1",
-            name="edit_file",
-            arguments={"file_path": "/tmp/main.py"},
-        ),
-        outcome=ToolOutcome(content="edited"),
-    )
-
-    LspEditObserverHook(lsp_manager=manager).run(context)
-
-    assert context.outcome is not None
-    assert context.outcome.model_text == "edited"
-    manager.acknowledge_diagnostic_batch = acknowledge  # type: ignore[method-assign]
-    assert manager.diagnostic_request_outcome(outcome.batch_id) is outcome
-    assert manager.diagnostic_batch_acknowledgement(outcome.batch_id) is None
 
 
 def test_failed_overlay_projection_keeps_failure_retryable(

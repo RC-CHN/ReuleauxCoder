@@ -226,6 +226,8 @@ Key invariants:
 - push diagnostics, LSP 3.17 pull diagnostics and server-initiated requests are supported;
 - shutdown and bounded respawn happen on the owning worker/event-loop path.
 
+Successful edits only enqueue document diagnostics; the request-time injector owns model delivery and dispatch acknowledgement. Automatic injection defaults to 20 diagnostics per file, 1,000 characters per message and 12,000 characters for the complete injection, with explicit omission counts. Full runtime diagnostics remain available to UI/history. See `docs/lsp-diagnostics.md` for limits and delivery semantics.
+
 Default matrix: Python, TypeScript 7 native, TypeScript 6 legacy, JavaScript, YAML, Bash, Go, C, C++, and Rust. TypeScript mode is `auto | native | legacy`; native uses `tsc --lsp --stdio`, legacy uses `typescript-language-server`.
 
 ## Remote peer
