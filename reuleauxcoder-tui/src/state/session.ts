@@ -159,7 +159,15 @@ export class SessionStore extends EventEmitter {
         this.processCompleted(process);
         break;
       }
-      case 'DiagnosticsPublished': this.diagnostics.set(p.file_path, p); this.add('notice', 'Diagnostics · ' + p.file_path, fields(p.diagnostics)); break;
+      case 'DiagnosticsPublished': {
+        this.diagnostics.set(p.file_path, p);
+        const counts = new Map<string, number>();
+        for (const diagnostic of p.diagnostics) counts.set(diagnostic.severity, (counts.get(diagnostic.severity) ?? 0) + 1);
+        const summary = [...counts].map(([severity, count]) => `${count} ${severity}${count === 1 || severity === 'info' ? '' : 's'}`).join(' · ');
+        const cell = this.add('notice', 'LSP · ' + p.file_path, summary || 'No diagnostics', fields(p.diagnostics));
+        cell.tone = counts.has('error') ? 'error' : counts.has('warning') ? 'warning' : 'info';
+        break;
+      }
       case 'DiagnosticsCleared': this.diagnostics.delete(p.file_path); break;
       case 'PlanUpdated': this.plan = p; break;
       case 'ProgressReported': this.progress = p; break;
