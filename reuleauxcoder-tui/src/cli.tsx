@@ -5,7 +5,7 @@ import {existsSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
-import {render} from 'ink';
+import {renderTerminal} from './ui/render.js';
 import {RpcPeer} from './protocol/peer.js';
 import {RuntimeClient} from './protocol/client.js';
 import {TuiController} from './state/controller.js';
@@ -52,7 +52,7 @@ async function main() {
     controller.session.notice(safe(chunk), 'backend');
   });
   let lastRenderSample = -Infinity;
-  const app = render(<App controller={controller} alternateScreen={!values['no-alt-screen']}/>, {
+  const app = renderTerminal(<App controller={controller} alternateScreen={!values['no-alt-screen']}/>, {
     alternateScreen: !values['no-alt-screen'], incrementalRendering: true,
     exitOnCtrlC: false, maxFps: RENDER_FPS, interactive: true,
     onRender: ({renderTime}) => {

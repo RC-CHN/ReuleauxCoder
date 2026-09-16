@@ -28,6 +28,12 @@ node reuleauxcoder-tui/dist/cli.js --python /path/to/venv/bin/python
 
 开发时运行 `npm --prefix reuleauxcoder-tui run dev -- --cwd /path/to/project`。
 
+`src/ui/render.tsx` 统一管理终端帧与光标保持，启动器和渲染 benchmark 共用此入口。
+Ink 7.1.1 每帧消费光标位置，适配层通过内部 `CursorContext` 在 `onRender` 绘制前
+重放最近一次提交的位置，让独立动画、正文刷新及 resize 保持 IME 定位；失焦或卸载时正常清除。
+输入组件仍使用公开的 `useCursor`。升级 Ink 时检查这个兼容边界；`test/cursor.test.tsx`
+通过真实 ANSI 输出验证位置保持与清除。
+
 发布构建执行 `npm run bundle --prefix reuleauxcoder-tui`，产物写入 Python 包的
 `reuleauxcoder/_tui/`，再运行 `uv build` 和 `python scripts/check-distributions.py`。
 bundle 包含运行时依赖及 Yoga WASM，附带第三方许可证；构建工具与 `node_modules`

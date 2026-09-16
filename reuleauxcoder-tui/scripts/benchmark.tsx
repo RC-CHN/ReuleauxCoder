@@ -1,5 +1,5 @@
 import React from 'react';
-import {render} from 'ink';
+import {renderTerminal} from '../src/ui/render.js';
 import {Writable, PassThrough} from 'node:stream';
 import {setTimeout as delay} from 'node:timers/promises';
 import {writeFile} from 'node:fs/promises';
@@ -113,7 +113,7 @@ for (const scene of ['idle-rpc', 'busy', 'panel-scroll', 'continuous-scroll', 't
   }});
   Object.assign(stdout, {columns: 160, rows: 40, isTTY: true});
   const stdin = new PassThrough(); Object.assign(stdin, {isTTY: true, setRawMode() {}, ref() {}, unref() {}});
-  const app = render(<App controller={c}/>, {stdout, stdin, stderr: stdout, interactive: true, exitOnCtrlC: false, patchConsole: false, incrementalRendering: true, maxFps: RENDER_FPS,
+  const app = renderTerminal(<App controller={c}/>, {stdout, stdin, stderr: stdout, interactive: true, exitOnCtrlC: false, patchConsole: false, incrementalRendering: true, maxFps: RENDER_FPS,
     onRender: ({renderTime}) => {if (measuring) renderTimes.push(renderTime);},
   });
   let renderError: unknown;
