@@ -109,6 +109,8 @@ node reuleauxcoder-tui/dist/cli.js --theme /path/to/theme.json
 | `/ps` | 后台进程、轮询、打断、终止、密文输入 |
 | `/session`、`/save`、`/new` | 浏览、恢复、保存、新建会话 |
 | `/reset`、`/compact`、`/quit` | 清空、压缩、保存退出 |
+
+`/compact` 直接打开策略面板：默认选中旧对话摘要，也可选择精简工具输出或深度压缩；只有深度压缩需要额外确认。面板显示后端估计的上下文用量，执行后报告前后变化。CLI 复用同一组选项；`/compact force <snip|summarize|collapse>` 仍可直接指定策略。
 | `/help`、`/config`、`/tokens`、`/status`、`/debug` | 帮助、配置、token、性能与调试 |
 
 `View all details` 展示视图的全部字段。命令帮助里保留的旧 CLI 语法是后端参考信息；新版输入区的 slash 用于打开一级菜单。

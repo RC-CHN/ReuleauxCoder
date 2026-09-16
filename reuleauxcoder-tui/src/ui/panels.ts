@@ -55,7 +55,7 @@ export function panelRows(c: TuiController, width: number, height: number, layou
   if (screen?.kind === 'list') {
     const items = c.listItems(screen);
     screen.index = Math.min(screen.index, Math.max(0, items.length - 1));
-    const filter = height > 1 ? inputRows(screen.filter, width - 2, 1).map(row => '⌕ ' + row + (screen.filter.text ? '' : paint.muted('Filter options…'))) : [];
+    const filter = height > 1 && screen.panel?.filterable !== false ? inputRows(screen.filter, width - 2, 1).map(row => '⌕ ' + row + (screen.filter.text ? '' : paint.muted('Filter options…'))) : [];
     return {title: screen.title, rows: [...filter, ...selectionRows(items, screen.index, width, height - filter.length)], hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'open'), keyHint('Esc', 'back')], navigation: `${items.length ? screen.index + 1 : 0}/${items.length}`};
   }
   if (screen?.kind === 'document') {

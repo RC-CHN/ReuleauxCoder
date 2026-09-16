@@ -14,12 +14,10 @@ from reuleauxcoder.app.commands.view_models import (
     PerformanceViewModel,
     TokenUsageViewModel,
 )
-from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.shared import (
     EmptyCommand,
     UI_TARGETS,
-    enum_text,
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
@@ -27,21 +25,13 @@ from reuleauxcoder.app.runtime.session_state import (
     restore_config_runtime_defaults,
 )
 from reuleauxcoder.app.runtime.effective_config import build_effective_config_view
-from reuleauxcoder.domain.context.manager import estimate_tokens
 from reuleauxcoder.domain.runtime.performance import PerformanceSample
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
-
-_FORCE_COMPACT_STRATEGIES = {"snip", "summarize", "collapse"}
 
 
 @dataclass(frozen=True, slots=True)
 class ExitCommand:
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class CompactContextCommand:
-    force_strategy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,26 +55,6 @@ def _parse_reset(user_input: str, parse_ctx):
     if match_template(user_input, "/reset") is not None:
         return EmptyCommand()
     return None
-
-
-def _parse_compact(user_input: str, parse_ctx):
-    if match_template(user_input, "/compact") is not None:
-        return CompactContextCommand()
-
-    captures = match_template(
-        user_input, "/compact force {strategy}", case_insensitive=True
-    )
-    if captures is None:
-        return None
-
-    try:
-        strategy = enum_text(_FORCE_COMPACT_STRATEGIES, case_insensitive=True).parse(
-            captures["strategy"]
-        )
-    except ParamParseError:
-        return CompactContextCommand(force_strategy="")
-
-    return CompactContextCommand(force_strategy=strategy)
 
 
 def _parse_tokens(user_input: str, parse_ctx):
@@ -164,55 +134,6 @@ def _handle_reset(command, ctx) -> CommandEffect:
         "Conversation reset (in-memory only, does not delete saved sessions)."
         + process_note
     )
-    return ctx.effect.finish(control="continue")
-
-
-def _handle_compact(command, ctx) -> CommandEffect:
-    before = estimate_tokens(ctx.agent.messages)
-
-    if command.force_strategy == "":
-        ctx.effect.warning(
-            "Invalid compact strategy. Use: /compact force <snip|summarize|collapse>"
-        )
-        return ctx.effect.finish(control="continue")
-
-    if command.force_strategy:
-        force = getattr(ctx.agent, "force_compress_context", None)
-        compressed = (
-            force(command.force_strategy, ctx.agent.llm)
-            if callable(force)
-            else ctx.agent.context.force_compress(
-                ctx.agent.messages,
-                command.force_strategy,
-                ctx.agent.llm,
-            )
-        )
-        after = estimate_tokens(ctx.agent.messages)
-        if compressed:
-            ctx.effect.success(
-                f"Forced {command.force_strategy}: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
-            )
-        else:
-            ctx.effect.info(
-                f"Forced {command.force_strategy}: no change ({before} tokens, {len(ctx.agent.messages)} messages)"
-            )
-        return ctx.effect.finish(control="continue")
-
-    maybe_compress = getattr(ctx.agent, "maybe_compress_context", None)
-    compressed = (
-        maybe_compress(ctx.agent.llm, reason="manual compact command")
-        if callable(maybe_compress)
-        else ctx.agent.context.maybe_compress(ctx.agent.messages, ctx.agent.llm)
-    )
-    after = estimate_tokens(ctx.agent.messages)
-    if compressed:
-        ctx.effect.success(
-            f"Compressed: {before} → {after} tokens ({len(ctx.agent.messages)} messages)"
-        )
-    else:
-        ctx.effect.info(
-            f"Nothing to compress ({before} tokens, {len(ctx.agent.messages)} messages)"
-        )
     return ctx.effect.finish(control="continue")
 
 
@@ -435,16 +356,6 @@ def register_actions(registry: ActionRegistry) -> None:
                 triggers=(slash_trigger("/reset"),),
                 parser=_parse_reset,
                 handler=_handle_reset,
-            ),
-            ActionSpec(
-                action_id="system.compact",
-                command_type=CompactContextCommand,
-                feature_id="system",
-                description="[session] Compact the current conversation context",
-                ui_targets=UI_TARGETS,
-                triggers=(slash_trigger("/compact"),),
-                parser=_parse_compact,
-                handler=_handle_compact,
             ),
             ActionSpec(
                 action_id="system.tokens",

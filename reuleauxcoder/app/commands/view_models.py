@@ -8,6 +8,16 @@ from reuleauxcoder.domain.goal import Goal
 
 
 @dataclass(frozen=True, slots=True)
+class CompactViewModel:
+    estimated_tokens: int
+    input_limit: int
+    view_type: str = "compact"
+
+    def to_payload(self) -> dict[str, Any]:
+        return {"estimated_tokens": self.estimated_tokens, "input_limit": self.input_limit}
+
+
+@dataclass(frozen=True, slots=True)
 class GoalViewModel:
     goal: Goal | None
     default_token_budget: int | None = None

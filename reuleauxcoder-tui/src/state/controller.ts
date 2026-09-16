@@ -161,8 +161,10 @@ export class TuiController extends EventEmitter {
   }
   private panelScreen(panel: Panel, view: View, menu?: Menu): ListScreen {
     const items: Item[] = panel.items.map(item => ({label: item.label, description: item.description, current: item.current, select: () => this.selectPanel(panel, item, view, menu)}));
-    items.push({label: 'View all details', description: 'Inspect every field in this view', select: () => this.document(view.title, fields(view.view_model), menu)});
-    if (menu) items.push({label: 'More actions…', description: 'All operations and parameter forms', select: () => {this.screens.push(this.list(menu.title, this.actionItems(menu), menu)); this.changed();}});
+    if (panel.show_auxiliary_actions !== false) {
+      items.push({label: 'View all details', description: 'Inspect every field in this view', select: () => this.document(view.title, fields(view.view_model), menu)});
+      if (menu) items.push({label: 'More actions…', description: 'All operations and parameter forms', select: () => {this.screens.push(this.list(menu.title, this.actionItems(menu), menu)); this.changed();}});
+    }
     return this.list(panel.title, items, menu, panel);
   }
   private async selectPanel(panel: Panel, item: PanelItem, view: View, menu?: Menu) {
@@ -314,7 +316,7 @@ export class TuiController extends EventEmitter {
         const items = this.listItems(screen);
         if (key.upArrow || key.downArrow) screen.index = items.length ? (screen.index + (key.upArrow ? -1 : 1) + items.length) % items.length : 0;
         else if (key.return) await items[screen.index]?.select();
-        else {screen.filter = edit(screen.filter, input, key); screen.index = 0;}
+        else if (screen.panel?.filterable !== false) {screen.filter = edit(screen.filter, input, key); screen.index = 0;}
       } else if (screen.kind === 'document') {
         if (key.tab && screen.menu) this.screens.push(this.list(screen.menu.title, this.actionItems(screen.menu), screen.menu));
         else if (key.upArrow || key.downArrow) {this.scrollBy(key.upArrow ? -1 : 1); return;}

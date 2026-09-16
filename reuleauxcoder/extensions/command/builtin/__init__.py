@@ -10,6 +10,10 @@ from reuleauxcoder.app.commands.panels import (
     CommandPanelSpec,
 )
 from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.extensions.command.builtin.compact import (
+    command_panel_spec as compact_panel_spec,
+    register_actions as register_compact_actions,
+)
 from reuleauxcoder.extensions.command.builtin.goal import (
     command_panel_spec as goal_panel_spec,
     register_actions as register_goal_actions,
@@ -76,6 +80,7 @@ _BUILTIN_COMMAND_FEATURES = (
     _CommandFeature(register_skill_actions, skills_panel_spec()),
     _CommandFeature(register_subagent_job_actions, subagent_jobs_panel_spec()),
     _CommandFeature(register_system_actions),
+    _CommandFeature(register_compact_actions, compact_panel_spec()),
     _CommandFeature(register_thinking_actions, thinking_panel_spec()),
 )
 

@@ -15,6 +15,7 @@ def test_builtin_command_features_contribute_all_interactive_panels_in_order() -
         "sessions",
         "skills",
         "subagent_jobs",
+        "compact",
         "thinking_effort",
     )
 

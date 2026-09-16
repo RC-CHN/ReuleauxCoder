@@ -32,6 +32,7 @@ def _example(trigger):
         "text": "follow this up",
         "on|off": "on",
         "tokens|none": "1000",
+        "snip|summarize|collapse": "snip",
     }
     text = re.sub(r"<([^>]+)>", lambda match: values[match[1]], trigger.value)
     return (

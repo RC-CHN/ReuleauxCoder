@@ -30,6 +30,7 @@ class PanelDefinition:
     filterable: bool = False
     keep_open_on_submit: bool = False
     return_to_parent_on_submit: bool = False
+    show_auxiliary_actions: bool = True
 
     def child_for(self, label: str) -> "PanelDefinition | None":
         """Return the child panel attached to a row label."""
