@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,8 +14,7 @@ import httpx
 import pytest
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcomeStatus
-from reuleauxcoder.extensions.tools.builtin import builtin_tool_types
-from reuleauxcoder.extensions.tools.builtin import web
+from reuleauxcoder.extensions.tools.builtin import builtin_tool_types, web
 from reuleauxcoder.extensions.tools.builtin.web import (
     WebFetchTool,
     WebSearchTool,
@@ -96,10 +96,10 @@ class _FakeClient:
     def __init__(self, handler) -> None:
         self._handler = handler
 
-    def __call__(self, *args: Any, **kwargs: Any) -> "_FakeClient":
+    def __call__(self, *args: Any, **kwargs: Any) -> _FakeClient:
         return self
 
-    async def __aenter__(self) -> "_FakeClient":
+    async def __aenter__(self) -> _FakeClient:
         return self
 
     async def __aexit__(self, *args: Any) -> bool:
@@ -117,6 +117,7 @@ def _tool_with_config(tool, **overrides):
     tool._agent_config = SimpleNamespace(
         web_enabled=overrides.get("web_enabled", True),
         web_search_provider=overrides.get("web_search_provider", "auto"),
+        web_proxy=overrides.get("web_proxy", "env"),
         web_allow_private_networks=overrides.get(
             "web_allow_private_networks",
             True,
@@ -129,6 +130,111 @@ def test_web_tools_are_registered() -> None:
     names = {tool.name for tool in builtin_tool_types()}
     assert "web_fetch" in names
     assert "web_search" in names
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_both_tools_use_a_real_http_proxy_without_resolving_target_hosts(
+    monkeypatch, explicit
+):
+    requests = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append((self.command, self.path))
+            if self.path.endswith("/start"):
+                self.send_response(302)
+                self.send_header(
+                    "Location", f"http://127.0.0.1:{self.server.server_port}/direct"
+                )
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"fetched through proxy")
+
+        def do_POST(self):
+            requests.append((self.command, self.path))
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Title: Proxy result\nURL: https://example.test/result\n",
+                            }
+                        ]
+                    },
+                }
+            ).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    proxy = f"http://127.0.0.1:{server.server_port}"
+    monkeypatch.setenv("http_proxy", proxy)
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    monkeypatch.setattr(web, "_EXA_MCP_URL", "http://search.invalid/mcp")
+    try:
+        settings = {"web_proxy": proxy} if explicit else {}
+        fetched = _tool_with_config(WebFetchTool(), **settings).execute(
+            "http://page.invalid/article"
+        )
+        searched = _tool_with_config(
+            WebSearchTool(), web_search_provider="exa", **settings
+        ).execute("query")
+        assert fetched.model_text == "fetched through proxy"
+        assert searched.status is ToolOutcomeStatus.SUCCEEDED
+        assert "Proxy result" in searched.model_text
+        assert requests == [
+            ("GET", "http://page.invalid/article"),
+            ("POST", "http://search.invalid/mcp"),
+        ]
+        requests.clear()
+        monkeypatch.setenv("no_proxy", "127.0.0.1")
+        redirected = _tool_with_config(WebFetchTool(), **settings).execute(
+            "http://page.invalid/start"
+        )
+        assert redirected.model_text == "fetched through proxy"
+        # Explicit proxies ignore NO_PROXY; env routing is resolved at each hop.
+        assert requests == [
+            ("GET", "http://page.invalid/start"),
+            ("GET", f"{proxy}/direct" if explicit else "/direct"),
+        ]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_explicit_proxy_failure_never_falls_back_to_direct_or_exposes_credentials(
+    monkeypatch,
+):
+    selected = []
+
+    def fail_client(**options):
+        selected.append(options["proxy"])
+        raise httpx.ProxyError("http://user:private-password@proxy.test:7890")
+
+    monkeypatch.setattr(web.httpx, "AsyncClient", fail_client)
+    proxy = "http://user:private-password@proxy.test:7890"
+    for tool, arguments in [
+        (WebFetchTool(), {"url": "http://page.invalid"}),
+        (WebSearchTool(), {"query": "test"}),
+    ]:
+        outcome = _tool_with_config(tool, web_proxy=proxy).execute(**arguments)
+        assert outcome.status is ToolOutcomeStatus.FAILED
+        assert "private-password" not in outcome.model_text + str(outcome.metadata)
+    assert selected and all(route == proxy for route in selected)
 
 
 def test_fetch_preflight_rejects_non_http_schemes() -> None:
@@ -258,6 +364,7 @@ def test_fetch_public_only_mode_blocks_private_redirects(
     tool = _tool_with_config(
         WebFetchTool(),
         web_allow_private_networks=False,
+        web_proxy="direct",
     )
     outcome = tool.execute("http://93.184.216.34/start")
     assert outcome.status is ToolOutcomeStatus.DENIED
@@ -286,6 +393,7 @@ def test_fetch_public_only_mode_checks_the_connected_peer(
     tool = _tool_with_config(
         WebFetchTool(),
         web_allow_private_networks=False,
+        web_proxy="direct",
     )
     outcome = tool.execute("http://93.184.216.34/")
     assert outcome.status is ToolOutcomeStatus.DENIED
@@ -314,6 +422,7 @@ def test_fetch_public_only_mode_rejects_mixed_dns_answers(
     tool = _tool_with_config(
         WebFetchTool(),
         web_allow_private_networks=False,
+        web_proxy="direct",
     )
     outcome = tool.execute("https://example.com/")
     assert outcome.status is ToolOutcomeStatus.DENIED

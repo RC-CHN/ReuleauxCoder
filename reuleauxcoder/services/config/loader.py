@@ -395,6 +395,7 @@ class ConfigLoader:
                 "store_dir", DEFAULTS["tool_output_store_dir"]
             ),
             web_enabled=bool(web_config.get("enabled", DEFAULTS["web_enabled"])),
+            web_proxy=web_config.get("proxy", DEFAULTS["web_proxy"]),
             web_search_provider=str(
                 web_config.get("search_provider", DEFAULTS["web_search_provider"])
             ),

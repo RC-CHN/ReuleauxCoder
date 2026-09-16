@@ -173,6 +173,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
             "web": {
                 "enabled": True,
                 "search_provider": "parallel",
+                "proxy": "socks5://127.0.0.1:1080",
                 "allow_private_networks": False,
             },
             "prompt": {"system_append": "Always answer in Chinese."},
@@ -205,6 +206,7 @@ def test_parse_config_selects_active_profiles_and_modes() -> None:
     assert config.skills.disabled == ["demo"]
     assert config.web_enabled is True
     assert config.web_search_provider == "parallel"
+    assert config.web_proxy == "socks5://127.0.0.1:1080"
     assert config.web_allow_private_networks is False
     assert config.prompt.system_append == "Always answer in Chinese."
     assert config.preserve_reasoning_content is True

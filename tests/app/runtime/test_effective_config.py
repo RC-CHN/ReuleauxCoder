@@ -50,11 +50,25 @@ def test_effective_config_view_marks_session_overrides_and_sources() -> None:
 
 
 def test_effective_config_view_never_exposes_credentials() -> None:
-    config = Config(api_key="super-secret", base_url="https://example.test")
+    config = Config(
+        api_key="super-secret",
+        base_url="https://example.test",
+        web_proxy="http://proxy-user:proxy-password@localhost:7890",
+        effective_sources={"web.proxy": "workspace"},
+    )
 
     payload = build_effective_config_view(config).to_payload()
 
     assert "super-secret" not in str(payload)
+    assert "proxy-user" not in str(payload)
+    assert "proxy-password" not in str(payload)
+    row = next(
+        row
+        for row in build_effective_config_view(config).rows
+        if row.path == "web.proxy"
+    )
+    assert row.value == "http://***@localhost:7890"
+    assert row.source == "workspace"
 
 
 def test_effective_config_includes_runtime_scope_diagnostics() -> None:

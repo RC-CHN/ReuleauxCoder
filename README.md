@@ -9,6 +9,9 @@ The CLI uses native terminal scrollback, Rich Markdown output and prompt_toolkit
 line editing. The independent React + Ink TUI lives in `reuleauxcoder-tui/`.
 Both frontends use the same JSON-RPC runtime for chat, slash commands and approvals.
 
+Web tools use environment proxies by default; `web.proxy` can force a direct
+connection or a fixed HTTP/SOCKS5 proxy. See [web tool networking](docs/web-tools.md).
+
 Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/he-yufeng/CoreCoder).
 
 [中文](README_CN.md)

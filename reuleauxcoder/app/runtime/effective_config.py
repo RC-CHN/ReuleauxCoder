@@ -6,6 +6,7 @@ from reuleauxcoder.app.commands.view_models import (
     EffectiveConfigRowViewModel,
     EffectiveConfigViewModel,
 )
+from reuleauxcoder.domain.config.web import display_web_proxy
 from reuleauxcoder.extensions.lsp.config import LspConfig
 
 
@@ -26,6 +27,11 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
     lsp = LspConfig.from_config(config)
 
     rows = (
+        EffectiveConfigRowViewModel(
+            "web.proxy",
+            display_web_proxy(config.web_proxy),
+            source("web.proxy"),
+        ),
         EffectiveConfigRowViewModel(
             "models.active_main",
             str(runtime_main or "-"),

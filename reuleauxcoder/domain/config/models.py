@@ -3,6 +3,8 @@
 from dataclasses import asdict, dataclass, field, fields
 from typing import Literal, Optional
 
+from reuleauxcoder.domain.config.web import WebProxyConfigError, validate_web_proxy
+
 
 RequestMode = Literal["chat-completions", "responses", "messages"]
 
@@ -415,6 +417,7 @@ class Config:
     web_enabled: bool = True
     web_search_provider: str = "auto"  # "auto" | "exa" | "parallel"
     web_allow_private_networks: bool = True
+    web_proxy: str = "env"
 
     # Session settings
     session_auto_save: bool = True
@@ -585,6 +588,10 @@ class Config:
 
         if self.web_search_provider not in {"auto", "exa", "parallel"}:
             errors.append("web_search_provider must be one of auto, exa, parallel")
+        try:
+            validate_web_proxy(self.web_proxy)
+        except WebProxyConfigError as error:
+            errors.append(str(error))
 
         if self.approval.default_mode not in valid_actions:
             errors.append(

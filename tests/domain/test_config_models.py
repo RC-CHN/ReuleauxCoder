@@ -345,6 +345,45 @@ def test_config_supports_llm_debug_trace_flag() -> None:
 def test_web_private_networks_are_allowed_by_default() -> None:
     config = Config(api_key="key")
     assert config.web_allow_private_networks is True
+    assert config.web_proxy == "env"
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        None,
+        False,
+        "",
+        "automatic",
+        "ftp://host",
+        "http://host:99999",
+        "http://user:private@host/path",
+        "http://host/?password=secret",
+    ],
+)
+def test_web_proxy_validation_rejects_invalid_settings_without_echoing_secrets(proxy):
+    errors = Config(api_key="key", web_proxy=proxy).validate()
+    assert any("web.proxy" in error for error in errors)
+    assert "private" not in " ".join(errors)
+    assert "secret" not in " ".join(errors)
+
+
+@pytest.mark.parametrize(
+    "proxy",
+    [
+        "env",
+        "direct",
+        "http://localhost:7890",
+        "https://user:secret@[::1]:443",
+        "socks5://127.0.0.1:1080",
+        "socks5h://host:1080",
+    ],
+)
+def test_web_proxy_configuration_accepts_supported_modes(proxy):
+    assert not any(
+        "web.proxy" in error
+        for error in Config(api_key="key", web_proxy=proxy).validate()
+    )
 
 
 def test_remote_exec_config_defaults() -> None:

@@ -9,6 +9,9 @@ CLI 使用终端原生滚屏、Rich Markdown 输出和 prompt_toolkit 行编辑�
 独立 React + Ink TUI 位于 `reuleauxcoder-tui/`；两个前端共用 JSON-RPC
 运行时，消息、slash 命令和审批都经过同一协议边界。
 
+网页抓取和搜索默认使用环境变量中的代理；可用 `web.proxy` 指定直连或固定的
+HTTP/SOCKS5 代理。详见[网页工具网络配置](docs/web-tools.md)。
+
 灵感来自并作为 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 的完整重写而启动。
 
 [English](README.md)

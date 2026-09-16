@@ -108,6 +108,7 @@ DEFAULTS = {
     "web_enabled": True,
     "web_search_provider": "auto",
     "web_allow_private_networks": True,
+    "web_proxy": "env",
     "shell_rtk": "off",  # "auto" | "on" | "off"
     "notes_workspace_max": 30,
     "notes_global_max": 20,

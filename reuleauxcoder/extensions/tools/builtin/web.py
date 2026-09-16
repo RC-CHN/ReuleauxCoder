@@ -11,16 +11,16 @@ rate limits; the free tier works without them.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
-from contextlib import suppress
-from dataclasses import dataclass, field
-from html.parser import HTMLParser
-from ipaddress import IPv4Address, IPv6Address, ip_address
 import json
 import math
 import os
 import socket
 import threading
+from collections.abc import Coroutine
+from contextlib import suppress
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import Any, TypeVar
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
@@ -32,8 +32,10 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.cancellation import CancellationSignal
+from reuleauxcoder.domain.config.web import WebProxyConfigError
 from reuleauxcoder.extensions.tools.backend import LocalToolBackend, ToolBackend
 from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
+from reuleauxcoder.infrastructure.web_client import WebClient
 
 _FETCH_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -216,14 +218,23 @@ def _decode_response_body(response: httpx.Response, body: bytes) -> str:
     return body.decode(response.encoding or "utf-8", errors="replace")
 
 
-def _web_settings(tool: Tool) -> tuple[bool, str, bool]:
+def _web_settings(tool: Tool) -> tuple[bool, str, bool, str]:
     config = getattr(tool, "_agent_config", None)
     enabled = bool(getattr(config, "web_enabled", True))
     provider = str(getattr(config, "web_search_provider", "auto"))
-    allow_private_networks = bool(
-        getattr(config, "web_allow_private_networks", True)
+    allow_private_networks = bool(getattr(config, "web_allow_private_networks", True))
+    return (
+        enabled,
+        provider,
+        allow_private_networks,
+        getattr(config, "web_proxy", "env"),
     )
-    return enabled, provider, allow_private_networks
+
+
+def _proxy_failure(error: WebProxyConfigError) -> ToolOutcome:
+    return _failure(
+        "Invalid web proxy configuration", str(error), code="proxy_configuration"
+    )
 
 
 def _parse_web_url(url: str) -> SplitResult:
@@ -627,7 +638,7 @@ def _parse_parallel_hits(text: str) -> list[_SearchHit]:
 
 
 async def _search_exa(
-    client: httpx.AsyncClient, query: str, num_results: int
+    client: WebClient, query: str, num_results: int
 ) -> list[_SearchHit]:
     api_key = os.environ.get("EXA_API_KEY", "").strip()
     request = client.stream(
@@ -661,7 +672,7 @@ async def _search_exa(
 
 
 async def _search_parallel(
-    client: httpx.AsyncClient, query: str, num_results: int
+    client: WebClient, query: str, num_results: int
 ) -> list[_SearchHit]:
     headers = {
         "Accept": "application/json, text/event-stream",
@@ -777,7 +788,7 @@ class WebFetchTool(Tool):
         format: str = "markdown",
         timeout: float | None = None,
     ) -> ToolOutcome:
-        enabled, _, allow_private_networks = _web_settings(self)
+        enabled, _, allow_private_networks, proxy = _web_settings(self)
         if not enabled:
             return _failure(
                 "Web access disabled",
@@ -833,11 +844,14 @@ class WebFetchTool(Tool):
                         seconds,
                         headers,
                         allow_private_networks=allow_private_networks,
+                        proxy=proxy,
                     ),
                     cancellation=self.current_cancellation_signal(),
                     timeout=seconds,
                 )
             )
+        except WebProxyConfigError as error:
+            return _proxy_failure(error)
         except _WebRequestCancelled:
             return _failure(
                 "Web fetch cancelled",
@@ -909,11 +923,12 @@ class WebFetchTool(Tool):
         headers: dict[str, str],
         *,
         allow_private_networks: bool,
+        proxy: str,
     ) -> ToolOutcome:
-        async with httpx.AsyncClient(
-            follow_redirects=False,
+        async with WebClient(
+            proxy,
             timeout=seconds,
-            trust_env=allow_private_networks,
+            public_only=not allow_private_networks,
         ) as client:
             response, redirect_count = await self._fetch_redirect_chain(
                 client,
@@ -976,7 +991,7 @@ class WebFetchTool(Tool):
 
     @staticmethod
     async def _fetch_once(
-        client: httpx.AsyncClient,
+        client: WebClient,
         url: str,
         headers: dict[str, str],
         *,
@@ -1010,7 +1025,7 @@ class WebFetchTool(Tool):
     @classmethod
     async def _fetch_redirect_chain(
         cls,
-        client: httpx.AsyncClient,
+        client: WebClient,
         url: str,
         headers: dict[str, str],
         *,
@@ -1082,7 +1097,7 @@ class WebSearchTool(Tool):
     def execute(  # type: ignore[override]
         self, query: str, num_results: int = 8
     ) -> ToolOutcome:
-        enabled, preference, _ = _web_settings(self)
+        enabled, preference, _, proxy = _web_settings(self)
         if not enabled:
             return _failure(
                 "Web access disabled",
@@ -1096,11 +1111,13 @@ class WebSearchTool(Tool):
         try:
             return asyncio.run(
                 _run_interruptible(
-                    self._execute_async(query, num_results, providers),
+                    self._execute_async(query, num_results, providers, proxy),
                     cancellation=self.current_cancellation_signal(),
                     timeout=None,
                 )
             )
+        except WebProxyConfigError as error:
+            return _proxy_failure(error)
         except _WebRequestCancelled:
             return _failure(
                 "Web search cancelled",
@@ -1112,17 +1129,19 @@ class WebSearchTool(Tool):
 
     @staticmethod
     async def _execute_async(
-        query: str, num_results: int, providers: list[str]
+        query: str, num_results: int, providers: list[str], proxy: str
     ) -> ToolOutcome:
         searchers = {"exa": _search_exa, "parallel": _search_parallel}
         errors: list[str] = []
-        async with httpx.AsyncClient() as client:
+        async with WebClient(proxy, timeout=_SEARCH_TIMEOUT) as client:
             for provider in providers:
                 try:
                     hits = await asyncio.wait_for(
                         searchers[provider](client, query, num_results),
                         timeout=_SEARCH_TIMEOUT,
                     )
+                except WebProxyConfigError:
+                    raise
                 except (
                     TimeoutError,
                     asyncio.TimeoutError,

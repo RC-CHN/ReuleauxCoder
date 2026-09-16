@@ -137,6 +137,10 @@ approval:
 #   fixed_prompt_tokens: 0
 #   tool_schema_tokens: 0
 
+# Both web tools use environment proxies when omitted. See docs/web-tools.md.
+# web:
+#   proxy: env # env | direct | "http://127.0.0.1:7890" | "socks5://127.0.0.1:1080"
+
 # Optional output/session/history settings. Omit to use defaults.
 # tool_output:
 #   max_chars: 12000
