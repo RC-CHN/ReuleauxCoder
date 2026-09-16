@@ -50,8 +50,8 @@ export interface GitWorkspace {
   ahead: number | null; behind: number | null; files: GitFile[];
   additions: number | null; deletions: number | null; truncated: boolean; reason: string | null;
 }
-export interface PanelItem {label: string; description: string; current: boolean; action: {action_id: string; command: {[key: string]: Json}} | null}
-export interface Panel {view_type: string; title: string; items: PanelItem[]; children: [string, Panel][]; filterable: boolean; keep_open_on_submit: boolean; return_to_parent_on_submit: boolean; show_auxiliary_actions?: boolean}
+export interface PanelItem {label: string; description: string; current: boolean; id?: string | null; action: {action_id: string; command: {[key: string]: Json}} | null}
+export interface Panel {view_type: string; title: string; items: PanelItem[]; children: [string, Panel][]; filterable: boolean; keep_open_on_submit: boolean; return_to_parent_on_submit: boolean; show_auxiliary_actions?: boolean; body?: string; output?: string | null; on_open?: PanelItem['action']}
 export interface View {action: string; title: string; view_model: RecordData; focus: boolean; reuse_key: string | null}
 export interface UIEvent {message: string; level: string; kind: string; payload: RecordData | null; data: RecordData; timestamp: number}
 export interface Interaction extends RecordData {request_id: string; title: string}

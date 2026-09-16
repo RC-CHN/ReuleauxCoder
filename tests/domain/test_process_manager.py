@@ -81,6 +81,11 @@ def test_manager_keeps_independent_consumer_cursors(tmp_path) -> None:
     # Native Windows children translate "\n" to "\r\n" on text-mode pipes.
     assert model_output.replace("\r\n", "\n") == "hello\n"
     assert ui_output.replace("\r\n", "\n") == "hello\n"
+    identity = {"agent_id": "agent", "owner_session_id": "session", "session_generation": 0}
+    preview = manager.poll(handle.session_id, consumer="preview", retain_output_chars=4, **identity)
+    assert preview.stdout == ui_output[-4:]
+    assert manager.poll(handle.session_id, consumer="preview", **identity).stdout == preview.stdout
+    assert manager.poll(handle.session_id, consumer="model", **identity).stdout == ""
     manager.shutdown()
 
 

@@ -56,6 +56,23 @@ export function panelRows(c: TuiController, width: number, height: number, layou
   if (screen?.kind === 'list') {
     const items = c.listItems(screen);
     screen.index = Math.min(screen.index, Math.max(0, items.length - 1));
+    if (screen.panel?.body) {
+      const content = layout.rows(screen, width, () => safe(screen.panel!.body!) + '\n\n' + safe(screen.output ?? 'Loading output…'));
+      const actionHeight = Math.min(items.length * (width >= 45 ? 2 : 1), Math.max(1, Math.floor(height / 3)));
+      const contentHeight = Math.max(0, height - actionHeight - 1);
+      const end = Math.max(0, content.length - contentHeight);
+      const offset = Math.min(screen.contentOffset ?? end, end);
+      screen.contentHeight = contentHeight;
+      screen.contentEnd = end;
+      // Store the resolved position, so PgUp starts at the visible tail.
+      screen.contentOffset = offset;
+      return {
+        title: screen.title,
+        rows: [...content.slice(offset, offset + contentHeight), ...(height > actionHeight ? [paint.border('─'.repeat(width))] : []), ...selectionRows(items, screen.index, width, actionHeight)].slice(0, height),
+        hint: [keyHint('↑↓', 'action'), keyHint('Enter', 'run'), keyHint('PgUp/PgDn', 'output'), keyHint('Home/End', 'facts / latest'), keyHint('Esc', 'back')],
+        navigation: `${offset + 1}/${content.length}`,
+      };
+    }
     const input = height > 1 && screen.panel?.filterable !== false ? inputLayout(screen.filter, width - 2, 1) : undefined;
     const filter = input?.rows.map(row => '⌕ ' + row + (screen.filter.text ? '' : paint.muted('Filter options…'))) ?? [];
     return {title: screen.title, rows: [...filter, ...selectionRows(items, screen.index, width, height - filter.length)], cursor: input?.cursor && {...input.cursor, x: input.cursor.x + 2}, hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'open'), keyHint('Esc', 'back')], navigation: `${items.length ? screen.index + 1 : 0}/${items.length}`};

@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from reuleauxcoder.app.commands.process_views import (
-    ProcessRowViewModel,
-    ProcessSessionsViewModel,
-)
+from dataclasses import dataclass, replace
 
-from dataclasses import dataclass
-
+from reuleauxcoder.app.commands.capabilities import UICapability
 from reuleauxcoder.app.commands.matchers import match_template
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.panels import (
     CommandPanelSpec,
     PanelDefinition,
     PanelItem,
+)
+from reuleauxcoder.app.commands.process_views import (
+    ProcessRowViewModel,
+    ProcessSessionsViewModel,
 )
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.requests import ActionRequest
@@ -23,16 +23,15 @@ from reuleauxcoder.app.commands.shared import (
     slash_trigger,
 )
 from reuleauxcoder.app.commands.specs import ActionSpec, DuringTurnPolicy
+from reuleauxcoder.app.interaction_contracts import ConfirmRequest, InputTextRequest
+from reuleauxcoder.app.ui_events import UIEventKind
 from reuleauxcoder.domain.process import (
+    ProcessSessionError,
     ProcessSessionNotFound,
     ProcessSnapshot,
     ProcessState,
 )
 from reuleauxcoder.domain.process_manager import ManagedProcessView, ProcessManager
-from reuleauxcoder.app.ui_events import UIEventKind
-from reuleauxcoder.app.interaction_contracts import InputTextRequest
-from reuleauxcoder.app.commands.capabilities import UICapability
-
 
 _MAX_UI_OUTPUT_CHARS = 8_000
 
@@ -40,6 +39,7 @@ _MAX_UI_OUTPUT_CHARS = 8_000
 @dataclass(frozen=True, slots=True)
 class ListProcessesCommand:
     stop_picker: bool = False
+    refresh: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +152,8 @@ def _handle_list(command, ctx) -> CommandEffect:
         owner_session_id=owner_session_id,
         session_generation=generation,
     )
-    ctx.effect.open_view(
+    present = ctx.effect.refresh_view if command.refresh else ctx.effect.open_view
+    present(
         view,
         title=("Stop a Process" if command.stop_picker else "Process Sessions"),
         reuse_key=view.view_type,
@@ -168,6 +169,35 @@ def _handle_control(command, ctx) -> CommandEffect:
             kind=UIEventKind.COMMAND,
         )
         return ctx.effect.finish(control="continue")
+
+    if command.action not in {"poll", "interrupt", "terminate"}:
+        ctx.effect.error(f"Unknown process action: {command.action}")
+        return ctx.effect.finish(control="continue")
+
+    if command.action == "terminate":
+        if command.session_id == "all":
+            subject = "all unresolved processes owned by this session"
+        else:
+            try:
+                process = manager.get_view(
+                    command.session_id,
+                    agent_id=agent_id,
+                    owner_session_id=owner_session_id,
+                    session_generation=generation,
+                )
+            except ProcessSessionNotFound as error:
+                ctx.effect.error(str(error), kind=UIEventKind.COMMAND)
+                return ctx.effect.finish(control="continue")
+            subject = f"{process.command}\n{process.backend} · {process.cwd}\n{process.session_id}"
+        response = ctx.ui_interactor.confirm(
+            ConfirmRequest(
+                "Terminate process tree",
+                f"Stop this process and its descendants?\n\n{subject}",
+                severity="warning",
+            )
+        )
+        if response.cancelled or not response.confirmed:
+            return ctx.effect.finish(control="continue")
 
     if command.session_id == "all":
         if command.action != "terminate":
@@ -195,17 +225,17 @@ def _handle_control(command, ctx) -> CommandEffect:
             agent_id=agent_id,
             owner_session_id=owner_session_id,
             generation=generation,
+            retain_output=UICapability.MENUS in ctx.ui_profile.capabilities,
         )
-    except ProcessSessionNotFound as error:
-        ctx.effect.error(str(error), kind=UIEventKind.COMMAND)
-        return ctx.effect.finish(control="continue")
-    except Exception as error:
+    except ProcessSessionError as error:
         ctx.effect.error(
             f"Process operation was not confirmed: {error}",
             kind=UIEventKind.COMMAND,
         )
         return ctx.effect.finish(control="continue")
 
+    if UICapability.MENUS in ctx.ui_profile.capabilities:
+        return _refresh(manager, ctx, agent_id, owner_session_id, generation, snapshot)
     if command.action == "poll":
         ctx.effect.info(
             _snapshot_text(snapshot),
@@ -277,7 +307,7 @@ def _handle_secure_input(command, ctx) -> CommandEffect:
         )
         return ctx.effect.finish(control="continue")
     try:
-        manager.write_sensitive_line(
+        snapshot = manager.write_sensitive_line(
             command.session_id,
             response.value,
             consumer=f"human:{agent_id}",
@@ -285,19 +315,20 @@ def _handle_secure_input(command, ctx) -> CommandEffect:
             owner_session_id=owner_session_id,
             session_generation=generation,
         )
-    except Exception as error:
+    except (ProcessSessionError, ValueError) as error:
         ctx.effect.error(
             f"Hidden input was not confirmed for {command.session_id}: {error}",
             kind=UIEventKind.COMMAND,
         )
         return ctx.effect.finish(control="continue")
 
-    ctx.effect.info(
-        f"Hidden input was sent to {command.session_id}; its value was not recorded.",
-        kind=UIEventKind.COMMAND,
-        process_session_id=command.session_id,
-    )
-    return _refresh(manager, ctx, agent_id, owner_session_id, generation)
+    if UICapability.MENUS not in ctx.ui_profile.capabilities:
+        ctx.effect.info(
+            f"Hidden input was sent to {command.session_id}; its value was not recorded.",
+            kind=UIEventKind.COMMAND,
+            process_session_id=command.session_id,
+        )
+    return _refresh(manager, ctx, agent_id, owner_session_id, generation, snapshot)
 
 
 def _run_control(
@@ -307,6 +338,7 @@ def _run_control(
     agent_id: str,
     owner_session_id: str | None,
     generation: int,
+    retain_output: bool = False,
 ) -> ProcessSnapshot:
     common = {
         "consumer": f"human:{agent_id}",
@@ -315,7 +347,12 @@ def _run_control(
         "session_generation": generation,
     }
     if command.action == "poll":
-        return manager.poll(command.session_id, wait_ms=0, **common)
+        return manager.poll(
+            command.session_id,
+            wait_ms=0,
+            retain_output_chars=_MAX_UI_OUTPUT_CHARS if retain_output else None,
+            **common,
+        )
     if command.action == "interrupt":
         return manager.interrupt(command.session_id, **common)
     return manager.terminate(
@@ -331,6 +368,7 @@ def _refresh(
     agent_id: str,
     owner_session_id: str | None,
     generation: int,
+    snapshot: ProcessSnapshot | None = None,
 ) -> CommandEffect:
     view = _build_view(
         manager,
@@ -338,6 +376,10 @@ def _refresh(
         owner_session_id=owner_session_id,
         session_generation=generation,
     )
+    if snapshot is not None:
+        view = replace(
+            view, output_session_id=snapshot.session_id, output=_output_text(snapshot) or "(no output)"
+        )
     ctx.effect.refresh_view(
         view,
         title="Process Sessions",
@@ -356,13 +398,16 @@ def _snapshot_text(snapshot: ProcessSnapshot) -> str:
             f"output_decode_replaced={snapshot.output_decode_replaced}"
         ),
     ]
-    if snapshot.stdout:
-        lines.append("stdout:\n" + _safe_output(snapshot.stdout))
-    if snapshot.stderr:
-        lines.append("stderr:\n" + _safe_output(snapshot.stderr))
-    if not snapshot.stdout and not snapshot.stderr:
-        lines.append("(no new output)")
+    lines.append(_output_text(snapshot) or "(no new output)")
     return "\n".join(lines)
+
+
+def _output_text(snapshot: ProcessSnapshot) -> str:
+    return "\n".join(
+        f"{stream}:\n{_safe_output(value)}"
+        for stream, value in (("stdout", snapshot.stdout), ("stderr", snapshot.stderr))
+        if value
+    )
 
 
 def _safe_output(value: str) -> str:
@@ -375,7 +420,7 @@ def _safe_output(value: str) -> str:
     if len(safe) <= _MAX_UI_OUTPUT_CHARS:
         return safe
     omitted = len(safe) - _MAX_UI_OUTPUT_CHARS
-    return safe[:_MAX_UI_OUTPUT_CHARS] + f"\n… ({omitted} UI preview chars omitted)"
+    return f"… ({omitted} UI preview chars omitted)\n" + safe[-_MAX_UI_OUTPUT_CHARS:]
 
 
 def _single_line(value: str, limit: int = 80) -> str:
@@ -388,30 +433,48 @@ def command_panel_spec() -> CommandPanelSpec:
 
     def build(model: object, title: str) -> PanelDefinition:
         assert isinstance(model, ProcessSessionsViewModel)
-        items = tuple(
-            PanelItem(
-                label=session.session_id,
+
+        def process_item(session):
+            return PanelItem(
+                label=_single_line(session.command),
                 description=(
-                    f"{session.state} · {session.backend}/{session.stream_mode} · "
-                    f"{session.elapsed_seconds:.1f}s · {_single_line(session.command)}"
+                    f"{session.state} · {session.elapsed_seconds:.1f}s · "
+                    f"{session.backend}/{session.stream_mode}"
                 ),
-                action=None,
-                current=session.state != "exited",
+                id=session.session_id,
             )
-            for session in model.sessions
-        ) or (
+
+        active = tuple(
+            session for session in model.sessions if session.state != "exited"
+        )
+        ended = tuple(
+            session for session in model.sessions if session.state == "exited"
+        )
+        active_ids = {session.session_id for session in active}
+        ended_ids = {session.session_id for session in ended}
+        items = [process_item(session) for session in active]
+        if ended:
+            items.append(
+                PanelItem(
+                    f"Ended processes · {len(ended)}",
+                    "Inspect retained output and exit facts",
+                    id="ended",
+                )
+            )
+        items.append(
             PanelItem(
-                label="(no process sessions)",
-                description="long-running shell calls will appear here",
-                action=None,
-            ),
+                "Refresh processes",
+                "Reload process states and elapsed time",
+                ActionRequest("processes.list", ListProcessesCommand(refresh=True)),
+                id="refresh",
+            )
         )
         children: list[tuple[str, PanelDefinition]] = []
         for session in model.sessions:
             actions = [
                 PanelItem(
-                    label="poll output",
-                    description="read new output and latest process facts",
+                    label="Refresh output",
+                    description="Read output and update process facts",
                     action=ActionRequest(
                         "processes.control",
                         ControlProcessCommand("poll", session.session_id),
@@ -419,10 +482,10 @@ def command_panel_spec() -> CommandPanelSpec:
                 )
             ]
             if session.state != "exited":
-                if session.stream_mode == "pty":
+                if session.stream_mode == "pty" and session.state == "running":
                     actions.append(
                         PanelItem(
-                            label="send hidden input",
+                            label="Send hidden input…",
                             description="write one masked line directly to the PTY",
                             action=ActionRequest(
                                 "processes.secure_input",
@@ -433,16 +496,16 @@ def command_panel_spec() -> CommandPanelSpec:
                 actions.extend(
                     (
                         PanelItem(
-                            label="interrupt",
-                            description="send a soft interrupt",
+                            label="Interrupt",
+                            description="Send Ctrl+C; the process may handle or ignore it",
                             action=ActionRequest(
                                 "processes.control",
                                 ControlProcessCommand("interrupt", session.session_id),
                             ),
                         ),
                         PanelItem(
-                            label="terminate",
-                            description="stop the process tree",
+                            label="Terminate process tree…",
+                            description="Stop this process and its descendants; requires confirmation",
                             action=ActionRequest(
                                 "processes.control",
                                 ControlProcessCommand("terminate", session.session_id),
@@ -454,19 +517,52 @@ def command_panel_spec() -> CommandPanelSpec:
                 (
                     session.session_id,
                     PanelDefinition(
-                        view_type="process_session_actions",
-                        title=f"{title} · {session.session_id}",
+                        view_type=f"process_session:{session.session_id}",
+                        title=f"{session.state} · {session.backend} · {_single_line(session.command)}",
                         items=tuple(actions),
-                        return_to_parent_on_submit=True,
+                        keep_open_on_submit=True,
+                        show_auxiliary_actions=False,
+                        body=_process_facts(session),
+                        output=model.output
+                        if model.output_session_id == session.session_id
+                        else None,
+                        on_open=ActionRequest(
+                            "processes.control",
+                            ControlProcessCommand("poll", session.session_id),
+                        ),
                     ),
                 )
             )
+        children.append(
+            (
+                "ended",
+                PanelDefinition(
+                    view_type="process_sessions_ended",
+                    title="Ended processes",
+                    items=tuple(process_item(session) for session in ended),
+                    children=tuple(
+                        child
+                        for child in children
+                        if child[0] in ended_ids
+                    ),
+                    filterable=True,
+                    show_auxiliary_actions=False,
+                ),
+            )
+        )
         return PanelDefinition(
             view_type=model.view_type,
             title=title,
-            items=items,
-            children=tuple(children),
+            items=tuple(items),
+            children=tuple(
+                child
+                for child in children
+                if child[0] == "ended"
+                or child[0] in active_ids
+            ),
             filterable=True,
+            keep_open_on_submit=True,
+            show_auxiliary_actions=False,
         )
 
     return CommandPanelSpec(
@@ -474,6 +570,27 @@ def command_panel_spec() -> CommandPanelSpec:
         ProcessSessionsViewModel,
         build,
     )
+
+
+def _process_facts(session: ProcessRowViewModel) -> str:
+    facts = [
+        session.command,
+        f"{session.state} · {session.elapsed_seconds:.1f}s · {session.backend}/{session.stream_mode}",
+        f"Directory: {session.cwd}",
+        f"Session: {session.session_id}",
+    ]
+    if session.exit_code is not None:
+        facts.append(f"Exit code: {session.exit_code}")
+    if session.termination_reason:
+        facts.append(f"Termination: {session.termination_reason}")
+    if session.output_truncated:
+        facts.append("Some process output was truncated.")
+    if session.output_decode_replaced:
+        facts.append("Invalid output bytes were replaced while decoding.")
+    facts.append(
+        f"Output preview: latest {_MAX_UI_OUTPUT_CHARS:,} characters per stream read by this interface"
+    )
+    return "\n".join(facts)
 
 
 def register_actions(registry: ActionRegistry) -> None:
@@ -509,6 +626,7 @@ def register_actions(registry: ActionRegistry) -> None:
                 ),
                 parser=_parse_control,
                 handler=_handle_control,
+                interactive=True,
                 during_turn=DuringTurnPolicy.IMMEDIATE,
             ),
             ActionSpec(

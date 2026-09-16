@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
 
 from reuleauxcoder.app.commands.requests import ActionRequest
 
@@ -17,6 +17,7 @@ class PanelItem:
     description: str
     action: ActionRequest | None = None
     current: bool = False
+    id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,16 +27,19 @@ class PanelDefinition:
     view_type: str
     title: str
     items: tuple[PanelItem, ...]
-    children: tuple[tuple[str, "PanelDefinition"], ...] = ()
+    children: tuple[tuple[str, PanelDefinition], ...] = ()
     filterable: bool = False
     keep_open_on_submit: bool = False
     return_to_parent_on_submit: bool = False
     show_auxiliary_actions: bool = True
+    body: str = ""
+    output: str | None = None
+    on_open: ActionRequest | None = None
 
-    def child_for(self, label: str) -> "PanelDefinition | None":
-        """Return the child panel attached to a row label."""
+    def child_for(self, key: str) -> PanelDefinition | None:
+        """Return a child by stable item ID, or label for unkeyed items."""
         return next(
-            (child for item_label, child in self.children if item_label == label),
+            (child for item_key, child in self.children if item_key == key),
             None,
         )
 

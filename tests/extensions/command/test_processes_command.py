@@ -1,7 +1,4 @@
 from __future__ import annotations
-from reuleauxcoder.app.commands.requests import ActionRequest
-from reuleauxcoder.app.commands.service import CommandService
-from reuleauxcoder.app.ui_events import UIEventBus
 
 import shlex
 import sys
@@ -10,8 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from reuleauxcoder.app.commands.capabilities import UICapability, UIProfile
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.registry import ActionRegistry
+from reuleauxcoder.app.commands.requests import ActionRequest
+from reuleauxcoder.app.commands.service import CommandService
+from reuleauxcoder.app.interaction_contracts import ConfirmResponse, InputTextResponse
+from reuleauxcoder.app.ui_events import UIEventBus
 from reuleauxcoder.domain.process import ProcessState
 from reuleauxcoder.domain.process_manager import ProcessManager
 from reuleauxcoder.extensions.command.builtin.processes import (
@@ -31,14 +33,13 @@ from reuleauxcoder.interfaces.cli.registration import (
     CLI_PROFILE,
     REMOTE_CLI_PROFILE,
 )
-from reuleauxcoder.app.interaction_contracts import InputTextResponse
 
 
 def _python_command(source: str) -> str:
     return f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"
 
 
-def _context(manager: ProcessManager, *, interactor=None):
+def _context(manager: ProcessManager, *, interactor=None, profile=CLI_PROFILE):
     return SimpleNamespace(
         agent=SimpleNamespace(
             process_manager=manager,
@@ -48,6 +49,7 @@ def _context(manager: ProcessManager, *, interactor=None):
         ),
         effect=CommandEffect(),
         ui_interactor=interactor,
+        ui_profile=profile,
     )
 
 
@@ -75,6 +77,69 @@ def test_hidden_input_command_is_not_advertised_to_unmasked_remote_cli() -> None
     assert registry.parse("/ps input proc_1", ui_profile=REMOTE_CLI_PROFILE) is None
 
 
+def test_process_panel_poll_retains_output_without_notices_and_rejecting_stop_keeps_process(
+    tmp_path,
+):
+    manager = ProcessManager()
+    handle = manager.start(
+        LocalProcessPort(),
+        _python_command(
+            "print('retained output', flush=True); import time; time.sleep(30)"
+        ),
+        cwd=str(tmp_path),
+        runtime_timeout=60,
+        tty=False,
+        owner_agent_id="agent",
+        owner_session_id="session",
+        session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    ctx = _context(
+        manager,
+        profile=UIProfile("tui", "TUI", frozenset({UICapability.MENUS})),
+        interactor=SimpleNamespace(
+            confirm=lambda request: ConfirmResponse(confirmed=False)
+        ),
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            ctx.effect = CommandEffect()
+            result = _handle_control(
+                ControlProcessCommand("poll", handle.session_id), ctx
+            )
+            if "retained output" in result.views[-1].view_model.output:
+                break
+            assert time.monotonic() < deadline, "process did not produce output"
+            time.sleep(0.01)
+        assert not result.notifications
+        ctx.effect = CommandEffect()
+        again = _handle_control(ControlProcessCommand("poll", handle.session_id), ctx)
+        assert again.views[-1].view_model.output == result.views[-1].view_model.output
+        ctx.effect = CommandEffect()
+        _handle_control(ControlProcessCommand("terminate", handle.session_id), ctx)
+        assert (
+            manager.get_view(
+                handle.session_id,
+                agent_id="agent",
+                owner_session_id="session",
+                session_generation=0,
+            ).state
+            is ProcessState.RUNNING
+        )
+        snapshot = manager.poll(
+            handle.session_id,
+            consumer="model",
+            agent_id="agent",
+            owner_session_id="session",
+            session_generation=0,
+        )
+        assert "retained output" in snapshot.stdout
+    finally:
+        manager.shutdown(grace_seconds=0)
+
+
 def test_process_panel_is_owned_by_process_command_and_exposes_factual_actions(
     tmp_path,
 ) -> None:
@@ -92,7 +157,13 @@ def test_process_panel_is_owned_by_process_command_and_exposes_factual_actions(
         origin_turn_id="turn",
     )
     manager.publish(handle.session_id)
-    ctx = _context(manager)
+    confirmations = []
+
+    def confirm(request):
+        confirmations.append(request)
+        return ConfirmResponse(confirmed=True)
+
+    ctx = _context(manager, interactor=SimpleNamespace(confirm=confirm))
 
     result = _handle_list(ListProcessesCommand(), ctx)
     view = result.views[0].view_model
@@ -101,6 +172,15 @@ def test_process_panel_is_owned_by_process_command_and_exposes_factual_actions(
     assert definition is not None
     child = definition.child_for(handle.session_id)
     assert child is not None
+    assert (
+        definition.items[0].label.startswith(sys.executable)
+        or "python" in definition.items[0].label
+    )
+    assert child.keep_open_on_submit
+    assert not child.show_auxiliary_actions
+    assert child.on_open == ActionRequest(
+        "processes.control", ControlProcessCommand("poll", handle.session_id)
+    )
     assert tuple(item.action for item in child.items) == (
         ActionRequest(
             "processes.control", ControlProcessCommand("poll", handle.session_id)
@@ -120,6 +200,8 @@ def test_process_panel_is_owned_by_process_command_and_exposes_factual_actions(
     )
     assert "latest state is" in controlled.notifications[0].message
     assert controlled.views[-1].action == "refresh"
+    assert handle.session_id in confirmations[0].message
+    assert "descendants" in confirmations[0].message
     manager.shutdown(grace_seconds=0)
 
 

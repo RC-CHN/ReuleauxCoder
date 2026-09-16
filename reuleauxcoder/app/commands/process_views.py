@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True, slots=True)
 class ProcessRowViewModel:
     session_id: str
@@ -23,6 +24,8 @@ class ProcessRowViewModel:
 class ProcessSessionsViewModel:
     sessions: tuple[ProcessRowViewModel, ...]
     view_type: str = "process_sessions"
+    output_session_id: str | None = None
+    output: str = ""
 
     def to_payload(self) -> dict[str, object]:
         return {

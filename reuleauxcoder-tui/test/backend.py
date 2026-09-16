@@ -1,8 +1,9 @@
 """Real runtime/stdio transport with a deterministic LLM loop; no network or API key."""
 
+import shlex
+import sys
 from dataclasses import fields
 from pathlib import Path
-import sys
 from types import MappingProxyType, SimpleNamespace
 
 from reuleauxcoder.app.commands.capabilities import UICapability, UIProfile
@@ -43,6 +44,7 @@ from reuleauxcoder.domain.runtime.events import (
     ToolCallStarted,
     ToolOutputDelta,
 )
+from reuleauxcoder.infrastructure.process.local import LocalProcessPort
 from reuleauxcoder.infrastructure.rpc.peer import RpcPeer
 from reuleauxcoder.infrastructure.rpc.transport import StreamTransport
 from reuleauxcoder.interfaces.entrypoint.rpc import create_server
@@ -225,6 +227,24 @@ def contract_fixture():
 
 
 peer.methods["test.fixture"] = contract_fixture
+
+
+def process_fixture():
+    source = "import time; print('\\n'.join(f'output {i}' for i in range(200)), flush=True); time.sleep(30)"
+    command = f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"
+    ids = []
+    for _ in range(2):
+        handle = agent.process_manager.start(
+            LocalProcessPort(), command, cwd=str(Path.cwd()), runtime_timeout=60, tty=False,
+            owner_agent_id=agent.agent_id, owner_session_id=agent.current_session_id,
+            session_generation=agent.session_generation, origin_turn_id=None,
+        )
+        agent.process_manager.publish(handle.session_id)
+        ids.append(handle.session_id)
+    return ids
+
+
+peer.methods["test.processes"] = process_fixture
 peer.start()
 try:
     peer.closed.wait()

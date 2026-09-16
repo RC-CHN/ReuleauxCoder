@@ -12,8 +12,8 @@ import type {HistoryOperation} from '../protocol/history.js';
 import {fields} from '../ui/format.js';
 import {ScrollMotion} from './scroll.js';
 
-export interface Item {label: string; description: string; current?: boolean; select(): void | Promise<void>}
-export interface ListScreen {kind: 'list'; title: string; items: Item[]; index: number; filter: Editor; menu?: Menu; panel?: Panel}
+export interface Item {label: string; description: string; current?: boolean; id?: string | null; select(): void | Promise<void>}
+export interface ListScreen {kind: 'list'; title: string; items: Item[]; index: number; filter: Editor; menu?: Menu; panel?: Panel; panelPath?: string[]; output?: string; contentOffset?: number | null; contentHeight?: number; contentEnd?: number}
 export interface DocumentScreen {kind: 'document'; title: string; body: string; offset: number; menu?: Menu}
 export interface FormScreen {kind: 'form'; title: string; action: Action; values: {[key: string]: Json}; index: number; input: Editor; error: string}
 export interface HistoryScreen {kind: 'history'; title: string; browser: HistoryBrowser; menu?: never}
@@ -149,27 +149,45 @@ export class TuiController extends EventEmitter {
       if (presentation?.refresh !== 'update') return;
       const index = this.screens.findIndex(screen => screen.kind === 'list' && screen.panel?.view_type === presentation.definition.view_type);
       if (index < 0) return;
-      const previous = this.screens[index] as ListScreen;
-      const replacement = this.panelScreen(presentation.definition, view, previous.menu);
-      replacement.filter = previous.filter;
-      const oldLabel = previous.items[previous.index]?.label;
-      replacement.index = Math.max(0, replacement.items.findIndex(item => item.label === oldLabel));
-      this.screens[index] = replacement; this.changed(); return;
+      const panels: {panel: Panel; path: string[]}[] = [];
+      const collect = (panel: Panel, path: string[]) => {panels.push({panel, path}); for (const [id, child] of panel.children) collect(child, [...path, id]);};
+      collect(presentation.definition, []);
+      for (let i = index; i < this.screens.length; i++) {
+        const previous = this.screens[i];
+        if (previous.kind !== 'list' || !previous.panel) continue;
+        const matches = panels.filter(item => item.panel.view_type === previous.panel!.view_type);
+        const match = matches.find(item => isDeepStrictEqual(item.path, previous.panelPath)) ?? (matches.length === 1 ? matches[0] : undefined);
+        if (!match) {this.screens.length = i; break;}
+        const {panel, path} = match;
+        const replacement = this.panelScreen(panel, view, previous.menu, path);
+        replacement.filter = previous.filter;
+        replacement.output = panel.output ?? previous.output;
+        replacement.contentOffset = previous.contentOffset === previous.contentEnd ? null : previous.contentOffset;
+        const selected = this.listItems(previous)[previous.index];
+        replacement.index = Math.max(0, this.listItems(replacement).findIndex(item => (item.id ?? item.label) === (selected?.id ?? selected?.label)));
+        this.screens[i] = replacement;
+      }
+      this.changed(); return;
     }
     this.screens = presentation ? [this.panelScreen(presentation.definition, view, menu)] : [{kind: 'document', title: view.title, body: fields(view.view_model), offset: 0, menu}];
     this.changed();
   }
-  private panelScreen(panel: Panel, view: View, menu?: Menu): ListScreen {
-    const items: Item[] = panel.items.map(item => ({label: item.label, description: item.description, current: item.current, select: () => this.selectPanel(panel, item, view, menu)}));
+  private panelScreen(panel: Panel, view: View, menu?: Menu, path: string[] = []): ListScreen {
+    const items: Item[] = panel.items.map(item => ({label: item.label, description: item.description, current: item.current, id: item.id, select: () => this.selectPanel(panel, item, view, menu)}));
     if (panel.show_auxiliary_actions !== false) {
       items.push({label: 'View all details', description: 'Inspect every field in this view', select: () => this.document(view.title, fields(view.view_model), menu)});
       if (menu) items.push({label: 'More actions…', description: 'All operations and parameter forms', select: () => {this.screens.push(this.list(menu.title, this.actionItems(menu), menu)); this.changed();}});
     }
-    return this.list(panel.title, items, menu, panel);
+    return {...this.list(panel.title, items, menu, panel), panelPath: path, output: panel.output ?? undefined, contentOffset: null};
   }
   private async selectPanel(panel: Panel, item: PanelItem, view: View, menu?: Menu) {
-    const child = panel.children.find(([label]) => label === item.label)?.[1];
-    if (child) {this.screens.push(this.panelScreen(child, view, menu)); this.changed(); return;}
+    const child = panel.children.find(([id]) => id === (item.id ?? item.label))?.[1];
+    if (child) {
+      const path = this.screen?.kind === 'list' ? this.screen.panelPath ?? [] : [];
+      this.screens.push(this.panelScreen(child, view, menu, [...path, item.id ?? item.label])); this.changed();
+      if (child.on_open) await this.client.submitAction(child.on_open.action_id, child.on_open.command);
+      return;
+    }
     if (!item.action) return;
     if (!panel.keep_open_on_submit) {
       if (panel.return_to_parent_on_submit) this.screens.pop();
@@ -298,7 +316,10 @@ export class TuiController extends EventEmitter {
     if (input === 'OP' || input === '\x1bOP' || key.ctrl && input === 'g') {this.showHelp(); return;}
     if (key.pageUp || key.pageDown) {
       const delta = (key.pageUp ? -1 : 1) * Math.max(1, this.viewportRows - 1);
-      if (!this.active && this.screen?.kind === 'list') this.screen.index = Math.max(0, Math.min(this.listItems(this.screen).length - 1, this.screen.index + delta));
+      if (!this.active && this.screen?.kind === 'list') {
+        if (this.screen.panel?.body) this.screen.contentOffset = Math.max(0, (this.screen.contentOffset ?? 0) + (key.pageUp ? -1 : 1) * Math.max(1, (this.screen.contentHeight ?? 1) - 1));
+        else this.screen.index = Math.max(0, Math.min(this.listItems(this.screen).length - 1, this.screen.index + delta));
+      }
       else {this.scrollBy(delta); return;}
       this.changed(); return;
     }
@@ -316,6 +337,7 @@ export class TuiController extends EventEmitter {
         const items = this.listItems(screen);
         if (key.upArrow || key.downArrow) screen.index = items.length ? (screen.index + (key.upArrow ? -1 : 1) + items.length) % items.length : 0;
         else if (key.return) await items[screen.index]?.select();
+        else if (screen.panel?.body && (key.home || key.end)) screen.contentOffset = key.home ? 0 : null;
         else if (screen.panel?.filterable !== false) {screen.filter = edit(screen.filter, input, key); screen.index = 0;}
       } else if (screen.kind === 'document') {
         if (key.tab && screen.menu) this.screens.push(this.list(screen.menu.title, this.actionItems(screen.menu), screen.menu));

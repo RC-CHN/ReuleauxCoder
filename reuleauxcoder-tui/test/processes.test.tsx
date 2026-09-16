@@ -12,9 +12,71 @@ import {updateProcess, processElapsed} from '../src/state/processes.js';
 import {App} from '../src/ui/App.js';
 import {sidebarRows} from '../src/ui/sidebar.js';
 import {safe} from '../src/ui/format.js';
-import {until} from './helpers.js';
+import {backend, until} from './helpers.js';
+import type {ListScreen} from '../src/state/controller.js';
 
 const processEvent = (overrides = {}) => ({process_session_id: 'proc_test', command: 'npm run dev', state: 'running', change: 'published', elapsed_seconds: 0, stdout: '', stderr: '', ...overrides});
+
+test('process panels keep identity, output and scroll position through polling, confirmation and exit', async t => {
+  const b = await backend(); t.after(() => b.close());
+  const ids = await b.peer.request('test.processes') as string[];
+  const c = b.controller;
+  const app = render(<App controller={c}/>); t.after(() => app.cleanup());
+  const screen = () => c.screen as ListScreen;
+  await c.openMenu(c.menus.find(menu => menu.name === '/ps')!);
+  await until(() => screen()?.panel?.view_type === 'process_sessions');
+  assert.equal(screen().items[0].label, screen().items[1].label, 'same commands remain separate processes');
+  await c.key('', {downArrow: true});
+  const beforeRefresh = screen();
+  await screen().items.find(item => item.id === 'refresh')!.select();
+  await until(() => screen() !== beforeRefresh);
+  assert.equal(c.listItems(screen())[screen().index].id, ids[1]);
+  await screen().items.find(item => item.id === ids[1])!.select();
+  await until(() => screen()?.output?.includes('output 199'));
+  assert.equal(screen().panel!.view_type, `process_session:${ids[1]}`);
+  await until(() => (screen().contentOffset ?? 0) > 0);
+  const end = screen().contentOffset!;
+  await c.key('', {pageUp: true});
+  await until(() => screen().contentOffset! < end);
+  const offset = screen().contentOffset;
+  const transcript = [...c.session.cells];
+  const previous = screen();
+  await c.key('', {return: true});
+  await until(() => screen() !== previous);
+  assert.equal(screen().contentOffset, offset);
+  assert(screen().output!.includes('output 199'));
+  assert.deepEqual(c.session.cells, transcript, 'poll output stays in the panel');
+  await c.key('', {home: true});
+  await until(() => app.lastFrame()?.includes(ids[1]));
+  const stop = () => screen().items.find(item => item.label === 'Terminate process tree…')!.select();
+  await stop();
+  await until(() => c.active?.kind === 'confirm');
+  assert(c.active!.request.message.includes(ids[1]));
+  await c.key('n');
+  await until(() => !c.active);
+  assert.equal(screen().panel!.view_type, `process_session:${ids[1]}`);
+  await stop();
+  await until(() => c.active?.kind === 'confirm');
+  const beforeStop = screen();
+  await c.key('y');
+  await until(() => !c.active && screen() !== beforeStop);
+  const deadline = Date.now() + 5000;
+  while (!screen().panel?.body?.includes('exited')) {
+    assert(Date.now() < deadline, 'termination was not observed');
+    const beforePoll = screen();
+    await screen().items.find(item => item.label === 'Refresh output')!.select();
+    await until(() => screen() !== beforePoll);
+  }
+  assert.deepEqual(screen().items.map(item => item.label), ['Refresh output']);
+  assert(screen().output!.includes('output 199'));
+  await c.key('', {escape: true});
+  assert.equal(screen().panel!.view_type, 'process_sessions');
+  assert(screen().items.some(item => item.id === ids[0]));
+  await screen().items.find(item => item.id === 'ended')!.select();
+  await screen().items.find(item => item.id === ids[1])!.select();
+  await until(() => screen().output?.includes('output 199'));
+  assert.equal(screen().panel!.view_type, `process_session:${ids[1]}`);
+});
 
 test('process output survives chunk boundaries and completion, which is announced once', () => {
   const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));

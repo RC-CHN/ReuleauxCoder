@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 import concurrent.futures
-from dataclasses import dataclass, field, replace
-from enum import Enum
 import threading
 import time
 import uuid
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
+from enum import Enum
 
 from reuleauxcoder.domain.process import (
     MAX_PROCESS_INPUT_BYTES,
@@ -23,8 +23,8 @@ from reuleauxcoder.domain.process import (
     ProcessShutdownReport,
     ProcessSnapshot,
     ProcessState,
-    ProcessStreamMode,
     ProcessStreamHandler,
+    ProcessStreamMode,
 )
 
 
@@ -94,9 +94,24 @@ class _ManagedEntry:
     input_bytes: int = 0
     input_lock: threading.Lock = field(default_factory=threading.Lock)
     sensitive_values: list[str] = field(default_factory=list)
-    output_filters: dict[tuple[str, str], "_SensitiveOutputFilter"] = field(
+    output_filters: dict[tuple[str, str], _SensitiveOutputFilter] = field(
         default_factory=dict
     )
+    output_tails: dict[str, _ConsumerOutputTail] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class _ConsumerOutputTail:
+    """Optional bounded, redacted output retained for a polling consumer."""
+
+    limit: int
+    stdout: str = ""
+    stderr: str = ""
+
+    def append(self, snapshot: ProcessSnapshot) -> ProcessSnapshot:
+        self.stdout = (self.stdout + snapshot.stdout)[-self.limit :]
+        self.stderr = (self.stderr + snapshot.stderr)[-self.limit :]
+        return replace(snapshot, stdout=self.stdout, stderr=self.stderr)
 
 
 @dataclass(slots=True)
@@ -334,7 +349,10 @@ class ProcessManager:
         session_generation: int,
         wait_ms: int = 0,
         mark_observed: bool = True,
+        retain_output_chars: int | None = None,
     ) -> ProcessSnapshot:
+        if retain_output_chars is not None and retain_output_chars < 1:
+            raise ValueError("retain_output_chars must be positive")
         entry, cursor, consumer_lock = self._entry_and_cursor(
             session_id,
             consumer=consumer,
@@ -373,6 +391,13 @@ class ProcessManager:
                     if mark_observed:
                         entry.observed = True
                         entry.observed_at = time.monotonic()
+                if retain_output_chars is not None:
+                    tail = entry.output_tails.setdefault(
+                        consumer, _ConsumerOutputTail(retain_output_chars)
+                    )
+                    tail.limit = retain_output_chars
+                if tail := entry.output_tails.get(consumer):
+                    snapshot = tail.append(snapshot)
         return snapshot
 
     def write(

@@ -111,6 +111,8 @@ node reuleauxcoder-tui/dist/cli.js --theme /path/to/theme.json
 | `/reset`、`/compact`、`/quit` | 清空、压缩、保存退出 |
 
 `/compact` 直接打开策略面板：默认选中旧对话摘要，也可选择精简工具输出或深度压缩；只有深度压缩需要额外确认。面板显示后端估计的上下文用量，执行后报告前后变化。CLI 复用同一组选项；`/compact force <snip|summarize|collapse>` 仍可直接指定策略。
+
+`/ps` 按命令选择进程，显示状态、耗时和本地/远端来源；已结束进程放在二级列表。进入详情自动读取输出，↑↓ 选择操作、Enter 执行、PgUp/PgDn 滚动、Home/End 查看进程信息或最新输出。刷新、打断和密文输入后仍留在详情页，终止进程树需要确认；Esc 只关闭面板。人工输出保留每个流最近 8,000 字符，读取游标独立于模型，重新进入详情不会丢掉已读输出。CLI 的显式 `/ps poll|interrupt|terminate <id>` 和 `/stop <id|all>` 仍可用。
 | `/help`、`/config`、`/tokens`、`/status`、`/debug` | 帮助、配置、token、性能与调试 |
 
 `View all details` 展示视图的全部字段。命令帮助里保留的旧 CLI 语法是后端参考信息；新版输入区的 slash 用于打开一级菜单。

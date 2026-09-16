@@ -69,7 +69,7 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
   const bodyHeight = bodyBudget - queue.length;
   const available = contentHeight - queue.length;
   const listLength = c.screen?.kind === 'list' ? c.listItems(c.screen).length : c.palette.length;
-  const desiredPanelHeight = c.screen?.kind === 'history' ? available : c.active || c.screen?.kind === 'document' || c.screen?.kind === 'form' ? 18 : Math.min(18, listLength * (panelWidth >= 45 ? 2 : 1) + (c.screen ? 1 : 0));
+  const desiredPanelHeight = c.screen?.kind === 'history' || c.screen?.kind === 'list' && c.screen.panel?.body ? available : c.active || c.screen?.kind === 'document' || c.screen?.kind === 'form' ? 18 : Math.min(18, listLength * (panelWidth >= 45 ? 2 : 1) + (c.screen ? 1 : 0));
   const panelCapacity = hasPanel ? Math.max(1, Math.min(desiredPanelHeight, available - (c.active ? 1 : 4) - panelHintBudget)) : 0;
   const panel = hasPanel ? panelRows(c, panelWidth, panelCapacity, panelLayout) : null;
   const panelHeight = panel ? Math.max(1, Math.min(panelCapacity, panel.rows.length)) : 0;
