@@ -3123,10 +3123,9 @@ class SessionStore:
         trusted_last_event_seq: int = 0,
     ) -> _HistoryLoadResult:
         """Load history, retaining safe facts for every recoverable failure."""
+        decoded_events: list[HistoryEvent] = []
         events: list[HistoryEvent] = []
         issues = _RestoreIssueCollector()
-        seen_event_ids: set[str] = set()
-        previous_seq = 0
         physical_line_count = 0
         decoded_sequence_floor = 0
 
@@ -3196,8 +3195,6 @@ class SessionStore:
                         expected_session_id=expected_session_id,
                     )
                     event = HistoryEvent.from_dict(payload)
-                    if event.event_id in seen_event_ids or event.seq <= previous_seq:
-                        raise ValueError("history event ordering is invalid")
                     event, _ = self._compact_legacy_request_event(event)
                 except (
                     AttributeError,
@@ -3213,17 +3210,42 @@ class SessionStore:
                 if failure_type is not None:
                     record_issue("history_decode", failure_type)
                     continue
-                events.append(event)
-                seen_event_ids.add(event.event_id)
-                previous_seq = event.seq
+                decoded_events.append(event)
                 if total_bytes and time.monotonic() - started >= 0.5:
                     percent = min(100, int(read_bytes * 100 / total_bytes))
                     if percent >= next_percent and percent < 100:
                         self._report_progress(
                             f"Reading history ledger... {percent}% "
-                            f"({len(events)} event(s))."
+                            f"({len(decoded_events)} event(s))."
                         )
                         next_percent = (percent // 10 + 1) * 10
+
+        repaired_events, repaired = self._repair_legacy_store_side_sequence_reuse(
+            decoded_events
+        )
+        repaired_is_complete = (
+            repaired
+            and not issues.facts()
+            and len(decoded_events) == physical_line_count
+            and self._history_event_ordering_is_valid(repaired_events)
+        )
+        if repaired_is_complete:
+            try:
+                self._atomic_replace_history(events_path, repaired_events)
+            except SessionRestoreError as error:
+                record_issue(error.phase, error.error_type)
+            else:
+                decoded_events = repaired_events
+
+        seen_event_ids: set[str] = set()
+        previous_seq = 0
+        for event in decoded_events:
+            if event.event_id in seen_event_ids or event.seq <= previous_seq:
+                record_issue("history_decode", "ValueError")
+                continue
+            events.append(event)
+            seen_event_ids.add(event.event_id)
+            previous_seq = event.seq
 
         self._report_progress(
             f"History ledger ready ({len(events)} event(s), "
@@ -3239,6 +3261,73 @@ class SessionStore:
                 max((event.seq for event in events), default=0),
             ),
         )
+
+    @staticmethod
+    def _history_event_ordering_is_valid(events: list[HistoryEvent]) -> bool:
+        seen_event_ids: set[str] = set()
+        previous_seq = 0
+        for event in events:
+            if event.event_id in seen_event_ids or event.seq <= previous_seq:
+                return False
+            seen_event_ids.add(event.event_id)
+            previous_seq = event.seq
+        return True
+
+    @staticmethod
+    def _repair_legacy_store_side_sequence_reuse(
+        events: list[HistoryEvent],
+    ) -> tuple[list[HistoryEvent], bool]:
+        """Repair the exact sequence-reuse pattern produced by old stores."""
+        repaired = list(events)
+        changed = False
+        index = 1
+        while index + 2 < len(repaired):
+            diagnostic = repaired[index - 1]
+            exit_message = repaired[index]
+            exit_lifecycle = repaired[index + 1]
+            following = repaired[index + 2]
+
+            diagnostic_message = diagnostic.payload.get("message")
+            diagnostic_content = (
+                diagnostic_message.get("content")
+                if isinstance(diagnostic_message, dict)
+                else None
+            )
+            exit_payload_message = exit_message.payload.get("message")
+            exit_content = (
+                exit_payload_message.get("content")
+                if isinstance(exit_payload_message, dict)
+                else None
+            )
+            matches_legacy_bug = (
+                diagnostic.kind == "message_committed"
+                and diagnostic.payload.get("source") == "session_diagnostic"
+                and isinstance(diagnostic_content, str)
+                and "[LLM_ERROR_DIAGNOSTIC]" in diagnostic_content
+                and exit_message.kind == "message_committed"
+                and exit_message.payload.get("source") == "session_exit"
+                and isinstance(exit_content, str)
+                and exit_content.startswith("[SESSION_EXIT]")
+                and exit_message.seq == diagnostic.seq
+                and exit_lifecycle.kind == "session_lifecycle"
+                and exit_lifecycle.payload.get("source") == "session_exit"
+                and exit_lifecycle.payload.get("message_event_id")
+                == exit_message.event_id
+                and exit_lifecycle.seq == diagnostic.seq + 1
+                and following.seq == diagnostic.seq + 3
+            )
+            if not matches_legacy_bug:
+                index += 1
+                continue
+
+            repaired[index] = replace(exit_message, seq=diagnostic.seq + 1)
+            repaired[index + 1] = replace(
+                exit_lifecycle,
+                seq=diagnostic.seq + 2,
+            )
+            changed = True
+            index += 3
+        return repaired, changed
 
     @staticmethod
     def _validate_history_event_payload(
