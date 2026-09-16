@@ -4,12 +4,13 @@ import test from 'node:test';
 import {PassThrough} from 'node:stream';
 import {setTimeout as delay} from 'node:timers/promises';
 import {render} from 'ink-testing-library';
+import CursorContext from '../node_modules/ink/build/components/CursorContext.js';
 import {RpcPeer} from '../src/protocol/peer.js';
 import {RuntimeClient} from '../src/protocol/client.js';
 import {TuiController} from '../src/state/controller.js';
 import {editor, edit} from '../src/state/editor.js';
 import {App} from '../src/ui/App.js';
-import {inputRows, TranscriptLayout} from '../src/ui/viewport.js';
+import {inputLayout, inputRows, TranscriptLayout, type CursorPosition} from '../src/ui/viewport.js';
 import {markdown, safe} from '../src/ui/format.js';
 import {panelRows} from '../src/ui/panels.js';
 import {TextLayout} from '../src/ui/text-layout.js';
@@ -21,10 +22,13 @@ import {until, backend} from './helpers.js';
 test('real Ink input handles F keys, Unicode paste, menus, resize and secret masking', async t => {
   const b = await backend(); t.after(() => b.close());
   const c = b.controller;
-  const app = render(<App controller={c}/>); t.after(() => app.cleanup());
+  let cursor: CursorPosition | undefined;
+  const app = render(<CursorContext.Provider value={{setCursorPosition: value => {cursor = value;}}}><App controller={c}/></CursorContext.Provider>); t.after(() => app.cleanup());
   await until(() => app.lastFrame()?.includes('Ready'));
+  await until(() => cursor?.x === 5);
   app.stdin.write('\x1bOQ');
   await until(() => app.lastFrame()?.includes('Session details'));
+  assert.equal(cursor, undefined, 'documents do not claim the IME cursor');
   app.stdin.write('\x1b'); await until(() => !c.screen);
   const transcript = [...c.session.cells];
   app.stdin.write('/model');
@@ -42,6 +46,8 @@ test('real Ink input handles F keys, Unicode paste, menus, resize and secret mas
   app.stdin.write('\x1b[200~中文\n👩🏽‍💻\x1b[201~');
   await until(() => c.composer.text === '中文\n👩🏽‍💻');
   await until(() => app.lastFrame()?.includes('中文'));
+  await until(() => cursor?.x === 7);
+  assert.equal(cursor!.y, safe(app.lastFrame()!).split('\n').findIndex(row => row.includes('👩🏽‍💻')));
   c.resize(12, 40);
   await until(() => (app.lastFrame()?.split('\n').length ?? 99) <= 11);
   assert(app.lastFrame()?.includes('中文'));
@@ -63,12 +69,27 @@ test('real Ink input handles F keys, Unicode paste, menus, resize and secret mas
   app.stdin.write('1'); await until(() => c.active?.kind === 'input_text');
   app.stdin.write('\x1b[200~top-secret\x1b[201~');
   await until(() => app.lastFrame()?.includes('••••'));
+  assert.equal(cursor?.x, 13, 'masked input anchors after bullets, inside the panel rail');
+  assert.equal(cursor!.y, safe(app.lastFrame()!).split('\n').findIndex(row => row.includes('••••')));
   assert(app.frames.every(frame => !frame.includes('top-secret')));
   assert.equal(c.composer.text, '中文\n👩🏽‍💻');
   app.stdin.write('\x1b'); await until(() => !b.client.state.running);
   app.stdin.write('\x1bOS'); await until(() => c.expanded);
   app.stdin.write('\x1b[14~'); await until(() => !c.expanded);
   app.stdin.write('\x1bOP'); await until(() => c.screen?.title === 'Keyboard help');
+});
+
+test('input cursor follows rendered wrapping, grapheme width and the visible input window', () => {
+  for (const [value, width, height, expected] of [
+    [editor('中文👩🏽‍💻'), 12, 4, {x: 6, y: 0}],
+    [{text: 'abcd中z', cursor: 4}, 5, 4, {x: 0, y: 1}],
+    [{text: 'aa hello', cursor: 4}, 7, 4, {x: 1, y: 1}],
+    [editor('abcd'), 4, 4, {x: 0, y: 1}],
+    [{text: 'a\nb', cursor: 1}, 8, 4, {x: 1, y: 0}],
+    [editor('a\nb\nc\nd\ne'), 8, 2, {x: 1, y: 1}],
+  ] as const) assert.deepEqual(inputLayout(value, width, height).cursor, expected, JSON.stringify(value));
+  assert.deepEqual(inputLayout(editor('中文👩🏽‍💻'), 12, 2, true, true).cursor, {x: 3, y: 0});
+  assert.equal(inputLayout(editor('draft'), 12, 2, false).cursor, undefined);
 });
 
 test('queued prompts and commands stay visible until the backend clears them', async t => {

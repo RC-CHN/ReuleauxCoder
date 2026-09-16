@@ -6,16 +6,32 @@ import {fit, paint} from './theme.js';
 export {TranscriptLayout} from './transcript.js';
 
 export const line = (text: string, width: number) => sliceAnsi(text, 0, Math.max(1, width));
-export function inputRows(value: Editor, width: number, height: number, active = true, secret = false): string[] {
+export interface CursorPosition {x: number; y: number}
+export interface InputLayout {rows: string[]; cursor?: CursorPosition}
+
+export function inputLayout(value: Editor, width: number, height: number, active = true, secret = false): InputLayout {
   const segments = [...new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(value.text)].map(item => item.segment);
   const display = segments.map(part => secret ? '•' : safe(part));
   const before = display.slice(0, value.cursor).join('');
   const cursor = display[value.cursor];
   const content = active ? before + `\x1b[7m${!cursor || cursor === '\n' ? ' ' : cursor}\x1b[27m` + (cursor === '\n' ? '\n' : '') + display.slice(value.cursor + 1).join('') : display.join('');
   const rows = wrap(content || ' ', width);
-  const cursorRow = wrap(before + ' ', width).length - 1;
+  // Find the highlighted grapheme in the *wrapped* text: wrapping the prefix
+  // separately can put the cursor in the wrong word or before a wide character.
+  let position: CursorPosition | undefined;
+  for (let y = 0; active && y < rows.length; y++) {
+    const marker = rows[y].indexOf('\x1b[7m');
+    if (marker < 0 || !stringWidth(rows[y].slice(marker + 4).split('\x1b[27m')[0])) continue;
+    position = {x: stringWidth(rows[y].slice(0, marker)), y};
+    break;
+  }
+  const cursorRow = position?.y ?? wrap(before + ' ', width).length - 1;
   const start = Math.max(0, Math.min(rows.length - height, cursorRow - height + 1));
-  return rows.slice(start, start + height);
+  return {rows: rows.slice(start, start + height), cursor: position && {...position, y: position.y - start}};
+}
+
+export function inputRows(value: Editor, width: number, height: number, active = true, secret = false): string[] {
+  return inputLayout(value, width, height, active, secret).rows;
 }
 
 export function selectionRows(items: {label: string; description?: string | null; current?: boolean}[], index: number, width: number, height: number): string[] {

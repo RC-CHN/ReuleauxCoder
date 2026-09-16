@@ -1,8 +1,8 @@
 import React, {memo, useEffect, useMemo, useState, useSyncExternalStore} from 'react';
-import {Box, Text, useApp, useInput, usePaste, useStdout} from 'ink';
+import {Box, Text, useApp, useCursor, useInput, usePaste, useStdout} from 'ink';
 import type {TuiController} from '../state/controller.js';
 import {safe} from './format.js';
-import {inputRows, TranscriptLayout} from './viewport.js';
+import {inputLayout, TranscriptLayout} from './viewport.js';
 import {hintRows, panelRows} from './panels.js';
 import {useAlternateScroll, useTerminalKeys} from './terminal.js';
 import {between, fit, rail, frameEdge, frameRow, keyHint, paint} from './theme.js';
@@ -35,6 +35,7 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
   useSyncExternalStore(c.subscribe, c.snapshot, c.snapshot);
   const {stdout} = useStdout();
   const {exit} = useApp();
+  const {setCursorPosition} = useCursor();
   const layout = useMemo(() => new TranscriptLayout(), []);
   const panelLayout = useMemo(() => new TextLayout(), [c.active, c.screen]);
   const hiddenLogoRows = useLogoCollapse();
@@ -56,7 +57,9 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
   const chrome = consoleChrome(c, dimensions.width, c.session.fatal ? 'Disconnected' : liveActivity?.label ?? 'Ready', hiddenLogoRows);
   const footerHeight = chrome.status ? 2 : 1;
   const composerWidth = Math.max(1, dimensions.width - 6);
-  const composerHeight = Math.min(4, Math.max(1, inputRows(c.composer, composerWidth, 4).length));
+  const focused = !c.active && !c.screen;
+  const composerInput = inputLayout(c.composer, composerWidth, 4, focused);
+  const composerHeight = Math.max(1, composerInput.rows.length);
   const bodyBudget = height - chrome.header.length - footerHeight - composerHeight - 2;
   const contentHeight = Math.max(1, bodyBudget - (liveActivity ? 1 : 0));
   const panelWidth = Math.max(1, width - 2);
@@ -83,10 +86,9 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
     : [...(!dimensions.sidebar && backgroundCount ? [keyHint('/ps', `${backgroundCount} processes`)] : []), keyHint('F4', c.expanded ? 'collapse details' : 'tool output + reasoning + LSP'), keyHint('F2', 'session'), keyHint('/', 'commands'), ...(dimensions.width >= 100 ? [keyHint('Ctrl+C', state.running ? 'interrupt' : 'exit')] : [])]
   ).join('   ');
   const footer = c.exitConfirm ? paint.warning('Press Ctrl+C again to save and exit.') : c.session.fatal ? paint.error(safe(c.session.fatal)) : c.status ? paint.muted(safe(c.status)) : c.offset !== null ? paint.muted(`History ${transcript.start + 1}/${transcript.estimated ? '~' : ''}${transcript.total} · End follows output`) : shortcutHints;
-  const focused = !c.active && !c.screen;
   const inputColor = focused ? paint.accent : paint.muted;
   const panelColor = c.active ? paint.warning : paint.accent;
-  const composer = inputRows(c.composer, composerWidth, composerHeight, focused).map((row, index) => frameRow(
+  const composer = composerInput.rows.map((row, index) => frameRow(
     (index ? '  ' : inputColor('› ')) + row + (!c.composer.text && !index && focused ? paint.muted('Describe your next change…') : ''), dimensions.width,
   ));
   const composerAction = focused ? paint.badge(state.running ? 'Enter queue' : 'Enter send') : '';
@@ -103,6 +105,14 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
     ? <ProcessSidebar controller={c} height={bodyHeight} width={dimensions.sidebar}/> : null,
   [c, bodyHeight, dimensions.sidebar, c.session.state, c.session.sidebarRevision, c.session.plan, c.session.progress,
     c.session.git, c.session.fatal, c.active, liveActivity?.label]);
+  // Coordinates include the root padding and the input's frame/rail prefix.
+  setCursorPosition(composerInput.cursor ? {
+    x: 5 + composerInput.cursor.x,
+    y: chrome.header.length + bodyHeight + queue.length + 1 + composerInput.cursor.y,
+  } : panel?.cursor && panel.cursor.y < panelHeight ? {
+    x: 3 + panel.cursor.x,
+    y: chrome.header.length + transcriptHeight + (liveActivity ? 1 : 0) + 1 + panel.cursor.y,
+  } : undefined);
   return <Box flexDirection="column" paddingLeft={1} paddingRight={1} width={c.columns} height={height} overflowY="hidden">
     <Reveal key={c.session.fatal ? 'disconnected' : c.session.connected ? 'connected' : 'connecting'}>{progress =>
       <Rows rows={chrome.header.map(row => paint.reveal(row, progress))} height={chrome.header.length} width={dimensions.width}/>

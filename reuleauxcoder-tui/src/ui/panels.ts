@@ -3,11 +3,11 @@ import stringWidth from 'string-width';
 import {humanize} from '../state/menus.js';
 import {diff, fields, safe, wrap} from './format.js';
 import {keyHint, paint} from './theme.js';
-import {inputRows, line, selectionRows} from './viewport.js';
+import {inputLayout, line, selectionRows, type CursorPosition} from './viewport.js';
 import {historyRows} from './history.js';
 import {TextLayout} from './text-layout.js';
 
-export interface PanelRows {title: string; rows: string[]; hint: string[]; navigation?: string}
+export interface PanelRows {title: string; rows: string[]; hint: string[]; navigation?: string; cursor?: CursorPosition}
 
 export function hintRows(hints: string[], width: number): string[] {
   const rows: string[] = [];
@@ -28,7 +28,8 @@ export function panelRows(c: TuiController, width: number, height: number, layou
       const intro = wrap(safe(prompt), width);
       const introHeight = Math.max(0, Math.min(intro.length, height - 2));
       const prefix = introHeight ? [...intro.slice(0, introHeight), ''] : [];
-      return {title, rows: [...prefix, ...inputRows(c.interactionInput, width, Math.max(1, height - prefix.length), true, request.secret)], hint: [request.secret ? paint.warning('Masked') : '', keyHint('Enter', 'submit'), keyHint('Alt+Enter', 'newline'), keyHint('Esc', 'cancel')].filter(Boolean)};
+      const input = inputLayout(c.interactionInput, width, Math.max(1, height - prefix.length), true, request.secret);
+      return {title, rows: [...prefix, ...input.rows], cursor: input.cursor && {...input.cursor, y: prefix.length + input.cursor.y}, hint: [request.secret ? paint.warning('Masked') : '', keyHint('Enter', 'submit'), keyHint('Alt+Enter', 'newline'), keyHint('Esc', 'cancel')].filter(Boolean)};
     }
     if (kind === 'choose_one' || c.interactionMode === 'scope') {
       const items = kind === 'choose_one' ? request.items : request.grant_options.map((item: any) => ({...item, label: item.label + (item.broad ? ' (broad scope)' : '')}));
@@ -55,8 +56,9 @@ export function panelRows(c: TuiController, width: number, height: number, layou
   if (screen?.kind === 'list') {
     const items = c.listItems(screen);
     screen.index = Math.min(screen.index, Math.max(0, items.length - 1));
-    const filter = height > 1 && screen.panel?.filterable !== false ? inputRows(screen.filter, width - 2, 1).map(row => '⌕ ' + row + (screen.filter.text ? '' : paint.muted('Filter options…'))) : [];
-    return {title: screen.title, rows: [...filter, ...selectionRows(items, screen.index, width, height - filter.length)], hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'open'), keyHint('Esc', 'back')], navigation: `${items.length ? screen.index + 1 : 0}/${items.length}`};
+    const input = height > 1 && screen.panel?.filterable !== false ? inputLayout(screen.filter, width - 2, 1) : undefined;
+    const filter = input?.rows.map(row => '⌕ ' + row + (screen.filter.text ? '' : paint.muted('Filter options…'))) ?? [];
+    return {title: screen.title, rows: [...filter, ...selectionRows(items, screen.index, width, height - filter.length)], cursor: input?.cursor && {...input.cursor, x: input.cursor.x + 2}, hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'open'), keyHint('Esc', 'back')], navigation: `${items.length ? screen.index + 1 : 0}/${items.length}`};
   }
   if (screen?.kind === 'document') {
     const rows = layout.rows(screen.body, width, () => safe(screen.body).split('\n').map(row => {
@@ -68,7 +70,9 @@ export function panelRows(c: TuiController, width: number, height: number, layou
   }
   if (screen?.kind === 'form') {
     const parameter = screen.action.parameters[screen.index];
-    return {title: screen.title, rows: [line(paint.accent(`${humanize(parameter.name)} · ${screen.index + 1}/${screen.action.parameters.length}${parameter.required ? ' · required' : ''}`), width), ...wrap(paint.muted(parameter.kind === 'boolean' ? 'Tab changes value: true / false' + (parameter.nullable ? ' / auto' : '') : parameter.kind === 'integer' ? 'Enter a whole number.' : 'Enter text.'), width), '', ...inputRows(screen.input, width, Math.max(1, height - 4)), ...(screen.error ? [line(paint.error(screen.error), width)] : [])].slice(0, height), hint: [keyHint('Enter', 'next / submit'), keyHint('↑', 'previous field'), keyHint('Esc', 'back')]};
+    const prefix = [line(paint.accent(`${humanize(parameter.name)} · ${screen.index + 1}/${screen.action.parameters.length}${parameter.required ? ' · required' : ''}`), width), ...wrap(paint.muted(parameter.kind === 'boolean' ? 'Tab changes value: true / false' + (parameter.nullable ? ' / auto' : '') : parameter.kind === 'integer' ? 'Enter a whole number.' : 'Enter text.'), width), ''].slice(0, Math.max(0, height - 1));
+    const input = inputLayout(screen.input, width, Math.max(1, height - prefix.length - (screen.error ? 1 : 0)));
+    return {title: screen.title, rows: [...prefix, ...input.rows, ...(screen.error ? [line(paint.error(screen.error), width)] : [])].slice(0, height), cursor: input.cursor && {...input.cursor, y: prefix.length + input.cursor.y}, hint: [keyHint('Enter', 'next / submit'), keyHint('↑', 'previous field'), keyHint('Esc', 'back')]};
   }
   if (c.palette.length) return {title: 'Commands', rows: selectionRows(c.palette.map(menu => ({label: menu.name, description: menu.title})), c.paletteIndex % c.palette.length, width, height), hint: [keyHint('↑↓', 'select'), keyHint('Tab', 'complete'), keyHint('Enter', 'open'), keyHint('Esc', 'dismiss')]};
   return null;
