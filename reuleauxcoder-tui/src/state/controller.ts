@@ -388,8 +388,8 @@ export class TuiController extends EventEmitter {
     this.scroll.cancel();
     this.expanded = !this.expanded;
     this.status = this.expanded
-      ? 'Full details shown · F4 collapse output + reasoning'
-      : 'Compact view · F4 show tool output + reasoning';
+      ? 'Full details shown · F4 collapse output + reasoning + tables'
+      : 'Compact view · F4 show output + reasoning + tables';
     this.changed();
   }
   showSession() {

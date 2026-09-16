@@ -10,6 +10,7 @@ import {TranscriptLayout} from '../src/ui/transcript.js';
 import {decode, record} from '../src/protocol/wire.js';
 import {safe} from '../src/ui/format.js';
 import {backend, until} from './helpers.js';
+import stringWidth from 'string-width';
 
 test('long transcript lays out visible blocks, retains anchors and bounds row storage', () => {
   const session = new SessionStore();
@@ -48,6 +49,44 @@ test('a multi-megabyte streaming message only lays out its visible tail', () => 
   assert(layout.measurements - before < 4);
   assert.equal(session.cells[0].body, text + 'unique latest token');
   assert(layout.retainedRows <= 6000);
+});
+
+test('large tables retain headers and alignment across lazy blocks and window sizes', () => {
+  const session = new SessionStore(), layout = new TranscriptLayout();
+  const body = '| Name | Description |\n| :--- | ---: |\n' + Array.from({length: 10_000}, (_, index) => `| row-${index} | 中文 ${index} |\n`).join('');
+  session.add('assistant', 'Reuleaux', body);
+  const draw = (offset: number | null, width = 80) => layout.render(session.cells, width, 24, offset, true, session.takeDirtyIndex());
+  let page = draw(null);
+  assert(safe(page.rows.join('\n')).includes('row-9999'));
+  assert(safe(page.rows.join('\n')).includes('│'));
+  assert(layout.measurements < 4);
+  const before = layout.measurements;
+  draw(page.start);
+  assert.equal(layout.measurements, before, 'continued table blocks reuse the layout cache');
+  for (let i = 0; i < 30; i++) {
+    page = draw(Math.max(0, page.start - 17));
+    assert(page.rows.every(row => stringWidth(row) <= 80));
+    assert(!safe(page.rows.join('\n')).includes('| row-'), 'continuations must remain table cells');
+  }
+  assert(safe(draw(page.start, 16).rows.join('\n')).includes('Description:'));
+  assert.equal(session.cells[0].body, body);
+  assert(layout.retainedRows <= 6000);
+});
+
+test('long cells and a table header at a block edge survive folding and streaming append', () => {
+  const session = new SessionStore(), layout = new TranscriptLayout();
+  const append = (text: string) => session.runtime({payload: decode(record('ReasoningDelta', {text, display_mode: 'inline'}))});
+  const draw = (expanded = true) => layout.render(session.cells, 60, 24, null, expanded, session.takeDirtyIndex());
+  append('prefix\n'.repeat(582) + '\n| Key | Value |\n'); draw();
+  append('| --- | --- |\n| long | ' + 'word '.repeat(2000) + 'FINAL |\n');
+  const full = draw();
+  assert(safe(full.rows.join('\n')).includes('FINAL'));
+  assert.deepEqual(full.rows, new TranscriptLayout().render(session.cells, 60, 24, null, true).rows);
+  const compact = draw(false);
+  assert(safe(compact.rows.join('\n')).includes('… +'));
+  assert(!safe(compact.rows.join('\n')).includes('FINAL'));
+  append('\nAfter table\n\n```text\n| fake | header |\n| --- | --- |\n```\n');
+  assert.deepEqual(draw().rows, new TranscriptLayout().render(session.cells, 60, 24, null, true).rows);
 });
 
 for (const reasoning of [false, true]) test(`${reasoning ? 'reasoning' : 'assistant'} appends retain stable blocks and Markdown fence state`, () => {

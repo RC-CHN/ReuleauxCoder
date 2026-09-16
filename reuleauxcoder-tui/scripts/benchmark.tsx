@@ -57,6 +57,19 @@ for (const largeMessage of [false, true]) {
 }
 
 const documentText = Array.from({length: 5000}, (_, i) => `Field ${i}: 中文 content and https://example.com/documentation/${i}`).join('\n');
+for (const expanded of [false, true]) {
+  const session = new SessionStore(), layout = new TranscriptLayout();
+  const body = '| Name | Description |\n| :--- | ---: |\n' + Array.from({length: 10_000}, (_, i) => `| row-${i} | ${'中文 long value '.repeat(20)}${i} |\n`).join('');
+  session.add('assistant', 'Reuleaux', body);
+  const started = performance.now();
+  let page = layout.render(session.cells, 100, 32, null, expanded, session.takeDirtyIndex());
+  const cold = performance.now() - started, initialBlocks = layout.measurements;
+  const result = measure(`10000-row-table-${expanded ? 'expanded' : 'compact'}-scroll`, 240, index => {
+    page = layout.render(session.cells, 100, 32, Math.max(0, page.start + (index < 120 ? -3 : 3)), expanded, Infinity);
+  });
+  Object.assign(result, {cold_ms: round(cold), source_chars: body.length, initial_blocks: initialBlocks, measured_blocks: layout.measurements, cached_rows: layout.retainedRows});
+}
+
 const panel = controller();
 const panelLayout = new TextLayout();
 panel.document('Large document', documentText);

@@ -3,6 +3,7 @@ import wrapAnsi from 'wrap-ansi';
 import {typeOf} from '../protocol/wire.js';
 import {humanize} from '../state/menus.js';
 import {frameEdge, frameRow, paint} from './theme.js';
+import {tableRows} from './table.js';
 /** Treat backend/user escape sequences as data. Styling is produced only here. */
 export const safe = (text: string) => text.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 
@@ -18,12 +19,13 @@ function inline(tokens: Token[]): string {
       }
       case 'image': return `[${token.text}] ${safe(token.href)}`;
       case 'br': return '\n';
+      case 'html': return /^<br\s*\/?\s*>$/i.test(token.text) ? '\n' : token.text;
       default: return token.tokens ? inline(token.tokens) : token.text ?? token.raw;
     }
   }).join('');
 }
 
-export function markdown(text: string, width = 80): string {
+export function markdown(text: string, width = 80, expanded = false): string {
   function render(tokens: Token[]): string {
     return tokens.map((token: any) => {
       switch (token.type) {
@@ -32,7 +34,7 @@ export function markdown(text: string, width = 80): string {
         case 'code': return [frameEdge(token.lang || 'code', width, false, paint.info), ...wrap(safe(token.text), width - 4).map(line => frameRow(line, width)), frameEdge('', width, true)].join('\n') + '\n';
         case 'blockquote': return render(token.tokens).split('\n').map(line => '│ ' + line).join('\n');
         case 'list': return token.items.map((item: any, index: number) => `${token.ordered ? `${index + (token.start || 1)}.` : '•'} ${item.task ? (item.checked ? '[✓] ' : '[ ] ') : ''}${render(item.tokens).trimEnd()}`).join('\n') + '\n';
-        case 'table': return [token.header.map((cell: any) => paint.bold(inline(cell.tokens))).join(' │ '), ...token.rows.map((row: any[]) => row.map(cell => inline(cell.tokens)).join(' │ '))].join('\n') + '\n';
+        case 'table': return tableRows(token, Math.max(1, width), expanded, inline).join('\n') + '\n';
         case 'hr': return '────────\n';
         case 'space': return '\n';
         default: return inline([token]);

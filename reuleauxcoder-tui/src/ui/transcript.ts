@@ -3,10 +3,11 @@ import {diff, markdown, safe, wrap} from './format.js';
 import {paint} from './theme.js';
 import {toolGroupRows, transcriptGroups} from './tool-groups.js';
 import sliceAnsi from 'slice-ansi';
+import {markdownContext, tableHeader, type MarkdownContext} from './markdown-context.js';
 
 const BLOCK_CHARS = 4096;
 const CACHE_ROWS = 6000;
-interface Block {id: string; cell: Cell; text: string; offset: number; first: boolean; last: boolean; number: number; tools?: Cell[]; fence?: string}
+interface Block extends MarkdownContext {id: string; cell: Cell; text: string; offset: number; first: boolean; last: boolean; number: number; tools?: Cell[]}
 interface Group {start: number; entry: number; number: number; cell: Cell; revision: number; appendRevision: number}
 
 /** Prefix sums support append, tail replacement and visible-height corrections. */
@@ -98,7 +99,7 @@ export class TranscriptLayout {
       && (cell.kind === 'assistant' || cell.kind === 'reasoning') && !(this.expanded && cell.details)
       && cell.revision > tail.revision && cell.revision - tail.revision === (cell.appendRevision ?? 0) - tail.appendRevision) {
       this.blocks.pop(); this.heights.truncate(this.blocks.length); this.measured.delete(last.id);
-      this.appendBlocks(cell, tail.number, cell.body, undefined, last.offset, this.blocks.length - tail.entry, last.fence);
+      this.appendBlocks(cell, tail.number, cell.body, undefined, last.offset, this.blocks.length - tail.entry, last);
       tail.revision = cell.revision; tail.appendRevision = cell.appendRevision ?? 0;
       return;
     }
@@ -127,23 +128,29 @@ export class TranscriptLayout {
     for (const [id, cached] of this.cache) if (!this.positions.has(id)) {this.cache.delete(id); this.cacheRows -= cached.rows.length;}
   }
 
-  private appendBlocks(cell: Cell, number: number, content: string, tools?: Cell[], position = 0, part = 0, fence?: string) {
+  private appendBlocks(cell: Cell, number: number, content: string, tools?: Cell[], position = 0, part = 0, context: MarkdownContext = {}) {
+    const isMarkdown = cell.kind === 'assistant' || cell.kind === 'reasoning';
     do {
       let end = Math.min(content.length, position + BLOCK_CHARS);
       if (end < content.length) {
         const newline = content.lastIndexOf('\n', end);
         if (newline > position) end = newline + 1;
+        else if (context.table) {
+          // A table row is the smallest layout unit: do not cut a long cell in two.
+          const next = content.indexOf('\n', end);
+          end = next < 0 ? content.length : next + 1;
+        }
         // Never split a UTF-16 surrogate pair.
         else if (/[\uD800-\uDBFF]/.test(content[end - 1])) end--;
       }
-      const block = {id: `${cell.id}:${part++}`, cell, text: content.slice(position, end), offset: position, first: position === 0, last: end === content.length, number, tools, fence};
-      this.scannedChars += block.text.length;
-      if (cell.kind === 'assistant' || cell.kind === 'reasoning') {
-        for (const match of block.text.matchAll(/^ {0,3}(`{3,}|~{3,})([^\n]*)$/gm)) {
-          if (!fence) fence = match[1] + match[2];
-          else if (match[1][0] === fence[0] && match[1].length >= fence.match(/^(`+|~+)/)![0].length && !match[2].trim()) fence = undefined;
-        }
+      if (isMarkdown && end < content.length && content[end - 1] === '\n' && !context.fence) {
+        const headerStart = content.lastIndexOf('\n', end - 2) + 1;
+        const nextEnd = content.indexOf('\n', end);
+        if (headerStart > position && tableHeader(content.slice(headerStart, end - 1), content.slice(end, nextEnd < 0 ? content.length : nextEnd))) end = headerStart;
       }
+      const block = {id: `${cell.id}:${part++}`, cell, text: content.slice(position, end), offset: position, first: position === 0, last: end === content.length, number, tools, fence: context.fence, table: context.table};
+      this.scannedChars += block.text.length;
+      if (isMarkdown) context = markdownContext(block.text, context);
       this.positions.set(block.id, this.blocks.length); this.blocks.push(block); this.heights.push(this.estimate(block));
       position = end;
     } while (position < content.length);
@@ -153,12 +160,12 @@ export class TranscriptLayout {
   }
   private rows(index: number): string[] {
     const block = this.blocks[index], cell = block.cell;
-    const signature = `${this.width}/${this.expanded}/${block.number}/${cell.kind}/${cell.title}/${cell.tone}/${cell.streaming}/${block.first}/${block.last}/${block.fence ?? ''}/${block.tools?.map(item => `${item.id}:${item.revision}`).join(',') ?? ''}`;
+    const signature = `${this.width}/${this.expanded}/${block.number}/${cell.kind}/${cell.title}/${cell.tone}/${cell.streaming}/${block.first}/${block.last}/${block.fence ?? ''}/${block.table ?? ''}/${block.tools?.map(item => `${item.id}:${item.revision}`).join(',') ?? ''}`;
     let cached = this.cache.get(block.id);
     if (cached) {this.cache.delete(block.id); this.cacheRows -= cached.rows.length;}
     if (!cached || cached.text !== block.text || cached.signature !== signature) {
       this.measurements++;
-      cached = {text: block.text, signature, rows: block.tools ? toolGroupRows(block.tools, this.width).map(row => sliceAnsi(row, 0, Math.max(1, this.width))) : blockRows(block, this.width)};
+      cached = {text: block.text, signature, rows: block.tools ? toolGroupRows(block.tools, this.width).map(row => sliceAnsi(row, 0, Math.max(1, this.width))) : blockRows(block, this.width, this.expanded)};
     }
     this.cache.set(block.id, cached); this.cacheRows += cached.rows.length;
     while (this.cacheRows > CACHE_ROWS) {const [id, value] = this.cache.entries().next().value!; this.cache.delete(id); this.cacheRows -= value.rows.length;}
@@ -167,12 +174,12 @@ export class TranscriptLayout {
   }
 }
 
-function blockRows(block: Block, width: number): string[] {
+function blockRows(block: Block, width: number, expanded: boolean): string[] {
   const {cell} = block;
   const text = !block.last && block.text.endsWith('\n') ? block.text.slice(0, -1) : block.text;
-  const md = block.fence ? block.fence + '\n' + text : text;
-  const body = cell.kind === 'reasoning' ? paint.dim(markdown(md, width - 2))
-    : cell.kind === 'assistant' && !cell.streaming ? markdown(md, width - 2) : cell.kind === 'tool' ? diff(text) : safe(text);
+  const md = block.fence ? block.fence + '\n' + text : (block.table ?? '') + text;
+  const body = cell.kind === 'reasoning' ? paint.dim(markdown(md, width - 2, expanded))
+    : cell.kind === 'assistant' && !cell.streaming ? markdown(md, width - 2, expanded) : cell.kind === 'tool' ? diff(text) : safe(text);
   const rows = wrap(body, Math.max(1, width - 2));
   const symbol = cell.streaming ? '◌' : cell.kind === 'user' ? '▸' : cell.kind === 'assistant' ? '◭' : cell.kind === 'tool' ? '↳' : '·';
   const label = cell.kind === 'user' ? cell.title === 'You' ? 'YOU' : safe(cell.title) : cell.kind === 'assistant' ? 'REULEAUX' : cell.kind === 'tool' ? `TOOL / ${safe(cell.title)}` : safe(cell.title);
