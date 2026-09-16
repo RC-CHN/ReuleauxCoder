@@ -2985,6 +2985,123 @@ def test_save_exit_does_not_reuse_store_side_minted_sequence(
     assert exit_event.seq > diagnostic_seq
 
 
+def test_load_repairs_legacy_store_side_sequence_reuse(tmp_path: Path) -> None:
+    session_id = "session_legacy_store_side_sequence_reuse"
+    ledger = HistoryLedger(session_id=session_id)
+    ledger.append("normal_runtime_event", {"position": "before"})
+    diagnostic = ledger.append(
+        "message_committed",
+        {
+            "source": "session_diagnostic",
+            "message": {
+                "role": "user",
+                "content": "[LLM_ERROR_DIAGNOSTIC] legacy failure",
+            },
+        },
+    )
+    exit_message = ledger.append_message(
+        {"role": "user", "content": "[SESSION_EXIT] User left."},
+        source="session_exit",
+    )
+    exit_lifecycle = ledger.events[-1]
+    ledger.append("normal_runtime_event", {"position": "after"})
+    store = SessionStore(tmp_path)
+    store.save(
+        messages=[{"role": "user", "content": "authoritative"}],
+        model="model",
+        session_id=session_id,
+        history_events=list(ledger.events),
+    )
+    events_path = tmp_path / session_id / "events.jsonl"
+    persisted = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    for payload in persisted:
+        if payload["event_id"] == exit_message.event_id:
+            payload["seq"] = diagnostic.seq
+        elif payload["event_id"] == exit_lifecycle.event_id:
+            payload["seq"] = diagnostic.seq + 1
+    events_path.write_text(
+        "".join(json.dumps(payload) + "\n" for payload in persisted),
+        encoding="utf-8",
+    )
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert [event.seq for event in loaded.history_events] == [1, 2, 3, 4, 5]
+    repaired_exit = next(
+        event
+        for event in loaded.history_events
+        if event.event_id == exit_message.event_id
+    )
+    repaired_lifecycle = next(
+        event
+        for event in loaded.history_events
+        if event.event_id == exit_lifecycle.event_id
+    )
+    assert repaired_exit.event_id == exit_message.event_id
+    assert repaired_lifecycle.event_id == exit_lifecycle.event_id
+    assert not any(
+        issue.phase == "history_decode" for issue in loaded.restore_issues
+    )
+    store.save(
+        messages=loaded.messages,
+        model=loaded.model,
+        session_id=session_id,
+        history_events=loaded.history_events,
+        history_next_seq_floor=loaded.history_next_seq_floor,
+        replay_envelope=loaded.replay_envelope,
+    )
+    repaired_on_disk = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [payload["seq"] for payload in repaired_on_disk] == [1, 2, 3, 4, 5]
+    assert [payload["event_id"] for payload in repaired_on_disk] == [
+        event.event_id for event in ledger.events
+    ]
+
+
+def test_load_does_not_repair_arbitrary_duplicate_sequences(tmp_path: Path) -> None:
+    session_id = "session_arbitrary_duplicate_sequences"
+    ledger = HistoryLedger(session_id=session_id)
+    ledger.append("normal_runtime_event", {"position": "first"})
+    duplicate = ledger.append("normal_runtime_event", {"position": "duplicate"})
+    ledger.append("normal_runtime_event", {"position": "last"})
+    store = SessionStore(tmp_path)
+    store.save(
+        messages=[{"role": "user", "content": "authoritative"}],
+        model="model",
+        session_id=session_id,
+        history_events=list(ledger.events),
+    )
+    events_path = tmp_path / session_id / "events.jsonl"
+    persisted = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    persisted[1]["seq"] = persisted[0]["seq"]
+    events_path.write_text(
+        "".join(json.dumps(payload) + "\n" for payload in persisted),
+        encoding="utf-8",
+    )
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert any(issue.phase == "history_decode" for issue in loaded.restore_issues)
+    assert duplicate.event_id not in {
+        event.event_id for event in loaded.history_events
+    }
+    unchanged = [
+        json.loads(line)
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [payload["seq"] for payload in unchanged] == [1, 1, 3]
+
+
 def test_session_store_load_backfills_missing_message_token_counts(
     tmp_path: Path,
 ) -> None:
