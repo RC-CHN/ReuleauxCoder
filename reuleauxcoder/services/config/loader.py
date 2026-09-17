@@ -26,6 +26,7 @@ from reuleauxcoder.domain.config.schema import (
     DEFAULT_ACTIVE_MODE,
 )
 from reuleauxcoder.infrastructure.yaml.loader import save_yaml_config, load_yaml_config
+from reuleauxcoder.domain.images import ImageConfig
 
 
 class ExampleConfigError(Exception):
@@ -51,6 +52,7 @@ class ConfigLoader:
         "provider",
         "request_mode",
         "responses",
+        "support_modal",
         "base_url",
         "max_tokens",
         "temperature",
@@ -375,6 +377,7 @@ class ConfigLoader:
 
         return Config(
             **llm_params,
+            image=ImageConfig(**data.get("attachments", {}).get("image", {})),
             mcp_servers=mcp_servers,
             model_profiles=model_profiles,
             active_model_profile=active_model_profile,
@@ -438,9 +441,8 @@ class ConfigLoader:
                 system_append=str(prompt_config.get("system_append", "") or ""),
             ),
             context=ContextConfig(
-                auto_snip=bool(
-                    context_config.get("auto_snip", DEFAULTS["auto_snip"])
-                ),
+                image_retention=context_config.get("image_retention", "history"),
+                auto_snip=bool(context_config.get("auto_snip", DEFAULTS["auto_snip"])),
                 auto_summarize=bool(
                     context_config.get(
                         "auto_summarize", DEFAULTS["auto_summarize"]

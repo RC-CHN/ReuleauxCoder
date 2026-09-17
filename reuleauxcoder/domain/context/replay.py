@@ -479,6 +479,13 @@ class _ProvenanceSource:
         }
 
 
+def _provenance_hash(message: dict) -> str:
+    # Internal ownership metadata is durable, but is never sent to a provider.
+    return content_hash(
+        {key: value for key, value in message.items() if not key.startswith("_rc_")}
+    )
+
+
 class ItemProvenanceIndex:
     """Reuse hashes of committed, append-only events within one owning runtime.
 
@@ -515,7 +522,7 @@ class ItemProvenanceIndex:
                 if kind == "message_committed":
                     message = payload.get("message")
                     if isinstance(message, dict):
-                        self._messages.setdefault(content_hash(message), []).append(
+                        self._messages.setdefault(_provenance_hash(message), []).append(
                             _ProvenanceSource(
                                 event.event_id, tuple(getattr(event, "artifact_refs", ()))
                             )
@@ -527,7 +534,7 @@ class ItemProvenanceIndex:
             if latest_view is not None:
                 payload = latest_view.payload
                 self._view_hashes = tuple(
-                    content_hash(item) for item in payload.get("items") or ()
+                    _provenance_hash(item) for item in payload.get("items") or ()
                 )
                 self._view_source = _ProvenanceSource(
                     latest_view.event_id,
@@ -548,7 +555,7 @@ class ItemProvenanceIndex:
         fallback_event_id: str | None = None,
     ) -> list[dict[str, Any]]:
         self._sync(events)
-        hashes = [content_hash(item) for item in items]
+        hashes = [_provenance_hash(item) for item in items]
         result: list[dict[str, Any] | None] = [None] * len(items)
         if self._view_source is not None:
             cursor = 0

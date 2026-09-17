@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping
+from reuleauxcoder.domain.images import ImageReference
 
 
 class ToolOutcomeStatus(str, Enum):
@@ -116,8 +117,13 @@ class ToolOutcome:
     error_kind: ToolErrorKind | None = None
     model_content: str | None = None
     retention_hint: ToolRetentionHint = field(default_factory=ToolRetentionHint)
+    images: tuple[ImageReference, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.images, tuple) or any(
+            not isinstance(image, ImageReference) for image in self.images
+        ):
+            raise ValueError("Tool images must be immutable image references")
         if self.duration_seconds is not None and self.duration_seconds < 0:
             raise ValueError("duration_seconds cannot be negative")
         if self.success and self.error_kind is not None:
@@ -135,6 +141,15 @@ class ToolOutcome:
         if self.model_content is not None:
             return self.model_content
         return self._detailed_text(include_diagnostics=True)
+
+    @property
+    def model_message_content(self) -> str | list[dict]:
+        if not self.images:
+            return self.model_text
+        return [
+            {"type": "text", "text": self.model_text},
+            *(image.to_part() for image in self.images),
+        ]
 
     @property
     def display_text(self) -> str:

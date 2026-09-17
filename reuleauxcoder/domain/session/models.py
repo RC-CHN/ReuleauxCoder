@@ -11,6 +11,7 @@ from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.history import HistoryEvent
 from reuleauxcoder.domain.output_journal import interrupted_output
 from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
+from reuleauxcoder.domain.images import content_text, display_content
 
 MAX_SESSION_PREVIEW_CHARS = 120
 
@@ -37,9 +38,9 @@ def _display_message_text(message: dict) -> str:
     """Return user-facing conversation text without persistence markers."""
     if is_synthetic_context_message(message):
         return ""
-    content = message.get("content")
-    if not isinstance(content, str):
-        return ""
+    content = (display_content if message.get("role") == "user" else content_text)(
+        message.get("content")
+    )
     text = content.strip()
     if message.get("role") == "user" and text.startswith("[SESSION_EXIT]"):
         return ""

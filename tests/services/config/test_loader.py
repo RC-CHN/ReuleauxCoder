@@ -85,6 +85,31 @@ def test_merge_dicts_applies_partial_mcp_server_override() -> None:
     }
 
 
+def test_input_modalities_are_profile_scoped_arrays() -> None:
+    config = ConfigLoader()._parse_config(
+        {
+            "models": {
+                "profiles": {
+                    "vision": {
+                        "model": "vision",
+                        "api_key": "test",
+                        "support_modal": ["text", "image"],
+                    },
+                    "text": {"model": "text", "api_key": "test"},
+                }
+            }
+        }
+    )
+    assert list(config.support_modal) == ["text", "image"]
+    assert config.model_profiles["vision"].to_dict()["support_modal"] == [
+        "text",
+        "image",
+    ]
+    assert config.model_profiles["text"].to_dict()["support_modal"] == ["text"]
+    config.support_modal = "image"
+    assert any("support_modal" in error for error in config.validate())
+
+
 def test_parse_config_reads_automatic_context_strategies() -> None:
     config = ConfigLoader()._parse_config(
         {

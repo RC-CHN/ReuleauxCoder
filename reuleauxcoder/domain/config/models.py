@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Literal, Optional
 
 from reuleauxcoder.domain.config.web import WebProxyConfigError, validate_web_proxy
+from reuleauxcoder.domain.images import ImageConfig
 
 
 RequestMode = Literal["chat-completions", "responses", "messages"]
@@ -144,6 +145,7 @@ class ModelProfileConfig:
     provider: str = "openai-compatible"
     request_mode: Optional[RequestMode] = None
     responses: ResponsesConfig = field(default_factory=ResponsesConfig)
+    support_modal: tuple[str, ...] = ("text",)
     base_url: Optional[str] = None
     max_tokens: int = 4096
     temperature: float = 0.0
@@ -166,6 +168,7 @@ class ModelProfileConfig:
             "provider": self.provider,
             "request_mode": self.request_mode,
             "responses": self.responses.to_dict(),
+            "support_modal": list(self.support_modal),
             "base_url": self.base_url,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
@@ -194,6 +197,7 @@ class ModelProfileConfig:
             provider=d.get("provider", "openai-compatible"),
             request_mode=d.get("request_mode"),
             responses=ResponsesConfig.from_dict(d.get("responses")),
+            support_modal=d.get("support_modal", ("text",)),
             context=ContextStrategyOverrides.from_dict(d.get("context")),
             base_url=d.get("base_url"),
             max_tokens=d.get("max_tokens", 4096),
@@ -314,6 +318,7 @@ class ContextConfig:
     auto_snip: bool = True
     auto_summarize: bool = True
     auto_collapse: bool = True
+    image_retention: Literal["history", "user_turn"] = "history"
     snip_keep_recent_tools: int = 2  # number of recent agent rounds to protect
     snip_threshold_chars: int = 1500
     snip_min_lines: int = 6
@@ -379,6 +384,8 @@ class Config:
     provider: str = "openai-compatible"
     request_mode: Optional[RequestMode] = None
     responses: ResponsesConfig = field(default_factory=ResponsesConfig)
+    support_modal: tuple[str, ...] = ("text",)
+    image: ImageConfig = field(default_factory=ImageConfig)
     base_url: Optional[str] = None
     max_tokens: int = 4096
     temperature: float = 0.0
@@ -456,6 +463,14 @@ class Config:
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""
         errors = []
+        from reuleauxcoder.domain.images import input_modalities
+
+        try:
+            input_modalities(self.support_modal)
+        except ValueError as error:
+            errors.append(str(error))
+        if self.context.image_retention not in {"history", "user_turn"}:
+            errors.append("context.image_retention must be history or user_turn")
         from reuleauxcoder.domain.goal import validate_budget
 
         try:
@@ -524,6 +539,10 @@ class Config:
         ):
             errors.append("active_sub_model_profile must exist in model_profiles")
         for name, profile in self.model_profiles.items():
+            try:
+                input_modalities(profile.support_modal)
+            except ValueError as error:
+                errors.append(f"model_profiles[{name}].{error}")
             if not profile.api_key:
                 errors.append(f"model_profiles[{name}].api_key is required")
             if profile.max_tokens < 1:

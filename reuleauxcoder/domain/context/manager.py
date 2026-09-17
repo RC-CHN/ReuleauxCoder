@@ -18,6 +18,7 @@ from urllib.request import urlopen
 import uuid
 
 from reuleauxcoder.domain.context.budget import ContextBudget
+from reuleauxcoder.domain.images import content_text, image_parts
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.rounds import (
     group_api_rounds,
@@ -349,7 +350,8 @@ def _estimate_message_tokens_chars(message: dict) -> int:
     """Estimate a message without requiring a tokenizer vocabulary."""
     total = 0.0
     if message.get("content"):
-        total += _estimate_text_tokens_chars(str(message["content"]))
+        total += _estimate_text_tokens_chars(content_text(message["content"]))
+        total += 2048 * len(image_parts([message]))
     if message.get("tool_calls"):
         total += _estimate_text_tokens_chars(str(message["tool_calls"]))
     return math.ceil(total)
@@ -370,9 +372,12 @@ def estimate_message_tokens(
         total = 0
         if message.get("content"):
             try:
-                total += len(encoder.encode(str(message["content"])))
+                total += len(encoder.encode(content_text(message["content"])))
             except Exception:
-                total += len(str(message["content"])) // 3
+                total += len(content_text(message["content"])) // 3
+            # Initial provider-neutral estimate; measured usage calibrates it.
+            # Base64 length measures traffic, not vision tokens.
+            total += 2048 * len(image_parts([message]))
         if message.get("tool_calls"):
             try:
                 total += len(encoder.encode(str(message["tool_calls"])))
@@ -522,9 +527,16 @@ class ContextManager:
         self._usage_observations: list[UsageObservation] = []
         self._latest_usage: UsageObservation | None = None
         self._estimate_scale_by_profile: dict[str, float] = {}
+        self.image_projection: Callable[[list[dict]], list[dict]] | None = None
 
     def get_context_tokens(self, messages: list[dict]) -> int:
         """Get current locally-estimated context token count."""
+        if self.image_projection is not None and image_parts(messages):
+            projected = self.image_projection(messages)
+            for original, message in zip(messages, projected):
+                if image_parts([original]):
+                    message.pop(MESSAGE_TOKEN_KEY, None)
+            messages = projected
         return estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
 
     def reconfigure(
@@ -947,6 +959,9 @@ class ContextManager:
             if i in protected or m.get("role") != "tool":
                 continue
             content = m.get("content", "")
+            # Image-bearing results remain typed until a whole round is summarized.
+            if not isinstance(content, str):
+                continue
             if len(content) <= self._snip_threshold_chars:
                 continue
             lines = content.splitlines()
@@ -1232,7 +1247,7 @@ class ContextManager:
         snapshot: list[dict[str, Any]] = []
         for index, msg in selected:
             role = msg.get("role", "?")
-            content = (msg.get("content", "") or "").replace("\r", "")
+            content = content_text(msg.get("content")).replace("\r", "")
             if len(content) > max_chars:
                 content = content[: max_chars - 3] + "..."
             item: dict[str, Any] = {

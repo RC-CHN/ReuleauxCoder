@@ -9,7 +9,7 @@ class Message:
     """A single message in the conversation."""
 
     role: str  # "system", "user", "assistant", "tool"
-    content: Optional[str] = None
+    content: str | list[dict] | None = None
     tool_calls: Optional[list[dict]] = None
     tool_call_id: Optional[str] = None
 

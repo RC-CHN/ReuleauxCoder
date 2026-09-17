@@ -12,6 +12,7 @@ _LLM_RUNTIME_FIELDS = (
     "api_key",
     "provider",
     "request_mode",
+    "support_modal",
     "base_url",
     "temperature",
     "max_tokens",
@@ -34,8 +35,10 @@ def llm_runtime_kwargs(settings: Any, *, debug_trace: bool = False) -> dict[str,
                 "provider",
                 getattr(settings, "provider_family", "openai-compatible"),
             )
-        elif field == "request_mode":
-            kwargs[field] = getattr(settings, field, None)
+        elif field in {"request_mode", "support_modal"}:
+            kwargs[field] = getattr(
+                settings, field, ("text",) if field == "support_modal" else None
+            )
         else:
             kwargs[field] = getattr(settings, field)
     responses = getattr(settings, "responses", None)

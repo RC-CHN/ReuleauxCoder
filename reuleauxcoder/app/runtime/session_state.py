@@ -274,6 +274,12 @@ def bind_session_persistence(
     events_path=None,
 ) -> SessionRestoreIssue | None:
     """Bind live ledger fsync and replay snapshots to the active session."""
+    from reuleauxcoder.infrastructure.persistence.images import ImageStore
+
+    if hasattr(agent, "image_store"):
+        agent.image_store = ImageStore(store.sessions_dir, config.image)
+        if hasattr(agent.llm, "image_store"):
+            agent.llm.image_store = agent.image_store
     bind = getattr(agent, "bind_session_persistence", None)
     if not callable(bind):
         agent.current_session_id = session_id

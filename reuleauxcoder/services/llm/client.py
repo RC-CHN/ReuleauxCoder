@@ -13,6 +13,15 @@ from urllib.parse import urlparse
 from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError
 
 from reuleauxcoder.domain.cancellation import CancellationSignal
+from reuleauxcoder.domain.images import (
+    ImageRecovery,
+    ImageStorePort,
+    project_images,
+    image_request_stats,
+    image_parts,
+    input_modalities,
+)
+from reuleauxcoder.domain.context.replay import content_hash
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.hooks.types import (
     AfterLLMResponseContext,
@@ -403,8 +412,15 @@ class LLM:
         reasoning_effort_param: str = "reasoning_effort",
         debug_trace: bool = False,
         ui_bus: UIEventBus | None = None,
+        support_modal: tuple[str, ...] = ("text",),
     ):
         self.model = model
+        self.support_modal = input_modalities(support_modal)
+        self.image_store: ImageStorePort | None = None
+        self._image_recovery_key: tuple | None = None
+        self._image_recovery = ImageRecovery()
+        self.last_image_attempts: list[dict[str, Any]] = []
+        self.image_projection_sources: dict[str, dict] = {}
         self.provider_family = normalize_provider_family(provider)
         self.provider = self.provider_family
         if self.provider_family not in {"openai-compatible", "anthropic"}:
@@ -474,6 +490,7 @@ class LLM:
         reasoning_effort_values: dict[str, object] | None = None,
         reasoning_effort_param: str | None = None,
         debug_trace: bool | None = None,
+        support_modal: tuple[str, ...] = ("text",),
     ) -> None:
         """Hot-swap runtime model/client settings.
 
@@ -530,6 +547,9 @@ class LLM:
             except Exception:
                 pass
         self.model = model
+        self.support_modal = input_modalities(support_modal)
+        self._image_recovery_key = None
+        self._image_recovery = ImageRecovery()
         self.provider_family = provider_family
         self.provider = provider_family
         self.request_mode = effective_request_mode
@@ -596,6 +616,10 @@ class LLM:
     def close(self) -> None:
         """Release the active provider; runner cleanup owns failure isolation."""
         self._provider_adapter.close()
+
+    @property
+    def supports_images(self) -> bool:
+        return "image" in self.support_modal
 
     def _emit_debug(self, message: str, **data: Any) -> None:
         """Emit a debug UI event when a bus is attached."""
@@ -796,8 +820,48 @@ class LLM:
 
         report_phase("request_build")
         self.last_dispatched_request = None
+        image_request_id = self._image_request_id = object()
+        self.last_image_attempts = []
+        self.image_projection_sources = {}
         self.last_debug_trace_path = None
         raw_messages = [dict(msg) for msg in messages]
+        recovery_key = (
+            session_id,
+            event_metadata.get("agent_id"),
+            event_metadata.get("image_turn_id")
+            or event_metadata.get("turn_id")
+            or operation_id,
+        )
+        if recovery_key != self._image_recovery_key and (
+            event_metadata.get("turn_id")
+            or event_metadata.get("image_turn_id")
+            or image_parts(messages)
+        ):
+            self._image_recovery_key = recovery_key
+            self._image_recovery = ImageRecovery()
+
+        def project_for_model(source):
+            projected = project_images(
+                source,
+                supports_images=self.supports_images,
+                load_image=(lambda image: self.image_store.data_url(session_id, image))
+                if self.image_store is not None and session_id
+                else None,
+                retention=event_metadata.get("image_retention", "history"),
+                turn_id=event_metadata.get(
+                    "image_turn_id", event_metadata.get("turn_id")
+                ),
+            )
+            for original, message in zip(source, projected):
+                if image_parts([original]):
+                    self.image_projection_sources[content_hash(message)] = (
+                        self.image_projection_sources.get(
+                            content_hash(original), original
+                        )
+                    )
+            return projected
+
+        messages = project_for_model(messages)
         messages = sanitize_messages_for_llm(
             messages,
             preserve_reasoning_content=self.preserve_reasoning_content,
@@ -986,8 +1050,10 @@ class LLM:
             # Freeze messages only after dispatch callbacks have atomically
             # claimed or removed their final-payload contribution.
             params["messages"] = normalize_provider_message_roles(
-                before_context.messages
+                project_for_model(before_context.messages)
             )
+            original_image_messages = params["messages"]
+            params["messages"] = self._project_image_recovery(original_image_messages)
             provider_attempts = 1 if has_dispatch_effects else LLM_MAX_ATTEMPTS
             retry_cancellation = None if has_dispatch_effects else cancellation_event
             # stream_options is an OpenAI extension
@@ -996,11 +1062,14 @@ class LLM:
                 self.last_dispatched_request = canonicalize_request_params(params)
                 report_phase("connect", attempt=1, max_attempts=provider_attempts)
                 stream = _cancellable_stream_open(
-                    lambda: self._call_with_retry_observed(
+                    lambda: self._call_with_image_recovery(
                         params,
                         retry_observer,
+                        original_messages=original_image_messages,
                         cancellation_event=retry_cancellation,
                         max_attempts=provider_attempts,
+                        request_id=image_request_id,
+                        recovery_cancellation=cancellation_event,
                     ),
                     cancellation_event,
                 )
@@ -1023,11 +1092,14 @@ class LLM:
                     max_attempts=provider_attempts,
                 )
                 stream = _cancellable_stream_open(
-                    lambda: self._call_with_retry_observed(
+                    lambda: self._call_with_image_recovery(
                         params,
                         retry_observer,
+                        original_messages=original_image_messages,
                         cancellation_event=retry_cancellation,
                         max_attempts=provider_attempts,
+                        request_id=image_request_id,
+                        recovery_cancellation=cancellation_event,
                     ),
                     cancellation_event,
                 )
@@ -1315,6 +1387,77 @@ class LLM:
                     }
                 )
 
+    def _call_with_image_recovery(
+        self,
+        params: dict,
+        on_retry,
+        *,
+        original_messages: list[dict],
+        cancellation_event,
+        max_attempts: int,
+        request_id,
+        recovery_cancellation,
+    ):
+        while True:
+            if self._image_request_id is not request_id:
+                raise LLMRequestCancelled("Superseded image request")
+            self.last_dispatched_request = canonicalize_request_params(params)
+            stats = {
+                **image_request_stats(params["messages"]),
+                "degradation_level": self._image_recovery.level,
+            }
+            try:
+                return self._call_with_retry_observed(
+                    params,
+                    on_retry,
+                    cancellation_event=cancellation_event,
+                    max_attempts=max_attempts,
+                )
+            except Exception as error:
+                if getattr(error, "status_code", None) != 413:
+                    raise
+                if (
+                    self._image_request_id is not request_id
+                    or recovery_cancellation is not None
+                    and recovery_cancellation.is_set()
+                ):
+                    raise LLMRequestCancelled("LLM image recovery cancelled") from error
+                if not stats["image_count"] or not self._image_recovery.advance(
+                    original_messages
+                ):
+                    raise
+                params["messages"] = self._project_image_recovery(original_messages)
+                if self.ui_bus is not None:
+                    self.ui_bus.warning(
+                        "Provider rejected request size. Retrying with "
+                        + (
+                            "the latest two images."
+                            if self._image_recovery.level == 1
+                            else "existing images replaced by text markers."
+                        )
+                        + " Saved image history is preserved."
+                    )
+
+    def _project_image_recovery(self, messages: list[dict]) -> list[dict]:
+        projected = project_images(
+            messages,
+            supports_images=self.supports_images,
+            recovery=self._image_recovery,
+        )
+        for original, message in zip(messages, projected):
+            source = self.image_projection_sources.get(content_hash(original))
+            if source is not None:
+                self.image_projection_sources[content_hash(message)] = source
+        return projected
+
+    def _record_image_attempt(self, params: dict) -> dict:
+        stats = {
+            **image_request_stats(params["messages"]),
+            "degradation_level": self._image_recovery.level,
+        }
+        self.last_image_attempts.append(stats)
+        return stats
+
     def _call_with_retry_observed(
         self,
         params: dict,
@@ -1332,7 +1475,12 @@ class LLM:
                 on_retry=on_retry,
                 cancellation_event=cancellation_event,
             )
-        return call(params)
+        stats = self._record_image_attempt(params)
+        try:
+            return call(params)
+        except Exception as error:
+            stats["status_code"] = getattr(error, "status_code", None)
+            raise
 
     def _call_with_retry(
         self,
@@ -1346,9 +1494,11 @@ class LLM:
         for attempt in range(max_retries):
             if cancellation_event is not None and cancellation_event.is_set():
                 raise LLMRequestCancelled("LLM request cancelled before retry")
+            stats = self._record_image_attempt(params)
             try:
                 return self._provider_adapter.open_stream(params)
             except Exception as error:
+                stats["status_code"] = getattr(error, "status_code", None)
                 if not self._provider_adapter.is_retryable(error):
                     raise
                 if cancellation_event is not None and cancellation_event.is_set():

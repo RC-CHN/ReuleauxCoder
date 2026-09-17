@@ -41,6 +41,13 @@ from reuleauxcoder.domain.hooks import (
     HookRegistry,
 )
 from reuleauxcoder.domain.history import HistoryEvent, HistoryLedger
+from reuleauxcoder.domain.images import (
+    ChatInput,
+    IMAGE_TURN_KEY,
+    ImageStorePort,
+    display_content,
+    project_images,
+)
 from reuleauxcoder.domain.output_journal import OutputJournal
 from reuleauxcoder.domain.plan import PlanController
 from reuleauxcoder.domain.goal import GoalController
@@ -80,7 +87,7 @@ class PendingUserSteering:
     """One admitted user direction awaiting a model-safe boundary."""
 
     steering_id: str
-    content: str
+    content: str | list[dict]
     generation: int
     turn_id: str
 
@@ -151,6 +158,8 @@ class Agent:
         self.agent_id = agent_id or uuid.uuid4().hex
         self.session_generation = 0
         self.current_session_id: str | None = None
+        self.image_store: ImageStorePort | None = None
+        self.image_turn_id: str | None = None
         self.session_fingerprint: str | None = getattr(
             config, "session_fingerprint", None
         )
@@ -267,6 +276,7 @@ class Agent:
             )
         else:
             self.context = ContextManager(max_tokens=max_context_tokens)
+        self.context.image_projection = self._project_context_images
 
         # Event handlers are best-effort observers available before hook
         # diagnostics are wired. Correctness-critical delivery belongs behind
@@ -358,6 +368,20 @@ class Agent:
             )
         return synthesized
 
+    def _project_context_images(self, messages: list[dict]) -> list[dict]:
+        """Budget the visible request without loading image bytes or editing history."""
+        return project_images(
+            messages,
+            supports_images="image" in getattr(self.llm, "support_modal", ()),
+            load_image=lambda image: "",
+            retention=getattr(
+                getattr(self.runtime_config, "context", None),
+                "image_retention",
+                "history",
+            ),
+            turn_id=self.image_turn_id,
+        )
+
     def _append_message(
         self,
         message: dict,
@@ -366,6 +390,18 @@ class Agent:
         history_metadata: dict[str, Any] | None = None,
     ) -> None:
         with self._context_revision_lock:
+            if isinstance(message.get("content"), list):
+                message = {
+                    **message,
+                    "content": [
+                        {**part, "turn_id": self.image_turn_id}
+                        if isinstance(part, dict)
+                        and part.get("type") == "image"
+                        and not part.get("turn_id")
+                        else part
+                        for part in message["content"]
+                    ],
+                }
             api_round_id = (
                 f"{self._current_turn_id}:{self.state.current_round}"
                 if self._current_turn_id is not None
@@ -678,6 +714,21 @@ class Agent:
         self._replace_context_messages(
             list(session.messages), reason="session resume", record=False
         )
+        self.image_turn_id = None
+        for message in reversed(session.messages):
+            owner = message.get(IMAGE_TURN_KEY)
+            if owner is None and isinstance(message.get("content"), list):
+                owner = next(
+                    (
+                        part.get("turn_id")
+                        for part in reversed(message["content"])
+                        if part.get("type") == "image" and part.get("turn_id")
+                    ),
+                    None,
+                )
+            if owner:
+                self.image_turn_id = owner
+                break
         restorable_subagent_kinds = {
             "subagent_job_changed",
             "subagent_communication_queued",
@@ -827,9 +878,13 @@ class Agent:
                 epoch=self._round_interrupt_epoch,
             )
 
-    def admit_user_steering(self, text: str) -> str | None:
+    def admit_user_steering(self, text: str | ChatInput) -> str | None:
         """Admit one user direction and durably record its non-terminal state."""
-        content = text.strip()
+        content = (
+            text.content(self.image_turn_id or self._current_turn_id or "")
+            if isinstance(text, ChatInput)
+            else text.strip()
+        )
         if not content:
             return None
         with self._steering_lock:
@@ -861,7 +916,7 @@ class Agent:
         self.persist_runtime_snapshot()
         return steering_id
 
-    def submit_user_steering(self, text: str) -> bool:
+    def submit_user_steering(self, text: str | ChatInput) -> bool:
         """Queue user direction for the next protocol-safe inference boundary."""
         return self.admit_user_steering(text) is not None
 
@@ -876,7 +931,7 @@ class Agent:
         """Queued steering previews for the current generation (UI display)."""
         with self._steering_lock:
             return tuple(
-                item.content
+                display_content(item.content)
                 for item in self._pending_user_steering
                 if item.generation == self.session_generation
             )
@@ -909,6 +964,8 @@ class Agent:
                     turn_id=item.turn_id,
                 )
                 message = {"role": "user", "content": item.content}
+                if self.image_turn_id is not None and isinstance(item.content, list):
+                    message[IMAGE_TURN_KEY] = self.image_turn_id
                 self.history_ledger.append_message(
                     message,
                     source="user_steering",
@@ -924,7 +981,16 @@ class Agent:
             if applied:
                 with self._context_revision_lock:
                     self.state.messages.extend(
-                        {"role": "user", "content": item.content}
+                        {
+                            "role": "user",
+                            "content": item.content,
+                            **(
+                                {IMAGE_TURN_KEY: self.image_turn_id}
+                                if self.image_turn_id is not None
+                                and isinstance(item.content, list)
+                                else {}
+                            ),
+                        }
                         for item in applied
                     )
                     self._context_revision += 1
@@ -934,7 +1000,7 @@ class Agent:
             for item in applied:
                 self._emit_event(
                     AgentEvent.user_steering(
-                        item.content,
+                        display_content(item.content),
                         steering_id=item.steering_id,
                         attempt_id=attempt_id,
                     )
@@ -1691,7 +1757,7 @@ class Agent:
 
     def chat(
         self,
-        user_input: str,
+        user_input: str | ChatInput,
         *,
         goal_continuation: bool = False,
         clear_stop: bool = True,
@@ -1707,12 +1773,14 @@ class Agent:
             )
 
     def _chat_turn(
-        self, user_input: str, *, goal_continuation: bool, clear_stop: bool
+        self, user_input: str | ChatInput, *, goal_continuation: bool, clear_stop: bool
     ) -> str:
         """Process one user message."""
         if clear_stop:
             self.clear_stop_request()
         self._current_turn_id = uuid.uuid4().hex
+        if not goal_continuation:
+            self.image_turn_id = self._current_turn_id
         with self._steering_lock:
             self._accepting_user_steering = True
             self._round_interrupt_pending = False
@@ -1748,10 +1816,32 @@ class Agent:
                 source="goal_continuation",
             )
         else:
-            self._append_message(
-                {"role": "user", "content": user_input}, source="user_input"
+            image_metadata = (
+                {IMAGE_TURN_KEY: self.image_turn_id}
+                if (
+                    isinstance(user_input, ChatInput)
+                    and user_input.images
+                    or any(
+                        isinstance(message.get("content"), list)
+                        for message in self.state.messages
+                    )
+                )
+                else {}
             )
-        self._emit_event(AgentEvent.chat_start("" if goal_continuation else user_input))
+            self._append_message(
+                {
+                    "role": "user",
+                    "content": user_input.content(self.image_turn_id)
+                    if isinstance(user_input, ChatInput)
+                    else user_input,
+                    **image_metadata,
+                },
+                source="user_input",
+            )
+        display = (
+            user_input.display_text if isinstance(user_input, ChatInput) else user_input
+        )
+        self._emit_event(AgentEvent.chat_start("" if goal_continuation else display))
 
         # Run the loop
         try:
@@ -1865,6 +1955,7 @@ class Agent:
         self.state.current_round = 0
         self.state.total_model_calls = 0
         self._current_turn_id = None
+        self.image_turn_id = None
         self._pending_subagent_injections.clear()
         with self._steering_lock:
             self._pending_user_steering.clear()

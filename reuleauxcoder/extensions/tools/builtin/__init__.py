@@ -23,6 +23,7 @@ from reuleauxcoder.extensions.tools.builtin.history import (
     HistorySearchTool,
 )
 from reuleauxcoder.extensions.tools.builtin.list_file import ListFileTool
+from reuleauxcoder.extensions.tools.builtin.images import ViewImageTool
 from reuleauxcoder.extensions.tools.builtin.lsp import (
     LspDiagnosticsTool,
     LspRestartTool,
@@ -61,6 +62,7 @@ _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
     HistoryReadTool,
     ArtifactReadTool,
     ListFileTool,
+    ViewImageTool,
     LspTool,
     LspStatusTool,
     LspDiagnosticsTool,

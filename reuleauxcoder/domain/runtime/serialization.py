@@ -169,8 +169,14 @@ def _decode_payload(
 
 
 def _decode_tool_outcome(data: dict[str, Any]) -> ToolOutcome:
+    from reuleauxcoder.domain.images import ImageReference
+
     values = dict(data)
     try:
+        values["images"] = tuple(
+            ImageReference(**_require_string_dict(item, "image"))
+            for item in values.get("images", [])
+        )
         values["status"] = ToolOutcomeStatus(values["status"])
         if values.get("error_kind") is not None:
             values["error_kind"] = ToolErrorKind(values["error_kind"])

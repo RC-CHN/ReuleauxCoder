@@ -1,6 +1,7 @@
 """Build a typed, secret-safe view of effective runtime configuration."""
 
 from __future__ import annotations
+import json
 
 from reuleauxcoder.app.commands.view_models import (
     EffectiveConfigRowViewModel,
@@ -46,6 +47,35 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
             "models.runtime_model",
             str(getattr(getattr(agent, "llm", None), "model", config.model)),
             "session",
+        ),
+        EffectiveConfigRowViewModel(
+            "models.support_modal",
+            json.dumps(
+                getattr(
+                    getattr(agent, "llm", None),
+                    "support_modal",
+                    config.support_modal,
+                )
+            ),
+            "session",
+        ),
+        EffectiveConfigRowViewModel(
+            "context.image_retention",
+            context.image_retention,
+            source("context.image_retention"),
+        ),
+        *(
+            EffectiveConfigRowViewModel(
+                f"attachments.image.{name}",
+                str(getattr(config.image, name)),
+                source(f"attachments.image.{name}"),
+            )
+            for name in (
+                "normal_max_bytes",
+                "max_edge_px",
+                "detail_max_base64_bytes",
+                "originals_cache_max_bytes",
+            )
         ),
         EffectiveConfigRowViewModel(
             "modes.active",

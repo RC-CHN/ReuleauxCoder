@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
 from reuleauxcoder.domain.context.replay import align_item_provenance
+from reuleauxcoder.domain.images import content_text
 
 if TYPE_CHECKING:
     from reuleauxcoder.services.llm.client import LLM
@@ -143,7 +144,7 @@ def build_summary_document(
     )
 
     for index, message in enumerate(messages):
-        content = str(message.get("content") or "").strip()
+        content = content_text(message.get("content")).strip()
         if not content:
             continue
         role = message.get("role")
@@ -508,8 +509,15 @@ def _project_summary_message(message: dict) -> dict:
                 "document",
                 "input_image",
             }:
-                source = part.get("name") or part.get("id") or "embedded"
-                parts.append(f"[{part.get('type')} source={source}]")
+                source = (
+                    part.get("attachment_id")
+                    or part.get("name")
+                    or part.get("id")
+                    or "embedded"
+                )
+                parts.append(
+                    f"[{part.get('type')} source={source}; image bytes not viewed by summarizer]"
+                )
             elif isinstance(part, dict):
                 parts.append(str(part.get("text") or part.get("content") or ""))
             else:

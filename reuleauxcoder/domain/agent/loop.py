@@ -744,8 +744,9 @@ class AgentLoop:
             agent_id=self.agent.agent_id,
             turn_id=self.agent._current_turn_id,
         )
+        projection_sources = getattr(self.agent.llm, "image_projection_sources", {})
         provenance = self.agent.history_ledger.item_provenance(
-            replay_items,
+            [projection_sources.get(content_hash(item), item) for item in replay_items],
             fallback_event_id=observed.event_id,
         )
 
@@ -845,6 +846,28 @@ class AgentLoop:
             }
             for schema in self._tool_schema_cache
         ]
+
+    def _record_image_traffic(self, attempt_id: str) -> None:
+        attempts = getattr(self.agent.llm, "last_image_attempts", None)
+        if not attempts or not any(
+            item.get("image_count") or item.get("degradation_level")
+            for item in attempts
+        ):
+            return
+        self.agent.history_ledger.append(
+            "image_payload_observed",
+            {
+                "attempt_id": attempt_id,
+                "attempts": [dict(item) for item in attempts],
+                "image_base64_bytes": sum(
+                    item.get("image_base64_bytes", 0) for item in attempts
+                ),
+                "measurement": "base64 payload bytes across provider attempts; not network wire bytes",
+            },
+            agent_id=self.agent.agent_id,
+            turn_id=self.agent._current_turn_id,
+            api_round_id=attempt_id,
+        )
 
     def _record_request_interrupt_marker(
         self, *, attempt_id: str, interrupt_epoch: int
@@ -972,6 +995,12 @@ class AgentLoop:
                         "session_generation": self.agent.session_generation,
                         "turn_id": self.agent._current_turn_id,
                         "round_index": round_num,
+                        "image_turn_id": self.agent.image_turn_id,
+                        "image_retention": getattr(
+                            getattr(self.agent.runtime_config, "context", None),
+                            "image_retention",
+                            "history",
+                        ),
                         "attempt_id": attempt_id,
                         "active_mode": self.agent.active_mode,
                         "pending_tool_calls": len(
@@ -1042,6 +1071,9 @@ class AgentLoop:
                         interrupt_epoch=interrupt_epoch,
                     )
                 continue
+
+            finally:
+                self._record_image_traffic(attempt_id)
 
             if final_budget.local_request_estimate is not None:
                 local_request_estimate = final_budget.local_request_estimate
@@ -1363,6 +1395,12 @@ class AgentLoop:
                         "session_generation": self.agent.session_generation,
                         "turn_id": self.agent._current_turn_id,
                         "round_index": self.agent.state.current_round,
+                        "image_turn_id": self.agent.image_turn_id,
+                        "image_retention": getattr(
+                            getattr(self.agent.runtime_config, "context", None),
+                            "image_retention",
+                            "history",
+                        ),
                         "attempt_id": attempt_id,
                         "active_mode": self.agent.active_mode,
                         "summary_phase": True,
@@ -1435,6 +1473,8 @@ class AgentLoop:
                         interrupt_epoch=interrupt_epoch,
                     )
                 continue
+            finally:
+                self._record_image_traffic(attempt_id)
             if final_budget.local_request_estimate is not None:
                 summary_local_request = final_budget.local_request_estimate
             self._record_dispatched_request_envelope(

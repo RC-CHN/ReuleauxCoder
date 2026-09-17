@@ -3477,10 +3477,13 @@ class SessionStore:
                 if not isinstance(value, str) or not value:
                     raise ValueError("history usage identity is invalid")
         elif kind == "steering_admitted":
-            for key in ("steering_id", "turn_id", "content"):
+            for key in ("steering_id", "turn_id"):
                 value = event_payload.get(key)
                 if not isinstance(value, str) or not value:
                     raise ValueError("history steering admission is invalid")
+            content = event_payload.get("content")
+            if not isinstance(content, (str, list)) or not content:
+                raise ValueError("history steering content is invalid")
             generation = event_payload.get("generation")
             if (
                 not isinstance(generation, int)

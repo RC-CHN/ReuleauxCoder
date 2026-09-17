@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
+from reuleauxcoder.domain.images import content_text
 
 
 MAX_SNAPSHOT_MESSAGES = 10
@@ -30,7 +31,7 @@ def snapshot_messages(
         }
         content = msg.get("content")
         if content is not None:
-            text = str(content)
+            text = content_text(content)
             item["content"] = text[:MAX_CONTENT_CHARS] + (
                 "..." if len(text) > MAX_CONTENT_CHARS else ""
             )

@@ -562,6 +562,7 @@ def _normalize_tool_outcome(outcome: ToolOutcome) -> ToolOutcome:
 
 
 _AFTER_FIXED_OUTCOME_FIELDS = (
+    "images",
     "status",
     "summary",
     "content",
@@ -1530,7 +1531,7 @@ class ToolExecutor:
             outcome,
             failures,
         )
-        return published.model_text
+        return published.model_message_content
 
     @staticmethod
     def _execution_failure_outcome(

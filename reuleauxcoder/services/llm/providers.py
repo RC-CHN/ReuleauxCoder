@@ -11,6 +11,7 @@ from typing import Any, Iterator, Protocol
 import httpx
 
 from reuleauxcoder.domain.llm.models import PROVIDER_DATA_KEY
+from reuleauxcoder.domain.images import content_text
 
 
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -89,14 +90,7 @@ class OpenAICompatibleProvider:
         request = dict(params)
         messages = request.get("messages")
         if isinstance(messages, list):
-            request["messages"] = [
-                {
-                    key: value
-                    for key, value in message.items()
-                    if key != PROVIDER_DATA_KEY
-                }
-                for message in messages
-            ]
+            request["messages"] = _chat_messages(messages)
         return self._client.chat.completions.create(**request)
 
     def is_retryable(self, error: BaseException) -> bool:
@@ -108,9 +102,38 @@ class OpenAICompatibleProvider:
             close()
 
 
-def _responses_text_blocks(
-    content: object, *, role: str
-) -> list[dict[str, Any]]:
+def _chat_messages(source: list[dict]) -> list[dict]:
+    """Chat Completions tool results are text; attach their images after the group."""
+    messages: list[dict] = []
+    media: list[dict] = []
+    for message in source:
+        if message.get("role") != "tool" and media:
+            messages.append({"role": "user", "content": media})
+            media = []
+        item = {
+            key: value for key, value in message.items() if key != PROVIDER_DATA_KEY
+        }
+        content = item.get("content")
+        if item.get("role") == "tool" and isinstance(content, list):
+            images = [part for part in content if part.get("type") == "image_url"]
+            if images:
+                media.extend(
+                    [
+                        {
+                            "type": "text",
+                            "text": f"Images returned by tool call {item.get('tool_call_id', '')}:",
+                        },
+                        *images,
+                    ]
+                )
+            item["content"] = content_text(content)
+        messages.append(item)
+    if media:
+        messages.append({"role": "user", "content": media})
+    return messages
+
+
+def _responses_text_blocks(content: object, *, role: str) -> list[dict[str, Any]]:
     block_type = "output_text" if role == "assistant" else "input_text"
     if isinstance(content, str):
         return [{"type": block_type, "text": content}]
@@ -120,8 +143,20 @@ def _responses_text_blocks(
         raise TypeError("responses message content must be text")
     blocks: list[dict[str, Any]] = []
     for block in content:
+        if isinstance(block, dict) and block.get("type") == "image_url":
+            if role == "assistant":
+                raise TypeError("Assistant image input is unsupported")
+            image = block["image_url"]
+            blocks.append(
+                {
+                    "type": "input_image",
+                    "image_url": image["url"],
+                    "detail": image.get("detail", "auto"),
+                }
+            )
+            continue
         if not isinstance(block, dict) or block.get("type") != "text":
-            raise TypeError("responses adapter supports text content blocks only")
+            raise TypeError("Unsupported responses content block")
         text = block.get("text")
         if not isinstance(text, str):
             raise TypeError("responses text content must be a string")
@@ -150,7 +185,7 @@ def _responses_input(
         if role == "tool":
             content = message.get("content")
             if not isinstance(content, str):
-                raise TypeError("responses tool output must be text")
+                content = _responses_text_blocks(content, role="user")
             items.append(
                 {
                     "type": "function_call_output",
@@ -499,8 +534,28 @@ def _content_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
             blocks.append({"type": "text", "text": content})
     elif isinstance(content, list):
         for block in content:
+            if isinstance(block, dict) and block.get("type") == "image_url":
+                url = block["image_url"]["url"]
+                if (
+                    not isinstance(url, str)
+                    or not url.startswith("data:")
+                    or ";base64," not in url
+                ):
+                    raise TypeError("Anthropic image content must be a base64 data URL")
+                media_type, data = url[5:].split(";base64,", 1)
+                blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": data,
+                        },
+                    }
+                )
+                continue
             if not isinstance(block, dict) or block.get("type") != "text":
-                raise TypeError("anthropic adapter supports text content blocks only")
+                raise TypeError("Unsupported anthropic content block")
             text = block.get("text")
             if not isinstance(text, str):
                 raise TypeError("anthropic text content must be a string")
@@ -560,7 +615,7 @@ def _anthropic_messages(
         if role == "tool":
             content = message.get("content")
             if not isinstance(content, str):
-                raise TypeError("anthropic tool result must be text")
+                content = _content_blocks(message)
             _merge_message(
                 messages,
                 "user",
