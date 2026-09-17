@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Receive fragmented TUI RPC frames without repeatedly copying their prefixes.
+
 ## 0.9.3 - 2026-09-11
 
 - Prioritized scroll frames over event batching, added immediate first-row feedback, and reused stable sidebar/text surfaces. Reproducible Ink benchmarks now cover continuous panel and transcript scrolling, input latency, idle RPC traffic, and multi-megabyte streaming replies.

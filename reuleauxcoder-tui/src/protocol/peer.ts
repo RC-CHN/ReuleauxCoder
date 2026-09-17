@@ -12,7 +12,8 @@ export class RpcPeer extends EventEmitter {
   readonly methods = new Map<string, Handler>();
   closed = false;
   private nextId = 0;
-  private buffer = Buffer.alloc(0);
+  private frameParts: Buffer[] = [];
+  private frameBytes = 0;
   private pending = new Map<string, {resolve(value: Json): void; reject(error: Error): void; timer: NodeJS.Timeout}>();
   static readonly maxFrame = 16 * 1024 * 1024;
 
@@ -46,15 +47,19 @@ export class RpcPeer extends EventEmitter {
 
   private receive = (chunk: Buffer): void => {
     try {
-      this.buffer = Buffer.concat([this.buffer, chunk]);
-      let end: number;
-      while ((end = this.buffer.indexOf(10)) !== -1) {
-        if (end > RpcPeer.maxFrame) throw new Error('RPC frame exceeds 16 MiB');
-        const line = this.buffer.subarray(0, end).toString('utf8');
-        this.buffer = this.buffer.subarray(end + 1);
-        this.dispatch(JSON.parse(line));
+      // Search only new bytes and join fragmented frames once, after the newline.
+      let start = 0;
+      while (start < chunk.length && !this.closed) {
+        const end = chunk.indexOf(10, start);
+        const part = chunk.subarray(start, end < 0 ? chunk.length : end);
+        this.frameBytes += part.length;
+        if (this.frameBytes > RpcPeer.maxFrame) throw new Error('RPC frame exceeds 16 MiB');
+        if (end < 0) {this.frameParts.push(part); break;}
+        const frame = this.frameParts.length ? Buffer.concat([...this.frameParts, part], this.frameBytes) : part;
+        this.frameParts = []; this.frameBytes = 0;
+        this.dispatch(JSON.parse(frame.toString('utf8')));
+        start = end + 1;
       }
-      if (this.buffer.length > RpcPeer.maxFrame) throw new Error('RPC frame exceeds 16 MiB');
     } catch (error) {this.close(error as Error);}
   };
 
@@ -86,6 +91,7 @@ export class RpcPeer extends EventEmitter {
   close(error?: Error): void {
     if (this.closed) return;
     this.closed = true;
+    this.frameParts = []; this.frameBytes = 0;
     this.reader.off('data', this.receive);
     for (const pending of this.pending.values()) {clearTimeout(pending.timer); pending.reject(error ?? new Error('Connection closed'));}
     this.pending.clear();

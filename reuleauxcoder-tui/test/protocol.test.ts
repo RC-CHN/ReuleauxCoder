@@ -38,6 +38,41 @@ test('malformed replies and EOF reject pending calls instead of leaving promises
   }
 });
 
+test('large fragmented frames copy at most one frame and preserve adjacent messages', t => {
+  const input = new PassThrough(), output = new PassThrough();
+  const peer = new RpcPeer(input, output); t.after(() => peer.close());
+  const received: unknown[] = [];
+  peer.on('notification', (method, params) => received.push([method, params]));
+  const text = '中文🙂'.repeat(100_000);
+  const frame = Buffer.from(JSON.stringify({jsonrpc: '2.0', method: 'large', params: {text}}));
+  const next = Buffer.from('\n{"jsonrpc":"2.0","method":"next","params":{}}\n');
+  const concat = Buffer.concat;
+  let copiedBytes = 0;
+  t.mock.method(Buffer, 'concat', (parts: Buffer[], length?: number) => {
+    copiedBytes += parts.reduce((total, part) => total + part.length, 0);
+    return concat(parts, length);
+  });
+  for (let offset = 0; offset < frame.length; offset += 1024) input.write(frame.subarray(offset, offset + 1024));
+  assert.equal(copiedBytes, 0, 'incomplete frames never copy their accumulated prefix');
+  input.write(next);
+  assert.deepEqual(received, [['large', {text}], ['next', {}]]);
+  assert.equal(copiedBytes, frame.length);
+});
+
+test('frame limits apply to each fragmented message, including the final fragment', t => {
+  for (const newline of [false, true]) {
+    const input = new PassThrough(), output = new PassThrough();
+    const peer = new RpcPeer(input, output); t.after(() => peer.close());
+    let failure: Error | undefined;
+    peer.on('close', error => {failure = error;});
+    input.write(Buffer.alloc(RpcPeer.maxFrame, 32));
+    assert(!peer.closed, 'a frame at the limit may still receive its newline');
+    input.write(Buffer.from(newline ? 'x\n' : 'x'));
+    assert(peer.closed);
+    assert.match(failure!.message, /exceeds 16 MiB/);
+  }
+});
+
 test('reverse interaction deadline and cancellation resolve the same correlated response', async t => {
   const a = new PassThrough(); const b = new PassThrough();
   const frontend = new RpcPeer(a, b); const backend = new RpcPeer(b, a);
