@@ -6,6 +6,7 @@ models:
   profiles:
     gpt-4.1:
       model: "gpt-4.1"
+      support_modal: [text, image] # Accepted inputs; defaults to [text].
       api_key: "your-api-key-here"
       provider: "openai-compatible"
       base_url: "https://api.openai.com/v1"
@@ -24,6 +25,7 @@ models:
 
     gpt-4.1-mini:
       model: "gpt-4.1-mini"
+      support_modal: [text, image]
       api_key: "your-api-key-here"
       provider: "openai-compatible"
       base_url: "https://api.openai.com/v1"
@@ -71,7 +73,7 @@ modes:
   profiles:
     planner:
       description: "Planning-first mode; keep implementation changes minimal unless asked."
-      tools: ["read_file", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress"]
+      tools: ["read_file", "view_image", "glob", "grep", "history_search", "history_read", "artifact_read", "update_plan", "report_progress"]
       prompt_append: "Focus on architecture, trade-offs, and actionable implementation plans."
       allowed_subagent_modes: ["explore"]
 
@@ -115,8 +117,17 @@ approval:
 #     Always answer in Chinese unless explicitly requested otherwise.
 #     Keep responses concise and actionable.
 
+# Optional image budgets. Paste a local image path to attach it; see docs/images.md.
+# attachments:
+#   image:
+#     normal_max_bytes: 262144             # 256 KiB binary per ordinary image
+#     max_edge_px: 2000
+#     detail_max_base64_bytes: 2097152     # 2 MiB Base64 for detail/ROI
+#     originals_cache_max_bytes: 1073741824 # 1 GiB originals per session
+
 # Optional context compression settings. Omit to use defaults.
 # context:
+#   image_retention: history # history | user_turn; steering/goal continuations keep the turn.
 #   # Automatic strategies are independent; manual /compact force remains available.
 #   auto_snip: true
 #   auto_summarize: true

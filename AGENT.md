@@ -240,7 +240,9 @@ Interactive remote chat streams host-rendered output and forwards approvals to t
 
 ## Configuration
 
-Workspace config is `.rcoder/config.yaml`; user config is `~/.rcoder/config.yaml`. Runtime sections are `app`, `models`, `modes`, `approval`, `prompt`, `skills`, `mcp`, `context`, `session`, `goal`, `tool_output`, `shell`, `web`, `lsp`, `remote_exec`, `ui`, and `cli`.
+Image inputs use `domain/images.py` references and `infrastructure/persistence/images.py` immutable variants, with a separately bounded original cache. CLI/TUI recognize pasted local image paths and insert numbered markers; `/attach` remains a fallback. Imports use session-generation-bound chunks. Per-profile `support_modal` defaults to `[text]`; adding `image` enables image input. Request projection hides images for text models without changing canonical history. `context.image_retention` defaults to `history`; `user_turn` shares ownership across steering/tool/goal continuations and expires on the next real user turn. `attachments.image` controls compression and the original cache. HTTP 413 recovery is finite and request-only; `image_payload_observed` records Base64 payload across attempts. See `docs/images.md` for behavior and deferred clipboard/peer imports.
+
+Workspace config is `.rcoder/config.yaml`; user config is `~/.rcoder/config.yaml`. Runtime sections are `app`, `models`, `modes`, `approval`, `prompt`, `skills`, `mcp`, `context`, `attachments`, `session`, `goal`, `tool_output`, `shell`, `web`, `lsp`, `remote_exec`, `ui`, and `cli`.
 
 `domain/goal.py` owns the single persisted session Goal. RuntimeServer admits automatic turns only after user/client work drains; CLI/TUI share `/goal` actions and snapshots over JSON-RPC. Goal changes use the existing ledger and runtime snapshot. Default token budget is unlimited; main, summary and goal-owned isolated-worker requests count input minus cached input plus output. Interrupt pauses the goal; restored active goals wait for frontend readiness. See `docs/goals.md` for controls, recovery and accounting limits.
 

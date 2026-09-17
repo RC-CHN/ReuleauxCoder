@@ -87,6 +87,8 @@ cp config.yaml.example .rcoder/config.yaml   # or write your own
 
 ## React TUI
 
+Paste a local image path into CLI or TUI to insert an `[Image #1]` attachment marker. `/attach <path>` remains available. Set `support_modal: [text, image]` on a vision model profile; the default is `[text]`. Images use compact 256 KiB previews and follow history; switching to a text model preserves saved references. See [image input and retention](docs/images.md) for compression, user-turn retention and remote paths.
+
 The independent React + Ink frontend lives in [`reuleauxcoder-tui/`](reuleauxcoder-tui/README.md). It uses the Python runtime over JSON-RPC, with top-level slash menus, command panels, approvals and a persistent composer. Release-wheel users run `rcoder` or `rcoder-tui` with Node.js 22+. For frontend development:
 
 ```sh

@@ -96,6 +96,8 @@ node reuleauxcoder-tui/dist/cli.js
 
 用 `rcoder-tui --cwd /path/to/project` 指定工作区，或用 `rcoder-cli` 显式启动线性 CLI。快捷键、功能对应和 SSH 后端用法见前端 README。
 
+CLI 和 TUI 可直接粘贴本地图片路径，输入框和发出的用户消息中会显示 `[Image #1]` 附件标记；`/attach <路径>` 保留作备用入口。图片模型配置 `support_modal: [text, image]`，默认 `[text]`。普通图片默认压缩到 256 KiB，随历史保留；切到文字模型只改变请求投影，切回后恢复仍符合策略的图片。详见[图片输入与上下文保留](docs/images.md)。
+
 ## 远端 Bootstrap（Host/Peer）
 
 先在 A 机的 `.rcoder/config.yaml` 中配置 remote relay：
