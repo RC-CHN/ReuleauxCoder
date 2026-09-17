@@ -61,9 +61,9 @@ export function toolGroupRows(cells: Cell[], width: number): string[] {
   const latest = cells.findLast(cell => cell.streaming) ?? cells.at(-1)!;
   for (const cell of cells) if (cell !== latest && failed(cell)) rows.push('  ' + summary(cell));
   rows.push('  ' + summary(latest));
-  if (latest.streaming && ['shell', 'shell_session'].includes(latest.tool?.name ?? latest.title) && latest.body !== 'Running…') {
-    const tail = safe(latest.body).trimEnd().split('\n').slice(-3).join('\n');
-    rows.push(...wrap(tail, Math.max(1, width - 4)).slice(-3).map(row => paint.muted('  ▏ ' + row)));
+  if (latest.streaming && ['shell', 'shell_session'].includes(latest.tool?.name ?? latest.title)) {
+    const tail = latest.outputTail?.text ?? (latest.body === 'Running…' ? '' : safe(latest.body).trimEnd().split('\n').slice(-3).join('\n'));
+    if (tail) rows.push(...wrap(tail, Math.max(1, width - 4)).slice(-3).map(row => paint.muted('  ▏ ' + row)));
   }
   return [...rows.map((row, index) => index === 0 ? paint.panel(fit(row, width)) : row), ''];
 }

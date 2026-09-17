@@ -3,8 +3,9 @@ import type {GitWorkspace} from '../protocol/wire.js';
 import {emptyState, typeOf, type Json, type RecordData, type RuntimeState, type UIEvent, type View} from '../protocol/wire.js';
 import {diff, fields} from '../ui/format.js';
 import {updateProcess, type ProcessView} from './processes.js';
+import {OutputTail} from './output-tail.js';
 
-export interface Cell {id: string; kind: 'user' | 'assistant' | 'reasoning' | 'tool' | 'notice'; title: string; body: string; details: string; revision: number; appendRevision?: number; streaming: boolean; tone?: string; tool?: {name: string; arguments: RecordData; outcome?: RecordData}}
+export interface Cell {id: string; kind: 'user' | 'assistant' | 'reasoning' | 'tool' | 'notice'; title: string; body: string; details: string; revision: number; appendRevision?: number; streaming: boolean; tone?: string; outputTail?: OutputTail; tool?: {name: string; arguments: RecordData; outcome?: RecordData}}
 export class SessionStore extends EventEmitter {
   state: RuntimeState = emptyState;
   cells: Cell[] = [];
@@ -32,6 +33,10 @@ export class SessionStore extends EventEmitter {
 
   add(kind: Cell['kind'], title: string, body: string, details = '', streaming = false): Cell {
     const cell: Cell = {id: String(++this.next), kind, title, body, details, revision: 0, streaming};
+    if (kind === 'tool' && streaming) {
+      cell.outputTail = new OutputTail();
+      if (body !== 'Running…') cell.outputTail.append(body);
+    }
     this.cells.push(cell);
     this.cellIndices.set(cell, this.cells.length - 1);
     if (streaming) this.streaming.add(cell);
@@ -128,7 +133,7 @@ export class SessionStore extends EventEmitter {
       }
       case 'ToolOutputDelta': {
         const cell = this.tools.get(p.tool_call_id);
-        if (cell) {cell.body = (cell.body === 'Running…' ? '' : cell.body) + p.text; this.touch(cell);}
+        if (cell) {cell.body = (cell.body === 'Running…' ? '' : cell.body) + p.text; cell.outputTail?.append(p.text); this.touch(cell);}
         else this.add('tool', p.tool_call_id, p.text);
         break;
       }
@@ -140,7 +145,7 @@ export class SessionStore extends EventEmitter {
         const detail = [cell.details, fields(out)].filter(Boolean).join('\n\n');
         cell.title = `${p.tool_name} · ${out.status}`;
         cell.body = body + (out.diff ? this.reviewedDiffs.has(out.diff.unified) ? '\nReviewed diff applied.' : '\n' + diff(out.diff.unified) : '');
-        cell.details = detail; cell.streaming = false; this.touch(cell);
+        cell.details = detail; cell.streaming = false; cell.outputTail = undefined; this.touch(cell);
         this.streaming.delete(cell); this.tools.delete(p.tool_call_id);
         if (out.diff) this.reviewedDiffs.delete(out.diff.unified);
         cell.tone = out.status === 'succeeded' ? 'success' : 'warning';
@@ -194,7 +199,7 @@ export class SessionStore extends EventEmitter {
     cell.tone = success ? 'success' : 'warning';
   }
   private finishCell(cell: Cell | undefined) {
-    if (cell?.streaming) {cell.streaming = false; this.streaming.delete(cell); this.touch(cell);}
+    if (cell?.streaming) {cell.streaming = false; cell.outputTail = undefined; this.streaming.delete(cell); this.touch(cell);}
   }
   private touch(cell: Cell, appended = false) {cell.revision++; if (appended) cell.appendRevision = (cell.appendRevision ?? 0) + 1; this.contentRevision++; this.dirtyIndex = Math.min(this.dirtyIndex, this.cellIndices.get(cell)!);}
 }
