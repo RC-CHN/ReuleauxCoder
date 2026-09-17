@@ -46,7 +46,7 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
     return () => {stdout.off('resize', resize); c.off('exit', quit);};
   }, [c, stdout, exit]);
   useInput((input, key) => {void c.key(input, key).catch(c.fail);});
-  usePaste(text => c.paste(text));
+  usePaste(text => {void c.paste(text).catch(c.fail);});
   useTerminalKeys(c);
   useAlternateScroll(alternateScreen);
 
@@ -92,7 +92,7 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
     (index ? '  ' : inputColor('› ')) + row + (!c.composer.text && !index && focused ? paint.muted('Describe your next change…') : ''), dimensions.width,
   ));
   const composerAction = focused ? paint.badge(state.running ? 'Enter queue' : 'Enter send') : '';
-  const composerHint = focused ? `Alt+Enter newline${dimensions.width >= 65 ? ' · Alt+↑↓ history' : ''}` : 'Draft preserved';
+  const composerHint = c.images.length ? `${c.images.length} images · /detach <number|all> · ${state.support_modal?.includes('image') ? 'Enter send' : 'switch to an image model'}` : focused ? `Alt+Enter newline${dimensions.width >= 65 ? ' · Alt+↑↓ history' : ''}` : 'Draft preserved';
   const welcome = [
     keyHint('Enter', state.running ? 'queue a follow-up prompt' : 'send a prompt'),
     keyHint('/', 'explore commands') + (width >= 45 ? '   ' + keyHint('Ctrl+G', 'keyboard help') : ''),

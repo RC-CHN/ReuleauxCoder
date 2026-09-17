@@ -3,11 +3,14 @@
 import asyncio
 from enum import Enum, auto
 from time import monotonic
+import re
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import get_app_session, run_in_terminal
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
+from reuleauxcoder.interfaces.cli.images import ImagePaste, pasted_image_path
 
 from reuleauxcoder.interfaces.cli.prompt import (
     FORGE_USER_PROMPT_STYLE,
@@ -33,7 +36,25 @@ class CLIInput:
         self.draft = Document()
         self._exit_pressed_at = 0.0
         self._size = None
+        self.image_labels = lambda: ()
         bindings = KeyBindings()
+
+        @bindings.add(Keys.BracketedPaste)
+        def paste(event):
+            path = pasted_image_path(event.data)
+            if path is None:
+                event.current_buffer.insert_text(event.data)
+            else:
+                self._leave(event.app, ImagePaste(path, event.data))
+
+        @bindings.add("backspace")
+        def backspace(event):
+            marker = re.search(
+                r"\[Image #[1-9]\d*\]$",
+                event.current_buffer.document.text_before_cursor,
+            )
+            count = len(marker[0]) if marker and marker[0] in self.image_labels() else 1
+            event.current_buffer.delete_before_cursor(count)
 
         @bindings.add("f2")
         @bindings.add("c-o")

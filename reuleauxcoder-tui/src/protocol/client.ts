@@ -1,7 +1,10 @@
 import {EventEmitter} from 'node:events';
+import {open} from 'node:fs/promises';
+import {basename, join} from 'node:path';
+import {homedir} from 'node:os';
 import {RpcPeer} from './peer.js';
 import type {ArtifactPage, HistoryOperation, HistoryPage} from './history.js';
-import type {GitWorkspace} from './wire.js';
+import type {GitWorkspace, ImageReference} from './wire.js';
 import {actionRequest, cancellation, decode, emptyState, enumValue, record, tuple, type Action, type Json, type PendingInteraction, type RuntimeState, type UIEvent} from './wire.js';
 
 export class RuntimeClient extends EventEmitter {
@@ -72,6 +75,29 @@ export class RuntimeClient extends EventEmitter {
     return result;
   }
   submitAction(id: string, command: {[key: string]: Json} = {}) {return this.submit(actionRequest(id, command));}
+  async attachImage(path: string): Promise<ImageReference> {
+    if (!this.info?.image_uploads) throw new Error('Backend does not support image attachments.');
+    if (path.startsWith('~/') || path.startsWith('~\\')) path = join(homedir(), path.slice(2));
+    const state = this.state;
+    const file = await open(path, 'r');
+    let upload: any;
+    try {
+      upload = await this.peer.request('images.begin', {session_id: state.session_id, session_generation: state.session_generation, name: basename(path), size_bytes: (await file.stat()).size});
+      const buffer = Buffer.alloc(upload.chunk_bytes);
+      let offset = 0;
+      while (true) {
+        const {bytesRead} = await file.read(buffer, 0, buffer.length, null);
+        if (!bytesRead) break;
+        offset = await this.peer.request('images.append', {upload_id: upload.upload_id, offset, data: buffer.subarray(0, bytesRead).toString('base64')}) as number;
+      }
+      const image = decode(await this.peer.request('images.complete', {upload_id: upload.upload_id}));
+      if (state.session_id !== this.state.session_id || state.session_generation !== this.state.session_generation) throw new Error('Session changed during image upload; attach it again.');
+      return image;
+    } finally {
+      await file.close();
+      if (upload) await this.peer.request('images.cancel', {upload_id: upload.upload_id});
+    }
+  }
   async panel(payload: Json) {return decode(await this.peer.request('view.panel', {payload}));}
   async refresh() {
     const state = await this.peer.request('runtime.snapshot', this.info?.conditional_snapshots ? {known_revision: this.state.revision} : {}, 5000);

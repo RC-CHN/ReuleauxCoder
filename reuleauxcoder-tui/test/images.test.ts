@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {backend, until} from './helpers.js';
+import {editor} from '../src/state/editor.js';
+
+test('path uploads preserve drafts on text models and send after capability switch', async t => {
+  const b = await backend(); t.after(() => b.close());
+  const {client, controller: c} = b;
+  const path = join(b.cwd, 'screen with spaces.png');
+  await writeFile(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVR4nGP8//8/AwwwMSABFA4Aby0DAyMYAwQAAAAASUVORK5CYII=', 'base64'));
+  c.composer = editor('inspect ');
+  await c.paste(`"${path}"`);
+  assert.equal(c.images.length, 1);
+  assert.equal(c.composer.text, 'inspect [Image #1]');
+  await assert.rejects(c.key('', {return: true}), /does not support images/);
+  assert.equal(c.images.length, 1);
+  assert.equal(c.composer.text, 'inspect [Image #1]');
+  await b.peer.request('test.image_capability', {enabled: true});
+  await until(() => client.state.support_modal?.includes('image'));
+  await c.key('', {return: true});
+  assert.equal(c.images.length, 0);
+  assert.equal(c.composer.text, '');
+  await until(() => !client.state.running);
+  assert(b.controller.session.cells.some(cell => cell.kind === 'user' && cell.body === 'inspect [Image #1]'));
+  await c.paste(path);
+  await c.key('', {backspace: true});
+  assert.equal(c.composer.text, '');
+  assert.equal(c.images.length, 0);
+  c.composer = editor(`/attach ${path}`);
+  await c.key('', {return: true});
+  assert.equal(c.images.length, 1);
+  await client.submitAction('system.reset');
+  await until(() => !client.state.running);
+  assert.equal(c.images.length, 0);
+});

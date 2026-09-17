@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 import queue
+import base64
+from pathlib import Path
 from concurrent.futures import Future
 
 from reuleauxcoder.app.rpc.codec import encode, decode
@@ -71,6 +73,49 @@ class RuntimeClient:
         )
         self._state(admission.state)
         return admission
+
+    def attach_image(self, path: str):
+        """Read a frontend-local path; the backend receives bounded chunks, never a path."""
+        if not self.info.get("image_uploads"):
+            raise ValueError("Backend does not support image attachments")
+        path = Path(path).expanduser()
+        state = self.state
+        with path.open("rb") as stream:
+            upload = self.peer.request(
+                "images.begin",
+                {
+                    "session_id": state.session_id,
+                    "session_generation": state.session_generation,
+                    "name": path.name,
+                    "size_bytes": path.stat().st_size,
+                },
+            )
+            try:
+                offset = 0
+                while chunk := stream.read(upload["chunk_bytes"]):
+                    offset = self.peer.request(
+                        "images.append",
+                        {
+                            "upload_id": upload["upload_id"],
+                            "offset": offset,
+                            "data": base64.b64encode(chunk).decode("ascii"),
+                        },
+                    )
+                image = decode(
+                    self.peer.request(
+                        "images.complete", {"upload_id": upload["upload_id"]}
+                    )
+                )
+                if (state.session_id, state.session_generation) != (
+                    self.state.session_id,
+                    self.state.session_generation,
+                ):
+                    raise ValueError(
+                        "Session changed during image upload; attach it again"
+                    )
+                return image
+            finally:
+                self.peer.request("images.cancel", {"upload_id": upload["upload_id"]})
 
     def build_panel(self, payload):
         return decode(self.peer.request("view.panel", {"payload": encode(payload)}))

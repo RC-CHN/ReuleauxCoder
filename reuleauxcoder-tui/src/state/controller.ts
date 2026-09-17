@@ -2,7 +2,7 @@ import {EventEmitter} from 'node:events';
 import {isDeepStrictEqual} from 'node:util';
 import type {Key} from 'ink';
 import {RuntimeClient} from '../protocol/client.js';
-import {cancellation, record, typeOf, type Action, type Json, type Panel, type PanelItem, type PendingInteraction, type View} from '../protocol/wire.js';
+import {cancellation, record, tuple, typeOf, type Action, type ImageReference, type Json, type Panel, type PanelItem, type PendingInteraction, type View} from '../protocol/wire.js';
 import {SessionStore} from './session.js';
 import {edit, editor, type Editor} from './editor.js';
 import {actionLabel, defaults, fieldValue, humanize, menusFromCatalog, type Menu} from './menus.js';
@@ -11,6 +11,7 @@ import {HistoryBrowser} from './history-browser.js';
 import type {HistoryOperation} from '../protocol/history.js';
 import {fields} from '../ui/format.js';
 import {ScrollMotion} from './scroll.js';
+import {editImageDraft, pastedImagePath, replaceSpan, type DraftImage} from './images.js';
 
 export interface Item {label: string; description: string; current?: boolean; id?: string | null; select(): void | Promise<void>}
 export interface ListScreen {kind: 'list'; title: string; items: Item[]; index: number; filter: Editor; menu?: Menu; panel?: Panel; panelPath?: string[]; output?: string; contentOffset?: number | null; contentHeight?: number; contentEnd?: number}
@@ -23,6 +24,9 @@ export class TuiController extends EventEmitter {
   readonly session = new SessionStore();
   menus: Menu[] = [];
   composer = editor();
+  images: DraftImage[] = [];
+  private imageNumber = 0;
+  private pendingPaste?: Promise<void>;
   screens: Screen[] = [];
   paletteIndex = 0;
   paletteDismissed = false;
@@ -57,7 +61,18 @@ export class TuiController extends EventEmitter {
       this.pendingView = this.pendingView.then(() => this.openView(view, wire, epoch)).catch(this.fail);
     });
     client.on('initialized', info => {this.menus = menusFromCatalog(client.catalog); this.session.initialize(info);});
-    client.on('state', state => this.session.update(state));
+    client.on('state', state => {
+      if (state.session_id !== this.session.state.session_id || state.session_generation !== this.session.state.session_generation) {
+        if (this.images.length) this.status = 'Session changed; draft images cleared. Attach them again to use them here.';
+        for (const {label} of this.images) {
+          const start = this.composer.text.indexOf(label);
+          if (start >= 0) this.composer = replaceSpan(this.composer, start, start + label.length, '');
+        }
+        this.images = [];
+        this.imageNumber = 0;
+      }
+      this.session.update(state);
+    });
     client.on('event', (event, wire, generation) => {
       this.session.event(event, wire, generation);
       if (event.message && !['RuntimeEventPayload', 'ViewEventPayload', 'InteractionPromptPayload'].includes(typeOf(event.payload) ?? '')) this.status = event.message;
@@ -257,12 +272,36 @@ export class TuiController extends EventEmitter {
       this.answer(kind === 'confirm' ? record('ConfirmResponse', {confirmed: yes}) : record('ReviewResponse', {approved: yes, action: yes ? 'allow_once' : 'deny'}));
     }
   }
-  paste(text: string) {
+  paste(text: string): Promise<void> {
     if (this.active && (this.active.kind === 'input_text' || this.interactionMode === 'feedback')) this.interactionInput = edit(this.interactionInput, text, {});
     else if (this.screen?.kind === 'form') this.screen.input = edit(this.screen.input, text, {});
     else if (this.screen?.kind === 'history' && this.screen.browser.search) this.screen.browser.search = edit(this.screen.browser.search, text, {});
-    else if (!this.active && !this.screen) {this.composer = edit(this.composer, text, {}); this.paletteDismissed = false;}
+    else if (!this.active && !this.screen) {
+      const generation = this.client.state.session_generation;
+      this.composer = edit(this.composer, text, {}); this.paletteDismissed = false;
+      const pasted = text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+      const task = (this.pendingPaste ?? Promise.resolve()).catch(() => {}).then(async () => {
+        const path = await pastedImagePath(pasted);
+        if (!path || generation !== this.client.state.session_generation || !this.composer.text.includes(pasted)) return;
+        const image = await this.client.attachImage(path);
+        const start = this.composer.text.indexOf(pasted);
+        if (start < 0 || generation !== this.client.state.session_generation) return;
+        const label = this.imageLabel(image);
+        this.composer = replaceSpan(this.composer, start, start + pasted.length, label);
+        this.status = `${label} ${image.name} · ${image.width}x${image.height} · ${image.size_bytes} bytes`;
+        this.changed();
+      });
+      this.pendingPaste = task;
+      this.changed();
+      return task.finally(() => {if (this.pendingPaste === task) this.pendingPaste = undefined;});
+    }
     this.changed();
+    return Promise.resolve();
+  }
+  private imageLabel(image: ImageReference): string {
+    const label = `[Image #${++this.imageNumber}]`;
+    this.images = [...this.images, {label, image}];
+    return label;
   }
   async key(input: string, key: Partial<Key> = {}) {
     if (this.closing) return;
@@ -301,7 +340,7 @@ export class TuiController extends EventEmitter {
     if (key.ctrl && input === 'c') {
       if (this.active) this.answer(cancellation(this.active.kind));
       else if (this.screen) {for (const screen of this.screens) if (screen.kind === 'history') screen.browser.dispose(); this.screens = []; this.viewEpoch++;}
-      else if (this.composer.text) {this.composer = editor(); this.exitConfirm = false;}
+      else if (this.composer.text || this.images.length) {this.composer = editor(); this.images = []; this.imageNumber = 0; this.exitConfirm = false;}
       else if (this.session.state.stopping) await this.finish();
       else if (this.session.state.running && !this.session.fatal) {
         const result = await this.client.interrupt();
@@ -310,7 +349,7 @@ export class TuiController extends EventEmitter {
       else this.exitConfirm = true;
       this.changed(); return;
     }
-    if (key.ctrl && input === 'd' && !this.composer.text && !this.active) {await this.finish(); return;}
+    if (key.ctrl && input === 'd' && !this.composer.text && !this.images.length && !this.active) {await this.finish(); return;}
     if (input === '[12~' || input === '\x1bOQ' || key.ctrl && input === 'o') {this.showSession(); return;}
     if (input === '[14~' || input === '\x1bOS' || key.ctrl && input === 'r') {this.toggleDetails(); return;}
     if (input === 'OP' || input === '\x1bOP' || key.ctrl && input === 'g') {this.showHelp(); return;}
@@ -362,16 +401,35 @@ export class TuiController extends EventEmitter {
       this.changed(); return;
     }
     if (key.return && !key.shift && !key.meta) {
+      await this.pendingPaste;
       const text = this.composer.text.trim();
-      if (!text) return;
-      if (text.startsWith('/')) {
+      if (!text && !this.images.length) return;
+      if (text === '/attach' || text.startsWith('/attach ')) {
+        const draft = this.composer;
+        let path = text.slice('/attach'.length).trim();
+        if (path.length >= 2 && ['"', "'"].includes(path[0]) && path.at(-1) === path[0]) path = path.slice(1, -1);
+        if (!path) throw new Error('Usage: /attach <frontend-local image path>');
+        const image = await this.client.attachImage(path);
+        if (this.composer === draft) this.composer = editor();
+        this.composer = edit(this.composer, this.imageLabel(image) + ' ', {});
+        this.status = `${image.name} (${image.width}x${image.height}, ${image.size_bytes} bytes). Backspace removes an image marker.`;
+      } else if (text === '/detach' || text.startsWith('/detach ')) {
+        const value = text.slice('/detach'.length).trim();
+        if (value === 'all') this.images = [];
+        else if (this.images.some(item => item.label === `[Image #${value}]`)) this.images = this.images.filter(item => item.label !== `[Image #${value}]`);
+        else throw new Error('Usage: /detach <image number|all>');
+        this.composer = editor(this.images.map(item => item.label).join(' '));
+        this.status = `${this.images.length} draft images remaining.`;
+      } else if (text.startsWith('/')) {
         const menu = this.menus.find(menu => menu.name === text.split(/\s/)[0]);
         if (menu) {this.composer = editor(); await this.openMenu(menu);}
         else this.status = 'Choose a command from / or Ctrl+P.';
       } else {
         const draft = this.composer;
-        const admission = await this.client.submit(text);
-        if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); this.historyIndex = null; this.offset = null; await this.history.add(text);}
+        const images = this.images;
+        const value = images.length ? record('ChatInput', {text, images: tuple(images.map(item => record('ImageReference', {...item.image}))), image_labels: tuple(images.map(item => item.label)), session_id: this.client.state.session_id, session_generation: this.client.state.session_generation}) : text;
+        const admission = await this.client.submit(value);
+        if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); if (this.images === images) {this.images = []; this.imageNumber = 0;} this.historyIndex = null; this.offset = null; if (text) await this.history.add(text);}
         else this.status = 'The backend is stopping. Your draft is still here.';
       }
     } else if (key.home && !this.composer.text) this.offset = 0;
@@ -381,7 +439,8 @@ export class TuiController extends EventEmitter {
       if (this.historyIndex === null) {this.historyDraft = this.composer; this.historyIndex = this.history.entries.length;}
       this.historyIndex = Math.max(0, Math.min(this.history.entries.length, this.historyIndex + (key.upArrow ? -1 : 1)));
       this.composer = this.historyIndex === this.history.entries.length ? this.historyDraft : editor(this.history.entries[this.historyIndex]);
-    } else {this.composer = edit(this.composer, key.return ? '\n' : input, key.return ? {} : key); this.paletteDismissed = false; this.paletteIndex = 0; this.exitConfirm = false;}
+    } else {this.composer = editImageDraft(this.composer, key.return ? '\n' : input, key.return ? {} : key, this.images); this.paletteDismissed = false; this.paletteIndex = 0; this.exitConfirm = false;}
+    this.images = this.images.filter(item => this.composer.text.includes(item.label));
     this.changed();
   }
   toggleDetails() {

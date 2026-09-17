@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
+from dataclasses import replace
 import logging
 from pathlib import Path
 import threading
@@ -25,6 +26,7 @@ from reuleauxcoder.app.runtime.session_state import (
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.app.interaction_contracts import UIInteractor
+from reuleauxcoder.domain.images import ChatInput
 
 if TYPE_CHECKING:
     from reuleauxcoder.domain.agent.agent import Agent
@@ -66,7 +68,7 @@ class CommandService:
         self.interactions = interactions
         self.panels = panels
         self.exit_saved_session_id: str | None = None
-        self._pending: deque[tuple[ActionRequest | str, str]] = deque()
+        self._pending: deque[tuple[ActionRequest | str | ChatInput, str]] = deque()
         self._queue_lock = threading.Lock()
         self._execution_lock = threading.RLock()
 
@@ -91,12 +93,16 @@ class CommandService:
     def pending_inputs(self) -> tuple[str, ...]:
         with self._queue_lock:
             return tuple(
-                request for request, _ in self._pending if isinstance(request, str)
+                label
+                for request, label in self._pending
+                if isinstance(request, (str, ChatInput))
             )
 
-    def queue_input(self, text: str) -> None:
+    def queue_input(self, text: str | ChatInput) -> None:
         with self._queue_lock:
-            self._pending.append((text, text))
+            self._pending.append(
+                (text, text.display_text if isinstance(text, ChatInput) else text)
+            )
 
     def build_panel(self, payload: ViewEventPayload) -> PanelPresentation | None:
         if self.panels is None:
@@ -113,13 +119,13 @@ class CommandService:
         with self._queue_lock:
             self._pending.clear()
 
-    def next_pending(self) -> ActionRequest | str | None:
+    def next_pending(self) -> ActionRequest | str | ChatInput | None:
         with self._queue_lock:
             if not self._pending:
                 return None
             request, label = self._pending.popleft()
         self.ui_bus.info(
-            f"Applying queued {'prompt' if isinstance(request, str) else 'command'} now: {label}",
+            f"Applying queued {'prompt' if isinstance(request, (str, ChatInput)) else 'command'} now: {label}",
             kind=UIEventKind.COMMAND,
         )
         return request
@@ -130,8 +136,10 @@ class CommandService:
         return prepared.request if not isinstance(prepared, CommandResult) else None
 
     def _prepare(
-        self, value: str | ActionRequest, *, during_turn: bool
+        self, value: str | ActionRequest | ChatInput, *, during_turn: bool
     ) -> ParsedAction | CommandResult:
+        if isinstance(value, ChatInput):
+            return CommandResult(control="chat", session_id=self.session_id)
         if isinstance(value, str):
             if not value.startswith("/"):
                 return CommandResult(control="chat", session_id=self.session_id)
@@ -163,7 +171,7 @@ class CommandService:
         return parsed
 
     def submit(
-        self, value: str | ActionRequest, *, during_turn: bool = False
+        self, value: str | ActionRequest | ChatInput, *, during_turn: bool = False
     ) -> CommandResult:
         parsed = self._prepare(value, during_turn=during_turn)
         if isinstance(parsed, CommandResult):
@@ -221,16 +229,21 @@ class CommandService:
                 _logger.exception("Command failed: %s", parsed.action.action_id)
                 raise
 
-    def prepare_chat_input(self, text: str) -> str:
+    def prepare_chat_input(self, text: str | ChatInput) -> str | ChatInput:
         """Consume the restore marker once, from the backend's current session."""
         self.exit_saved_session_id = None
         if self.session_exit_time is None:
             return text
         exit_time, self.session_exit_time = self.session_exit_time, None
         now = time.strftime("%Y-%m-%d %H:%M:%S %Z")
-        return (
+        prefix = (
             f"[SESSION_RESUME] User returned to the session at {now} "
-            f"(last left at {exit_time}).\n\n{text}"
+            f"(last left at {exit_time}).\n\n"
+        )
+        return (
+            replace(text, text=prefix + text.text)
+            if isinstance(text, ChatInput)
+            else prefix + text
         )
 
     def save_exit(self, *, progress: Callable[[str], None] | None = None) -> str | None:

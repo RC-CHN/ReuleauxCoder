@@ -38,6 +38,44 @@ def wait_for(predicate):
         sleep(0.01)
 
 
+def test_bracketed_image_path_paste_keeps_marker_in_user_message(
+    cli_runtime, tmp_path, monkeypatch
+):
+    from reuleauxcoder.domain.images import display_content, image_parts
+    from tests.domain.test_images import picture
+
+    rt = cli_runtime
+    rt.agent.llm.support_modal = ("text", "image")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    path = tmp_path / "screen shot.png"
+    path.write_bytes(picture(size=(4, 3)))
+    failures = []
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+
+        def drive():
+            try:
+                pipe.send_text(f'look \x1b[200~"{path}"\x1b[201~')
+                wait_for(lambda: "[Image #1]" in rt.transcript.getvalue())
+                pipe.send_text("\n")
+                wait_for(lambda: bool(image_parts(rt.agent.messages)))
+                wait_for(lambda: not rt.client.state.running)
+                pipe.send_text("/quit\n")
+            except BaseException as error:
+                failures.append(error)
+                pipe.send_text("\x15\x04")
+
+        driver = Thread(target=drive, daemon=True)
+        driver.start()
+        run_repl(rt.client, rt.bus, rt.output, rt.interactor)
+        driver.join(6)
+    assert not failures
+    assert display_content(rt.agent.messages[0]["content"]) == "look [Image #1]"
+
+
 @pytest.fixture
 def cli_runtime(tmp_path):
     config = Config(

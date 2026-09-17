@@ -229,6 +229,14 @@ def contract_fixture():
 peer.methods["test.fixture"] = contract_fixture
 
 
+def image_capability(enabled):
+    agent.llm.support_modal = ("text", "image") if enabled else ("text",)
+    return encode(server._publish_state())
+
+
+peer.methods["test.image_capability"] = image_capability
+
+
 def process_fixture():
     source = "import time; print('\\n'.join(f'output {i}' for i in range(200)), flush=True); time.sleep(30)"
     command = f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"

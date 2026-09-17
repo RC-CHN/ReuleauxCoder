@@ -15,6 +15,9 @@ from reuleauxcoder.app.commands.service import CommandService
 from reuleauxcoder.app.commands.view_models import GoalViewModel
 from reuleauxcoder.app.rpc.codec import encode, decode
 from reuleauxcoder.app.rpc.models import RuntimeSnapshot, Submission
+from reuleauxcoder.app.rpc.images import ImageUploads
+from reuleauxcoder.domain.images import ChatInput
+from reuleauxcoder.infrastructure.persistence.images import ImageStore
 from reuleauxcoder.app.runtime.approval import build_runtime_approval_provider
 from reuleauxcoder.app.runtime.approval_interaction import make_approval_handler
 from reuleauxcoder.app.runtime.interactions import InteractionCoordinator
@@ -104,6 +107,13 @@ class RuntimeServer:
         self._snapshot: RuntimeSnapshot | None = None
         self._published_revision = 0
         self._workers: set[threading.Thread] = set()
+        if self.agent.image_store is None:
+            self.agent.image_store = ImageStore(
+                commands.sessions_dir or self.config.session_dir or get_sessions_dir(),
+                self.config.image,
+            )
+        self.agent.llm.image_store = self.agent.image_store
+        self.images = ImageUploads(self)
         self.interactions = InteractionCoordinator(RemoteInteractor(peer))
         commands.interactions = self.interactions
         self.agent.ui_interactor = self.interactions
@@ -122,6 +132,10 @@ class RuntimeServer:
                 "runtime.ready": self.ready,
                 "goal.get": lambda: encode(self.agent.goal_controller.state),
                 "runtime.submit": self.submit,
+                "images.begin": self.images.begin,
+                "images.append": self.images.append,
+                "images.complete": self.images.complete,
+                "images.cancel": self.images.cancel,
                 "runtime.interrupt": self.interrupt,
                 "runtime.resize": self.resize,
                 "runtime.report_issue": self.agent.record_runtime_issue,
@@ -176,6 +190,7 @@ class RuntimeServer:
                 queued_steering=tuple(agent.pending_user_steering())
                 + self.commands.pending_inputs,
                 model=agent.llm.model,
+                support_modal=tuple(getattr(agent.llm, "support_modal", ("text",))),
                 context_tokens=context.predict_request_tokens(agent.messages),
                 context_limit=context.request_input_limit,
                 mcp_enabled=sum(server.enabled for server in self.config.mcp_servers),
@@ -250,6 +265,7 @@ class RuntimeServer:
                     "conditional_snapshots": True,
                     "history_query": True,
                     "goals": True,
+                    "image_uploads": True,
                     "catalog": self.commands.catalog,
                     "state": self.snapshot(),
                     "history_file": self.config.history_file,
@@ -303,7 +319,7 @@ class RuntimeServer:
 
     def _input(self, value):
         value = self._decode(value)
-        if isinstance(value, str):
+        if isinstance(value, (str, ChatInput)):
             return value
         if not isinstance(value, ActionRequest) or not isinstance(value.command, dict):
             raise RpcError(-32602, "Expected text or an action request")
@@ -336,10 +352,15 @@ class RuntimeServer:
         with self._lock:
             if self._closing:
                 raise RpcError(-32002, "Session is closing")
+            self._validate_chat_images(value)
             if isinstance(value, str) and value.startswith("/"):
                 self._notify("runtime.command", text=value)
             if self._running:
-                if isinstance(value, str) and not value.startswith("/"):
+                if (
+                    isinstance(value, ChatInput)
+                    or isinstance(value, str)
+                    and not value.startswith("/")
+                ):
                     accepted = self.agent.submit_user_steering(value)
                     status = "steering" if accepted else "rejected"
                     if not accepted and not self.agent.stop_requested():
@@ -355,6 +376,25 @@ class RuntimeServer:
                 status = "running"
                 self._spawn(value)
             return encode(Submission(status, self._publish_state()))
+
+    def _validate_chat_images(self, value, *, check_model=True):
+        if not isinstance(value, ChatInput):
+            return
+        if not value.text.strip() and not value.images:
+            raise RpcError(-32602, "Chat input is empty")
+        if not value.images:
+            return
+        self.images._check_session(value.session_id, value.session_generation)
+        if check_model and "image" not in getattr(self.agent.llm, "support_modal", ()):
+            raise RpcError(
+                -32602,
+                "Current model does not support images. Switch model or detach the images; your draft is preserved.",
+            )
+        try:
+            for image in value.images:
+                self.agent.image_store.validate_reference(value.session_id, image)
+        except (OSError, ValueError) as error:
+            raise RpcError(-32602, str(error)) from error
 
     def _spawn(self, value, *, concurrent=False):
         worker = threading.Thread(
@@ -429,6 +469,10 @@ class RuntimeServer:
                     else:
                         result = self.commands.submit(value, during_turn=concurrent)
                     if result.control == "chat":
+                        with self._lock:
+                            # An accepted, queued image survives a later model switch.
+                            # The request projection decides whether its bytes are sent.
+                            self._validate_chat_images(value, check_model=False)
                         self.agent.chat(self.commands.prepare_chat_input(value))
                         result = CommandResult(session_id=self.commands.session_id)
                     self._notify("runtime.completed", result=encode(result))
@@ -521,6 +565,7 @@ class RuntimeServer:
     def _shutdown(self):
         with self._lock:
             self._closing = True
+            self.images.close()
             self.commands.clear_pending()
             self.agent.discard_pending_user_steering(reason="session_exit")
             self.agent.request_stop()

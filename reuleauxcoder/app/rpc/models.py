@@ -16,6 +16,7 @@ class RuntimeSnapshot:
     queued_commands: tuple[str, ...] = ()
     queued_steering: tuple[str, ...] = ()
     model: str = ""
+    support_modal: tuple[str, ...] = ("text",)
     context_tokens: int = 0
     context_limit: int = 0
     mcp_enabled: int = 0
