@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Staged freshly built release peers into Docker images instead of shipping older checked-in binaries, and recorded the tag commit explicitly in GitHub Release metadata.
 - Receive fragmented TUI RPC frames without repeatedly copying their prefixes.
 - Maintain bounded streaming shell previews without rescanning complete output. Expanded tool records retain the full output.
 - Serialize session manifests without copying separately stored replay artifacts.

@@ -124,6 +124,21 @@ jobs:
         working-directory: dist/peer
         run: sha256sum rcoder-peer-* > SHA256SUMS
 
+      - name: Stage release peers for Docker
+        shell: python
+        run: |
+          from pathlib import Path
+          import shutil
+
+          for platform in ("linux", "darwin", "windows"):
+              suffix = ".exe" if platform == "windows" else ""
+              for arch in ("amd64", "arm64"):
+                  source = Path("dist/peer") / f"rcoder-peer-{platform}-{arch}{suffix}"
+                  target = Path("artifacts/remote") / platform / arch / f"rcoder-peer{suffix}"
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copyfile(source, target)
+                  target.chmod(0o755)
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
@@ -159,6 +174,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: |
             dist/*.tar.gz

@@ -56,3 +56,32 @@ def test_release_publishes_cross_platform_peers_with_checksum_manifest() -> None
     assert "go test ./..." in source
     assert "sha256sum rcoder-peer-* > SHA256SUMS" in source
     assert "dist/peer/*" in source
+
+
+def test_release_docker_peers_match_published_artifacts(tmp_path, monkeypatch) -> None:
+    _, workflow = _workflow("release.yml")
+    steps = workflow["jobs"]["release"]["steps"]
+    stage = next(
+        step for step in steps if step["name"] == "Stage release peers for Docker"
+    )
+    build = next(
+        step for step in steps if step["name"] == "Build and push Docker image"
+    )
+    assert steps.index(stage) < steps.index(build)
+    monkeypatch.chdir(tmp_path)
+    published = tmp_path / "dist" / "peer"
+    published.mkdir(parents=True)
+    targets = []
+    for platform, arch in EXPECTED_TARGETS:
+        suffix = ".exe" if platform == "windows" else ""
+        source = published / f"rcoder-peer-{platform}-{arch}{suffix}"
+        source.write_bytes(f"current release: {platform}/{arch}".encode())
+        target = (
+            tmp_path / "artifacts" / "remote" / platform / arch / f"rcoder-peer{suffix}"
+        )
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"stale checked-in binary")
+        targets.append((source, target))
+    exec(compile(stage["run"], "release.yml:stage-peers", "exec"), {})
+    for source, target in targets:
+        assert target.read_bytes() == source.read_bytes()
