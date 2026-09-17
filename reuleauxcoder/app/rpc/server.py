@@ -372,6 +372,9 @@ class RuntimeServer:
                     if request is not None:
                         self._spawn(request, concurrent=True)
             else:
+                # Clear the previous turn's stop before admission becomes visible.
+                # Workers must preserve interrupts received after this boundary.
+                self.agent.clear_stop_request()
                 self._running = True
                 status = "running"
                 self._spawn(value)
@@ -467,13 +470,17 @@ class RuntimeServer:
                             )
                         result = CommandResult(session_id=self.commands.session_id)
                     else:
-                        result = self.commands.submit(value, during_turn=concurrent)
+                        result = self.commands.submit(
+                            value, during_turn=concurrent, clear_stop=False
+                        )
                     if result.control == "chat":
                         with self._lock:
                             # An accepted, queued image survives a later model switch.
                             # The request projection decides whether its bytes are sent.
                             self._validate_chat_images(value, check_model=False)
-                        self.agent.chat(self.commands.prepare_chat_input(value))
+                        self.agent.chat(
+                            self.commands.prepare_chat_input(value), clear_stop=False
+                        )
                         result = CommandResult(session_id=self.commands.session_id)
                     self._notify("runtime.completed", result=encode(result))
                     if result.control == "exit":
@@ -520,6 +527,8 @@ class RuntimeServer:
                         value = self._next_goal()
                     if not concurrent and value is None:
                         self._running = False
+                    elif not concurrent:
+                        self.agent.clear_stop_request()
                     self._publish_state()
         except BaseException:
             log.exception("Runtime could not record or publish its result")

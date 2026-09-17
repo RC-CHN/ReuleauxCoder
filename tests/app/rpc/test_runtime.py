@@ -176,6 +176,34 @@ def test_backend_owns_interrupt_and_stop_state(runtime):
     assert not runtime.client.state.stopping
 
 
+@pytest.mark.parametrize("value", ["work", "/model"])
+def test_interrupt_before_worker_execution_is_preserved(runtime, monkeypatch, value):
+    entered, release = threading.Event(), threading.Event()
+    submit = runtime.server.commands.submit
+
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return submit(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.server.commands, "submit", delayed)
+    runtime.client.submit(value)
+    assert entered.wait(3)
+    try:
+        assert runtime.client.interrupt()["outcome"] == "stop_requested"
+    finally:
+        release.set()
+    runtime.client.wait_idle()
+    assert runtime.agent.stop_requested()
+
+    monkeypatch.setattr(runtime.server.commands, "submit", submit)
+    observed = []
+    runtime.loop.run = lambda: observed.append(runtime.agent.stop_requested()) or "done"
+    runtime.client.submit("next user turn")
+    runtime.client.wait_idle()
+    assert observed == [False]
+
+
 def test_user_metadata_cannot_be_decoded_as_a_contract():
     original = UIEvent.info(
         "data", arbitrary={"$type": "ActionRequest", "fields": {"x": 1}}

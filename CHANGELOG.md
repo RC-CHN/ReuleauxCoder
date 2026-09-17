@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserved interrupts received after RPC admission but before chat or command execution starts, while clearing previous stop state when admitting the next operation.
 - Staged freshly built release peers into Docker images instead of shipping older checked-in binaries, and recorded the tag commit explicitly in GitHub Release metadata.
 - Receive fragmented TUI RPC frames without repeatedly copying their prefixes.
 - Maintain bounded streaming shell previews without rescanning complete output. Expanded tool records retain the full output.

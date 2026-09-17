@@ -171,16 +171,20 @@ class CommandService:
         return parsed
 
     def submit(
-        self, value: str | ActionRequest | ChatInput, *, during_turn: bool = False
+        self,
+        value: str | ActionRequest | ChatInput,
+        *,
+        during_turn: bool = False,
+        clear_stop: bool = True,
     ) -> CommandResult:
         parsed = self._prepare(value, during_turn=during_turn)
         if isinstance(parsed, CommandResult):
             return parsed
         with self._execution_lock:
-            if not during_turn:
-                clear_stop = getattr(self.agent, "clear_stop_request", None)
-                if clear_stop is not None:
-                    clear_stop()
+            if not during_turn and clear_stop:
+                clear_stop_request = getattr(self.agent, "clear_stop_request", None)
+                if clear_stop_request is not None:
+                    clear_stop_request()
             before = (self.session_id, getattr(self.agent, "session_generation", None))
             try:
                 effect = CommandEffect()
