@@ -115,6 +115,43 @@ def test_manifest_does_not_serialize_discarded_replay_artifacts(tmp_path, monkey
     assert restored.replay_envelope.validate()
 
 
+def test_live_save_reuses_history_hashes_and_restored_events_rebuild_them(tmp_path, monkeypatch) -> None:
+    from reuleauxcoder.domain.context import replay as replay_module
+
+    ledger = HistoryLedger()
+    messages = []
+    for index in range(100):
+        message = {"role": "user", "content": f"message-{index}", MESSAGE_TOKEN_KEY: 1}
+        messages.append(message)
+        ledger.append_message(message, source="test")
+    store = SessionStore(tmp_path)
+    session_id = store.save(messages, "model", history_events=ledger.events)
+    hashed = []
+
+    def measured(value):
+        if isinstance(value, dict) and "role" in value:
+            hashed.append(value)
+        return content_hash(value)
+
+    monkeypatch.setattr(replay_module, "content_hash", measured)
+    # The retained model context may be tiny even after a long conversation.
+    store.save(
+        messages[-2:], "model", session_id, history_events=ledger.events,
+        incremental=True, events_already_persisted=True,
+    )
+    assert len(hashed) == 2, "old committed messages must not be rehashed for a live save"
+    loaded = store.load(session_id)
+    assert loaded is not None
+    expected = loaded.replay_envelope.item_provenance
+    store.save(
+        messages[-2:], "model", session_id, history_events=loaded.history_events,
+        incremental=True, events_already_persisted=True,
+    )
+    restored = store.load(session_id)
+    assert restored is not None
+    assert restored.replay_envelope.item_provenance == expected
+
+
 def test_session_restore_error_rejects_content_bearing_facts() -> None:
     sentinel = "session-secret-must-not-leak"
 

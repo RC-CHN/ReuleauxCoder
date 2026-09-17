@@ -5,6 +5,7 @@
 - Receive fragmented TUI RPC frames without repeatedly copying their prefixes.
 - Maintain bounded streaming shell previews without rescanning complete output. Expanded tool records retain the full output.
 - Serialize session manifests without copying separately stored replay artifacts.
+- Reuse committed message hashes for request and live-session provenance, rebuilding indexes after history replacement or restore.
 
 ## 0.9.3 - 2026-09-11
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
+from reuleauxcoder.domain.context.replay import ItemProvenanceIndex
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 
 
@@ -105,6 +106,7 @@ class HistoryLedger:
         self._pending_sink_events: list[HistoryEvent] = []
         self._unbound_events: list[HistoryEvent] = []
         self._performance_monitor = performance_monitor
+        self._provenance_index = ItemProvenanceIndex()
 
     @property
     def events(self) -> tuple[HistoryEvent, ...]:
@@ -116,6 +118,15 @@ class HistoryLedger:
         """Return the highest consumed or reserved durable sequence."""
         with self._lock:
             return self._next_seq - 1
+
+    def item_provenance(
+        self, items: list[dict], *, fallback_event_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Align a request using this ledger's incrementally indexed commits."""
+        with self._lock:
+            return self._provenance_index.align(
+                items, self._events, fallback_event_id=fallback_event_id
+            )
 
     def raise_floor(self, floor: int) -> None:
         """Reserve every sequence number up to floor without emitting events."""

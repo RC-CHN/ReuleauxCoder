@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.cancellation import CancellationView
 from reuleauxcoder.domain.context.replay import (
-    align_item_provenance,
     ReplayEnvelope,
     RequestEnvelope,
     content_hash,
@@ -745,9 +744,8 @@ class AgentLoop:
             agent_id=self.agent.agent_id,
             turn_id=self.agent._current_turn_id,
         )
-        provenance = align_item_provenance(
+        provenance = self.agent.history_ledger.item_provenance(
             replay_items,
-            self.agent.history_ledger.events,
             fallback_event_id=observed.event_id,
         )
 

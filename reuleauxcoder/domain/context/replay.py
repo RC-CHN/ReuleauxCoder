@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -9,7 +10,10 @@ import math
 import re
 import unicodedata
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from reuleauxcoder.domain.history import HistoryEvent
 
 
 def canonicalize(value: Any) -> Any:
@@ -456,69 +460,128 @@ def align_item_provenance(
     items: list[dict], events, *, fallback_event_id: str | None = None
 ) -> list[dict[str, Any]]:
     """Trace each exact model item to a message/view event without altering it."""
-    result: list[dict[str, Any] | None] = [None] * len(items)
-    event_list = list(events)
-    latest_view = next(
-        (
-            event
-            for event in reversed(event_list)
-            if getattr(event, "kind", None) == "context_view_committed"
-        ),
-        None,
+    return ItemProvenanceIndex().align(
+        items, events, fallback_event_id=fallback_event_id
     )
-    if latest_view is not None:
-        view_items = list(getattr(latest_view, "payload", {}).get("items") or [])
-        cursor = 0
-        for index, item in enumerate(items):
-            while cursor < len(view_items):
-                candidate = view_items[cursor]
-                cursor += 1
-                if content_hash(candidate) == content_hash(item):
-                    result[index] = {
-                        "source_event_ids": [latest_view.event_id],
-                        "artifact_refs": list(
-                            getattr(latest_view, "artifact_refs", ())
-                        ),
-                        "checkpoint_id": getattr(latest_view, "payload", {}).get(
-                            "checkpoint_id"
-                        ),
-                    }
-                    break
 
-    message_events: dict[str, list] = {}
-    for event in event_list:
-        if getattr(event, "kind", None) != "message_committed":
-            continue
-        message = getattr(event, "payload", {}).get("message")
-        if isinstance(message, dict):
-            message_events.setdefault(content_hash(message), []).append(event)
-    used_event_ids: set[str] = set()
-    for index, item in enumerate(items):
-        if result[index] is not None:
-            continue
-        candidates = message_events.get(content_hash(item), [])
-        event = next(
-            (
-                candidate
-                for candidate in reversed(candidates)
-                if candidate.event_id not in used_event_ids
-            ),
-            None,
-        )
-        if event is not None:
-            used_event_ids.add(event.event_id)
-            result[index] = {
-                "source_event_ids": [event.event_id],
-                "artifact_refs": list(getattr(event, "artifact_refs", ())),
-                "checkpoint_id": None,
-            }
-        else:
-            result[index] = {
-                "source_event_ids": [fallback_event_id] if fallback_event_id else [],
-                "artifact_refs": [],
-                "checkpoint_id": None,
-            }
-    return [dict(item or {}) for item in result]
+
+@dataclass(frozen=True, slots=True)
+class _ProvenanceSource:
+    event_id: str
+    artifact_refs: tuple[str, ...]
+    checkpoint_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_event_ids": [self.event_id],
+            "artifact_refs": list(self.artifact_refs),
+            "checkpoint_id": self.checkpoint_id,
+        }
+
+
+class ItemProvenanceIndex:
+    """Reuse hashes of committed, append-only events within one owning runtime.
+
+    A restored/replaced/truncated prefix rebuilds the index. Event identity is
+    checked across the prefix, so matching lengths or reused IDs cannot make a
+    different ledger look current. Committed event payloads must not be mutated.
+    Owners serialize access with their ledger/store lock.
+    """
+
+    def __init__(self) -> None:
+        self._events: tuple[HistoryEvent, ...] = ()
+        self._messages: dict[str, list[_ProvenanceSource]] = {}
+        self._view_hashes: tuple[str, ...] = ()
+        self._view_source: _ProvenanceSource | None = None
+
+    def _reset(self) -> None:
+        self._events = ()
+        self._messages.clear()
+        self._view_hashes = ()
+        self._view_source = None
+
+    def _sync(self, events: Iterable[HistoryEvent]) -> None:
+        current = tuple(events)
+        if len(current) < len(self._events) or any(
+            previous is not event
+            for previous, event in zip(self._events, current)
+        ):
+            self._reset()
+        try:
+            latest_view = None
+            for event in current[len(self._events) :]:
+                kind = getattr(event, "kind", None)
+                payload = getattr(event, "payload", {})
+                if kind == "message_committed":
+                    message = payload.get("message")
+                    if isinstance(message, dict):
+                        self._messages.setdefault(content_hash(message), []).append(
+                            _ProvenanceSource(
+                                event.event_id, tuple(getattr(event, "artifact_refs", ()))
+                            )
+                        )
+                elif kind == "context_view_committed":
+                    latest_view = event
+            # Superseded views cannot supply provenance. Restoration only needs
+            # the last view, even if the ledger contains many earlier compactions.
+            if latest_view is not None:
+                payload = latest_view.payload
+                self._view_hashes = tuple(
+                    content_hash(item) for item in payload.get("items") or ()
+                )
+                self._view_source = _ProvenanceSource(
+                    latest_view.event_id,
+                    tuple(getattr(latest_view, "artifact_refs", ())),
+                    payload.get("checkpoint_id"),
+                )
+        except BaseException:
+            # An interrupted update must not leave a partially advanced index.
+            self._reset()
+            raise
+        self._events = current
+
+    def align(
+        self,
+        items: list[dict],
+        events: Iterable[HistoryEvent],
+        *,
+        fallback_event_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self._sync(events)
+        hashes = [content_hash(item) for item in items]
+        result: list[dict[str, Any] | None] = [None] * len(items)
+        if self._view_source is not None:
+            cursor = 0
+            for index, item_hash in enumerate(hashes):
+                while cursor < len(self._view_hashes):
+                    candidate_hash = self._view_hashes[cursor]
+                    cursor += 1
+                    if candidate_hash == item_hash:
+                        result[index] = self._view_source.to_dict()
+                        break
+
+        used_event_ids: set[str] = set()
+        positions: dict[str, int] = {}
+        for index, item_hash in enumerate(hashes):
+            if result[index] is not None:
+                continue
+            candidates = self._messages.get(item_hash, ())
+            position = positions.get(item_hash, len(candidates))
+            while position:
+                position -= 1
+                source = candidates[position]
+                if source.event_id not in used_event_ids:
+                    used_event_ids.add(source.event_id)
+                    result[index] = source.to_dict()
+                    break
+            positions[item_hash] = position
+            if result[index] is None:
+                result[index] = {
+                    "source_event_ids": [fallback_event_id] if fallback_event_id else [],
+                    "artifact_refs": [],
+                    "checkpoint_id": None,
+                }
+        return [dict(item or {}) for item in result]
 
 
 @dataclass(frozen=True, slots=True)

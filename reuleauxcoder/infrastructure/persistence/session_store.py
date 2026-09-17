@@ -28,7 +28,7 @@ from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.replay import (
     ReplayEnvelope,
     RequestEnvelope,
-    align_item_provenance,
+    ItemProvenanceIndex,
     validate_provider_message,
     validate_replay_payload,
 )
@@ -462,6 +462,8 @@ class SessionStore:
         self._projection = SessionInventoryProjection(self._sessions_dir)
         self._projection_issue: SessionRestoreIssue | None = None
         self._seq_floors: dict[str, int] = {}
+        # Retain only the most recently saved ledger, not every visited session.
+        self._provenance_index = ItemProvenanceIndex()
 
     @property
     def sessions_dir(self) -> Path:
@@ -980,6 +982,10 @@ class SessionStore:
                 effective_runtime.active_mode = active_mode
 
             base_replay = replay_envelope
+            if not events_already_persisted:
+                # Only the live append-only ledger permits reuse. Other callers
+                # may have edited event payloads before asking for a full save.
+                self._provenance_index = ItemProvenanceIndex()
             try:
                 replay = ReplayEnvelope.create(
                     session_id=session_id,
@@ -1006,7 +1012,7 @@ class SessionStore:
                     ),
                     tools=list(base_replay.tools) if base_replay else [],
                     items=saved_messages,
-                    item_provenance=align_item_provenance(
+                    item_provenance=self._provenance_index.align(
                         saved_messages, ledger.events
                     ),
                 )
