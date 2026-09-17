@@ -86,7 +86,7 @@ cp config.yaml.example .rcoder/config.yaml   # 或自行编写
 
 ## React TUI
 
-独立的 React + Ink 前端位于 [`reuleauxcoder-tui/`](reuleauxcoder-tui/README.md)，通过 JSON-RPC 使用 Python 运行时，提供一级 slash 菜单、命令面板、审批和固定输入区。需要 Node.js 22+ 及本仓库的 Python 环境。
+独立的 React + Ink 前端位于 [`reuleauxcoder-tui/`](reuleauxcoder-tui/README.md)，通过 JSON-RPC 使用 Python 运行时，提供一级 slash 菜单、命令面板、审批和固定输入区。安装发布 wheel 后，在具备 Node.js 22+ 的交互终端中运行 `rcoder` 或 `rcoder-tui` 即可启动 TUI。以下为前端开发方式：
 
 ```sh
 npm --prefix reuleauxcoder-tui ci
@@ -94,7 +94,7 @@ npm --prefix reuleauxcoder-tui run build
 node reuleauxcoder-tui/dist/cli.js
 ```
 
-用 `--cwd /path/to/project` 指定工作区。现有 `rcoder` 入口继续使用原界面；快捷键、功能对应和 SSH 后端用法见前端 README。
+用 `rcoder-tui --cwd /path/to/project` 指定工作区，或用 `rcoder-cli` 显式启动线性 CLI。快捷键、功能对应和 SSH 后端用法见前端 README。
 
 ## 远端 Bootstrap（Host/Peer）
 
