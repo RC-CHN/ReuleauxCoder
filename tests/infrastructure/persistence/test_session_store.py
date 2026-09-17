@@ -86,6 +86,35 @@ def _rehash_replay(payload: dict) -> None:
     payload["canonical_payload_hash"] = content_hash(core)
 
 
+def test_manifest_does_not_serialize_discarded_replay_artifacts(tmp_path, monkeypatch) -> None:
+    store = SessionStore(tmp_path)
+    messages = [{"role": "user", "content": "persist me", MESSAGE_TOKEN_KEY: 3}]
+    replay_writes = []
+    original = ReplayEnvelope.to_dict
+
+    def serialize_replay(replay):
+        replay_writes.append(replay.view_id)
+        return original(replay)
+
+    def full_snapshot_not_needed(_session):
+        pytest.fail("manifest serialization must not build a full session snapshot")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ReplayEnvelope, "to_dict", serialize_replay)
+        patch.setattr(Session, "to_dict", full_snapshot_not_needed)
+        session_id = store.save(
+            messages, "model", total_prompt_tokens=17, total_completion_tokens=5
+        )
+    assert len(replay_writes) == 1
+    restored = store.load(session_id)
+    assert restored is not None
+    assert restored.messages == messages
+    assert restored.total_prompt_tokens == 17
+    assert restored.total_completion_tokens == 5
+    assert restored.replay_envelope is not None
+    assert restored.replay_envelope.validate()
+
+
 def test_session_restore_error_rejects_content_bearing_facts() -> None:
     sentinel = "session-secret-must-not-leak"
 

@@ -261,20 +261,26 @@ class Session:
             ),
         )
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary for serialization."""
+    def metadata_dict(self) -> dict:
+        """Serialize metadata without copying separately stored replay artifacts."""
         return {
             "id": self.id,
             "model": self.model,
             "saved_at": self.saved_at,
             "fingerprint": self.fingerprint,
-            "messages": self.messages,
             "active_mode": self.active_mode,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
             "runtime_state": self.runtime_state.to_dict(),
             "history_completeness": self.history_completeness,
             "restore_issues": [issue.to_dict() for issue in self.restore_issues],
+        }
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization."""
+        return {
+            **self.metadata_dict(),
+            "messages": self.messages,
             "replay_envelope": (
                 self.replay_envelope.to_dict() if self.replay_envelope else None
             ),

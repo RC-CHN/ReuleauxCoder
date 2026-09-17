@@ -2546,12 +2546,7 @@ class SessionStore:
                 ref="checkpoint",
             )
             cursor.checkpoint_ids.add(checkpoint.id)
-        manifest = session.to_dict()
-        manifest.pop("messages", None)
-        manifest.pop("history_events", None)
-        manifest.pop("replay_envelope", None)
-        manifest.pop("request_envelopes", None)
-        manifest.pop("checkpoints", None)
+        manifest = session.metadata_dict()
         manifest["checkpoint_ids"] = [item.id for item in session.checkpoints]
         manifest["request_ids"] = [
             item.request_id for item in session.request_envelopes
