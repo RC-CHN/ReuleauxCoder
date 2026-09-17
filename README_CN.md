@@ -23,13 +23,13 @@ HTTP/SOCKS5 代理。详见[网页工具网络配置](docs/web-tools.md)。
 先安装 [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/)，再用 release 中的 wheel 进行全局安装：
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.9.3/reuleauxcoder-0.9.3-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.10.0/reuleauxcoder-0.10.0-py3-none-any.whl
 ```
 
 或者使用 [`uv`](https://docs.astral.sh/uv/)：
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.9.3/reuleauxcoder-0.9.3-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.10.0/reuleauxcoder-0.10.0-py3-none-any.whl
 ```
 
 wheel 内含 TUI 及其 JavaScript 依赖，安装不需要 Node 或 npm。

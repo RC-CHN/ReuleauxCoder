@@ -1,13 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 - 2026-09-17
 
+- Added image inputs across Chat Completions, Responses and Anthropic Messages. Model profiles declare `support_modal: [text, image]`; omitted capabilities default to text only.
+- Preserved immutable image references through history and model switches, with request-only placeholders for text models. Images follow effective history by default, with optional `user_turn` retention that shares ownership across steering, tools and automatic goal continuations.
+- Added image path paste recognition and inline `[Image #N]` markers in the CLI and TUI, plus session-bound chunked uploads from local frontends to SSH backends. Native screenshot clipboard bridging and remote peer image imports remain deferred.
+- Compressed ordinary images to 256 KiB and a 2000 px maximum edge by default, added bounded detail crops through `view_image`, and separated the 1 GiB per-session original cache from persistent sent variants. Finite HTTP 413 recovery and per-attempt Base64 accounting make image traffic visible.
+- Bounded local regex search and moved remote searches to peer-side execution, with shared matching, output budgets and compatibility checks.
+- Unified bounded LSP diagnostic projections, woke waiting readers on publication, and folded diagnostics behind TUI detail controls.
+- Added shared proxy routing for web tools, a context compression strategy picker, and process browsing and controls inside TUI panels.
+- Fixed TUI IME cursor positioning across independent frame updates, and wrapped and folded Markdown tables across history blocks.
+- Repaired legacy session event sequences and prevented sequence reuse across store-side event creation.
 - Preserved interrupts received after RPC admission but before chat or command execution starts, while clearing previous stop state when admitting the next operation.
 - Staged freshly built release peers into Docker images instead of shipping older checked-in binaries, and recorded the tag commit explicitly in GitHub Release metadata.
-- Receive fragmented TUI RPC frames without repeatedly copying their prefixes.
-- Maintain bounded streaming shell previews without rescanning complete output. Expanded tool records retain the full output.
-- Serialize session manifests without copying separately stored replay artifacts.
-- Reuse committed message hashes for request and live-session provenance, rebuilding indexes after history replacement or restore.
+- Received fragmented TUI RPC frames without repeatedly copying their prefixes, and maintained bounded streaming shell previews without rescanning complete output. Expanded tool records retain the full output.
+- Serialized session manifests without copying separately stored replay artifacts, and reused committed message hashes for request and live-session provenance, rebuilding indexes after history replacement or restore.
 
 ## 0.9.3 - 2026-09-11
 
