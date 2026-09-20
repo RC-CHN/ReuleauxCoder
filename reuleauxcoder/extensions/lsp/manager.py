@@ -397,6 +397,7 @@ class LspManager:
 
         # Lock (RLock for reentrancy in health_check)
         self._lock: threading.RLock = threading.RLock()
+        self._diagnostic_results_changed = threading.Condition(self._lock)
         self._shutdown_lock = threading.Lock()
 
         # Worker thread
@@ -1555,6 +1556,35 @@ class LspManager:
         with self._lock:
             self._prune_expired_diagnostic_batches_locked()
             return dict(self._diagnostic_batch_metrics)
+
+    def wait_for_diagnostic_request(
+        self,
+        batch_id: str,
+        *,
+        timeout: float,
+        cancellation: CancellationSignal | None = None,
+    ) -> DiagnosticOutcome | None:
+        """Briefly await an existing request without cancelling or consuming it.
+
+        Publication wakes the waiter immediately. A caller deadline or stop
+        leaves the worker result available for request-time delivery.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._diagnostic_results_changed:
+            while True:
+                if cancellation is not None and cancellation.is_set():
+                    return None
+                outcome = self.diagnostic_request_outcome(batch_id)
+                if outcome is not None:
+                    return outcome
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or batch_id not in self._pending_diagnostic_requests:
+                    return None
+                self._diagnostic_results_changed.wait(
+                    min(remaining, _TOOL_REQUEST_POLL_INTERVAL)
+                    if cancellation is not None
+                    else remaining
+                )
 
     def request_diagnostics_sync(
         self,
@@ -2718,6 +2748,7 @@ class LspManager:
 
         self._pending_diagnostic_requests.remove(request.batch_id)
         self._diagnostic_batch_metrics[f"outcome_{status.value}"] += 1
+        self._diagnostic_results_changed.notify_all()
         return True
 
     def _store_diagnostic_failure_outcome_locked(

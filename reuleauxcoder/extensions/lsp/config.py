@@ -25,6 +25,7 @@ class LspConfig:
 
     enabled: bool = True
     poll_timeout_ms: int = 5000
+    edit_wait_timeout_ms: int = 1000
     max_diagnostics: int = 20
     max_injection_chars: int = 12_000
     max_message_chars: int = 1_000
@@ -33,6 +34,8 @@ class LspConfig:
     server_overrides: dict[str, LspServerOverride] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.edit_wait_timeout_ms < 0:
+            raise ValueError("lsp.edit_wait_timeout_ms cannot be negative")
         for name in ("poll_timeout_ms", "max_diagnostics", "max_message_chars"):
             if getattr(self, name) < 1:
                 raise ValueError(f"lsp.{name} must be positive")
@@ -56,6 +59,9 @@ class LspConfig:
 
         enabled = bool(lsp_raw.get("enabled", defaults.enabled))
         poll_timeout_ms = int(lsp_raw.get("poll_timeout_ms", defaults.poll_timeout_ms))
+        edit_wait_timeout_ms = int(
+            lsp_raw.get("edit_wait_timeout_ms", defaults.edit_wait_timeout_ms)
+        )
         max_diagnostics = int(lsp_raw.get("max_diagnostics", defaults.max_diagnostics))
         max_injection_chars = int(
             lsp_raw.get("max_injection_chars", defaults.max_injection_chars)
@@ -86,6 +92,7 @@ class LspConfig:
         return cls(
             enabled=enabled,
             poll_timeout_ms=poll_timeout_ms,
+            edit_wait_timeout_ms=edit_wait_timeout_ms,
             max_diagnostics=max_diagnostics,
             max_injection_chars=max_injection_chars,
             max_message_chars=max_message_chars,

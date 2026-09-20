@@ -233,3 +233,6 @@ skills:
 
 goal:
   default_token_budget: null # Cumulative input - cached input + output; null means no limit.
+
+lsp:
+  edit_wait_timeout_ms: 1000 # Wait briefly for diagnostics in edit/write results; 0 only checks ready results.

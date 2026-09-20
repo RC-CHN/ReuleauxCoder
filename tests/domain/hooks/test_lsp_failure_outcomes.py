@@ -78,7 +78,7 @@ def _execution_state_tail() -> dict[str, str]:
     }
 
 
-def test_edit_failure_is_delivered_by_request_injector() -> None:
+def test_ready_diagnostic_failure_is_delivered_with_successful_edit() -> None:
     manager = _manager()
     route = DiagnosticRoute(
         file_path=Path("/tmp/main.py"),
@@ -109,8 +109,13 @@ def test_edit_failure_is_delivered_by_request_injector() -> None:
     LspEditObserverHook(lsp_manager=manager).run(context)
 
     assert context.outcome is not None
-    assert context.outcome.model_text == "edited"
-    assert manager.diagnostic_batch_acknowledgement(outcome.batch_id) is None
+    assert context.outcome.success
+    assert context.outcome.model_text.startswith("edited\n\n")
+    assert "status=error" in context.outcome.model_text
+    assert "error_type=LspDocumentReadError" in context.outcome.model_text
+    assert (
+        manager.diagnostic_batch_acknowledgement(outcome.batch_id) == "lsp-edit:edit-1"
+    )
     request = BeforeLLMRequestContext(
         hook_point=HookPoint.BEFORE_LLM_REQUEST,
         messages=[_execution_state_tail()],
@@ -120,8 +125,7 @@ def test_edit_failure_is_delivered_by_request_injector() -> None:
         turn_id="turn",
     )
     LspDiagnosticsInjectorHook(lsp_manager=manager).run(request)
-    assert "status=error" in request.messages[0]["content"]
-    assert "error_type=LspDocumentReadError" in request.messages[0]["content"]
+    assert "status=error" not in request.messages[0]["content"]
     assert request._commit_dispatch_callbacks() == ()
     assert manager.diagnostic_request_outcome(outcome.batch_id) is None
 

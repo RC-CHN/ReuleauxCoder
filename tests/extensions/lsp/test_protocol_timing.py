@@ -8,6 +8,17 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
+from reuleauxcoder.domain.hooks.builtin.lsp_injector import LspDiagnosticsInjectorHook
+from reuleauxcoder.domain.hooks.types import (
+    AfterToolExecuteContext,
+    BeforeLLMRequestContext,
+    HookPoint,
+)
+from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.lsp.config import LspConfig, LspServerOverride
 from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
 from reuleauxcoder.extensions.lsp.manager import LspManager, LspTransportState
@@ -106,6 +117,93 @@ def _wait_for_batch(manager: LspManager, batch_id: str):
     return batches[0]
 
 
+@pytest.mark.parametrize("tool_name", ["edit_file", "write_file"])
+@pytest.mark.parametrize("mode", ["save-only", "pull"])
+def test_edit_returns_fresh_diagnostics_from_worker(
+    tmp_path: Path,
+    tool_name: str,
+    mode: str,
+) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("# FAKE_LSP_ERROR: immediate result\n", encoding="utf-8")
+    manager = _manager(tmp_path, tmp_path / "inline.jsonl", mode=mode)
+    manager.config.edit_wait_timeout_ms = 3000
+    try:
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            agent_id="parent",
+            session_generation=1,
+            session_id="session",
+            turn_id="turn-1",
+            tool_call=ToolCall(
+                id="edit-1", name=tool_name, arguments={"file_path": str(path)}
+            ),
+            outcome=ToolOutcome(
+                content="edited", model_content="edited; approval refreshed"
+            ),
+        )
+        LspEditObserverHook(lsp_manager=manager).run(context)
+        assert context.outcome is not None
+        assert context.outcome.model_text.startswith("edited; approval refreshed\n\n")
+        assert "immediate result" in context.outcome.model_text
+        assert context.outcome.diagnostics[0].message == "immediate result"
+        assert manager.pending_diagnostic_batches() == ()
+        assert tuple(manager._acknowledged_batches.values()) == ("lsp-edit:edit-1",)
+    finally:
+        manager.shutdown_all()
+
+
+def test_edit_wait_expiry_leaves_late_diagnostics_for_request_injection(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "main.py"
+    path.write_text("# FAKE_LSP_ERROR: late result\n", encoding="utf-8")
+    gate = tmp_path / "release-save"
+    manager = _manager(
+        tmp_path, tmp_path / "late.jsonl", mode="save-only", first_save_gate=gate
+    )
+    manager.config.edit_wait_timeout_ms = 10
+    try:
+        original = ToolOutcome(content="edited")
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            agent_id="parent",
+            session_generation=1,
+            session_id="session",
+            turn_id="turn-1",
+            tool_call=ToolCall(
+                id="edit-1", name="edit_file", arguments={"file_path": str(path)}
+            ),
+            outcome=original,
+        )
+        LspEditObserverHook(lsp_manager=manager).run(context)
+        assert context.outcome is original
+        with manager._lock:
+            (batch_id,) = manager._pending_diagnostic_requests
+        gate.touch()
+        _wait_for_batch(manager, batch_id)
+        request = BeforeLLMRequestContext(
+            hook_point=HookPoint.BEFORE_LLM_REQUEST,
+            agent_id="parent",
+            session_generation=1,
+            session_id="session",
+            turn_id="turn-2",
+            messages=[
+                {
+                    "role": "user",
+                    "content": "<execution_state>\n<runtime_instruction>Continue.</runtime_instruction>\n</execution_state>",
+                }
+            ],
+        )
+        LspDiagnosticsInjectorHook(lsp_manager=manager).run(request)
+        assert "late result" in request.messages[-1]["content"]
+        assert request._commit_dispatch_callbacks() == ()
+        assert manager.pending_diagnostic_batches() == ()
+    finally:
+        gate.touch()
+        manager.shutdown_all()
+
+
 def test_save_only_server_publishes_after_sync_then_save(tmp_path: Path) -> None:
     path = tmp_path / "main.py"
     path.write_text("# FAKE_LSP_ERROR: save-only\n", encoding="utf-8")
@@ -152,9 +250,7 @@ def test_explicit_diagnostics_tool_observes_real_stdio_publish(
     log_path = tmp_path / "explicit-tool.jsonl"
     manager = _manager(tmp_path, log_path, mode="push")
     try:
-        outcome = LspDiagnosticsTool(lsp_manager=manager).execute(
-            filePath=str(path)
-        )
+        outcome = LspDiagnosticsTool(lsp_manager=manager).execute(filePath=str(path))
 
         assert outcome.success
         assert "ERROR [1:1] explicit tool" in outcome.model_text

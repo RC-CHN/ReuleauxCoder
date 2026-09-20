@@ -2322,6 +2322,7 @@ class ToolExecutor:
                     result=outcome.model_text,
                     outcome=outcome,
                     round_index=self.agent.state.current_round,
+                    cancellation=cancellation,
                 )
             except BaseException as error:
                 self._capture_post_effect_failure(

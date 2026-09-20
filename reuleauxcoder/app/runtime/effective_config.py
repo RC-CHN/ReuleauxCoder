@@ -97,7 +97,12 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
             EffectiveConfigRowViewModel(
                 f"lsp.{name}", str(getattr(lsp, name)), source(f"lsp.{name}")
             )
-            for name in ("max_diagnostics", "max_injection_chars", "max_message_chars")
+            for name in (
+                "edit_wait_timeout_ms",
+                "max_diagnostics",
+                "max_injection_chars",
+                "max_message_chars",
+            )
         ),
         EffectiveConfigRowViewModel(
             "lsp.typescript_mode",

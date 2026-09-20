@@ -10,6 +10,7 @@ class TestLspConfigDefaults:
         lsp = LspConfig.from_config(config)
         assert lsp.enabled is True
         assert lsp.poll_timeout_ms == 5000
+        assert lsp.edit_wait_timeout_ms == 1000
         assert lsp.max_diagnostics == 20
         assert lsp.include_warnings is True
         assert lsp.typescript_mode == "auto"
@@ -27,6 +28,7 @@ class TestLspConfigDefaults:
         config.lsp = {  # type: ignore[attr-defined]
             "enabled": False,
             "poll_timeout_ms": 10000,
+            "edit_wait_timeout_ms": 0,
             "max_diagnostics": 10,
             "max_injection_chars": 4000,
             "max_message_chars": 500,
@@ -36,6 +38,7 @@ class TestLspConfigDefaults:
         lsp = LspConfig.from_config(config)
         assert lsp.enabled is False
         assert lsp.poll_timeout_ms == 10000
+        assert lsp.edit_wait_timeout_ms == 0
         assert lsp.max_diagnostics == 10
         assert lsp.max_injection_chars == 4000
         assert lsp.max_message_chars == 500
@@ -62,6 +65,7 @@ class TestLspConfigDefaults:
             ("max_message_chars", 0),
             ("max_injection_chars", 511),
             ("poll_timeout_ms", 0),
+            ("edit_wait_timeout_ms", -1),
         ],
     )
     def test_invalid_diagnostic_limits_are_rejected(

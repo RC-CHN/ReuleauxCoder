@@ -9,6 +9,7 @@ from typing import Any
 
 from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
+from reuleauxcoder.domain.cancellation import CancellationSignal
 
 
 class HookKind(str, Enum):
@@ -61,6 +62,7 @@ class AfterToolExecuteContext(HookContext):
     result: str = ""
     outcome: ToolOutcome | None = None
     round_index: int | None = None
+    cancellation: CancellationSignal | None = None
 
 
 @dataclass(slots=True)

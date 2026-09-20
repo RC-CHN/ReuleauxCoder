@@ -40,6 +40,8 @@ def test_effective_config_view_marks_session_overrides_and_sources() -> None:
     assert rows["models.active_sub"].source == "global"
     assert rows["modes.active"].source == "session"
     assert rows["lsp.enabled"].source == "default"
+    assert rows["lsp.edit_wait_timeout_ms"].value == "1000"
+    assert rows["lsp.edit_wait_timeout_ms"].source == "default"
     assert rows["lsp.typescript_mode"].value == "auto"
     assert rows["lsp.max_injection_chars"].value == "4000"
     assert rows["lsp.max_injection_chars"].source == "workspace"

@@ -39,7 +39,7 @@ from reuleauxcoder.extensions.lsp.manager import LspManager
 
 def _make_manager() -> LspManager:
     """Create an LspManager with all languages marked unavailable."""
-    config = LspConfig(enabled=True)
+    config = LspConfig(enabled=True, edit_wait_timeout_ms=0)
     mgr = LspManager(config, workspace_cwd=Path("/tmp"))
     # Hook unit tests control completion directly and must never start a real
     # language-server process in the background.
@@ -100,7 +100,9 @@ def _execution_state_tail() -> dict:
 
 
 @pytest.mark.parametrize("tool_name", ["edit_file", "write_file"])
-def test_edits_queue_document_commit_without_waiting(tool_name: str) -> None:
+def test_edits_leave_pending_diagnostics_when_wait_budget_expires(
+    tool_name: str,
+) -> None:
     from reuleauxcoder.extensions.lsp.registry import LanguageId
 
     manager = _make_manager()
@@ -153,6 +155,58 @@ def test_failed_edit_does_not_enqueue_diagnostics() -> None:
     )
     LspEditObserverHook(lsp_manager=manager).run(context)
     assert manager._diagnostics_queue == []
+
+
+def test_inline_diagnostics_are_bounded_without_losing_raw_details() -> None:
+    from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+    manager = _make_manager()
+    manager.config.max_diagnostics = 1
+    manager.config.max_message_chars = 20
+    manager.config.max_injection_chars = 512
+    message = "error " + "<unsafe>" * 200
+    _complete_enqueued_batch(
+        manager,
+        DiagnosticBlock(
+            "test.py", [Diagnostic(1, 1, message), Diagnostic(2, 1, "extra")]
+        ),
+    )
+    context = AfterToolExecuteContext(
+        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+        tool_call=ToolCall(
+            id="edit", name="edit_file", arguments={"file_path": "test.py"}
+        ),
+        outcome=ToolOutcome(content="edited"),
+    )
+    LspEditObserverHook(lsp_manager=manager).run(context)
+    assert context.outcome is not None
+    injection = context.outcome.model_text.removeprefix("edited\n\n")
+    assert len(injection) <= 512
+    assert "1 diagnostics and 0 outcomes omitted" in injection
+    assert "1 messages shortened" in injection
+    assert "<unsafe>" not in injection
+    assert context.outcome.diagnostics[0].message == message
+    assert len(context.outcome.diagnostics) == 2
+
+
+def test_inline_diagnostics_losing_ack_race_do_not_change_tool_result() -> None:
+    from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
+
+    manager = _make_manager()
+    _complete_enqueued_batch(
+        manager, DiagnosticBlock("test.py", [Diagnostic(1, 1, "error")])
+    )
+    manager.acknowledge_diagnostic_batch = MagicMock(return_value=False)
+    original = ToolOutcome(content="edited")
+    context = AfterToolExecuteContext(
+        hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+        tool_call=ToolCall(
+            id="edit", name="edit_file", arguments={"file_path": "test.py"}
+        ),
+        outcome=original,
+    )
+    LspEditObserverHook(lsp_manager=manager).run(context)
+    assert context.outcome is original
 
 
 class TestLspEditObserverCreateFromConfig:
@@ -361,8 +415,10 @@ class TestLspDiagnosticsInjectorCreateFromConfig:
 
 
 @pytest.mark.parametrize("model_content", [None, "edited with refreshed approval"])
+@pytest.mark.parametrize("tool_name", ["edit_file", "write_file"])
 def test_ready_edit_diagnostics_have_one_delivery_path(
     model_content: str | None,
+    tool_name: str,
 ) -> None:
     from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
 
@@ -373,16 +429,21 @@ def test_ready_edit_diagnostics_have_one_delivery_path(
     edit_context = AfterToolExecuteContext(
         hook_point=HookPoint.AFTER_TOOL_EXECUTE,
         tool_call=ToolCall(
-            id="1", name="edit_file", arguments={"file_path": "/tmp/test.py"}
+            id="1", name=tool_name, arguments={"file_path": "/tmp/test.py"}
         ),
         outcome=original,
     )
     LspEditObserverHook(lsp_manager=manager).run(edit_context)
-    assert edit_context.outcome is original
-    assert manager.diagnostic_batch_acknowledgement("batch-1") is None
+    assert edit_context.outcome is not None
+    assert edit_context.outcome.model_text.startswith(original.model_text + "\n\n")
+    assert "actual error" in edit_context.outcome.model_text
+    assert edit_context.outcome.content == original.content
+    assert edit_context.outcome.diagnostics[0].message == "actual error"
+    assert edit_context.result == edit_context.outcome.model_text
+    assert manager.diagnostic_batch_acknowledgement("batch-1") == "lsp-edit:1"
 
     messages = [
-        {"role": "tool", "content": original.model_text},
+        {"role": "tool", "content": edit_context.outcome.model_text},
         _execution_state_tail(),
     ]
     request = BeforeLLMRequestContext(
@@ -390,9 +451,8 @@ def test_ready_edit_diagnostics_have_one_delivery_path(
     )
     injector = LspDiagnosticsInjectorHook(lsp_manager=manager)
     injector.run(request)
-    assert request.messages[0]["content"] == original.model_text
-    assert "actual error" in request.messages[-1]["content"]
-    assert manager.diagnostic_batch_acknowledgement("batch-1") is None
+    assert request.messages[0]["content"] == edit_context.outcome.model_text
+    assert "actual error" not in request.messages[-1]["content"]
     assert request._commit_dispatch_callbacks() == ()
     assert manager.pending_diagnostic_batches() == ()
 

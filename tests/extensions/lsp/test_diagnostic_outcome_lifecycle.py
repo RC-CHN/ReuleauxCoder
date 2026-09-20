@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import AsyncMock, MagicMock
 
 from reuleauxcoder.extensions.lsp.client import LspDocumentReadError, LspFailureFacts
@@ -40,6 +42,45 @@ def _request(manager: LspManager, path: Path, *, route: DiagnosticRoute | None =
     assert batch_id is not None
     request = manager._diagnostics_queue.pop()
     return batch_id, request
+
+
+def test_edit_wait_cancellation_leaves_request_pending(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _manager(tmp_path)
+    batch_id, request = _request(manager, tmp_path / "main.py")
+    waiting = Event()
+    cancelled = Event()
+    real_wait = manager._diagnostic_results_changed.wait
+
+    def observed_wait(timeout=None):
+        waiting.set()
+        return real_wait(timeout)
+
+    monkeypatch.setattr(manager._diagnostic_results_changed, "wait", observed_wait)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            manager.wait_for_diagnostic_request,
+            batch_id,
+            timeout=10,
+            cancellation=cancelled,
+        )
+        try:
+            assert waiting.wait(1)
+        finally:
+            cancelled.set()
+        assert future.result(timeout=1) is None
+    assert batch_id in manager._pending_diagnostic_requests
+    with manager._lock:
+        manager._complete_diagnostic_request_locked(
+            request,
+            status=DiagnosticOutcomeStatus.SERVER_UNAVAILABLE,
+            failure=LspFailureFacts(
+                phase="availability", error_type="LspServerUnavailable"
+            ),
+        )
+    assert manager.wait_for_diagnostic_request(batch_id, timeout=0) is not None
+    assert manager.diagnostic_batch_acknowledgement(batch_id) is None
 
 
 def _server(*, baseline: int, current: int, diagnostics: list[Diagnostic]) -> MagicMock:

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Returned fresh LSP diagnostics directly with successful file edits and writes, preserving the original tool output and retaining diagnostics in conversation history.
+- Added a configurable one-second edit diagnostic wait, with event-driven wakeups, cancellation support and request-time fallback for late results without duplicate delivery.
+- Shared bounded diagnostic projections across immediate and deferred delivery, with protocol tests for push/pull servers, timeout fallback and cancellation.
+
 ## 0.10.0 - 2026-09-17
 
 - Added image inputs across Chat Completions, Responses and Anthropic Messages. Model profiles declare `support_modal: [text, image]`; omitted capabilities default to text only.
