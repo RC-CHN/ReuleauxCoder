@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.1 - 2026-09-20
 
 - Returned fresh LSP diagnostics directly with successful file edits and writes, preserving the original tool output and retaining diagnostics in conversation history.
 - Added a configurable one-second edit diagnostic wait, with event-driven wakeups, cancellation support and request-time fallback for late results without duplicate delivery.
