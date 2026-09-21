@@ -1,5 +1,11 @@
 # Tool I/O and performance
 
+Tool-output projections count line boundaries without materializing all lines,
+locate only retained head/tail spans, and copy only characters within the output
+budget. Existing splitlines and retention semantics are preserved. Full-output
+archives encode 64 Ki-character chunks and hash the exact bytes as they are
+written, avoiding repeated full-output UTF-8 allocations.
+
 Shell waits pass the remaining duration to the process adapter in one poll.
 Local condition waits and host-side remote future waits check cancellation every
 50 ms without issuing extra peer RPCs. Cancelling a remote wait only detaches the

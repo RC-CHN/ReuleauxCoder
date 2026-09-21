@@ -1,7 +1,16 @@
 from types import SimpleNamespace
 from pathlib import Path
+import hashlib
+import random
+import tracemalloc
 
-from reuleauxcoder.domain.hooks.builtin.tool_output import ToolOutputTruncationHook
+import pytest
+
+from reuleauxcoder.domain.hooks.builtin.tool_output import (
+    ToolOutputTruncationHook,
+    _line_summary,
+    _retain_text,
+)
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolRetentionHint,
@@ -33,6 +42,96 @@ def _ctx(
         result=result,
         round_index=1,
     )
+
+
+def _legacy_retention(text, max_lines, max_chars, strategy):
+    """Compatibility oracle for the previous whole-output algorithm."""
+    lines = text.splitlines()
+    if strategy is ToolRetentionStrategy.TAIL:
+        return "\n".join(lines[-max_lines:])[-max_chars:].lstrip()
+    if strategy is ToolRetentionStrategy.HEAD_TAIL:
+        head = max(1, (max_lines + 1) // 2)
+        tail = max_lines - head
+        selected = "\n".join(lines[:head] + (lines[-tail:] if tail else []))
+        if len(selected) <= max_chars:
+            return selected
+        head_chars = max(1, (max_chars + 1) // 2)
+        tail_chars = max_chars - head_chars
+        if not tail_chars:
+            return selected[:head_chars].rstrip()
+        return selected[:head_chars].rstrip() + "\n" + selected[-tail_chars:].lstrip()
+    return "\n".join(lines[:max_lines])[:max_chars].rstrip()
+
+
+@pytest.mark.parametrize("strategy", list(ToolRetentionStrategy))
+@pytest.mark.parametrize("max_lines,max_chars", [(1, 1), (2, 3), (5, 16), (120, 12000)])
+def test_bounded_retention_matches_previous_splitlines_semantics(
+    strategy, max_lines, max_chars
+):
+    rng = random.Random(17)
+    samples = ["", "\n", "\r\n", "a\r\nb\r\n", "x" * 100000]
+    samples += [
+        "".join(
+            rng.choices(
+                "abc 你好\t\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029", k=rng.randrange(200)
+            )
+        )
+        for _ in range(150)
+    ]
+    for source in samples:
+        assert _line_summary(source)[0] == len(source.splitlines())
+        assert _retain_text(
+            source, max_lines=max_lines, max_chars=max_chars, strategy=strategy
+        ) == _legacy_retention(source, max_lines, max_chars, strategy)
+
+
+@pytest.mark.parametrize("many_lines", [False, True], ids=["long-line", "many-lines"])
+def test_projection_memory_is_bounded_by_retained_output(many_lines):
+    source = "line\n" * 500000 if many_lines else "x" * (8 * 1024 * 1024)
+    hook = ToolOutputTruncationHook(
+        max_chars=8000, max_lines=120, store_full_output=False
+    )
+    ctx = _ctx("/tmp/output.log", source)
+    ctx.outcome = ToolOutcome(
+        content=source,
+        model_content=source,
+        retention_hint=ToolRetentionHint(strategy=ToolRetentionStrategy.HEAD_TAIL),
+    )
+    tracemalloc.start()
+    try:
+        result = hook.run(ctx)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 512 * 1024
+    assert result.outcome.content == source
+    assert result.outcome.truncation.original_lines == len(source.splitlines())
+
+
+@pytest.mark.parametrize("session_id", [None, "archive-session"])
+def test_chunked_archive_preserves_utf8_bytes_and_checksum(tmp_path, session_id):
+    hook = ToolOutputTruncationHook(
+        max_chars=20,
+        max_lines=2,
+        store_full_output=True,
+        store_dir=str(tmp_path),
+        sessions_dir=str(tmp_path),
+    )
+    source = "你好\r\n🙂\u2028" * 40000
+    ctx = _ctx("/tmp/output.log", source)
+    ctx.session_id = session_id
+    ctx.outcome = ToolOutcome(content=source, model_content=source)
+    result = hook.run(ctx)
+    reference = result.outcome.archive_reference
+    path = (
+        tmp_path / session_id / "artifacts" / reference.path
+        if session_id
+        else Path(reference.path)
+    )
+    encoded = source.encode("utf-8")
+    assert path.read_bytes() == encoded
+    assert reference.size_bytes == len(encoded)
+    assert reference.checksum_sha256 == hashlib.sha256(encoded).hexdigest()
 
 
 def test_tool_output_truncates_regular_read_file_output() -> None:

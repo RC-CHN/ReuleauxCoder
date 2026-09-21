@@ -75,20 +75,23 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
 
         outcome = context.outcome or ToolOutcome.from_legacy(context.result)
         result = outcome.model_text
-        line_count = len(result.splitlines())
+        line_count, separators = _line_summary(result)
         char_count = len(result)
         if line_count <= self.max_lines and char_count <= self.max_chars:
             return context
 
         archive_path: Path | None = None
         artifact_ref: str | None = None
+        archive_reference: ToolArchiveReference | None = None
         if self.store_full_output:
-            archive_path, artifact_ref = self._archive_output(
+            archive_path, archive_reference = self._archive_output(
                 tool_call.name,
                 result,
                 context.round_index,
                 session_id=context.session_id,
             )
+            if context.session_id:
+                artifact_ref = archive_reference.path
 
         strategy = outcome.retention_hint.strategy
         truncated_text = _retain_text(
@@ -96,13 +99,15 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
             max_lines=self.max_lines,
             max_chars=self.max_chars,
             strategy=strategy,
+            separators=separators,
         )
+        retained_lines = len(truncated_text.splitlines())
 
         summary_lines = [
             f"[truncated] Tool output exceeded limits ({line_count} lines, {char_count} chars).",
             _retention_summary(
                 strategy,
-                retained_lines=len(truncated_text.splitlines()),
+                retained_lines=retained_lines,
                 max_chars=self.max_chars,
                 anchor_line=outcome.retention_hint.anchor_line,
             ),
@@ -129,18 +134,10 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
                 original_chars=char_count,
                 original_lines=line_count,
                 retained_chars=len(truncated_text),
-                retained_lines=len(truncated_text.splitlines()),
+                retained_lines=retained_lines,
                 strategy=strategy.value,
             ),
-            archive_reference=(
-                ToolArchiveReference(
-                    path=artifact_ref or str(archive_path),
-                    checksum_sha256=hashlib.sha256(result.encode("utf-8")).hexdigest(),
-                    size_bytes=len(result.encode("utf-8")),
-                )
-                if archive_path is not None
-                else None
-            ),
+            archive_reference=archive_reference,
         )
         context.result = context.outcome.model_text
         return context
@@ -163,7 +160,7 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         round_index: int | None,
         *,
         session_id: str | None,
-    ) -> tuple[Path, str | None]:
+    ) -> tuple[Path, ToolArchiveReference]:
         if session_id:
             if not is_safe_session_id(session_id):
                 raise ValueError("invalid session_id")
@@ -177,18 +174,28 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
             path = artifact_dir / f"{uuid.uuid4().hex}.txt"
             artifact_ref = f"tools/{path.name}"
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8", newline="")
-            return path, artifact_ref
-
-        day_dir = self.output_dir / time.strftime("%Y-%m-%d")
-        day_dir.mkdir(parents=True, exist_ok=True)
-        round_part = (
-            f"round-{round_index:02d}" if round_index is not None else "round-na"
+        else:
+            day_dir = self.output_dir / time.strftime("%Y-%m-%d")
+            day_dir.mkdir(parents=True, exist_ok=True)
+            round_part = (
+                f"round-{round_index:02d}" if round_index is not None else "round-na"
+            )
+            filename = f"{round_part}-{tool_name}-{uuid.uuid4().hex[:8]}.txt"
+            path = day_dir / filename
+            artifact_ref = str(path)
+        digest = hashlib.sha256()
+        size_bytes = 0
+        with path.open("wb") as stream:
+            for offset in range(0, len(content), 64 * 1024):
+                encoded = content[offset : offset + 64 * 1024].encode("utf-8")
+                stream.write(encoded)
+                digest.update(encoded)
+                size_bytes += len(encoded)
+        return path, ToolArchiveReference(
+            path=artifact_ref,
+            checksum_sha256=digest.hexdigest(),
+            size_bytes=size_bytes,
         )
-        filename = f"{round_part}-{tool_name}-{uuid.uuid4().hex[:8]}.txt"
-        path = day_dir / filename
-        path.write_text(content, encoding="utf-8", newline="")
-        return path, None
 
     def _should_bypass_truncation(self, tool_name: str, arguments: dict) -> bool:
         return (
@@ -225,32 +232,116 @@ class ToolOutputTruncationHook(TransformHook[AfterToolExecuteContext]):
         return False
 
 
+_LINE_SEPARATORS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+def _line_summary(text: str) -> tuple[int, tuple[str, ...]]:
+    """Count splitlines boundaries without allocating the discarded lines."""
+    separators = tuple(char for char in _LINE_SEPARATORS if char in text)
+    count = sum(text.count(char) for char in separators)
+    if "\r" in separators and "\n" in separators:
+        count -= text.count("\r\n")
+    if text and text[-1] not in _LINE_SEPARATORS:
+        count += 1
+    return count, separators
+
+
+def _line_spans(
+    text: str, separators: tuple[str, ...], count: int, *, tail: bool = False
+) -> list[tuple[int, int]]:
+    """Locate only the retained lines; even a huge single line stays a span."""
+    spans = []
+    position = len(text) if tail else 0
+    boundaries = {
+        char: text.rfind(char) if tail else text.find(char) for char in separators
+    }
+    for _ in range(count):
+        if tail:
+            if position <= 0:
+                break
+            end = position
+            if text[end - 1] in _LINE_SEPARATORS:
+                end -= 1
+                if text[end] == "\n" and end and text[end - 1] == "\r":
+                    end -= 1
+            for char, boundary in boundaries.items():
+                if boundary >= end:
+                    boundaries[char] = text.rfind(char, 0, end)
+            start = max(boundaries.values(), default=-1) + 1
+            spans.append((start, end))
+            position = start
+        else:
+            if position >= len(text):
+                break
+            for char, boundary in boundaries.items():
+                if 0 <= boundary < position:
+                    boundaries[char] = text.find(char, position)
+            end = min(
+                (index for index in boundaries.values() if index >= 0),
+                default=len(text),
+            )
+            spans.append((position, end))
+            position = end + (2 if text.startswith("\r\n", end) else 1)
+    return list(reversed(spans)) if tail else spans
+
+
+def _slice_joined(
+    text: str, spans: list[tuple[int, int]], start: int, stop: int
+) -> str:
+    """Slice newline-joined spans without materializing the unbounded join."""
+    parts = []
+    position = 0
+    for index, (left, right) in enumerate(spans):
+        if index:
+            if start <= position < stop:
+                parts.append("\n")
+            position += 1
+        length = right - left
+        lower = max(0, start - position)
+        upper = min(length, stop - position)
+        if lower < upper:
+            parts.append(text[left + lower : left + upper])
+        position += length
+        if position >= stop:
+            break
+    return "".join(parts)
+
+
 def _retain_text(
     text: str,
     *,
     max_lines: int,
     max_chars: int,
     strategy: ToolRetentionStrategy,
+    separators: tuple[str, ...] | None = None,
 ) -> str:
-    lines = text.splitlines()
+    if separators is None:
+        _, separators = _line_summary(text)
     if strategy is ToolRetentionStrategy.TAIL:
-        selected = "\n".join(lines[-max_lines:])
-        return selected[-max_chars:].lstrip()
+        spans = _line_spans(text, separators, max_lines, tail=True)
+        length = sum(end - start for start, end in spans) + max(0, len(spans) - 1)
+        return _slice_joined(text, spans, max(0, length - max_chars), length).lstrip()
     if strategy is ToolRetentionStrategy.HEAD_TAIL:
         head_count = max(1, (max_lines + 1) // 2)
         tail_count = max(0, max_lines - head_count)
-        selected = "\n".join(
-            [*lines[:head_count], *(lines[-tail_count:] if tail_count else [])]
+        spans = _line_spans(text, separators, head_count) + _line_spans(
+            text, separators, tail_count, tail=True
         )
-        if len(selected) <= max_chars:
-            return selected
+        length = sum(end - start for start, end in spans) + max(0, len(spans) - 1)
+        if length <= max_chars:
+            return _slice_joined(text, spans, 0, length)
         head_chars = max(1, (max_chars + 1) // 2)
         tail_chars = max_chars - head_chars
+        head = _slice_joined(text, spans, 0, head_chars).rstrip()
         if not tail_chars:
-            return selected[:head_chars].rstrip()
-        return selected[:head_chars].rstrip() + "\n" + selected[-tail_chars:].lstrip()
-    selected = "\n".join(lines[:max_lines])
-    return selected[:max_chars].rstrip()
+            return head
+        return (
+            head
+            + "\n"
+            + _slice_joined(text, spans, length - tail_chars, length).lstrip()
+        )
+    spans = _line_spans(text, separators, max_lines)
+    return _slice_joined(text, spans, 0, max_chars).rstrip()
 
 
 def _retention_summary(
