@@ -17,6 +17,7 @@ import time
 
 
 package = Path(__file__).resolve().parent.parent
+no_mouse = os.environ.get("RCODER_TUI_TEST_NO_MOUSE") == "1"
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 90, 0, 0))
 capture = bytearray()
@@ -57,6 +58,7 @@ with tempfile.TemporaryDirectory(prefix="rcoder-tui-pty-") as cwd:
     child = subprocess.Popen(
         [
             *command,
+            *(["--no-mouse"] if no_mouse else []),
             "--backend",
             sys.executable,
             "--",
@@ -84,7 +86,8 @@ with tempfile.TemporaryDirectory(prefix="rcoder-tui-pty-") as cwd:
         child.send_signal(signal.SIGWINCH)
         os.write(master, "\x1b[200~中文任务\x1b[201~".encode())
         read_until("中文任务")
-        os.write(master, b"\x1b[<64;10;5M\x1b[<65;10;5M")
+        if not no_mouse:
+            os.write(master, b"\x1b[<64;10;5M\x1b[<65;10;5M")
         os.write(master, b"\r")
         read_until("successfully")
         os.write(master, b"\x04")
@@ -93,7 +96,8 @@ with tempfile.TemporaryDirectory(prefix="rcoder-tui-pty-") as cwd:
         assert b"\x1b[?1049h" in capture
         assert b"\x1b[?1049l" in capture
         assert b"\x1b[?1007l" in capture
-        assert b"\x1b[?1000h" in capture and b"\x1b[?1006h" in capture
+        assert (b"\x1b[?1000h" in capture) is not no_mouse
+        assert (b"\x1b[?1006h" in capture) is not no_mouse
         assert b"\x1b[?1000l" in capture and b"\x1b[?1006l" in capture
         assert Path(cwd, ".rcoder/tui-history.jsonl").read_text() == '"中文任务"\n'
     finally:

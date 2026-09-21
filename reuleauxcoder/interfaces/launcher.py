@@ -56,6 +56,11 @@ def _launch(*, explicit_tui: bool):
     )
     parser.add_argument("--theme", help="TUI theme preset or JSON path")
     parser.add_argument(
+        "--no-mouse",
+        action="store_true",
+        help="Disable TUI mouse reporting for native terminal selection",
+    )
+    parser.add_argument(
         "--no-alt-screen",
         action="store_true",
         help="Render TUI in the main terminal buffer",

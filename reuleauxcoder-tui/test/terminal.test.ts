@@ -8,6 +8,12 @@ test('launcher owns a real PTY and restores the terminal on exit', {skip: proces
   await promisify(execFile)(python, [fileURLToPath(new URL('./terminal_smoke.py', import.meta.url)), process.execPath], {timeout: 30_000});
 });
 
+test('--no-mouse preserves native selection and terminal restoration', {skip: process.platform === 'win32'}, async () => {
+  await promisify(execFile)(python, [fileURLToPath(new URL('./terminal_smoke.py', import.meta.url)), process.execPath], {
+    timeout: 30_000, env: {...process.env, RCODER_TUI_TEST_NO_MOUSE: '1'},
+  });
+});
+
 test('bundled TUI runs menus, chat and approvals without node_modules', {skip: process.platform === 'win32'}, async () => {
   await promisify(execFile)(python, [
     fileURLToPath(new URL('./terminal_smoke.py', import.meta.url)), process.execPath,

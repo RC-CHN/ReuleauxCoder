@@ -33,7 +33,9 @@ def launch(monkeypatch, tmp_path):
 
 def test_auto_tui_uses_installed_python_and_preserves_options(launch, monkeypatch):
     monkeypatch.setattr(
-        launcher.sys, "argv", ["rcoder", "--model", "profile", "--theme", "ocean"]
+        launcher.sys,
+        "argv",
+        ["rcoder", "--model", "profile", "--theme", "ocean", "--no-mouse"],
     )
     launcher.main()
     assert launch == [
@@ -48,6 +50,7 @@ def test_auto_tui_uses_installed_python_and_preserves_options(launch, monkeypatc
                 "profile",
                 "--theme",
                 "ocean",
+                "--no-mouse",
             ],
         )
     ]
