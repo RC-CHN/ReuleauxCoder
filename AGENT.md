@@ -4,7 +4,7 @@ This file describes the current repository, not a future design. Detailed design
 
 ## Current snapshot
 
-- Package version: `0.10.1`.
+- Package version: `0.10.2`.
 - Python interface: `rcoder-cli` is the linear CLI with native terminal scrollback, Rich output and prompt_toolkit line editing over JSON-RPC.
 - Launcher: `rcoder` auto-selects the bundled TUI when Node >=22 and a terminal are available; `rcoder-tui` requires it explicitly. Batch/backend modes use CLI. Wheel and sdist releases contain the standalone JS bundle; runtime installation needs no npm.
 - Independent TUI: `reuleauxcoder-tui/` is a React + Ink frontend over stdio JSON-RPC, with top-level slash menus, backend-owned command panels and a persistent composer. Launch it with `node reuleauxcoder-tui/dist/cli.js` after building.

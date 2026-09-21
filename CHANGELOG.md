@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.2 - 2026-09-21
 
 - Added `/shell` selection with executable names, paths and environment labels, including lazy discovery of shells inside a chosen Windows WSL distribution. New processes and model shell guidance follow the selection; existing processes stay unchanged, scoped children inherit an isolated preference, and `/shell auto` restores automatic selection.
 - Reused unchanged composed terminal rows across frames, keyed by width and ordered clipped/transformed writes, avoiding repeated cell-grid construction and serialization without changing animation timing.
@@ -17,6 +17,7 @@
 - Pruned glob traversal to directories that can still match the pattern, in both local workspaces and remote peers.
 - Paged file reads in local and remote workspace adapters, with bounded line retention, a 256 Ki-character page budget and explicit continuation instead of whole-file downloads. Older peers require an upgrade for paged reads; explicit full reads remain available.
 - Reported incomplete directory scans even when filtering leaves no matches, instead of incorrectly claiming that matching files do not exist.
+- Waited for RPC transport cleanup before exiting the stdio backend, preventing buffered-output shutdown races.
 
 ## 0.10.1 - 2026-09-20
 
