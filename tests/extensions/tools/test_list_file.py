@@ -95,6 +95,30 @@ class TestListFileExecute:
         assert "main.py" in result.model_text
         assert "README.md" not in result.model_text
 
+    def test_filter_after_scan_limit_reports_incomplete_results(
+        self, tool, tmp_path: Path, monkeypatch
+    ):
+        for name in ("a.txt", "b.txt", "z.py"):
+            (tmp_path / name).touch()
+        workspace = tool.backend.workspace
+        list_entries = workspace.list_entries
+
+        def limited(path, **kwargs):
+            return list_entries(path, **{**kwargs, "max_entries": 2})
+
+        monkeypatch.setattr(workspace, "list_entries", limited)
+        result = tool.execute(path=str(tmp_path), pattern="*.py")
+        assert result.metadata["truncated"] is True
+        assert result.metadata["entry_count"] == 0
+        assert "partial scan" in result.summary
+        assert "results are incomplete" in result.model_text
+        assert "no entries matching" not in result.model_text
+
+    def test_complete_empty_listing_is_not_partial(self, tool, tmp_path: Path):
+        result = tool.execute(path=str(tmp_path), pattern="*.py")
+        assert result.metadata["truncated"] is False
+        assert "no entries matching" in result.model_text
+
     def test_single_file(self, tool, tmp_path: Path):
         f = tmp_path / "main.py"
         f.write_text("print('hi')")

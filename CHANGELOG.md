@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Reported incomplete directory scans even when filtering leaves no matches, instead of incorrectly claiming that matching files do not exist.
+
 ## 0.10.1 - 2026-09-20
 
 - Returned fresh LSP diagnostics directly with successful file edits and writes, preserving the original tool output and retaining diagnostics in conversation history.

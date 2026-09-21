@@ -176,15 +176,30 @@ class ListFileTool(Tool):
                 if self._matches(entry, pattern, recursive=recursive)
             ]
             if not entries:
-                content = (
-                    f"(no entries matching '{pattern}' in '{path}')"
-                    if pattern
-                    else f"(empty directory: '{path}')"
-                )
+                if listing.truncated:
+                    content = (
+                        f"No matching entries found in the scanned portion of '{path}'.\n"
+                        "... (workspace listing limit reached; results are incomplete; "
+                        "narrow path or use glob/grep)"
+                    )
+                else:
+                    content = (
+                        f"(no entries matching '{pattern}' in '{path}')"
+                        if pattern
+                        else f"(empty directory: '{path}')"
+                    )
                 return ToolOutcome(
-                    summary=f"Listed 0 entries in {path}",
+                    summary=f"Listed 0 entries in {path}"
+                    + (" (partial scan)" if listing.truncated else ""),
                     content=content,
-                    metadata={"operation": "list", "path": path, "entry_count": 0},
+                    metadata={
+                        "operation": "list",
+                        "path": path,
+                        "entry_count": 0,
+                        "recursive": recursive,
+                        "pattern": pattern,
+                        "truncated": listing.truncated,
+                    },
                     retention_hint=ToolRetentionHint(
                         strategy=ToolRetentionStrategy.HEAD_TAIL
                     ),
