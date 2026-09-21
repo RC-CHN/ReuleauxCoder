@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reused bounded ANSI parsing and Unicode width caches across Ink frames, scoped to each terminal root. A version/hash-checked adapter keeps source runs and release bundles consistent, with byte-for-byte upstream renderer regression tests.
 - Cached fitted terminal rows with entry and memory limits, avoiding repeated ANSI clipping for rows shared by adjacent frames while preserving style closures and Unicode widths.
 - Removed TUI scroll easing and input debounce: wheel and keyboard navigation publish their full movement immediately. Reading history remains paused through output, resize and detail changes, with a new-output indicator and explicit Ctrl+End resume.
 - Unified wheel/page navigation across TUI lists, approvals and content panels. Scrolling preserves selection; confirming an offscreen selection first reveals it. Arrow navigation stops at list boundaries.

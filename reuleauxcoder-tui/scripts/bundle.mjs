@@ -3,7 +3,9 @@ import {build} from 'esbuild';
 import {mkdir, readFile, readdir, writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {patchRenderer} from './patch-renderer.mjs';
 
+await patchRenderer();
 const root = fileURLToPath(new URL('..', import.meta.url));
 const destination = resolve(root, '../reuleauxcoder/_tui');
 const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));

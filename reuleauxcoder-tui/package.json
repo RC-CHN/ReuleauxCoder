@@ -11,6 +11,11 @@
     "rcoder-tui": "dist/cli.js"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-renderer.mjs",
+    "predev": "node scripts/patch-renderer.mjs",
+    "prebuild": "node scripts/patch-renderer.mjs",
+    "prebenchmark": "node scripts/patch-renderer.mjs",
+    "prebenchmark:navigation": "node scripts/patch-renderer.mjs",
     "dev": "tsx src/cli.tsx",
     "build": "tsc -p tsconfig.json",
     "bundle": "node scripts/bundle.mjs",
