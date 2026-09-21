@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from collections.abc import Mapping
 import json
+import math
 import os
 import threading
 import time
@@ -40,7 +41,6 @@ from reuleauxcoder.infrastructure.process.buffer import BoundedTextBuffer
 _DEFAULT_RUNTIME_TIMEOUT_SECONDS = 0
 _DEFAULT_INITIAL_YIELD_MS = 5_000
 _DEFAULT_POLL_WAIT_MS = 5_000
-_CONTROL_POLL_SLICE_MS = 50
 _MODEL_OUTPUT_BYTES_PER_STREAM = 64 * 1024
 
 
@@ -64,16 +64,14 @@ def _shell_description(*, local: bool) -> str:
     )
     if not local:
         return (
-            base
-            + "\n\nThe remote peer selects its native shell. Use returned "
+            base + "\n\nThe remote peer selects its native shell. Use returned "
             "stdout, stderr, exit_code, and state to correct any platform or "
             "shell syntax mismatch; rcoder will not rewrite the command."
         )
     shell = get_platform_info().get_preferred_shell()
     if shell is ShellType.POWERSHELL:
         return (
-            base
-            + "\n\nThe local target uses Windows PowerShell 5.1. It does not "
+            base + "\n\nThe local target uses Windows PowerShell 5.1. It does not "
             "support the && operator; express the intended conditional behavior "
             "using PowerShell 5.1 syntax. Rcoder will not rewrite operators."
         )
@@ -290,8 +288,10 @@ class ShellTool(_BoundProcessTool):
         tty: bool = False,
     ) -> ToolOutcome:
         supports = getattr(self.backend, "supports_capability", None)
-        if self._manager is not None and callable(supports) and supports(
-            "process.start"
+        if (
+            self._manager is not None
+            and callable(supports)
+            and supports("process.start")
         ):
             return self._execute_managed(
                 command, timeout, yield_ms, cwd, persist_cwd, tty
@@ -322,9 +322,7 @@ class ShellTool(_BoundProcessTool):
                     code="process_manager_unavailable",
                 )
             return self._execute_legacy(command, timeout, cwd, persist_cwd)
-        return self._execute_managed(
-            command, timeout, yield_ms, cwd, persist_cwd, tty
-        )
+        return self._execute_managed(command, timeout, yield_ms, cwd, persist_cwd, tty)
 
     def _preflight_validate(  # type: ignore[override]
         self,
@@ -348,11 +346,7 @@ class ShellTool(_BoundProcessTool):
                 "cannot be created; the command was not started.",
                 code="process_manager_unavailable",
             )
-        if (
-            cwd is not None
-            and self.backend_id == "local"
-            and not os.path.isdir(cwd)
-        ):
+        if cwd is not None and self.backend_id == "local" and not os.path.isdir(cwd):
             return _boundary_failure(
                 f"Working directory does not exist ({cwd}); the command was not started.",
                 code="cwd_not_found",
@@ -372,9 +366,7 @@ class ShellTool(_BoundProcessTool):
             or ("." if self.backend.backend_id == "remote_relay" else os.getcwd())
         )
 
-    def _persist_cwd_after_start(
-        self, cwd: str | None, persist_cwd: bool
-    ) -> None:
+    def _persist_cwd_after_start(self, cwd: str | None, persist_cwd: bool) -> None:
         if cwd is not None and persist_cwd:
             with self._cwd_lock:
                 self._cwd = cwd
@@ -485,8 +477,7 @@ class ShellTool(_BoundProcessTool):
             if cancellation is not None and cancellation.is_set():
                 wait_ms = 0
             else:
-                remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
-                wait_ms = min(_CONTROL_POLL_SLICE_MS, remaining_ms)
+                wait_ms = max(0, math.ceil((deadline - time.monotonic()) * 1000))
             snapshot = manager.poll(
                 session_id,
                 consumer=self._consumer(),
@@ -494,6 +485,7 @@ class ShellTool(_BoundProcessTool):
                 owner_session_id=owner_session_id,
                 session_generation=generation,
                 wait_ms=wait_ms,
+                cancellation=cancellation,
             )
             stdout.append(snapshot.stdout)
             stderr.append(snapshot.stderr)
@@ -794,9 +786,7 @@ class ShellSessionTool(_BoundProcessTool):
                     agent_id=agent_id,
                     owner_session_id=owner_session_id,
                     generation=generation,
-                    wait_ms=(
-                        _DEFAULT_POLL_WAIT_MS if wait_ms is None else wait_ms
-                    ),
+                    wait_ms=(_DEFAULT_POLL_WAIT_MS if wait_ms is None else wait_ms),
                 )
                 return _outcome_from_snapshot(
                     snapshot,
@@ -962,38 +952,17 @@ class ShellSessionTool(_BoundProcessTool):
         generation: int,
         wait_ms: int,
     ) -> tuple[ProcessSnapshot, bool]:
-        deadline = time.monotonic() + (wait_ms / 1000)
-        snapshot: ProcessSnapshot | None = None
-        while True:
-            cancellation = self.backend.current_cancellation_signal()
-            if cancellation is not None and cancellation.is_set():
-                if snapshot is None:
-                    snapshot = manager.poll(
-                        session_id,
-                        consumer=consumer,
-                        agent_id=agent_id,
-                        owner_session_id=owner_session_id,
-                        session_generation=generation,
-                        wait_ms=0,
-                    )
-                return snapshot, True
-            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
-            slice_ms = min(_CONTROL_POLL_SLICE_MS, remaining_ms)
-            snapshot = manager.poll(
-                session_id,
-                consumer=consumer,
-                agent_id=agent_id,
-                owner_session_id=owner_session_id,
-                session_generation=generation,
-                wait_ms=slice_ms,
-            )
-            if (
-                snapshot.stdout
-                or snapshot.stderr
-                or snapshot.state is not ProcessState.RUNNING
-                or time.monotonic() >= deadline
-            ):
-                return snapshot, False
+        cancellation = self.backend.current_cancellation_signal()
+        snapshot = manager.poll(
+            session_id,
+            consumer=consumer,
+            agent_id=agent_id,
+            owner_session_id=owner_session_id,
+            session_generation=generation,
+            wait_ms=wait_ms,
+            cancellation=cancellation,
+        )
+        return snapshot, cancellation is not None and cancellation.is_set()
 
     @staticmethod
     def _latest_snapshot_after_error(
@@ -1048,8 +1017,7 @@ def _outcome_from_snapshot(
     facts = _snapshot_dict(snapshot)
     if operation_confirmed is None:
         operation_confirmed = (
-            not operation_executed
-            or snapshot.state is not ProcessState.UNKNOWN
+            not operation_executed or snapshot.state is not ProcessState.UNKNOWN
         )
     if call_cancelled:
         status = ToolOutcomeStatus.CANCELLED
@@ -1066,10 +1034,7 @@ def _outcome_from_snapshot(
     elif snapshot.state is ProcessState.UNKNOWN:
         status = ToolOutcomeStatus.FAILED
         error_kind = ToolErrorKind.EXECUTION
-    elif (
-        snapshot.state is ProcessState.EXITED
-        and snapshot.exit_code not in {None, 0}
-    ):
+    elif snapshot.state is ProcessState.EXITED and snapshot.exit_code not in {None, 0}:
         status = ToolOutcomeStatus.FAILED
         error_kind = ToolErrorKind.EXECUTION
     else:
@@ -1096,13 +1061,8 @@ def _outcome_from_snapshot(
     elif snapshot.state is ProcessState.UNKNOWN:
         summary = f"Process {snapshot.session_id} state unknown"
     else:
-        summary = (
-            f"Process {snapshot.session_id} exited"
-            + (
-                f" with code {snapshot.exit_code}"
-                if snapshot.exit_code is not None
-                else ""
-            )
+        summary = f"Process {snapshot.session_id} exited" + (
+            f" with code {snapshot.exit_code}" if snapshot.exit_code is not None else ""
         )
     return ToolOutcome(
         status=status,

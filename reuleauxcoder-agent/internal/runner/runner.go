@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -94,7 +95,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		CWD:            cwd,
 		WorkspaceRoot:  workspaceRoot,
 		Capabilities: []string{
-			"shell", "process.start", "process.input", "process.poll", "process.cancel",
+			"shell", "process.start", "process.input", "process.poll", "process.poll.concurrent", "process.cancel",
 			"process.interrupt", "process.terminate", "process.release",
 			"workspace.fs.stat", "workspace.fs.list", "workspace.fs.read_text",
 			"workspace.fs.snapshot_text",
@@ -222,6 +223,13 @@ func (r *Runner) runPollLoop(
 	pollInterval time.Duration,
 	processManager *processops.Manager,
 ) error {
+	ctx, cancelWaits := context.WithCancel(ctx)
+	var waits sync.WaitGroup
+	waitSlots := make(chan struct{}, 64)
+	defer func() {
+		cancelWaits()
+		waits.Wait()
+	}()
 	retryDelay := 500 * time.Millisecond
 	for {
 		select {
@@ -291,7 +299,23 @@ func (r *Runner) runPollLoop(
 				continue
 			}
 			var result protocol.WorkspaceResult
-			if strings.HasPrefix(workspaceReq.Operation, "process.") {
+			if workspaceReq.Operation == "process.poll" {
+				select {
+				case waitSlots <- struct{}{}:
+					waits.Add(1)
+					go func(requestID string, req protocol.WorkspaceRequest) {
+						defer waits.Done()
+						defer func() { <-waitSlots }()
+						result := processManager.ExecuteContext(ctx, req)
+						if err := r.sendWorkspaceResult(ctx, peerToken, requestID, result); err != nil && ctx.Err() == nil {
+							log.Printf("process poll response failed: %v", err)
+						}
+					}(env.RequestID, workspaceReq)
+					continue
+				default:
+					result = protocol.WorkspaceResult{OK: false, ErrorCode: "capacity", ErrorMessage: "too many pending process polls"}
+				}
+			} else if strings.HasPrefix(workspaceReq.Operation, "process.") {
 				result = processManager.Execute(workspaceReq)
 			} else {
 				result = workspaceops.Execute(workspaceReq, workspaceRoot, cwd)

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 import uuid
 from typing import Any, Callable
+
+from reuleauxcoder.domain.cancellation import CancellationSignal
 
 from reuleauxcoder.extensions.remote_exec.auth import TokenManager
 from reuleauxcoder.extensions.remote_exec.errors import (
@@ -328,6 +331,8 @@ class RelayServer:
         peer_id: str,
         request: WorkspaceRequest,
         timeout_sec: int | None = None,
+        *,
+        cancellation: CancellationSignal | None = None,
     ) -> WorkspaceResult:
         """Send one generic workspace primitive request."""
         if self._loop is None:
@@ -349,11 +354,24 @@ class RelayServer:
             payload=request.to_dict(),
         )
         effective_timeout = timeout_sec or request.timeout_sec
+        if cancellation is not None and cancellation.is_set():
+            raise concurrent.futures.CancelledError()
         future = asyncio.run_coroutine_threadsafe(
             self._send_and_wait(req_id, peer_id, envelope, effective_timeout),
             self._loop,
         )
-        return future.result()
+        if cancellation is None:
+            return future.result()
+        while True:
+            if cancellation.is_set():
+                # Detach this wait; the peer process and its output remain available.
+                future.cancel()
+                raise concurrent.futures.CancelledError()
+            try:
+                return future.result(timeout=0.05)
+            except concurrent.futures.TimeoutError:
+                if future.done():
+                    return future.result()
 
     # ------------------------------------------------------------------
     # Internal: request/response correlation

@@ -814,6 +814,7 @@ class LocalProcessPort:
         *,
         cursor: ProcessCursor | None = None,
         wait_ms: int = 0,
+        cancellation: CancellationSignal | None = None,
     ) -> ProcessSnapshot:
         if wait_ms < 0:
             raise ValueError("wait_ms must be non-negative")
@@ -826,11 +827,14 @@ class LocalProcessPort:
                 and entry.stdout.end_offset <= current.stdout_offset
                 and entry.stderr.end_offset <= current.stderr_offset
                 and wait_ms > 0
+                and not (cancellation is not None and cancellation.is_set())
             ):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                entry.condition.wait(timeout=remaining)
+                entry.condition.wait(
+                    timeout=min(remaining, 0.05) if cancellation is not None else remaining
+                )
         return self._snapshot(entry, current)
 
     def _snapshot(

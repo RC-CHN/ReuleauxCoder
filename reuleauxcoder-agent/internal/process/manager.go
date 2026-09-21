@@ -1,6 +1,7 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -190,11 +191,15 @@ func NewManager(root, defaultCWD string) *Manager {
 }
 
 func (m *Manager) Execute(req protocol.WorkspaceRequest) protocol.WorkspaceResult {
+	return m.ExecuteContext(context.Background(), req)
+}
+
+func (m *Manager) ExecuteContext(ctx context.Context, req protocol.WorkspaceRequest) protocol.WorkspaceResult {
 	switch req.Operation {
 	case "process.start":
 		return m.start(req.Args)
 	case "process.poll":
-		return m.poll(req.Args)
+		return m.poll(ctx, req.Args)
 	case "process.input":
 		return m.input(req.Args)
 	case "process.interrupt":
@@ -434,7 +439,7 @@ func (s *state) terminate(reason string) error {
 	return nil
 }
 
-func (m *Manager) poll(args map[string]any) protocol.WorkspaceResult {
+func (m *Manager) poll(ctx context.Context, args map[string]any) protocol.WorkspaceResult {
 	processID, _ := args["process_id"].(string)
 	processState := m.lookup(processID)
 	if processState == nil {
@@ -449,6 +454,7 @@ func (m *Manager) poll(args map[string]any) protocol.WorkspaceResult {
 		!isDone(processState.done) {
 		timer := time.NewTimer(time.Duration(waitMillis) * time.Millisecond)
 		select {
+		case <-ctx.Done():
 		case <-processState.changed:
 		case <-processState.done:
 		case <-timer.C:

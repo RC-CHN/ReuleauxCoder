@@ -164,6 +164,7 @@ class ProcessPort(Protocol):
         *,
         cursor: ProcessCursor | None = None,
         wait_ms: int = 0,
+        cancellation: CancellationSignal | None = None,
     ) -> ProcessSnapshot: ...
 
     def write_input(self, session_id: str, data: str) -> int: ...

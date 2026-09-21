@@ -20,6 +20,37 @@ def _python_command(source: str) -> str:
     return f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"
 
 
+def test_cancel_long_poll_preserves_running_process_and_later_output(tmp_path):
+    port = LocalProcessPort()
+    cancellation = threading.Event()
+    handle = port.start(
+        _python_command("import time; time.sleep(0.5); print('later'); time.sleep(30)"),
+        cwd=str(tmp_path),
+        runtime_timeout=0,
+    )
+    timer = threading.Timer(0.1, cancellation.set)
+    timer.start()
+    try:
+        started = time.monotonic()
+        snapshot = port.poll(
+            handle.session_id, wait_ms=30_000, cancellation=cancellation
+        )
+        assert time.monotonic() - started < 2
+        assert snapshot.state is ProcessState.RUNNING
+        output = snapshot.stdout
+        deadline = time.monotonic() + 5
+        cancellation.clear()
+        while "later" not in output:
+            assert time.monotonic() < deadline
+            snapshot = port.poll(handle.session_id, cursor=snapshot.cursor, wait_ms=500)
+            output += snapshot.stdout
+        assert output.count("later") == 1
+        assert port.poll(handle.session_id, cursor=snapshot.cursor).stdout == ""
+    finally:
+        timer.join()
+        port.terminate(handle.session_id)
+
+
 def test_timeout_preserves_and_streams_partial_output(tmp_path) -> None:
     chunks = []
     command = f"{shlex.quote(sys.executable)} -u -c " + shlex.quote(
@@ -122,13 +153,9 @@ def test_output_truncation_fact_never_regresses(tmp_path) -> None:
         raise AssertionError("process output did not drain")
 
     first_truncated = next(
-        index
-        for index, snapshot in enumerate(snapshots)
-        if snapshot.output_truncated
+        index for index, snapshot in enumerate(snapshots) if snapshot.output_truncated
     )
-    assert all(
-        snapshot.output_truncated for snapshot in snapshots[first_truncated:]
-    )
+    assert all(snapshot.output_truncated for snapshot in snapshots[first_truncated:])
     assert sum(len(snapshot.stdout) for snapshot in snapshots) == 5000
     port.release(handle.session_id)
 

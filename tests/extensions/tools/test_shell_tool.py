@@ -297,7 +297,9 @@ def test_interrupt_during_initial_wait_keeps_a_visible_controllable_process(tmp_
     session = _bind(ShellSessionTool(backend), manager)
     try:
         result = shell.execute(
-            _python_command("import time; print('still alive', flush=True); time.sleep(30)"),
+            _python_command(
+                "import time; print('still alive', flush=True); time.sleep(30)"
+            ),
             yield_ms=30_000,
         )
         facts = result.metadata["process_snapshot"]
@@ -355,6 +357,37 @@ def test_managed_shell_reports_nonzero_exit_as_process_fact(tmp_path: Path) -> N
     assert '"executed": false' not in result.model_text.lower()
     assert '"executed": true' in result.model_text.lower()
     manager.shutdown()
+
+
+def test_quiet_shell_waits_use_one_port_poll_each(tmp_path, monkeypatch):
+    from reuleauxcoder.infrastructure.process.local import LocalProcessPort
+
+    port = LocalProcessPort()
+    calls = []
+    manager = ProcessManager()
+    original = manager.poll
+
+    def poll(*args, **kwargs):
+        calls.append(kwargs["wait_ms"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "poll", poll)
+    backend = LocalToolBackend(ExecutionContext(cwd=str(tmp_path)), process=port)
+    shell = _bind(ShellTool(backend), manager)
+    session = _bind(ShellSessionTool(backend), manager)
+    try:
+        result = shell.execute(
+            _python_command("import time; time.sleep(30)"), yield_ms=250
+        )
+        assert len(calls) == 1
+        assert calls[0] >= 240
+        calls.clear()
+        session.execute(
+            result.metadata["process_snapshot"]["session_id"], "poll", wait_ms=200
+        )
+        assert calls == [200]
+    finally:
+        manager.shutdown(grace_seconds=0)
 
 
 def test_ambiguous_session_operation_is_attempted_but_not_confirmed() -> None:

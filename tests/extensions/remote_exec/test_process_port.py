@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+import queue
 import threading
 import time
 
@@ -17,7 +19,8 @@ from reuleauxcoder.extensions.remote_exec.backend import (
 )
 from reuleauxcoder.extensions.remote_exec.errors import RemoteTimeoutError
 from reuleauxcoder.extensions.remote_exec.peer_registry import PeerRegistry
-from reuleauxcoder.extensions.remote_exec.protocol import WorkspaceResult
+from reuleauxcoder.extensions.remote_exec.protocol import RelayEnvelope, WorkspaceResult
+from reuleauxcoder.extensions.remote_exec.server import RelayServer
 from reuleauxcoder.extensions.tools.backend import ExecutionContext
 
 
@@ -57,12 +60,112 @@ def _port(responses):
     return RemoteProcessPort(backend), relay
 
 
+def test_cancel_remote_long_poll_detaches_wait_without_losing_output():
+    relay = RelayServer()
+    requests = queue.Queue()
+    relay._send_fn = lambda _peer, envelope: requests.put(envelope)
+    relay.start()
+    peer_id = relay.registry.register(
+        {
+            "protocol_version": 2,
+            "capabilities": [
+                "process.start",
+                "process.poll",
+                "process.poll.concurrent",
+            ],
+        }
+    )
+    port = RemoteProcessPort(
+        RemoteRelayToolBackend(
+            relay, context=ExecutionContext(peer_id=peer_id, cwd="/workspace")
+        )
+    )
+    cancellation = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    def respond(request, data):
+        relay.handle_inbound(
+            peer_id,
+            RelayEnvelope(
+                type="workspace_result",
+                request_id=request.request_id,
+                peer_id=peer_id,
+                payload=WorkspaceResult(ok=True, data=data).to_dict(),
+            ),
+        )
+
+    try:
+        started = executor.submit(
+            port.start, "server", cwd="/workspace", runtime_timeout=0
+        )
+        respond(requests.get(timeout=2), {"process_id": "process"})
+        handle = started.result(timeout=2)
+        waiting = executor.submit(
+            port.poll, handle.session_id, wait_ms=30_000, cancellation=cancellation
+        )
+        abandoned = requests.get(timeout=2)
+        assert abandoned.payload["args"]["wait_ms"] == 30_000
+        with pytest.raises(queue.Empty):
+            requests.get(timeout=0.15)
+        cancellation.set()
+        snapshot = waiting.result(timeout=2)
+        assert snapshot.state is ProcessState.RUNNING
+        assert snapshot.termination_reason is None
+        assert snapshot.cursor == ProcessCursor()
+        deadline = time.monotonic() + 2
+        while relay._pending:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        data = {"stdout": "later", "stdout_offset": 5, "state": "running"}
+        respond(abandoned, data)
+        cancellation.clear()
+        waiting = executor.submit(
+            port.poll,
+            handle.session_id,
+            cursor=snapshot.cursor,
+            wait_ms=500,
+            cancellation=cancellation,
+        )
+        request = requests.get(timeout=2)
+        assert request.payload["args"]["stdout_offset"] == 0
+        respond(request, data)
+        snapshot = waiting.result(timeout=2)
+        assert snapshot.stdout == "later"
+        waiting = executor.submit(port.poll, handle.session_id, cursor=snapshot.cursor)
+        request = requests.get(timeout=2)
+        assert request.payload["args"]["stdout_offset"] == 5
+        respond(request, {"stdout_offset": 5, "state": "running"})
+        assert waiting.result(timeout=2).stdout == ""
+    finally:
+        cancellation.set()
+        relay.stop()
+        executor.shutdown(wait=True)
+
+
 def test_remote_background_start_does_not_send_an_expired_deadline():
     port, relay = _port([WorkspaceResult(ok=True, data={"process_id": "background"})])
     port.start("server", cwd="/workspace", runtime_timeout=0)
     args = relay.requests[0][0].args
     assert args["runtime_timeout_ms"] == 0
     assert args["deadline_unix_ms"] == 0
+
+
+def test_old_peer_keeps_short_requests_during_a_long_wait():
+    port, relay = _port(
+        [
+            WorkspaceResult(ok=True, data={"process_id": "legacy"}),
+            WorkspaceResult(ok=True, data={"state": "running"}),
+            WorkspaceResult(ok=True, data={"state": "running"}),
+            WorkspaceResult(
+                ok=True,
+                data={"state": "running", "stdout": "ready", "stdout_offset": 5},
+            ),
+        ]
+    )
+    handle = port.start("server", cwd="/workspace", runtime_timeout=0)
+    result = port.poll(handle.session_id, wait_ms=1_000)
+    assert result.stdout == "ready"
+    assert [req.args["wait_ms"] for req, _ in relay.requests[1:]] == [50, 50, 50]
 
 
 def test_remote_process_preserves_command_and_retains_terminal_until_release() -> None:

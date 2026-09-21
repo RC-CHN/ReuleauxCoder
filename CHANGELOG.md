@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaced shell's 50 ms remote polling loop with cancellable long waits. Interrupting a wait keeps the process running and preserves unread output for the next poll.
 - Pruned glob traversal to directories that can still match the pattern, in both local workspaces and remote peers.
 - Paged file reads in local and remote workspace adapters, with bounded line retention, a 256 Ki-character page budget and explicit continuation instead of whole-file downloads. Older peers require an upgrade for paged reads; explicit full reads remain available.
 - Reported incomplete directory scans even when filtering leaves no matches, instead of incorrectly claiming that matching files do not exist.

@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
+from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.domain.process import (
     MAX_PROCESS_INPUT_BYTES,
     MAX_PROCESS_SESSION_INPUT_BYTES,
@@ -214,9 +215,7 @@ class ProcessManager:
                 )
             else:
                 self._ports[port_id] = port
-                self._starting_ports[port_id] = (
-                    self._starting_ports.get(port_id, 0) + 1
-                )
+                self._starting_ports[port_id] = self._starting_ports.get(port_id, 0) + 1
                 self._starting += 1
         self._release_expired(expired)
         if capacity_error is not None:
@@ -348,6 +347,7 @@ class ProcessManager:
         owner_session_id: str | None,
         session_generation: int,
         wait_ms: int = 0,
+        cancellation: CancellationSignal | None = None,
         mark_observed: bool = True,
         retain_output_chars: int | None = None,
     ) -> ProcessSnapshot:
@@ -372,6 +372,7 @@ class ProcessManager:
                 session_id,
                 cursor=cursor,
                 wait_ms=wait_ms,
+                **({"cancellation": cancellation} if cancellation is not None else {}),
             )
             with self._lock:
                 current = self._entries.get(session_id)
@@ -734,9 +735,7 @@ class ProcessManager:
                         )
                         entry.last_snapshot = snapshot
                         if snapshot.state is ProcessState.EXITED:
-                            entry.terminal_at = (
-                                entry.terminal_at or time.monotonic()
-                            )
+                            entry.terminal_at = entry.terminal_at or time.monotonic()
             except Exception:
                 return
 
@@ -777,6 +776,7 @@ class ProcessManager:
             for entry in entries
             if entry.last_snapshot.state is ProcessState.UNKNOWN
         ]
+
         def interrupt_entry(entry: _ManagedEntry) -> None:
             try:
                 entry.port.interrupt(entry.handle.session_id)
@@ -794,9 +794,7 @@ class ProcessManager:
             if watcher is not None:
                 watcher.join(timeout=max(0.0, deadline - time.monotonic()))
         remaining = [
-            entry
-            for entry in live
-            if entry.last_snapshot.state is ProcessState.RUNNING
+            entry for entry in live if entry.last_snapshot.state is ProcessState.RUNNING
         ]
         force_targets = [*remaining, *unknown]
 
@@ -818,9 +816,7 @@ class ProcessManager:
                 if self._entries.get(entry.handle.session_id) is entry:
                     entry.last_snapshot = snapshot
                     if snapshot.state is ProcessState.EXITED:
-                        entry.terminal_at = (
-                            entry.terminal_at or time.monotonic()
-                        )
+                        entry.terminal_at = entry.terminal_at or time.monotonic()
             return True
 
         confirmations: tuple[bool, ...] = ()
@@ -845,9 +841,7 @@ class ProcessManager:
         for entry in force_targets:
             watcher = entry.watcher
             if watcher is not None:
-                watcher.join(
-                    timeout=max(0.0, reap_deadline - time.monotonic())
-                )
+                watcher.join(timeout=max(0.0, reap_deadline - time.monotonic()))
                 if watcher.is_alive():
                     reap_timeouts += 1
         remaining_manager_entries_by_port: dict[int, int] = {}
@@ -876,8 +870,7 @@ class ProcessManager:
                 reap_timeouts += report.reap_timeouts
                 extra_sessions = max(
                     0,
-                    report.total
-                    - remaining_manager_entries_by_port.get(id(port), 0),
+                    report.total - remaining_manager_entries_by_port.get(id(port), 0),
                 )
                 orphan_total += extra_sessions
                 orphan_terminated += min(extra_sessions, report.terminated)
@@ -1041,9 +1034,7 @@ class ProcessManager:
                 raise ProcessSessionNotFound(
                     f"process session '{session_id}' is not available in this session"
                 )
-            consumer_lock = entry.consumer_locks.setdefault(
-                consumer, threading.Lock()
-            )
+            consumer_lock = entry.consumer_locks.setdefault(consumer, threading.Lock())
             return (
                 entry,
                 entry.cursors.get(consumer, ProcessCursor()),

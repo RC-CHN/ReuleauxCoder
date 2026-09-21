@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import math
 import threading
 import time
 import uuid
@@ -766,9 +767,42 @@ class RemoteProcessPort:
         *,
         cursor: ProcessCursor | None = None,
         wait_ms: int = 0,
+        cancellation: CancellationSignal | None = None,
+    ) -> ProcessSnapshot:
+        if wait_ms < 0:
+            raise ValueError("wait_ms must be non-negative")
+        entry = self._lookup(session_id)
+        concurrent_poll = self._peer_supports(entry.peer_id, "process.poll.concurrent")
+        deadline = time.monotonic() + wait_ms / 1000
+        while True:
+            remaining = max(0, math.ceil((deadline - time.monotonic()) * 1000))
+            snapshot = self._poll_once(
+                session_id,
+                cursor=cursor,
+                wait_ms=remaining if concurrent_poll else min(50, remaining),
+                cancellation=cancellation,
+            )
+            if (
+                snapshot.stdout
+                or snapshot.stderr
+                or snapshot.state is not ProcessState.RUNNING
+                or time.monotonic() >= deadline
+                or (cancellation is not None and cancellation.is_set())
+            ):
+                return snapshot
+
+    def _poll_once(
+        self,
+        session_id: str,
+        *,
+        cursor: ProcessCursor | None = None,
+        wait_ms: int = 0,
+        cancellation: CancellationSignal | None = None,
     ) -> ProcessSnapshot:
         entry = self._lookup(session_id)
         current = cursor or ProcessCursor()
+        if cancellation is not None and cancellation.is_set():
+            return self._snapshot(entry, current)
         if not entry.start_confirmed:
             try:
                 data = self._request(
@@ -776,6 +810,7 @@ class RemoteProcessPort:
                     "process.start",
                     entry.start_args,
                     timeout_sec=_REMOTE_PROCESS_START_ACK_SECONDS,
+                    cancellation=cancellation,
                 )
                 confirmed_id = str(data.get("process_id", entry.process_id))
                 with entry.lock:
@@ -784,7 +819,11 @@ class RemoteProcessPort:
                     if entry.state is not ProcessState.EXITED:
                         entry.state = ProcessState.RUNNING
                         entry.termination_reason = None
-            except (PeerNotFoundError, RemoteExecError):
+            except (
+                PeerNotFoundError,
+                RemoteExecError,
+                concurrent.futures.CancelledError,
+            ):
                 return self._snapshot(entry, current)
         try:
             data = self._request(
@@ -797,7 +836,10 @@ class RemoteProcessPort:
                     "wait_ms": wait_ms,
                 },
                 timeout_sec=max(1, int(wait_ms / 1000) + 1),
+                cancellation=cancellation,
             )
+        except concurrent.futures.CancelledError:
+            return self._snapshot(entry, current)
         except (PeerNotFoundError, RemoteExecError):
             with entry.lock:
                 if entry.state is not ProcessState.EXITED:
@@ -1101,6 +1143,7 @@ class RemoteProcessPort:
         args: dict[str, Any],
         *,
         timeout_sec: int = _REMOTE_PROCESS_CONTROL_ACK_SECONDS,
+        cancellation: CancellationSignal | None = None,
     ) -> dict[str, Any]:
         result = self.backend.relay_server.send_workspace_request(
             entry.peer_id,
@@ -1111,6 +1154,7 @@ class RemoteProcessPort:
                 timeout_sec=timeout_sec,
             ),
             timeout_sec=timeout_sec,
+            **({"cancellation": cancellation} if cancellation is not None else {}),
         )
         if not result.ok:
             raise RemoteExecError(

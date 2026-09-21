@@ -1,5 +1,14 @@
 # Tool I/O and performance
 
+Shell waits pass the remaining duration to the process adapter in one poll.
+Local condition waits and host-side remote future waits check cancellation every
+50 ms without issuing extra peer RPCs. Cancelling a remote wait only detaches the
+request; it does not terminate the process or advance the output cursor. A later
+poll retrieves output using the same cursor, including output from a late reply.
+Peers advertising `process.poll.concurrent` execute polls separately from command
+dispatch, with at most 64 pending polls and cleanup on disconnect. Older peers
+retain 50 ms poll requests so a waiting process cannot block control commands.
+
 `read_file` applies `offset` and `limit` in the workspace adapter. Local reads
 scan bounded chunks and stop after the requested page plus lookahead. Remote
 reads use the `workspace.fs.read_text_page` capability and return only that page.
