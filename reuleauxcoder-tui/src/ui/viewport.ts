@@ -3,6 +3,7 @@ import stringWidth from 'string-width';
 import {layoutEditor, type Editor} from '../state/editor.js';
 import {safe, wrap} from './format.js';
 import {fit, paint} from './theme.js';
+import type {SelectionViewport} from '../state/scroll.js';
 export {TranscriptLayout} from './transcript.js';
 
 export const line = (text: string, width: number) => sliceAnsi(text, 0, Math.max(1, width));
@@ -27,12 +28,22 @@ export function inputRows(value: Editor, width: number, height: number, active =
   return inputLayout(value, width, height, active, secret).rows;
 }
 
-export function selectionRows(items: {label: string; description?: string | null; current?: boolean}[], index: number, width: number, height: number): string[] {
+export function selectionRows(items: {label: string; description?: string | null; current?: boolean}[], index: number, width: number, height: number, viewport?: SelectionViewport): string[] {
   const perItem = width >= 45 ? 2 : 1;
   const count = Math.max(1, Math.floor(height / perItem));
-  const start = Math.max(0, Math.min(index - count + 1, items.length - count));
+  let offset = Math.max(0, Math.min(index - count + 1, items.length - count)) * perItem;
+  if (viewport) {
+    viewport.height = Math.max(1, height); viewport.total = items.length * perItem; viewport.perItem = perItem;
+    offset = viewport.offset;
+    if (viewport.follow) {
+      if (index * perItem < offset) offset = index * perItem;
+      else if ((index + 1) * perItem > offset + height) offset = (index + 1) * perItem - height;
+    }
+    viewport.offset = offset = Math.max(0, Math.min(offset, viewport.total - viewport.height));
+  }
+  const start = Math.floor(offset / perItem);
   const rows: string[] = [];
-  for (let i = start; i < Math.min(items.length, start + count); i++) {
+  for (let i = start; i < Math.min(items.length, start + Math.ceil(height / perItem) + 1); i++) {
     const item = items[i];
     const title = `${i === index ? '▸' : ' '} ${safe(item.label)}${item.current ? ' ✓' : ''}`;
     rows.push(i === index ? paint.selected(paint.bold(fit(title, width))) : line((item.current ? paint.success : paint.secondary)(title), width));
@@ -42,7 +53,7 @@ export function selectionRows(items: {label: string; description?: string | null
     }
   }
   if (!items.length) rows.push(paint.muted('No matching items'));
-  return rows.slice(0, height);
+  return rows.slice(offset % perItem, offset % perItem + height);
 }
 
 export function statusLine(parts: string[], width: number) {

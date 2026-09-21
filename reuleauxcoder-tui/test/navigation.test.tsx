@@ -9,6 +9,58 @@ import {TuiController} from '../src/state/controller.js';
 import {RuntimeClient} from '../src/protocol/client.js';
 import {RpcPeer} from '../src/protocol/peer.js';
 import {until} from './helpers.js';
+import {panelRows} from '../src/ui/panels.js';
+import {safe} from '../src/ui/format.js';
+
+test('choice prompts scroll without changing the answer or the underlying draft', async t => {
+  const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
+  t.after(() => {c.dispose(); c.client.peer.close();});
+  c.composer = editor('preserved draft');
+  c.client.interactions.push({kind: 'choose_one', request: {request_id: 'choice', title: 'Choose', message: '', allow_cancel: true, items: Array.from({length: 20}, (_, i) => ({id: String(i), label: `Choice ${i}`}))}, expiresAt: null, resolve() {}});
+  const active = c.active!;
+  panelRows(c, 60, 6);
+  c.wheel(12);
+  await until(() => c.selection(active).offset === 12);
+  assert.equal(c.interactionIndex, 0);
+  assert(safe(panelRows(c, 60, 6)!.rows.join('\n')).includes('Choice 6'));
+  await c.key('', {return: true});
+  assert.equal(c.active, active);
+  assert(safe(panelRows(c, 60, 6)!.rows.join('\n')).includes('Choice 0'));
+  assert.equal(c.composer.text, 'preserved draft');
+  assert.equal(c.offset, null);
+  await c.key('', {upArrow: true});
+  assert.equal(c.interactionIndex, 0);
+});
+
+test('list wheel/pages preserve selection and Enter reveals offscreen actions before activating', async t => {
+  const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
+  t.after(() => {c.dispose(); c.client.peer.close();});
+  const selected: number[] = [];
+  c.screens.push({kind: 'list', title: 'Options', index: 0, filter: editor(), items: Array.from({length: 40}, (_, i) => ({label: `Option ${i}`, description: '', select: () => {selected.push(i);}}))});
+  const screen = c.screen!;
+  assert(screen.kind === 'list');
+  const view = () => safe(panelRows(c, 60, 8)!.rows.join('\n'));
+  assert(view().includes('Option 0'));
+  c.wheel(20);
+  await until(() => c.selection(screen).offset === 20);
+  assert(view().includes('Option 10'));
+  assert.equal(screen.index, 0);
+  await c.key('', {return: true});
+  assert.deepEqual(selected, []);
+  assert(view().includes('Option 0'));
+  await c.key('', {return: true});
+  assert.deepEqual(selected, [0]);
+  await c.key('', {upArrow: true});
+  assert.equal(screen.index, 0, 'no wrap at the first item');
+  c.viewportRows = 8;
+  await c.key('', {pageDown: true});
+  await until(() => c.selection(screen).offset === 7);
+  assert.equal(screen.index, 0);
+  await c.key('', {downArrow: true});
+  assert.equal(screen.index, 1);
+  assert(view().includes('Option 1'), 'keyboard selection becomes visible again');
+  assert.equal(c.offset, null, 'panel navigation does not move the transcript');
+});
 
 test('arrows edit multiline drafts and input history restores text, cursor and attachments', async t => {
   const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));

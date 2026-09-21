@@ -4,8 +4,9 @@ import {safe} from './format.js';
 import {inputLayout, selectionRows} from './viewport.js';
 import {keyHint, paint} from './theme.js';
 import {TextLayout} from './text-layout.js';
+import type {SelectionViewport} from '../state/scroll.js';
 
-export function historyRows(browser: HistoryBrowser, width: number, height: number, layout = new TextLayout()): PanelRows {
+export function historyRows(browser: HistoryBrowser, width: number, height: number, layout = new TextLayout(), selection?: SelectionViewport): PanelRows {
   const page = browser.page;
   const progress = page && page.indexed_bytes < page.source_bytes
     ? `Index ${page.indexed_bytes}/${page.source_bytes} bytes${page.awaiting_tail ? ' · awaiting complete record' : ''}` : '';
@@ -28,7 +29,7 @@ export function historyRows(browser: HistoryBrowser, width: number, height: numb
     rows = rows.slice(browser.offset, browser.offset + height - header.length);
   } else {
     const records = page?.records ?? [];
-    rows = selectionRows(records.map(record => ({label: `${record.seq} · ${record.role ?? record.kind}${record.turn_id ? ' · ' + record.turn_id : ''}`, description: record.content.slice(0, 300).replace(/\s+/g, ' ')})), browser.index, width, Math.max(1, height - header.length));
+    rows = selectionRows(records.map(record => ({label: `${record.seq} · ${record.role ?? record.kind}${record.turn_id ? ' · ' + record.turn_id : ''}`, description: record.content.slice(0, 300).replace(/\s+/g, ' ')})), browser.index, width, Math.max(1, height - header.length), selection);
     if (!records.length && !browser.loading) rows = [paint.muted(browser.nextCursor ? 'No matches in this scan. Next page continues searching.' : progress ? 'Refresh when the writer completes the record.' : 'No records in this page.')];
   }
   return {title, rows: [...header, ...rows].slice(0, height), cursor: cursor && cursor.y < height ? cursor : undefined, hint, navigation: `Page ${browser.cursors.length}${browser.nextCursor ? ' · more' : ''}`};

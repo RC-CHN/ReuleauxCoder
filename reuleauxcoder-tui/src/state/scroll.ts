@@ -1,5 +1,7 @@
 import {FRAME_MS} from '../ui/motion.js';
 
+export interface SelectionViewport {offset: number; height: number; total: number; perItem: number; follow: boolean}
+
 /** Retarget a short scroll; wheel bursts accumulate distance, never queued animations. */
 export class ScrollMotion {
   private timer?: ReturnType<typeof setInterval>;

@@ -34,7 +34,7 @@ export function panelRows(c: TuiController, width: number, height: number, layou
     if (kind === 'choose_one' || c.interactionMode === 'scope') {
       const items = kind === 'choose_one' ? request.items : request.grant_options.map((item: any) => ({...item, label: item.label + (item.broad ? ' (broad scope)' : '')}));
       const intro = kind === 'choose_one' ? request.message : 'Allow matching requests for this session:';
-      return {title, rows: [...(intro ? [line(paint.secondary(safe(intro)), width)] : []), ...selectionRows(items, c.interactionIndex, width, height - (intro ? 1 : 0))], hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'confirm'), keyHint('Esc', 'back')]};
+      return {title, rows: [...(intro ? [line(paint.secondary(safe(intro)), width)] : []), ...selectionRows(items, c.interactionIndex, width, height - (intro ? 1 : 0), c.selection(c.active))], hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'confirm'), keyHint('Esc', 'back')]};
     }
     const rows = layout.rows(request, width, () => {
       const context = request.context;
@@ -52,7 +52,7 @@ export function panelRows(c: TuiController, width: number, height: number, layou
     return {title, rows: rows.slice(c.interactionOffset, c.interactionOffset + height), hint, navigation: `PgUp/PgDn ${c.interactionOffset + 1}/${rows.length}`};
   }
   const screen = c.screen;
-  if (screen?.kind === 'history') return historyRows(screen.browser, width, height, layout);
+  if (screen?.kind === 'history') return historyRows(screen.browser, width, height, layout, c.selection(screen.browser));
   if (screen?.kind === 'list') {
     const items = c.listItems(screen);
     screen.index = Math.min(screen.index, Math.max(0, items.length - 1));
@@ -68,14 +68,14 @@ export function panelRows(c: TuiController, width: number, height: number, layou
       screen.contentOffset = offset;
       return {
         title: screen.title,
-        rows: [...content.slice(offset, offset + contentHeight), ...(height > actionHeight ? [paint.border('─'.repeat(width))] : []), ...selectionRows(items, screen.index, width, actionHeight)].slice(0, height),
+        rows: [...content.slice(offset, offset + contentHeight), ...(height > actionHeight ? [paint.border('─'.repeat(width))] : []), ...selectionRows(items, screen.index, width, actionHeight, c.selection(screen))].slice(0, height),
         hint: [keyHint('↑↓', 'action'), keyHint('Enter', 'run'), keyHint('PgUp/PgDn', 'output'), keyHint('Home/End', 'facts / latest'), keyHint('Esc', 'back')],
         navigation: `${offset + 1}/${content.length}`,
       };
     }
     const input = height > 1 && screen.panel?.filterable !== false ? inputLayout(screen.filter, width - 2, 1) : undefined;
     const filter = input?.rows.map(row => '⌕ ' + row + (screen.filter.text ? '' : paint.muted('Filter options…'))) ?? [];
-    return {title: screen.title, rows: [...filter, ...selectionRows(items, screen.index, width, height - filter.length)], cursor: input?.cursor && {...input.cursor, x: input.cursor.x + 2}, hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'open'), keyHint('Esc', 'back')], navigation: `${items.length ? screen.index + 1 : 0}/${items.length}`};
+    return {title: screen.title, rows: [...filter, ...selectionRows(items, screen.index, width, height - filter.length, c.selection(screen))], cursor: input?.cursor && {...input.cursor, x: input.cursor.x + 2}, hint: [keyHint('↑↓', 'select'), keyHint('Enter', 'open'), keyHint('Esc', 'back')], navigation: `${items.length ? screen.index + 1 : 0}/${items.length}`};
   }
   if (screen?.kind === 'document') {
     const rows = layout.rows(screen.body, width, () => safe(screen.body).split('\n').map(row => {
@@ -91,6 +91,6 @@ export function panelRows(c: TuiController, width: number, height: number, layou
     const input = inputLayout(screen.input, width, Math.max(1, height - prefix.length - (screen.error ? 1 : 0)));
     return {title: screen.title, rows: [...prefix, ...input.rows, ...(screen.error ? [line(paint.error(screen.error), width)] : [])].slice(0, height), cursor: input.cursor && {...input.cursor, y: prefix.length + input.cursor.y}, hint: [keyHint('Enter', 'next / submit'), keyHint('Shift+Tab', 'previous field'), keyHint('Esc', 'back')]};
   }
-  if (c.palette.length) return {title: 'Commands', rows: selectionRows(c.palette.map(menu => ({label: menu.name, description: menu.title})), c.paletteIndex % c.palette.length, width, height), hint: [keyHint('↑↓', 'select'), keyHint('Tab', 'complete'), keyHint('Enter', 'open'), keyHint('Esc', 'dismiss')]};
+  if (c.palette.length) return {title: 'Commands', rows: selectionRows(c.palette.map(menu => ({label: menu.name, description: menu.title})), c.paletteIndex % c.palette.length, width, height, c.selection(c)), hint: [keyHint('↑↓', 'select'), keyHint('Tab', 'complete'), keyHint('Enter', 'open'), keyHint('Esc', 'dismiss')]};
   return null;
 }

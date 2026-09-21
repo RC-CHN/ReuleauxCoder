@@ -10,7 +10,7 @@ import {InputHistory} from './history.js';
 import {HistoryBrowser} from './history-browser.js';
 import type {HistoryOperation} from '../protocol/history.js';
 import {fields} from '../ui/format.js';
-import {ScrollMotion} from './scroll.js';
+import {ScrollMotion, type SelectionViewport} from './scroll.js';
 import {editImageDraft, pastedImagePath, replaceSpan, type DraftImage} from './images.js';
 
 export interface Item {label: string; description: string; current?: boolean; id?: string | null; select(): void | Promise<void>}
@@ -54,6 +54,17 @@ export class TuiController extends EventEmitter {
   private historyDraft?: {composer: Editor; images: DraftImage[]; imageNumber: number};
   private refreshTimer?: NodeJS.Timeout;
   private scroll = new ScrollMotion(() => {this.revision++; this.flush();});
+  private selectionWindows = new WeakMap<object, SelectionViewport>();
+  selection(scope: object): SelectionViewport {
+    let window = this.selectionWindows.get(scope);
+    if (!window) {window = {offset: 0, height: 1, total: 0, perItem: 1, follow: true}; this.selectionWindows.set(scope, window);}
+    return window;
+  }
+  private revealSelection(scope: object, index: number): boolean {
+    const window = this.selection(scope);
+    window.follow = true;
+    return !window.total || index * window.perItem < window.offset + window.height && (index + 1) * window.perItem > window.offset;
+  }
 
   constructor(readonly client: RuntimeClient, readonly history = new InputHistory()) {
     super();
@@ -183,6 +194,7 @@ export class TuiController extends EventEmitter {
         replacement.contentOffset = previous.contentOffset === previous.contentEnd ? null : previous.contentOffset;
         const selected = this.listItems(previous)[previous.index];
         replacement.index = Math.max(0, this.listItems(replacement).findIndex(item => (item.id ?? item.label) === (selected?.id ?? selected?.label)));
+        this.selectionWindows.set(replacement, {...this.selection(previous)});
         this.screens[i] = replacement;
       }
       this.changed(); return;
@@ -258,8 +270,12 @@ export class TuiController extends EventEmitter {
     }
     const choices = kind === 'choose_one' ? request.items : this.interactionMode === 'scope' ? request.grant_options : [];
     if (choices.length) {
-      if (key.upArrow || key.downArrow) this.interactionIndex = (this.interactionIndex + (key.upArrow ? -1 : 1) + choices.length) % choices.length;
+      if (key.upArrow || key.downArrow) {
+        this.selection(this.active!).follow = true;
+        this.interactionIndex = Math.max(0, Math.min(choices.length - 1, this.interactionIndex + (key.upArrow ? -1 : 1)));
+      }
       const numeric = /^[1-9]$/.test(input) ? Number(input) - 1 : -1;
+      if (key.return && !this.revealSelection(this.active!, this.interactionIndex)) return;
       if (key.return || numeric >= 0 && numeric < choices.length) {
         const chosen = choices[numeric >= 0 ? numeric : this.interactionIndex];
         this.answer(kind === 'choose_one' ? record('ChooseOneResponse', {selected_id: chosen.id}) : record('ReviewResponse', {approved: true, action: 'allow_session', selected_id: chosen.id}));
@@ -310,6 +326,11 @@ export class TuiController extends EventEmitter {
   async key(input: string, key: Partial<Key> = {}) {
     if (this.closing) return;
     if (!(key.upArrow || key.downArrow || key.pageUp || key.pageDown)) this.scroll.cancel();
+    if (key.ctrl && (key.home || key.end)) {
+      if (!this.active && !this.screen && !this.palette.length) this.offset = key.home ? 0 : null;
+      else this.scrollBy(key.home ? -Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
+      this.changed(); return;
+    }
     if (!this.active && this.screen?.kind === 'history' && !(key.ctrl && ['c', 'd', 'o', 'r', 'g'].includes(input))) {
       const browser = this.screen.browser;
       if (key.escape) {
@@ -326,19 +347,16 @@ export class TuiController extends EventEmitter {
       else if (input === 'p' || key.leftArrow) void browser.previous();
       else if (input === 'r') void browser.load();
       else if (input === 'm' && !browser.detailed) this.showHistory('read', {reverse: true, messages_only: browser.parameters.messages_only === false});
-      else if (key.return && browser.current && !browser.detailed) this.showHistory('read', {event_id: browser.current.event_id});
+      else if (key.return && browser.current && !browser.detailed) {if (this.revealSelection(browser, browser.index)) this.showHistory('read', {event_id: browser.current.event_id});}
       else if (input === 'a' && browser.current?.artifact_refs.length) {
         this.screens.push(this.list('History artifacts', browser.current.artifact_refs.map(artifact_ref => ({label: artifact_ref, description: 'Read archived content', select: () => this.showHistory('artifact', {artifact_ref, session_id: browser.page!.session_id})}))));
       } else if (key.upArrow || key.downArrow) {
         if (browser.detailed) {this.scrollBy(key.upArrow ? -1 : 1); return;}
-        else browser.index = Math.max(0, Math.min((browser.page?.records.length ?? 1) - 1, browser.index + (key.upArrow ? -1 : 1)));
+        else {this.selection(browser).follow = true; browser.index = Math.max(0, Math.min((browser.page?.records.length ?? 1) - 1, browser.index + (key.upArrow ? -1 : 1)));}
       } else if (key.pageUp || key.pageDown) {
-        const delta = (key.pageUp ? -1 : 1) * this.viewportRows;
-        if (browser.detailed) {this.scrollBy(delta); return;}
-        else browser.index = Math.max(0, Math.min((browser.page?.records.length ?? 1) - 1, browser.index + Math.trunc(delta / 2)));
+        this.scrollBy((key.pageUp ? -1 : 1) * Math.max(1, this.viewportRows - 1)); return;
       }
-      else if (key.home) browser.offset = 0;
-      else if (key.end) browser.offset = Number.MAX_SAFE_INTEGER;
+      else if (key.home || key.end) {this.scrollBy(key.home ? -Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER); return;}
       this.changed(); return;
     }
     if (key.ctrl && input === 'c') {
@@ -359,12 +377,8 @@ export class TuiController extends EventEmitter {
     if (input === 'OP' || input === '\x1bOP' || key.ctrl && input === 'g') {this.showHelp(); return;}
     if (key.pageUp || key.pageDown) {
       const delta = (key.pageUp ? -1 : 1) * Math.max(1, this.viewportRows - 1);
-      if (!this.active && this.screen?.kind === 'list') {
-        if (this.screen.panel?.body) this.screen.contentOffset = Math.max(0, (this.screen.contentOffset ?? 0) + (key.pageUp ? -1 : 1) * Math.max(1, (this.screen.contentHeight ?? 1) - 1));
-        else this.screen.index = Math.max(0, Math.min(this.listItems(this.screen).length - 1, this.screen.index + delta));
-      }
-      else {this.scrollBy(delta); return;}
-      this.changed(); return;
+      const rows = this.screen?.kind === 'list' && this.screen.panel?.body ? (key.pageUp ? -1 : 1) * Math.max(1, (this.screen.contentHeight ?? 1) - 1) : delta;
+      this.scrollBy(rows); return;
     }
     if (this.active) {this.interactionKey(input, key); this.changed(); return;}
     if (key.escape) {
@@ -378,10 +392,10 @@ export class TuiController extends EventEmitter {
       if (screen.kind === 'document' && screen.title === 'Session details' && input === 'h' && this.client.info.history_query) {this.showHistory(); return;}
       if (screen.kind === 'list') {
         const items = this.listItems(screen);
-        if (key.upArrow || key.downArrow) screen.index = items.length ? (screen.index + (key.upArrow ? -1 : 1) + items.length) % items.length : 0;
-        else if (key.return) await items[screen.index]?.select();
+        if (key.upArrow || key.downArrow) {this.selection(screen).follow = true; screen.index = Math.max(0, Math.min(items.length - 1, screen.index + (key.upArrow ? -1 : 1)));}
+        else if (key.return) {if (this.revealSelection(screen, screen.index)) await items[screen.index]?.select();}
         else if (screen.panel?.body && (key.home || key.end)) screen.contentOffset = key.home ? 0 : null;
-        else if (screen.panel?.filterable !== false) {screen.filter = edit(screen.filter, input, key); screen.index = 0;}
+        else if (screen.panel?.filterable !== false) {screen.filter = edit(screen.filter, input, key); screen.index = 0; this.selection(screen).follow = true;}
       } else if (screen.kind === 'document') {
         if (key.tab && screen.menu) this.screens.push(this.list(screen.menu.title, this.actionItems(screen.menu), screen.menu));
         else if (key.upArrow || key.downArrow) {this.scrollBy(key.upArrow ? -1 : 1); return;}
@@ -402,9 +416,9 @@ export class TuiController extends EventEmitter {
     if (key.ctrl && input === 'p') {this.screens.push(this.list('Commands', this.menus.map(menu => ({label: menu.name, description: menu.title, select: () => this.openMenu(menu)})))); this.changed(); return;}
     if (this.palette.length && (key.upArrow || key.downArrow || key.tab || key.return)) {
       const menus = this.palette;
-      if (key.upArrow || key.downArrow) this.paletteIndex = (this.paletteIndex + (key.upArrow ? -1 : 1) + menus.length) % menus.length;
+      if (key.upArrow || key.downArrow) {this.selection(this).follow = true; this.paletteIndex = Math.max(0, Math.min(menus.length - 1, this.paletteIndex + (key.upArrow ? -1 : 1)));}
       else if (key.tab) this.composer = editor(menus[this.paletteIndex % menus.length].name);
-      else {const menu = menus[this.paletteIndex % menus.length]; this.composer = editor(); await this.openMenu(menu);}
+      else if (this.revealSelection(this, this.paletteIndex)) {const menu = menus[this.paletteIndex % menus.length]; this.composer = editor(); await this.openMenu(menu);}
       this.changed(); return;
     }
     if (key.return && !key.shift && !key.meta) {
@@ -439,13 +453,13 @@ export class TuiController extends EventEmitter {
         if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); if (this.images === images) {this.images = []; this.imageNumber = 0;} this.leaveInputHistory(); this.offset = null; if (text) await this.history.add(text);}
         else this.status = 'The backend is stopping. Your draft is still here.';
       }
-    } else if (key.ctrl && (key.home || key.end)) this.offset = key.home ? 0 : null;
-    else if ((key.upArrow || key.downArrow) && (key.meta || this.historyIndex !== null || !this.composer.text && !this.images.length)) {
+    } else if ((key.upArrow || key.downArrow) && (key.meta || this.historyIndex !== null || !this.composer.text && !this.images.length)) {
       this.recallInput(key.upArrow ? -1 : 1);
     } else {
       this.leaveInputHistory();
       this.composer = editImageDraft(this.composer, key.return ? '\n' : input, key.return ? {} : key, this.images, this.composerWidth);
       this.paletteDismissed = false; this.paletteIndex = 0; this.exitConfirm = false;
+      this.selection(this).follow = true;
     }
     this.images = this.images.filter(item => this.composer.text.includes(item.label));
     this.changed();
@@ -490,6 +504,21 @@ export class TuiController extends EventEmitter {
 
   private scrollBy(delta: number) {
     const active = this.active, screen = this.screen, cells = this.session.cells;
+    if (active && (active.kind === 'input_text' || this.interactionMode === 'feedback') || !active && screen?.kind === 'form') return;
+    const scope = active && (active.kind === 'choose_one' || this.interactionMode === 'scope') ? active
+      : !active && screen?.kind === 'list' && !screen.panel?.body ? screen
+      : !active && screen?.kind === 'history' && !screen.browser.detailed ? screen.browser
+      : !active && !screen && this.palette.length ? this : undefined;
+    if (scope) {
+      const viewport = this.selection(scope);
+      viewport.follow = false;
+      this.scroll.move(scope, delta, () => viewport.offset, row => {viewport.offset = row;}, () => this.active === active && this.screen === screen, Math.max(0, viewport.total - viewport.height));
+      return;
+    }
+    if (!active && screen?.kind === 'list') {
+      this.scroll.move(screen, delta, () => screen.contentOffset ?? screen.contentEnd ?? 0, row => {screen.contentOffset = row;}, () => !this.active && this.screen === screen, screen.contentEnd ?? 0);
+      return;
+    }
     if (active) {
       this.scroll.move(active, delta, () => this.interactionOffset, row => {this.interactionOffset = row;}, () => this.active === active);
     } else if (screen?.kind === 'document' || screen?.kind === 'history' && screen.browser.detailed) {
@@ -503,16 +532,6 @@ export class TuiController extends EventEmitter {
 
   wheel(delta: number) {
     if (this.closing) return;
-    if (this.active && (this.active.kind === 'input_text' || this.active.kind === 'choose_one' || this.interactionMode !== 'review')) return;
-    if (this.screen?.kind === 'form' || this.palette.length) return;
-    if (this.screen?.kind === 'list') {
-      if (this.screen.panel?.body) {
-        this.screen.contentOffset = Math.max(0, Math.min(this.screen.contentEnd ?? Infinity, (this.screen.contentOffset ?? this.screen.contentEnd ?? 0) + delta));
-        this.changed();
-      }
-      return;
-    }
-    if (this.screen?.kind === 'history' && !this.screen.browser.detailed) return;
     this.scrollBy(delta);
   }
 }
