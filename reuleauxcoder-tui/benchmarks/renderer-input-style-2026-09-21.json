@@ -1,0 +1,77 @@
+{
+  "label": "equal-style-fast-path",
+  "node": "v24.16.0",
+  "node_env": "production",
+  "platform": "linux",
+  "cpu": "Intel(R) Xeon(R) CPU Max 9470C",
+  "terminal": {
+    "columns": 160,
+    "rows": 40
+  },
+  "render_limit_fps": 120,
+  "scope": "Raw stdin through Ink to newly visible text in a synthetic terminal sink; excludes terminal emulator, GPU and SSH latency.",
+  "results": [
+    {
+      "name": "raw-wheel-to-content-frame",
+      "samples": 40,
+      "p50_ms": 18.77,
+      "p95_ms": 36.04,
+      "max_ms": 54.86,
+      "ink_render_p95_ms": 30.09,
+      "render_count": 40,
+      "cpu_percent_one_core": 92.39,
+      "output_kib": 235.08
+    },
+    {
+      "name": "raw-arrows-to-content-frame",
+      "samples": 40,
+      "p50_ms": 18.04,
+      "p95_ms": 22.72,
+      "max_ms": 27.5,
+      "ink_render_p95_ms": 18.37,
+      "render_count": 40,
+      "cpu_percent_one_core": 60.05,
+      "output_kib": 235.08
+    },
+    {
+      "name": "raw-typing-to-content-frame",
+      "samples": 40,
+      "p50_ms": 17.51,
+      "p95_ms": 20.37,
+      "max_ms": 23.78,
+      "ink_render_p95_ms": 16.66,
+      "render_count": 40,
+      "cpu_percent_one_core": 60.03,
+      "output_kib": 17.27
+    },
+    {
+      "name": "raw-wheel-busy-to-content-frame",
+      "samples": 40,
+      "p50_ms": 19.37,
+      "p95_ms": 29.43,
+      "max_ms": 32.3,
+      "ink_render_p95_ms": 13.78,
+      "render_count": 86,
+      "cpu_percent_one_core": 97,
+      "output_kib": 328.6
+    },
+    {
+      "name": "raw-typing-busy-to-content-frame",
+      "samples": 40,
+      "p50_ms": 18.66,
+      "p95_ms": 28.52,
+      "max_ms": 33.78,
+      "ink_render_p95_ms": 13.68,
+      "render_count": 87,
+      "cpu_percent_one_core": 94.69,
+      "output_kib": 117.3
+    },
+    {
+      "name": "500-line-unicode-cursor-and-layout",
+      "samples": 1000,
+      "p50_ms": 0,
+      "p95_ms": 0.01,
+      "max_ms": 0.19
+    }
+  ]
+}

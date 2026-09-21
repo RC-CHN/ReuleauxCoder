@@ -102,7 +102,7 @@ All recorded JSONs include additional render, CPU and output measurements:
 - [Raw first cache run](../reuleauxcoder-tui/benchmarks/navigation-raw-cache-first-2026-09-21.json)
 - [Raw final repeat](../reuleauxcoder-tui/benchmarks/navigation-raw-after-2026-09-21.json)
 
-## Remaining rendering work
+## Rendering follow-up
 
 A Node CPU profile of the raw-input benchmark showed ANSI tokenization, style
 diffing/serialization, Unicode width checks and garbage collection as the main
@@ -111,20 +111,11 @@ memoizing React rows does not eliminate that work. The shipped bundle already
 uses React production mode; switching the benchmark to production is a measurement
 correction, not a new application optimization.
 
-Animation timing remains unchanged. Further optimization should target redundant
-rendering work, rather than reduce or suppress animation:
-
-- Ink creates new output caches for every frame. Bounded reuse of parsed ANSI
-  rows and Unicode widths across frames could avoid reprocessing unchanged rows.
-- ANSI serialization computes style differences between every adjacent pair of
-  characters. Equal styles could bypass set allocation and diff construction.
-- Composed output rows could be reused when neither their contents nor placement
-  changes. This is a larger renderer change because clipping, overlapping writes
-  and wide characters must remain correct.
-
-These are profile-based candidates, not implemented optimizations or measured
-speedup claims. They touch the pinned Ink/ANSI renderer boundary and need output
-equivalence, Unicode, clipping, resize and cursor regressions before adoption.
+The three candidates are now implemented without changing animation timing:
+bounded cross-frame ANSI/width caches, equal-style serialization shortcuts and
+unchanged composed-row reuse. See [renderer measurements](tui-rendering-performance.md)
+for the production-mode comparison and [adapter notes](../reuleauxcoder-tui/renderer/README.md)
+for version guards, cache bounds and upstream byte-equivalence tests.
 
 The raw benchmark now also verifies newly exposed wheel content and newly typed
 text while the busy indicators animate. An unrelated spinner frame cannot satisfy

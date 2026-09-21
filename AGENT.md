@@ -9,6 +9,7 @@ This file describes the current repository, not a future design. Detailed design
 - Launcher: `rcoder` auto-selects the bundled TUI when Node >=22 and a terminal are available; `rcoder-tui` requires it explicitly. Batch/backend modes use CLI. Wheel and sdist releases contain the standalone JS bundle; runtime installation needs no npm.
 - Independent TUI: `reuleauxcoder-tui/` is a React + Ink frontend over stdio JSON-RPC, with top-level slash menus, backend-owned command panels and a persistent composer. Launch it with `node reuleauxcoder-tui/dist/cli.js` after building.
 - TUI navigation: wheel reports scroll independently of draft/history and menu selection; arrows edit visual input lines or select menu items. Reading stays paused through new output and resize until explicitly resumed. Key rules and reproducible responsiveness measurements: `docs/tui-navigation.md`.
+- TUI rendering: a version/hash-checked Ink adapter reuses bounded parsing/width caches and composed rows, with equal-style ANSI fast paths. Animation timing is unchanged; `reuleauxcoder-tui/renderer/README.md` describes installation and upgrade checks, and `docs/tui-rendering-performance.md` records measurements.
 - Remote peer: `reuleauxcoder-agent/`, a CLI-only Go peer.
 - Runtime supports sessions, approvals, hooks/extensions, skills, MCP, subagents, LSP, local/remote tools, streaming output, and context compression.
 
