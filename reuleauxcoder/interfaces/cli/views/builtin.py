@@ -27,6 +27,7 @@ from reuleauxcoder.app.commands.view_models import (
     TokenUsageViewModel,
 )
 from reuleauxcoder.extensions.mcp.models import MCPServersView
+from reuleauxcoder.app.commands.shell_views import ShellsView
 from reuleauxcoder.app.ui_events import ViewEventPayload
 from reuleauxcoder.presentation.policy import fold_text
 from reuleauxcoder.presentation.semantics import DisplayTone
@@ -276,6 +277,43 @@ def render_model_profiles_view(renderer, event) -> bool:
         "Switch main: /model <profile> · Switch subagent: /model use-sub <profile>",
         DisplayTone.MUTED,
     )
+    return True
+
+
+def render_shells_view(renderer, event) -> bool:
+    model = _view_model(event)
+    if not isinstance(model, ShellsView):
+        return False
+    stop_stream_and_clear(renderer)
+    table = make_table(renderer, title="Execution Shell", box=None, pad_edge=False)
+    for title in ("Shell", "Path", "Environment", "Selection ID"):
+        table.add_column(title)
+    for option in model.catalog.options:
+        active = model.current is not None and model.current.id == option.id
+        table.add_row(
+            Text(option.name + (" *" if active else "")),
+            Text(option.path),
+            Text(option.environment),
+            Text(option.id),
+        )
+    for distro in model.catalog.distributions:
+        table.add_row(
+            Text(f"WSL / {distro.name}"),
+            Text(distro.launcher),
+            "WSL",
+            Text(f"/shell wsl {distro.name}"),
+        )
+    renderer.console.print(table)
+    renderer.console.print(
+        Text(f"Current: {model.current.summary if model.current else 'unavailable'}")
+    )
+    renderer.console.print(
+        Text(
+            "/shell use <id|name|path> · /shell auto · New commands only; this runtime"
+        )
+    )
+    for diagnostic in model.catalog.diagnostics:
+        renderer.console.print(Text(diagnostic))
     return True
 
 
@@ -573,6 +611,7 @@ def builtin_cli_view_specs() -> list[ViewRendererSpec]:
                 view_type="model_profiles", render=render_model_profiles_view
             ),
             ViewRendererSpec(view_type="mode_profiles", render=render_modes_view),
+            ViewRendererSpec(view_type="shells", render=render_shells_view),
             ViewRendererSpec(
                 view_type="thinking_effort", render=render_thinking_effort_view
             ),

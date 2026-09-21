@@ -69,6 +69,17 @@ def test_system_prompt_no_longer_contains_runtime_environment_block() -> None:
     assert "- Shell: " not in prompt
 
 
+def test_runtime_environment_tracks_the_selected_execution_shell() -> None:
+    agent = _AgentStub()
+    tool = _Tool("shell", "Run commands")
+    tool.shell_environment = "Fish / WSL Ubuntu / /usr/bin/fish"
+    agent.get_active_tools = lambda: [tool]
+    loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")
+    assert tool.shell_environment in loop._full_messages()[-1]["content"]
+    tool.shell_environment = "PowerShell / Windows / C:/pwsh.exe"
+    assert tool.shell_environment in loop._full_messages()[-1]["content"]
+
+
 def test_agent_loop_appends_ephemeral_runtime_context_at_tail() -> None:
     agent = _AgentStub()
     loop = AgentLoop(agent, prompt_fn=system_prompt, shell_name="bash")

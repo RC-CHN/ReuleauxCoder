@@ -46,6 +46,10 @@ from reuleauxcoder.extensions.command.builtin.skills import (
     command_panel_spec as skills_panel_spec,
     register_actions as register_skill_actions,
 )
+from reuleauxcoder.extensions.command.builtin.shell import (
+    command_panel_spec as shell_panel_spec,
+    register_actions as register_shell_actions,
+)
 from reuleauxcoder.extensions.command.builtin.subagent_jobs import (
     command_panel_spec as subagent_jobs_panel_spec,
     register_actions as register_subagent_job_actions,
@@ -78,6 +82,7 @@ _BUILTIN_COMMAND_FEATURES = (
     _CommandFeature(register_process_actions, processes_panel_spec()),
     _CommandFeature(register_session_actions, sessions_panel_spec()),
     _CommandFeature(register_skill_actions, skills_panel_spec()),
+    _CommandFeature(register_shell_actions, shell_panel_spec()),
     _CommandFeature(register_subagent_job_actions, subagent_jobs_panel_spec()),
     _CommandFeature(register_system_actions),
     _CommandFeature(register_compact_actions, compact_panel_spec()),

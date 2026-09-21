@@ -31,6 +31,7 @@ from reuleauxcoder.domain.process import (
 )
 from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.infrastructure.platform import get_platform_info
+from reuleauxcoder.infrastructure.shells import LocalShellSelection, shell_argv
 from reuleauxcoder.infrastructure.process.buffer import BoundedTextBuffer
 
 
@@ -410,6 +411,7 @@ class LocalProcessPort:
         self._starting: dict[str, _LocalStartReservation] = {}
         self._lock = threading.RLock()
         self._closing = False
+        self.shells = LocalShellSelection()
 
     def start(
         self,
@@ -470,17 +472,22 @@ class LocalProcessPort:
         result_handle: ProcessHandle | None = None
         start_error: BaseException | None = None
         try:
-            invocation = get_platform_info().resolve_shell_invocation(command, tty=tty)
+            selected_shell = self.shells.selected
+            argv = (
+                shell_argv(selected_shell, command, cwd=cwd, tty=tty)
+                if selected_shell is not None
+                else get_platform_info().resolve_shell_invocation(command, tty=tty).argv
+            )
             session_id = f"proc_{uuid.uuid4().hex}"
             if tty:
                 process, pty_transport = self._spawn_pty(
-                    invocation.argv,
+                    argv,
                     cwd=cwd,
                     env=env,
                 )
                 mode = ProcessStreamMode.PTY
             else:
-                process = self._spawn_pipe(invocation.argv, cwd=cwd, env=env)
+                process = self._spawn_pipe(argv, cwd=cwd, env=env)
                 pty_transport = None
                 mode = ProcessStreamMode.PIPE
 

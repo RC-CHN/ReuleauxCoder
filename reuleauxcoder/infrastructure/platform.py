@@ -62,6 +62,11 @@ class PlatformInfo:
         )
         for executable, shell_type in candidates:
             path = shutil.which(executable)
+            if path and self.is_windows and executable == "bash":
+                # The System32 launcher is deprecated WSL interop, not Git Bash.
+                normalized = path.replace("\\", "/").lower()
+                if normalized.endswith(("/system32/bash.exe", "/sysnative/bash.exe")):
+                    continue
             if path is not None:
                 self._shell = shell_type
                 self._shell_path = path

@@ -23,6 +23,23 @@ test('unchanged RPC refreshes preserve state identity and do not notify the UI',
   await until(() => !client.state.running);
 });
 
+test('shell picker shows executable paths and dispatches selection through the real backend', async t => {
+  const b = await backend(); t.after(() => b.close());
+  const {client, controller: c} = b;
+  await client.submitAction('shell.list');
+  await until(() => c.screen?.kind === 'list' && c.screen.panel?.view_type === 'shells');
+  assert(c.screen?.kind === 'list');
+  const item = c.screen.panel!.items.find(item => item.action?.action_id === 'shell.select' && item.action.command.selector !== 'auto');
+  assert(item, 'fixture host has an executable shell');
+  assert(item.description.includes('/') || item.description.includes('\\'));
+  await client.submitAction(item.action!.action_id, item.action!.command);
+  await client.submitAction('shell.list');
+  await until(() => c.screen?.kind === 'list' && c.screen.panel!.items.some(row => row.current && row.label === item.label));
+  await client.submitAction('shell.select', {selector: 'auto'});
+  await client.submitAction('shell.list');
+  await until(() => c.screen?.kind === 'list' && c.screen.panel!.items[0].current);
+});
+
 test('Python catalog drives every command menu and typed parameter form', async t => {
   const b = await backend(); t.after(() => b.close());
   const {client, controller: c} = b;

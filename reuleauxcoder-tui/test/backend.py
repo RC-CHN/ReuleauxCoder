@@ -45,6 +45,7 @@ from reuleauxcoder.domain.runtime.events import (
     ToolOutputDelta,
 )
 from reuleauxcoder.infrastructure.process.local import LocalProcessPort
+from reuleauxcoder.extensions.tools.builtin.shell import ShellTool
 from reuleauxcoder.infrastructure.rpc.peer import RpcPeer
 from reuleauxcoder.infrastructure.rpc.transport import StreamTransport
 from reuleauxcoder.interfaces.entrypoint.rpc import create_server
@@ -62,7 +63,7 @@ config = Config(
     api_key="test", session_auto_save=True, history_file=str(Path.cwd() / "history")
 )
 loop = SimpleNamespace()
-agent = Agent(FakeLLM(), tools=[], config=config, loop=loop)
+agent = Agent(FakeLLM(), tools=[ShellTool()], config=config, loop=loop)
 agent.current_session_id = "test-session"
 agent.process_manager = ProcessManager()
 bus = UIEventBus()

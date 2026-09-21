@@ -118,6 +118,16 @@ class LocalToolBackend(ToolBackend):
 
     backend_id = "local"
 
+    def clone_for_scope(self, scope: str) -> "ToolBackend":
+        cloned = super().clone_for_scope(scope)
+        if isinstance(self.process, LocalProcessPort) and isinstance(
+            cloned.process, LocalProcessPort
+        ):
+            from reuleauxcoder.infrastructure.shells import LocalShellSelection
+
+            cloned.process.shells = LocalShellSelection(self.process.shells.selected)
+        return cloned
+
     def __init__(
         self,
         context: ExecutionContext | None = None,

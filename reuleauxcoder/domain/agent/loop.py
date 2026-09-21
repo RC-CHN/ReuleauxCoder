@@ -408,7 +408,14 @@ class AgentLoop:
                 "working_directory": runtime_cwd,
                 "os": f"{uname.system} {uname.release} ({uname.machine})",
                 "python": platform.python_version(),
-                "shell": self._shell,
+                "shell": next(
+                    (
+                        getattr(tool, "shell_environment", self._shell)
+                        for tool in self.agent.get_active_tools()
+                        if tool.name == "shell"
+                    ),
+                    self._shell,
+                ),
                 "directory": directory,
                 "notes": notes_text,
             },

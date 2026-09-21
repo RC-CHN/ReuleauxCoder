@@ -16,6 +16,7 @@ from reuleauxcoder.app.commands import (
     capabilities,
     panels,
     process_views,
+    shell_views,
     requests,
     specs,
     view_models,
@@ -27,6 +28,7 @@ from reuleauxcoder.domain import (
     history_query,
     images,
     plan,
+    shell,
     version_control,
 )
 from reuleauxcoder.domain.agent import tool_outcome
@@ -41,6 +43,7 @@ _MODULES = (
     approval_views,
     capabilities,
     process_views,
+    shell_views,
     requests,
     view_models,
     models,
@@ -49,6 +52,7 @@ _MODULES = (
     version_control,
     events,
     plan,
+    shell,
     goal,
     mcp_models,
     skill_models,

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added `/shell` selection with executable names, paths and environment labels, including lazy discovery of shells inside a chosen Windows WSL distribution. New processes and model shell guidance follow the selection; existing processes stay unchanged, scoped children inherit an isolated preference, and `/shell auto` restores automatic selection.
 - Reused unchanged composed terminal rows across frames, keyed by width and ordered clipped/transformed writes, avoiding repeated cell-grid construction and serialization without changing animation timing.
 - Skipped ANSI style-difference allocation for adjacent characters with identical styles, preserving upstream transitions and closing sequences byte for byte.
 - Reused bounded ANSI parsing and Unicode width caches across Ink frames, scoped to each terminal root. A version/hash-checked adapter keeps source runs and release bundles consistent, with byte-for-byte upstream renderer regression tests.

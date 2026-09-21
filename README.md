@@ -183,6 +183,10 @@ All LSP operations are read-only and do **not** require approval.
 /model set-sub <profile>   Persist the global subagent profile
 /mode              Show available modes
 /mode switch <n>   Switch the current session mode
+/shell             Choose an execution shell by name, path and environment
+/shell wsl <distribution>  Discover shells inside a Windows WSL distribution
+/shell use <id|name|path>   Choose a discovered shell
+/shell auto        Restore automatic shell selection
 /skills            Show discovered skills
 /skills reload     Reload skills from disk
 /skills enable <n>   Enable one skill
@@ -228,6 +232,7 @@ known command if within edit distance ≤ 2.
 - `/reset` only clears the current in-memory conversation. It does not delete saved sessions.
 - `/new` starts a fresh conversation and saves the previous one first when `session.auto_save` is enabled.
 - `/model` lists configured profiles and routing. Session switches do not rewrite global defaults; use `/model set-main` or `/model set-sub` for persisted defaults.
+- `/shell` selects the shell for new local commands in this runtime. Windows users can also choose a WSL distribution and its shell. Existing processes keep running with their original shell. See [Shell selection](docs/shell-selection.md).
 - `/skills` shows discovered skills; `/skills reload` rescans workspace/user skill directories; `/skills enable|disable <name>` persists skill state in workspace config.
 - `/session` shows a numbered, newest-first list for the current fingerprint. Its preview is the latest real user request, or the goal objective when no user message exists. Restore accepts the displayed number, a full ID, or `latest`; it saves the session being left when auto-save is enabled and replays the latest three user turns in the CLI. `rcoder -r <id>` restores directly on startup.
 - `/goal` manages one persistent objective per session. The backend continues it between turns, prioritizes user input, and preserves status and cumulative usage across compaction and restore. Budgets default to unlimited and count input minus cached input plus output. See [Goal controls and accounting](docs/goals.md).

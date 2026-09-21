@@ -33,6 +33,8 @@ def _example(trigger):
         "on|off": "on",
         "tokens|none": "1000",
         "snip|summarize|collapse": "snip",
+        "distribution": "Ubuntu",
+        "id|name|path": "bash",
     }
     text = re.sub(r"<([^>]+)>", lambda match: values[match[1]], trigger.value)
     return (

@@ -106,6 +106,8 @@ Managed shell processes are published before the initial wait, so interrupting a
 
 ## CLI and presentation
 
+`/shell` selects an in-memory preference on the local process backend. The command-owned panel shows native executable names and paths; Windows also lists WSL distributions and probes only the chosen distribution. New pipe/PTY processes use the selection, model descriptions/runtime context reflect it, and scoped backends inherit an independent snapshot. Existing processes are unchanged. Remote peers retain their own native shell. See `docs/shell-selection.md`.
+
 The independent React TUI lives in `reuleauxcoder-tui/`. Its protocol client owns framing and reverse interactions; state reducers retain complete content and drafts; React renders cached visible rows. The frontend derives menu groups and primitive form fields from the backend catalog, and consumes command-owned panel trees. Slash input selects a top-level menu. F2 exposes session/plan/job/startup facts; F4 expands reasoning and full structured tool output. The launcher owns a stdio backend process, with `--backend` supporting an SSH subprocess. See its README for parity, controls and verification.
 
 The default TUI workbench theme uses amber controls, sage activity and blue metadata. Wide terminals show a height-budgeted sidebar: attention, execution, plan and Git summaries precede session and activity details. Git facts come from the backend's `runtime.git` RPC every five seconds, using the existing bounded Git executor without consuming model-facing HEAD-change notices. F2 retains the full received snapshot; local upstream counts do not trigger network fetches. Approval actions wrap as whole items and paging information stays in the panel header.

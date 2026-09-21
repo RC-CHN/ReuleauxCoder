@@ -36,6 +36,8 @@ from reuleauxcoder.extensions.tools.base import (
 )
 from reuleauxcoder.infrastructure.platform import ShellType, get_platform_info
 from reuleauxcoder.infrastructure.process.buffer import BoundedTextBuffer
+from reuleauxcoder.infrastructure.shells import LocalShellSelection
+from reuleauxcoder.domain.shell import ShellOption
 
 
 _DEFAULT_RUNTIME_TIMEOUT_SECONDS = 0
@@ -44,7 +46,7 @@ _DEFAULT_POLL_WAIT_MS = 5_000
 _MODEL_OUTPUT_BYTES_PER_STREAM = 64 * 1024
 
 
-def _shell_description(*, local: bool) -> str:
+def _shell_description(*, local: bool, selected: ShellOption | None = None) -> str:
     base = (
         "Run a command unchanged in the target environment's reported shell.\n\n"
         "timeout is an optional hard total runtime limit in seconds; omitted "
@@ -68,7 +70,16 @@ def _shell_description(*, local: bool) -> str:
             "stdout, stderr, exit_code, and state to correct any platform or "
             "shell syntax mismatch; rcoder will not rewrite the command."
         )
-    shell = get_platform_info().get_preferred_shell()
+    if selected is not None:
+        base += f"\n\nSelected execution shell: {selected.summary}."
+        if selected.launcher:
+            base += " Commands run inside the named WSL distribution. cwd remains a host workspace path and is translated by WSL; command text is passed unchanged."
+        try:
+            shell = ShellType(selected.kind)
+        except ValueError:
+            return base + f" Use {selected.kind} syntax."
+    else:
+        shell = get_platform_info().get_preferred_shell()
     if shell is ShellType.POWERSHELL:
         return (
             base + "\n\nThe local target uses Windows PowerShell 5.1. It does not "
@@ -128,7 +139,29 @@ class _BoundProcessTool(Tool):
 
 class ShellTool(_BoundProcessTool):
     name = "shell"
-    description = _shell_description(local=True)
+
+    @property
+    def description(self) -> str:
+        selection = getattr(getattr(self.backend, "process", None), "shells", None)
+        return _shell_description(
+            local=self.backend_id == "local",
+            selected=selection.selected
+            if isinstance(selection, LocalShellSelection)
+            else None,
+        )
+
+    @property
+    def shell_environment(self) -> str:
+        selection = getattr(getattr(self.backend, "process", None), "shells", None)
+        if isinstance(selection, LocalShellSelection):
+            current = selection.current()
+            return current.summary if current else "No supported shell available"
+        return (
+            "Remote peer's native shell"
+            if self.backend_id != "local"
+            else get_platform_info().get_preferred_shell().value
+        )
+
     effect_class = "process_execution"
     parameters = {
         "type": "object",
@@ -239,7 +272,6 @@ class ShellTool(_BoundProcessTool):
 
     def __init__(self, backend: ToolBackend | None = None) -> None:
         super().__init__(backend)
-        self.description = _shell_description(local=self.backend_id == "local")
         self._cwd: str | None = None
         self._cwd_lock = threading.RLock()
 
