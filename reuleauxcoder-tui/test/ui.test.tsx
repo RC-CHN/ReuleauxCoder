@@ -147,17 +147,17 @@ test('scrolling to the bottom restores shortcuts and follows subsequent output',
   c.session.add('assistant', 'Reuleaux', Array.from({length: 60}, (_, index) => `line ${index}`).join('\n'));
   const app = render(<App controller={c}/>); t.after(() => app.cleanup());
   await until(() => app.lastFrame()?.includes('line 59'));
-  for (const key of [{pageDown: true}, {downArrow: true}]) {
-    await c.key('', {upArrow: true});
+  for (const page of [true, false]) {
+    c.wheel(-3);
     await until(() => app.lastFrame()?.includes('History '));
-    await c.key('', key);
+    if (page) await c.key('', {pageDown: true}); else c.wheel(3);
     await until(() => c.offset === null && !app.lastFrame()?.includes('History '));
     assert(app.lastFrame()?.includes('F4'));
   }
   c.session.add('assistant', 'Reuleaux', 'Latest response');
   c.changed();
   await until(() => app.lastFrame()?.includes('Latest response'));
-  await c.key('', {upArrow: true});
+  c.wheel(-3);
   await until(() => app.lastFrame()?.includes('History '));
   c.resize(100, 80);
   await until(() => c.offset === null && !app.lastFrame()?.includes('History '));
@@ -209,7 +209,7 @@ test('scroll bursts show intermediate rows, reverse immediately and yield to End
   await until(() => c.offset === reversed - page);
   assert(positions.every(row => row <= reversed), 'reversal drops outstanding travel in the old direction');
   await c.key('', {pageUp: true});
-  await c.key('', {end: true});
+  await c.key('', {end: true, ctrl: true});
   await until(() => app.lastFrame()?.includes('line 99'));
   await delay(180);
   assert.equal(c.offset, null, 'an old scroll cannot undo End');

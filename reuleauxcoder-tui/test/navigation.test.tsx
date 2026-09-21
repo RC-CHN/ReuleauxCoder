@@ -10,6 +10,39 @@ import {RuntimeClient} from '../src/protocol/client.js';
 import {RpcPeer} from '../src/protocol/peer.js';
 import {until} from './helpers.js';
 
+test('arrows edit multiline drafts and input history restores text, cursor and attachments', async t => {
+  const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
+  t.after(() => {c.dispose(); c.client.peer.close();});
+  c.history.entries.push('first question', 'second question');
+  c.composer = {...editor('first line\nsecond line [Image #1]'), cursor: 3};
+  c.images = [{label: '[Image #1]', image: {attachment_id: 'image', variant_id: 'v', mime_type: 'image/png', width: 1, height: 1, size_bytes: 100, original_width: 1, original_height: 1, name: 'test.png', turn_id: null}}];
+  const draft = c.composer, images = c.images;
+  await c.key('', {upArrow: true});
+  assert.equal(c.composer, draft, 'top-row Up must not load history');
+  await c.key('', {downArrow: true});
+  assert.equal(c.composer.cursor, 14);
+  await c.key('', {upArrow: true});
+  const saved = c.composer;
+  await c.key('', {upArrow: true, meta: true});
+  assert.equal(c.composer.text, 'second question');
+  assert.deepEqual(c.images, []);
+  c.wheel(-3);
+  assert.equal(c.composer.text, 'second question');
+  await c.key('', {upArrow: true});
+  assert.equal(c.composer.text, 'first question');
+  await c.key('', {downArrow: true});
+  await c.key('', {downArrow: true});
+  assert.deepEqual(c.composer, saved);
+  assert.deepEqual(c.images, images);
+  await c.key('c', {ctrl: true});
+  await c.key('', {upArrow: true});
+  assert.equal(c.composer.text, 'second question', 'empty input recalls history');
+  await c.key('!', {});
+  await c.key('', {upArrow: true});
+  assert.equal(c.composer.text, 'second question!', 'editing a recalled entry resumes normal cursor navigation');
+  assert.deepEqual(c.history.entries, ['first question', 'second question']);
+});
+
 test('real terminal wheel reports never become history navigation or draft text', async t => {
   const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
   c.session.connected = true;

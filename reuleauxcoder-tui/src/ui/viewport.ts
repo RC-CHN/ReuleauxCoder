@@ -1,6 +1,6 @@
 import sliceAnsi from 'slice-ansi';
 import stringWidth from 'string-width';
-import type {Editor} from '../state/editor.js';
+import {layoutEditor, type Editor} from '../state/editor.js';
 import {safe, wrap} from './format.js';
 import {fit, paint} from './theme.js';
 export {TranscriptLayout} from './transcript.js';
@@ -10,24 +10,17 @@ export interface CursorPosition {x: number; y: number}
 export interface InputLayout {rows: string[]; cursor?: CursorPosition}
 
 export function inputLayout(value: Editor, width: number, height: number, active = true, secret = false): InputLayout {
-  const segments = [...new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(value.text)].map(item => item.segment);
-  const display = segments.map(part => secret ? '•' : safe(part));
-  const before = display.slice(0, value.cursor).join('');
-  const cursor = display[value.cursor];
-  const content = active ? before + `\x1b[7m${!cursor || cursor === '\n' ? ' ' : cursor}\x1b[27m` + (cursor === '\n' ? '\n' : '') + display.slice(value.cursor + 1).join('') : display.join('');
-  const rows = wrap(content || ' ', width);
-  // Find the highlighted grapheme in the *wrapped* text: wrapping the prefix
-  // separately can put the cursor in the wrong word or before a wide character.
-  let position: CursorPosition | undefined;
-  for (let y = 0; active && y < rows.length; y++) {
-    const marker = rows[y].indexOf('\x1b[7m');
-    if (marker < 0 || !stringWidth(rows[y].slice(marker + 4).split('\x1b[27m')[0])) continue;
-    position = {x: stringWidth(rows[y].slice(0, marker)), y};
-    break;
-  }
-  const cursorRow = position?.y ?? wrap(before + ' ', width).length - 1;
-  const start = Math.max(0, Math.min(rows.length - height, cursorRow - height + 1));
-  return {rows: rows.slice(start, start + height), cursor: position && {...position, y: position.y - start}};
+  const layout = layoutEditor(value.text, width, secret);
+  const position = layout.positions[value.cursor];
+  const start = Math.max(0, Math.min(layout.rows.length - height, position.y - height + 1));
+  const rows = layout.rows.slice(start, start + height).map((row, index) => {
+    if (!active || index + start !== position.y) return row.text;
+    const before = layout.display.slice(row.start, value.cursor).join('');
+    const cursor = layout.display[value.cursor];
+    const marker = !cursor || cursor === '\n' ? ' ' : cursor;
+    return before + `\x1b[7m${marker}\x1b[27m` + layout.display.slice(value.cursor + 1, row.end).join('');
+  });
+  return {rows, cursor: active ? {...position, y: position.y - start} : undefined};
 }
 
 export function inputRows(value: Editor, width: number, height: number, active = true, secret = false): string[] {

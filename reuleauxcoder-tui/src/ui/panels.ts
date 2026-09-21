@@ -89,7 +89,7 @@ export function panelRows(c: TuiController, width: number, height: number, layou
     const parameter = screen.action.parameters[screen.index];
     const prefix = [line(paint.accent(`${humanize(parameter.name)} · ${screen.index + 1}/${screen.action.parameters.length}${parameter.required ? ' · required' : ''}`), width), ...wrap(paint.muted(parameter.kind === 'boolean' ? 'Tab changes value: true / false' + (parameter.nullable ? ' / auto' : '') : parameter.kind === 'integer' ? 'Enter a whole number.' : 'Enter text.'), width), ''].slice(0, Math.max(0, height - 1));
     const input = inputLayout(screen.input, width, Math.max(1, height - prefix.length - (screen.error ? 1 : 0)));
-    return {title: screen.title, rows: [...prefix, ...input.rows, ...(screen.error ? [line(paint.error(screen.error), width)] : [])].slice(0, height), cursor: input.cursor && {...input.cursor, y: prefix.length + input.cursor.y}, hint: [keyHint('Enter', 'next / submit'), keyHint('↑', 'previous field'), keyHint('Esc', 'back')]};
+    return {title: screen.title, rows: [...prefix, ...input.rows, ...(screen.error ? [line(paint.error(screen.error), width)] : [])].slice(0, height), cursor: input.cursor && {...input.cursor, y: prefix.length + input.cursor.y}, hint: [keyHint('Enter', 'next / submit'), keyHint('Shift+Tab', 'previous field'), keyHint('Esc', 'back')]};
   }
   if (c.palette.length) return {title: 'Commands', rows: selectionRows(c.palette.map(menu => ({label: menu.name, description: menu.title})), c.paletteIndex % c.palette.length, width, height), hint: [keyHint('↑↓', 'select'), keyHint('Tab', 'complete'), keyHint('Enter', 'open'), keyHint('Esc', 'dismiss')]};
   return null;

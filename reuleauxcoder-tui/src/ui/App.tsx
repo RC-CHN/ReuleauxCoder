@@ -56,12 +56,14 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   const chrome = consoleChrome(c, dimensions.width, c.session.fatal ? 'Disconnected' : liveActivity?.label ?? 'Ready', hiddenLogoRows);
   const footerHeight = chrome.status ? 2 : 1;
   const composerWidth = Math.max(1, dimensions.width - 6);
+  c.composerWidth = composerWidth;
   const focused = !c.active && !c.screen;
   const composerInput = inputLayout(c.composer, composerWidth, 4, focused);
   const composerHeight = Math.max(1, composerInput.rows.length);
   const bodyBudget = height - chrome.header.length - footerHeight - composerHeight - 2;
   const contentHeight = Math.max(1, bodyBudget - (liveActivity ? 1 : 0));
   const panelWidth = Math.max(1, width - 2);
+  c.inputWidth = panelWidth;
   const panelHintBudget = Math.min(3, Math.ceil(90 / panelWidth));
   const hasPanel = Boolean(c.active || c.screen || c.palette.length);
   const queue = queuedRows(c.session.state, dimensions.width, Math.max(0, Math.min(5, contentHeight - (hasPanel ? 5 : 2))));

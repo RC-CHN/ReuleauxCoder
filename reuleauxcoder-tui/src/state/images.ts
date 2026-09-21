@@ -43,7 +43,7 @@ export function replaceSpan(value: Editor, start: number, end: number, text: str
   return {text: value.text.slice(0, start) + text + value.text.slice(end), cursor: value.cursor <= before ? value.cursor : value.cursor >= before + removed ? value.cursor + added - removed : before + added};
 }
 
-export function editImageDraft(value: Editor, input: string, key: Partial<Key>, images: DraftImage[]): Editor {
+export function editImageDraft(value: Editor, input: string, key: Partial<Key>, images: DraftImage[], width = 80): Editor {
   for (const {label} of images) {
     const index = value.text.indexOf(label);
     if (index < 0) continue;
@@ -52,5 +52,5 @@ export function editImageDraft(value: Editor, input: string, key: Partial<Key>, 
     if (key.leftArrow && value.cursor > start && value.cursor <= end) return {...value, cursor: start};
     if (key.rightArrow && value.cursor >= start && value.cursor < end) return {...value, cursor: end};
   }
-  return edit(value, input, key);
+  return edit(value, input, key, width);
 }

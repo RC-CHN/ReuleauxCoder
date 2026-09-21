@@ -34,6 +34,8 @@ export class TuiController extends EventEmitter {
   offset: number | null = null;
   totalRows = 0;
   viewportRows = 10;
+  composerWidth = 74;
+  inputWidth = 76;
   columns = 80;
   rows = 24;
   exitConfirm = false;
@@ -49,7 +51,7 @@ export class TuiController extends EventEmitter {
   private viewEpoch = 0;
   private pendingView = Promise.resolve();
   private historyIndex: number | null = null;
-  private historyDraft = editor();
+  private historyDraft?: {composer: Editor; images: DraftImage[]; imageNumber: number};
   private refreshTimer?: NodeJS.Timeout;
   private scroll = new ScrollMotion(() => {this.revision++; this.flush();});
 
@@ -63,6 +65,7 @@ export class TuiController extends EventEmitter {
     client.on('initialized', info => {this.menus = menusFromCatalog(client.catalog); this.session.initialize(info);});
     client.on('state', state => {
       if (state.session_id !== this.session.state.session_id || state.session_generation !== this.session.state.session_generation) {
+        this.leaveInputHistory();
         if (this.images.length) this.status = 'Session changed; draft images cleared. Attach them again to use them here.';
         for (const {label} of this.images) {
           const start = this.composer.text.indexOf(label);
@@ -250,7 +253,7 @@ export class TuiController extends EventEmitter {
           else this.interactionMode = 'review';
         } else if (value || request.allow_empty) this.answer(record('InputTextResponse', {value}));
         else this.status = 'Enter a value, or press Esc to cancel.';
-      } else this.interactionInput = edit(this.interactionInput, key.return ? '\n' : input, key.return ? {} : key);
+      } else this.interactionInput = edit(this.interactionInput, key.return ? '\n' : input, key.return ? {} : key, this.inputWidth, request.secret);
       return;
     }
     const choices = kind === 'choose_one' ? request.items : this.interactionMode === 'scope' ? request.grant_options : [];
@@ -277,6 +280,7 @@ export class TuiController extends EventEmitter {
     else if (this.screen?.kind === 'form') this.screen.input = edit(this.screen.input, text, {});
     else if (this.screen?.kind === 'history' && this.screen.browser.search) this.screen.browser.search = edit(this.screen.browser.search, text, {});
     else if (!this.active && !this.screen) {
+      this.leaveInputHistory();
       const generation = this.client.state.session_generation;
       this.composer = edit(this.composer, text, {}); this.paletteDismissed = false;
       const pasted = text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
@@ -340,7 +344,7 @@ export class TuiController extends EventEmitter {
     if (key.ctrl && input === 'c') {
       if (this.active) this.answer(cancellation(this.active.kind));
       else if (this.screen) {for (const screen of this.screens) if (screen.kind === 'history') screen.browser.dispose(); this.screens = []; this.viewEpoch++;}
-      else if (this.composer.text || this.images.length) {this.composer = editor(); this.images = []; this.imageNumber = 0; this.exitConfirm = false;}
+      else if (this.composer.text || this.images.length) {this.composer = editor(); this.images = []; this.imageNumber = 0; this.leaveInputHistory(); this.exitConfirm = false;}
       else if (this.session.state.stopping) await this.finish();
       else if (this.session.state.running && !this.session.fatal) {
         const result = await this.client.interrupt();
@@ -385,11 +389,14 @@ export class TuiController extends EventEmitter {
         else if (key.end) screen.offset = Number.MAX_SAFE_INTEGER;
       } else if (screen.kind === 'history') return;
       else if (key.return && !key.shift && !key.meta) await this.submitForm(screen);
-      else if (key.upArrow && screen.index > 0) {screen.index--; screen.input = editor(String(screen.values[screen.action.parameters[screen.index].name] ?? ''));}
+      else if (key.tab && key.shift && screen.index > 0) {
+        screen.values[screen.action.parameters[screen.index].name] = screen.input.text;
+        screen.index--; screen.input = editor(String(screen.values[screen.action.parameters[screen.index].name] ?? ''));
+      }
       else if ((key.tab || key.leftArrow || key.rightArrow || input === ' ') && screen.action.parameters[screen.index].kind === 'boolean') {
         const choices = screen.action.parameters[screen.index].nullable ? ['auto', 'true', 'false'] : ['true', 'false'];
         screen.input = editor(choices[(choices.indexOf(screen.input.text) + 1) % choices.length]);
-      } else screen.input = edit(screen.input, key.return ? '\n' : input, key.return ? {} : key);
+      } else screen.input = edit(screen.input, key.return ? '\n' : input, key.return ? {} : key, this.inputWidth);
       this.changed(); return;
     }
     if (key.ctrl && input === 'p') {this.screens.push(this.list('Commands', this.menus.map(menu => ({label: menu.name, description: menu.title, select: () => this.openMenu(menu)})))); this.changed(); return;}
@@ -429,19 +436,35 @@ export class TuiController extends EventEmitter {
         const images = this.images;
         const value = images.length ? record('ChatInput', {text, images: tuple(images.map(item => record('ImageReference', {...item.image}))), image_labels: tuple(images.map(item => item.label)), session_id: this.client.state.session_id, session_generation: this.client.state.session_generation}) : text;
         const admission = await this.client.submit(value);
-        if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); if (this.images === images) {this.images = []; this.imageNumber = 0;} this.historyIndex = null; this.offset = null; if (text) await this.history.add(text);}
+        if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); if (this.images === images) {this.images = []; this.imageNumber = 0;} this.leaveInputHistory(); this.offset = null; if (text) await this.history.add(text);}
         else this.status = 'The backend is stopping. Your draft is still here.';
       }
-    } else if (key.home && !this.composer.text) this.offset = 0;
-    else if (key.end && !this.composer.text) this.offset = null;
-    else if ((key.upArrow || key.downArrow) && !key.meta && !this.composer.text && this.historyIndex === null) {this.scrollBy(key.upArrow ? -3 : 3); return;}
-    else if (key.upArrow || key.downArrow) {
-      if (this.historyIndex === null) {this.historyDraft = this.composer; this.historyIndex = this.history.entries.length;}
-      this.historyIndex = Math.max(0, Math.min(this.history.entries.length, this.historyIndex + (key.upArrow ? -1 : 1)));
-      this.composer = this.historyIndex === this.history.entries.length ? this.historyDraft : editor(this.history.entries[this.historyIndex]);
-    } else {this.composer = editImageDraft(this.composer, key.return ? '\n' : input, key.return ? {} : key, this.images); this.paletteDismissed = false; this.paletteIndex = 0; this.exitConfirm = false;}
+    } else if (key.ctrl && (key.home || key.end)) this.offset = key.home ? 0 : null;
+    else if ((key.upArrow || key.downArrow) && (key.meta || this.historyIndex !== null || !this.composer.text && !this.images.length)) {
+      this.recallInput(key.upArrow ? -1 : 1);
+    } else {
+      this.leaveInputHistory();
+      this.composer = editImageDraft(this.composer, key.return ? '\n' : input, key.return ? {} : key, this.images, this.composerWidth);
+      this.paletteDismissed = false; this.paletteIndex = 0; this.exitConfirm = false;
+    }
     this.images = this.images.filter(item => this.composer.text.includes(item.label));
     this.changed();
+  }
+  private leaveInputHistory() {this.historyIndex = null; this.historyDraft = undefined;}
+  private recallInput(delta: number) {
+    if (!this.history.entries.length || this.historyIndex === null && delta > 0) return;
+    if (this.historyIndex === null) {
+      this.historyDraft = {composer: this.composer, images: this.images, imageNumber: this.imageNumber};
+      this.historyIndex = this.history.entries.length;
+    }
+    this.historyIndex = Math.max(0, Math.min(this.history.entries.length, this.historyIndex + delta));
+    if (this.historyIndex === this.history.entries.length) {
+      Object.assign(this, this.historyDraft);
+      this.leaveInputHistory();
+    } else {
+      this.composer = editor(this.history.entries[this.historyIndex]);
+      this.images = [];
+    }
   }
   toggleDetails() {
     this.scroll.cancel();
@@ -455,7 +478,7 @@ export class TuiController extends EventEmitter {
     if (this.screen?.title === 'Session details') {this.screens.pop(); this.changed(); return;}
     this.document('Session details', fields({session: this.session.state, git: this.session.git, plan: this.session.plan, progress: this.session.progress, agents: [...this.session.jobs.values()], processes: [...this.session.processes.values()], diagnostics: [...this.session.diagnostics.values()], operations: [...this.session.operations.values()], startup: this.session.startup}));
   }
-  showHelp() {this.document('Keyboard help', 'Enter        Send / select\nShift+Enter  New line (Alt+Enter also works)\n/ or Ctrl+P  Open command menus\nEsc          Back / cancel interaction\nCtrl+C       Cancel interaction → close menu → clear draft → interrupt → confirm exit\nCtrl+D       Exit with an empty draft\nUp / Down    Scroll when input is empty; otherwise input history\nAlt+Up/Down  Input history, including with an empty draft\nPgUp / PgDn  Scroll the focused content\nHome / End   Transcript start / follow tail (empty composer)\nF1 / Ctrl+G  Keyboard help\nF2 / Ctrl+O  Session, plan, jobs and startup details\nF4 / Ctrl+R  Toggle full transcript details (all records)\nCtrl+A/E     Start / end of input\nCtrl+U/K/W   Delete before / after / previous word\n\nF4 shows:\n  Tool arguments and full received output, diffs, diagnostics and archive details.\n  Reasoning returned by the model.\nIt applies to all retained records in this conversation.\nPress F4 again to restore previews; PgUp/PgDn reads earlier content.\n\nApproval: 1/y/Enter approve once · 2/n deny · s session scope · f feedback\nSecret input is masked and never written to input history.');}
+  showHelp() {this.document('Keyboard help', 'Enter        Send / select\nShift+Enter  New line (Alt+Enter also works)\n/ or Ctrl+P  Open command menus\nEsc          Back / cancel interaction\nWheel        Scroll content without changing input\nShift+Tab    Previous form field\nCtrl+C       Cancel interaction → close menu → clear draft → interrupt → confirm exit\nCtrl+D       Exit with an empty draft\nUp / Down    Move within input; empty input recalls history\nAlt+Up/Down  Input history, including with an empty draft\nPgUp / PgDn  Scroll the focused content\nHome / End   Input line start / end\nCtrl+Home/End Transcript start / follow latest\nF1 / Ctrl+G  Keyboard help\nF2 / Ctrl+O  Session, plan, jobs and startup details\nF4 / Ctrl+R  Toggle full transcript details (all records)\nCtrl+A/E     Start / end of input\nCtrl+U/K/W   Delete before / after / previous word\n\nF4 shows:\n  Tool arguments and full received output, diffs, diagnostics and archive details.\n  Reasoning returned by the model.\nIt applies to all retained records in this conversation.\nPress F4 again to restore previews; PgUp/PgDn reads earlier content.\n\nApproval: 1/y/Enter approve once · 2/n deny · s session scope · f feedback\nSecret input is masked and never written to input history.');}
   async finish() {
     if (this.closing) return;
     this.scroll.cancel();
