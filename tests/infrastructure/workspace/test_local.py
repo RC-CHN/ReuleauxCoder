@@ -442,6 +442,11 @@ def test_pruned_glob_matches_exhaustive_traversal(tmp_path, pattern):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
+    # Windows directory enumeration may report cached directory mtimes while
+    # stat() sees later child creation. Stabilize fixture metadata so this
+    # comparison measures traversal/matching and ordering on the same snapshot.
+    for path in tmp_path.rglob("*"):
+        os.utime(path, (1_700_000_000, 1_700_000_000))
     workspace = LocalWorkspacePort(tmp_path)
     assert workspace.glob_paths(pattern, ".") == glob_paths_via_primitives(
         workspace, pattern, "."

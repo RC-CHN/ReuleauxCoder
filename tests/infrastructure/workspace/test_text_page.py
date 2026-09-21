@@ -67,7 +67,11 @@ def test_page_handles_crlf_at_chunk_boundary_and_skips_long_lines():
     assert not result.has_more
 
 
-@pytest.mark.parametrize("text", ["x" * 200_000, "中😀" * 100_000, "\n" * 200_000])
+@pytest.mark.parametrize(
+    "text",
+    ["x" * 200_000, "中😀" * 100_000, "\n" * 200_000],
+    ids=["long-ascii-line", "long-unicode-line", "empty-lines"],
+)
 def test_page_character_budget_bounds_long_and_empty_lines(text):
     result = read_text_page(StringIO(text), offset=1, limit=200_000, max_chars=20)
     assert len("\n".join(result.lines)) <= 20
