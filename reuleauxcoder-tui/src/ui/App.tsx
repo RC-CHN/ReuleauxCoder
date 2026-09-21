@@ -1,10 +1,10 @@
 import React, {memo, useEffect, useMemo, useState, useSyncExternalStore} from 'react';
-import {Box, Text, useApp, useCursor, useInput, usePaste, useStdout} from 'ink';
+import {Box, Text, useApp, useCursor, usePaste, useStdout} from 'ink';
 import type {TuiController} from '../state/controller.js';
 import {safe} from './format.js';
 import {inputLayout, TranscriptLayout} from './viewport.js';
 import {hintRows, panelRows} from './panels.js';
-import {useAlternateScroll, useTerminalKeys} from './terminal.js';
+import {useMouseReporting, useTerminalInput} from './terminal.js';
 import {between, fit, rail, frameEdge, frameRow, keyHint, paint} from './theme.js';
 import {activityFor, ActivityLine} from './activity.js';
 import {queuedRows} from './queued.js';
@@ -31,7 +31,7 @@ function ProcessSidebar({controller, width, height}: {controller: TuiController;
   return <Rows rows={sidebarRows(controller, width, height, now)} height={height} width={width}/>;
 }
 
-export function App({controller: c, alternateScreen = false}: {controller: TuiController; alternateScreen?: boolean}) {
+export function App({controller: c, alternateScreen = false, mouse = true}: {controller: TuiController; alternateScreen?: boolean; mouse?: boolean}) {
   useSyncExternalStore(c.subscribe, c.snapshot, c.snapshot);
   const {stdout} = useStdout();
   const {exit} = useApp();
@@ -45,10 +45,9 @@ export function App({controller: c, alternateScreen = false}: {controller: TuiCo
     resize(); stdout.on('resize', resize); c.on('exit', quit);
     return () => {stdout.off('resize', resize); c.off('exit', quit);};
   }, [c, stdout, exit]);
-  useInput((input, key) => {void c.key(input, key).catch(c.fail);});
+  useTerminalInput(c);
   usePaste(text => {void c.paste(text).catch(c.fail);});
-  useTerminalKeys(c);
-  useAlternateScroll(alternateScreen);
+  useMouseReporting(alternateScreen, mouse);
 
   const dimensions = workbenchLayout(c.columns, c.rows);
   const width = dimensions.main;

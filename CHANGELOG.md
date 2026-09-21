@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separated TUI mouse-wheel reports from keyboard input so scrolling cannot replace a draft with input history. Added `--no-mouse` for native terminal selection and restored mouse modes on exit.
 - Bounded tool-output projection memory by locating retained head/tail lines without splitting the whole result. Full-output archives now encode, write and hash bounded chunks in one pass.
 - Replaced shell's 50 ms remote polling loop with cancellable long waits. Interrupting a wait keeps the process running and preserves unread output for the next poll.
 - Broadcast peer output changes to all concurrent poll consumers, keeping process observation and tool waits responsive together.

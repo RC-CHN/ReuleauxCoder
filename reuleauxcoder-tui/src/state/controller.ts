@@ -477,4 +477,19 @@ export class TuiController extends EventEmitter {
       this.scroll.move(cells, delta, () => this.offset ?? bottom, row => {this.offset = row;}, () => !this.active && this.screen === screen && this.session.cells === cells, bottom);
     }
   }
+
+  wheel(delta: number) {
+    if (this.closing) return;
+    if (this.active && (this.active.kind === 'input_text' || this.active.kind === 'choose_one' || this.interactionMode !== 'review')) return;
+    if (this.screen?.kind === 'form' || this.palette.length) return;
+    if (this.screen?.kind === 'list') {
+      if (this.screen.panel?.body) {
+        this.screen.contentOffset = Math.max(0, Math.min(this.screen.contentEnd ?? Infinity, (this.screen.contentOffset ?? this.screen.contentEnd ?? 0) + delta));
+        this.changed();
+      }
+      return;
+    }
+    if (this.screen?.kind === 'history' && !this.screen.browser.detailed) return;
+    this.scrollBy(delta);
+  }
 }
