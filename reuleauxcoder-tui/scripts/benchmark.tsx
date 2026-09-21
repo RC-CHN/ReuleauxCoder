@@ -137,7 +137,7 @@ for (const scene of ['idle-rpc', 'busy', 'panel-scroll', 'continuous-scroll', 't
     results.push({name: `ink-${scene}`, duration_ms: round(elapsed), render_count: renderTimes.length, state_updates: stateUpdates, backend_bytes: wireBytes, tool_events: events, output_fps: round(frames.length * 1000 / elapsed), input_p95_ms: percentile(inputLatency, .95), frame_p50_ms: percentile(intervals, .5), frame_p95_ms: percentile(intervals, .95), ink_render_p95_ms: percentile(renderTimes, .95), cpu_percent_one_core: round((cpu.user + cpu.system) / (elapsed * 10)), output_kib_per_second: round(bytes / 1024 * 1000 / elapsed)});
   } finally {c.dispose(); app.unmount(); app.cleanup(); stdin.destroy(); if (runtime) await runtime.close(); else c.client.peer.close();}
 }
-const report = {label: values.label, node: process.version, platform: process.platform, cpu: cpus()[0]?.model, terminal: {columns: 160, rows: 40}, motion_fps: MOTION_FPS, render_limit_fps: RENDER_FPS, results};
+const report = {label: values.label, node: process.version, node_env: process.env.NODE_ENV ?? 'development', platform: process.platform, cpu: cpus()[0]?.model, terminal: {columns: 160, rows: 40}, motion_fps: MOTION_FPS, render_limit_fps: RENDER_FPS, results};
 const json = JSON.stringify(report, null, 2) + '\n';
 if (values.json) await writeFile(values.json, json);
 process.stdout.write(json);

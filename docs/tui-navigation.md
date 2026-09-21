@@ -54,6 +54,9 @@ It includes 10,000 transcript messages, a 5,000-line document, and an additional
 1,000-sample cached cursor/layout test on a 500-line Unicode draft. Both benchmarks
 use a synthetic 160×40 terminal sink, Node 24.16.0 on Linux, and a 120 FPS render
 cap for the recorded runs. They exclude terminal emulator, GPU and SSH latency.
+The original runs below used React's development mode. For measurements closer
+to the shipped bundle, prefix both commands with `NODE_ENV=production`; newer
+reports record `node_env` explicitly. Compare runs in the same mode.
 CPU percentages are relative to one core and include the sampling intervals.
 These are local observations, not a universal latency guarantee.
 
@@ -98,3 +101,32 @@ All recorded JSONs include additional render, CPU and output measurements:
 - [Raw before cache](../reuleauxcoder-tui/benchmarks/navigation-raw-before-cache-2026-09-21.json)
 - [Raw first cache run](../reuleauxcoder-tui/benchmarks/navigation-raw-cache-first-2026-09-21.json)
 - [Raw final repeat](../reuleauxcoder-tui/benchmarks/navigation-raw-after-2026-09-21.json)
+
+## Remaining rendering work
+
+A Node CPU profile of the raw-input benchmark showed ANSI tokenization, style
+diffing/serialization, Unicode width checks and garbage collection as the main
+active costs. Ink rebuilds its output grid even for an animation-only commit;
+memoizing React rows does not eliminate that work. The shipped bundle already
+uses React production mode; switching the benchmark to production is a measurement
+correction, not a new application optimization.
+
+Animation timing remains unchanged. Further optimization should target redundant
+rendering work, rather than reduce or suppress animation:
+
+- Ink creates new output caches for every frame. Bounded reuse of parsed ANSI
+  rows and Unicode widths across frames could avoid reprocessing unchanged rows.
+- ANSI serialization computes style differences between every adjacent pair of
+  characters. Equal styles could bypass set allocation and diff construction.
+- Composed output rows could be reused when neither their contents nor placement
+  changes. This is a larger renderer change because clipping, overlapping writes
+  and wide characters must remain correct.
+
+These are profile-based candidates, not implemented optimizations or measured
+speedup claims. They touch the pinned Ink/ANSI renderer boundary and need output
+equivalence, Unicode, clipping, resize and cursor regressions before adoption.
+
+The raw benchmark now also verifies newly exposed wheel content and newly typed
+text while the busy indicators animate. An unrelated spinner frame cannot satisfy
+an input sample. Use production mode on both sides and serialize benchmarks
+separately from test/build jobs when evaluating these candidates.

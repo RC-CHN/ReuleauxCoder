@@ -22,11 +22,13 @@ const marker = (index: number) => `NAV_${String(index).padStart(5, '0')}`;
 
 // Each sample waits for newly exposed text, rather than counting an unrelated
 // animation or cursor-only write as evidence that the input reached the screen.
-for (const scene of ['wheel', 'arrows', 'typing'] as const) {
+for (const scene of ['wheel', 'arrows', 'typing', 'wheel-busy', 'typing-busy'] as const) {
+  const inputKind = scene.replace('-busy', '');
   const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
   c.resize(40, 160); c.session.connected = true;
+  if (scene.endsWith('-busy')) c.session.state = {...c.session.state, running: true};
   for (let i = 0; i < 10000; i++) c.session.add('user', 'You', `Message ${i}\nHistory body\n`);
-  if (scene !== 'typing') {c.document('Navigation benchmark', Array.from({length: 5000}, (_, i) => `${marker(i)}: content 中文`).join('\n')); if (c.screen?.kind === 'document') c.screen.offset = 200;}
+  if (inputKind !== 'typing') {c.document('Navigation benchmark', Array.from({length: 5000}, (_, i) => `${marker(i)}: content 中文`).join('\n')); if (c.screen?.kind === 'document') c.screen.offset = 200;}
   else c.composer = editor('INPUT_');
   let measuring = false, pending: {expected: string; started: number; resolve(): void} | undefined;
   const latency: number[] = [], renders: number[] = [];
@@ -55,12 +57,12 @@ for (const scene of ['wheel', 'arrows', 'typing'] as const) {
     for (let i = 0; i < 40; i++) {
       const direction = i % 2 ? -1 : 1;
       let input: string, expected: string;
-      if (scene === 'typing') {input = 'x'; expected = 'INPUT_' + 'x'.repeat(i + 1);}
+      if (inputKind === 'typing') {input = 'x'; expected = 'INPUT_' + 'x'.repeat(i + 1);}
       else {
         if (c.screen?.kind !== 'document') throw new Error('Missing document');
-        const target = c.screen.offset + direction * (scene === 'wheel' ? 3 : 1);
+        const target = c.screen.offset + direction * (inputKind === 'wheel' ? 3 : 1);
         expected = marker(direction > 0 ? target + c.viewportRows - 1 : target);
-        input = scene === 'wheel' ? `\x1b[<${direction > 0 ? 65 : 64};20;10M` : direction > 0 ? '\x1b[B' : '\x1b[A';
+        input = inputKind === 'wheel' ? `\x1b[<${direction > 0 ? 65 : 64};20;10M` : direction > 0 ? '\x1b[B' : '\x1b[A';
       }
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {pending = undefined; reject(new Error(`${scene}: no frame showing ${expected}`));}, 3000);
@@ -85,7 +87,7 @@ for (let i = 0; i < 1000; i++) {
   times.push(performance.now() - started);
 }
 results.push({name: '500-line-unicode-cursor-and-layout', samples: times.length, p50_ms: percentile(times, .5), p95_ms: percentile(times, .95), max_ms: percentile(times, 1)});
-const report = {label: values.label, node: process.version, platform: process.platform, cpu: cpus()[0]?.model, terminal: {columns: 160, rows: 40}, render_limit_fps: RENDER_FPS, scope: 'Raw stdin through Ink to newly visible text in a synthetic terminal sink; excludes terminal emulator, GPU and SSH latency.', results};
+const report = {label: values.label, node: process.version, node_env: process.env.NODE_ENV ?? 'development', platform: process.platform, cpu: cpus()[0]?.model, terminal: {columns: 160, rows: 40}, render_limit_fps: RENDER_FPS, scope: 'Raw stdin through Ink to newly visible text in a synthetic terminal sink; excludes terminal emulator, GPU and SSH latency.', results};
 const json = JSON.stringify(report, null, 2) + '\n';
 if (values.json) await writeFile(values.json, json);
 process.stdout.write(json);
