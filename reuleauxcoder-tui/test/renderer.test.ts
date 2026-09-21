@@ -58,11 +58,38 @@ test('renderer caches stay bounded, refresh recency and bypass oversized payload
   assert(cache.weight <= 10 && cache.size <= 2);
 });
 
+test('unchanged composed rows are reused while width, placement, write order and transforms invalidate them', () => {
+  const caches = new OutputCaches();
+  let parsed = 0, value = 'A';
+  const originalParse = caches.getStyledChars.bind(caches);
+  caches.getStyledChars = (text: string) => {parsed++; return originalParse(text);};
+  const draw = (width = 20, x = 0, reversed = false) => {
+    const options = {width, height: 3};
+    const actual = new Output({...options, caches}), expected = new Original(options);
+    const writes = [[x, 0, '中文 styled'], [x + 1, 0, 'over'], [0, 1, 'same'], [0, 2, 'dynamic']] as const;
+    for (const [left, top, text] of reversed ? [...writes].reverse() : writes) {
+      const transform = {transformers: text === 'dynamic' ? [(line: string) => line + value] : []};
+      actual.write(left, top, text, transform); expected.write(left, top, text, transform);
+    }
+    const result = actual.get();
+    assert.deepEqual(result, expected.get());
+    return result;
+  };
+  draw(); assert.equal(parsed, 4);
+  draw(); assert.equal(parsed, 4, 'cache hit bypasses cell composition, not only parsing');
+  value = 'B'; draw(); assert.equal(parsed, 5, 'only the transformed row changed');
+  draw(21); assert.equal(parsed, 9, 'width affects the initial grid');
+  draw(21, 2); assert.equal(parsed, 11, 'placement changes only the overlaid row');
+  draw(21, 2, true); assert.equal(parsed, 13, 'paint order is significant');
+  for (let i = 0; i < 700; i++) {value = String(i); draw();}
+  assert(caches.rows.size <= 256 && caches.rows.weight <= caches.rows.maxWeight);
+});
+
 test('cross-frame caches preserve upstream bytes for Unicode, styles, clipping and overlapping writes', () => {
   const caches = new OutputCaches();
   let seed = 17;
   const random = (n: number) => {seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n;};
-  for (let frame = 0; frame < 350; frame++) {
+  for (let frame = 0; frame < 1000; frame++) {
     const dimensions = {width: 3 + random(28), height: 1 + random(8)};
     const actual = new Output({...dimensions, caches});
     const expected = new Original(dimensions);
@@ -82,6 +109,7 @@ test('cross-frame caches preserve upstream bytes for Unicode, styles, clipping a
   assert(caches.styledChars.weight <= caches.styledChars.maxWeight);
   assert(caches.widths.weight <= caches.widths.maxWeight);
   assert(caches.blockWidths.weight <= caches.blockWidths.maxWeight);
+  assert(caches.rows.weight <= caches.rows.maxWeight);
   assert.notStrictEqual(new OutputCaches().getStyledChars('reused 中文'), parsed, 'separate terminals do not share retained cells');
   for (let i = 0; i < 800; i++) caches.getStyledChars(`\x1b[31m${i}:` + 'x'.repeat(80));
   const oversized = 'x'.repeat(70000);

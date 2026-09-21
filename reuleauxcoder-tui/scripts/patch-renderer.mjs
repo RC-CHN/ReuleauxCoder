@@ -11,17 +11,24 @@ const replace = (text, from, to) => {
   if (text.split(from).length !== 2) throw new Error(`Renderer patch anchor changed: ${from}`);
   return text.replace(from, to);
 };
+const replaceBlock = (text, start, end, replacement) => {
+  const first = text.indexOf(start), last = text.indexOf(end, first);
+  if (first < 0 || last < first) throw new Error(`Renderer patch block changed: ${start}`);
+  return replace(text, text.slice(first, last + end.length), replacement);
+};
 
 export function patchOutput(source) {
   let text = "import {BoundedCache, styledWeight} from '../../../renderer/cache.js';\n" + source;
-  text = "import {serializeStyledChars} from '../../../renderer/serialize.js';\n" + text;
+  text = "import {composeRow} from '../../../renderer/compose-row.js';\n" + text;
   text = replace(text, 'class OutputCaches {', 'export class OutputCaches {');
   text = replace(text, 'widths = new Map();', 'widths = new BoundedCache(4096, 65536);');
   text = replace(text, 'blockWidths = new Map();', 'blockWidths = new BoundedCache(128, 65536);');
-  text = replace(text, 'styledChars = new Map();', 'styledChars = new BoundedCache(512, 2 * 1024 * 1024, styledWeight);');
+  text = replace(text, 'styledChars = new Map();', 'styledChars = new BoundedCache(512, 2 * 1024 * 1024, styledWeight);\n    rows = new BoundedCache(256, 2 * 1024 * 1024, (key, value) => key.length + value.length);');
   text = replace(text, 'caches = new OutputCaches();', 'caches;');
   text = replace(text, 'this.width = width;', 'this.caches = options.caches ?? new OutputCaches();\n        this.width = width;');
-  text = replace(text, 'styledCharsToString(lineWithoutEmptyItems)', 'serializeStyledChars(lineWithoutEmptyItems)');
+  text = replaceBlock(text, '            const row = [];', '            output.push(row);', '            output.push([]);');
+  text = replaceBlock(text, '                    const characters = this.caches.getStyledChars(line);', "                    if (currentLine[offsetX]?.value === '') {\n                        currentLine[offsetX] = spaceCell;\n                    }\n                    offsetY++;", '                    currentLine.push({x, line});\n                    offsetY++;');
+  text = replaceBlock(text, '            .map(line => {', '        })', '            .map(line => composeRow(line, this.width, this.caches))');
   return text;
 }
 

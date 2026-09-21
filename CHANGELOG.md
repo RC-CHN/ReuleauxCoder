@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reused unchanged composed terminal rows across frames, keyed by width and ordered clipped/transformed writes, avoiding repeated cell-grid construction and serialization without changing animation timing.
 - Skipped ANSI style-difference allocation for adjacent characters with identical styles, preserving upstream transitions and closing sequences byte for byte.
 - Reused bounded ANSI parsing and Unicode width caches across Ink frames, scoped to each terminal root. A version/hash-checked adapter keeps source runs and release bundles consistent, with byte-for-byte upstream renderer regression tests.
 - Cached fitted terminal rows with entry and memory limits, avoiding repeated ANSI clipping for rows shared by adjacent frames while preserving style closures and Unicode widths.
