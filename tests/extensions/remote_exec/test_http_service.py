@@ -556,10 +556,15 @@ class TestRemoteRelayHTTPService:
                 assert result_body["ok"] is True
 
             holder = {}
+            # This fixture intentionally registers a v1 peer. Paged reads
+            # require an upgrade; explicit full reads retain compatibility.
+            paged_read = ReadFileTool(backend=backend).execute("/tmp/demo.txt")
+            assert not paged_read.success
+            assert "upgrade" in paged_read.model_text.lower()
             thread = threading.Thread(
                 target=lambda: holder.setdefault(
                     "result",
-                    ReadFileTool(backend=backend).execute("/tmp/demo.txt"),
+                    ReadFileTool(backend=backend).execute("/tmp/demo.txt", override=True),
                 )
             )
             thread.start()
@@ -1360,6 +1365,8 @@ class TestRemoteRelayHTTPService:
                 "process.interrupt",
                 "process.terminate",
                 "process.release",
+                "process.poll.concurrent",
+                "workspace.fs.read_text_page",
                 "workspace.fs.snapshot_text",
                 "workspace.fs.write_text_verified",
                 "workspace.fs.replace_exact_verified",
