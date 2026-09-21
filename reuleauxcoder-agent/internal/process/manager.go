@@ -149,10 +149,10 @@ type state struct {
 }
 
 func (s *state) signalChange() {
-	select {
-	case s.changed <- struct{}{}:
-	default:
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	close(s.changed)
+	s.changed = make(chan struct{})
 }
 
 type Manager struct {
@@ -297,7 +297,7 @@ func (m *Manager) start(args map[string]any) (result protocol.WorkspaceResult) {
 
 	processState := &state{
 		id: processID, idempotencyKey: idempotencyKey,
-		cmd: cmd, done: make(chan struct{}), changed: make(chan struct{}, 1),
+		cmd: cmd, done: make(chan struct{}), changed: make(chan struct{}),
 		startedAt: time.Now(),
 	}
 	processState.stdout.onChange = processState.signalChange
@@ -448,6 +448,10 @@ func (m *Manager) poll(ctx context.Context, args map[string]any) protocol.Worksp
 	stdoutOffset := int64Arg(args["stdout_offset"])
 	stderrOffset := int64Arg(args["stderr_offset"])
 	waitMillis := int64Arg(args["wait_ms"])
+	// Subscribe before checking offsets so a concurrent write cannot be missed.
+	processState.mu.Lock()
+	changed := processState.changed
+	processState.mu.Unlock()
 	if waitMillis > 0 &&
 		stdoutOffset >= processState.stdout.endOffset() &&
 		stderrOffset >= processState.stderr.endOffset() &&
@@ -455,7 +459,7 @@ func (m *Manager) poll(ctx context.Context, args map[string]any) protocol.Worksp
 		timer := time.NewTimer(time.Duration(waitMillis) * time.Millisecond)
 		select {
 		case <-ctx.Done():
-		case <-processState.changed:
+		case <-changed:
 		case <-processState.done:
 		case <-timer.C:
 		}

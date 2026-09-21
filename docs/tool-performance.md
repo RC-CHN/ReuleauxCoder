@@ -12,7 +12,8 @@ Local condition waits and host-side remote future waits check cancellation every
 request; it does not terminate the process or advance the output cursor. A later
 poll retrieves output using the same cursor, including output from a late reply.
 Peers advertising `process.poll.concurrent` execute polls separately from command
-dispatch, with at most 64 pending polls and cleanup on disconnect. Older peers
+dispatch, with at most 64 pending polls and cleanup on disconnect. Output changes
+wake every waiting consumer, including both process observation and tool calls. Older peers
 retain 50 ms poll requests so a waiting process cannot block control commands.
 
 `read_file` applies `offset` and `limit` in the workspace adapter. Local reads
