@@ -1,0 +1,54 @@
+{
+  "label": "after-navigation-final",
+  "node": "v24.16.0",
+  "platform": "linux",
+  "cpu": "Intel(R) Xeon(R) CPU Max 9470C",
+  "terminal": {
+    "columns": 160,
+    "rows": 40
+  },
+  "render_limit_fps": 120,
+  "scope": "Raw stdin through Ink to newly visible text in a synthetic terminal sink; excludes terminal emulator, GPU and SSH latency.",
+  "results": [
+    {
+      "name": "raw-wheel-to-content-frame",
+      "samples": 40,
+      "p50_ms": 29.12,
+      "p95_ms": 50.51,
+      "max_ms": 50.52,
+      "ink_render_p95_ms": 43.44,
+      "render_count": 40,
+      "cpu_percent_one_core": 97.32,
+      "output_kib": 235.08
+    },
+    {
+      "name": "raw-arrows-to-content-frame",
+      "samples": 40,
+      "p50_ms": 26.91,
+      "p95_ms": 34.53,
+      "max_ms": 63.55,
+      "ink_render_p95_ms": 27.87,
+      "render_count": 40,
+      "cpu_percent_one_core": 89.46,
+      "output_kib": 235.08
+    },
+    {
+      "name": "raw-typing-to-content-frame",
+      "samples": 40,
+      "p50_ms": 23.41,
+      "p95_ms": 24.15,
+      "max_ms": 26.21,
+      "ink_render_p95_ms": 18.36,
+      "render_count": 40,
+      "cpu_percent_one_core": 75.71,
+      "output_kib": 17.27
+    },
+    {
+      "name": "500-line-unicode-cursor-and-layout",
+      "samples": 1000,
+      "p50_ms": 0,
+      "p95_ms": 0.01,
+      "max_ms": 0.15
+    }
+  ]
+}

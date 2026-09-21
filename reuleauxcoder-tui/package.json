@@ -16,6 +16,7 @@
     "bundle": "node scripts/bundle.mjs",
     "check": "tsc --noEmit -p tsconfig.json",
     "benchmark": "node --import tsx scripts/benchmark.tsx",
+    "benchmark:navigation": "node --import tsx scripts/benchmark-navigation.tsx",
     "test": "npm run build && npm run bundle && node --import tsx --test test/*.test.ts*"
   },
   "dependencies": {
