@@ -140,9 +140,27 @@ export const paint = {
   surface: (text: string) => surface(text, current.foreground, current.background),
 };
 
+const fittedRows = new Map<string, string>();
+let fittedChars = 0;
+
 export function fit(text: string, width: number): string {
+  // Adjacent scroll frames share most rows. Keep exact ANSI clipping semantics,
+  // while bounding both cache entries and retained string storage.
+  const key = text.length <= 4096 ? `${width}\0${text}` : undefined;
+  if (key !== undefined) {
+    const cached = fittedRows.get(key);
+    if (cached !== undefined) {fittedRows.delete(key); fittedRows.set(key, cached); return cached;}
+  }
   const clipped = sliceAnsi(text, 0, Math.max(0, width));
-  return clipped + ' '.repeat(Math.max(0, width - stringWidth(clipped)));
+  const result = clipped + ' '.repeat(Math.max(0, width - stringWidth(clipped)));
+  if (key !== undefined && result.length <= 4096) {
+    fittedRows.set(key, result); fittedChars += key.length + result.length;
+    while (fittedRows.size > 1024 || fittedChars > 1024 * 1024) {
+      const [oldKey, oldValue] = fittedRows.entries().next().value!;
+      fittedRows.delete(oldKey); fittedChars -= oldKey.length + oldValue.length;
+    }
+  }
+  return result;
 }
 
 export function between(left: string, right: string, width: number): string {

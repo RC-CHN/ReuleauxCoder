@@ -4,7 +4,19 @@ import {mkdtemp, mkdir, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {loadTheme} from '../src/ui/theme-config.js';
-import {resolveTheme} from '../src/ui/theme.js';
+import {fit, paint, resolveTheme} from '../src/ui/theme.js';
+import sliceAnsi from 'slice-ansi';
+import stringWidth from 'string-width';
+
+test('cached row fitting preserves ANSI closures and Unicode clipping across widths', () => {
+  const samples = ['plain', '中文👩🏽‍💻é', '\x1b[31mopen color', '\x1b[44m\x1b[31mred\x1b[39m', paint.selected(paint.bold('Selected 中文')), ''];
+  for (let repeat = 0; repeat < 3; repeat++) for (const text of samples) for (const width of [0, 1, 4, 20, 100]) {
+    const clipped = sliceAnsi(text, 0, width);
+    assert.equal(fit(text, width), clipped + ' '.repeat(Math.max(0, width - stringWidth(clipped))));
+  }
+  for (let i = 0; i < 2000; i++) fit(paint.accent(`row-${i}`), 80);
+  assert.equal(fit('plain', 8), 'plain   ', 'eviction preserves results');
+});
 
 test('project theme defaults, CLI preset and custom file have explicit precedence', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'rcoder-theme-'));
