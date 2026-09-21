@@ -29,6 +29,7 @@ class RpcPeer:
         self.methods = dict(methods or {})
         self.notifications = dict(notifications or {})
         self.closed = threading.Event()
+        self._close_complete = threading.Event()
         self.on_close = lambda: None
         self._ids = itertools.count(1)
         self._pending: dict[str, Future] = {}
@@ -224,5 +225,16 @@ class RpcPeer:
         try:
             self.on_close()
         finally:
-            self.transport.close()
-            self._workers.shutdown(wait=False, cancel_futures=True)
+            try:
+                # A sender may already be inside transport.send when closed is
+                # set. Finish that write before closing its stream.
+                with self._send_lock:
+                    self.transport.close()
+            finally:
+                self._workers.shutdown(wait=False, cancel_futures=True)
+                self._close_complete.set()
+
+    def wait_closed(self, timeout: float | None = None) -> None:
+        """Wait for transport cleanup, from the owning thread after close()."""
+        if not self._close_complete.wait(timeout):
+            raise TimeoutError("RPC transport cleanup did not finish")

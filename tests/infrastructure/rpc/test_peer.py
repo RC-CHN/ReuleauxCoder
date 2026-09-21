@@ -110,3 +110,39 @@ def test_stdio_framing_preserves_unicode_and_escaped_newlines():
     assert transport.receive() is None
     with pytest.raises(ValueError, match="Truncated"):
         StreamTransport(io.BytesIO(b'{"incomplete":'), io.BytesIO()).receive()
+
+
+def test_close_completion_waits_for_inflight_write_and_transport_cleanup():
+    writing, release_write = threading.Event(), threading.Event()
+    closing, release_close = threading.Event(), threading.Event()
+
+    class Transport:
+        def send(self, message):
+            writing.set()
+            assert release_write.wait(2)
+
+        def close(self):
+            closing.set()
+            assert release_close.wait(2)
+
+    peer = RpcPeer(Transport())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        send = pool.submit(peer.notify, "update")
+        assert writing.wait(2)
+        close = pool.submit(peer.close)
+        try:
+            assert peer.closed.wait(2)
+            assert not closing.is_set()
+            release_write.set()
+            send.result(timeout=2)
+            assert closing.wait(2)
+            # Another owner's close returns while the first closer is still
+            # cleaning up; wait_closed must distinguish these two states.
+            peer.close()
+            with pytest.raises(TimeoutError):
+                peer.wait_closed(timeout=0)
+        finally:
+            release_write.set()
+            release_close.set()
+        close.result(timeout=2)
+    peer.wait_closed(timeout=2)

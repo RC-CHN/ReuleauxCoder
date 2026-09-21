@@ -89,4 +89,5 @@ def run_stdio(options):
                     server.shutdown()
             finally:
                 peer.close()
+                peer.wait_closed(timeout=10)
                 runner.cleanup()

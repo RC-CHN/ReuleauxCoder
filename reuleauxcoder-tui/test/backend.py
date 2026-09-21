@@ -260,4 +260,5 @@ try:
 finally:
     server.shutdown()
     peer.close()
+    peer.wait_closed(timeout=10)
     agent.unbind_session_persistence()
