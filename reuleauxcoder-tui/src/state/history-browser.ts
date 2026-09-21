@@ -11,6 +11,7 @@ export class HistoryBrowser {
   error = '';
   index = 0;
   offset = 0;
+  end = 0;
   search: Editor | null = null;
   cursors: (string | null)[] = [null];
   private request = 0;

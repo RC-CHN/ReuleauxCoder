@@ -160,6 +160,9 @@ test('scrolling to the bottom restores shortcuts and follows subsequent output',
   c.wheel(-3);
   await until(() => app.lastFrame()?.includes('History '));
   c.resize(100, 80);
+  await delay(40);
+  assert.notEqual(c.offset, null, 'resize does not silently resume following');
+  await c.key('', {ctrl: true, end: true});
   await until(() => c.offset === null && !app.lastFrame()?.includes('History '));
 });
 
@@ -183,7 +186,7 @@ test('panel scrolling reuses wrapping while changed text and width invalidate it
   assert(narrower.rows.every(row => stringWidth(row) <= 30));
 });
 
-test('scroll bursts show intermediate rows, reverse immediately and yield to End or navigation', async t => {
+test('scroll input applies its full distance immediately and leaves no queued movement', async t => {
   const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
   t.after(() => {c.client.peer.close(); c.dispose();});
   c.resize(24, 100); // Match Ink's test terminal before measuring row coordinates.
@@ -196,10 +199,10 @@ test('scroll bursts show intermediate rows, reverse immediately and yield to End
   const unsubscribe = c.subscribe(() => {if (c.offset !== null) positions.push(c.offset);});
   t.after(unsubscribe);
   await c.key('', {pageUp: true});
-  assert.equal(positions[0], bottom - 1, 'the first row is published with the key, without waiting for a timer');
+  assert.equal(positions[0], bottom - page, 'the whole page moves with the key');
   await c.key('', {pageUp: true});
   await until(() => c.offset === bottom - page * 2);
-  assert(positions.some(row => row < bottom && row > bottom - page * 2), 'paging renders intermediate rows');
+  assert.equal(c.offset, bottom - page * 2);
 
   await c.key('', {pageDown: true});
   await until(() => c.offset !== null && c.offset > bottom - page * 2);
@@ -208,6 +211,9 @@ test('scroll bursts show intermediate rows, reverse immediately and yield to End
   await c.key('', {pageUp: true});
   await until(() => c.offset === reversed - page);
   assert(positions.every(row => row <= reversed), 'reversal drops outstanding travel in the old direction');
+  const stationary = c.offset;
+  await delay(150);
+  assert.equal(c.offset, stationary, 'no easing or residual animation after input stops');
   await c.key('', {pageUp: true});
   await c.key('', {end: true, ctrl: true});
   await until(() => app.lastFrame()?.includes('line 99'));

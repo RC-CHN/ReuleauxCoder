@@ -79,14 +79,14 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   const transcript = useMemo(() => layout.render(c.session.cells, width, transcriptHeight, c.offset, c.expanded, c.session.takeDirtyIndex()),
     [layout, c.session.contentRevision, width, transcriptHeight, c.offset, c.expanded]);
   c.viewportRows = Math.max(1, panel ? panelHeight : transcriptHeight); c.totalRows = transcript.total;
-  if (c.offset !== null) c.offset = transcriptHeight > 0 && transcript.start + transcriptHeight >= transcript.total ? null : transcript.start;
+  if (c.offset !== null) c.offset = transcript.start;
   const state = c.session.state;
   const backgroundCount = [...c.session.processes.values()].filter(process => process.state !== 'exited').length;
   const shortcutHints = (panel
     ? [keyHint('Esc', 'back'), keyHint('PgUp/PgDn', 'scroll'), keyHint('F2', 'details')]
     : [...(!dimensions.sidebar && backgroundCount ? [keyHint('/ps', `${backgroundCount} processes`)] : []), keyHint('F4', c.expanded ? 'collapse details' : 'output + reasoning + LSP + tables'), keyHint('F2', 'session'), keyHint('/', 'commands'), ...(dimensions.width >= 100 ? [keyHint('Ctrl+C', state.running ? 'interrupt' : 'exit')] : [])]
   ).join('   ');
-  const footer = c.exitConfirm ? paint.warning('Press Ctrl+C again to save and exit.') : c.session.fatal ? paint.error(safe(c.session.fatal)) : c.status ? paint.muted(safe(c.status)) : c.offset !== null ? paint.muted(`History ${transcript.start + 1}/${transcript.estimated ? '~' : ''}${transcript.total} · End follows output`) : shortcutHints;
+  const footer = c.exitConfirm ? paint.warning('Press Ctrl+C again to save and exit.') : c.session.fatal ? paint.error(safe(c.session.fatal)) : c.offset !== null ? paint.muted(`History ${transcript.start + 1}/${transcript.estimated ? '~' : ''}${transcript.total}${c.hasNewOutput ? ' · New output' : ''} · Ctrl+End follows output`) : c.status ? paint.muted(safe(c.status)) : shortcutHints;
   const inputColor = focused ? paint.accent : paint.muted;
   const panelColor = c.active ? paint.warning : paint.accent;
   const composer = composerInput.rows.map((row, index) => frameRow(

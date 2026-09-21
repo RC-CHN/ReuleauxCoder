@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Removed TUI scroll easing and input debounce: wheel and keyboard navigation publish their full movement immediately. Reading history remains paused through output, resize and detail changes, with a new-output indicator and explicit Ctrl+End resume.
 - Unified wheel/page navigation across TUI lists, approvals and content panels. Scrolling preserves selection; confirming an offscreen selection first reveals it. Arrow navigation stops at list boundaries.
 - Added visual-line Up/Down editing with Unicode cell geometry and remembered columns. Empty-input arrows and Alt+Up/Down recall history, restoring the original draft, cursor and image attachments; form fields use Shift+Tab to go back.
 - Separated TUI mouse-wheel reports from keyboard input so scrolling cannot replace a draft with input history. Added `--no-mouse` for native terminal selection and restored mouse modes on exit.

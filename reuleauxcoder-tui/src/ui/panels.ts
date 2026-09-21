@@ -45,7 +45,8 @@ export function panelRows(c: TuiController, width: number, height: number, layou
       ].filter(Boolean).map(safe).join('\n') : '';
       return kind === 'confirm' ? safe(request.message) : [paint.secondary(safe(request.summary)), paint.info(contextText), ...request.sections.map((section: any) => `${paint.accent(paint.bold(safe(section.title ?? section.kind)))}\n${section.kind === 'diff' ? diff(section.content) : fields(section.content)}`)].filter(Boolean).join('\n\n');
     });
-    c.interactionOffset = Math.min(c.interactionOffset, Math.max(0, rows.length - height));
+    c.interactionEnd = Math.max(0, rows.length - height);
+    c.interactionOffset = Math.min(c.interactionOffset, c.interactionEnd);
     const hint = kind === 'confirm'
       ? [paint.action('y/Enter yes'), paint.error('n no'), keyHint('Esc', 'cancel')]
       : [paint.action(`y/Enter ${safe(request.approve_label)} once`), paint.error(`n ${safe(request.reject_label)}`), ...(request.grant_options.length ? [keyHint('s', 'scope')] : []), keyHint('f', 'feedback')];
@@ -82,7 +83,8 @@ export function panelRows(c: TuiController, width: number, height: number, layou
       const separator = row.indexOf(': ');
       return separator >= 0 ? paint.info(row.slice(0, separator + 1)) + row.slice(separator + 1) : row;
     }).join('\n'));
-    screen.offset = Math.min(screen.offset, Math.max(0, rows.length - height));
+    screen.end = Math.max(0, rows.length - height);
+    screen.offset = Math.min(screen.offset, screen.end);
     return {title: screen.title, rows: rows.slice(screen.offset, screen.offset + height), hint: [...(screen.title === 'Session details' && c.client.info.history_query ? [keyHint('h', 'browse / search history')] : []), keyHint('↑↓ / PgUp/PgDn', 'scroll', paint.info), keyHint('Esc', 'back'), ...(screen.menu ? [keyHint('Tab', 'actions')] : [])], navigation: `${screen.offset + 1}/${rows.length}`};
   }
   if (screen?.kind === 'form') {

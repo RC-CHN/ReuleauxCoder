@@ -25,7 +25,8 @@ export function historyRows(browser: HistoryBrowser, width: number, height: numb
     const total = artifact?.total_chars ?? record?.total_chars;
     const metadata = [record && `${record.role ?? record.kind} · seq ${record.seq}${record.turn_id ? ' · ' + record.turn_id : ''}`, `Chars ${offset}–${offset + body.length}${total == null ? '' : '/' + total}`].filter(Boolean).join('\n');
     rows = layout.rows(artifact ?? record, width, () => paint.info(safe(metadata)) + '\n\n' + safe(body));
-    browser.offset = Math.min(browser.offset, Math.max(0, rows.length - Math.max(1, height - header.length)));
+    browser.end = Math.max(0, rows.length - Math.max(1, height - header.length));
+    browser.offset = Math.min(browser.offset, browser.end);
     rows = rows.slice(browser.offset, browser.offset + height - header.length);
   } else {
     const records = page?.records ?? [];

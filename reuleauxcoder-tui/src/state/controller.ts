@@ -10,12 +10,12 @@ import {InputHistory} from './history.js';
 import {HistoryBrowser} from './history-browser.js';
 import type {HistoryOperation} from '../protocol/history.js';
 import {fields} from '../ui/format.js';
-import {ScrollMotion, type SelectionViewport} from './scroll.js';
+import type {SelectionViewport} from './scroll.js';
 import {editImageDraft, pastedImagePath, replaceSpan, type DraftImage} from './images.js';
 
 export interface Item {label: string; description: string; current?: boolean; id?: string | null; select(): void | Promise<void>}
 export interface ListScreen {kind: 'list'; title: string; items: Item[]; index: number; filter: Editor; menu?: Menu; panel?: Panel; panelPath?: string[]; output?: string; contentOffset?: number | null; contentHeight?: number; contentEnd?: number}
-export interface DocumentScreen {kind: 'document'; title: string; body: string; offset: number; menu?: Menu}
+export interface DocumentScreen {kind: 'document'; title: string; body: string; offset: number; end?: number; menu?: Menu}
 export interface FormScreen {kind: 'form'; title: string; action: Action; values: {[key: string]: Json}; index: number; input: Editor; error: string}
 export interface HistoryScreen {kind: 'history'; title: string; browser: HistoryBrowser; menu?: never}
 export type Screen = ListScreen | DocumentScreen | FormScreen | HistoryScreen;
@@ -45,6 +45,9 @@ export class TuiController extends EventEmitter {
   interactionIndex = 0;
   interactionInput = editor();
   interactionOffset = 0;
+  interactionEnd = 0;
+  private readingRevision?: number;
+  get hasNewOutput() {return this.offset !== null && this.readingRevision !== undefined && this.session.contentRevision !== this.readingRevision;}
   private interactionId?: string;
   private revision = 0;
   private updateTimer?: NodeJS.Timeout;
@@ -53,7 +56,7 @@ export class TuiController extends EventEmitter {
   private historyIndex: number | null = null;
   private historyDraft?: {composer: Editor; images: DraftImage[]; imageNumber: number};
   private refreshTimer?: NodeJS.Timeout;
-  private scroll = new ScrollMotion(() => {this.revision++; this.flush();});
+  private inputChanged() {this.revision++; this.flush();}
   private selectionWindows = new WeakMap<object, SelectionViewport>();
   selection(scope: object): SelectionViewport {
     let window = this.selectionWindows.get(scope);
@@ -77,6 +80,7 @@ export class TuiController extends EventEmitter {
     client.on('state', state => {
       if (state.session_id !== this.session.state.session_id || state.session_generation !== this.session.state.session_generation) {
         this.leaveInputHistory();
+        this.offset = null; this.readingRevision = undefined;
         if (this.images.length) this.status = 'Session changed; draft images cleared. Attach them again to use them here.';
         for (const {label} of this.images) {
           const start = this.composer.text.indexOf(label);
@@ -147,7 +151,6 @@ export class TuiController extends EventEmitter {
   }
   resize(rows: number, columns: number) {
     if (this.rows === rows && this.columns === columns) return;
-    this.scroll.cancel();
     this.rows = rows; this.columns = columns;
     if (this.session.connected && !this.closing) this.client.resize(rows, columns);
     this.changed();
@@ -325,9 +328,15 @@ export class TuiController extends EventEmitter {
   }
   async key(input: string, key: Partial<Key> = {}) {
     if (this.closing) return;
-    if (!(key.upArrow || key.downArrow || key.pageUp || key.pageDown)) this.scroll.cancel();
+    try {await this.handleKey(input, key);}
+    finally {this.inputChanged();}
+  }
+  private async handleKey(input: string, key: Partial<Key>) {
     if (key.ctrl && (key.home || key.end)) {
-      if (!this.active && !this.screen && !this.palette.length) this.offset = key.home ? 0 : null;
+      if (!this.active && !this.screen && !this.palette.length) {
+        this.offset = key.home ? 0 : null;
+        this.readingRevision = key.home ? this.readingRevision ?? this.session.contentRevision : undefined;
+      }
       else this.scrollBy(key.home ? -Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER);
       this.changed(); return;
     }
@@ -450,7 +459,7 @@ export class TuiController extends EventEmitter {
         const images = this.images;
         const value = images.length ? record('ChatInput', {text, images: tuple(images.map(item => record('ImageReference', {...item.image}))), image_labels: tuple(images.map(item => item.label)), session_id: this.client.state.session_id, session_generation: this.client.state.session_generation}) : text;
         const admission = await this.client.submit(value);
-        if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); if (this.images === images) {this.images = []; this.imageNumber = 0;} this.leaveInputHistory(); this.offset = null; if (text) await this.history.add(text);}
+        if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); if (this.images === images) {this.images = []; this.imageNumber = 0;} this.leaveInputHistory(); this.offset = null; this.readingRevision = undefined; if (text) await this.history.add(text);}
         else this.status = 'The backend is stopping. Your draft is still here.';
       }
     } else if ((key.upArrow || key.downArrow) && (key.meta || this.historyIndex !== null || !this.composer.text && !this.images.length)) {
@@ -481,7 +490,6 @@ export class TuiController extends EventEmitter {
     }
   }
   toggleDetails() {
-    this.scroll.cancel();
     this.expanded = !this.expanded;
     this.status = this.expanded
       ? 'Full details shown · F4 collapse output + reasoning + tables'
@@ -495,15 +503,14 @@ export class TuiController extends EventEmitter {
   showHelp() {this.document('Keyboard help', 'Enter        Send / select\nShift+Enter  New line (Alt+Enter also works)\n/ or Ctrl+P  Open command menus\nEsc          Back / cancel interaction\nWheel        Scroll content without changing input\nShift+Tab    Previous form field\nCtrl+C       Cancel interaction → close menu → clear draft → interrupt → confirm exit\nCtrl+D       Exit with an empty draft\nUp / Down    Move within input; empty input recalls history\nAlt+Up/Down  Input history, including with an empty draft\nPgUp / PgDn  Scroll the focused content\nHome / End   Input line start / end\nCtrl+Home/End Transcript start / follow latest\nF1 / Ctrl+G  Keyboard help\nF2 / Ctrl+O  Session, plan, jobs and startup details\nF4 / Ctrl+R  Toggle full transcript details (all records)\nCtrl+A/E     Start / end of input\nCtrl+U/K/W   Delete before / after / previous word\n\nF4 shows:\n  Tool arguments and full received output, diffs, diagnostics and archive details.\n  Reasoning returned by the model.\nIt applies to all retained records in this conversation.\nPress F4 again to restore previews; PgUp/PgDn reads earlier content.\n\nApproval: 1/y/Enter approve once · 2/n deny · s session scope · f feedback\nSecret input is masked and never written to input history.');}
   async finish() {
     if (this.closing) return;
-    this.scroll.cancel();
     this.closing = true; clearInterval(this.refreshTimer); this.changed();
     try {const saved = await this.client.shutdown(); this.emit('exit', saved);}
     catch (error) {this.emit('exit', null, error);}
   }
-  dispose() {this.scroll.cancel(); clearInterval(this.refreshTimer); clearTimeout(this.updateTimer); this.removeAllListeners();}
+  dispose() {clearInterval(this.refreshTimer); clearTimeout(this.updateTimer); this.removeAllListeners();}
 
-  private scrollBy(delta: number) {
-    const active = this.active, screen = this.screen, cells = this.session.cells;
+  private scrollBy(delta: number, notify = false) {
+    const active = this.active, screen = this.screen;
     if (active && (active.kind === 'input_text' || this.interactionMode === 'feedback') || !active && screen?.kind === 'form') return;
     const scope = active && (active.kind === 'choose_one' || this.interactionMode === 'scope') ? active
       : !active && screen?.kind === 'list' && !screen.panel?.body ? screen
@@ -512,26 +519,31 @@ export class TuiController extends EventEmitter {
     if (scope) {
       const viewport = this.selection(scope);
       viewport.follow = false;
-      this.scroll.move(scope, delta, () => viewport.offset, row => {viewport.offset = row;}, () => this.active === active && this.screen === screen, Math.max(0, viewport.total - viewport.height));
+      viewport.offset = Math.max(0, Math.min(viewport.total - viewport.height, viewport.offset + delta));
+      if (notify) this.inputChanged();
       return;
     }
     if (!active && screen?.kind === 'list') {
-      this.scroll.move(screen, delta, () => screen.contentOffset ?? screen.contentEnd ?? 0, row => {screen.contentOffset = row;}, () => !this.active && this.screen === screen, screen.contentEnd ?? 0);
+      screen.contentOffset = Math.max(0, Math.min(screen.contentEnd ?? 0, (screen.contentOffset ?? screen.contentEnd ?? 0) + delta));
+      if (notify) this.inputChanged();
       return;
     }
     if (active) {
-      this.scroll.move(active, delta, () => this.interactionOffset, row => {this.interactionOffset = row;}, () => this.active === active);
+      this.interactionOffset = Math.max(0, Math.min(this.interactionEnd, this.interactionOffset + delta));
     } else if (screen?.kind === 'document' || screen?.kind === 'history' && screen.browser.detailed) {
       const position = screen.kind === 'document' ? screen : screen.browser;
-      this.scroll.move(position, delta, () => position.offset, row => {position.offset = row;}, () => !this.active && this.screen === screen);
+      position.offset = Math.max(0, Math.min(position.end ?? Number.MAX_SAFE_INTEGER, position.offset + delta));
     } else {
       const bottom = Math.max(0, this.totalRows - this.viewportRows);
-      this.scroll.move(cells, delta, () => this.offset ?? bottom, row => {this.offset = row;}, () => !this.active && this.screen === screen && this.session.cells === cells, bottom);
+      const next = Math.max(0, Math.min(bottom, (this.offset ?? bottom) + delta));
+      this.offset = delta > 0 && next === bottom ? null : next;
+      this.readingRevision = this.offset === null ? undefined : this.readingRevision ?? this.session.contentRevision;
     }
+    if (notify) this.inputChanged();
   }
 
   wheel(delta: number) {
     if (this.closing) return;
-    this.scrollBy(delta);
+    this.scrollBy(delta, true);
   }
 }

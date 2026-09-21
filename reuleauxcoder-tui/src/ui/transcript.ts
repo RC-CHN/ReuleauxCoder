@@ -58,6 +58,7 @@ export class TranscriptLayout {
     const oldIndex = this.heights.find(offset ?? this.start);
     let anchor = offset === null ? undefined : offset === this.start ? this.anchor : this.blocks[oldIndex] && {id: this.blocks[oldIndex].id, row: offset - this.heights.sum(oldIndex)};
     const resized = this.width !== width;
+    const anchorText = anchor && (resized || this.expanded !== expanded) ? this.cache.get(anchor.id)?.rows[anchor.row] : undefined;
     if (resized && anchor && this.width) anchor = {...anchor, row: Math.floor(anchor.row * this.width / width)};
     const reset = this.cells !== cells || this.expanded !== expanded;
     if (reset) dirty = 0;
@@ -78,7 +79,13 @@ export class TranscriptLayout {
     } else {
       index = anchor ? this.positions.get(anchor.id) ?? this.heights.find(offset) : this.heights.find(offset);
       within = Math.max(0, anchor && this.positions.has(anchor.id) ? anchor.row : offset - this.heights.sum(index));
-      within = Math.min(within, Math.max(0, this.rows(index).length - 1));
+      const rows = this.rows(index);
+      if (anchorText !== undefined) {
+        let closest = -1;
+        for (let row = 0; row < rows.length; row++) if (rows[row] === anchorText && (closest < 0 || Math.abs(row - within) < Math.abs(closest - within))) closest = row;
+        if (closest >= 0) within = closest;
+      }
+      within = Math.min(within, Math.max(0, rows.length - 1));
     }
     const first = index;
     const visible: string[] = [];

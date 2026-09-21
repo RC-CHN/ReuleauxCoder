@@ -12,6 +12,34 @@ import {until} from './helpers.js';
 import {panelRows} from '../src/ui/panels.js';
 import {safe} from '../src/ui/format.js';
 
+test('reading anchors survive new output, detail changes and resize until explicitly resumed', async t => {
+  const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
+  c.session.connected = true;
+  for (let i = 0; i < 30; i++) c.session.add('user', 'You', `Message ${i}\n` + 'body\n'.repeat(3));
+  const app = render(<App controller={c}/>);
+  t.after(() => {app.cleanup(); c.dispose(); c.client.peer.close();});
+  await until(() => app.lastFrame()?.includes('Message 29'));
+  await c.key('', {pageUp: true});
+  await until(() => app.lastFrame()?.includes('History '));
+  const before = c.offset;
+  const anchor = safe(app.lastFrame()!).match(/Message \d+/)?.[0];
+  assert(anchor);
+  c.session.add('assistant', 'Reuleaux', 'New response'); c.changed();
+  await until(() => app.lastFrame()?.includes('New output'));
+  assert.equal(c.offset, before);
+  assert(safe(app.lastFrame()!).includes(anchor));
+  c.toggleDetails();
+  await until(() => c.expanded);
+  c.resize(100, 90);
+  await until(() => app.lastFrame()?.includes('Ctrl+End'));
+  assert.notEqual(c.offset, null);
+  assert(safe(app.lastFrame()!).includes(anchor));
+  await c.key('', {ctrl: true, end: true});
+  assert.equal(c.offset, null);
+  assert.equal(c.hasNewOutput, false);
+  await until(() => app.lastFrame()?.includes('New response'));
+});
+
 test('choice prompts scroll without changing the answer or the underlying draft', async t => {
   const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
   t.after(() => {c.dispose(); c.client.peer.close();});
