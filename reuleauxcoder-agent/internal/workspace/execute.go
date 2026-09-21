@@ -12,7 +12,7 @@ import (
 )
 
 func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.WorkspaceResult {
-	if req.Operation != "fs.read_text" && req.Operation != "fs.snapshot_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.write_text_verified" && req.Operation != "fs.replace_exact_atomic" && req.Operation != "fs.replace_exact_verified" && req.Operation != "fs.stat" && req.Operation != "fs.list" && req.Operation != "fs.glob" && req.Operation != "fs.search_text" {
+	if req.Operation != "fs.read_text_page" && req.Operation != "fs.read_text" && req.Operation != "fs.snapshot_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.write_text_verified" && req.Operation != "fs.replace_exact_atomic" && req.Operation != "fs.replace_exact_verified" && req.Operation != "fs.stat" && req.Operation != "fs.list" && req.Operation != "fs.glob" && req.Operation != "fs.search_text" {
 		return failure("invalid_path", fmt.Sprintf("unsupported workspace operation %q", req.Operation))
 	}
 	cwd := defaultCWD
@@ -55,6 +55,8 @@ func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.Wo
 			return failure("io_error", err.Error())
 		}
 		return success(map[string]any{"content": string(content)})
+	case "fs.read_text_page":
+		return readTextPage(path, pathValue, req.Args)
 	case "fs.snapshot_text":
 		content, revision, err := readDocument(path)
 		if err != nil {

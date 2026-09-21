@@ -200,6 +200,19 @@ class WorkspaceListResult:
     truncated: bool = False
 
 
+DEFAULT_READ_MAX_CHARS = 256 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceTextPage:
+    """A bounded page; total lines are known only when the reader reaches EOF."""
+
+    lines: tuple[str, ...]
+    total_lines: int | None
+    has_more: bool
+    truncated: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceGlobResult:
     entries: tuple[WorkspaceEntry, ...]
@@ -259,6 +272,15 @@ class WorkspacePort(Protocol):
     def resolve(self, path: str | Path) -> Path: ...
 
     def read_text(self, path: str | Path) -> str: ...
+
+    def read_text_page(
+        self,
+        path: str | Path,
+        *,
+        offset: int = 1,
+        limit: int = 2000,
+        max_chars: int = DEFAULT_READ_MAX_CHARS,
+    ) -> WorkspaceTextPage: ...
 
     def snapshot_text(self, path: str | Path) -> WorkspaceDocumentSnapshot: ...
 

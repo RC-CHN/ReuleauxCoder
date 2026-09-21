@@ -89,28 +89,35 @@ class ReadFileTool(Tool):
         override: bool = False,
     ) -> ToolOutcome:
         try:
-            text = self.backend.workspace.read_text(file_path)
-            lines = text.splitlines()
-            total = len(lines)
-
             if override:
+                text = self.backend.workspace.read_text(file_path)
+                lines = text.splitlines()
+                total = len(lines)
                 start = 0
                 chunk = lines
+                has_more = truncated = False
             else:
-                start = max(0, offset - 1)
-                chunk = lines[start : start + limit]
+                page = self.backend.workspace.read_text_page(
+                    file_path, offset=offset, limit=limit
+                )
+                start = offset - 1
+                chunk = page.lines
+                total = page.total_lines
+                has_more = page.has_more
+                truncated = page.truncated
             numbered = [f"{start + i + 1}\t{ln}" for i, ln in enumerate(chunk)]
             result = "\n".join(numbered)
 
-            if not override and total > start + limit:
-                result += (
-                    f"\n... ({total} lines total, showing {start + 1}-{start + len(chunk)}; "
-                    "use override=true to read full file)"
-                )
+            if truncated:
+                result += "\n... (page character limit reached; use grep for targeted text or override=true for the full file)"
+            elif has_more:
+                result += f"\n... (more lines available; continue with offset={start + len(chunk) + 1})"
             model_content = result or "(empty file)"
-            source_chars = len("\n".join(chunk))
+            source_chars = sum(map(len, chunk)) + max(0, len(chunk) - 1)
             if chunk:
-                line_range = f"lines {start + 1}-{start + len(chunk)} of {total}"
+                line_range = f"lines {start + 1}-{start + len(chunk)}"
+                if total is not None:
+                    line_range += f" of {total}"
             else:
                 line_range = f"0 of {total} lines"
             return ToolOutcome(
@@ -124,6 +131,8 @@ class ReadFileTool(Tool):
                     "total_lines": total,
                     "character_count": source_chars,
                     "override": override,
+                    "has_more": has_more,
+                    "truncated": truncated,
                 },
                 retention_hint=ToolRetentionHint(
                     strategy=ToolRetentionStrategy.HEAD,

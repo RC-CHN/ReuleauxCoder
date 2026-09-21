@@ -28,6 +28,41 @@ class _Backend:
         return "peer"
 
 
+def test_remote_page_uses_bounded_peer_primitive(monkeypatch):
+    port = RemoteWorkspacePort(_Backend({"workspace.fs.read_text_page"}))
+    calls = []
+
+    def request(operation, **arguments):
+        calls.append((operation, arguments))
+        return {
+            "lines": ["hello"],
+            "total_lines": None,
+            "has_more": True,
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(port, "_request", request)
+    page = port.read_text_page("large.txt", offset=100, limit=1, max_chars=20)
+    assert page.lines == ("hello",)
+    assert calls == [
+        (
+            "fs.read_text_page",
+            {"path": "large.txt", "offset": 100, "limit": 1, "max_chars": 20},
+        )
+    ]
+
+
+def test_old_peer_does_not_silently_download_whole_file(monkeypatch):
+    port = RemoteWorkspacePort(_Backend(set()))
+
+    def unexpected_request(*args, **kwargs):
+        pytest.fail("old peer must not download the entire file for a page")
+
+    monkeypatch.setattr(port, "_request", unexpected_request)
+    with pytest.raises(WorkspaceError, match="upgrade the peer"):
+        port.read_text_page("large.txt")
+
+
 def _entry() -> dict[str, object]:
     return {
         "path": "/workspace/demo.py",

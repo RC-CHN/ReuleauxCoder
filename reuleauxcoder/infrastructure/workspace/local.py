@@ -14,6 +14,7 @@ from pathlib import Path
 from reuleauxcoder.domain.cancellation import CancellationSignal
 from reuleauxcoder.domain.workspace import (
     DEFAULT_SEARCH_LIMITS,
+    DEFAULT_READ_MAX_CHARS,
     WorkspaceDocumentSnapshot,
     WorkspaceEntry,
     WorkspaceError,
@@ -26,9 +27,11 @@ from reuleauxcoder.domain.workspace import (
     WorkspaceRevision,
     WorkspaceSearchLimits,
     WorkspaceSearchResult,
+    WorkspaceTextPage,
     compile_portable_glob,
 )
 from reuleauxcoder.infrastructure.workspace.search import search_text
+from reuleauxcoder.infrastructure.workspace.text import read_text_page
 
 
 class LocalWorkspacePort:
@@ -115,6 +118,44 @@ class LocalWorkspacePort:
             raise WorkspaceError(
                 WorkspaceErrorCode.IO_ERROR, f"failed to read {path}: {error}"
             ) from error
+
+    def read_text_page(
+        self,
+        path: str | Path,
+        *,
+        offset: int = 1,
+        limit: int = 2000,
+        max_chars: int = DEFAULT_READ_MAX_CHARS,
+    ) -> WorkspaceTextPage:
+        if any(
+            type(value) is not int or value < 1 for value in (offset, limit, max_chars)
+        ):
+            raise WorkspaceError(
+                WorkspaceErrorCode.INVALID_PATH, "page limits must be positive integers"
+            )
+        resolved = self.resolve(path)
+        try:
+            if resolved.exists() and not resolved.is_file():
+                raise WorkspaceError(
+                    WorkspaceErrorCode.NOT_A_FILE, f"{path} is not a file"
+                )
+            with resolved.open(
+                "r", encoding="utf-8", errors="replace", newline=""
+            ) as stream:
+                return read_text_page(
+                    stream, offset=offset, limit=limit, max_chars=max_chars
+                )
+        except FileNotFoundError as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.NOT_FOUND, f"{path} not found"
+            ) from error
+        except OSError as error:
+            code = (
+                WorkspaceErrorCode.NOT_A_FILE
+                if resolved.is_dir()
+                else WorkspaceErrorCode.IO_ERROR
+            )
+            raise WorkspaceError(code, f"failed to read {path}: {error}") from error
 
     def snapshot_text(self, path: str | Path) -> WorkspaceDocumentSnapshot:
         """Read text and a raw-byte revision from one backend observation."""

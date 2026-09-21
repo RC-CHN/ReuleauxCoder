@@ -39,6 +39,7 @@ from reuleauxcoder.domain.process import (
 )
 from reuleauxcoder.domain.workspace import (
     DEFAULT_SEARCH_LIMITS,
+    DEFAULT_READ_MAX_CHARS,
     WorkspaceDocumentSnapshot,
     WorkspaceEntry,
     WorkspaceError,
@@ -52,6 +53,7 @@ from reuleauxcoder.domain.workspace import (
     WorkspaceSearchLimits,
     WorkspaceSearchMatch,
     WorkspaceSearchResult,
+    WorkspaceTextPage,
     glob_paths_via_primitives,
 )
 from reuleauxcoder.extensions.remote_exec.errors import (
@@ -303,6 +305,46 @@ class RemoteWorkspacePort:
     def read_text(self, path: str | Path) -> str:
         return str(self._request("fs.read_text", path=str(path)).get("content", ""))
 
+    def read_text_page(
+        self,
+        path: str | Path,
+        *,
+        offset: int = 1,
+        limit: int = 2000,
+        max_chars: int = DEFAULT_READ_MAX_CHARS,
+    ) -> WorkspaceTextPage:
+        self.backend.resolve_peer_id()
+        if not self.backend.supports_capability("workspace.fs.read_text_page"):
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR,
+                "Remote peer does not support paged reads; upgrade the peer, or use "
+                "override=true to explicitly read the full file.",
+            )
+        data = self._request(
+            "fs.read_text_page",
+            path=str(path),
+            offset=offset,
+            limit=limit,
+            max_chars=max_chars,
+        )
+        lines = data.get("lines")
+        total = data.get("total_lines")
+        if (
+            not isinstance(lines, list)
+            or any(not isinstance(line, str) for line in lines)
+            or len(lines) > limit
+            or sum(map(len, lines)) > max_chars
+            or (total is not None and (type(total) is not int or total < 0))
+            or type(data.get("has_more")) is not bool
+            or type(data.get("truncated")) is not bool
+        ):
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR, "invalid remote text page"
+            )
+        return WorkspaceTextPage(
+            tuple(lines), total, data["has_more"], data["truncated"]
+        )
+
     def snapshot_text(self, path: str | Path) -> WorkspaceDocumentSnapshot:
         if self.backend.supports_capability("workspace.fs.snapshot_text"):
             data = self._request("fs.snapshot_text", path=str(path))
@@ -538,10 +580,16 @@ class RemoteWorkspacePort:
         return WorkspaceListResult(entries, truncated=bool(data.get("truncated")))
 
     def search_text(
-        self, pattern: str, path: str | Path, *,
-        include: str | None = None, exclude_dirs: tuple[str, ...] = (),
-        max_files: int = 5_000, max_matches: int = 200,
-        literal: bool = False, include_ignored: bool = False,
+        self,
+        pattern: str,
+        path: str | Path,
+        *,
+        include: str | None = None,
+        exclude_dirs: tuple[str, ...] = (),
+        max_files: int = 5_000,
+        max_matches: int = 200,
+        literal: bool = False,
+        include_ignored: bool = False,
         limits: WorkspaceSearchLimits = DEFAULT_SEARCH_LIMITS,
         cancellation: CancellationSignal | None = None,
     ) -> WorkspaceSearchResult:
@@ -549,18 +597,28 @@ class RemoteWorkspacePort:
             return WorkspaceSearchResult((), True, ("cancelled",))
         self.backend.resolve_peer_id()
         if not self.backend.supports_capability("workspace.fs.search_text.bounded"):
-            raise WorkspaceError(WorkspaceErrorCode.IO_ERROR,
-                                 "Remote grep requires an upgraded rcoder-peer with bounded search support")
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR,
+                "Remote grep requires an upgraded rcoder-peer with bounded search support",
+            )
         data = self._request(
-            "fs.search_text", path=str(path), pattern=pattern, literal=literal,
-            include=include, exclude_dirs=list(exclude_dirs),
-            max_files=max_files, max_matches=max_matches,
-            include_ignored=include_ignored, limits=asdict(limits),
+            "fs.search_text",
+            path=str(path),
+            pattern=pattern,
+            literal=literal,
+            include=include,
+            exclude_dirs=list(exclude_dirs),
+            max_files=max_files,
+            max_matches=max_matches,
+            include_ignored=include_ignored,
+            limits=asdict(limits),
         )
         return WorkspaceSearchResult(
             matches=tuple(WorkspaceSearchMatch(**item) for item in data["matches"]),
-            truncated=bool(data["truncated"]), reasons=tuple(data["reasons"]),
-            scanned_files=int(data["scanned_files"]), scanned_bytes=int(data["scanned_bytes"]),
+            truncated=bool(data["truncated"]),
+            reasons=tuple(data["reasons"]),
+            scanned_files=int(data["scanned_files"]),
+            scanned_bytes=int(data["scanned_bytes"]),
         )
 
     def glob_paths(
@@ -664,9 +722,9 @@ class RemoteProcessPort:
                 "cwd": cwd,
                 "tty": False,
                 "runtime_timeout_ms": runtime_timeout * 1000,
-                "deadline_unix_ms": int(
-                    (time.time() + runtime_timeout) * 1000
-                ) if runtime_timeout else 0,
+                "deadline_unix_ms": int((time.time() + runtime_timeout) * 1000)
+                if runtime_timeout
+                else 0,
             },
         )
         try:
@@ -781,9 +839,10 @@ class RemoteProcessPort:
                     entry.state = ProcessState.EXITED
                     entry.exit_code = _optional_int(data.get("exit_code"))
                     entry.termination_reason = _remote_termination_reason(data)
-                    entry.finished_at = _milliseconds_to_seconds(
-                        data.get("finished_unix_ms")
-                    ) or time.time()
+                    entry.finished_at = (
+                        _milliseconds_to_seconds(data.get("finished_unix_ms"))
+                        or time.time()
+                    )
                 else:
                     entry.state = ProcessState.RUNNING
             if entry.state is not ProcessState.EXITED:
@@ -849,8 +908,7 @@ class RemoteProcessPort:
                     entry.state = ProcessState.UNKNOWN
                     entry.termination_reason = "transport_unknown"
             raise ProcessOperationUnconfirmed(
-                "remote soft-interrupt delivery could not be confirmed: "
-                f"{error}",
+                f"remote soft-interrupt delivery could not be confirmed: {error}",
                 snapshot=self._snapshot(entry, ProcessCursor()),
             ) from error
         return self._snapshot(entry, ProcessCursor())

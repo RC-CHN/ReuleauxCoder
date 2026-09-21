@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.errors import (
     PeerDisconnectedError,
@@ -165,7 +167,9 @@ class TestRemoteBackendDispatch:
             result_holder = {}
 
             def run_tool():
-                result_holder["result"] = tool.execute(command="echo hello", timeout=120)
+                result_holder["result"] = tool.execute(
+                    command="echo hello", timeout=120
+                )
 
             t = threading.Thread(target=run_tool)
             t.start()
@@ -191,7 +195,8 @@ class TestRemoteBackendDispatch:
         finally:
             srv.stop()
 
-    def test_remote_workspace_uses_primitive_envelope(self) -> None:
+    @pytest.mark.parametrize("override", [False, True])
+    def test_remote_workspace_uses_primitive_envelope(self, override) -> None:
         srv = RelayServer()
         received: list[tuple[str, RelayEnvelope]] = []
         srv._send_fn = lambda peer_id, envelope: received.append((peer_id, envelope))
@@ -205,6 +210,11 @@ class TestRemoteBackendDispatch:
                     bootstrap_token=token,
                     cwd="/workspace",
                     workspace_root="/workspace",
+                    capabilities=[
+                        "workspace.fs.read_text_page",
+                        "workspace.fs.read_text",
+                    ],
+                    protocol_version=2,
                 )
             )
             backend = RemoteRelayToolBackend(relay_server=srv)
@@ -216,7 +226,10 @@ class TestRemoteBackendDispatch:
             holder: dict[str, object] = {}
             thread = threading.Thread(
                 target=lambda: holder.setdefault(
-                    "result", ReadFileTool(backend=backend).execute("README.md")
+                    "result",
+                    ReadFileTool(backend=backend).execute(
+                        "README.md", override=override
+                    ),
                 )
             )
             thread.start()
@@ -228,8 +241,15 @@ class TestRemoteBackendDispatch:
             envelope = received[0][1]
             assert envelope.type == "workspace_request"
             assert envelope.payload == {
-                "operation": "fs.read_text",
-                "args": {"path": "README.md"},
+                "operation": "fs.read_text" if override else "fs.read_text_page",
+                "args": {"path": "README.md"}
+                if override
+                else {
+                    "path": "README.md",
+                    "offset": 1,
+                    "limit": 2000,
+                    "max_chars": 256 * 1024,
+                },
                 "cwd": None,
                 "timeout_sec": 30,
             }
@@ -240,7 +260,15 @@ class TestRemoteBackendDispatch:
                     request_id=envelope.request_id,
                     peer_id=peer.peer_id,
                     payload=WorkspaceResult(
-                        ok=True, data={"content": "hello\n"}
+                        ok=True,
+                        data={"content": "hello\n"}
+                        if override
+                        else {
+                            "lines": ["hello"],
+                            "total_lines": 1,
+                            "has_more": False,
+                            "truncated": False,
+                        },
                     ).to_dict(),
                 ),
             )
