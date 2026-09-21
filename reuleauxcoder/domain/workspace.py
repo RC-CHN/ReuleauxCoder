@@ -350,11 +350,23 @@ class PortableGlobMatcher:
         )
 
     def matches(self, relative_path: str) -> bool:
+        return bool(
+            relative_path.replace("\\", "/").strip("/")
+            and self._segments
+            and self._states(relative_path)[-1]
+        )
+
+    def can_match_descendant(self, directory: str) -> bool:
+        """Whether consuming at least one more path segment can still match."""
+        if not self._segments:
+            return False
+        states = self._states(directory)
+        return any(states[:-1]) or (self._segments[-1] is None and states[-1])
+
+    def _states(self, relative_path: str) -> list[bool]:
         path_parts = tuple(
             part for part in relative_path.replace("\\", "/").split("/") if part
         )
-        if not path_parts or not self._segments:
-            return False
         previous = [False] * (len(self._segments) + 1)
         previous[0] = True
         for pattern_index, segment in enumerate(self._segments, 1):
@@ -373,7 +385,7 @@ class PortableGlobMatcher:
                         and segment.fullmatch(part) is not None
                     )
             previous = current
-        return previous[-1]
+        return previous
 
 
 @lru_cache(maxsize=256)

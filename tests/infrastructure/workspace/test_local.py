@@ -170,20 +170,13 @@ def test_verified_write_reports_external_base_and_observed_result(
     assert result.old_content == "changed by editor"
     assert result.new_content == "intended"
     assert result.receipt.external_change_before_write is True
-    assert (
-        result.receipt.verification
-        is WorkspaceMutationVerification.APPLIED_VERIFIED
-    )
+    assert result.receipt.verification is WorkspaceMutationVerification.APPLIED_VERIFIED
     assert result.receipt.atomic_replace is True
     assert result.receipt.observed_after is not None
-    assert (
-        result.receipt.observed_after.sha256
-        == result.receipt.intended_after_sha256
-    )
+    assert result.receipt.observed_after.sha256 == result.receipt.intended_after_sha256
     assert path.read_text() == "intended"
     assert (
-        WorkspaceMutationReceipt.from_dict(result.receipt.to_dict())
-        == result.receipt
+        WorkspaceMutationReceipt.from_dict(result.receipt.to_dict()) == result.receipt
     )
 
 
@@ -197,7 +190,9 @@ def test_failed_write_receipt_confirms_unchanged_target(
     def fail_replace(source, target) -> None:  # noqa: ARG001
         raise OSError("replace failed")
 
-    monkeypatch.setattr("reuleauxcoder.infrastructure.workspace.local.os.replace", fail_replace)
+    monkeypatch.setattr(
+        "reuleauxcoder.infrastructure.workspace.local.os.replace", fail_replace
+    )
 
     with pytest.raises(WorkspaceError) as failed:
         workspace.write_text_verified(path, "new")
@@ -233,10 +228,7 @@ def test_failed_write_receipt_reports_intended_contents_already_applied(
 
     receipt = failed.value.mutation_receipt
     assert receipt is not None
-    assert (
-        receipt.verification
-        is WorkspaceMutationVerification.APPLIED_VERIFIED
-    )
+    assert receipt.verification is WorkspaceMutationVerification.APPLIED_VERIFIED
     assert receipt.atomic_replace is False
     assert receipt.observed_after is not None
     assert receipt.observed_after.sha256 == receipt.intended_after_sha256
@@ -329,10 +321,7 @@ def test_exact_edit_retries_against_latest_external_contents(
     assert result.old_content == external
     assert result.new_content == updated
     assert result.receipt.external_change_before_write is True
-    assert (
-        result.receipt.verification
-        is WorkspaceMutationVerification.APPLIED_VERIFIED
-    )
+    assert result.receipt.verification is WorkspaceMutationVerification.APPLIED_VERIFIED
     assert path.read_bytes() == updated.encode("utf-8")
 
 
@@ -428,6 +417,58 @@ def test_optimized_glob_preserves_listing_truncation_order(tmp_path: Path) -> No
     assert optimized.listing_truncated is True
 
 
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "*",
+        "**",
+        "**/*.py",
+        "src",
+        "src/**",
+        "src/*",
+        "**/src/*.py",
+        "src/[an]*/?.py",
+        "**/**/**/*.py",
+    ],
+)
+def test_pruned_glob_matches_exhaustive_traversal(tmp_path, pattern):
+    for name in (
+        "src/a.py",
+        "src/nested/b.py",
+        "docs/src/c.py",
+        "node_modules/d.py",
+        ".hidden/e.py",
+    ):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    workspace = LocalWorkspacePort(tmp_path)
+    assert workspace.glob_paths(pattern, ".") == glob_paths_via_primitives(
+        workspace, pattern, "."
+    )
+
+
+def test_glob_pruning_avoids_unrelated_and_too_deep_directories(tmp_path, monkeypatch):
+    for name in ("src/a.py", "src/nested/b.py", "node_modules/pkg/c.py"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    scanned = []
+    real_scandir = os.scandir
+
+    def tracked(path):
+        scanned.append(Path(path).relative_to(tmp_path).as_posix())
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", tracked)
+    result = LocalWorkspacePort(tmp_path).glob_paths("src/*.py", ".", max_entries=10)
+    assert [Path(entry.relative_path).as_posix() for entry in result.entries] == [
+        "src/a.py"
+    ]
+    assert scanned == [".", "src"]
+    assert not result.listing_truncated
+
+
 def test_search_preserves_hidden_files_and_python_line_separators(
     tmp_path: Path,
 ) -> None:
@@ -448,8 +489,11 @@ def test_search_preserves_hidden_files_and_python_line_separators(
     }
 
     optimized = workspace.search_text("needle", ".", **arguments)
-    assert sorted((Path(m.path).name, m.line_number, m.line) for m in optimized.matches) == [
-        ("one.py", 2, "needle one"), ("one.py", 3, "needle two"),
+    assert sorted(
+        (Path(m.path).name, m.line_number, m.line) for m in optimized.matches
+    ) == [
+        ("one.py", 2, "needle one"),
+        ("one.py", 3, "needle two"),
         ("three.py", 1, "needle hidden"),
     ]
     assert optimized.reasons == ("match_limit",)

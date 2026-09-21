@@ -52,6 +52,18 @@ func globEntries(root, pathValue string, args map[string]any) protocol.Workspace
 		}
 		hits = append(hits, workspaceEntry(full, root, entryInfo))
 		return nil
+	}, func(relative string) bool {
+		states, err := portableGlobStates(relative, pattern)
+		if err != nil {
+			return true
+		}
+		for _, state := range states[:len(states)-1] {
+			if state {
+				return true
+			}
+		}
+		parts := splitPortablePath(pattern)
+		return len(parts) > 0 && parts[len(parts)-1] == "**" && states[len(states)-1]
 	})
 	if scanErr != nil {
 		return failure("io_error", scanErr.Error())
@@ -70,7 +82,7 @@ func globEntries(root, pathValue string, args map[string]any) protocol.Workspace
 	})
 }
 
-func scanWorkspace(root string, maxEntries int, visit func(string, string, os.DirEntry) error) (bool, error) {
+func scanWorkspace(root string, maxEntries int, visit func(string, string, os.DirEntry) error, descend func(string) bool) (bool, error) {
 	type pendingDirectory struct {
 		path   string
 		prefix string
@@ -101,7 +113,7 @@ func scanWorkspace(root string, maxEntries int, visit func(string, string, os.Di
 			if scanned >= maxEntries {
 				return true, nil
 			}
-			if child.IsDir() && child.Type()&os.ModeSymlink == 0 {
+			if child.IsDir() && child.Type()&os.ModeSymlink == 0 && (descend == nil || descend(relative)) {
 				pending = append(pending, pendingDirectory{path: full, prefix: relative})
 			}
 		}
@@ -110,11 +122,19 @@ func scanWorkspace(root string, maxEntries int, visit func(string, string, os.Di
 }
 
 func portableGlobMatch(relative, pattern string) (bool, error) {
-	pathParts := splitPortablePath(relative)
-	patternParts := splitPortablePath(pattern)
-	if len(pathParts) == 0 || len(patternParts) == 0 {
+	if len(splitPortablePath(relative)) == 0 || len(splitPortablePath(pattern)) == 0 {
 		return false, nil
 	}
+	states, err := portableGlobStates(relative, pattern)
+	if err != nil {
+		return false, err
+	}
+	return states[len(states)-1], nil
+}
+
+func portableGlobStates(relative, pattern string) ([]bool, error) {
+	pathParts := splitPortablePath(relative)
+	patternParts := splitPortablePath(pattern)
 	previous := make([]bool, len(patternParts)+1)
 	previous[0] = true
 	for index, segment := range patternParts {
@@ -131,13 +151,13 @@ func portableGlobMatch(relative, pattern string) (bool, error) {
 			}
 			matched, err := path.Match(segment, part)
 			if err != nil {
-				return false, err
+				return nil, err
 			}
 			current[index+1] = previous[index] && matched
 		}
 		previous = current
 	}
-	return previous[len(patternParts)], nil
+	return previous, nil
 }
 
 func portableBasenameMatch(name, pattern string) bool {

@@ -6,7 +6,7 @@ import hashlib
 import os
 import stat
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -514,6 +514,7 @@ class LocalWorkspacePort:
             include_hidden=True,
             max_entries=max_entries,
             visit=collect,
+            descend=matcher.can_match_descendant,
         )
         hits.sort(key=lambda entry: entry.mtime, reverse=True)
         return WorkspaceGlobResult(
@@ -529,6 +530,7 @@ class LocalWorkspacePort:
         include_hidden: bool,
         max_entries: int,
         visit,
+        descend: Callable[[str], bool] | None = None,
     ) -> bool:
         pending = [(os.fspath(base), "")]
         scanned = 0
@@ -547,7 +549,9 @@ class LocalWorkspacePort:
                     scanned += 1
                     if scanned >= max_entries:
                         return True
-                    if child.is_dir(follow_symlinks=False):
+                    if child.is_dir(follow_symlinks=False) and (
+                        descend is None or descend(relative_path)
+                    ):
                         pending.append((child.path, relative_path))
         except OSError as error:
             raise WorkspaceError(

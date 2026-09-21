@@ -15,3 +15,8 @@ without retaining it or transferring it from the peer.
 
 `list_file` reports incomplete scans even when the scanned entries do not match
 the filter. Its scan budget must never be interpreted as proof of no matches.
+
+Glob traversal checks whether a directory can contain a future match before
+descending. Patterns such as `src/*.py` skip dependency trees and nested source
+directories, while `src/**/*.py` retains recursive matching. Matching paths remain
+relative to the requested root and results remain sorted by modification time.
