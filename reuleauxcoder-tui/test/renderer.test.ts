@@ -7,8 +7,22 @@ import Output, {OutputCaches} from '../node_modules/ink/build/output.js';
 import Original from '../node_modules/ink/build/output.rcoder-original.js';
 import {BoundedCache} from '../renderer/cache.js';
 import {patchRenderer} from '../scripts/patch-renderer.mjs';
+import {styledCharsFromTokens, styledCharsToString, tokenize} from '@alcalzone/ansi-tokenize';
+import {serializeStyledChars} from '../renderer/serialize.js';
 
 const strings = ['', 'plain', '中文 👩🏽‍💻 é', '\x1b[31mred', '\x1b[1;2mstrong dim\x1b[22m normal', '\x1b[38;2;12;34;56mRGB\x1b[48;5;21m背景\x1b[0m', '\x1b]8;;https://example.com\x07link\x1b]8;;\x07'];
+
+test('style fast path preserves exact upstream transitions and final closures', () => {
+  const codes = ['', '\x1b[1m', '\x1b[2m', '\x1b[1;2m', '\x1b[22m', '\x1b[31m', '\x1b[39m', '\x1b[48;5;123m', '\x1b[38;2;1;2;3m', '\x1b[7m', '\x1b[0m', '\x1b]8;;https://example.com\x1b\\', '\x1b]8;;\x1b\\'];
+  for (const left of codes) for (const right of codes) for (const body of strings) {
+    const chars = styledCharsFromTokens(tokenize(`${left}same style 中文${right}${body}tail`));
+    assert.equal(serializeStyledChars(chars), styledCharsToString(chars));
+    // Reconstructed cells need value equality, not array/object identity.
+    const copies = chars.map(char => ({...char, styles: char.styles.map(style => ({...style}))}));
+    assert.equal(serializeStyledChars(copies), styledCharsToString(chars));
+  }
+  assert.equal(serializeStyledChars([]), '');
+});
 
 test('renderer installation is repeatable and rejects modified or upgraded upstream files', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'rcoder-renderer-'));

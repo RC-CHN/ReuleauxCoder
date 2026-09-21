@@ -14,12 +14,14 @@ const replace = (text, from, to) => {
 
 export function patchOutput(source) {
   let text = "import {BoundedCache, styledWeight} from '../../../renderer/cache.js';\n" + source;
+  text = "import {serializeStyledChars} from '../../../renderer/serialize.js';\n" + text;
   text = replace(text, 'class OutputCaches {', 'export class OutputCaches {');
   text = replace(text, 'widths = new Map();', 'widths = new BoundedCache(4096, 65536);');
   text = replace(text, 'blockWidths = new Map();', 'blockWidths = new BoundedCache(128, 65536);');
   text = replace(text, 'styledChars = new Map();', 'styledChars = new BoundedCache(512, 2 * 1024 * 1024, styledWeight);');
   text = replace(text, 'caches = new OutputCaches();', 'caches;');
   text = replace(text, 'this.width = width;', 'this.caches = options.caches ?? new OutputCaches();\n        this.width = width;');
+  text = replace(text, 'styledCharsToString(lineWithoutEmptyItems)', 'serializeStyledChars(lineWithoutEmptyItems)');
   return text;
 }
 
