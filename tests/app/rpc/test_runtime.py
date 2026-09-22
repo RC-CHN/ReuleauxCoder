@@ -401,9 +401,14 @@ def test_shutdown_reports_progress_before_slow_manifest_commit(runtime, monkeypa
     runtime.client.wait_idle()
     runtime.config.session_auto_save = True
     progress = []
-    runtime.client.peer.notifications["runtime.shutdown_progress"] = (
-        lambda message: progress.append(message)
-    )
+    progress_received = threading.Event()
+
+    def on_progress(message):
+        progress.append(message)
+        if message == "Committing session manifest...":
+            progress_received.set()
+
+    runtime.client.peer.notifications["runtime.shutdown_progress"] = on_progress
     committing, release = threading.Event(), threading.Event()
     original = SessionStore._atomic_write_json
 
@@ -418,7 +423,7 @@ def test_shutdown_reports_progress_before_slow_manifest_commit(runtime, monkeypa
         pending = executor.submit(runtime.client.shutdown)
         try:
             assert committing.wait(5)
-            runtime.client.peer.wait_notifications()
+            assert progress_received.wait(5)
             assert progress[0] == "Stopping active tasks..."
             assert "Writing replay snapshot" in "\n".join(progress)
             assert progress[-1] == "Committing session manifest..."
