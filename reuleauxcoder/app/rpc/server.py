@@ -602,6 +602,10 @@ class RuntimeServer:
             return self.commands.exit_saved_session_id
 
     def _shutdown(self):
+        def progress(message):
+            self._notify("runtime.shutdown_progress", message=message)
+
+        progress("Stopping active tasks...")
         with self._lock:
             self._closing = True
             self.images.close()
@@ -613,5 +617,5 @@ class RuntimeServer:
             if not self._lock.wait_for(lambda: not self._workers, timeout=10):
                 raise TimeoutError("Backend operations did not stop within 10 seconds")
         self.agent.reconcile_pending_tool_calls("session closed")
-        self.commands.save_exit()
+        self.commands.save_exit(progress=progress)
         self._publish_state()

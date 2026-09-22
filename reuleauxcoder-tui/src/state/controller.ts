@@ -41,6 +41,7 @@ export class TuiController extends EventEmitter {
   rows = 24;
   exitConfirm = false;
   closing = false;
+  shutdownProgress = 'Stopping active tasks…';
   status = '';
   interactionMode: 'review' | 'scope' | 'feedback' = 'review';
   interactionIndex = 0;
@@ -99,6 +100,7 @@ export class TuiController extends EventEmitter {
     });
     client.on('completed', result => {this.session.completed(result); if (result.control === 'exit') void this.finish().catch(this.fail);});
     client.on('command', text => this.session.notice(text));
+    client.on('shutdownProgress', message => {this.shutdownProgress = message; this.changed();});
     client.on('operationFailure', message => this.fail(new Error(message)));
     client.on('failure', error => {this.session.fatal = error.message; this.session.connected = false; this.fail(error);});
     client.on('answered', (item, response) => this.session.reviewed(item.request, response));
@@ -328,7 +330,13 @@ export class TuiController extends EventEmitter {
     return label;
   }
   async key(input: string, key: Partial<Key> = {}) {
-    if (this.closing) return;
+    if (this.closing) {
+      if (key.ctrl && input === 'c') {
+        if (this.exitConfirm) this.client.peer.close(new Error('Forced exit; session save may be incomplete.'));
+        else {this.exitConfirm = true; this.changed();}
+      }
+      return;
+    }
     try {await this.handleKey(input, key);}
     finally {this.inputChanged();}
   }
@@ -504,7 +512,7 @@ export class TuiController extends EventEmitter {
   showHelp() {this.document('Keyboard help', 'Enter        Send / select\nShift+Enter  New line (Alt+Enter also works)\n/ or Ctrl+P  Open command menus\nEsc          Back / cancel interaction\nWheel        Scroll content without changing input\nShift+Tab    Previous form field\nCtrl+C       Cancel interaction → close menu → clear draft → interrupt → confirm exit\nCtrl+D       Exit with an empty draft\nUp / Down    Move within input; empty input recalls history\nAlt+Up/Down  Input history, including with an empty draft\nPgUp / PgDn  Scroll the focused content\nHome / End   Input line start / end\nCtrl+Home/End Transcript start / follow latest\nF1 / Ctrl+G  Keyboard help\nF2 / Ctrl+O  Session, plan, jobs and startup details\nF4 / Ctrl+R  Toggle full transcript details (all records)\nCtrl+A/E     Start / end of input\nCtrl+U/K/W   Delete before / after / previous word\n\nF4 shows:\n  Tool arguments and full received output, diffs, diagnostics and archive details.\n  Reasoning returned by the model.\nIt applies to all retained records in this conversation.\nPress F4 again to restore previews; PgUp/PgDn reads earlier content.\n\nApproval: 1/y/Enter approve once · 2/n deny · s session scope · f feedback\nSecret input is masked and never written to input history.');}
   async finish() {
     if (this.closing) return;
-    this.closing = true; clearInterval(this.refreshTimer); this.changed();
+    this.closing = true; this.exitConfirm = false; clearInterval(this.refreshTimer); this.changed();
     try {const saved = await this.client.shutdown(); this.emit('exit', saved);}
     catch (error) {this.emit('exit', null, error);}
   }

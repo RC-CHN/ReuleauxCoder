@@ -11,16 +11,16 @@ export class MessagePeer extends Events {
   readonly methods = new Map<string, Handler>();
   closed = false;
   private nextId = 0;
-  private pending = new Map<string, {resolve(value: Json): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
+  private pending = new Map<string, {resolve(value: Json): void; reject(error: Error): void; timer?: ReturnType<typeof setTimeout>}>();
   constructor(private writeMessage: (message: Json) => void, private disconnect: () => void = () => {}) {
     super();
   }
 
-  request(method: string, params: Json = {}, timeout = 30_000): Promise<Json> {
+  request(method: string, params: Json = {}, timeout: number | null = 30_000): Promise<Json> {
     if (this.closed) return Promise.reject(new Error('Backend disconnected'));
     const id = String(++this.nextId);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {this.pending.delete(id); reject(new Error(`Request timed out: ${method}`));}, timeout);
+      const timer = timeout === null ? undefined : setTimeout(() => {this.pending.delete(id); reject(new Error(`Request timed out: ${method}`));}, timeout);
       this.pending.set(id, {resolve, reject, timer});
       try {this.send({jsonrpc: '2.0', id, method, params});}
       catch (error) {clearTimeout(timer); this.pending.delete(id); reject(error);}

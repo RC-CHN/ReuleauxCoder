@@ -2550,7 +2550,7 @@ class SessionStore:
             self._report_progress(
                 f"Writing {len(pending_requests)} request record(s)..."
             )
-        for request in pending_requests:
+        for index, request in enumerate(pending_requests, 1):
             self._atomic_write_json(
                 requests_dir / f"{request.request_id}.json",
                 request.to_dict(),
@@ -2558,6 +2558,8 @@ class SessionStore:
                 skip_if_unchanged=True,
             )
             cursor.request_ids.add(request.request_id)
+            if index % 10 == 0 or index == len(pending_requests):
+                self._report_progress(f"Request records ready: {index}/{len(pending_requests)}...")
         pending_checkpoints = [
             checkpoint
             for checkpoint in session.checkpoints
@@ -2567,7 +2569,7 @@ class SessionStore:
             self._report_progress(
                 f"Writing {len(pending_checkpoints)} context checkpoint(s)..."
             )
-        for checkpoint in pending_checkpoints:
+        for index, checkpoint in enumerate(pending_checkpoints, 1):
             self._atomic_write_json(
                 checkpoints_dir / f"{checkpoint.id}.json",
                 checkpoint.to_dict(),
@@ -2575,6 +2577,8 @@ class SessionStore:
                 skip_if_unchanged=True,
             )
             cursor.checkpoint_ids.add(checkpoint.id)
+            if index % 10 == 0 or index == len(pending_checkpoints):
+                self._report_progress(f"Context checkpoints ready: {index}/{len(pending_checkpoints)}...")
         manifest = session.metadata_dict()
         manifest["checkpoint_ids"] = [item.id for item in session.checkpoints]
         manifest["request_ids"] = [

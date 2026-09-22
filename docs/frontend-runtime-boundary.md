@@ -46,6 +46,12 @@ Python 的 `LocalConnection.close()` 是本地组装入口使用的整体清理�
 TypeScript 的 `client.close()` 关闭传输，`client.shutdown()` 还请求后端保存退出。
 当前 stdio 后端会在 EOF 时清理退出，因此视图卸载也不应关闭宿主持有的 stdio。
 
+退出请求没有固定的 RPC 总时限：宿主等到保存完成、明确报错或连接断开后再清理
+进程，避免慢磁盘上的正常 `fsync` 被前端超时打断。后端仍限制停止任务的等待时间，
+并通过 `runtime.shutdown_progress` 通知推送停止任务、写入记录和提交快照的阶段。
+TUI 保持显示当前阶段和累计等待时间；等待期间两次 Ctrl+C 可明确强制退出，
+界面会提示保存可能不完整。进度通知不写入会话历史。
+
 未来 VS Code Remote 的适配位置：
 
 ```mermaid

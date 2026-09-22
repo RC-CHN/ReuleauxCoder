@@ -390,6 +390,49 @@ def test_shutdown_is_idempotent(runtime):
     assert runtime.agent.messages == messages
 
 
+def test_shutdown_reports_progress_before_slow_manifest_commit(runtime, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
+
+    directory = runtime.server.commands.sessions_dir / runtime.server.commands.session_id
+    directory.mkdir()
+    runtime.agent.history_ledger.bind_jsonl(directory / "events.jsonl")
+    runtime.client.submit("retain this")
+    runtime.client.wait_idle()
+    runtime.config.session_auto_save = True
+    progress = []
+    runtime.client.peer.notifications["runtime.shutdown_progress"] = (
+        lambda message: progress.append(message)
+    )
+    committing, release = threading.Event(), threading.Event()
+    original = SessionStore._atomic_write_json
+
+    def write(store, path, payload, **kwargs):
+        if kwargs["ref"] == "manifest":
+            committing.set()
+            assert release.wait(5)
+        return original(store, path, payload, **kwargs)
+
+    monkeypatch.setattr(SessionStore, "_atomic_write_json", write)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(runtime.client.shutdown)
+        try:
+            assert committing.wait(5)
+            runtime.client.peer.wait_notifications()
+            assert progress[0] == "Stopping active tasks..."
+            assert "Writing replay snapshot" in "\n".join(progress)
+            assert progress[-1] == "Committing session manifest..."
+            assert not pending.done()
+            assert runtime.server.commands.exit_saved_session_id is None
+        finally:
+            release.set()
+        saved = pending.result(timeout=5)
+    assert saved == runtime.server.commands.exit_saved_session_id
+    restored = SessionStore(runtime.server.commands.sessions_dir).load(saved)
+    assert restored is not None
+    assert not restored.restore_issues
+
+
 def test_shutdown_cancels_an_interaction_before_cli_pumps_it(runtime):
     runtime.client._foreground_interactions = True
     responses = []

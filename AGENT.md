@@ -83,6 +83,8 @@ Tool start/finish runtime facts are ledgered independently of model/UI text, inc
 
 Live session persistence writes the first snapshot synchronously so a new session is discoverable before its first reply. `domain/output_journal.py` checkpoints response/reasoning/tool chunks every second or 64 Ki characters and immediately records final tool output. Message commits acknowledge matching stream IDs in the same durable event. Recovery projects unacknowledged output into the human transcript, without changing provider messages or automatically replaying work. Torn ledger tails are separated before new appends; snapshots fsync before replacement and sync directories on POSIX. Unsent frontend drafts remain separate from backend persistence.
 
+Fresh session stores reuse request/checkpoint files only after checking their exact serialized bytes; changed artifacts retain atomic replacement and fsync. Shutdown waits for the backend's durable save without a fixed RPC deadline, with `runtime.shutdown_progress` notifications for TUI phases and a continuous elapsed timer. Explicit forced exit requires two interrupts during shutdown and warns that saving may be incomplete.
+
 ## Workspace and process primitives
 
 - `domain/workspace.py`: `WorkspacePort` and filesystem result types.

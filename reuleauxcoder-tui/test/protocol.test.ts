@@ -6,6 +6,42 @@ import {RpcPeer, RpcError} from '../src/protocol/peer.js';
 import {RuntimeClient} from '../src/protocol/client.js';
 import {decode, record} from '../src/protocol/wire.js';
 
+test('shutdown keeps the connection open through a slow save and delivers progress', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const input = new PassThrough(), output = new PassThrough();
+  const peer = new RpcPeer(input, output); t.after(() => peer.close());
+  const client = new RuntimeClient(peer);
+  const written: any[] = []; output.on('data', chunk => written.push(JSON.parse(chunk.toString())));
+  const progress: string[] = []; client.on('shutdownProgress', message => progress.push(message));
+  const shutdown = client.shutdown();
+  let completed = false;
+  void shutdown.then(() => {completed = true;});
+  const ordinary = assert.rejects(peer.request('ordinary'), /Request timed out: ordinary/);
+  t.mock.timers.tick(60_000);
+  await ordinary;
+  assert(!completed);
+  assert(!peer.closed, 'a slow save must not trigger process teardown');
+  input.write(JSON.stringify({jsonrpc: '2.0', method: 'runtime.shutdown_progress', params: {message: 'Committing session manifest...'}}) + '\n');
+  assert.deepEqual(progress, ['Committing session manifest...']);
+  input.write(JSON.stringify({jsonrpc: '2.0', id: written[0].id, result: 'saved-session'}) + '\n');
+  assert.equal(await shutdown, 'saved-session');
+  assert(peer.closed);
+});
+
+test('shutdown still fails on backend errors, disconnects and explicit host close', async () => {
+  for (const cause of ['error', 'disconnect', 'close']) {
+    const input = new PassThrough(), output = new PassThrough();
+    const peer = new RpcPeer(input, output);
+    const client = new RuntimeClient(peer);
+    const rejected = assert.rejects(client.shutdown(), cause === 'error' ? /disk failed/ : cause === 'disconnect' ? /Backend disconnected/ : /connection lost/);
+    if (cause === 'error') input.write(JSON.stringify({jsonrpc: '2.0', id: '1', error: {code: -32603, message: 'disk failed'}}) + '\n');
+    else if (cause === 'disconnect') input.end();
+    else peer.close(new Error('connection lost'));
+    await rejected;
+    assert(peer.closed);
+  }
+});
+
 test('fragmented UTF-8 framing permits reverse requests and notifications while awaiting input', async t => {
   const input = new PassThrough(); const output = new PassThrough();
   const peer = new RpcPeer(input, output); t.after(() => peer.close());

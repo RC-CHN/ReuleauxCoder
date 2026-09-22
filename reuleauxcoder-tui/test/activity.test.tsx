@@ -16,6 +16,42 @@ import {editor} from '../src/state/editor.js';
 import {safe} from '../src/ui/format.js';
 import {until} from './helpers.js';
 
+test('shutdown shows RPC save phases and keeps elapsed time across phase changes', async t => {
+  const input = new PassThrough(), output = new PassThrough();
+  const c = new TuiController(new RuntimeClient(new RpcPeer(input, output)));
+  const written: any[] = []; output.on('data', chunk => written.push(JSON.parse(chunk.toString())));
+  c.session.connected = true;
+  const app = render(<App controller={c}/>);
+  const finishing = c.finish();
+  t.after(async () => {app.cleanup(); c.client.close(); await finishing; c.dispose();});
+  await until(() => app.lastFrame()?.includes('Stopping active tasks…'));
+  await until(() => /Stopping active tasks…[^\n]* [1-9]\d*s/.test(safe(app.lastFrame()!)));
+  const elapsed = Number(/Stopping active tasks…[^\n]*? (\d+)s/.exec(safe(app.lastFrame()!))![1]);
+  input.write(JSON.stringify({jsonrpc: '2.0', method: 'runtime.shutdown_progress', params: {message: 'Committing session manifest...'}}) + '\n');
+  await until(() => app.lastFrame()?.includes('Committing session manifest...'));
+  const after = Number(/Committing session manifest\.\.\.[^\n]*? (\d+)s/.exec(safe(app.lastFrame()!))![1]);
+  assert(after >= elapsed, 'phase changes must not reset the shutdown clock');
+  assert(app.lastFrame()?.includes('Waiting for save to finish'));
+  assert.equal(c.session.cells.length, 0, 'progress does not append conversation history');
+  input.write(JSON.stringify({jsonrpc: '2.0', id: written.find(item => item.method === 'runtime.shutdown').id, result: 'saved'}) + '\n');
+  await finishing;
+});
+
+test('forcing exit during saving requires a second explicit interrupt', async t => {
+  const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
+  t.after(() => {c.client.close(); c.dispose();});
+  let failure: Error | undefined;
+  c.on('exit', (_saved, error) => {failure = error;});
+  const finishing = c.finish();
+  await c.key('c', {ctrl: true});
+  assert(c.exitConfirm);
+  assert(!c.client.peer.closed);
+  await c.key('c', {ctrl: true});
+  await finishing;
+  assert(c.client.peer.closed);
+  assert.match(failure!.message, /session save may be incomplete/);
+});
+
 test('logo collapse shades the disappearing edge between whole-row layout changes', t => {
   const c = new TuiController(new RuntimeClient(new RpcPeer(new PassThrough(), new PassThrough())));
   t.after(() => {c.client.peer.close(); c.dispose();});

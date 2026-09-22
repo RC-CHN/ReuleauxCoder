@@ -48,6 +48,7 @@ export class RuntimeClient extends Events {
       case 'runtime.completed': this.emit('completed', decode(params.result)); break;
       case 'runtime.command': this.emit('command', params.text); break;
       case 'runtime.failed': this.emit('operationFailure', `${params.error_type}: ${params.message}`); break;
+      case 'runtime.shutdown_progress': this.emit('shutdownProgress', params.message); break;
       case 'interaction.cancel': {
         const item = this.interactions.find(item => item.request.request_id === params.request_id);
         if (item) this.answer(item.request.request_id, cancellation(item.kind));
@@ -114,7 +115,9 @@ export class RuntimeClient extends Events {
     this.closing = true;
     for (const item of [...this.interactions]) this.answer(item.request.request_id, cancellation(item.kind));
     if (this.peer.closed) return null;
-    try {return await this.peer.request('runtime.shutdown', {}, 15_000) as string | null;}
+    // Keep the transport alive until the durable save completes. Disconnects,
+    // backend errors and an explicit host close still reject this request.
+    try {return await this.peer.request('runtime.shutdown', {}, null) as string | null;}
     finally {this.close();}
   }
 }

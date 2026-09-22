@@ -256,7 +256,8 @@ class RuntimeClient:
             self.interactor.cancel(request_id)
 
     def shutdown(self):
-        result = self.peer.request("runtime.shutdown", timeout=15)
+        # A slow durable save must finish before its process owner can tear down.
+        result = self.peer.request("runtime.shutdown")
         self.refresh()
         return result
 

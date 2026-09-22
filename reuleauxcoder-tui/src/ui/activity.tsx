@@ -8,7 +8,7 @@ import {useMotion} from './motion.js';
 
 export function activityFor(c: TuiController) {
   if (c.session.fatal) return null;
-  if (c.closing) return {label: 'Saving & closing…', moving: true};
+  if (c.closing) return {label: safe(c.shutdownProgress), moving: true};
   if (!c.session.connected) return {label: 'Connecting…', moving: true};
   if (c.active || c.session.state.approval_waiting) return {label: 'Waiting for your input', moving: false};
   if (c.session.state.stopping) return {label: 'Stopping…', moving: true};

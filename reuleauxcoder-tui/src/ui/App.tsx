@@ -57,7 +57,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   const footerHeight = chrome.status ? 2 : 1;
   const composerWidth = Math.max(1, dimensions.width - 6);
   c.composerWidth = composerWidth;
-  const focused = !c.active && !c.screen;
+  const focused = !c.closing && !c.active && !c.screen;
   const composerInput = inputLayout(c.composer, composerWidth, 4, focused);
   const composerHeight = Math.max(1, composerInput.rows.length);
   const bodyBudget = height - chrome.header.length - footerHeight - composerHeight - 2;
@@ -86,7 +86,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
     ? [keyHint('Esc', 'back'), keyHint('PgUp/PgDn', 'scroll'), keyHint('F2', 'details')]
     : [...(!dimensions.sidebar && backgroundCount ? [keyHint('/ps', `${backgroundCount} processes`)] : []), keyHint('F4', c.expanded ? 'collapse details' : 'output + reasoning + LSP + tables'), keyHint('F2', 'session'), keyHint('/', 'commands'), ...(dimensions.width >= 100 ? [keyHint('Ctrl+C', state.running ? 'interrupt' : 'exit')] : [])]
   ).join('   ');
-  const footer = c.exitConfirm ? paint.warning('Press Ctrl+C again to save and exit.') : c.session.fatal ? paint.error(safe(c.session.fatal)) : c.offset !== null ? paint.muted(`History ${transcript.start + 1}/${transcript.estimated ? '~' : ''}${transcript.total}${c.hasNewOutput ? ' · New output' : ''} · Ctrl+End follows output`) : c.status ? paint.muted(safe(c.status)) : shortcutHints;
+  const footer = c.closing ? c.exitConfirm ? paint.warning('Ctrl+C again forces exit; saving may be incomplete.') : paint.muted('Waiting for save to finish · Ctrl+C to force exit') : c.exitConfirm ? paint.warning('Press Ctrl+C again to save and exit.') : c.session.fatal ? paint.error(safe(c.session.fatal)) : c.offset !== null ? paint.muted(`History ${transcript.start + 1}/${transcript.estimated ? '~' : ''}${transcript.total}${c.hasNewOutput ? ' · New output' : ''} · Ctrl+End follows output`) : c.status ? paint.muted(safe(c.status)) : shortcutHints;
   const inputColor = focused ? paint.accent : paint.muted;
   const panelColor = c.active ? paint.warning : paint.accent;
   const composer = composerInput.rows.map((row, index) => frameRow(
@@ -121,7 +121,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
     <Box flexDirection="row" height={bodyHeight} flexShrink={0}>
       <Box flexDirection="column" width={width} flexShrink={0}>
         <Rows rows={transcript.rows.length ? transcript.rows : emptyRows} height={transcriptHeight} width={width}/>
-        {liveActivity && <ActivityLine key={liveActivity.label} {...liveActivity} width={width}/>}
+        {liveActivity && <ActivityLine key={c.closing ? 'shutdown' : liveActivity.label} {...liveActivity} width={width}/>}
         {panel && <Reveal key={panelTransition}>{progress => <>
           <Rows rows={[paint.reveal(paint.panel(between(paint.badge(panelKind, c.active ? 'warning' : 'accent') + ' ' + paint.secondary(safe(panel.title)), paint.info(panel.navigation || ''), width)), progress)]} height={1} width={width}/>
           <Rows rows={Array.from({length: panelHeight}, (_, index) => paint.reveal(rail(panel.rows[index] || '', width, panelColor), progress))} height={panelHeight} width={width}/>
