@@ -2228,7 +2228,9 @@ class SessionStore:
         )
         return metadata, issues, manifest
 
-    def _atomic_write_json(self, path: Path, payload: dict, *, ref: str) -> None:
+    def _atomic_write_json(
+        self, path: Path, payload: dict, *, ref: str, skip_if_unchanged: bool = False
+    ) -> None:
         try:
             _validate_strict_utf8_tree(payload)
             encoded = json.dumps(
@@ -2243,6 +2245,25 @@ class SessionStore:
                 error_type=_safe_error_type(error),
                 ref=ref,
             ) from None
+        if skip_if_unchanged:
+            status = self._safe_path_status(path, phase=f"{ref}_write", ref=ref)
+            if (
+                status is not None
+                and stat.S_ISREG(status.st_mode)
+                and status.st_size == len(encoded)
+            ):
+                try:
+                    with path.open("rb") as stream:
+                        if stream.read(len(encoded) + 1) == encoded:
+                            return
+                except FileNotFoundError:
+                    pass  # Recreate an artifact removed since the status check.
+                except OSError as error:
+                    raise SessionRestoreError(
+                        phase=f"{ref}_read",
+                        error_type=_safe_error_type(error),
+                        ref=ref,
+                    ) from None
         self._atomic_replace_bytes(
             path,
             encoded,
@@ -2373,8 +2394,8 @@ class SessionStore:
         if incremental and not cursor.initialized:
             # The manifest projection is authoritative. Files not referenced by
             # the in-memory session are inert and belong to a separate GC path.
-            # Rewrite the bounded live projection once instead of scanning an
-            # unbounded directory of obsolete artifacts.
+            # Check only the bounded live projection; unchanged durable records
+            # can be reused even by a fresh store (as during exit).
             cursor.request_ids.clear()
             cursor.checkpoint_ids.clear()
             cursor.initialized = True
@@ -2534,6 +2555,7 @@ class SessionStore:
                 requests_dir / f"{request.request_id}.json",
                 request.to_dict(),
                 ref="request_record",
+                skip_if_unchanged=True,
             )
             cursor.request_ids.add(request.request_id)
         pending_checkpoints = [
@@ -2550,6 +2572,7 @@ class SessionStore:
                 checkpoints_dir / f"{checkpoint.id}.json",
                 checkpoint.to_dict(),
                 ref="checkpoint",
+                skip_if_unchanged=True,
             )
             cursor.checkpoint_ids.add(checkpoint.id)
         manifest = session.metadata_dict()

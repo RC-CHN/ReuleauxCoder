@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -113,6 +114,97 @@ def test_manifest_does_not_serialize_discarded_replay_artifacts(tmp_path, monkey
     assert restored.total_completion_tokens == 5
     assert restored.replay_envelope is not None
     assert restored.replay_envelope.validate()
+
+
+def _saved_projection(tmp_path):
+    requests = _request_envelopes(99)
+    checkpoint = CompactionCheckpoint.create(
+        trigger="quality_wall", strategy=["summarize"], source_history_version=3,
+        replacement_history=[{"role": "user", "content": "retained summary"}],
+        tokens_before=60_000, tokens_after=40_000, preserved_rounds=3, cache_epoch=2,
+    )
+    messages = [{"role": "user", "content": "persist me", MESSAGE_TOKEN_KEY: 3}]
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages, "model", request_envelopes=requests, checkpoints=[checkpoint]
+    )
+    return session_id, messages, requests, checkpoint
+
+
+def test_exit_from_fresh_store_reuses_durable_records(tmp_path, monkeypatch) -> None:
+    session_id, messages, requests, checkpoint = _saved_projection(tmp_path)
+    # Exit constructs its own store, without the live writer's cursor cache.
+    store = SessionStore(tmp_path)
+    writes = []
+    original = store._atomic_replace_bytes
+
+    def write(path, payload, **kwargs):
+        writes.append(kwargs["ref"])
+        return original(path, payload, **kwargs)
+
+    monkeypatch.setattr(store, "_atomic_replace_bytes", write)
+    store.save(
+        messages, "model", session_id, request_envelopes=requests,
+        checkpoints=[checkpoint], is_exit=True, incremental=True,
+        events_already_persisted=True,
+    )
+    assert writes == ["replay", "manifest"]
+    restored = SessionStore(tmp_path).load(session_id)
+    assert restored is not None
+    assert not restored.restore_issues
+    assert restored.request_envelopes == requests
+    assert restored.checkpoints == [checkpoint]
+    assert "[SESSION_EXIT]" in restored.messages[-1]["content"]
+
+
+@pytest.mark.parametrize("ref", ["request_record", "checkpoint"])
+@pytest.mark.parametrize("damage", ["missing", "same_size", "truncated"])
+def test_fresh_save_repairs_changed_records(tmp_path, monkeypatch, ref, damage) -> None:
+    session_id, messages, requests, checkpoint = _saved_projection(tmp_path)
+    path = tmp_path / session_id / (
+        f"requests/{requests[0].request_id}.json" if ref == "request_record"
+        else f"checkpoints/{checkpoint.id}.json"
+    )
+    expected = path.read_bytes()
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"x" * (len(expected) if damage == "same_size" else 1))
+    store = SessionStore(tmp_path)
+    writes = []
+    original = store._atomic_replace_bytes
+
+    def write(path, payload, **kwargs):
+        writes.append(kwargs["ref"])
+        return original(path, payload, **kwargs)
+
+    monkeypatch.setattr(store, "_atomic_replace_bytes", write)
+    store.save(
+        messages, "model", session_id, request_envelopes=requests,
+        checkpoints=[checkpoint], incremental=True, events_already_persisted=True,
+    )
+    assert writes == ["replay", ref, "manifest"]
+    assert path.read_bytes() == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink privileges vary")
+@pytest.mark.parametrize("ref", ["request_record", "checkpoint"])
+def test_unchanged_record_check_rejects_symlinks(tmp_path, ref) -> None:
+    session_id, messages, requests, checkpoint = _saved_projection(tmp_path)
+    path = tmp_path / session_id / (
+        f"requests/{requests[0].request_id}.json" if ref == "request_record"
+        else f"checkpoints/{checkpoint.id}.json"
+    )
+    target = tmp_path / "outside.json"
+    path.replace(target)
+    path.symlink_to(target)
+    with pytest.raises(SessionRestoreError) as raised:
+        SessionStore(tmp_path).save(
+            messages, "model", session_id, request_envelopes=requests,
+            checkpoints=[checkpoint], incremental=True, events_already_persisted=True,
+        )
+    assert raised.value.error_type == "SymbolicLinkError"
+    assert raised.value.ref == ref
 
 
 def test_live_save_reuses_history_hashes_and_restored_events_rebuild_them(tmp_path, monkeypatch) -> None:
