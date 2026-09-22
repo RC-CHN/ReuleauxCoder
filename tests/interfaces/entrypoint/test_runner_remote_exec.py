@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import itertools
 import socket
 import threading
 import time
@@ -12,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib import request
 
+from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import (
     Config,
     ContextConfig,
@@ -20,10 +20,7 @@ from reuleauxcoder.domain.config.models import (
     ModelProfileConfig,
     RemoteExecConfig,
 )
-from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.runtime.events import ErrorOccurred, RuntimeEvent
-from reuleauxcoder.domain.history import HistoryLedger
-from reuleauxcoder.domain.extensions.lifecycle import LifecycleCoordinator
 from reuleauxcoder.domain.approval import ApprovalRequest
 from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
 from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
@@ -83,73 +80,17 @@ class FakeLLM:
             setattr(self, key, value)
 
 
-class FakeContext:
-    def __init__(self) -> None:
-        self.max_tokens = 64000
-        self._ui_bus = None
+class FakeAgent(Agent):
+    """Use the real runtime surface with a deterministic chat implementation."""
 
-    def reconfigure(self, max_tokens: int, **_strategy_settings) -> None:
-        self.max_tokens = max_tokens
-
-
-class FakeAgent:
-    _ids = itertools.count()
-
-    def __init__(self, llm: FakeLLM, chat_behavior=None) -> None:
-        self.llm = llm
-        self.tools = []
-        self.context = FakeContext()
-        self.state = SimpleNamespace(
-            messages=[],
-            total_prompt_tokens=0,
-            total_completion_tokens=0,
-            current_round=0,
-        )
-        self.messages = self.state.messages
-        self.available_modes = {
-            "coder": ModeConfig(name="coder", description="Default coding mode"),
-            "debugger": ModeConfig(name="debugger", description="Debug mode"),
-        }
-        self.active_mode = "coder"
-        self.active_main_model_profile = None
-        self.active_sub_model_profile = None
-        self.session_fingerprint = "local"
-        self.hook_registry = HookRegistry()
-        self.lifecycle = LifecycleCoordinator(self.hook_registry)
-        self._event_handlers = []
-        self.agent_id = f"fake-agent-{next(self._ids)}"
-        self.session_generation = 0
+    def __init__(self, llm, chat_behavior=None, *, config=None):
+        super().__init__(llm, [], config=config)
         self.current_session_id = "fake-session"
-        self._current_turn_id = "fake-turn"
-        self.history_ledger = HistoryLedger(
-            session_id=self.current_session_id, agent_id=self.agent_id
-        )
-        self._stop_requested = False
-        self.approval_provider = None
         self.runtime_issues = []
         self._chat_behavior = chat_behavior or (lambda _agent, prompt: f"ok:{prompt}")
 
-    def register_hook(self, hook_point, hook) -> None:
-        self.hook_registry.register(hook_point, hook)
-
-    def add_event_handler(self, handler) -> None:
-        self._event_handlers.append(handler)
-
-    def _emit_event(self, event) -> None:
-        for handler in tuple(self._event_handlers):
-            handler(event)
-
-    def persist_runtime_snapshot(self) -> None:
+    def persist_runtime_snapshot(self):
         pass
-
-    def set_mode(self, mode_name: str) -> None:
-        self.active_mode = mode_name
-
-    def clear_stop_request(self) -> None:
-        self._stop_requested = False
-
-    def request_stop(self) -> None:
-        self._stop_requested = True
 
     def record_runtime_issue(
         self,
@@ -171,7 +112,9 @@ class FakeAgent:
         self.runtime_issues.append((phase, error_type, ref, count))
         return True
 
-    def chat(self, user_input: str) -> str:
+    def chat(self, user_input, *, clear_stop=True, **kwargs):
+        if clear_stop:
+            self.clear_stop_request()
         self.messages.append({"role": "user", "content": user_input})
         response = self._chat_behavior(self, user_input)
         self.messages.append({"role": "assistant", "content": response})
@@ -201,7 +144,7 @@ def _build_runner_with_fake_agent(
             create_llm=lambda cfg: FakeLLM(cfg.model),
             load_tools=lambda _backend: [],
             create_agent=lambda llm, _tools, _config, _hook_registry: FakeAgent(
-                llm, chat_behavior=chat_behavior
+                llm, chat_behavior=chat_behavior, config=_config
             ),
         ),
     )
@@ -620,6 +563,7 @@ class TestRunnerRemoteExec:
             chat_behavior=chat_behavior,
         )
         ctx = runner.initialize()
+        initial_sessions = _session_entry_names(sessions_dir)
         try:
             assert runner._relay_server is not None
             assert runner._relay_http_service is not None
@@ -668,7 +612,7 @@ class TestRunnerRemoteExec:
             assert sentinel not in str(error)
             assert not any(event["type"] == "chat_end" for event in events)
             assert chat_calls == []
-            assert _session_entry_names(sessions_dir) == {session_id}
+            assert _session_entry_names(sessions_dir) == initial_sessions | {session_id}
         finally:
             runner.cleanup(ctx.agent)
 
@@ -700,6 +644,7 @@ class TestRunnerRemoteExec:
         )
         runner.dependencies.create_session_store = lambda _path: store
         ctx = runner.initialize()
+        initial_sessions = _session_entry_names(sessions_dir)
         try:
             assert runner._relay_server is not None
             assert runner._relay_http_service is not None
@@ -741,7 +686,7 @@ class TestRunnerRemoteExec:
             assert error["payload"]["ref"] == "session"
             assert not any(event["type"] == "chat_end" for event in events)
             assert chat_calls == []
-            assert _session_entry_names(sessions_dir) == {session_id}
+            assert _session_entry_names(sessions_dir) == initial_sessions | {session_id}
         finally:
             runner.cleanup(ctx.agent)
 

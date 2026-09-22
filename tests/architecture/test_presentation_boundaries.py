@@ -75,12 +75,19 @@ def test_command_frontends_depend_on_contracts_without_dispatch_or_storage():
         "reuleauxcoder.extensions.command",
         "reuleauxcoder.infrastructure.persistence",
         "reuleauxcoder.app.rpc.server",
-        "reuleauxcoder.domain.agent",
+        "reuleauxcoder.domain.agent.agent",
+        "reuleauxcoder.domain.agent.loop",
+        "reuleauxcoder.domain.context.manager",
+        "reuleauxcoder.interfaces.entrypoint",
+        "reuleauxcoder.services.llm",
     )
     paths = [
-        ROOT / "reuleauxcoder/interfaces/cli/repl.py",
-        ROOT / "reuleauxcoder/interfaces/cli/input.py",
-        ROOT / "reuleauxcoder/interfaces/cli/details.py",
+        *(
+            path
+            for path in (ROOT / "reuleauxcoder/interfaces/cli").rglob("*.py")
+            if path.name != "main.py"
+        ),
+        ROOT / "reuleauxcoder/interfaces/relay.py",
     ]
     for path in paths:
         assert not any(name.startswith(forbidden) for name in _imports(path)), path
@@ -107,13 +114,15 @@ def test_command_handlers_only_use_single_typed_effect_channel() -> None:
     assert "view_model_from_payload" not in view_models
 
 
-def test_remote_commands_reuse_the_peer_presentation_bus() -> None:
+def test_remote_adapter_submits_only_through_rpc() -> None:
     source = (
         ROOT / "reuleauxcoder" / "interfaces" / "entrypoint" / "remote_relay.py"
     ).read_text(encoding="utf-8")
 
     assert source.count("command_bus = UIEventBus()") == 1
-    assert "presentation.ui_bus" in source
+    assert "RuntimeServer(commands, backend)" in source
+    assert ".chat(" not in source
+    assert ".submit(" not in source
 
 
 def test_core_config_parser_does_not_consume_legacy_model_alias() -> None:

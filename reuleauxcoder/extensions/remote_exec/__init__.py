@@ -4,9 +4,6 @@ MVP: host-mode relay server with in-memory peer registry, short-lived tokens,
 and forwarding of builtin tool execution to a connected peer.
 """
 
-from reuleauxcoder.extensions.remote_exec.backend import RemoteRelayToolBackend
-from reuleauxcoder.extensions.remote_exec.bootstrap import generate_bootstrap_script
-from reuleauxcoder.extensions.remote_exec.http_service import RemoteRelayHTTPService
 from reuleauxcoder.extensions.remote_exec.errors import (
     AuthError,
     PeerDisconnectedError,
@@ -16,7 +13,6 @@ from reuleauxcoder.extensions.remote_exec.errors import (
     RemoteTimeoutError,
     RemoteToolError,
 )
-from reuleauxcoder.extensions.remote_exec.peer_registry import PeerInfo, PeerRegistry
 from reuleauxcoder.extensions.remote_exec.protocol import (
     ChatRequest,
     ChatResponse,
@@ -41,7 +37,6 @@ from reuleauxcoder.extensions.remote_exec.protocol import (
     RelayEnvelope,
     ToolStreamChunk,
 )
-from reuleauxcoder.extensions.remote_exec.server import RelayServer
 
 __all__ = [
     "RemoteRelayToolBackend",
@@ -80,3 +75,19 @@ __all__ = [
     "ToolStreamChunk",
     "RelayServer",
 ]
+
+
+def __getattr__(name):
+    from importlib import import_module
+
+    modules = {
+        "RemoteRelayToolBackend": "backend",
+        "RemoteRelayHTTPService": "http_service",
+        "generate_bootstrap_script": "bootstrap",
+        "PeerInfo": "peer_registry",
+        "PeerRegistry": "peer_registry",
+        "RelayServer": "server",
+    }
+    if name in modules:
+        return getattr(import_module(f"{__name__}.{modules[name]}"), name)
+    raise AttributeError(name)
