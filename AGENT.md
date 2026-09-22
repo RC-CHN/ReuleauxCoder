@@ -4,7 +4,7 @@ This file describes the current repository, not a future design. Detailed design
 
 ## Current snapshot
 
-- Package version: `0.10.2`.
+- Package version: `0.10.3`.
 - Python interface: `rcoder-cli` is the linear CLI with native terminal scrollback, Rich output and prompt_toolkit line editing over JSON-RPC.
 - Launcher: `rcoder` auto-selects the bundled TUI when Node >=22 and a terminal are available; `rcoder-tui` requires it explicitly. Batch/backend modes use CLI. Wheel and sdist releases contain the standalone JS bundle; runtime installation needs no npm.
 - Independent TUI: `reuleauxcoder-tui/` is a React + Ink frontend over stdio JSON-RPC, with top-level slash menus, backend-owned command panels and a persistent composer. Launch it with `node reuleauxcoder-tui/dist/cli.js` after building.
@@ -283,6 +283,17 @@ RCODER_RUN_LSP_INTEGRATION=1 uv run pytest -q tests/extensions/lsp/test_integrat
 ```
 
 The real LSP integration suite requires the configured language servers to be available. Do not encode a historical pass count as a permanent repository fact.
+
+## Release rules
+
+- Keep implementation and CI fixes in separate, focused commits. The final release commit must be `chore(release): prepare vX.Y.Z`; the annotated `vX.Y.Z` tag must point to that commit. Put fixes before the release commit when arranging the history.
+- Update `pyproject.toml`, the root package version in `uv.lock`, the version snapshot in this file, `CHANGELOG.md`, and the wheel installation links in both READMEs together.
+- Keep `uv.lock` on the official PyPI registry and artifact URLs. A version bump must not commit machine-specific mirror rewrites or refresh unrelated dependencies.
+- Build the bundled TUI and wheel/sdist, run `scripts/check-distributions.py`, and run `scripts/smoke-install.py` outside the checkout before publishing. Keep release notes consistent with the changelog.
+- Push the final release commit to `main` first, then wait for **all CI jobs on that exact commit** to pass, including Windows. Only then push its release tag. The tag-triggered Release workflow has its own Linux checks and does not gate itself on the separate main CI result.
+- Use `.github/workflows/release.yml` to build and publish the wheel, sdist, six platform/architecture peer binaries, peer `SHA256SUMS`, and the `linux/amd64` and `linux/arm64` GHCR host images.
+- For a user-requested withdrawal and republication, stop any old release workflow before removing the old GitHub Release and remote tag. Fix and validate the replacement, put its release `chore` last, and repeat the CI-before-tag sequence. Protect any necessary branch-history replacement with an explicit `--force-with-lease` expected SHA; preserve unrelated user work.
+- Before reporting completion, verify release-workflow success, the published asset names and checksums, and both image architectures. Confirm the tag, GitHub Release target and image revision identify the same final release commit, and report the release link and any remaining worktree changes.
 
 ## Detailed references
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.3 - 2026-09-22
+
+- Routed CLI, host status and remote relay views through the shared JSON-RPC runtime, keeping backend ownership and cleanup in entrypoint composition. Remote peers retain independent runtimes across chats.
+- Separated lightweight Python client imports and browser-compatible TypeScript message clients from backend and Node adapters. Added capability-based frontend profiles and byte-based image uploads, with documented host boundaries for future Tauri and VS Code Remote adapters.
+- Kept interrupted reasoning and response history independent of display preferences, and delayed restored goal activation until the frontend is ready.
+- Drained earlier RPC notifications before reporting idle, preserving final responses when snapshots arrive before completion callbacks.
+- Fixed relay shutdown races during peer initialization and approval registration, serialized checkpoints with final exit saves, and treated cancelled Go peer result posts as normal shutdown.
+
 ## 0.10.2 - 2026-09-21
 
 - Added `/shell` selection with executable names, paths and environment labels, including lazy discovery of shells inside a chosen Windows WSL distribution. New processes and model shell guidance follow the selection; existing processes stay unchanged, scoped children inherit an isolated preference, and `/shell auto` restores automatic selection.
