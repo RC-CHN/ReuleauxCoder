@@ -694,9 +694,12 @@ class TestRunnerRemoteExec:
         self, tmp_path: Path
     ) -> None:
         port = _free_port()
+        both_chatting = threading.Barrier(2, timeout=10)
 
         def chat_behavior(agent: FakeAgent, prompt: str) -> str:
-            time.sleep(0.15)
+            # Assert actual overlap rather than relying on a short sleep. Each
+            # peer now initializes a real runtime and durable session first.
+            both_chatting.wait()
             return f"reply:{prompt}:{getattr(agent, 'current_session_id', '-')}"
 
         runner = _build_runner_with_fake_agent(
@@ -736,12 +739,19 @@ class TestRunnerRemoteExec:
             t2.start()
             t1.join(timeout=3)
             t2.join(timeout=3)
+            assert not t1.is_alive() and not t2.is_alive()
 
             events_a = _collect_stream_events(
-                runner._relay_http_service.base_url, token_a, starts["alpha"]["chat_id"]
+                runner._relay_http_service.base_url,
+                token_a,
+                starts["alpha"]["chat_id"],
+                timeout_sec=15,
             )
             events_b = _collect_stream_events(
-                runner._relay_http_service.base_url, token_b, starts["beta"]["chat_id"]
+                runner._relay_http_service.base_url,
+                token_b,
+                starts["beta"]["chat_id"],
+                timeout_sec=15,
             )
 
             end_a = [event for event in events_a if event["type"] == "chat_end"][-1]
