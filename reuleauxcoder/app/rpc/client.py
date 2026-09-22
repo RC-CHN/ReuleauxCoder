@@ -198,11 +198,17 @@ class RuntimeClient:
             with self._condition:
                 if self.peer.closed.is_set():
                     raise ConnectionError("Backend disconnected")
-                if not self.state.running:
+                idle = not self.state.running
+                if not idle:
+                    self._condition.wait(0.05)
+            if idle:
+                self.peer.wait_notifications()
+                with self._condition:
+                    if self.state.running:
+                        continue
                     if self._failure is not None:
                         raise self._failure
                     return
-                self._condition.wait(0.05)
 
     def _interact(self, kind, request, timeout_seconds=None):
         if kind not in ("confirm", "choose_one", "input_text", "review"):

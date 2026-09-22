@@ -77,3 +77,35 @@ def test_relay_clears_stream_binding_when_checkpoint_fails(runtime, relay_view):
         relay_view.run("hello", _RemoteChatSession("chat", "peer"))
     assert relay_view.session is None
     assert not runtime.client.state.running
+
+
+def test_relay_waits_for_completion_notification_after_an_idle_snapshot(
+    runtime, relay_view
+):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    results = []
+
+    def completed(result):
+        entered.set()
+        assert release.wait(3)
+        relay_view._completed(result)
+
+    runtime.client.on_completed = completed
+
+    def run():
+        results.append(relay_view.run("hello"))
+        finished.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(3)
+        # Request responses can overtake the independent notification worker.
+        runtime.client.refresh()
+        assert not runtime.client.state.running
+        assert not finished.wait(0.1)
+    finally:
+        release.set()
+        worker.join(3)
+    assert finished.is_set()
+    assert results[0].response == "done"

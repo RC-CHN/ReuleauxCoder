@@ -206,12 +206,27 @@ class RpcPeer:
 
     def _deliver(self):
         while (message := self._events.get()) is not None:
+            if isinstance(message, threading.Event):
+                message.set()
+                continue
             try:
                 self.notifications[message["method"]](**message.get("params", {}))
             except BaseException:
                 log.exception("RPC notification failed: %s", message["method"])
                 self.close()
                 return
+
+    def wait_notifications(self):
+        """Wait for notifications already received before a request response.
+
+        Responses resolve on the reader thread; their caller must not assume
+        earlier notifications have finished on the separate delivery thread.
+        """
+        delivered = threading.Event()
+        self._events.put(delivered)
+        while not delivered.wait(0.05):
+            if self.closed.is_set():
+                raise ConnectionError("RPC connection closed")
 
     def close(self):
         with self._lock:
