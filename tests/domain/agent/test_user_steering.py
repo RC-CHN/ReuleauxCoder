@@ -3,6 +3,7 @@ from reuleauxcoder.domain.agent.events import AgentEventType
 from reuleauxcoder.domain.llm.models import LLMResponse
 from reuleauxcoder.services.llm.client import LLMRequestCancelled
 from types import SimpleNamespace
+import pytest
 
 
 class _LLM:
@@ -214,7 +215,7 @@ class _ImmediateSteeringLLM:
     def chat(self, **kwargs):
         self.calls.append(kwargs)
         if len(self.calls) == 1:
-            kwargs["on_token"]("partial answer")
+            kwargs[getattr(self, "stream_callback", "on_token")]("partial answer")
             assert self.agent.submit_user_steering("use the newer direction")
             result = self.agent.request_interrupt_intent()
             assert result.outcome is InterruptIntentOutcome.PROMOTED
@@ -223,9 +224,15 @@ class _ImmediateSteeringLLM:
         return LLMResponse(content="revised")
 
 
-def test_immediate_steering_retries_same_round_with_marker_before_steering() -> None:
+@pytest.mark.parametrize("stream_callback", ["on_token", "on_reasoning_token"])
+@pytest.mark.parametrize("display_mode", ["quiet", "inline"])
+def test_immediate_steering_retries_same_round_with_marker_before_steering(
+    stream_callback, display_mode,
+) -> None:
     llm = _ImmediateSteeringLLM()
+    llm.stream_callback = stream_callback
     agent = Agent(llm=llm, tools=[])
+    agent.reasoning_display_mode = display_mode
     llm.agent = agent
     emitted = []
     agent.add_event_handler(emitted.append)

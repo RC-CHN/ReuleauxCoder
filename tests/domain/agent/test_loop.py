@@ -1064,7 +1064,11 @@ def test_subagent_round_limit_returns_tool_free_partial_handoff() -> None:
     assert agent._loop.round_limit_reached is True
 
 
-def test_round_limit_summary_honours_immediate_steering_attempts() -> None:
+@pytest.mark.parametrize("stream_callback", ["on_token", "on_reasoning_token"])
+@pytest.mark.parametrize("display_mode", ["quiet", "inline"])
+def test_round_limit_summary_honours_immediate_steering_attempts(
+    stream_callback, display_mode,
+) -> None:
     class _SummarySteeringLLM(_BudgetLLM):
         def __init__(self) -> None:
             super().__init__()
@@ -1077,7 +1081,7 @@ def test_round_limit_summary_honours_immediate_steering_attempts() -> None:
                     tool_calls=[ToolCall(id="missing", name="unknown", arguments={})]
                 )
             if len(self.calls) == 2:
-                kwargs["on_token"]("partial handoff")
+                kwargs[stream_callback]("partial handoff")
                 assert self.agent.submit_user_steering("include the migration risk")
                 self.agent.request_interrupt_intent()
                 raise LLMRequestCancelled("summary interrupted")
@@ -1085,6 +1089,7 @@ def test_round_limit_summary_honours_immediate_steering_attempts() -> None:
 
     llm = _SummarySteeringLLM()
     agent = Agent(llm=llm, tools=[], max_rounds=1)
+    agent.reasoning_display_mode = display_mode
     llm.agent = agent
 
     result = agent.chat("investigate")

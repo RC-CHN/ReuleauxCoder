@@ -1069,10 +1069,7 @@ class AgentLoop:
                             interrupt_epoch=interrupt_epoch,
                         )
                     )
-                if streamed_output or (
-                    streamed_reasoning
-                    and self.agent.reasoning_display_mode != "quiet"
-                ):
+                if streamed_output or streamed_reasoning:
                     self._record_request_interrupt_marker(
                         attempt_id=attempt_id,
                         interrupt_epoch=interrupt_epoch,
@@ -1471,10 +1468,7 @@ class AgentLoop:
                             interrupt_epoch=interrupt_epoch,
                         )
                     )
-                if summary_streamed or (
-                    summary_reasoning_streamed
-                    and self.agent.reasoning_display_mode != "quiet"
-                ):
+                if summary_streamed or summary_reasoning_streamed:
                     self._record_request_interrupt_marker(
                         attempt_id=attempt_id,
                         interrupt_epoch=interrupt_epoch,
