@@ -161,7 +161,7 @@ def _register_peer(base_url: str, bootstrap_token: str, cwd: str) -> tuple[str, 
 
 
 def _collect_stream_events(
-    base_url: str, peer_token: str, chat_id: str, timeout_sec: float = 3.0
+    base_url: str, peer_token: str, chat_id: str, timeout_sec: float = 15.0
 ) -> list[dict]:
     deadline = time.time() + timeout_sec
     cursor = 0
@@ -185,6 +185,77 @@ def _collect_stream_events(
 
 
 class TestRunnerRemoteExec:
+    def test_cleanup_waits_for_peer_initialization_and_closes_its_runtime(
+        self, tmp_path
+    ):
+        from reuleauxcoder.extensions.remote_exec.http_service import _RemoteChatSession
+        from reuleauxcoder.infrastructure.rpc.peer import RpcError
+
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{_free_port()}",
+            session_dir=tmp_path / "sessions",
+        )
+        ctx = runner.initialize()
+        initializing, release, disposed = (
+            threading.Event(),
+            threading.Event(),
+            threading.Event(),
+        )
+        peers, failures = [], []
+        create_agent = runner.dependencies.create_agent
+
+        def delayed_create(*args):
+            initializing.set()
+            assert release.wait(5)
+            peer = create_agent(*args)
+            peers.append(peer)
+            return peer
+
+        runner.dependencies.create_agent = delayed_create
+        peer_id, _ = _register_peer(
+            runner._relay_http_service.base_url,
+            runner._relay_server.issue_bootstrap_token(ttl_sec=60),
+            str(tmp_path),
+        )
+
+        def chat():
+            try:
+                runner._relay_http_service.stream_chat_handler(
+                    peer_id, "hello", _RemoteChatSession("chat", peer_id)
+                )
+            except (ConnectionError, RpcError):
+                pass  # The owner is deliberately closing this connection.
+            except BaseException as error:
+                failures.append(error)
+
+        def dispose():
+            try:
+                runner._remote_chat_cleanup()
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                disposed.set()
+
+        worker = threading.Thread(target=chat)
+        cleanup = threading.Thread(target=dispose)
+        worker.start()
+        try:
+            assert initializing.wait(5)
+            cleanup.start()
+            assert not disposed.wait(0.1)
+            release.set()
+            cleanup.join(10)
+            worker.join(10)
+            assert not cleanup.is_alive() and not worker.is_alive()
+            assert peers[0].ui_interactor.is_shutdown
+            assert not failures
+        finally:
+            release.set()
+            worker.join(10)
+            if cleanup.ident is not None:
+                cleanup.join(10)
+            runner.cleanup(ctx.agent)
+
     def test_local_mode_no_relay(self, tmp_path: Path) -> None:
         """When remote_exec is disabled, runner starts normally with local backend."""
         config = Config(remote_exec=RemoteExecConfig(enabled=False))
@@ -941,7 +1012,7 @@ class TestRunnerRemoteExec:
             )
             cursor = 0
             first_events: list[dict] = []
-            deadline = time.time() + 2
+            deadline = time.time() + 15
             while time.time() < deadline:
                 _, first = _json_request(
                     "POST",

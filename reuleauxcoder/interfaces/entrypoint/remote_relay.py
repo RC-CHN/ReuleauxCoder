@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 
 from reuleauxcoder.app.runtime.session_state import (
@@ -128,6 +129,9 @@ def bind_remote_chat_handler(
     peer_connection_markers: dict[str, str] = {}
     peer_presenters: dict[str, RelayUI] = {}
     peer_connections: dict[str, LocalConnection] = {}
+    peer_lifecycle = threading.Condition()
+    initializing_peers = 0
+    closing = False
 
     def _terminal_for_peer(peer_id: str) -> TerminalCapabilities:
         peer = relay_server.registry.get(peer_id)
@@ -217,6 +221,12 @@ def bind_remote_chat_handler(
                 peer_agent.lifecycle.runner_shutdown()
 
     def _dispose_all_peers() -> None:
+        nonlocal closing
+        with peer_lifecycle:
+            closing = True
+            # Initialization publishes the connection only after its handshake.
+            # Wait for ownership to be registered before taking the cleanup set.
+            peer_lifecycle.wait_for(lambda: initializing_peers == 0)
         failure = None
         for peer_id in tuple(peer_presenters):
             try:
@@ -243,7 +253,21 @@ def bind_remote_chat_handler(
                 )
         return f"remote:{machine_key}:{workspace_root or '.'}"
 
-    def _create_peer_agent(peer_id: str) -> Agent:
+    def _peer_view(peer_id: str) -> RelayUI:
+        nonlocal initializing_peers
+        with peer_lifecycle:
+            if closing:
+                raise RuntimeError("Remote relay host is closing")
+            initializing_peers += 1
+        try:
+            _initialize_peer_agent(peer_id)
+            return peer_presenters[peer_id]
+        finally:
+            with peer_lifecycle:
+                initializing_peers -= 1
+                peer_lifecycle.notify_all()
+
+    def _initialize_peer_agent(peer_id: str) -> Agent:
         marker = _connection_marker(peer_id)
         existing = peer_agents.get(peer_id)
         if existing is not None and peer_connection_markers.get(peer_id) == marker:
@@ -507,14 +531,14 @@ def bind_remote_chat_handler(
 
     def _chat(peer_id: str, prompt: str) -> ChatResponse:
         try:
-            _create_peer_agent(peer_id)
+            presentation = _peer_view(peer_id)
         except SessionRestoreError as error:
             return ChatResponse(response="", error=str(error))
-        return peer_presenters[peer_id].run(prompt)
+        return presentation.run(prompt)
 
     def _stream_chat(peer_id: str, prompt: str, remote_session) -> None:
         try:
-            _create_peer_agent(peer_id)
+            presentation = _peer_view(peer_id)
         except SessionRestoreError as error:
             remote_session.append_event(
                 "error",
@@ -527,7 +551,7 @@ def bind_remote_chat_handler(
                 },
             )
             return
-        peer_presenters[peer_id].run(prompt, remote_session)
+        presentation.run(prompt, remote_session)
 
     runner._relay_http_service.set_chat_handler(_chat)
     runner._relay_http_service.set_stream_chat_handler(_stream_chat)

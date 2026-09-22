@@ -120,7 +120,11 @@ class _RemoteChatSession:
 
     def register_interaction(self, request_id: str) -> None:
         with self.cond:
-            self.interaction_waiters[request_id] = {}
+            self.interaction_waiters[request_id] = (
+                {"done": True, "cancelled": True, "reason": "chat cancelled"}
+                if self.cancel_requested or self.done
+                else {}
+            )
 
     def resolve_interaction(
         self,
@@ -217,7 +221,10 @@ class _RemoteChatSession:
             self.admit_steering_callback = admit_steering
             self.interrupt_intent_callback = interrupt_intent
             self.stop_turn_callback = stop_turn
+            cancelled = self.cancel_requested
             self.cond.notify_all()
+        if cancelled:
+            stop_turn()
 
     def apply_control(self, request: ChatControlRequest) -> ChatControlResponse:
         """Apply one idempotent peer control operation."""

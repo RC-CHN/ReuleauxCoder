@@ -1,6 +1,7 @@
 """Relay views use the same real RPC runtime as terminal and desktop clients."""
 
 import threading
+import time
 
 import pytest
 
@@ -77,6 +78,18 @@ def test_relay_clears_stream_binding_when_checkpoint_fails(runtime, relay_view):
         relay_view.run("hello", _RemoteChatSession("chat", "peer"))
     assert relay_view.session is None
     assert not runtime.client.state.running
+
+
+def test_relay_honors_cancellation_before_interaction_registration(runtime, relay_view):
+    session = _RemoteChatSession("chat", "peer")
+    relay_view.session = session
+    request = ConfirmRequest(
+        title="Confirm", message="Continue?", deadline=time.monotonic()
+    )
+    response = relay_view.confirm(request)
+    assert response.cancelled and not response.confirmed
+    assert not session.interaction_waiters
+    assert not relay_view._interaction_sessions
 
 
 def test_relay_waits_for_completion_notification_after_an_idle_snapshot(

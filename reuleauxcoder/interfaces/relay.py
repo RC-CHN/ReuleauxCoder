@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import threading
+import time
 
 from rich.console import Console
 
@@ -188,31 +189,39 @@ class RelayUI:
         session = self.session
         if session is None:
             raise RuntimeError("Interactions require a streaming remote chat")
-        self._interaction_sessions[request.request_id] = session
-        session.register_interaction(request.request_id)
-        with self._lock:
-            self.flush()
-            render_interaction_request(
-                self.console,
-                request,
-                max_preview_lines=self.renderer.policy.tool_preview_lines,
-                max_preview_chars=self.renderer.policy.tool_preview_chars,
-            )
-            rendered_frame = export_remote_console(self.console)
-        kind = {
-            ConfirmRequest: "confirm",
-            ChooseOneRequest: "choose_one",
-            InputTextRequest: "text_input",
-            ReviewRequest: "review",
-        }[type(request)]
-        payload = {
-            "request_id": request.request_id,
-            "kind": kind,
-            "rendered_frame": rendered_frame,
-            "input_constraints": interaction_constraints(request),
-        }
-        session.append_event("interaction_request", payload)
         try:
+            with self._lock:
+                # RPC cancellation can arrive before the view starts presenting.
+                if (
+                    request.deadline is not None
+                    and request.deadline <= time.monotonic()
+                ):
+                    return None, True, "interaction cancelled"
+                self._interaction_sessions[request.request_id] = session
+                session.register_interaction(request.request_id)
+                self.flush()
+                render_interaction_request(
+                    self.console,
+                    request,
+                    max_preview_lines=self.renderer.policy.tool_preview_lines,
+                    max_preview_chars=self.renderer.policy.tool_preview_chars,
+                )
+                rendered_frame = export_remote_console(self.console)
+                kind = {
+                    ConfirmRequest: "confirm",
+                    ChooseOneRequest: "choose_one",
+                    InputTextRequest: "text_input",
+                    ReviewRequest: "review",
+                }[type(request)]
+                session.append_event(
+                    "interaction_request",
+                    {
+                        "request_id": request.request_id,
+                        "kind": kind,
+                        "rendered_frame": rendered_frame,
+                        "input_constraints": interaction_constraints(request),
+                    },
+                )
             value, cancelled, reason = session.wait_interaction(request.request_id)
             session.append_event(
                 "interaction_resolved",
@@ -224,7 +233,8 @@ class RelayUI:
             )
             return value, cancelled, reason
         finally:
-            self._interaction_sessions.pop(request.request_id, None)
+            with self._lock:
+                self._interaction_sessions.pop(request.request_id, None)
 
     def confirm(self, request: ConfirmRequest) -> ConfirmResponse:
         value, cancelled, _ = self._request(request)
@@ -264,6 +274,9 @@ class RelayUI:
         )
 
     def cancel(self, request_id: str) -> None:
-        session = self._interaction_sessions.get(request_id)
-        if session is not None:
-            session.resolve_interaction(request_id, None, True, "interaction cancelled")
+        with self._lock:
+            session = self._interaction_sessions.get(request_id)
+            if session is not None:
+                session.resolve_interaction(
+                    request_id, None, True, "interaction cancelled"
+                )
