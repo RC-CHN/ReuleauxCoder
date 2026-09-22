@@ -32,7 +32,14 @@ test('process panels keep identity, output and scroll position through polling, 
   await until(() => screen() !== beforeRefresh);
   assert.equal(c.listItems(screen())[screen().index].id, ids[1]);
   await screen().items.find(item => item.id === ids[1])!.select();
-  await until(() => screen()?.output?.includes('output 199'));
+  await until(() => screen()?.panel?.view_type === `process_session:${ids[1]}`);
+  const outputDeadline = Date.now() + 5000;
+  while (!screen().output?.includes('output 199')) {
+    assert(Date.now() < outputDeadline, 'fixture process output was not observed');
+    const beforePoll = screen();
+    await screen().items.find(item => item.label === 'Refresh output')!.select();
+    await until(() => screen() !== beforePoll);
+  }
   assert.equal(screen().panel!.view_type, `process_session:${ids[1]}`);
   await until(() => (screen().contentOffset ?? 0) > 0);
   const end = screen().contentOffset!;
