@@ -125,7 +125,6 @@ def bind_remote_chat_handler(
     skills_service: SkillsService | None = getattr(agent, "skills_service", None)
     session_store = runner.dependencies.create_session_store(sessions_dir)
     peer_agents: dict[str, Agent] = {}
-    peer_commands: dict[str, CommandService] = {}
     peer_connection_markers: dict[str, str] = {}
     peer_presenters: dict[str, RelayUI] = {}
     peer_connections: dict[str, LocalConnection] = {}
@@ -163,10 +162,9 @@ def bind_remote_chat_handler(
         frontend, backend = RpcPeer(left), RpcPeer(right)
         client = RuntimeClient(frontend, presentation.bus, presentation)
         server = RuntimeServer(commands, backend)
-        backend.methods["runtime.checkpoint"] = lambda: _save_peer_session_once(
-            peer_agent, peer_id
+        backend.methods["runtime.checkpoint"] = lambda: commands.checkpoint(
+            lambda: _save_peer_session_once(peer_agent, peer_id)
         )
-        peer_commands[peer_id] = commands
         connection = LocalConnection(client, server)
         backend.start()
         frontend.start()
@@ -174,10 +172,7 @@ def bind_remote_chat_handler(
             client.initialize(REMOTE_CLI_PROFILE, activate=False)
             presentation.connect(client)
         except BaseException:
-            try:
-                connection.close()
-            finally:
-                peer_commands.pop(peer_id, None)
+            connection.close()
             raise
         peer_presenters[peer_id] = presentation
         peer_connections[peer_id] = connection
@@ -206,7 +201,6 @@ def bind_remote_chat_handler(
             if connection is not None:
                 connection.close()
         finally:
-            peer_commands.pop(peer_id, None)
             presenter = peer_presenters.pop(peer_id, None)
             if presenter is not None:
                 presenter.close()
@@ -517,9 +511,6 @@ def bind_remote_chat_handler(
         }
 
     def _save_peer_session_once(peer_agent: Agent, peer_id: str) -> dict | None:
-        commands = peer_commands.get(peer_id)
-        if commands is not None and commands.exit_saved_session_id is not None:
-            return None
         try:
             _save_peer_session(peer_agent, peer_id)
         except KeyboardInterrupt:

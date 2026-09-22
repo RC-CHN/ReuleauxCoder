@@ -9,6 +9,7 @@ from reuleauxcoder.app.interaction_contracts import ConfirmRequest
 from reuleauxcoder.extensions.remote_exec.http_service import _RemoteChatSession
 from reuleauxcoder.extensions.remote_exec.protocol import TerminalCapabilities
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.interfaces.relay import RelayUI
 
 
@@ -90,6 +91,78 @@ def test_relay_honors_cancellation_before_interaction_registration(runtime, rela
     assert response.cancelled and not response.confirmed
     assert not session.interaction_waiters
     assert not relay_view._interaction_sessions
+
+
+@pytest.mark.parametrize("first", ["checkpoint", "shutdown"])
+def test_checkpoint_and_shutdown_serialize_session_writes(runtime, monkeypatch, first):
+    runtime.config.session_auto_save = True
+    runtime.client.submit("preserve work")
+    runtime.client.wait_idle()
+    commands = runtime.server.commands
+    release = threading.Event()
+    entered = {kind: threading.Event() for kind in ("checkpoint", "shutdown")}
+    dispatched = {kind: threading.Event() for kind in entered}
+    saves, failures = [], []
+    original_save = SessionStore.save
+
+    def save(store, *args, **kwargs):
+        kind = "shutdown" if kwargs.get("is_exit") else "checkpoint"
+        entered[kind].set()
+        if kind == first:
+            assert release.wait(5)
+        result = original_save(store, *args, **kwargs)
+        saves.append(kind)
+        return result
+
+    monkeypatch.setattr(SessionStore, "save", save)
+
+    def checkpoint():
+        dispatched["checkpoint"].set()
+        return commands.checkpoint(
+            lambda: SessionStore(commands.sessions_dir).save(
+                runtime.agent.messages, runtime.agent.llm.model, commands.session_id
+            )
+        )
+
+    def shutdown():
+        dispatched["shutdown"].set()
+        return runtime.server.shutdown()
+
+    runtime.server.peer.methods.update(
+        {"runtime.checkpoint": checkpoint, "runtime.shutdown": shutdown}
+    )
+
+    def request(kind):
+        try:
+            runtime.client.peer.request(f"runtime.{kind}")
+        except BaseException as error:
+            failures.append(error)
+
+    second = "shutdown" if first == "checkpoint" else "checkpoint"
+    workers = [
+        threading.Thread(target=request, args=(kind,)) for kind in (first, second)
+    ]
+    workers[0].start()
+    try:
+        assert entered[first].wait(5)
+        workers[1].start()
+        assert dispatched[second].wait(5)
+        assert not entered[second].wait(0.1)
+    finally:
+        release.set()
+        for worker in workers:
+            if worker.ident is not None:
+                worker.join(5)
+    assert not any(worker.is_alive() for worker in workers)
+    assert not failures
+    assert saves == (
+        ["checkpoint", "shutdown"] if first == "checkpoint" else ["shutdown"]
+    )
+    saved = SessionStore(commands.sessions_dir).load(commands.session_id)
+    assert saved is not None
+    assert any(
+        "[SESSION_EXIT]" in message.get("content", "") for message in saved.messages
+    )
 
 
 def test_relay_waits_for_completion_notification_after_an_idle_snapshot(

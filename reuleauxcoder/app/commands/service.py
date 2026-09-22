@@ -254,6 +254,13 @@ class CommandService:
         with self._execution_lock:
             return self._save_exit(progress=progress)
 
+    def checkpoint(self, save):
+        """Serialize a host checkpoint with commands and the final exit snapshot."""
+        with self._execution_lock:
+            if self.exit_saved_session_id is None:
+                return save()
+            return None
+
     def record_chat_failure(self, error: Exception) -> None:
         path = getattr(error, "llm_diagnostic_path", None)
         if path and self.session_id:
