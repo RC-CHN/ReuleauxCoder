@@ -111,6 +111,7 @@ def main():
             frontend_bus,
             cli_ui.interactor,
             foreground_interactions=True,
+            activate=False,
         )
         return run_cli(
             connection.client,

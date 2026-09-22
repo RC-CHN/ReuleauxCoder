@@ -131,8 +131,8 @@ def test_budget_change_does_not_resume_and_resume_retains_cumulative_usage(runti
     assert runtime.client.state.goal.status == "complete"
 
 
+@pytest.mark.parametrize("runtime", [False], indirect=True)
 def test_restored_active_goal_waits_for_frontend_ready(runtime):
-    runtime.server._ready = False
     runtime.agent.goal_controller.create("Restored work", None)
     called = []
 
@@ -142,7 +142,9 @@ def test_restored_active_goal_waits_for_frontend_ready(runtime):
         return "done"
 
     runtime.loop.run = run
-    runtime.client._state(decode(runtime.client.peer.request("runtime.ready")))
+    assert not runtime.server._ready
+    assert not runtime.client.state.running
+    runtime.client.ready()
     runtime.client.wait_idle()
     assert called == [1]
 

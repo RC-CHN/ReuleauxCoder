@@ -46,6 +46,7 @@ def run_repl(
             exited.set()
 
     runtime.on_completed = completed
+    runtime.ready()
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     editor = None
     images = []

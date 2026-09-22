@@ -35,6 +35,7 @@ def run_cli(runtime, ui_bus, registration, *, prompt=None, history_file=None):
             return 1
         if prompt:
             runtime.submit(prompt)
+            runtime.ready()
             runtime.wait_idle(pump=output.drain)
             output.drain()
         else:

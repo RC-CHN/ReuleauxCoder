@@ -53,7 +53,9 @@ class LocalConnection:
             self.server.shutdown()
 
 
-def connect_local(ctx, profile, ui_bus, interactor, *, foreground_interactions=False):
+def connect_local(
+    ctx, profile, ui_bus, interactor, *, foreground_interactions=False, activate=True
+):
     left, right = MemoryTransport.pair()
     frontend, backend = RpcPeer(left), RpcPeer(right)
     client = RuntimeClient(
@@ -63,7 +65,7 @@ def connect_local(ctx, profile, ui_bus, interactor, *, foreground_interactions=F
     backend.start()
     frontend.start()
     try:
-        client.initialize(profile)
+        client.initialize(profile, activate=activate)
     except BaseException:
         client.close()
         backend.close()

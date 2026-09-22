@@ -24,7 +24,7 @@ class FakeLLM:
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, request):
     config = Config(
         api_key="test", session_auto_save=False, history_file=str(tmp_path / "history")
     )
@@ -48,7 +48,11 @@ def runtime(tmp_path):
         skills_service=None,
     )
     connection = connect_local(
-        ctx, UIProfile("tui", "TUI", frozenset(UICapability)), frontend, interactor
+        ctx,
+        UIProfile("tui", "TUI", frozenset(UICapability)),
+        frontend,
+        interactor,
+        activate=getattr(request, "param", True),
     )
     try:
         yield SimpleNamespace(
