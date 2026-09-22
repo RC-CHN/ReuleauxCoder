@@ -1388,19 +1388,22 @@ class TestRemoteRelayHTTPService:
             shell.bind_execution(tool_call_id="call", session_generation=0)
 
             process = backend.process
-            runtime_timeout = 10
+            # This checks output and quoting, not PowerShell cold-start speed.
+            # The explicit timeout case below still enforces a one-second limit.
+            runtime_timeout = 30 if os.name == "nt" else 10
             process_handle = process.start(
                 _shell_write_command("left && right"),
                 cwd=str(work_dir),
                 runtime_timeout=runtime_timeout,
             )
-            snapshot, stdout, _stderr = _wait_for_process_exit(
+            snapshot, stdout, stderr = _wait_for_process_exit(
                 process,
                 process_handle.session_id,
                 timeout=runtime_timeout + 5,
             )
-            assert stdout == "left && right"
-            assert snapshot.exit_code == 0
+            assert snapshot.exit_code == 0, (snapshot, stdout, stderr)
+            assert snapshot.termination_reason == "exit", (snapshot, stdout, stderr)
+            assert stdout == "left && right", (snapshot, stdout, stderr)
             process.release(process_handle.session_id)
 
             running_handle = process.start(

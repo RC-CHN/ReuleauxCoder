@@ -60,7 +60,8 @@ def _json_request(
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = request.Request(url, data=data, headers=headers, method=method)
-    with _URLOPEN(req, timeout=5) as resp:
+    # Synchronous chat includes cold peer/runtime initialization on Windows.
+    with _URLOPEN(req, timeout=15) as resp:
         body = resp.read().decode("utf-8")
         return resp.status, json.loads(body) if body else {}
 
