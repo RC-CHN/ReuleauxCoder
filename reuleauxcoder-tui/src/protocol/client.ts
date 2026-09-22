@@ -1,20 +1,17 @@
-import {EventEmitter} from 'node:events';
-import {open} from 'node:fs/promises';
-import {basename, join} from 'node:path';
-import {homedir} from 'node:os';
-import {RpcPeer} from './peer.js';
+import {Events} from './events.js';
+import type {MessagePeer} from './message-peer.js';
 import type {ArtifactPage, HistoryOperation, HistoryPage} from './history.js';
 import type {GitWorkspace, ImageReference} from './wire.js';
 import {actionRequest, cancellation, decode, emptyState, enumValue, record, tuple, type Action, type Json, type PendingInteraction, type RuntimeState, type UIEvent} from './wire.js';
 
-export class RuntimeClient extends EventEmitter {
+export class RuntimeClient extends Events {
   state: RuntimeState = emptyState;
   catalog: Action[] = [];
   info: any;
   interactions: PendingInteraction[] = [];
   private closing = false;
 
-  constructor(readonly peer: RpcPeer) {
+  constructor(readonly peer: MessagePeer) {
     super();
     peer.on('notification', (method, params) => this.notification(method, params));
     peer.on('close', (error) => {
@@ -30,14 +27,14 @@ export class RuntimeClient extends EventEmitter {
     }));
   }
 
-  async initialize(): Promise<void> {
-    const capabilities = ['text_input', 'stream_output', 'palette', 'buttons', 'menus', 'modal', 'diff_review', 'text_select', 'text_edit', 'secure_text_input'];
-    this.info = decode(await this.peer.request('initialize', {version: 1, profile: record('UIProfile', {ui_id: 'tui', display_name: 'ReuleauxCoder React TUI', capabilities: tuple(capabilities.map(item => enumValue('UICapability', item)), 'frozenset')})}));
+  async initialize(profile: {ui_id: string; display_name: string; capabilities: string[]} = tuiProfile): Promise<void> {
+    const capabilities = profile.capabilities;
+    this.info = decode(await this.peer.request('initialize', {version: 1, profile: record('UIProfile', {ui_id: profile.ui_id, display_name: profile.display_name, capabilities: tuple(capabilities.map(item => enumValue('UICapability', item)), 'frozenset')})}));
     this.catalog = this.info.catalog.actions;
-    if (this.info.version !== 1 || this.catalog.some(item => !Array.isArray(item.parameters))) throw new Error('This TUI requires a backend with command form metadata. Update the Python package.');
+    if (this.info.version !== 1 || this.catalog.some(item => !Array.isArray(item.parameters))) throw new Error('This client requires a backend with command form metadata. Update the Python package.');
     this.update(this.info.state);
     this.emit('initialized', this.info);
-    if (this.info.goals) this.update(decode(await this.peer.request('runtime.ready')));
+    if (this.info.goals && !this.info.host_mode) this.update(decode(await this.peer.request('runtime.ready')));
   }
 
   private update(state: RuntimeState): void {
@@ -75,27 +72,24 @@ export class RuntimeClient extends EventEmitter {
     return result;
   }
   submitAction(id: string, command: {[key: string]: Json} = {}) {return this.submit(actionRequest(id, command));}
-  async attachImage(path: string): Promise<ImageReference> {
+  async uploadImage(source: ImageSource): Promise<ImageReference> {
     if (!this.info?.image_uploads) throw new Error('Backend does not support image attachments.');
-    if (path.startsWith('~/') || path.startsWith('~\\')) path = join(homedir(), path.slice(2));
     const state = this.state;
-    const file = await open(path, 'r');
-    let upload: any;
+    const upload = await this.peer.request('images.begin', {session_id: state.session_id, session_generation: state.session_generation, name: source.name, size_bytes: source.size}) as any;
     try {
-      upload = await this.peer.request('images.begin', {session_id: state.session_id, session_generation: state.session_generation, name: basename(path), size_bytes: (await file.stat()).size});
-      const buffer = Buffer.alloc(upload.chunk_bytes);
       let offset = 0;
-      while (true) {
-        const {bytesRead} = await file.read(buffer, 0, buffer.length, null);
-        if (!bytesRead) break;
-        offset = await this.peer.request('images.append', {upload_id: upload.upload_id, offset, data: buffer.subarray(0, bytesRead).toString('base64')}) as number;
+      while (offset < source.size) {
+        const chunk = await source.read(offset, Math.min(upload.chunk_bytes, source.size - offset));
+        if (!chunk.length || chunk.length > upload.chunk_bytes) throw new Error('Invalid image source chunk');
+        let binary = '';
+        for (const byte of chunk) binary += String.fromCharCode(byte);
+        offset = await this.peer.request('images.append', {upload_id: upload.upload_id, offset, data: btoa(binary)}) as number;
       }
       const image = decode(await this.peer.request('images.complete', {upload_id: upload.upload_id}));
       if (state.session_id !== this.state.session_id || state.session_generation !== this.state.session_generation) throw new Error('Session changed during image upload; attach it again.');
       return image;
     } finally {
-      await file.close();
-      if (upload) await this.peer.request('images.cancel', {upload_id: upload.upload_id});
+      await this.peer.request('images.cancel', {upload_id: upload.upload_id});
     }
   }
   async panel(payload: Json) {return decode(await this.peer.request('view.panel', {payload}));}
@@ -110,11 +104,29 @@ export class RuntimeClient extends EventEmitter {
   async interrupt(): Promise<{outcome: string; discarded_count: number}> {return decode(await this.peer.request('runtime.interrupt'));}
   resize(rows: number, columns: number) {this.peer.notify('runtime.resize', {rows, columns});}
   recordPerformance(elapsedMs: number) {this.peer.notify('runtime.record_performance', {category: 'ui_render', name: 'ink_render', elapsed_ms: elapsedMs});}
+  /** Disconnect the transport; process ownership belongs to the host. */
+  close(): void {
+    this.closing = true;
+    for (const item of [...this.interactions]) this.answer(item.request.request_id, cancellation(item.kind));
+    this.peer.close();
+  }
   async shutdown(): Promise<string | null> {
     this.closing = true;
     for (const item of [...this.interactions]) this.answer(item.request.request_id, cancellation(item.kind));
     if (this.peer.closed) return null;
     try {return await this.peer.request('runtime.shutdown', {}, 15_000) as string | null;}
-    finally {this.peer.close();}
+    finally {this.close();}
   }
 }
+
+/** Browser File/Blob sources can use slice(offset, offset + length).arrayBuffer(). */
+export interface ImageSource {
+  name: string;
+  size: number;
+  read(offset: number, length: number): Promise<Uint8Array>;
+}
+
+export const tuiProfile = {
+  ui_id: 'tui', display_name: 'ReuleauxCoder React TUI',
+  capabilities: ['text_input', 'stream_output', 'palette', 'buttons', 'menus', 'modal', 'diff_review', 'text_select', 'text_edit', 'secure_text_input'],
+};

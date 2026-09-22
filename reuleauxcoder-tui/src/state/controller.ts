@@ -2,6 +2,7 @@ import {EventEmitter} from 'node:events';
 import {isDeepStrictEqual} from 'node:util';
 import type {Key} from 'ink';
 import {RuntimeClient} from '../protocol/client.js';
+import {attachImageFile} from '../protocol/files.js';
 import {cancellation, record, tuple, typeOf, type Action, type ImageReference, type Json, type Panel, type PanelItem, type PendingInteraction, type View} from '../protocol/wire.js';
 import {SessionStore} from './session.js';
 import {edit, editor, type Editor} from './editor.js';
@@ -306,7 +307,7 @@ export class TuiController extends EventEmitter {
       const task = (this.pendingPaste ?? Promise.resolve()).catch(() => {}).then(async () => {
         const path = await pastedImagePath(pasted);
         if (!path || generation !== this.client.state.session_generation || !this.composer.text.includes(pasted)) return;
-        const image = await this.client.attachImage(path);
+        const image = await attachImageFile(this.client, path);
         const start = this.composer.text.indexOf(pasted);
         if (start < 0 || generation !== this.client.state.session_generation) return;
         const label = this.imageLabel(image);
@@ -439,7 +440,7 @@ export class TuiController extends EventEmitter {
         let path = text.slice('/attach'.length).trim();
         if (path.length >= 2 && ['"', "'"].includes(path[0]) && path.at(-1) === path[0]) path = path.slice(1, -1);
         if (!path) throw new Error('Usage: /attach <frontend-local image path>');
-        const image = await this.client.attachImage(path);
+        const image = await attachImageFile(this.client, path);
         if (this.composer === draft) this.composer = editor();
         this.composer = edit(this.composer, this.imageLabel(image) + ' ', {});
         this.status = `${image.name} (${image.width}x${image.height}, ${image.size_bytes} bytes). Backspace removes an image marker.`;

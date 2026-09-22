@@ -61,7 +61,7 @@ export interface Panel {view_type: string; title: string; items: PanelItem[]; ch
 export interface View {action: string; title: string; view_model: RecordData; focus: boolean; reuse_key: string | null}
 export interface UIEvent {message: string; level: string; kind: string; payload: RecordData | null; data: RecordData; timestamp: number}
 export interface Interaction extends RecordData {request_id: string; title: string}
-export interface PendingInteraction {kind: string; request: Interaction; expiresAt: number | null; resolve: (value: Json) => void; timer?: NodeJS.Timeout}
+export interface PendingInteraction {kind: string; request: Interaction; expiresAt: number | null; resolve: (value: Json) => void; timer?: ReturnType<typeof setTimeout>}
 
 export const emptyState: RuntimeState = {revision: 0, session_id: null, agent_id: null, session_generation: 0, running: false, stopping: false, interrupt_pending: false, queued_commands: [], queued_steering: [], model: '', context_tokens: 0, context_limit: 0, mcp_enabled: 0, mcp_tools: 0, mcp_state: 'ready', workspace: '', exit_saved_session_id: null, approval_waiting: 0};
 
