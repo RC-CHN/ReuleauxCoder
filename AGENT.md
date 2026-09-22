@@ -116,6 +116,8 @@ TUI motion stays local to the affected React surface: startup and panel transiti
 
 The CLI is split by responsibility:
 
+- `interfaces/entrypoint/cli.py`: local runtime ownership and cleanup; `interfaces/cli/main.py` dispatches stdio without loading terminal UI.
+- `interfaces/cli/application.py`: connected-client view lifecycle, including host status over RPC.
 - `interfaces/cli/repl.py`: JSON-RPC submission, interaction handoff and session lifecycle.
 - `interfaces/cli/input.py`: prompt_toolkit line editing, runtime output pumping and draft preservation.
 - `interfaces/cli/details.py`: restored conversation, session/execution facts and full tool output.
@@ -148,6 +150,8 @@ Current CLI behavior:
 ## Commands and interactions
 
 `app/commands/service.py` owns command execution, capability checks, during-turn queues, auditing, session transitions, resume markers and exit snapshots. `app/rpc/server.py` owns chat workers, admission, interruption and interaction lifecycle; CLI/TUI adapters use `RuntimeClient` for both chat and commands. Slash input and typed `ActionRequest` submissions share this boundary. Session identity is read from the agent at execution time; frontends retain only revisioned backend snapshots.
+
+The relay terminal adapter also uses a persistent RPC client/runtime per peer, while preserving the Go peer's HTTP transport. Bootstrap code owns backend objects; views consume initialization metadata and events. TypeScript's message peer and runtime client work without Node; stream framing and local file reads are separate Node adapters. View disposal does not own runtime shutdown. See `docs/frontend-runtime-boundary.md` for the boundaries, lifecycle and future desktop/VS Code Remote adaptation points.
 
 Built-ins expose explicit `register_actions` and optional `command_panel_spec` contributions under `extensions/command/builtin/`. Each feature owns its parsers, parameter dataclasses, handlers, audit declarations and panel builders. The single `_BUILTIN_COMMAND_FEATURES` catalog pairs actions with panels. The service exposes a metadata-only `ActionCatalog` and immutable `PanelPresentation` data. Panel rows carry typed action requests; selection must not write slash text into the chat buffer. Frontends own cursor, filtering, focus, keyboard handling and framework-specific rendering.
 

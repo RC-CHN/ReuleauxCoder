@@ -4,6 +4,8 @@
 
 独立的 React + Ink 终端前端，与 `reuleauxcoder-agent/` 同级。Python 后端拥有 Agent、命令、审批策略和会话保存；界面通过双向 JSON-RPC 收发数据。
 
+`src/protocol/client.ts` 和 `message-peer.ts` 可用于浏览器消息桥；Node stdio 和本地图片文件读取分别在 `peer.ts`、`files.ts`。客户端可传入 UI profile，图片接口接收字节源。宿主负责后端进程与客户端生命周期，视图关闭只解绑监听。详见[前端与运行时边界](../docs/frontend-runtime-boundary.md)。
+
 ## 运行
 
 安装发布 wheel 后直接运行 `rcoder` 或 `rcoder-tui`，需要 Node.js 22+，不需要 npm。
