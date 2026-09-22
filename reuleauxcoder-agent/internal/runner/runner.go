@@ -222,11 +222,16 @@ func (r *Runner) runPollLoop(
 	peerToken, workspaceRoot, cwd string,
 	pollInterval time.Duration,
 	processManager *processops.Manager,
-) error {
+) (returnErr error) {
 	ctx, cancelWaits := context.WithCancel(ctx)
 	var waits sync.WaitGroup
 	waitSlots := make(chan struct{}, 64)
 	defer func() {
+		// Parent cancellation can arrive while a result POST is still awaiting
+		// its response. It is normal shutdown, just like cancellation in Poll.
+		if ctx.Err() != nil && errors.Is(returnErr, ctx.Err()) {
+			returnErr = nil
+		}
 		cancelWaits()
 		waits.Wait()
 	}()
@@ -245,6 +250,9 @@ func (r *Runner) runPollLoop(
 		})
 		cancelPoll()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			if isAuthenticationError(err) {
 				if refreshErr := r.refreshLease(ctx, peerToken); refreshErr == nil {
 					log.Print("peer lease refreshed after poll authentication failure")

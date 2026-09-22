@@ -99,3 +99,36 @@ func TestLongPollDoesNotBlockControlOrPeerShutdown(t *testing.T) {
 		})
 	}
 }
+
+func TestPeerShutdownDuringResultResponse(t *testing.T) {
+	root := t.TempDir()
+	manager := processops.NewManager(root, root)
+	defer manager.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/remote/poll":
+			_ = json.NewEncoder(w).Encode(protocol.RelayEnvelope{Type: "cleanup", RequestID: "cleanup"})
+		case "/remote/result":
+			// Cancel after receiving the result, but before acknowledging it.
+			// Receiving a POST does not mean the client received its response.
+			cancel()
+			<-releaseResponse
+		}
+	}))
+	defer server.Close()
+	defer close(releaseResponse)
+	r := &Runner{client: client.New(server.URL)}
+	done := make(chan error, 1)
+	go func() { done <- r.runPollLoop(ctx, "token", root, root, time.Millisecond, manager) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shutdown returned an in-flight POST error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdown did not stop the in-flight POST")
+	}
+}
