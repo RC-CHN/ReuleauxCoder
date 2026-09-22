@@ -12,7 +12,6 @@ from reuleauxcoder import __version__
 from reuleauxcoder.app.commands.specs import TriggerKind
 from reuleauxcoder.app.rpc.client import RuntimeClient
 from reuleauxcoder.app.ui_events import UIEvent, UIEventBus
-from reuleauxcoder.infrastructure.fs.paths import ensure_user_dirs
 from reuleauxcoder.interfaces.cli.input import CLIInput, PromptAction
 from reuleauxcoder.interfaces.cli.images import ImagePaste
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
@@ -27,13 +26,16 @@ def run_repl(
     output_coordinator,
     interaction_coordinator,
     startup_events: tuple[UIEvent, ...] = (),
+    *,
+    history_file: str | None = None,
 ) -> None:
-    ensure_user_dirs()
     show_banner(
         runtime.state.model,
         runtime.info["base_url"],
         __version__,
         startup_events=startup_events,
+        workspace=runtime.state.workspace,
+        runtime_environment=runtime.info.get("runtime_environment"),
     )
     output = output_coordinator
     output.renderer.restore(runtime.info, runtime.state)
@@ -60,9 +62,7 @@ def run_repl(
             }
         )
         words.extend(["/attach", "/detach"])
-        history_path = Path(
-            runtime.info["history_file"] or ".rcoder/history"
-        ).expanduser()
+        history_path = Path(history_file or ".rcoder/history").expanduser()
         history_path.parent.mkdir(parents=True, exist_ok=True)
         editor = CLIInput(
             runtime,

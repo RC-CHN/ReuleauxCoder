@@ -28,7 +28,11 @@ def create_server(ctx, peer, profile):
         skills_service=ctx.skills_service,
         panels=create_builtin_command_panel_registry(),
     )
-    server = RuntimeServer(commands, peer)
+    server = RuntimeServer(
+        commands,
+        peer,
+        host_mode=ctx.config.remote_exec.enabled and ctx.config.remote_exec.host_mode,
+    )
     ctx.ui_interactor = server.interactions
     return server
 

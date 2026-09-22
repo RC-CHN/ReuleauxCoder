@@ -10,6 +10,40 @@ from reuleauxcoder.extensions.command.builtin.thinking import SetEffortCommand
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
 
 
+def test_initialization_describes_backend_without_exposing_local_history(runtime):
+    info = runtime.client.info
+    assert (
+        info["presentation"]["reasoning_display"] == runtime.config.ui.reasoning_display
+    )
+    assert info["model_configured"] is True
+    assert info["host_mode"] is False
+    assert info["runtime_environment"]["system"]
+    assert "history_file" not in info
+    assert "api_key" not in info
+    info["presentation"]["reasoning_display"] = "inline"
+    assert runtime.config.ui.reasoning_display != "inline"
+
+
+def test_peer_controls_and_final_response_cross_the_runtime(runtime):
+    entered, release = threading.Event(), threading.Event()
+    completed = []
+    runtime.loop.run = lambda: (entered.set(), release.wait(3), "done")[-1]
+    runtime.client.on_completed = completed.append
+    assert runtime.client.admit_steering("too early") is None
+    runtime.client.submit("hello")
+    assert entered.wait(2)
+    try:
+        steering_id = runtime.client.admit_steering("new direction")
+        assert steering_id
+        assert runtime.client.interrupt()["outcome"] == "promoted"
+        runtime.client.stop()
+        assert runtime.agent.stop_requested()
+    finally:
+        release.set()
+    runtime.client.wait_idle()
+    assert completed[-1].response == "done"
+
+
 def test_snapshot_revision_tracks_changes_and_conditional_reads(runtime):
     client = runtime.client
     changes = []
@@ -18,9 +52,12 @@ def test_snapshot_revision_tracks_changes_and_conditional_reads(runtime):
     for _ in range(3):
         client.refresh()
         assert runtime.server.snapshot().revision == original.revision
-        assert client.peer.request(
-            "runtime.snapshot", {"known_revision": original.revision}
-        ) is None
+        assert (
+            client.peer.request(
+                "runtime.snapshot", {"known_revision": original.revision}
+            )
+            is None
+        )
     assert changes == []
     runtime.agent.llm.model = "changed-model"
     client.refresh()

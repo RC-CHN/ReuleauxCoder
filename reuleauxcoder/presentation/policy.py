@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import SimpleNamespace
 
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
@@ -47,6 +48,11 @@ class PresentationPolicy:
     show_tool_args: bool = True
     reasoning_display: ReasoningDisplay = ReasoningDisplay.INDICATOR
     notification_threshold: NotificationThreshold = NotificationThreshold.INFO
+
+    @classmethod
+    def from_mapping(cls, values) -> "PresentationPolicy":
+        """Consume the initialization contract without importing backend config."""
+        return cls.from_ui_config(SimpleNamespace(**values))
 
     @classmethod
     def from_ui_config(cls, config) -> "PresentationPolicy":

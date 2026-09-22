@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 import logging
 from pathlib import Path
 import threading
@@ -27,6 +27,7 @@ from reuleauxcoder.domain.runtime.events import RuntimeEvent, SubagentJobChanged
 from reuleauxcoder.infrastructure.rpc.peer import RpcError, RpcPeer
 from reuleauxcoder.infrastructure.fs.paths import get_sessions_dir
 from reuleauxcoder.infrastructure.persistence.history_query import SessionHistory
+from reuleauxcoder.infrastructure.platform import get_platform_info
 
 log = logging.getLogger(__name__)
 
@@ -90,8 +91,9 @@ class RemoteInteractor:
 
 
 class RuntimeServer:
-    def __init__(self, commands: CommandService, peer: RpcPeer):
+    def __init__(self, commands: CommandService, peer: RpcPeer, *, host_mode=False):
         self.commands, self.peer = commands, peer
+        self.host_mode = host_mode
         self.agent, self.config, self.bus = (
             commands.agent,
             commands.config,
@@ -137,6 +139,8 @@ class RuntimeServer:
                 "images.complete": self.images.complete,
                 "images.cancel": self.images.cancel,
                 "runtime.interrupt": self.interrupt,
+                "runtime.admit_steering": self.admit_steering,
+                "runtime.stop": self.stop,
                 "runtime.resize": self.resize,
                 "runtime.report_issue": self.agent.record_runtime_issue,
                 "runtime.record_performance": self.record_performance,
@@ -268,7 +272,13 @@ class RuntimeServer:
                     "image_uploads": True,
                     "catalog": self.commands.catalog,
                     "state": self.snapshot(),
-                    "history_file": self.config.history_file,
+                    "presentation": asdict(self.config.ui),
+                    "host_mode": self.host_mode,
+                    "model_configured": bool(self.config.api_key),
+                    "runtime_environment": {
+                        "system": get_platform_info().system,
+                        "shell": get_platform_info().get_preferred_shell().value,
+                    },
                     "base_url": self.config.base_url,
                     "startup_events": self.bus.history_snapshot(),
                     "recent_conversation": recent,
@@ -478,10 +488,12 @@ class RuntimeServer:
                             # An accepted, queued image survives a later model switch.
                             # The request projection decides whether its bytes are sent.
                             self._validate_chat_images(value, check_model=False)
-                        self.agent.chat(
+                        response = self.agent.chat(
                             self.commands.prepare_chat_input(value), clear_stop=False
                         )
-                        result = CommandResult(session_id=self.commands.session_id)
+                        result = CommandResult(
+                            session_id=self.commands.session_id, response=response
+                        )
                     self._notify("runtime.completed", result=encode(result))
                     if result.control == "exit":
                         with self._lock:
@@ -542,6 +554,24 @@ class RuntimeServer:
                 self._workers.discard(threading.current_thread())
                 self._wake_goal()
                 self._lock.notify_all()
+
+    def admit_steering(self, text):
+        if not isinstance(text, str):
+            raise RpcError(-32602, "Expected steering text")
+        with self._lock:
+            result = (
+                self.agent.admit_user_steering(text)
+                if self._running and not self._closing
+                else None
+            )
+        self._publish_state()
+        return result
+
+    def stop(self):
+        with self._lock:
+            self.agent.request_stop()
+        self.agent.goal_controller.stop("paused")
+        self._publish_state()
 
     def interrupt(self):
         with self._lock:

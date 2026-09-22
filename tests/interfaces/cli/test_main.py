@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-import reuleauxcoder.interfaces.cli.main as main_module
+import reuleauxcoder.interfaces.entrypoint.cli as main_module
 from reuleauxcoder.presentation.semantics import DisplayTone
 
 

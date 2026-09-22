@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -22,13 +21,12 @@ def show_banner(
     console_override: Console | None = None,
     startup_events: Sequence[UIEvent] = (),
     theme: CLITheme = DEFAULT_CLI_THEME,
+    workspace: str = "",
+    runtime_environment: dict | None = None,
 ) -> None:
     """Render the sole persistent box in CLI scrollback: the session plate."""
-    from reuleauxcoder.infrastructure.platform import get_platform_info
-
     target = console_override or Console()
-    platform_info = get_platform_info()
-    shell = platform_info.get_preferred_shell()
+    environment = runtime_environment or {}
     panel_width = min(88, target.width)
     value_width = max(8, panel_width - 18)
     body = Text()
@@ -37,8 +35,13 @@ def show_banner(
     body.append(f"  //  V{version}", style=theme.style(DisplayTone.MUTED))
     body.append("\n")
     _fact(body, "MODEL", _truncate_middle(model, value_width), theme)
-    _fact(body, "ROOT", _truncate_middle(str(Path.cwd()), value_width), theme)
-    _fact(body, "RUNTIME", f"{platform_info.system.upper()} / {shell.value}", theme)
+    _fact(body, "ROOT", _truncate_middle(workspace, value_width), theme)
+    _fact(
+        body,
+        "RUNTIME",
+        f"{environment.get('system', '').upper()} / {environment.get('shell', '')}",
+        theme,
+    )
     if base_url:
         _fact(body, "BASE", _truncate_middle(base_url, value_width), theme)
 

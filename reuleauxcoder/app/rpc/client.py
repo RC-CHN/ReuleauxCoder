@@ -44,7 +44,7 @@ class RuntimeClient:
         )
         peer.methods["interaction.request"] = self._interact
 
-    def initialize(self, profile):
+    def initialize(self, profile, *, activate=True):
         self.info = decode(
             self.peer.request(
                 "initialize", {"profile": encode(profile), "version": 1}, timeout=30
@@ -54,9 +54,13 @@ class RuntimeClient:
         self._state(self.info["state"])
         for event in self.info["runtime_events"]:
             self.ui_bus.emit_runtime(event)
-        if self.info.get("goals"):
-            self._state(decode(self.peer.request("runtime.ready")))
+        if activate:
+            self.ready()
         return self.info
+
+    def ready(self):
+        if self.info.get("goals") and not self.info.get("host_mode"):
+            self._state(decode(self.peer.request("runtime.ready")))
 
     def _state(self, state):
         with self._condition:
@@ -122,6 +126,12 @@ class RuntimeClient:
 
     def interrupt(self):
         return self.peer.request("runtime.interrupt")
+
+    def admit_steering(self, text):
+        return self.peer.request("runtime.admit_steering", {"text": text})
+
+    def stop(self):
+        return self.peer.request("runtime.stop")
 
     def resize(self, rows, columns):
         self.peer.notify("runtime.resize", {"rows": rows, "columns": columns})

@@ -370,6 +370,11 @@ class UIEventBus:
         with self._subscriber_failure_lock:
             return self._subscriber_failure_stale_dropped
 
+    def unsubscribe(self, handler: Callable[[UIEvent], object]) -> None:
+        """Detach a view without ending the runtime that owns this bus."""
+        if handler in self._handlers:
+            self._handlers.remove(handler)
+
     def subscribe(
         self,
         handler: Callable[[UIEvent], object],
@@ -422,7 +427,7 @@ class UIEventBus:
         """Call every registered handler for *event*."""
         accepted: UIEventDeliveryAck | None = None
         rejected: UIEventDeliveryAck | None = None
-        for handler in self._handlers:
+        for handler in tuple(self._handlers):
             result = self._invoke_handler(handler, event, ref="dispatch")
             if not isinstance(result, UIEventDeliveryAck):
                 continue

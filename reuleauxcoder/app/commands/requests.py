@@ -20,3 +20,4 @@ class CommandResult:
     clear_transcript: bool = False
     plan: PlanState | None = None
     progress: ProgressState | None = None
+    response: str | None = None
