@@ -1,11 +1,5 @@
 """Domain layer - core abstractions and state models."""
 
-from reuleauxcoder.domain.agent import Agent
-from reuleauxcoder.domain.config import Config
-from reuleauxcoder.domain.context import ContextManager
-from reuleauxcoder.domain.hooks import HookKind, HookPoint, HookRegistry
-from reuleauxcoder.domain.session import Session
-
 __all__ = [
     "Agent",
     "ContextManager",
@@ -15,3 +9,20 @@ __all__ = [
     "HookPoint",
     "HookKind",
 ]
+
+
+def __getattr__(name):
+    from importlib import import_module
+
+    modules = {
+        "Agent": "agent",
+        "Config": "config",
+        "ContextManager": "context",
+        "Session": "session",
+        "HookKind": "hooks",
+        "HookPoint": "hooks",
+        "HookRegistry": "hooks",
+    }
+    if name in modules:
+        return getattr(import_module(f"{__name__}.{modules[name]}"), name)
+    raise AttributeError(name)

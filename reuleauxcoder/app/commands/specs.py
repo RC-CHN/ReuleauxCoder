@@ -88,7 +88,7 @@ class ActionDescription:
 
     def is_available_in(self, ui_profile: UIProfile) -> bool:
         """Return whether this action is available in the given UI profile."""
-        if ui_profile.ui_id not in self.ui_targets:
+        if self.ui_targets and ui_profile.ui_id not in self.ui_targets:
             return False
         return self.required_capabilities.issubset(ui_profile.capabilities)
 

@@ -8,7 +8,8 @@ from reuleauxcoder.app.commands.params import EnumParam, StrParam
 from reuleauxcoder.app.commands.specs import TriggerKind, TriggerSpec
 from reuleauxcoder.app.commands.capabilities import UICapability
 
-UI_TARGETS = frozenset({"cli", "tui", "vscode"})
+# An empty target set means any frontend with the required capabilities.
+UI_TARGETS = frozenset()
 TEXT_REQUIRED = frozenset({UICapability.TEXT_INPUT})
 
 

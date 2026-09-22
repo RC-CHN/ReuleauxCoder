@@ -40,6 +40,16 @@ def test_action_registry_iter_actions_filters_by_ui_profile() -> None:
     assert [action.action_id for action in actions] == ["cli-only"]
 
 
+def test_generic_actions_use_capabilities_and_keep_explicit_ui_restrictions():
+    desktop = UIProfile("desktop", "Desktop", CLI_PROFILE.capabilities)
+    registry = ActionRegistry([
+        _slash_action(action_id="shared", ui_targets=frozenset()),
+        _slash_action(action_id="cli-only"),
+    ])
+    assert [item.action_id for item in registry.iter_actions(desktop)] == ["shared"]
+    assert registry.iter_actions(UIProfile("desktop", "Desktop")) == []
+
+
 def test_action_registry_parse_returns_first_matching_action() -> None:
     def parser(user_input, parse_ctx):
         return {"value": user_input} if user_input == "/test" else None

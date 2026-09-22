@@ -10,9 +10,19 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0"
 
-from reuleauxcoder.domain.agent import Agent
-from reuleauxcoder.services.llm.client import LLM
-from reuleauxcoder.domain.config.models import Config
-from reuleauxcoder.extensions.tools.registry import build_tools
-
 __all__ = ["Agent", "LLM", "Config", "build_tools", "__version__"]
+
+
+def __getattr__(name):
+    # Importing a protocol client must not initialize the runtime or its tools.
+    from importlib import import_module
+
+    modules = {
+        "Agent": "reuleauxcoder.domain.agent",
+        "LLM": "reuleauxcoder.services.llm.client",
+        "Config": "reuleauxcoder.domain.config.models",
+        "build_tools": "reuleauxcoder.extensions.tools.registry",
+    }
+    if name in modules:
+        return getattr(import_module(modules[name]), name)
+    raise AttributeError(name)
