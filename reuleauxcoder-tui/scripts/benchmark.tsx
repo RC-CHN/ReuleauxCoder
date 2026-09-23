@@ -13,9 +13,9 @@ import {safe} from '../src/ui/format.js';
 import {MOTION_FPS, RENDER_FPS} from '../src/ui/motion.js';
 import {SessionStore} from '../src/state/session.js';
 import {TuiController} from '../src/state/controller.js';
-import {RuntimeClient} from '../src/protocol/client.js';
-import {RpcPeer} from '../src/protocol/peer.js';
-import {decode, record} from '../src/protocol/wire.js';
+import {RuntimeClient} from '@reuleauxcoder/client';
+import {RpcPeer} from '@reuleauxcoder/client/node';
+import {decode, record} from '@reuleauxcoder/client';
 import {backend} from '../test/helpers.js';
 
 const {values} = parseArgs({options: {json: {type: 'string'}, label: {type: 'string', default: 'working-tree'}}});

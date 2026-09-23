@@ -1,4 +1,4 @@
-import type {Action, Json, Parameter} from '../protocol/wire.js';
+import type {Action, Json, Parameter} from '@reuleauxcoder/client';
 
 export interface Menu {name: string; title: string; actions: Action[]}
 export function menusFromCatalog(actions: Action[]): Menu[] {

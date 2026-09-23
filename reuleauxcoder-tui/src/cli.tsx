@@ -6,8 +6,9 @@ import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {parseArgs} from 'node:util';
 import {renderTerminal} from './ui/render.js';
-import {RpcPeer} from './protocol/peer.js';
-import {RuntimeClient} from './protocol/client.js';
+import {RpcPeer} from '@reuleauxcoder/client/node';
+import {RuntimeClient} from '@reuleauxcoder/client';
+import {tuiProfile} from './profile.js';
 import {TuiController} from './state/controller.js';
 import {InputHistory} from './state/history.js';
 import {App} from './ui/App.js';
@@ -60,7 +61,7 @@ async function main() {
       const now = performance.now();
       if (controller.session.connected && !peer.closed && now - lastRenderSample >= 1000) {
         lastRenderSample = now;
-        client.recordPerformance(renderTime);
+        client.recordPerformance('ink_render', renderTime);
       }
     },
   });
@@ -68,7 +69,7 @@ async function main() {
   process.once('SIGTERM', terminate);
   process.once('SIGHUP', terminate);
   try {
-    await client.initialize();
+    await client.initialize(tuiProfile);
     client.resize(controller.rows, controller.columns);
     controller.startRefresh();
     const saved = await app.waitUntilExit();

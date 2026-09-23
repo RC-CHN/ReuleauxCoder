@@ -1,6 +1,6 @@
 import {EventEmitter} from 'node:events';
-import type {GitWorkspace} from '../protocol/wire.js';
-import {emptyState, typeOf, type Json, type RecordData, type RuntimeState, type UIEvent, type View} from '../protocol/wire.js';
+import type {GitWorkspace} from '@reuleauxcoder/client';
+import {emptyState, typeOf, type Json, type RecordData, type RuntimeState, type UIEvent, type View} from '@reuleauxcoder/client';
 import {diff, fields} from '../ui/format.js';
 import {updateProcess, type ProcessView} from './processes.js';
 import {OutputTail} from './output-tail.js';

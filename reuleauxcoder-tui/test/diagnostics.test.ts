@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {decode, record} from '../src/protocol/wire.js';
+import {decode, record} from '@reuleauxcoder/client';
 import {SessionStore} from '../src/state/session.js';
 import {safe} from '../src/ui/format.js';
 import {TranscriptLayout} from '../src/ui/transcript.js';

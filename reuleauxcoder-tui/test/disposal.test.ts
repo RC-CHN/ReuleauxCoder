@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {setTimeout as delay} from 'node:timers/promises';
-import {MessagePeer} from '../src/protocol/message-peer.js';
-import {RuntimeClient} from '../src/protocol/client.js';
+import {MessagePeer} from '@reuleauxcoder/client';
+import {RuntimeClient} from '@reuleauxcoder/client';
 import {TuiController} from '../src/state/controller.js';
 
 test('disposing and remounting controllers detaches only their own listeners', async t => {

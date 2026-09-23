@@ -6,9 +6,11 @@ import {resolve} from 'node:path';
 
 test('browser bundle supports messages, interactions, byte uploads and independent view disposal', async t => {
   const bundle = await build({
-    stdin: {contents: `export {RuntimeClient} from './client.js'; export {MessagePeer} from './message-peer.js'; export * from './wire.js';`, resolveDir: resolve('src/protocol')},
-    bundle: true, platform: 'browser', format: 'iife', globalName: 'Protocol', write: false,
+    stdin: {contents: `export * from '@reuleauxcoder/client';`, resolveDir: resolve('.')},
+    bundle: true, platform: 'browser', format: 'iife', globalName: 'Protocol', write: false, metafile: true,
   });
+  assert(Object.keys(bundle.metafile.inputs).every(path => path === '<stdin>' || path.replaceAll('\\', '/').includes('reuleauxcoder-client/dist/')),
+    'the browser entry must not pull in TUI code or external dependencies');
   // No process, require, Buffer, filesystem, streams or Node event emitter.
   const browser: any = {setTimeout, clearTimeout, performance, btoa};
   runInNewContext(bundle.outputFiles[0].text, browser);

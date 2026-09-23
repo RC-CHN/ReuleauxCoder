@@ -1,4 +1,4 @@
-import type {RuntimeState} from '../protocol/wire.js';
+import type {RuntimeState} from '@reuleauxcoder/client';
 import {safe} from './format.js';
 import {fit, paint, rail, section} from './theme.js';
 

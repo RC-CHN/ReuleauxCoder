@@ -1,4 +1,4 @@
-import type {RecordData} from '../protocol/wire.js';
+import type {RecordData} from '@reuleauxcoder/client';
 
 export interface ProcessView extends RecordData {
   process_session_id: string;

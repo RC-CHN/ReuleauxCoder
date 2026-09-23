@@ -2,7 +2,7 @@
 import {open} from 'node:fs/promises';
 import {basename, join} from 'node:path';
 import {homedir} from 'node:os';
-import type {RuntimeClient} from './client.js';
+import type {RuntimeClient} from '../client.js';
 
 export async function attachImageFile(client: RuntimeClient, path: string) {
   if (path.startsWith('~/') || path.startsWith('~\\')) path = join(homedir(), path.slice(2));

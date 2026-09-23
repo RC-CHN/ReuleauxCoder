@@ -1,6 +1,6 @@
 import type {Readable, Writable} from 'node:stream';
-import {MessagePeer} from './message-peer.js';
-export {RpcError} from './message-peer.js';
+import {MessagePeer} from '../message-peer.js';
+export {RpcError} from '../message-peer.js';
 
 /** Node stdio adapter; the message peer itself has no stream or Buffer dependency. */
 export class RpcPeer extends MessagePeer {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFile} from 'node:fs/promises';
 import {backend, until} from './helpers.js';
-import {decode, typeOf} from '../src/protocol/wire.js';
+import {decode, typeOf} from '@reuleauxcoder/client';
 import {editor} from '../src/state/editor.js';
 import {panelRows} from '../src/ui/panels.js';
 import {TranscriptLayout} from '../src/ui/viewport.js';

@@ -1,6 +1,6 @@
 import {marked, type Token} from 'marked';
 import wrapAnsi from 'wrap-ansi';
-import {typeOf} from '../protocol/wire.js';
+import {typeOf} from '@reuleauxcoder/client';
 import {humanize} from '../state/menus.js';
 import {frameEdge, frameRow, paint} from './theme.js';
 import {tableRows} from './table.js';

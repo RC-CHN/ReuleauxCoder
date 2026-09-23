@@ -1,0 +1,19 @@
+{
+  "name": "@reuleauxcoder/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared JSON-RPC runtime client for ReuleauxCoder frontends",
+  "license": "AGPL-3.0-or-later",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "node": "./dist/node/index.js"
+    }
+  }
+}

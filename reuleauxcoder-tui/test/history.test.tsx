@@ -7,7 +7,7 @@ import {render} from 'ink-testing-library';
 import {App} from '../src/ui/App.js';
 import {SessionStore} from '../src/state/session.js';
 import {TranscriptLayout} from '../src/ui/transcript.js';
-import {decode, record} from '../src/protocol/wire.js';
+import {decode, record} from '@reuleauxcoder/client';
 import {safe} from '../src/ui/format.js';
 import {backend, until} from './helpers.js';
 import stringWidth from 'string-width';

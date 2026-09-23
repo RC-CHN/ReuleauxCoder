@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {PassThrough} from 'node:stream';
 import {once} from 'node:events';
-import {RpcPeer, RpcError} from '../src/protocol/peer.js';
-import {RuntimeClient} from '../src/protocol/client.js';
-import {decode, record} from '../src/protocol/wire.js';
+import {RpcPeer, RpcError} from '@reuleauxcoder/client/node';
+import {RuntimeClient} from '@reuleauxcoder/client';
+import {decode, record} from '@reuleauxcoder/client';
 
 test('shutdown keeps the connection open through a slow save and delivers progress', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});

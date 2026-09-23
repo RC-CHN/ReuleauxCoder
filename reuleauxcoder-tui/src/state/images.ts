@@ -3,7 +3,7 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import type {Key} from 'ink';
-import type {ImageReference} from '../protocol/wire.js';
+import type {ImageReference} from '@reuleauxcoder/client';
 import {edit, graphemes, type Editor} from './editor.js';
 
 export interface DraftImage {label: string; image: ImageReference}

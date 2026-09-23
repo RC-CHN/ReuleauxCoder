@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {OutputTail} from '../src/state/output-tail.js';
 import {SessionStore} from '../src/state/session.js';
-import {decode, record} from '../src/protocol/wire.js';
+import {decode, record} from '@reuleauxcoder/client';
 import {safe} from '../src/ui/format.js';
 import {toolGroupRows} from '../src/ui/tool-groups.js';
 

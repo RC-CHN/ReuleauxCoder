@@ -10,8 +10,8 @@ import {safe} from '../src/ui/format.js';
 import {inputLayout} from '../src/ui/viewport.js';
 import {editor, edit} from '../src/state/editor.js';
 import {TuiController} from '../src/state/controller.js';
-import {RuntimeClient} from '../src/protocol/client.js';
-import {RpcPeer} from '../src/protocol/peer.js';
+import {RuntimeClient} from '@reuleauxcoder/client';
+import {RpcPeer} from '@reuleauxcoder/client/node';
 import {RENDER_FPS} from '../src/ui/motion.js';
 
 const {values} = parseArgs({options: {json: {type: 'string'}, label: {type: 'string', default: 'working-tree'}}});

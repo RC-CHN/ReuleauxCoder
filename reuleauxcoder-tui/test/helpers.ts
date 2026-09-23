@@ -4,8 +4,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {RpcPeer} from '../src/protocol/peer.js';
-import {RuntimeClient} from '../src/protocol/client.js';
+import {RpcPeer} from '@reuleauxcoder/client/node';
+import {RuntimeClient} from '@reuleauxcoder/client';
+import {tuiProfile} from '../src/profile.js';
 import {TuiController} from '../src/state/controller.js';
 import {InputHistory} from '../src/state/history.js';
 
@@ -25,7 +26,7 @@ export async function backend() {
   child.once('error', error => peer.close(error));
   const client = new RuntimeClient(peer);
   const controller = new TuiController(client, new InputHistory(join(cwd, 'history.jsonl')));
-  try {await client.initialize();}
+  try {await client.initialize(tuiProfile);}
   catch (error) {child.kill(); throw new Error(String(error) + errors);}
   return {client, controller, peer, cwd, child, errors: () => errors, async close() {
     await client.shutdown(); controller.dispose();

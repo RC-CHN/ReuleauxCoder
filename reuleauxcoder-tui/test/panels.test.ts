@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {PassThrough} from 'node:stream';
 import {setImmediate as nextTurn} from 'node:timers/promises';
-import {RuntimeClient} from '../src/protocol/client.js';
-import {RpcPeer} from '../src/protocol/peer.js';
+import {RuntimeClient} from '@reuleauxcoder/client';
+import {RpcPeer} from '@reuleauxcoder/client/node';
 import {TuiController} from '../src/state/controller.js';
-import type {View} from '../src/protocol/wire.js';
-import type {Action} from '../src/protocol/wire.js';
+import type {View} from '@reuleauxcoder/client';
+import type {Action} from '@reuleauxcoder/client';
 import {panelRows} from '../src/ui/panels.js';
 
 test('compact opens choices and sends a typed strategy without a text form', async t => {

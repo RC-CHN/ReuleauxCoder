@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {record} from '../src/protocol/wire.js';
+import {record} from '@reuleauxcoder/client';
 import {safe} from '../src/ui/format.js';
 import {sidebarRows} from '../src/ui/sidebar.js';
 import {backend, until} from './helpers.js';

@@ -11,11 +11,14 @@
     "rcoder-tui": "dist/cli.js"
   },
   "scripts": {
-    "postinstall": "node scripts/patch-renderer.mjs",
-    "predev": "node scripts/patch-renderer.mjs",
-    "prebuild": "node scripts/patch-renderer.mjs",
-    "prebenchmark": "node scripts/patch-renderer.mjs",
-    "prebenchmark:navigation": "node scripts/patch-renderer.mjs",
+    "build:client": "tsc -p ../reuleauxcoder-client/tsconfig.json --typeRoots ./node_modules/@types",
+    "postinstall": "npm run build:client && node scripts/patch-renderer.mjs",
+    "predev": "npm run build:client && node scripts/patch-renderer.mjs",
+    "prebuild": "npm run build:client && node scripts/patch-renderer.mjs",
+    "prebundle": "npm run build:client",
+    "precheck": "npm run build:client",
+    "prebenchmark": "npm run build:client && node scripts/patch-renderer.mjs",
+    "prebenchmark:navigation": "npm run build:client && node scripts/patch-renderer.mjs",
     "dev": "tsx src/cli.tsx",
     "build": "tsc -p tsconfig.json",
     "bundle": "node scripts/bundle.mjs",
@@ -25,6 +28,7 @@
     "test": "npm run build && npm run bundle && node --import tsx --test test/*.test.ts*"
   },
   "dependencies": {
+    "@reuleauxcoder/client": "file:../reuleauxcoder-client",
     "@alcalzone/ansi-tokenize": "0.3.0",
     "ink": "7.1.1",
     "marked": "18.0.12",

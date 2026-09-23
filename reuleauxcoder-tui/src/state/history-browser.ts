@@ -1,6 +1,6 @@
-import type {RuntimeClient} from '../protocol/client.js';
-import type {RecordData} from '../protocol/wire.js';
-import type {HistoryPage, ArtifactPage, HistoryOperation} from '../protocol/history.js';
+import type {RuntimeClient} from '@reuleauxcoder/client';
+import type {RecordData} from '@reuleauxcoder/client';
+import type {HistoryPage, ArtifactPage, HistoryOperation} from '@reuleauxcoder/client';
 import {editor, type Editor} from './editor.js';
 
 /** Retain one payload page; navigation keeps only cursors, never old bodies. */

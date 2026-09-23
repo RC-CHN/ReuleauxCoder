@@ -27,7 +27,7 @@ export class RuntimeClient extends Events {
     }));
   }
 
-  async initialize(profile: {ui_id: string; display_name: string; capabilities: string[]} = tuiProfile): Promise<void> {
+  async initialize(profile: UIProfile): Promise<void> {
     const capabilities = profile.capabilities;
     this.info = decode(await this.peer.request('initialize', {version: 1, profile: record('UIProfile', {ui_id: profile.ui_id, display_name: profile.display_name, capabilities: tuple(capabilities.map(item => enumValue('UICapability', item)), 'frozenset')})}));
     this.catalog = this.info.catalog.actions;
@@ -104,7 +104,7 @@ export class RuntimeClient extends Events {
   }
   async interrupt(): Promise<{outcome: string; discarded_count: number}> {return decode(await this.peer.request('runtime.interrupt'));}
   resize(rows: number, columns: number) {this.peer.notify('runtime.resize', {rows, columns});}
-  recordPerformance(elapsedMs: number) {this.peer.notify('runtime.record_performance', {category: 'ui_render', name: 'ink_render', elapsed_ms: elapsedMs});}
+  recordPerformance(name: string, elapsedMs: number) {this.peer.notify('runtime.record_performance', {category: 'ui_render', name, elapsed_ms: elapsedMs});}
   /** Disconnect the transport; process ownership belongs to the host. */
   close(): void {
     this.closing = true;
@@ -129,7 +129,9 @@ export interface ImageSource {
   read(offset: number, length: number): Promise<Uint8Array>;
 }
 
-export const tuiProfile = {
-  ui_id: 'tui', display_name: 'ReuleauxCoder React TUI',
-  capabilities: ['text_input', 'stream_output', 'palette', 'buttons', 'menus', 'modal', 'diff_review', 'text_select', 'text_edit', 'secure_text_input'],
-};
+/** Each frontend advertises only the interactions it implements. */
+export interface UIProfile {
+  ui_id: string;
+  display_name: string;
+  capabilities: string[];
+}
