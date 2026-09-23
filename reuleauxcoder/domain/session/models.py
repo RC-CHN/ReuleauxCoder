@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -14,6 +15,55 @@ from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_messa
 from reuleauxcoder.domain.images import content_text, display_content
 
 MAX_SESSION_PREVIEW_CHARS = 120
+# Human restore previews only; canonical messages and ledger records stay intact.
+MAX_RECENT_CONVERSATION_BYTES = 256 * 1024
+MAX_RECENT_ENTRY_BYTES = 64 * 1024
+MAX_RECENT_CONVERSATION_ENTRIES = 128
+_PREVIEW_TRUNCATED = "\n[Preview truncated; open session history for full content.]"
+_PREVIEW_OMITTED = {
+    "role": "assistant",
+    "content": "[Earlier preview entries omitted; open session history for full content.]",
+}
+
+
+def _preview_size(entry: dict[str, str]) -> int:
+    return len(
+        json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _bounded_recent_conversation(entries: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Keep newest entries within a JSON byte budget, including escape expansion."""
+    selected: list[dict[str, str]] = []
+    # Reserve brackets, separators and an omission notice before choosing entries.
+    remaining = MAX_RECENT_CONVERSATION_BYTES - 2 - _preview_size(_PREVIEW_OMITTED) - 1
+    for entry in reversed(entries):
+        if len(selected) >= MAX_RECENT_CONVERSATION_ENTRIES:
+            break
+        budget = min(MAX_RECENT_ENTRY_BYTES, remaining - 1)
+        text = entry["content"]
+        # Avoid encoding an entire oversized message just to measure its preview.
+        if len(text) <= budget and _preview_size(entry) <= budget:
+            preview = entry
+        else:
+            preview = {"role": entry["role"], "content": _PREVIEW_TRUNCATED}
+            if _preview_size(preview) > budget:
+                break
+            low, high = 0, min(len(text), budget)
+            while low < high:
+                middle = (low + high + 1) // 2
+                preview["content"] = text[:middle] + _PREVIEW_TRUNCATED
+                if _preview_size(preview) <= budget:
+                    low = middle
+                else:
+                    high = middle - 1
+            preview["content"] = text[:low] + _PREVIEW_TRUNCATED
+        selected.append(preview)
+        remaining -= _preview_size(preview) + 1
+    if len(selected) < len(entries):
+        selected.append(dict(_PREVIEW_OMITTED))
+    selected.reverse()
+    return selected
 
 
 def is_safe_session_preview(value: object) -> bool:
@@ -304,7 +354,7 @@ class Session:
         )
 
     def get_recent_conversation(self, max_user_turns: int = 3) -> list[dict[str, str]]:
-        """Return a compact human transcript, excluding protocol/tool messages."""
+        """Return a bounded human preview, excluding protocol/tool messages."""
         entries: list[dict[str, str]] = []
         for message in self.messages:
             role = message.get("role")
@@ -345,4 +395,4 @@ class Session:
         ]
         if len(user_positions) > max_user_turns:
             entries = entries[user_positions[-max_user_turns] :]
-        return entries
+        return _bounded_recent_conversation(entries)

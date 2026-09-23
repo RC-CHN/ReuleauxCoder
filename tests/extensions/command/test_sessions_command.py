@@ -1,3 +1,5 @@
+import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,8 +24,11 @@ from reuleauxcoder.extensions.command.builtin.sessions import (
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.app.commands.service import CommandService
-from reuleauxcoder.app.ui_events import UIEventBus, UIEventKind
+from reuleauxcoder.app.ui_events import UIEventBus, UIEventKind, ViewEventPayload
 from reuleauxcoder.app.commands.capabilities import UICapability, UIProfile
+from reuleauxcoder.app.rpc.codec import encode
+from reuleauxcoder.infrastructure.persistence.history_query import SessionHistory
+from reuleauxcoder.infrastructure.rpc.transport import StreamTransport
 
 
 class FakeLLM:
@@ -202,6 +207,47 @@ def test_resume_latest_uses_current_fingerprint_only(tmp_path: Path) -> None:
         view for view in ctx.effect.views if view.view_type == "session_resume"
     )
     assert transcript.view_model.entries[0].content == "local msg"
+
+
+def test_resume_preview_is_bounded_and_full_content_remains_pageable(tmp_path):
+    text = '中文🙂"\\\n' * 20_000
+    store = SessionStore(tmp_path)
+    session_id = store.save(
+        messages=[
+            {"role": "user", "content": "Question"},
+            {"role": "assistant", "content": text},
+        ],
+        model="test",
+    )
+    ctx = _build_ctx(tmp_path)
+    _handle_resume_session(ResumeSessionCommand(target=session_id), ctx)
+    transcript = next(
+        view for view in ctx.effect.views if view.view_type == "session_resume"
+    )
+    assert "Preview truncated" in transcript.view_model.entries[-1].content
+    assert ctx.agent.state.messages[-1]["content"] == text
+    # Exercise the typed resume-view encoding and the same framing as stdio.
+    output = io.BytesIO()
+    payload = ViewEventPayload(
+        action=transcript.action, title=transcript.title,
+        view_model=transcript.view_model,
+    )
+    StreamTransport(io.BytesIO(), output).send(
+        json.dumps(encode(payload), ensure_ascii=False)
+    )
+    assert len(output.getvalue()) < StreamTransport.MAX_MESSAGE_BYTES
+    loaded = store.load(session_id)
+    assert loaded.messages[-1]["content"] == text
+    event = next(event for event in loaded.history_events if event.role == "assistant")
+    history = SessionHistory(tmp_path)
+    cursor, parts = None, []
+    while True:
+        page = history.read(session_id, event_id=event.event_id, cursor=cursor)
+        parts.extend(record.content for record in page.records)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+    assert "".join(parts) == text
 
 
 def test_corrupt_resume_keeps_current_session_and_exposes_safe_failure_fact(
