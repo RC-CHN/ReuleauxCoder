@@ -23,7 +23,7 @@ test('browser bundle supports messages, interactions, byte uploads and independe
   let shutdowns = 0;
   backend.methods.set('initialize', ({profile}: any) => {
     initializedProfile = decode(profile);
-    return {version: 1, image_uploads: true, catalog: {actions: []}, state: {...emptyState, revision: 1}};
+    return {version: 1, image_uploads: true, attachment_uploads: true, catalog: {actions: []}, state: {...emptyState, revision: 1}};
   });
   backend.methods.set('runtime.shutdown', () => {shutdowns++; return null;});
   await client.initialize({ui_id: 'desktop', display_name: 'Desktop', capabilities: ['text_input']});
@@ -51,6 +51,32 @@ test('browser bundle supports messages, interactions, byte uploads and independe
   const image = await client.uploadImage({name: 'blob.png', size: bytes.length, read: async (offset: number, length: number) => bytes.slice(offset, offset + length)});
   assert.equal(image.attachment_id, 'image');
   assert.deepEqual(received, [...bytes]); assert(cancelled);
+
+  received.length = 0;
+  cancelled = false;
+  backend.methods.set('attachments.begin', ({name, size_bytes}: any) => {
+    assert.equal(name, 'blob.bin'); assert.equal(size_bytes, bytes.length);
+    return {upload_id: 'upload', chunk_bytes: 2};
+  });
+  backend.methods.set('attachments.append', backend.methods.get('images.append'));
+  backend.methods.set('attachments.complete', () => record('AttachmentReference', {attachment_id: 'file', name: 'blob.bin', mime_type: 'application/octet-stream', size_bytes: bytes.length, path: '.rcoder/attachments/session/file/blob.bin'}));
+  backend.methods.set('attachments.cancel', backend.methods.get('images.cancel'));
+  const source = {name: 'blob.bin', size: bytes.length, read: async (offset: number, length: number) => bytes.slice(offset, offset + length)};
+  const attachment = await client.uploadAttachment(source);
+  assert.equal(attachment.attachment_id, 'file');
+  assert.equal(attachment.path, '.rcoder/attachments/session/file/blob.bin');
+  assert.deepEqual(received, [...bytes]); assert(cancelled);
+
+  await assert.rejects(client.uploadAttachment({...source, size: 64 * 1024 * 1024 + 1, read: () => {throw new Error('Must not read oversized files');}}), /64 MiB/);
+  cancelled = false;
+  await assert.rejects(client.uploadAttachment({...source, read: async () => new Uint8Array(3)}), /source chunk/);
+  assert(cancelled);
+  cancelled = false;
+  backend.methods.set('attachments.append', () => 0);
+  await assert.rejects(client.uploadAttachment(source), /acknowledgement/);
+  assert(cancelled);
+  client.info.attachment_uploads = false;
+  await assert.rejects(client.uploadAttachment(source), /does not support/);
 
   let views = 0;
   const view = () => views++;

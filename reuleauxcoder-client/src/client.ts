@@ -1,7 +1,7 @@
 import {Events} from './events.js';
 import type {MessagePeer} from './message-peer.js';
 import type {ArtifactPage, HistoryOperation, HistoryPage} from './history.js';
-import type {GitWorkspace, ImageReference} from './wire.js';
+import type {AttachmentReference, GitWorkspace, ImageReference} from './wire.js';
 import {actionRequest, cancellation, decode, emptyState, enumValue, record, tuple, type Action, type Json, type PendingInteraction, type RuntimeState, type UIEvent} from './wire.js';
 
 export class RuntimeClient extends Events {
@@ -75,22 +75,34 @@ export class RuntimeClient extends Events {
   submitAction(id: string, command: {[key: string]: Json} = {}) {return this.submit(actionRequest(id, command));}
   async uploadImage(source: ImageSource): Promise<ImageReference> {
     if (!this.info?.image_uploads) throw new Error('Backend does not support image attachments.');
+    return this.upload(source, 'images');
+  }
+  async uploadAttachment(source: AttachmentSource): Promise<AttachmentReference> {
+    if (!this.info?.attachment_uploads) throw new Error('Backend does not support file attachments.');
+    if (!Number.isSafeInteger(source.size) || source.size < 0 || source.size > 64 * 1024 * 1024) throw new Error('Attachment size must be between 0 and 64 MiB.');
+    return this.upload(source, 'attachments');
+  }
+  private async upload(source: AttachmentSource, namespace: 'images' | 'attachments') {
     const state = this.state;
-    const upload = await this.peer.request('images.begin', {session_id: state.session_id, session_generation: state.session_generation, name: source.name, size_bytes: source.size}) as any;
+    const upload = await this.peer.request(`${namespace}.begin`, {session_id: state.session_id, session_generation: state.session_generation, name: source.name, size_bytes: source.size}) as any;
     try {
+      if (!Number.isSafeInteger(upload.chunk_bytes) || upload.chunk_bytes <= 0 || upload.chunk_bytes > 256 * 1024) throw new Error('Invalid upload chunk limit');
       let offset = 0;
       while (offset < source.size) {
-        const chunk = await source.read(offset, Math.min(upload.chunk_bytes, source.size - offset));
-        if (!chunk.length || chunk.length > upload.chunk_bytes) throw new Error('Invalid image source chunk');
+        const length = Math.min(upload.chunk_bytes, source.size - offset);
+        const chunk = await source.read(offset, length);
+        if (!chunk.length || chunk.length > length) throw new Error('Invalid upload source chunk');
         let binary = '';
         for (const byte of chunk) binary += String.fromCharCode(byte);
-        offset = await this.peer.request('images.append', {upload_id: upload.upload_id, offset, data: btoa(binary)}) as number;
+        const next = await this.peer.request(`${namespace}.append`, {upload_id: upload.upload_id, offset, data: btoa(binary)});
+        if (next !== offset + chunk.length) throw new Error('Invalid upload acknowledgement');
+        offset = next as number;
       }
-      const image = decode(await this.peer.request('images.complete', {upload_id: upload.upload_id}));
-      if (state.session_id !== this.state.session_id || state.session_generation !== this.state.session_generation) throw new Error('Session changed during image upload; attach it again.');
-      return image;
+      const reference = decode(await this.peer.request(`${namespace}.complete`, {upload_id: upload.upload_id}));
+      if (state.session_id !== this.state.session_id || state.session_generation !== this.state.session_generation) throw new Error('Session changed during upload; attach it again.');
+      return reference;
     } finally {
-      await this.peer.request('images.cancel', {upload_id: upload.upload_id});
+      await this.peer.request(`${namespace}.cancel`, {upload_id: upload.upload_id});
     }
   }
   async panel(payload: Json) {return decode(await this.peer.request('view.panel', {payload}));}
@@ -123,11 +135,13 @@ export class RuntimeClient extends Events {
 }
 
 /** Browser File/Blob sources can use slice(offset, offset + length).arrayBuffer(). */
-export interface ImageSource {
+export interface AttachmentSource {
   name: string;
   size: number;
   read(offset: number, length: number): Promise<Uint8Array>;
 }
+
+export type ImageSource = AttachmentSource;
 
 /** Each frontend advertises only the interactions it implements. */
 export interface UIProfile {

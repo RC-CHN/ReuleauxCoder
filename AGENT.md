@@ -37,7 +37,7 @@ reuleauxcoder-tui/
 
 reuleauxcoder-client/
 ├── src/             # host-neutral TypeScript runtime client and wire contracts
-└── src/node/        # stdio framing and frontend-local image reads
+└── src/node/        # stdio framing and frontend-local file reads
 ```
 
 Layer rules:
@@ -254,6 +254,8 @@ The host remote-exec extension owns authentication, peer registry, relay protoco
 Interactive remote chat streams host-rendered output and forwards approvals to the same host approval path. The peer should not duplicate model, command, tool-policy, diff, hook, LSP or presentation semantics.
 
 ## Configuration
+
+Ordinary attachments use the session-bound `attachments.begin/append/complete/cancel` RPC and shared client `uploadAttachment` byte source (`attachFile` in the Node adapter). Files stay in the backend workspace at `.rcoder/attachments/<session-id>/<attachment-id>/<name>`, with a 64 MiB per-file limit and 256 KiB chunks streamed through temporary files. The returned relative path is for explicit draft/tool use; uploading does not submit chat, parse content or replace the image pipeline. See `docs/attachments.md` for the contract and cleanup boundaries.
 
 Image inputs use `domain/images.py` references and `infrastructure/persistence/images.py` immutable variants, with a separately bounded original cache. CLI/TUI recognize pasted local image paths and insert numbered markers; `/attach` remains a fallback. Imports use session-generation-bound chunks. Per-profile `support_modal` defaults to `[text]`; adding `image` enables image input. Request projection hides images for text models without changing canonical history. `context.image_retention` defaults to `history`; `user_turn` shares ownership across steering/tool/goal continuations and expires on the next real user turn. `attachments.image` controls compression and the original cache. HTTP 413 recovery is finite and request-only; `image_payload_observed` records Base64 payload across attempts. See `docs/images.md` for behavior and deferred clipboard/peer imports.
 

@@ -44,6 +44,11 @@ export interface ImageReference {
   width: number; height: number; size_bytes: number;
   original_width: number; original_height: number; name: string; turn_id: string | null;
 }
+export interface AttachmentReference {
+  attachment_id: string; name: string; mime_type: string; size_bytes: number;
+  /** POSIX-style path relative to the backend workspace. */
+  path: string;
+}
 export interface Goal {
   id: string; objective: string;
   status: 'active' | 'paused' | 'blocked' | 'usage_limited' | 'budget_limited' | 'complete';
