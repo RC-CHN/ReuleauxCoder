@@ -6,6 +6,7 @@ Run in a subprocess so a regression cannot leave deadlocked pytest workers.
 import multiprocessing
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -180,3 +181,75 @@ def _steering_during_context_read():
 
 def test_steering_drain_does_not_invert_compression_cancellation_locks():
     _run_bounded(_steering_during_context_read)
+
+
+def _rpc_during_context_publish(directory, operation):
+    from reuleauxcoder.app.commands.capabilities import UIProfile
+    from reuleauxcoder.app.commands.loader import create_builtin_action_registry
+    from reuleauxcoder.app.ui_events import UIEventBus
+    from reuleauxcoder.infrastructure.rpc.peer import RpcPeer
+    from reuleauxcoder.infrastructure.rpc.transport import MemoryTransport
+    from reuleauxcoder.interfaces.entrypoint.rpc import create_server
+
+    config = Config(api_key="test", session_dir=directory, session_auto_save=False)
+    agent = Agent(_LLM(), tools=[], config=config)
+    context_lock = _ObservedLock()
+    agent._context_revision_lock = context_lock
+    store = SessionStore(Path(directory))
+    session_id = store.generate_session_id()
+    assert (
+        bind_session_persistence(config, agent, store, session_id, fingerprint="local")
+        is None
+    )
+    ctx = SimpleNamespace(
+        agent=agent,
+        config=config,
+        ui_bus=UIEventBus(),
+        action_registry=create_builtin_action_registry(),
+        sessions_dir=Path(directory),
+        session_exit_time=None,
+        skills_service=None,
+    )
+    transport, other = MemoryTransport.pair()
+    peer = RpcPeer(transport)
+    server = create_server(ctx, peer, UIProfile("test", "Test", frozenset()))
+    server._initialized = server._running = True
+    agent._accepting_user_steering = True
+    agent._current_turn_id = "turn"
+    if operation == "shutdown":
+        assert agent.admit_user_steering("pending")
+    errors = []
+
+    def request():
+        try:
+            if operation == "shutdown":
+                server.shutdown()
+            elif operation == "submit":
+                server.submit("New direction")
+            else:
+                assert server.admit_steering("New direction")
+        except BaseException as error:
+            errors.append(error)
+
+    with context_lock:
+        background = threading.Thread(
+            target=request, name="snapshot-contender", daemon=True
+        )
+        background.start()
+        assert context_lock.attempted.wait(3)
+        # Model/compression usage can publish a goal update under context.
+        agent.goal_controller.create("Publish while a steering RPC persists", None)
+    background.join(3)
+    assert not background.is_alive()
+    assert not errors
+    if operation != "shutdown":
+        assert agent.pending_user_steering() == ("New direction",)
+    agent.unbind_session_persistence()
+    assert store.load(session_id).runtime_state.goal is not None
+    peer.close()
+    other.close()
+
+
+@pytest.mark.parametrize("operation", ["submit", "admit", "shutdown"])
+def test_rpc_admission_releases_lock_before_snapshot_wait(tmp_path, operation):
+    _run_bounded(_rpc_during_context_publish, str(tmp_path), operation)

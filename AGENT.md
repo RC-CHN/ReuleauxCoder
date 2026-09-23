@@ -274,6 +274,7 @@ Use `/config` to inspect effective values and their sources. Session overrides l
 - Keep model-context retention separate from human presentation folding.
 - Preserve event correlation and session generation across async work.
 - Long-lived resources need explicit scope, cancellation and disposal.
+- Snapshot saves acquire context before the writer lock. Plan/Progress mutations release their controller lock before persistence/event delivery; RPC steering admission releases its admission lock before snapshot waits. Steering application takes context before steering. Preserve these orders and the subprocess concurrency regressions in `tests/app/runtime/test_persistence_lock_order.py`; see `docs/runtime-locking.md`.
 - Entrypoint startup-progress and session-notification callbacks log unexpected exceptions with their traceback and propagate them. Do not add diagnostic-delivery buffers or nested fallback sinks to keep startup successful; the CLI cleans up initialized resources before an unexpected startup failure escapes. KeyboardInterrupt remains normal user control.
 - Slash commands also log unexpected dispatch, audit and effect-delivery failures with their traceback and propagate them to the calling interface. Session restore errors are handled by the session command; lifecycle callbacks and diagnostic recorders do not have fallback chains that turn failures into successful command results.
 - Do not add a second tool implementation to the peer or another interface adapter.

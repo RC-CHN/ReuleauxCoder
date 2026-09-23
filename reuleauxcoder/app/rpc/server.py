@@ -378,7 +378,7 @@ class RuntimeServer:
                     or isinstance(value, str)
                     and not value.startswith("/")
                 ):
-                    accepted = self.agent.submit_user_steering(value)
+                    accepted = self.agent.submit_user_steering(value, persist=False)
                     status = "steering" if accepted else "rejected"
                     if not accepted and not self.agent.stop_requested():
                         self.commands.queue_input(value)
@@ -395,7 +395,12 @@ class RuntimeServer:
                 self._running = True
                 status = "running"
                 self._spawn(value)
-            return encode(Submission(status, self._publish_state()))
+            submission = Submission(status, self._publish_state())
+        # Admission remains atomic and ledger-durable. Snapshot capture can
+        # wait for context/goal work that itself publishes through this lock.
+        if status == "steering":
+            self.agent.persist_runtime_snapshot()
+        return encode(submission)
 
     def _validate_chat_images(self, value, *, check_model=True):
         if not isinstance(value, ChatInput):
@@ -567,10 +572,12 @@ class RuntimeServer:
             raise RpcError(-32602, "Expected steering text")
         with self._lock:
             result = (
-                self.agent.admit_user_steering(text)
+                self.agent.admit_user_steering(text, persist=False)
                 if self._running and not self._closing
                 else None
             )
+        if result is not None:
+            self.agent.persist_runtime_snapshot()
         self._publish_state()
         return result
 
@@ -618,8 +625,12 @@ class RuntimeServer:
             self.images.close()
             self.attachments.close()
             self.commands.clear_pending()
-            self.agent.discard_pending_user_steering(reason="session_exit")
+            discarded = self.agent.discard_pending_user_steering(
+                reason="session_exit", persist=False
+            )
             self.agent.request_stop()
+        if discarded:
+            self.agent.persist_runtime_snapshot()
         self.interactions.shutdown(reason="session closed")
         with self._lock:
             if not self._lock.wait_for(lambda: not self._workers, timeout=10):

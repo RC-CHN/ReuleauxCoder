@@ -878,8 +878,14 @@ class Agent:
                 epoch=self._round_interrupt_epoch,
             )
 
-    def admit_user_steering(self, text: str | ChatInput) -> str | None:
-        """Admit one user direction and durably record its non-terminal state."""
+    def admit_user_steering(
+        self, text: str | ChatInput, *, persist: bool = True
+    ) -> str | None:
+        """Admit one direction durably; RPC may flush outside its admission lock.
+
+        With persist=False the ledger still fsyncs, and the caller owns the
+        subsequent snapshot flush before acknowledging the request.
+        """
         content = (
             text.content(self.image_turn_id or self._current_turn_id or "")
             if isinstance(text, ChatInput)
@@ -913,12 +919,15 @@ class Agent:
                     turn_id=turn_id,
                 )
             )
-        self.persist_runtime_snapshot()
+        if persist:
+            self.persist_runtime_snapshot()
         return steering_id
 
-    def submit_user_steering(self, text: str | ChatInput) -> bool:
+    def submit_user_steering(
+        self, text: str | ChatInput, *, persist: bool = True
+    ) -> bool:
         """Queue user direction for the next protocol-safe inference boundary."""
-        return self.admit_user_steering(text) is not None
+        return self.admit_user_steering(text, persist=persist) is not None
 
     def _has_user_steering(self) -> bool:
         with self._steering_lock:
@@ -1009,12 +1018,12 @@ class Agent:
                 )
         return len(applied)
 
-    def discard_pending_user_steering(self, *, reason: str) -> int:
+    def discard_pending_user_steering(self, *, reason: str, persist: bool = True) -> int:
         """Durably discard every non-terminal steering admission."""
         with self._steering_lock:
             discarded = self._discard_pending_user_steering_locked(reason=reason)
             self._round_interrupt_pending = False
-        if discarded:
+        if discarded and persist:
             self.persist_runtime_snapshot()
         return discarded
 
