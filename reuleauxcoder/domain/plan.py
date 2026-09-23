@@ -134,15 +134,18 @@ class PlanController:
                 event_id=event.event_id,
             )
             self._committed_calls[tool_call_id] = (fingerprint, revision)
-            self._persist_or_require_recovery()
-            self._agent._emit_event(
-                AgentEvent.plan_updated(
-                    revision=revision,
-                    items=[asdict(item) for item in items],
-                    explanation=explanation,
-                )
-            )
-            return self._state, True
+            state = self._state
+        # Snapshot writers read this controller. Never wait for persistence or
+        # call event subscribers while holding its state lock.
+        self._persist_or_require_recovery()
+        notification = AgentEvent.plan_updated(
+            revision=revision,
+            items=[asdict(item) for item in items],
+            explanation=explanation,
+        )
+        notification.session_generation = session_generation
+        self._agent._emit_event(notification)
+        return state, True
 
     def report(
         self,
@@ -199,16 +202,17 @@ class PlanController:
                 event_id=event.event_id,
             )
             self._committed_calls[tool_call_id] = (fingerprint, revision)
-            self._persist_or_require_recovery()
-            self._agent._emit_event(
-                AgentEvent.progress_reported(
-                    revision=revision,
-                    phase=phase,
-                    summary=summary,
-                    next_step=next_step,
-                )
-            )
-            return self._progress, True
+            state = self._progress
+        self._persist_or_require_recovery()
+        notification = AgentEvent.progress_reported(
+            revision=revision,
+            phase=phase,
+            summary=summary,
+            next_step=next_step,
+        )
+        notification.session_generation = session_generation
+        self._agent._emit_event(notification)
+        return state, True
 
     def _persist_or_require_recovery(self) -> None:
         try:
