@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.4 - 2026-09-23
+
+- Reused unchanged persisted records during exit saves and kept shutdown connected until durable saving finishes, with progress messages, elapsed time and explicit confirmation before forced exit.
+- Bounded restored conversation previews by encoded size and entry count, keeping full session history available through paged history queries.
+- Detached TUI controller subscriptions and invalidated pending view work on disposal, preserving the host-owned runtime connection across view lifecycles.
+- Extracted the shared, zero-runtime-dependency TypeScript client into `@reuleauxcoder/client`, with browser-safe contracts and optional Node adapters for future VS Code Remote and desktop frontends.
+- Added session-bound ordinary attachment uploads into `.rcoder/attachments`, with a 64 MiB file limit, 256 KiB chunks, bounded disk streaming, safe filenames and relative-path references. Browser and Node clients share the same byte-source API; uploads do not automatically parse or submit file contents.
+- Stabilized shutdown-notification and process-output integration tests by waiting for observable delivery and readiness.
+
 ## 0.10.3 - 2026-09-22
 
 - Routed CLI, host status and remote relay views through the shared JSON-RPC runtime, keeping backend ownership and cleanup in entrypoint composition. Remote peers retain independent runtimes across chats.
