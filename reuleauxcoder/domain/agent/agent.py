@@ -939,7 +939,9 @@ class Agent:
     def _drain_user_steering(self, *, attempt_id: str | None = None) -> int:
         """Apply admitted steering to model history at a protocol-safe boundary."""
         applied: list[PendingUserSteering] = []
-        with self._steering_lock:
+        # Compression checks the interrupt epoch while holding context. Keep
+        # the same order when steering changes context, never the reverse.
+        with self._context_revision_lock, self._steering_lock:
             pending = self._pending_user_steering
             self._pending_user_steering = []
             for item in pending:

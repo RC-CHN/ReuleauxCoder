@@ -40,6 +40,7 @@ class _LiveSessionPersistence:
         incident_sink=None,
         stop_sink=None,
         delay: float = _LIVE_SNAPSHOT_DELAY_SECONDS,
+        context_lock=None,
     ):
         self._persist = persist
         self._incident_sink = incident_sink
@@ -47,6 +48,9 @@ class _LiveSessionPersistence:
         self._delay = max(0.0, delay)
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
+        # Context mutations may synchronously persist (including first-message
+        # discovery and compression usage). Always take context before writer.
+        self._context_lock = context_lock if context_lock is not None else nullcontext()
         self._timer: threading.Timer | None = None
         self._closed = False
         self._generation = 0
@@ -89,7 +93,7 @@ class _LiveSessionPersistence:
             if self._closed or generation != self._generation:
                 return
             self._timer = None
-        with self._write_lock:
+        with self._context_lock, self._write_lock:
             with self._lock:
                 if self._closed or generation != self._generation:
                     return
@@ -130,7 +134,7 @@ class _LiveSessionPersistence:
             timer, self._timer = self._timer, None
             if timer is not None:
                 timer.cancel()
-        with self._write_lock:
+        with self._context_lock, self._write_lock:
             try:
                 self._persist()
                 self._has_snapshot = True
@@ -370,6 +374,7 @@ def bind_session_persistence(
             events_path=events_path,
             callback=_LiveSessionPersistence(
                 persist,
+                context_lock=getattr(agent, "_context_revision_lock", None),
                 incident_sink=lambda phase, error_type, ref: (
                     _retain_persistence_incident(agent, phase, error_type, ref)
                 ),
