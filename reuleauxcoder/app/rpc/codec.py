@@ -24,6 +24,7 @@ from reuleauxcoder.app.commands import (
 from reuleauxcoder.app.rpc import models
 from reuleauxcoder.domain import (
     approval,
+    attachments,
     goal,
     history_query,
     images,
@@ -49,6 +50,7 @@ _MODULES = (
     models,
     history_query,
     images,
+    attachments,
     version_control,
     events,
     plan,

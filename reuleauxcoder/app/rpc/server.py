@@ -16,6 +16,7 @@ from reuleauxcoder.app.commands.view_models import GoalViewModel
 from reuleauxcoder.app.rpc.codec import encode, decode
 from reuleauxcoder.app.rpc.models import RuntimeSnapshot, Submission
 from reuleauxcoder.app.rpc.images import ImageUploads
+from reuleauxcoder.app.rpc.attachments import AttachmentUploads
 from reuleauxcoder.domain.images import ChatInput
 from reuleauxcoder.infrastructure.persistence.images import ImageStore
 from reuleauxcoder.app.runtime.approval import build_runtime_approval_provider
@@ -116,6 +117,7 @@ class RuntimeServer:
             )
         self.agent.llm.image_store = self.agent.image_store
         self.images = ImageUploads(self)
+        self.attachments = AttachmentUploads(self)
         self.interactions = InteractionCoordinator(RemoteInteractor(peer))
         commands.interactions = self.interactions
         self.agent.ui_interactor = self.interactions
@@ -138,6 +140,10 @@ class RuntimeServer:
                 "images.append": self.images.append,
                 "images.complete": self.images.complete,
                 "images.cancel": self.images.cancel,
+                "attachments.begin": self.attachments.begin,
+                "attachments.append": self.attachments.append,
+                "attachments.complete": self.attachments.complete,
+                "attachments.cancel": self.attachments.cancel,
                 "runtime.interrupt": self.interrupt,
                 "runtime.admit_steering": self.admit_steering,
                 "runtime.stop": self.stop,
@@ -270,6 +276,7 @@ class RuntimeServer:
                     "history_query": True,
                     "goals": True,
                     "image_uploads": True,
+                    "attachment_uploads": True,
                     "catalog": self.commands.catalog,
                     "state": self.snapshot(),
                     "presentation": asdict(self.config.ui),
@@ -609,6 +616,7 @@ class RuntimeServer:
         with self._lock:
             self._closing = True
             self.images.close()
+            self.attachments.close()
             self.commands.clear_pending()
             self.agent.discard_pending_user_steering(reason="session_exit")
             self.agent.request_stop()
