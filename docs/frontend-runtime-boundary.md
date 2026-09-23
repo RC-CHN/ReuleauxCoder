@@ -42,6 +42,8 @@ relay 的保存回调仍由后端 composition root 注册为 `runtime.checkpoint
 
 视图的挂载、监听解除与后端进程生命周期是两件事。宿主保留客户端和进程，
 关闭一个视图只移除其监听；明确退出会话时才请求 `runtime.shutdown`。
+TUI controller 销毁时解绑自身订阅、取消刷新，并忽略尚未完成的面板和历史请求；
+同一客户端上的其他视图和宿主监听继续工作。
 Python 的 `LocalConnection.close()` 是本地组装入口使用的整体清理操作。
 TypeScript 的 `client.close()` 关闭传输，`client.shutdown()` 还请求后端保存退出。
 当前 stdio 后端会在 EOF 时清理退出，因此视图卸载也不应关闭宿主持有的 stdio。

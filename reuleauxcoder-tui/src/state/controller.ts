@@ -58,6 +58,8 @@ export class TuiController extends EventEmitter {
   private historyIndex: number | null = null;
   private historyDraft?: {composer: Editor; images: DraftImage[]; imageNumber: number};
   private refreshTimer?: NodeJS.Timeout;
+  private disposed = false;
+  private subscriptions: (() => void)[] = [];
   private inputChanged() {this.revision++; this.flush();}
   private selectionWindows = new WeakMap<object, SelectionViewport>();
   selection(scope: object): SelectionViewport {
@@ -73,13 +75,17 @@ export class TuiController extends EventEmitter {
 
   constructor(readonly client: RuntimeClient, readonly history = new InputHistory()) {
     super();
-    this.session.on('change', this.changed);
-    this.session.on('view', (view, wire) => {
+    const listen = (source: EventEmitter | RuntimeClient, event: string, listener: (...args: any[]) => void) => {
+      source.on(event, listener);
+      this.subscriptions.push(() => source.off(event, listener));
+    };
+    listen(this.session, 'change', this.changed);
+    listen(this.session, 'view', (view, wire) => {
       const epoch = this.viewEpoch;
       this.pendingView = this.pendingView.then(() => this.openView(view, wire, epoch)).catch(this.fail);
     });
-    client.on('initialized', info => {this.menus = menusFromCatalog(client.catalog); this.session.initialize(info);});
-    client.on('state', state => {
+    listen(client, 'initialized', info => {this.menus = menusFromCatalog(client.catalog); this.session.initialize(info);});
+    listen(client, 'state', state => {
       if (state.session_id !== this.session.state.session_id || state.session_generation !== this.session.state.session_generation) {
         this.leaveInputHistory();
         this.offset = null; this.readingRevision = undefined;
@@ -93,18 +99,18 @@ export class TuiController extends EventEmitter {
       }
       this.session.update(state);
     });
-    client.on('event', (event, wire, generation) => {
+    listen(client, 'event', (event, wire, generation) => {
       this.session.event(event, wire, generation);
       if (event.message && !['RuntimeEventPayload', 'ViewEventPayload', 'InteractionPromptPayload'].includes(typeOf(event.payload) ?? '')) this.status = event.message;
       if (this.screen && typeOf(event.payload) === 'ReasoningNoticePayload') this.document(event.payload.title, event.message);
     });
-    client.on('completed', result => {this.session.completed(result); if (result.control === 'exit') void this.finish().catch(this.fail);});
-    client.on('command', text => this.session.notice(text));
-    client.on('shutdownProgress', message => {this.shutdownProgress = message; this.changed();});
-    client.on('operationFailure', message => this.fail(new Error(message)));
-    client.on('failure', error => {this.session.fatal = error.message; this.session.connected = false; this.fail(error);});
-    client.on('answered', (item, response) => this.session.reviewed(item.request, response));
-    client.on('interactions', () => {
+    listen(client, 'completed', result => {this.session.completed(result); if (result.control === 'exit') void this.finish().catch(this.fail);});
+    listen(client, 'command', text => this.session.notice(text));
+    listen(client, 'shutdownProgress', message => {this.shutdownProgress = message; this.changed();});
+    listen(client, 'operationFailure', message => this.fail(new Error(message)));
+    listen(client, 'failure', error => {this.session.fatal = error.message; this.session.connected = false; this.fail(error);});
+    listen(client, 'answered', (item, response) => this.session.reviewed(item.request, response));
+    listen(client, 'interactions', () => {
       const active = client.interactions[0];
       if (active?.request.request_id !== this.interactionId) {
         this.interactionId = active?.request.request_id;
@@ -118,11 +124,12 @@ export class TuiController extends EventEmitter {
   snapshot = () => this.revision;
   subscribe = (listener: () => void) => {this.on('change', listener); return () => {this.off('change', listener);};};
   changed = () => {
+    if (this.disposed) return;
     this.revision++;
     if (!this.updateTimer) this.updateTimer = setTimeout(this.flush, 16);
   };
   private flush = () => {clearTimeout(this.updateTimer); this.updateTimer = undefined; this.emit('change');};
-  fail = (error: Error) => {this.status = error.message; this.session.notice(error.message, 'error');};
+  fail = (error: Error) => {if (!this.disposed) {this.status = error.message; this.session.notice(error.message, 'error');}};
   get active(): PendingInteraction | undefined {return this.client.interactions[0];}
   get screen(): Screen | undefined {return this.screens.at(-1);}
   get palette(): Menu[] {
@@ -133,6 +140,7 @@ export class TuiController extends EventEmitter {
   listItems(screen: ListScreen) {const query = screen.filter.text.toLowerCase(); return screen.items.filter(item => `${item.label} ${item.description}`.toLowerCase().includes(query));}
 
   startRefresh() {
+    if (this.disposed) return;
     let refreshing = false;
     let gitRefreshing = false, nextGitRefresh = 0, lastStateRefresh = -Infinity;
     this.refreshTimer = setInterval(() => {
@@ -141,12 +149,12 @@ export class TuiController extends EventEmitter {
       if (!refreshing && now - lastStateRefresh >= (this.session.state.running || this.active ? 500 : 5000)) {
         refreshing = true;
         lastStateRefresh = now;
-        void this.client.refresh().catch(error => {this.session.connected = false; this.session.fatal = error.message; this.fail(error);}).finally(() => {refreshing = false;});
+        void this.client.refresh().catch(error => {if (!this.disposed) {this.session.connected = false; this.session.fatal = error.message; this.fail(error);}}).finally(() => {refreshing = false;});
       }
       if (this.client.info.workspace_git && !gitRefreshing && performance.now() >= nextGitRefresh) {
         gitRefreshing = true;
         nextGitRefresh = performance.now() + 5000;
-        void this.client.git().then(git => {if (!isDeepStrictEqual(this.session.git, git)) {this.session.git = git; this.changed();}})
+        void this.client.git().then(git => {if (!this.disposed && !isDeepStrictEqual(this.session.git, git)) {this.session.git = git; this.changed();}})
           .catch(this.fail).finally(() => {gitRefreshing = false;});
       }
     }, 500);
@@ -516,7 +524,14 @@ export class TuiController extends EventEmitter {
     try {const saved = await this.client.shutdown(); this.emit('exit', saved);}
     catch (error) {this.emit('exit', null, error);}
   }
-  dispose() {clearInterval(this.refreshTimer); clearTimeout(this.updateTimer); this.removeAllListeners();}
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true; this.viewEpoch++;
+    clearInterval(this.refreshTimer); clearTimeout(this.updateTimer);
+    for (const unsubscribe of this.subscriptions.splice(0)) unsubscribe();
+    for (const screen of this.screens) if (screen.kind === 'history') screen.browser.dispose();
+    this.removeAllListeners();
+  }
 
   private scrollBy(delta: number, notify = false) {
     const active = this.active, screen = this.screen;
