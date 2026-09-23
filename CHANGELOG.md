@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.5 - 2026-09-23
+
+- Fixed a confirmed deadlock between `report_progress` / `update_plan` and background session snapshots by publishing after releasing the controller lock.
+- Unified context, snapshot-writer and steering lock order to prevent hangs during context replacement, initial saves, compression usage accounting and steering application.
+- Moved steering snapshot flushes outside RPC admission locks, preventing submission and shutdown from deadlocking with Goal state publication while preserving durable admission and save-before-acknowledgement behavior.
+- Added deterministic subprocess concurrency regressions and documented the runtime lock-order audit without weakening ledger fsync or shutdown persistence.
+
 ## 0.10.4 - 2026-09-23
 
 - Reused unchanged persisted records during exit saves and kept shutdown connected until durable saving finishes, with progress messages, elapsed time and explicit confirmation before forced exit.

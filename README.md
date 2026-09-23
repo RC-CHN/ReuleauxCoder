@@ -23,13 +23,13 @@ Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/
 Install [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/) first, then install the release wheel globally:
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.10.4/reuleauxcoder-0.10.4-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.10.5/reuleauxcoder-0.10.5-py3-none-any.whl
 ```
 
 Or use [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.10.4/reuleauxcoder-0.10.4-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.10.5/reuleauxcoder-0.10.5-py3-none-any.whl
 ```
 
 The wheel includes the React TUI and its JavaScript dependencies. Installation
