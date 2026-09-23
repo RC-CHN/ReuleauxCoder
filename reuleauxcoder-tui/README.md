@@ -4,7 +4,7 @@
 
 独立的 React + Ink 终端前端，与 `reuleauxcoder-agent/` 同级。Python 后端拥有 Agent、命令、审批策略和会话保存；界面通过双向 JSON-RPC 收发数据。
 
-`src/protocol/client.ts` 和 `message-peer.ts` 可用于浏览器消息桥；Node stdio 和本地图片文件读取分别在 `peer.ts`、`files.ts`。客户端可传入 UI profile，图片接口接收字节源。宿主负责后端进程与客户端生命周期，视图关闭只解绑监听。详见[前端与运行时边界](../docs/frontend-runtime-boundary.md)。
+通过内部包 [`@reuleauxcoder/client`](../reuleauxcoder-client/README.md) 连接后端：默认入口可用于浏览器消息桥，`/node` 入口提供 stdio 和本地图片文件读取。TUI 在 `src/profile.ts` 声明自己的 UI profile，图片接口接收字节源。宿主负责后端进程与客户端生命周期，视图关闭只解绑监听。现有 npm 安装和构建脚本会先构建共享客户端。详见[前端与运行时边界](../docs/frontend-runtime-boundary.md)。
 
 ## 运行
 
@@ -207,7 +207,7 @@ node reuleauxcoder-tui/dist/cli.js --backend ssh -- -T devbox \
 
 ```text
 src/cli.tsx          启动参数、子进程和终端生命周期
-src/protocol/        JSON 编解码、双向 peer、运行时客户端
+src/profile.ts       TUI 身份与界面能力；协议来自 @reuleauxcoder/client
 src/state/           会话记录、输入编辑、历史、菜单与交互状态
 src/ui/              React 布局、内容窗口、面板与格式化
 test/                Python 实际运行时、跨语言协议、Ink 和 PTY 验证

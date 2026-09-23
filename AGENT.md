@@ -31,13 +31,18 @@ reuleauxcoder-agent/
 └── internal/{client,process,protocol,runner,terminal,tools,workspace}/
 
 reuleauxcoder-tui/
-├── src/{protocol,state,ui}/
-├── src/cli.tsx
+├── src/{state,ui}/
+├── src/{cli.tsx,profile.ts}
 └── test/            # real Python runtime, Ink input and PTY integration
+
+reuleauxcoder-client/
+├── src/             # host-neutral TypeScript runtime client and wire contracts
+└── src/node/        # stdio framing and frontend-local image reads
 ```
 
 Layer rules:
 
+- TypeScript frontends share the private, zero-runtime-dependency `@reuleauxcoder/client` package. Its root entry is browser-safe; `/node` is opt-in. Frontends supply their own UI profile. TUI install/build hooks compile the local dependency with the existing toolchain; see `reuleauxcoder-client/README.md`.
 - Domain and presentation code must not import Rich, prompt_toolkit, Textual, or CLI view code.
 - Commands return `CommandEffect`, typed view models, interaction requests, and state changes; they do not construct Rich objects.
 - Tools use `WorkspacePort` and `ProcessPort` primitives. Platform-specific behavior belongs in local or remote adapters.

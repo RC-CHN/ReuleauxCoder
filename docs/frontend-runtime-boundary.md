@@ -14,9 +14,10 @@ CLI、React TUI 和 relay 终端适配器通过双向 JSON-RPC 使用同一个
 | `interfaces/entrypoint/` | 组装 Agent、连接、适配器，拥有后端清理责任 |
 | `interfaces/cli/application.py` | 只接收已连接的客户端，渲染普通 CLI 或 host 状态 |
 | `interfaces/relay.py` | RPC 客户端事件转成现有 HTTP peer 的终端输出、审批与控制协议 |
-| `reuleauxcoder-tui/src/protocol/message-peer.ts` | 不依赖 Node 的 JSON-RPC 消息关联、请求、通知、反向调用 |
-| `reuleauxcoder-tui/src/protocol/client.ts` | 不依赖 Node 的运行时 API；可传入自己的 UI profile |
-| `reuleauxcoder-tui/src/protocol/{peer,files}.ts` | Node 字节流 framing 与前端本地文件读取 |
+| `reuleauxcoder-client/src/message-peer.ts` | 不依赖 Node 的 JSON-RPC 消息关联、请求、通知、反向调用 |
+| `reuleauxcoder-client/src/client.ts` | 不依赖 Node 的运行时 API；宿主显式传入自己的 UI profile |
+| `reuleauxcoder-client/src/node/{peer,files}.ts` | Node 字节流 framing 与前端本地文件读取 |
+| `reuleauxcoder-tui/src/profile.ts` | TUI 身份与支持的界面能力 |
 
 本地 CLI 继续使用内存传输，但消息经过真正的 JSON 编解码，不传递后端对象。
 TUI 继续使用 stdio。relay 保留 Go peer 的 HTTP 协议及 host 上的 Rich 渲染，
@@ -38,7 +39,9 @@ relay 的保存回调仍由后端 composition root 注册为 `runtime.checkpoint
 
 包的公共兼容导出按需加载。导入 Python 客户端、CLI 界面或 relay 界面不会连带
 加载 Agent、LLM 或工具注册表；启动 stdio 后端不会加载 Rich 或 prompt_toolkit。
-协议数据暂不搬成新的独立发布包。
+TypeScript 协议代码通过仓库内部包 `@reuleauxcoder/client` 共享，默认入口无
+Node 或 UI 框架依赖，`/node` 单独提供 Node 适配器。该包不独立发布 npm，
+TUI 使用本地依赖并沿用现有构建工具链。用法见[共享客户端](../reuleauxcoder-client/README.md)。
 
 ## 宿主与视图生命周期
 
@@ -85,4 +88,5 @@ flowchart LR
 - `tests/domain/agent/{test_loop,test_user_steering}.py`：普通轮次和最终总结的推理/内容中断不受显示模式影响。
 - `tests/app/rpc/`、CLI/relay 集成测试：状态、命令、控制、审批、恢复、保存和 peer 隔离。
 - `reuleauxcoder-tui/test/browser-protocol.test.ts`：浏览器目标打包，并在不提供 Node 全局对象的环境中运行消息、审批、字节上传和视图解绑。
+- `reuleauxcoder-tui/test/client-package.test.ts`：只携带 client 编译产物的独立消费者、无 Node 类型的浏览器类型检查，以及 Node 入口打包边界。
 - 既有 TUI framing、真实 Python、图片、PTY 和 bundle 测试继续运行。
