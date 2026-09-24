@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {readFile} from 'node:fs/promises';
+import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {record} from '@reuleauxcoder/client';
 import {CoreRuntime, CoreFailure} from '../src/core/runtime.js';
-import {backend, until} from './helpers.js';
+import {backend, backendScript, python, until} from './helpers.js';
+import {minimumCoreVersion, minimumEditorApiVersion} from '../src/core/compatibility.js';
 
 test('real core streams Unicode, owns sent drafts, and survives view listeners detaching', async t => {
   const b = await backend(); t.after(() => b.close());
@@ -68,4 +70,19 @@ test('closing during initialization cancels the handshake and reaps the child', 
   const rejection = assert.rejects(starting);
   await runtime.shutdown(); await rejection;
   assert.equal(runtime.client, undefined); runtime.dispose();
+});
+
+test('same-release legacy core is blocked before ready and can reconnect after updating', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'rcoder compatibility 中文-'));
+  const runtime = new CoreRuntime();
+  t.after(async () => {await runtime.shutdown(); runtime.dispose(); await rm(cwd, {recursive: true, force: true});});
+  let synchronized = false; let ready = false;
+  runtime.on('ready', () => {ready = true;});
+  await assert.rejects(runtime.start({cwd, commands: [{command: python, args: [backendScript, '--legacy-core']}], beforeReady: async () => {synchronized = true;}}),
+    error => error instanceof CoreFailure && error.kind === 'incompatible' && error.message.includes('integration revision'));
+  assert.equal(synchronized, false); assert.equal(ready, false); assert.equal(runtime.client, undefined);
+  const client = await runtime.start({cwd, commands: [{command: python, args: [backendScript]}]});
+  assert.equal(client.info.core_version, minimumCoreVersion);
+  assert.equal(client.info.editor_api_version, minimumEditorApiVersion);
+  assert.equal(ready, true);
 });

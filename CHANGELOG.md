@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Check core release versions and editor integration revisions before VS Code startup resumes saved goals. Detect same-version outdated builds, show an inline update action, and explain installation of the checksum-verified bundled wheel on the workspace host while preserving external installations.
+
 - Open Markdown workspace file references (including plain/inline-code filenames, nested paths and line ranges) in the VS Code editor instead of treating `.md` names as websites. Preserve explicit HTTP links, Remote workspace authority and workspace boundaries. Clarify work overview typography and active/completed status colors.
 
 - Compact the VS Code conversation header and composer, grow multiline drafts automatically, collapse work overview and completed goals by default, remove the separate Pending Reviews view, and improve dark-theme contrast and Chinese UI coverage.

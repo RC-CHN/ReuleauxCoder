@@ -37,6 +37,7 @@ input, select, .command-form textarea {width: 100%; border: 1px solid var(--line
 #setup {padding: 18px; flex-shrink: 0; max-height: 40vh; overflow: auto; border-bottom: 1px solid var(--line)}
 #setup h2 {font-size: 18px; margin: 0 0 8px; font-weight: 550}
 #setup p {color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere}
+#setup #setup-install-hint {font-size: 11px; line-height: 1.5; margin: 10px 0 0}
 .actions {display: flex; flex-wrap: wrap; gap: 7px}
 .actions button {border-color: var(--line); font-size: 12px}
 #transcript {flex: 1; min-height: 0; overflow: auto; padding: 16px 16px 10px; scrollbar-gutter: stable; scroll-padding: 12px}

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from reuleauxcoder.app.commands.capabilities import UICapability, UIProfile
 from reuleauxcoder.app.commands.loader import create_builtin_action_registry
 from reuleauxcoder.app.interaction_contracts import InputTextRequest
-from reuleauxcoder.app.rpc.codec import encode
+from reuleauxcoder.app.rpc.codec import encode, decode
 from reuleauxcoder.app.ui_events import UIEventBus
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
@@ -70,6 +70,13 @@ loop.run = run
 # ToolExecutor passes workspace.resolve() results; also expand Windows 8.3 aliases here.
 peer.methods["test.is_dirty"] = lambda path: bool(server.editor_documents.guard(str(Path(path).resolve())))
 peer.methods["test.state"] = lambda: encode(server._publish_state())
+if "--legacy-core" in sys.argv:
+    def legacy_initialize(**params):
+        result = decode(server.initialize(**params))
+        result.pop("editor_api_version")
+        return encode(result)
+
+    peer.methods["initialize"] = legacy_initialize
 peer.start()
 try:
     peer.closed.wait()

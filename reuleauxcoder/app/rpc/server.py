@@ -8,6 +8,7 @@ from pathlib import Path
 import threading
 from typing import get_type_hints
 
+from reuleauxcoder import __version__
 from reuleauxcoder.app.commands.requests import ActionRequest, CommandResult
 from reuleauxcoder.app.commands.capabilities import UIProfile
 from reuleauxcoder.app.commands.service import CommandService
@@ -228,6 +229,10 @@ class RuntimeServer:
             result = encode(
                 {
                     "version": 1,
+                    "core_version": __version__,
+                    # Revision 1 includes separately visible session/workspace
+                    # approval rules. Increase for required editor integration fixes.
+                    "editor_api_version": 1,
                     "workspace_git": self.agent.git_monitor is not None,
                     "conditional_snapshots": True,
                     "submission_ids": True,

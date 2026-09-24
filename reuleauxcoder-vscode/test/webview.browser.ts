@@ -78,6 +78,17 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.waitForFunction(() => document.querySelector('#environment')!.textContent?.includes('SSH: workbench'));
       await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('#send')!.disabled);
       assert.equal(await page.locator('#composer').getAttribute('aria-label'), language === 'zh' ? '消息' : 'Message');
+      state.phase = 'failed'; state.error = {kind: 'incompatible', message: 'Core 0.9.3; requires 0.11.0'}; await publish();
+      await page.locator('#setup').waitFor({state: 'visible'});
+      const updateCore = page.locator('#setup [data-command="install"]');
+      assert.equal(await updateCore.textContent(), language === 'zh' ? '更新核心' : 'Update core');
+      assert((await updateCore.getAttribute('class'))?.includes('primary'));
+      assert((await page.locator('#setup-install-hint').textContent())?.includes(language === 'zh' ? '保留已有的外部安装' : 'external installations are kept'));
+      assert(await page.locator('#send').isDisabled());
+      await updateCore.click(); assert.equal(messages.filter(message => message.action === 'install').length, 1);
+      state.phase = 'installing'; await publish();
+      await page.waitForFunction(() => document.querySelector<HTMLButtonElement>('#setup [data-command="install"]')!.disabled);
+      state.phase = 'ready'; state.error = undefined; await publish(); await page.locator('#setup').waitFor({state: 'hidden'});
       const compactHeight = (await page.locator('#composer').boundingBox())!.height;
       assert(compactHeight <= 28);
       assert((await page.locator('.app-header').boundingBox())!.height <= 42);

@@ -437,5 +437,10 @@
   "Open workspace file: {0}": "在编辑器中打开：{0}",
   "Invalid file reference.": "文件引用无效。",
   "This link points outside the current workspace.": "此链接指向当前工作区之外。",
-  "File not found in this workspace: {0}": "在当前工作区中找不到文件：{0}"
+  "File not found in this workspace: {0}": "在当前工作区中找不到文件：{0}",
+  "Update core": "更新核心",
+  "Uses the core bundled with this extension in a private environment on the workspace host. Switches to it after installation; external installations are kept. Dependencies may require a download.": "使用扩展附带的核心，在工作区主机的私有环境中安装并切换使用，保留已有的外部安装。依赖可能需要联网下载。",
+  "This core does not report a supported release version. Install the bundled core ({0} or newer).": "当前核心未提供受支持的发行版本信息，请安装扩展附带的核心（{0} 或更新版本）。",
+  "Core {0} is too old. This extension requires {1} or newer.": "当前核心为 {0}，此扩展需要 {1} 或更新版本，请更新核心。",
+  "Core {0} lacks editor integration revision {1}. Update the core even if the release number is unchanged.": "当前核心 {0} 缺少编辑器接口修订 {1}。即使发行版本号相同，仍需更新核心以使用新的修复。"
 }

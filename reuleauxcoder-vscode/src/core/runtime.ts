@@ -3,6 +3,7 @@ import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {EventEmitter} from 'node:events';
 import {RuntimeClient, type UIProfile} from '@reuleauxcoder/client';
 import {RpcPeer} from '@reuleauxcoder/client/node';
+import {compatibilityProblem} from './compatibility.js';
 
 export interface CoreCommand {command: string; args: string[]}
 export interface RuntimeOptions {cwd: string; commands: CoreCommand[]; startupTimeout?: number; beforeReady?: (client: RuntimeClient) => Promise<unknown>}
@@ -60,7 +61,10 @@ export class CoreRuntime extends EventEmitter {
           new Promise<never>((_, reject) => {timer = setTimeout(() => reject(new CoreFailure('startup', t('Core initialization timed out.'), this.stderr)), options.startupTimeout ?? 30000);}),
         ]);
         if (epoch !== this.epoch) throw new Error(t('Core startup was cancelled.'));
+        const problem = compatibilityProblem(client.info ?? {});
+        if (problem) throw new CoreFailure('incompatible', problem);
         if (!client.info?.submission_ids || !client.info?.review_documents || !client.info?.attachment_uploads || !client.info?.editor_documents) throw new CoreFailure('incompatible', t('This core lacks the submission, native diff or attachment protocol required by the extension. Install the bundled compatible core.'));
+        this.emit('log', `Core ${client.info.core_version}; editor integration ${client.info.editor_api_version}\n`);
         await options.beforeReady?.(client);
         await client.ready();
         if (epoch !== this.epoch) throw new Error(t('Core startup was cancelled.'));

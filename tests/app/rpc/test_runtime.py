@@ -2,6 +2,7 @@ import threading
 from types import MappingProxyType
 import pytest
 
+from reuleauxcoder import __version__
 from reuleauxcoder.app.commands.requests import ActionRequest
 from reuleauxcoder.app.interaction_contracts import ConfirmRequest, InputTextRequest
 from reuleauxcoder.app.rpc.codec import encode, decode
@@ -12,6 +13,8 @@ from reuleauxcoder.infrastructure.rpc.peer import RpcError
 
 def test_initialization_describes_backend_without_exposing_local_history(runtime):
     info = runtime.client.info
+    assert info["core_version"] == __version__
+    assert info["editor_api_version"] == 1
     assert (
         info["presentation"]["reasoning_display"] == runtime.config.ui.reasoning_display
     )

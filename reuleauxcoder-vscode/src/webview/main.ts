@@ -120,6 +120,7 @@ function render(state: HostSnapshot): void {
   setup.querySelector<HTMLButtonElement>('[data-command="start"]')!.classList.toggle('primary', !needsInstall);
   setup.querySelector<HTMLButtonElement>('[data-command="start"]')!.textContent = state.phase === 'failed' ? t('Retry') : t('Start core');
   setup.querySelector<HTMLButtonElement>('[data-command="install"]')!.classList.toggle('primary', needsInstall);
+  setup.querySelector<HTMLButtonElement>('[data-command="install"]')!.textContent = state.error?.kind === 'incompatible' ? t('Update core') : t('Install compatible core');
   attention.update(state);
   if (follow) transcript.scrollTop = transcript.scrollHeight;
   if (state.notice) notice(state.notice);

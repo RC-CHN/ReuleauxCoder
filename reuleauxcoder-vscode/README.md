@@ -5,8 +5,8 @@
 ## 开始使用
 
 1. 在工作区窗口中安装 VSIX，打开右侧 **Reuleaux → 会话**。Remote 窗口需安装到对应的远端环境。
-2. 扩展自动寻找并启动核心：`reuleaux.corePath` → 扩展托管安装 → 主机 PATH 中的 `rcoder`。已有核心必须支持本版本扩展的 RPC 能力。
-3. 如果缺少核心或版本不兼容，点击 **安装兼容核心**。扩展校验附带 wheel，并在工作区主机的扩展存储中建立私有 Python 环境；有 uv 时使用 uv，否则使用 Python venv/pip。需要 Python 3.10+，首次安装依赖需要网络。没有 uv 的 Debian/Ubuntu 主机还需对应的 `python3-venv` 包。安装失败不会替换已有托管核心。
+2. 扩展自动寻找并启动核心：`reuleaux.corePath` → 扩展托管安装 → 主机 PATH 中的 `rcoder`。启动握手检查核心发行版本、编辑器接口修订号和 RPC 能力，通过后才允许恢复目标与发送消息。发行版本至少与扩展一致；接口修订号也能识别版本号相同但缺少必要修复的旧构建。
+3. 如果缺少核心或版本不兼容，在会话内点击 **安装兼容核心／更新核心**。使用 VSIX 附带的配套 wheel（校验 SHA256），不直接拉取 GitHub latest；在工作区主机的扩展存储中建立新的私有 Python 环境，有 uv 时使用 uv，否则使用 Python venv/pip。安装完成后切换到托管核心，已有外部安装保留，安装失败不会替换已有托管核心。需要 Python 3.10+，首次安装依赖需要网络。没有 uv 的 Debian/Ubuntu 主机还需对应的 `python3-venv` 包。
 4. 使用工作区主机的 `~/.rcoder/config.yaml` 配置模型。核心首次启动缺少配置时会生成示例；也支持工作区 `.rcoder/config.yaml`，或通过 `reuleaux.coreArguments` 传入 `--config`。配置错误通过启动信息与 **查看日志** 展示，修正后重试。
 
 也可以通过 **选择已有安装** 指定主机上的 `rcoder`，或配置 `reuleaux.corePath` 为 Python 可执行文件、`reuleaux.coreArguments` 为 `["-m", "reuleauxcoder"]`。参数逐项传递，不经过 shell。
@@ -61,6 +61,8 @@ CI 在 Linux 和 Windows 上运行核心协议、真实 VS Code 宿主、Chromiu
 ReuleauxCoder runs a persistent Python core on the workspace host, locally or inside VS Code Remote SSH/WSL/Containers. Chat defaults to the secondary sidebar; change approvals open frozen before/after documents in the native editor. Requires VS Code 1.106+ and host Python 3.10+.
 
 Open **Reuleaux → Conversation** to connect automatically. If the core is missing or incompatible, choose **Install compatible core** to install the checksum-verified bundled wheel in private extension storage using uv or venv/pip. Configure your model in the host's `~/.rcoder/config.yaml` (a first-run example is generated), then retry. The settings table above supports explicit executable, arguments and Python selection. No shell command interpolation is used.
+
+Startup checks the core release version (at least the extension version), editor integration revision and required capabilities before resuming goals or accepting messages. The revision detects older builds even when the release number matches. **Update core** installs the matching wheel included in the VSIX into a new private environment on the workspace host, then switches to it; it does not fetch GitHub latest or overwrite an external installation. Failed installation preserves the existing managed core. Python dependencies may still require network access.
 
 Enter shows ordinary/steering input immediately and preserves the next draft. Files and clipboard images transfer as bounded byte chunks to the workspace host; sending during an upload waits for that message's attachments in the background. Failed messages can retry with the same ID or return to the draft. Context actions capture selected code and diagnostics. Approval revalidates disk content; built-in edits refuse to overwrite known unsaved editor documents. Closing a view leaves the host session connected.
 
