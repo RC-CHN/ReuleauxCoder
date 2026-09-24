@@ -19,7 +19,7 @@ export async function writePreview(language: string): Promise<string> {
     {id: 'assistant', role: 'assistant', text: zh ? '输入流程已经接通。这次修改包括：\n\n- **功能菜单**：点击即可选择，支持搜索与快捷键。\n- **就地审批**：打开文件审阅 diff，再选择是否批准。\n- **工作概况**：计划、子任务和进程进展随时可见。\n\n```ts\nawait commands.open("goal.show");\n```\n\n下面是待审阅的提案。' : 'The input flow is connected. This change includes:\n\n- **Command menu**: clickable choices, search and shortcuts.\n- **Contextual reviews**: open the file diff, then decide.\n- **Work overview**: plans, agents and process progress stay visible.\n\n```ts\nawait commands.open("goal.show");\n```\n\nThe proposal is ready below.'},
   ], reviews: [{id: 'review', title: 'edit_file', summary: zh ? '重组输入区，保持消息即时回显，并接入会话内命令面板。' : 'Reshape the composer, preserve immediate message echo, and connect conversation command panels.', documents: [{id: 'main', path: 'src/webview/main.ts'}, {id: 'style', path: 'src/webview/style.css'}], grants: [{id: 'files', label: zh ? '当前会话 · 所列文件' : 'This session · Listed files', description: zh ? '在当前会话中允许修改这些文件' : 'Allow changes to these files for this session', broad: false}]}]};
   const encoded = JSON.stringify({state, panels}).replaceAll('<', '\\u003c');
-  const bootstrap = `const demo = ${encoded}; let serial = 0; let saved; const publish = () => {demo.state.revision++; window.postMessage({kind:'snapshot', snapshot:structuredClone(demo.state)}, '*');};
+  const bootstrap = `const demo = ${encoded}; let serial = 0; let saved; let stack=[]; const publish = () => {demo.state.revision++; window.postMessage({kind:'snapshot', snapshot:structuredClone(demo.state)}, '*');};
 window.acquireVsCodeApi = () => ({getState:()=>saved, setState:value=>{saved=value;}, postMessage: message => setTimeout(() => {
   const data=message.data||{}; let result=null; const state=demo.state;
   if(message.action==='ready') result=structuredClone(state);
@@ -28,14 +28,14 @@ window.acquireVsCodeApi = () => ({getState:()=>saved, setState:value=>{saved=val
   else if(message.action==='command.open'||message.action==='models'||message.action==='sessions') {
     const id=data.actionId || (message.action==='models'?'model.show':'goal.show');
     const action=state.catalog.find(item=>item.action_id===id);
-    if(action) {state.commandSurface={id:++serial,feature:action.feature_id,busy:false,canBack:false,...(action.parameters.length?{action}:{panel:structuredClone(demo.panels[id]||demo.panels['goal.show'])})}; publish();}
+    if(action) {stack=[];state.commandSurface={id:++serial,feature:action.feature_id,busy:false,canBack:false,...(action.parameters.length?{action}:{panel:structuredClone(demo.panels[id]||demo.panels['goal.show'])})}; publish();}
   } else if(message.action==='command.select') {
     const surface=state.commandSurface; const item=surface.panel.items[data.index]; const child=surface.panel.children.find(entry=>entry[0]===item.label)?.[1];
-    if(child) state.commandSurface={...surface,id:++serial,canBack:true,panel:child};
-    else if(item.action?.action_id.startsWith('skills.')) {item.current=!item.current;surface.id=++serial;}
+    if(child) {stack.push(surface);state.commandSurface={...surface,id:++serial,canBack:true,panel:child};}
+    else if(item.action?.action_id.startsWith('skills.')||item.action?.action_id.startsWith('mcp.')) {item.current=!item.current;surface.id=++serial;}
     else if(item.action?.action_id==='goal.create') state.commandSurface={id:++serial,feature:'goal',busy:false,canBack:false,action:state.catalog.find(item=>item.action_id==='goal.create')};
     else state.commandSurface=undefined; publish();
-  } else if(message.action==='command.back') {state.commandSurface={id:++serial,feature:'model',busy:false,canBack:false,panel:structuredClone(demo.panels['model.show'])};publish();}
+  } else if(message.action==='command.back') {state.commandSurface={...stack.pop(),id:++serial,canBack:stack.length>0};publish();}
   else if(message.action==='command.close'||message.action==='command.submit') {state.commandSurface=undefined;publish();}
   else if(message.action==='approve'||message.action==='reject') {state.reviews=state.reviews.filter(item=>item.id!==data.id);publish();}
   else if(message.action==='review'||message.action==='git') {state.notice=${JSON.stringify(zh ? '这是交互预览；安装到 VS Code 后会在原生编辑区打开。' : 'Interactive preview: the installed extension opens this in the native VS Code editor.')};publish();}

@@ -11,11 +11,18 @@ export const catalog: Action[] = [
   {action_id: 'approval.show', feature_id: 'approval', description: 'Permissions', preview: true, parameters: [], triggers: [{kind: 'slash', value: '/approval'}]},
 ];
 const base: Panel = {view_type: 'models', title: 'Model Profiles', items: [], children: [], filterable: true, keep_open_on_submit: true, return_to_parent_on_submit: false};
+const permissionItems = [['allow', 'Allow automatically', 'Matching calls run without asking'], ['warn', 'Warn, then run', 'Show a warning but do not block execution'], ['require_approval', 'Ask every time', 'Require a review for every match'], ['deny', 'Block', 'Reject matching calls before execution']];
+const permissions: Panel = {...base, view_type: 'approval_rules', title: 'Approval rules', items: ['edit_file', 'shell'].map(tool => ({label: tool, description: 'Ask every time', action: null, current: false})), children: ['edit_file', 'shell'].map(tool => [tool, {
+  ...base, view_type: 'approval_lifetime', title: `Approval rules · ${tool}`, items: ['This session', 'This workspace'].map(label => ({label, description: label === 'This session' ? 'stored with this conversation session' : 'saved in .rcoder/config.yaml', action: null, current: false})),
+  children: ['This session', 'This workspace'].map((label, index) => [label, {...base, view_type: 'approval_actions', title: `Approval rules · ${tool} · ${label}`, items: permissionItems.map(([action, label, description]) => ({label, description, current: action === 'require_approval', action: {action_id: index ? 'approval.set_global' : 'approval.set', command: {target: `tool=${tool}`, action}}}))}]),
+}])};
 export const panels: Record<string, Panel> = {
   'model.show': {...base, items: [{label: 'Session · Main model', description: 'Reasoning model', action: null, current: false}], children: [['Session · Main model', {...base, view_type: 'profiles', items: [{label: 'Reasoning model', description: '128k context', current: true, action: {action_id: 'model.use_main', command: {profile_name: 'main'}}}, {label: 'Fast model', description: '64k context', current: false, action: {action_id: 'model.use_main', command: {profile_name: 'fast'}}}]}]]},
   'skills.show': {...base, view_type: 'skills', title: 'Skills', items: [{label: 'Code review', description: 'Review code for bugs and regressions', current: true, action: {action_id: 'skills.disable', command: {skill_name: 'review', enabled: false}}}]},
   'goal.show': {...base, view_type: 'goal', title: 'Goal', items: [{label: 'Create goal', description: 'Keep working toward an objective', current: false, action: {action_id: 'goal.create', command: {objective: null}}}]},
-  'approval.show': {...base, view_type: 'approval', title: 'Permissions', items: [{label: 'This session', description: 'Ask', current: true, action: null}]},
+  'approval.show': permissions,
+  'mode.show': {...base, view_type: 'modes', title: 'Modes', items: ['coder', 'planner'].map(mode => ({label: mode, description: '', current: mode === 'coder', action: {action_id: 'mode.switch', command: {mode_name: mode}}}))},
+  'mcp.show': {...base, view_type: 'mcp', title: 'MCP Servers', items: [{label: 'workspace-tools', description: 'enabled · 12 tools', current: true, action: {action_id: 'mcp.disable', command: {server_name: 'workspace-tools', enabled: false}}}]},
 };
 export const overview: WorkOverview = {
   contextTokens: 27420, contextLimit: 128000, approvalPolicy: 'require_approval', mcpTools: 12, queued: 0,

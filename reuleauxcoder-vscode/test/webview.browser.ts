@@ -149,6 +149,15 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-checked') === 'false');
       await page.locator('.workbench-heading button').last().click();
 
+      await page.locator('.context-strip [data-action="approval.show"]').click();
+      await page.locator('.panel-rows button').first().click();
+      await page.waitForFunction(() => document.querySelector('.permission-steps .active')?.textContent?.startsWith('2'));
+      await page.locator('.panel-rows button').first().click();
+      await page.waitForFunction(() => document.querySelectorAll('.permission-row').length === 4);
+      assert.equal(await page.locator('.permission-row[aria-current="true"]').count(), 1);
+      await page.locator('.permission-row[data-policy="require_approval"]').click();
+      await page.waitForFunction(() => document.querySelector('#workbench')!.hasAttribute('hidden'));
+
       state.interactions = [{id: 'secret', kind: 'input_text', title: 'Authentication', message: 'Enter a secret', secret: true, allowEmpty: false, allowCancel: true}]; await publish();
       await page.locator('.answer-form input').fill('not-persisted'); await publish();
       assert.equal(await page.locator('.answer-form input').inputValue(), 'not-persisted');
@@ -192,6 +201,15 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await preview.waitForFunction(() => document.querySelector('.attention-card'));
       await delay(200); await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-${language}.png`)});
       await preview.locator('#commands').click(); await delay(150); await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-menu-${language}.png`)});
+      await preview.locator('.workbench-heading button').last().click();
+      await preview.locator('.context-strip [data-action="approval.show"]').click();
+      await preview.locator('.panel-rows button').first().click();
+      await preview.waitForFunction(() => document.querySelector('.permission-steps .active')?.textContent?.startsWith('2'));
+      await preview.locator('.panel-rows button').first().click();
+      await preview.waitForFunction(() => document.querySelectorAll('.permission-row').length === 4);
+      await delay(150); await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-permissions-${language}.png`)});
+      await preview.locator('.workbench-heading button').first().click();
+      await preview.waitForFunction(() => document.querySelector('.permission-steps .active')?.textContent?.startsWith('2'));
       await preview.locator('.workbench-heading button').last().click();
       await preview.evaluate(() => {
         document.body.classList.add('vscode-light');
