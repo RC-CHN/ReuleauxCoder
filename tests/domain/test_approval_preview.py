@@ -1,4 +1,7 @@
+import hashlib
 from pathlib import Path
+
+import pytest
 
 from reuleauxcoder.domain.approval import (
     ApprovalRequest,
@@ -65,18 +68,20 @@ def test_read_only_approval_has_compact_target_instead_of_json() -> None:
     assert preview.sections[0].content == "CHANGELOG.md · from line 1 · limit 10"
 
 
-def test_native_diff_and_text_preview_share_the_captured_revision(tmp_path):
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_native_diff_and_text_preview_share_the_captured_revision(tmp_path, newline):
     path = tmp_path / "example.py"
-    path.write_text("before = 1\n", encoding="utf-8")
+    before = f"before = 1{newline}"
+    path.write_bytes(before.encode("utf-8"))
     workspace = LocalWorkspacePort(tmp_path, cwd=tmp_path)
     request = ApprovalRequest("edit_file", {"file_path": "example.py", "old_string": "1", "new_string": "2"})
     snapshot = capture_approval_document(request, workspace=workspace)
-    path.write_text("editor changed this\n", encoding="utf-8")
+    path.write_bytes(f"editor changed this{newline}".encode("utf-8"))
     preview = build_approval_preview(request, workspace=workspace, document=snapshot)
     document = preview.documents[0]
-    assert document.before == "before = 1\n"
-    assert document.after == "before = 2\n"
-    assert document.before_sha256 == snapshot.revision.sha256
+    assert document.before == before
+    assert document.after == f"before = 2{newline}"
+    assert document.before_sha256 == snapshot.revision.sha256 == hashlib.sha256(before.encode("utf-8")).hexdigest()
     assert "-before = 1" in preview.sections[0].content
     assert "+before = 2" in preview.sections[0].content
     assert "editor changed" not in preview.sections[0].content
