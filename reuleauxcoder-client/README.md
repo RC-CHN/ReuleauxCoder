@@ -8,9 +8,10 @@ rejected. Receipts are scoped to the live connection and session generation,
 with up to 4,096 retained IDs per generation; they are not a restart/reconnect
 deduplication contract. Legacy callers may omit the ID.
 
-`@reuleauxcoder/client` 是仓库内部共享的 JSON-RPC 客户端，供 TUI 和后续宿主使用。
-没有运行时 npm 依赖，不包含 React、Ink、界面状态、进程启动或 Python 业务实现。
-目前不独立发布 npm 包，也不包含 VS Code 扩展。
+`@reuleauxcoder/client` 是仓库内部共享的 JSON-RPC 客户端，供 TUI 和 VS Code 宿主使用。
+没有运行时 npm 依赖，不包含 React、Ink、界面渲染、进程启动或 Python 业务实现。
+`SubmissionQueue` 负责与界面无关的发送状态及重试；消费者通过 `SubmissionSink` 投影消息。
+目前不独立发布 npm 包；VS Code 产品适配器位于 `reuleauxcoder-vscode/`。
 
 ## 入口
 
@@ -90,6 +91,12 @@ await client.initialize(profile);
 - `client.close()` 关闭传输；`client.shutdown()` 先请求后端保存退出，再关闭传输。
 - 视图卸载不调用这两个方法。关闭 stdio 会让现有后端走 EOF 清理流程。
 - 当前不提供后台 daemon、多客户端会话或自动重连。
+
+编辑器宿主可使用 `initialize(profile, {ready: false})`，同步未保存文档后再调用
+`ready()` 放行恢复的 Goal。默认初始化行为保持不变。
+`reviewDocument(requestId, documentId, side)` 分页读取审批绑定的冻结文本，原生展示
+上限为 4 Mi 字符，审批结束后无法再读取。`SubmissionQueue.send` 接受可选的视图生成
+ID；`retry(id)` 仅重试指定消息，省略 ID 则重试最近失败的一条。
 
 ## 验证
 

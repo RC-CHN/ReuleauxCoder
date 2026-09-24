@@ -25,13 +25,18 @@ export class RuntimeClient extends Events {
     peer.methods.set('interaction.request', params => this.inbox.request(params));
   }
 
-  async initialize(profile: UIProfile): Promise<void> {
+  async initialize(profile: UIProfile, options: {ready?: boolean} = {}): Promise<void> {
     const capabilities = profile.capabilities;
     this.info = decode(await this.peer.request('initialize', {version: 1, profile: record('UIProfile', {ui_id: profile.ui_id, display_name: profile.display_name, capabilities: tuple(capabilities.map(item => enumValue('UICapability', item)), 'frozenset')})}));
     this.catalog = this.info.catalog.actions;
     if (this.info.version !== 1 || this.catalog.some(item => !Array.isArray(item.parameters))) throw new Error('This client requires a backend with command form metadata. Update the Python package.');
     this.update(this.info.state);
     this.emit('initialized', this.info);
+    if (options.ready !== false) await this.ready();
+  }
+
+  /** Hosts can synchronize editor state before allowing restored goals to continue. */
+  async ready(): Promise<void> {
     if (this.info.goals && !this.info.host_mode) this.update(decode(await this.peer.request('runtime.ready')));
   }
 
@@ -107,6 +112,18 @@ export class RuntimeClient extends Events {
     return decode(await this.peer.request(`history.${operation}`, parameters));
   }
   async interrupt(): Promise<{outcome: string; discarded_count: number}> {return decode(await this.peer.request('runtime.interrupt'));}
+  async reviewDocument(requestId: string, documentId: string, side: 'before' | 'after'): Promise<string> {
+    if (!this.info?.review_documents) throw new Error('Update the core to support native review documents.');
+    let result = '', offset = 0;
+    for (;;) {
+      const page = await this.peer.request('review.document', {request_id: requestId, document_id: documentId, side, offset, limit: 65536}) as {text: string; next_offset: number; complete: boolean};
+      if (typeof page.text !== 'string' || typeof page.complete !== 'boolean' || !Number.isSafeInteger(page.next_offset) || page.next_offset < offset || (!page.complete && page.next_offset === offset)) throw new Error('Invalid review document page');
+      result += page.text;
+      if (result.length > 4 * 1024 * 1024) throw new Error('Native review document exceeds the 4 Mi-character display limit. Review the text preview.');
+      if (page.complete) return result;
+      offset = page.next_offset;
+    }
+  }
   resize(rows: number, columns: number) {this.peer.notify('runtime.resize', {rows, columns});}
   recordPerformance(name: string, elapsedMs: number) {this.peer.notify('runtime.record_performance', {category: 'ui_render', name, elapsed_ms: elapsedMs});}
   /** Disconnect the transport; process ownership belongs to the host. */
