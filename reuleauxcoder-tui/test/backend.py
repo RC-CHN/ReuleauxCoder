@@ -259,6 +259,9 @@ try:
     peer.closed.wait()
 finally:
     server.shutdown()
+    # This fixture owns the manager normally cleaned up by EntrypointRunner.
+    report = agent.process_manager.shutdown()
+    assert report.unknown == 0 and report.reap_timeouts == 0, report
     peer.close()
     peer.wait_closed(timeout=10)
     agent.unbind_session_persistence()

@@ -21,7 +21,7 @@ export async function backend() {
   const child = spawn(python, [fileURLToPath(new URL('./backend.py', import.meta.url))], {cwd, stdio: 'pipe'});
   let errors = '';
   child.stderr.on('data', chunk => {errors += chunk;});
-  const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+  const exited = new Promise<void>(resolve => child.once('close', () => resolve()));
   const peer = new RpcPeer(child.stdout, child.stdin);
   child.once('error', error => peer.close(error));
   const client = new RuntimeClient(peer);
@@ -32,7 +32,8 @@ export async function backend() {
     await client.shutdown(); controller.dispose();
     const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
     await exited; clearTimeout(timer);
-    await rm(cwd, {recursive: true, force: true});
-    if (child.exitCode !== 0) throw new Error(`Backend exit ${child.exitCode}: ${errors}`);
+    try {
+      if (child.exitCode !== 0) throw new Error(`Backend exit ${child.exitCode}: ${errors}`);
+    } finally {await rm(cwd, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});}
   }};
 }

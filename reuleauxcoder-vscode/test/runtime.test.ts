@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
+import {once} from 'node:events';
 import {record} from '@reuleauxcoder/client';
 import {CoreRuntime, CoreFailure} from '../src/core/runtime.js';
 import {backend, until} from './helpers.js';
@@ -43,12 +44,17 @@ test('unsaved documents block policy-allowed core edits and release after save',
   // Windows editor/file URIs may disagree on drive and filename casing.
   const reportedPath = process.platform === 'win32' ? path.toUpperCase() : path;
   await b.client.peer.request('runtime.editor_documents', {revision: 1, paths: [reportedPath]});
+  const blocked = once(b.client, 'completed', {signal: AbortSignal.timeout(10000)});
   b.session.submit('dirty-edit', 'auto-edit', [], b.client.state.session_generation);
-  await until(() => !b.client.state.running && b.session.transcript.cells.some(cell => cell.text.includes('Unsaved editor changes')));
+  await blocked;
+  await until(() => !b.client.state.running);
+  assert(b.session.transcript.cells.some(cell => cell.text.includes('Unsaved editor changes')));
   assert.equal(await readFile(path, 'utf8'), 'old = 1\n');
   await b.client.peer.request('runtime.editor_documents', {revision: 2, paths: []});
+  const saved = once(b.client, 'completed', {signal: AbortSignal.timeout(10000)});
   b.session.submit('saved-edit', 'auto-edit', [], b.client.state.session_generation);
-  await until(async () => (await readFile(path, 'utf8')).startsWith('new'));
+  const [result] = await saved;
+  assert.equal(await readFile(path, 'utf8'), 'new = 1\n', JSON.stringify(result));
 });
 
 test('missing executable is classified separately and startup is single-flight', async () => {
