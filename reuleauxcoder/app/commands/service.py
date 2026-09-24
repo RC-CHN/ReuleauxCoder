@@ -20,9 +20,7 @@ from reuleauxcoder.app.commands.specs import ActionCatalog, DuringTurnPolicy
 from reuleauxcoder.app.commands.text import _invalid_command_usage, _suggest_command
 from reuleauxcoder.app.ui_events import UIEventBus, UIEventKind, ViewEventPayload
 from reuleauxcoder.app.runtime.session_state import (
-    build_session_runtime_state,
-    build_session_persistence_kwargs,
-    get_session_fingerprint,
+    save_session_snapshot,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 from reuleauxcoder.app.interaction_contracts import UIInteractor
@@ -264,11 +262,16 @@ class CommandService:
     def record_chat_failure(self, error: Exception) -> None:
         path = getattr(error, "llm_diagnostic_path", None)
         if path and self.session_id:
+            content = f"[LLM_ERROR_DIAGNOSTIC] path={path} error={type(error).__name__}: {error}"
+            record = getattr(self.agent, "record_session_diagnostic", None)
+            if callable(record):
+                record(content)
+                return
             store = SessionStore(self.sessions_dir)
             store.append_system_message(
                 self.session_id,
                 self.config.model,
-                f"[LLM_ERROR_DIAGNOSTIC] path={path} error={type(error).__name__}: {error}",
+                content,
                 active_mode=getattr(self.agent, "active_mode", None),
             )
             ledger = getattr(self.agent, "history_ledger", None)
@@ -300,19 +303,10 @@ class CommandService:
         store = SessionStore(self.sessions_dir)
         store.set_progress_callback(progress)
         try:
-            sid = store.save(
-                self.agent.messages,
-                self.agent.llm.model,
-                self.session_id,
+            sid = save_session_snapshot(
+                self.config, self.agent, store, self.session_id,
                 is_exit=True,
-                total_prompt_tokens=self.agent.state.total_prompt_tokens,
-                total_completion_tokens=self.agent.state.total_completion_tokens,
-                active_mode=getattr(self.agent, "active_mode", None),
-                fingerprint=get_session_fingerprint(self.config, self.agent),
-                runtime_state=build_session_runtime_state(self.config, self.agent),
                 incremental=True,
-                events_already_persisted=True,
-                **build_session_persistence_kwargs(self.agent),
             )
         except Exception as error:
             elapsed = time.monotonic() - started

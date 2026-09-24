@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-import threading
 import time
 
 from reuleauxcoder.app.runtime.approval import (
@@ -27,133 +26,10 @@ from reuleauxcoder.infrastructure.persistence.session_store import (
     DEFAULT_SESSION_FINGERPRINT,
 )
 
-_LIVE_SNAPSHOT_DELAY_SECONDS = 0.15
-
-
-class _LiveSessionPersistence:
-    """Coalesce full snapshots while the append-only ledger stays durable."""
-
-    def __init__(
-        self,
-        persist,
-        *,
-        incident_sink=None,
-        stop_sink=None,
-        delay: float = _LIVE_SNAPSHOT_DELAY_SECONDS,
-        context_lock=None,
-    ):
-        self._persist = persist
-        self._incident_sink = incident_sink
-        self._stop_sink = stop_sink
-        self._delay = max(0.0, delay)
-        self._lock = threading.RLock()
-        self._write_lock = threading.Lock()
-        # Context mutations may synchronously persist (including first-message
-        # discovery and compression usage). Always take context before writer.
-        self._context_lock = context_lock if context_lock is not None else nullcontext()
-        self._timer: threading.Timer | None = None
-        self._closed = False
-        self._generation = 0
-        self._has_snapshot = False
-
-    def __call__(self, *, deferred: bool = False) -> None:
-        # A new session needs a discoverable manifest before its first reply.
-        if not deferred or not self._has_snapshot:
-            self.flush()
-            return
-        scheduling_error: BaseException | None = None
-        with self._lock:
-            if self._closed:
-                return
-            self._generation += 1
-            generation = self._generation
-            if self._timer is not None:
-                try:
-                    self._timer.cancel()
-                except BaseException as error:
-                    scheduling_error = error
-            try:
-                timer = threading.Timer(
-                    self._delay,
-                    self._run_deferred,
-                    args=(generation,),
-                )
-                timer.daemon = True
-                self._timer = timer
-                timer.start()
-            except BaseException as error:
-                self._timer = None
-                scheduling_error = error
-        if scheduling_error is not None:
-            # Scheduling observes an already committed ledger/message mutation.
-            self._record_failure(scheduling_error)
-
-    def _run_deferred(self, generation: int) -> None:
-        with self._lock:
-            if self._closed or generation != self._generation:
-                return
-            self._timer = None
-        with self._context_lock, self._write_lock:
-            with self._lock:
-                if self._closed or generation != self._generation:
-                    return
-            try:
-                self._persist()
-                self._has_snapshot = True
-            except BaseException as error:
-                # The event itself was fsync'd before this best-effort snapshot.
-                # A later forced flush or restore-tail reconstruction recovers.
-                self._record_failure(error)
-                return
-
-    def _record_failure(self, error: BaseException) -> None:
-        if isinstance(
-            error, (KeyboardInterrupt, SystemExit, GeneratorExit)
-        ) and callable(self._stop_sink):
-            try:
-                self._stop_sink()
-            except BaseException:
-                pass
-        if not callable(self._incident_sink):
-            return
-        try:
-            self._incident_sink(
-                "session_snapshot",
-                _safe_persistence_error_type(error),
-                "session_persistence",
-            )
-        except BaseException:
-            # This is the final non-recursive diagnostic boundary.
-            pass
-
-    def flush(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._generation += 1
-            timer, self._timer = self._timer, None
-            if timer is not None:
-                timer.cancel()
-        with self._context_lock, self._write_lock:
-            try:
-                self._persist()
-                self._has_snapshot = True
-            except BaseException as error:
-                self._record_failure(error)
-                raise
-
-    def close(self) -> None:
-        self.flush()
-        with self._lock:
-            self._closed = True
-
-
-def _safe_persistence_error_type(error: BaseException) -> str:
-    name = type(error).__name__
-    if name and len(name) <= 64 and name.isascii() and name.replace("_", "").isalnum():
-        return name
-    return "Exception"
-
+from reuleauxcoder.app.runtime.snapshot_writer import (
+    SessionSnapshotWriter as _LiveSessionPersistence,
+    _safe_persistence_error_type,
+)
 
 def _request_cooperative_stop(agent: Agent, error: BaseException) -> None:
     if not isinstance(error, (KeyboardInterrupt, SystemExit, GeneratorExit)):
@@ -266,6 +142,34 @@ def build_session_persistence_kwargs(agent: Agent) -> dict:
         "checkpoints": list(getattr(context, "checkpoints", ())),
         "restore_issues": list(getattr(agent, "session_restore_issues", ())),
     }
+
+
+def save_session_snapshot(
+    config, agent, store, session_id=None, *, fingerprint=None, is_exit=False,
+    incremental=False,
+):
+    """Save through the live writer; store adapters never allocate live events."""
+    scope = getattr(agent, "session_snapshot_scope", None)
+    with scope() if callable(scope) else nullcontext():
+        commit_exit = getattr(agent, "commit_session_exit", None)
+        if is_exit and callable(commit_exit):
+            commit_exit()
+        return store.save(
+            list(agent.messages),
+            getattr(agent.llm, "model", config.model),
+            session_id or agent.current_session_id,
+            is_exit=is_exit and not callable(commit_exit),
+            total_prompt_tokens=agent.state.total_prompt_tokens,
+            total_completion_tokens=agent.state.total_completion_tokens,
+            active_mode=getattr(agent, "active_mode", None),
+            runtime_state=build_session_runtime_state(config, agent),
+            fingerprint=fingerprint or get_session_fingerprint(config, agent),
+            incremental=incremental,
+            events_already_persisted=bool(
+                getattr(agent, "_session_persist_callback", None)
+            ),
+            **build_session_persistence_kwargs(agent),
+        )
 
 
 def bind_session_persistence(

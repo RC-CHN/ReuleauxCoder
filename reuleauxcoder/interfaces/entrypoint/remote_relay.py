@@ -8,9 +8,8 @@ import threading
 
 from reuleauxcoder.app.runtime.session_state import (
     bind_session_persistence,
-    build_session_persistence_kwargs,
     apply_session_runtime_state,
-    build_session_runtime_state,
+    save_session_snapshot,
     restore_config_runtime_defaults,
 )
 from reuleauxcoder.app.commands.registry import ActionRegistry
@@ -416,16 +415,9 @@ def bind_remote_chat_handler(
             or not getattr(peer_agent, "messages", None)
         ):
             return
-        sid = session_store.save(
-            peer_agent.messages,
-            getattr(peer_agent.llm, "model", config.model),
-            getattr(peer_agent, "current_session_id", None),
-            total_prompt_tokens=peer_agent.state.total_prompt_tokens,
-            total_completion_tokens=peer_agent.state.total_completion_tokens,
-            active_mode=getattr(peer_agent, "active_mode", None),
-            runtime_state=build_session_runtime_state(config, peer_agent),
+        sid = save_session_snapshot(
+            config, peer_agent, session_store,
             fingerprint=_peer_fingerprint(peer_id),
-            **build_session_persistence_kwargs(peer_agent),
         )
         peer_agent.current_session_id = sid
 

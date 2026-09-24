@@ -942,7 +942,10 @@ class TestRunnerRemoteExec:
 
         def save(store, *args, **kwargs):
             sid = original_save(store, *args, **kwargs)
-            saves.append((sid, kwargs.get("is_exit", False)))
+            saves.append((sid, any(
+                "[SESSION_EXIT]" in str(message.get("content", ""))
+                for message in args[0]
+            )))
             return sid
 
         monkeypatch.setattr(SessionStore, "save", save)

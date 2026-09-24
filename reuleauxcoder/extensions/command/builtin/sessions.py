@@ -28,9 +28,8 @@ from reuleauxcoder.app.commands.view_models import (
 )
 from reuleauxcoder.app.runtime.session_state import (
     bind_session_persistence,
-    build_session_persistence_kwargs,
     apply_session_runtime_state,
-    build_session_runtime_state,
+    save_session_snapshot,
     get_session_fingerprint,
     restore_config_runtime_defaults,
 )
@@ -73,16 +72,9 @@ def _settle_current_session(ctx, store, session_id: str | None, fingerprint: str
 
 
 def _save_session_snapshot(ctx, store, session_id: str | None, fingerprint: str):
-    return store.save(
-        ctx.agent.messages,
-        getattr(ctx.agent.llm, "model", ctx.config.model),
-        session_id,
-        total_prompt_tokens=ctx.agent.state.total_prompt_tokens,
-        total_completion_tokens=ctx.agent.state.total_completion_tokens,
-        active_mode=getattr(ctx.agent, "active_mode", None),
-        runtime_state=build_session_runtime_state(ctx.config, ctx.agent),
+    return save_session_snapshot(
+        ctx.config, ctx.agent, store, session_id,
         fingerprint=fingerprint,
-        **build_session_persistence_kwargs(ctx.agent),
     )
 
 

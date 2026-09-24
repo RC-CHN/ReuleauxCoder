@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from collections.abc import Callable, Iterable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Any, TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
@@ -224,6 +224,7 @@ class Agent:
         self._context_revision = 0
         self._stop_event = threading.Event()
         self._current_turn_id: str | None = None
+        self._exit_commit_owner: tuple | None = None
         self.history_ledger = HistoryLedger(
             generation=self.session_generation,
             agent_id=self.agent_id,
@@ -447,6 +448,40 @@ class Agent:
         )
         self._session_persist_callback = callback
         self._session_persist_accepts_deferred = accepts_deferred
+
+    @contextmanager
+    def session_snapshot_scope(self):
+        """Keep explicit and background snapshots on the same writer boundary."""
+        with self._context_revision_lock:
+            scope = getattr(self._session_persist_callback, "write_scope", None)
+            with scope() if callable(scope) else nullcontext():
+                yield
+
+    def commit_session_exit(self) -> None:
+        """Allocate exit events from the live ledger, once even if saving retries."""
+        with self._context_revision_lock:
+            owner = (id(self.history_ledger), self.session_generation, self._current_turn_id)
+            if self._exit_commit_owner == owner:
+                return
+            message = {
+                "role": "user",
+                "content": "[SESSION_EXIT] User left the session at "
+                + time.strftime("%Y-%m-%d %H:%M:%S %Z") + ".",
+            }
+            self.history_ledger.append_message(
+                message, source="session_exit", agent_id=self.agent_id,
+                turn_id=self._current_turn_id,
+            )
+            self.state.messages.append(message)
+            self._context_revision += 1
+            self._exit_commit_owner = owner
+
+    def record_session_diagnostic(self, content: str) -> None:
+        self._append_message(
+            synthetic_user_message("session_diagnostic", content, source="session_store"),
+            source="session_diagnostic",
+        )
+        self.persist_runtime_snapshot()
 
     def unbind_session_persistence(self) -> None:
         if self._output_journal is not None:

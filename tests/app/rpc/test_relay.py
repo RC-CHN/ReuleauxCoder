@@ -6,6 +6,7 @@ import time
 import pytest
 
 from reuleauxcoder.app.interaction_contracts import ConfirmRequest
+from reuleauxcoder.app.runtime.session_state import save_session_snapshot
 from reuleauxcoder.extensions.remote_exec.http_service import _RemoteChatSession
 from reuleauxcoder.extensions.remote_exec.protocol import TerminalCapabilities
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
@@ -106,7 +107,9 @@ def test_checkpoint_and_shutdown_serialize_session_writes(runtime, monkeypatch, 
     original_save = SessionStore.save
 
     def save(store, *args, **kwargs):
-        kind = "shutdown" if kwargs.get("is_exit") else "checkpoint"
+        kind = "shutdown" if any(
+            "[SESSION_EXIT]" in str(message.get("content")) for message in args[0]
+        ) else "checkpoint"
         entered[kind].set()
         if kind == first:
             assert release.wait(5)
@@ -119,8 +122,9 @@ def test_checkpoint_and_shutdown_serialize_session_writes(runtime, monkeypatch, 
     def checkpoint():
         dispatched["checkpoint"].set()
         return commands.checkpoint(
-            lambda: SessionStore(commands.sessions_dir).save(
-                runtime.agent.messages, runtime.agent.llm.model, commands.session_id
+            lambda: save_session_snapshot(
+                runtime.config, runtime.agent, SessionStore(commands.sessions_dir),
+                commands.session_id,
             )
         )
 

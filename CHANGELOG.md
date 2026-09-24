@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Kept exit and diagnostic events on the live session ledger, preventing duplicate sequence numbers after `/quit` and late background events. Explicit saves now share the live snapshot writer so older snapshots cannot overwrite exit state.
+
 ## 0.10.5 - 2026-09-23
 
 - Fixed a confirmed deadlock between `report_progress` / `update_plan` and background session snapshots by publishing after releasing the controller lock.

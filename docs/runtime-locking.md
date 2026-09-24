@@ -20,6 +20,9 @@ state from that commit. Existing presentation reducers ignore older revisions.
 Goal mutations already release the goal lock before publishing.
 
 The snapshot adapter keeps a consistent context view while serializing saves.
+Explicit command, exit and relay saves use the same snapshot writer as background
+saves. Exit and diagnostic events are allocated by the live history ledger;
+storage adapters must not allocate additional events behind that ledger's back.
 It still waits for real disk writes: this fix does not make fsync asynchronous
 or promise that a busy/damaged disk cannot stall I/O. Initial session discovery,
 ledger durability, snapshot-failure recovery and final shutdown saves remain.
