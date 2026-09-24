@@ -14,6 +14,7 @@ from typing import Any, Callable
 from reuleauxcoder.app.commands.loader import create_builtin_action_registry
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.domain.agent.agent import Agent
+from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.process_manager import (
@@ -71,6 +72,7 @@ def _default_create_agent(
 ) -> Agent:
     return Agent(
         llm=llm,
+        shell_name=get_platform_info().get_preferred_shell().value,
         tools=tools,
         config=config,
         hook_registry=hook_registry,

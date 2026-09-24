@@ -6,7 +6,7 @@ from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.agent.tool_outcome import ToolErrorKind
 from reuleauxcoder.domain.config.models import ApprovalConfig
-from reuleauxcoder.domain.hooks.builtin.tool_policy import ToolPolicyGuardHook
+from reuleauxcoder.extensions.hooks.builtin.tool_policy import ToolPolicyGuardHook
 from reuleauxcoder.domain.hooks.types import BeforeToolExecuteContext, HookPoint
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.subagent.manager import _filter_subagent_tools

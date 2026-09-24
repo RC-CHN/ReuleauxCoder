@@ -16,7 +16,7 @@ def _python_sources(relative_root: str) -> str:
 def test_builtin_contributions_do_not_register_during_import() -> None:
     command_sources = _python_sources("reuleauxcoder/extensions/command/builtin")
     tool_sources = _python_sources("reuleauxcoder/extensions/tools/builtin")
-    hook_sources = _python_sources("reuleauxcoder/domain/hooks/builtin")
+    hook_sources = _python_sources("reuleauxcoder/extensions/hooks/builtin")
 
     assert "register_command_module" not in command_sources
     assert "@register_tool" not in tool_sources

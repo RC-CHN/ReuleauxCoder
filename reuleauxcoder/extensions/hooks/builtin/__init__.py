@@ -2,16 +2,16 @@
 
 from reuleauxcoder.domain.hooks.discovery import HookSpec
 from reuleauxcoder.domain.hooks.types import HookPoint
-from reuleauxcoder.domain.hooks.builtin.tool_output import ToolOutputTruncationHook
-from reuleauxcoder.domain.hooks.builtin.tool_policy import ToolPolicyGuardHook
-from reuleauxcoder.domain.hooks.builtin.project_context import (
+from reuleauxcoder.extensions.hooks.builtin.tool_output import ToolOutputTruncationHook
+from reuleauxcoder.extensions.hooks.builtin.tool_policy import ToolPolicyGuardHook
+from reuleauxcoder.extensions.hooks.builtin.project_context import (
     ProjectContextHook,
     ProjectContextStartupNotifier,
 )
-from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
-from reuleauxcoder.domain.hooks.builtin.lsp_injector import LspDiagnosticsInjectorHook
-from reuleauxcoder.domain.hooks.builtin.git_state import GitStateInjectorHook
-from reuleauxcoder.domain.hooks.builtin.process_sessions import (
+from reuleauxcoder.extensions.hooks.builtin.lsp_edit_observer import LspEditObserverHook
+from reuleauxcoder.extensions.hooks.builtin.lsp_injector import LspDiagnosticsInjectorHook
+from reuleauxcoder.extensions.hooks.builtin.git_state import GitStateInjectorHook
+from reuleauxcoder.extensions.hooks.builtin.process_sessions import (
     ProcessSessionInjectorHook,
 )
 

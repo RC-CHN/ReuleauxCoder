@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Move tool contracts and pure prompt policy into domain, assemble integration hooks and subagent restore in the host/extension layer, and inject platform shell selection at agent construction. Enforce the domain's runtime dependency direction with an architecture check.
+
 - Show ordinary and steering messages immediately on Enter and clear the sent draft before RPC/history I/O. Track sending, queued and unconfirmed delivery separately, correlate applied events without duplicate user messages, preserve new drafts, and retry retained messages with the same submission ID via `/retry`.
 
 - Cancel timed-out automatic reviews, bound each reviewer's active worker to one, and prevent expired queued reviews from issuing later LLM requests; dispose reviewers with the runtime.

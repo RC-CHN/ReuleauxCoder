@@ -293,7 +293,7 @@ sub = Agent(
 
 ### 8.1 ToolOutputTruncationHook
 
-位置：[`reuleauxcoder/domain/hooks/builtin/tool_output.py`](../reuleauxcoder/domain/hooks/builtin/tool_output.py:14)
+位置：[`reuleauxcoder/extensions/hooks/builtin/tool_output.py`](../reuleauxcoder/extensions/hooks/builtin/tool_output.py:14)
 
 **类型**：`TransformHook[AfterToolExecuteContext]`
 
@@ -309,7 +309,7 @@ sub = Agent(
 
 ### 8.2 ToolPolicyGuardHook
 
-位置：[`reuleauxcoder/domain/hooks/builtin/tool_policy.py`](../reuleauxcoder/domain/hooks/builtin/tool_policy.py:12)
+位置：[`reuleauxcoder/extensions/hooks/builtin/tool_policy.py`](../reuleauxcoder/extensions/hooks/builtin/tool_policy.py:12)
 
 **类型**：`GuardHook[BeforeToolExecuteContext]`
 

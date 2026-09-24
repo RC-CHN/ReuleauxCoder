@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reuleauxcoder.domain.hooks.builtin.git_state import (
+from reuleauxcoder.extensions.hooks.builtin.git_state import (
     GitStateInjectorHook,
     render_git_snapshot,
 )

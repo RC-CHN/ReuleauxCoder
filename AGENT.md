@@ -44,6 +44,7 @@ Layer rules:
 
 - TypeScript frontends share the private, zero-runtime-dependency `@reuleauxcoder/client` package. Its root entry is browser-safe; `/node` is opt-in. Frontends supply their own UI profile. TUI install/build hooks compile the local dependency with the existing toolchain; see `reuleauxcoder-client/README.md`.
 - Domain and presentation code must not import Rich, prompt_toolkit, Textual, or CLI view code.
+- Domain runtime imports must not reach app, extensions, infrastructure or services. Tool contracts and prompt policy live in domain; integration hooks live in `extensions/hooks`. Host factories supply the native shell name and reconstruct subagent services after restoring core history.
 - Commands return `CommandEffect`, typed view models, interaction requests, and state changes; they do not construct Rich objects.
 - Tools use `WorkspacePort` and `ProcessPort` primitives. Platform-specific behavior belongs in local or remote adapters.
 - CLI and TUI are adapters over the same runtime events, presentation semantics, command effects, and interaction ports.

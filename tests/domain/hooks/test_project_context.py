@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from reuleauxcoder.domain.hooks.builtin.project_context import (
+from reuleauxcoder.extensions.hooks.builtin.project_context import (
     DEFAULT_CONTEXT_FILES,
     ProjectContextHook,
     ProjectContextSnapshot,

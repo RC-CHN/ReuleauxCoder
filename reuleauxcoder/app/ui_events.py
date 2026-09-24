@@ -20,6 +20,7 @@ from reuleauxcoder.domain.runtime.events import (
     runtime_event_delivery_class,
 )
 from reuleauxcoder.app.interaction_contracts import InteractionRequest
+from reuleauxcoder.domain.runtime.notification_kind import UIEventKind as UIEventKind
 
 
 class UIEventLevel(Enum):
@@ -32,19 +33,6 @@ class UIEventLevel(Enum):
     DEBUG = "debug"
 
 
-class UIEventKind(Enum):
-    """Logical kind for interface-layer events."""
-
-    SYSTEM = "system"
-    COMMAND = "command"
-    SESSION = "session"
-    MODEL = "model"
-    MCP = "mcp"
-    APPROVAL = "approval"
-    VIEW = "view"
-    AGENT = "agent"
-    CONTEXT = "context"
-    REMOTE = "remote"
 
 
 class ViewModelPort(Protocol):

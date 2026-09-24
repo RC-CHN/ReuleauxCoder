@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from reuleauxcoder.domain.hooks.builtin.process_sessions import (
+from reuleauxcoder.extensions.hooks.builtin.process_sessions import (
     ProcessSessionInjectorHook,
 )
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint

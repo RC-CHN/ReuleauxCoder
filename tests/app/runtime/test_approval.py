@@ -24,7 +24,7 @@ from reuleauxcoder.domain.config.models import (
     MCPServerConfig,
 )
 from reuleauxcoder.domain.hooks import HookPoint, HookRegistry
-from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
+from reuleauxcoder.extensions.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.domain.llm.models import ToolCall
 
 

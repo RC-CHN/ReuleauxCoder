@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from reuleauxcoder.infrastructure.platform import get_platform_info
+
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
@@ -2239,6 +2241,7 @@ def run_subagent_task(
         "lsp_manager", getattr(parent_agent, "lsp_manager", None)
     )
     sub = Agent(
+        shell_name=get_platform_info().get_preferred_shell().value,
         llm=parent_agent.llm,
         tools=sub_tools,
         max_context_tokens=subagent_max_context,

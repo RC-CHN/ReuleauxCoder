@@ -1,9 +1,7 @@
 from reuleauxcoder.domain.config.models import Config
-from reuleauxcoder.domain.hooks.builtin import builtin_hook_specs
-from reuleauxcoder.domain.hooks.discovery import (
-    discover_hook_specs,
-    instantiate_hooks,
-)
+from reuleauxcoder.extensions.hooks.builtin import builtin_hook_specs
+from reuleauxcoder.domain.hooks.discovery import instantiate_hooks
+from reuleauxcoder.extensions.hooks import discover_hook_specs
 
 
 EXPECTED_BUILTIN_HOOKS = (

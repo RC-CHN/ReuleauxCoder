@@ -22,13 +22,6 @@ class HookSpec:
     factory: Callable[["Config"], HookBase[Any]] | None = None
     enabled_by_default: bool = True
 
-def discover_hook_specs() -> list[HookSpec]:
-    """Return explicit builtin hook specs in stable pipeline order."""
-    from reuleauxcoder.domain.hooks.builtin import builtin_hook_specs
-
-    return list(builtin_hook_specs())
-
-
 def instantiate_hooks(
     specs: Sequence[HookSpec],
     config: "Config",

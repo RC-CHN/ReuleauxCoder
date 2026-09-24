@@ -7,7 +7,7 @@ from reuleauxcoder.domain.config.models import (
     Config,
 )
 from reuleauxcoder.domain.hooks import HookPoint
-from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
+from reuleauxcoder.extensions.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.extensions.command.builtin.approval import (
     SetApprovalRuleCommand,

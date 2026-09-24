@@ -16,10 +16,10 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
-from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import (
+from reuleauxcoder.extensions.hooks.builtin.lsp_edit_observer import (
     LspEditObserverHook,
 )
-from reuleauxcoder.domain.hooks.builtin.lsp_injector import (
+from reuleauxcoder.extensions.hooks.builtin.lsp_injector import (
     LspDiagnosticsInjectorHook,
 )
 from reuleauxcoder.domain.hooks.types import (
@@ -620,7 +620,7 @@ class TestLspDiagnosticsInjectorDedup:
     def test_injection_error_does_not_ack_and_retry_acks_once(
         self, monkeypatch
     ) -> None:
-        from reuleauxcoder.domain.hooks.builtin import lsp_injector
+        from reuleauxcoder.extensions.hooks.builtin import lsp_injector
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
 
         mgr = _make_manager()
@@ -671,7 +671,7 @@ class TestLspDiagnosticsInjectorDedup:
         assert context._commit_dispatch_callbacks() == ()
 
     def test_failed_overlay_write_does_not_ack(self, monkeypatch) -> None:
-        from reuleauxcoder.domain.hooks.builtin import lsp_injector
+        from reuleauxcoder.extensions.hooks.builtin import lsp_injector
         from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
 
         mgr = _make_manager()

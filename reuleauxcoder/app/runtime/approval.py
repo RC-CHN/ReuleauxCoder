@@ -28,7 +28,7 @@ from reuleauxcoder.domain.config.models import (
 )
 from reuleauxcoder.domain.config.schema import DEFAULTS
 from reuleauxcoder.domain.hooks import HookPoint
-from reuleauxcoder.domain.hooks.builtin import ToolPolicyGuardHook
+from reuleauxcoder.extensions.hooks.builtin import ToolPolicyGuardHook
 from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.extensions.mcp.runtime import find_mcp_server
 from reuleauxcoder.extensions.tools.builtin import builtin_tool_types

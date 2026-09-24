@@ -57,7 +57,7 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
 )
 from reuleauxcoder.domain.workspace import WorkspaceRevision
-from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
+from reuleauxcoder.domain.tools import InterruptMode, Tool
 
 
 _EXTERNAL_PATH_ARGUMENTS = {

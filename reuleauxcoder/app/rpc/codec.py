@@ -33,7 +33,7 @@ from reuleauxcoder.domain import (
     version_control,
 )
 from reuleauxcoder.domain.agent import tool_outcome
-from reuleauxcoder.domain.runtime import events
+from reuleauxcoder.domain.runtime import events, notification_kind
 from reuleauxcoder.extensions.mcp import models as mcp_models
 from reuleauxcoder.extensions.skills import models as skill_models
 
@@ -53,6 +53,7 @@ _MODULES = (
     attachments,
     version_control,
     events,
+    notification_kind,
     plan,
     shell,
     goal,

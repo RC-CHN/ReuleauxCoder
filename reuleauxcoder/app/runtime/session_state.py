@@ -382,7 +382,15 @@ def apply_session_runtime_state(session: Session, config: Config, agent: Agent) 
 
     restore_history = getattr(agent, "restore_history_runtime", None)
     if callable(restore_history):
-        restore_history(session)
+        behavioral_events = restore_history(session) or ()
+        restorable_subagent_kinds = {
+            "subagent_job_changed", "subagent_communication_queued",
+            "subagent_communication_delivered",
+        }
+        if any(event.kind in restorable_subagent_kinds for event in behavioral_events):
+            from reuleauxcoder.extensions.subagent.manager import get_subagent_manager
+
+            get_subagent_manager(agent).restore_from_history(agent, behavioral_events)
     else:
         agent.state.messages = list(session.messages)
     agent.state.total_prompt_tokens = session.total_prompt_tokens

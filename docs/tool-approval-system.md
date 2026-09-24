@@ -39,7 +39,7 @@
 
 | 组件 | 位置 | 职责 |
 |------|------|------|
-| [`ToolPolicyGuardHook`](reuleauxcoder/domain/hooks/builtin/tool_policy.py:15) | Policy | 工具执行前的统一拦截点，协调内置策略与配置策略 |
+| [`ToolPolicyGuardHook`](reuleauxcoder/extensions/hooks/builtin/tool_policy.py:15) | Policy | 工具执行前的统一拦截点，协调内置策略与配置策略 |
 | [`ApprovalPolicyEngine`](reuleauxcoder/domain/approval_engine.py:36) | Policy | 基于配置规则的审批决策引擎 |
 | [`ToolExecutor`](reuleauxcoder/domain/agent/tool_execution.py:20) | Runtime | 执行工具调用，处理 guard 决策与审批流程 |
 | [`ApprovalProvider`](reuleauxcoder/domain/approval.py:44) | Interface | 审批交互接口，由各界面层实现 |
@@ -303,7 +303,7 @@ MCP effective policy view:
 规则修改后：
 
 1. 写入工作区配置 `.rcoder/config.yaml`
-2. 调用 [`ToolPolicyGuardHook.update_approval_config()`](reuleauxcoder/domain/hooks/builtin/tool_policy.py:34) 热更新运行时策略
+2. 调用 [`ToolPolicyGuardHook.update_approval_config()`](reuleauxcoder/extensions/hooks/builtin/tool_policy.py:34) 热更新运行时策略
 
 无需重启即可生效。
 
@@ -342,7 +342,7 @@ class VSCodeApprovalProvider(ApprovalProvider):
 
 1. 扩展 [`ApprovalRuleConfig`](reuleauxcoder/domain/config/models.py:42) 添加新字段
 2. 扩展 [`ToolApprovalContext`](reuleauxcoder/domain/approval_engine.py:15) 添加对应字段
-3. 在 [`ToolPolicyGuardHook.run()`](reuleauxcoder/domain/hooks/builtin/tool_policy.py:38) 中填充新字段
+3. 在 [`ToolPolicyGuardHook.run()`](reuleauxcoder/extensions/hooks/builtin/tool_policy.py:38) 中填充新字段
 4. 更新 [`_matches()`](reuleauxcoder/domain/approval_engine.py:71) 方法支持新维度
 
 ## 9. 当前限制

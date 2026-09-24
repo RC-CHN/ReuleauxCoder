@@ -6,7 +6,7 @@ import tracemalloc
 
 import pytest
 
-from reuleauxcoder.domain.hooks.builtin.tool_output import (
+from reuleauxcoder.extensions.hooks.builtin.tool_output import (
     ToolOutputTruncationHook,
     _line_summary,
     _retain_text,

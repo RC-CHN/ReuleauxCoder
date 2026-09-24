@@ -1287,7 +1287,7 @@ class ContextManager:
 
     @staticmethod
     def _context_event_kind():
-        from reuleauxcoder.app.ui_events import UIEventKind
+        from reuleauxcoder.domain.runtime.notification_kind import UIEventKind
 
         return UIEventKind.CONTEXT
 

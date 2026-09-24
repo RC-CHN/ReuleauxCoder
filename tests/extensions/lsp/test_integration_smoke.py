@@ -24,8 +24,8 @@ from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.extensions.lsp.diagnostics import Diagnostic
 from reuleauxcoder.extensions.lsp.diagnostics import DiagnosticRoute
 from reuleauxcoder.extensions.lsp.manager import LspManager
-from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
-from reuleauxcoder.domain.hooks.builtin.lsp_injector import (
+from reuleauxcoder.extensions.hooks.builtin.lsp_edit_observer import LspEditObserverHook
+from reuleauxcoder.extensions.hooks.builtin.lsp_injector import (
     LspDiagnosticsInjectorHook,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry

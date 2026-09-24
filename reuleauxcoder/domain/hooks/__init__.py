@@ -8,7 +8,6 @@ from reuleauxcoder.domain.hooks.base import (
 )
 from reuleauxcoder.domain.hooks.discovery import (
     HookSpec,
-    discover_hook_specs,
     instantiate_hooks,
 )
 from reuleauxcoder.domain.hooks.registry import HookRegistry
@@ -36,7 +35,6 @@ __all__ = [
     "TransformHook",
     "HookRegistry",
     "HookSpec",
-    "discover_hook_specs",
     "instantiate_hooks",
     "AfterLLMResponseContext",
     "AfterToolExecuteContext",

@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
-from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
-from reuleauxcoder.domain.hooks.builtin.lsp_injector import LspDiagnosticsInjectorHook
+from reuleauxcoder.extensions.hooks.builtin.lsp_edit_observer import LspEditObserverHook
+from reuleauxcoder.extensions.hooks.builtin.lsp_injector import LspDiagnosticsInjectorHook
 from reuleauxcoder.domain.hooks.types import (
     AfterToolExecuteContext,
     BeforeLLMRequestContext,

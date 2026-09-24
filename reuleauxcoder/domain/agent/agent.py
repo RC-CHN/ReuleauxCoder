@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from reuleauxcoder.domain.approval import ApprovalProvider
     from reuleauxcoder.domain.llm.protocols import LLMProtocol
     from reuleauxcoder.domain.process_manager import ProcessManager
-    from reuleauxcoder.extensions.tools.base import Tool
+    from reuleauxcoder.domain.tools import Tool
     from reuleauxcoder.domain.config.models import Config
     from reuleauxcoder.domain.extensions import ToolExtensionRuntime
     from reuleauxcoder.domain.extensions import ExtensionManager, ExtensionScopeContainer
@@ -62,8 +62,7 @@ from reuleauxcoder.domain.llm.context_messages import (
     mark_synthetic_user_message,
     synthetic_user_message,
 )
-from reuleauxcoder.infrastructure.platform import get_platform_info
-from reuleauxcoder.services.prompt.builder import system_prompt
+from reuleauxcoder.domain.prompt import system_prompt
 
 
 _MAX_RUNTIME_ISSUE_KEYS = 8
@@ -140,6 +139,7 @@ class Agent:
         extension_runtime: ToolExtensionRuntime | None = None,
         agent_id: str | None = None,
         performance_monitor: RuntimePerformanceMonitor | None = None,
+        shell_name: str = "sh",
     ):
         self.llm = llm
         self.performance_monitor = (
@@ -303,8 +303,7 @@ class Agent:
         if loop is not None:
             self._loop = loop
         else:
-            shell = get_platform_info().get_preferred_shell().value
-            self._loop = AgentLoop(self, prompt_fn=system_prompt, shell_name=shell)
+            self._loop = AgentLoop(self, prompt_fn=system_prompt, shell_name=shell_name)
         self._executor = executor or ToolExecutor(self)
 
         # Buffer for sub-agent injections that arrive during active tool execution.
@@ -681,7 +680,7 @@ class Agent:
             )
             return True
 
-    def restore_history_runtime(self, session) -> None:
+    def restore_history_runtime(self, session) -> tuple[HistoryEvent, ...]:
         if self._session_persist_callback is not None:
             self.unbind_session_persistence()
         self.history_ledger = HistoryLedger(
@@ -765,20 +764,8 @@ class Agent:
             if owner:
                 self.image_turn_id = owner
                 break
-        restorable_subagent_kinds = {
-            "subagent_job_changed",
-            "subagent_communication_queued",
-            "subagent_communication_delivered",
-        }
-        if behavior_projection_safe and any(
-            event.kind in restorable_subagent_kinds for event in behavioral_events
-        ):
-            from reuleauxcoder.extensions.subagent.manager import (
-                get_subagent_manager,
-            )
-
-            manager = get_subagent_manager(self)
-            manager.restore_from_history(self, behavioral_events)
+        # Extension reconstruction belongs to the host composition layer.
+        return behavioral_events if behavior_projection_safe else ()
 
     def _discard_recovered_steering_admissions(
         self,

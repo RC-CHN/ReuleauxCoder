@@ -4,8 +4,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
-from reuleauxcoder.domain.hooks.builtin.lsp_edit_observer import LspEditObserverHook
-from reuleauxcoder.domain.hooks.builtin.lsp_injector import (
+from reuleauxcoder.extensions.hooks.builtin.lsp_edit_observer import LspEditObserverHook
+from reuleauxcoder.extensions.hooks.builtin.lsp_injector import (
     LspDiagnosticsInjectorHook,
 )
 from reuleauxcoder.domain.hooks.types import (
@@ -169,7 +169,7 @@ def test_late_failure_is_injected_and_acknowledged_only_after_dispatch() -> None
 def test_failed_overlay_projection_keeps_failure_retryable(
     monkeypatch,
 ) -> None:
-    from reuleauxcoder.domain.hooks.builtin import lsp_injector
+    from reuleauxcoder.extensions.hooks.builtin import lsp_injector
 
     manager = _manager()
     route = DiagnosticRoute(file_path=Path("/tmp/main.py"))

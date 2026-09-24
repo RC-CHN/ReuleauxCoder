@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
     ToolArchiveReference,
@@ -384,6 +385,7 @@ def worker_process_main(
             BrokeredWorkerTool(tool_spec, client) for tool_spec in spec.tools
         ]
         child = Agent(
+            shell_name=get_platform_info().get_preferred_shell().value,
             llm=llm,
             tools=tools,
             max_context_tokens=spec.max_context_tokens,

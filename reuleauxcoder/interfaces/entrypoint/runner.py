@@ -38,10 +38,8 @@ from reuleauxcoder.domain.runtime.events import (
     RuntimeEvent,
 )
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
-from reuleauxcoder.domain.hooks import (
-    discover_hook_specs,
-    instantiate_hooks,
-)
+from reuleauxcoder.domain.hooks import instantiate_hooks
+from reuleauxcoder.extensions.hooks import discover_hook_specs
 from reuleauxcoder.domain.extensions import (
     ExtensionDefinition,
     ExtensionPhase,
