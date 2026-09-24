@@ -97,7 +97,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: reuleauxcoder-tui/package-lock.json
+          cache-dependency-path: |
+            reuleauxcoder-tui/package-lock.json
+            reuleauxcoder-vscode/package-lock.json
 
       - name: Bundle TUI
         run: |
@@ -112,6 +114,32 @@ jobs:
 
       - name: Install wheel and smoke test outside checkout
         run: uv run python scripts/smoke-install.py
+
+      - name: Package VS Code extension with compatible core
+        run: |
+          npm ci --prefix reuleauxcoder-vscode
+          npm run package --prefix reuleauxcoder-vscode
+          npm run test:install --prefix reuleauxcoder-vscode
+
+      - name: Validate release versions and prepare changelog notes
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import tomllib
+
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          project = tomllib.loads(Path("pyproject.toml").read_text())
+          lock = tomllib.loads(Path("uv.lock").read_text())
+          extension = json.loads(Path("reuleauxcoder-vscode/package.json").read_text())
+          assert project["project"]["version"] == version
+          assert next(p["version"] for p in lock["package"] if p["name"] == "reuleauxcoder") == version
+          assert extension["version"] == version
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          section = next(part for part in changelog.split("\n## ") if part.startswith(version + " - "))
+          notes = section.split("\n", 1)[1].strip() + "\n"
+          Path(os.environ["RUNNER_TEMP"], "release-notes.md").write_text(notes, encoding="utf-8")
 
       - name: Download peer artifacts
         uses: actions/download-artifact@v8
@@ -175,8 +203,9 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           target_commitish: ${{ github.sha }}
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             dist/*.tar.gz
             dist/*.whl
             dist/peer/*
+            reuleauxcoder-vscode/*.vsix
