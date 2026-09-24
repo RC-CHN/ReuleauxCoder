@@ -67,7 +67,8 @@ def run():
 
 
 loop.run = run
-peer.methods["test.is_dirty"] = lambda path: bool(server.editor_documents.guard(path))
+# ToolExecutor passes workspace.resolve() results; also expand Windows 8.3 aliases here.
+peer.methods["test.is_dirty"] = lambda path: bool(server.editor_documents.guard(str(Path(path).resolve())))
 peer.methods["test.state"] = lambda: encode(server._publish_state())
 peer.start()
 try:
