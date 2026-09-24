@@ -1,0 +1,16 @@
+import {spawnSync} from 'node:child_process';
+import {mkdir, readdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {resolve, join} from 'node:path';
+const directory = resolve('dist/core');
+await rm(directory, {recursive: true, force: true});
+await mkdir(directory, {recursive: true});
+const result = spawnSync('uv', ['build', '--wheel', '--out-dir', directory], {cwd: resolve('..'), stdio: 'inherit', shell: false});
+if (result.error) throw result.error;
+if (result.status !== 0) throw new Error('Core wheel build failed.');
+const wheels = (await readdir(directory)).filter(name => name.endsWith('.whl'));
+if (wheels.length !== 1) throw new Error('Expected exactly one core wheel.');
+const wheel = wheels[0];
+const sha256 = createHash('sha256').update(await readFile(join(directory, wheel))).digest('hex');
+await writeFile(join(directory, 'manifest.json'), JSON.stringify({wheel, sha256}, null, 2) + '\n');
+console.log(`Bundled ${wheel} (${sha256.slice(0, 12)})`);

@@ -1,0 +1,277 @@
+{
+  "name": "reuleauxcoder",
+  "displayName": "ReuleauxCoder",
+  "description": "%description%",
+  "version": "0.1.0",
+  "publisher": "RC-CHN",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RC-CHN/ReuleauxCoder.git"
+  },
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.cjs",
+  "type": "module",
+  "files": [
+    "dist/extension.cjs",
+    "dist/webview.js",
+    "dist/webview.css",
+    "dist/core/**",
+    "media",
+    "README.md",
+    "package.nls*.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:client": "tsc -p ../reuleauxcoder-client/tsconfig.json --typeRoots ./node_modules/@types",
+    "check": "npm run build:client && tsc --noEmit",
+    "build": "npm run check && node scripts/build.mjs",
+    "test": "npm run build && node --import tsx --test test/*.test.ts",
+    "test:extension": "npm run build && node scripts/test-extension.mjs",
+    "test:webview": "node --import tsx --test test/webview.browser.ts",
+    "test:install": "node --import tsx test/install.smoke.ts",
+    "bundle:core": "node scripts/bundle-core.mjs",
+    "vscode:prepublish": "npm run build && npm run bundle:core",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@reuleauxcoder/client": "file:../reuleauxcoder-client"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "@types/vscode": "1.106.0",
+    "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "3.6.2",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "playwright": "1.58.2"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "ReuleauxCoder",
+      "properties": {
+        "reuleaux.corePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "%reuleaux.corePath%"
+        },
+        "reuleaux.coreArguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine-overridable",
+          "description": "%reuleaux.coreArguments%"
+        },
+        "reuleaux.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "%reuleaux.autoStart%"
+        },
+        "reuleaux.openDiffAutomatically": {
+          "type": "boolean",
+          "default": true,
+          "description": "%reuleaux.openDiffAutomatically%"
+        },
+        "reuleaux.pythonPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "%reuleaux.pythonPath%"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "reuleaux.open",
+        "title": "%reuleaux.open%",
+        "category": "Reuleaux",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "reuleaux.openEditor",
+        "title": "%reuleaux.openEditor%",
+        "category": "Reuleaux",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "reuleaux.start",
+        "title": "%reuleaux.start%",
+        "category": "Reuleaux"
+      },
+      {
+        "command": "reuleaux.install",
+        "title": "%reuleaux.install%",
+        "category": "Reuleaux"
+      },
+      {
+        "command": "reuleaux.selectCore",
+        "title": "%reuleaux.selectCore%",
+        "category": "Reuleaux"
+      },
+      {
+        "command": "reuleaux.stop",
+        "title": "%reuleaux.stop%",
+        "category": "Reuleaux",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "reuleaux.shutdown",
+        "title": "%reuleaux.shutdown%",
+        "category": "Reuleaux"
+      },
+      {
+        "command": "reuleaux.newSession",
+        "title": "%reuleaux.newSession%",
+        "category": "Reuleaux",
+        "icon": "$(add)"
+      },
+      {
+        "command": "reuleaux.sessions",
+        "title": "%reuleaux.sessions%",
+        "category": "Reuleaux",
+        "icon": "$(history)"
+      },
+      {
+        "command": "reuleaux.actions",
+        "title": "%reuleaux.actions%",
+        "category": "Reuleaux"
+      },
+      {
+        "command": "reuleaux.addContext",
+        "title": "%reuleaux.addContext%",
+        "category": "Reuleaux",
+        "icon": "$(add)"
+      },
+      {
+        "command": "reuleaux.explainSelection",
+        "title": "%reuleaux.explainSelection%",
+        "category": "Reuleaux"
+      },
+      {
+        "command": "reuleaux.fixDiagnostic",
+        "title": "%reuleaux.fixDiagnostic%",
+        "category": "Reuleaux"
+      },
+      {
+        "command": "reuleaux.review",
+        "title": "%reuleaux.review%",
+        "category": "Reuleaux",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "reuleaux.approve",
+        "title": "%reuleaux.approve%",
+        "category": "Reuleaux",
+        "icon": "$(check)"
+      },
+      {
+        "command": "reuleaux.reject",
+        "title": "%reuleaux.reject%",
+        "category": "Reuleaux",
+        "icon": "$(close)"
+      },
+      {
+        "command": "reuleaux.logs",
+        "title": "%reuleaux.logs%",
+        "category": "Reuleaux",
+        "icon": "$(output)"
+      }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "reuleaux",
+          "title": "Reuleaux",
+          "icon": "media/reuleaux.svg"
+        }
+      ]
+    },
+    "views": {
+      "reuleaux": [
+        {
+          "type": "webview",
+          "id": "reuleaux.chat",
+          "name": "%reuleaux.chat%"
+        },
+        {
+          "id": "reuleaux.reviews",
+          "name": "%reuleaux.reviews%"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "reuleaux.openEditor",
+          "when": "view == reuleaux.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "reuleaux.newSession",
+          "when": "view == reuleaux.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "reuleaux.sessions",
+          "when": "view == reuleaux.chat",
+          "group": "navigation@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "reuleaux.approve",
+          "when": "resourceScheme == reuleaux-review",
+          "group": "navigation@1"
+        },
+        {
+          "command": "reuleaux.reject",
+          "when": "resourceScheme == reuleaux-review",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "reuleaux.addContext",
+          "when": "resourceScheme == file || resourceScheme == vscode-remote",
+          "group": "reuleaux@1"
+        },
+        {
+          "command": "reuleaux.explainSelection",
+          "when": "editorHasSelection",
+          "group": "reuleaux@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "reuleaux.addContext",
+          "when": "!explorerResourceIsFolder",
+          "group": "reuleaux"
+        }
+      ]
+    }
+  }
+}

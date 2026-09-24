@@ -59,7 +59,7 @@ TypeScript 的 `client.close()` 关闭传输，`client.shutdown()` 还请求后�
 TUI 保持显示当前阶段和累计等待时间；等待期间两次 Ctrl+C 可明确强制退出，
 界面会提示保存可能不完整。进度通知不写入会话历史。
 
-未来 VS Code Remote 的适配位置：
+VS Code Remote 的适配位置（`reuleauxcoder-vscode/`）：
 
 ```mermaid
 flowchart LR
@@ -74,9 +74,11 @@ flowchart LR
   host <-->|stdio JSON-RPC| backend
 ```
 
-宿主负责 Python 启停和消息转发，Webview 使用通用消息客户端。Tauri 可以采用相同
-边界，由桌面宿主管理 Python。当前没有实现这些产品适配器，也没有加入 daemon、
-多客户端会话或断线后后台持续运行机制；完整宿主退出后仍按现有保存/恢复机制处理。
+宿主负责 Python 启停、共享 RuntimeClient、提交队列和交互状态，Webview 只接收可序列化
+展示快照，并通过白名单消息桥请求操作。原生 diff、QuickPick、诊断与编辑器状态由
+VS Code 适配器处理。关闭或重建 Webview 不关闭核心连接；本机使用相同结构。
+Tauri 尚未实现。当前没有 daemon、多客户端会话或断线后后台持续运行机制；完整宿主
+退出后仍按现有保存/恢复机制处理。
 
 后端尚未完成初始化时的启动进度、stderr 和致命错误由宿主展示，属于启动诊断通道；
 它们不承载聊天、命令或审批操作。

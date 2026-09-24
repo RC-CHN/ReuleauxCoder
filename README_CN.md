@@ -16,6 +16,10 @@ HTTP/SOCKS5 代理。详见[网页工具网络配置](docs/web-tools.md)。
 
 [English](README.md)
 
+## VS Code 扩展
+
+[VS Code 扩展](reuleauxcoder-vscode/README.md) 支持本机和 Remote 工作区：右侧会话、中央原生 diff 审批、编辑器上下文与文件/图片粘贴上传。界面默认跟随 VS Code 使用中文或英文，缺少核心时可在工作区主机安装附带的兼容版本。
+
 ## 安装
 
 ### 全局安装（推荐）

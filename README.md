@@ -101,6 +101,8 @@ Use `rcoder-tui --cwd /path/to/project` to choose a workspace, or `rcoder-cli` f
 
 ## Remote Bootstrap (Host/Peer)
 
+The [VS Code extension](reuleauxcoder-vscode/README.md) supports local and Remote workspaces with a right-side conversation, native editor diff approvals, editor context and clipboard/file uploads. It includes Chinese/English UI and can install a compatible core on the workspace host.
+
 Configure remote relay in `.rcoder/config.yaml` on machine A:
 
 ```yaml

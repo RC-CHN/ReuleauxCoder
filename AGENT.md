@@ -11,6 +11,7 @@ This file describes the current repository, not a future design. Detailed design
 - TUI navigation: wheel reports scroll independently of draft/history and menu selection; arrows edit visual input lines or select menu items. Reading stays paused through new output and resize until explicitly resumed. Key rules and reproducible responsiveness measurements: `docs/tui-navigation.md`.
 - TUI rendering: a version/hash-checked Ink adapter reuses bounded parsing/width caches and composed rows, with equal-style ANSI fast paths. Animation timing is unchanged; `reuleauxcoder-tui/renderer/README.md` describes installation and upgrade checks, and `docs/tui-rendering-performance.md` records measurements.
 - Remote peer: `reuleauxcoder-agent/`, a CLI-only Go peer.
+- VS Code extension: `reuleauxcoder-vscode/` runs in the workspace extension host on local/Remote workspaces, owns a persistent stdio core and exposes a right-side conversation, native diff approvals, editor context and byte uploads. It ships Chinese/English UI resources and a compatible core wheel; its README documents build and host/browser tests.
 - Runtime supports sessions, approvals, hooks/extensions, skills, MCP, subagents, LSP, local/remote tools, streaming output, and context compression.
 
 ## Repository map
