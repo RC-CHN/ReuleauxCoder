@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 import inspect
 import itertools
 import json
 import logging
 import queue
 import threading
+import time
+
+from reuleauxcoder.domain.cancellation import CancellationSignal
 
 from reuleauxcoder.infrastructure.rpc.transport import MessageTransport
 
@@ -59,13 +62,19 @@ class RpcPeer:
                 raise ConnectionError("RPC connection closed")
             self.transport.send(data)
 
-    def request(self, method: str, params=None, *, timeout: float | None = None):
+    def request(
+        self, method: str, params=None, *, timeout: float | None = None,
+        cancellation_event: CancellationSignal | None = None,
+    ):
         with self._lock:
             if self.closed.is_set():
                 raise ConnectionError("RPC connection closed")
             request_id = str(next(self._ids))
             future = self._pending[request_id] = Future()
         try:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise CancelledError("RPC request cancelled")
+            deadline = time.monotonic() + timeout if timeout is not None else None
             self._send(
                 {
                     "jsonrpc": "2.0",
@@ -74,7 +83,21 @@ class RpcPeer:
                     "params": params or {},
                 }
             )
-            return future.result(timeout=timeout)
+            if cancellation_event is None:
+                return future.result(timeout=timeout)
+            while True:
+                if cancellation_event.is_set():
+                    raise CancelledError("RPC request cancelled")
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("RPC request timed out")
+                try:
+                    return future.result(
+                        timeout=0.05 if remaining is None else min(0.05, remaining)
+                    )
+                except TimeoutError:
+                    if future.done():
+                        raise
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)

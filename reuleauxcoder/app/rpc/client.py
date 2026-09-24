@@ -25,6 +25,7 @@ class RuntimeClient:
         self._foreground_interactions = foreground_interactions
         self._interaction_queue = queue.Queue()
         self._active_interactions = {}
+        self._cancelled_interactions: dict[str, None] = {}
         self._failure = None
         self.on_state = lambda state: None
         self.on_completed = lambda result: None
@@ -220,12 +221,17 @@ class RuntimeClient:
         with self._condition:
             if self.peer.closed.is_set():
                 raise ConnectionError("Backend disconnected")
+            if request.request_id in self._cancelled_interactions:
+                self._cancelled_interactions.pop(request.request_id)
+                return encode(cancelled_response(request, "interaction cancelled"))
             self._active_interactions[request.request_id] = (request, future)
         try:
             if self._foreground_interactions:
                 self._interaction_queue.put((kind, request, future))
                 return encode(future.result())
-            return encode(getattr(self.interactor, kind)(request))
+            response = getattr(self.interactor, kind)(request)
+            with self._condition:
+                return encode(future.result() if future.done() else response)
         finally:
             with self._condition:
                 self._active_interactions.pop(request.request_id, None)
@@ -237,6 +243,9 @@ class RuntimeClient:
         with self._condition:
             active = self._active_interactions.get(request_id)
             if active is None:
+                self._cancelled_interactions[request_id] = None
+                if len(self._cancelled_interactions) > 1024:
+                    self._cancelled_interactions.pop(next(iter(self._cancelled_interactions)))
                 return
             request, future = active
             request.deadline = time.monotonic()

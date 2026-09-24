@@ -167,10 +167,10 @@ class InteractionCoordinator:
                     )
                 acquired = self._slot.acquire(timeout=timeout)
 
-            reason = self._cancel_reason(request.deadline, cancellation)
-            if reason is not None:
-                return cancelled_response(request, reason)
             with self._state_lock:
+                reason = self._cancel_reason(request.deadline, cancellation)
+                if reason is not None:
+                    return cancelled_response(request, reason)
                 self._active_request_id = request_id
             response = invoke()
             reason = self._cancel_reason(request.deadline, cancellation)

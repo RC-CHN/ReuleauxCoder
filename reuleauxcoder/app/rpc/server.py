@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass, replace
 import logging
 from pathlib import Path
 import threading
-import time
 from typing import get_type_hints
 
 from reuleauxcoder.app.commands.requests import ActionRequest, CommandResult
@@ -15,6 +14,7 @@ from reuleauxcoder.app.commands.service import CommandService
 from reuleauxcoder.app.commands.view_models import GoalViewModel
 from reuleauxcoder.app.rpc.codec import encode, decode
 from reuleauxcoder.app.rpc.models import RuntimeSnapshot, Submission
+from reuleauxcoder.app.rpc.remote_interactor import RemoteInteractor
 from reuleauxcoder.app.rpc.images import ImageUploads
 from reuleauxcoder.app.rpc.attachments import AttachmentUploads
 from reuleauxcoder.domain.images import ChatInput
@@ -39,56 +39,6 @@ class _GoalContinuation:
     generation: int
 
 
-class RemoteInteractor:
-    def __init__(self, peer):
-        self.peer = peer
-        self.review_request = None
-
-    def _ask(self, kind, request):
-        timeout = (
-            max(0.0, request.deadline - time.monotonic())
-            if request.deadline is not None
-            else None
-        )
-        wire_request = replace(request, deadline=None)
-        try:
-            return decode(
-                self.peer.request(
-                    "interaction.request",
-                    {
-                        "kind": kind,
-                        "request": encode(wire_request),
-                        "timeout_seconds": timeout,
-                    },
-                    timeout=timeout,
-                )
-            )
-        except TimeoutError:
-            self.cancel(request.request_id)
-            raise
-
-    def confirm(self, request):
-        return self._ask("confirm", request)
-
-    def choose_one(self, request):
-        return self._ask("choose_one", request)
-
-    def input_text(self, request):
-        return self._ask("input_text", request)
-
-    def review(self, request):
-        self.review_request = request
-        try:
-            return self._ask("review", request)
-        finally:
-            self.review_request = None
-
-    def cancel(self, request_id):
-        if not self.peer.closed.is_set():
-            self.peer.notify("interaction.cancel", {"request_id": request_id})
-
-    def notify(self, event):
-        self.peer.notify("runtime.event", {"event": encode(event)})
 
 
 class RuntimeServer:

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve early interaction cancellation across Python/TypeScript request scheduling, close deferred modals on disconnect, and let backend cancellation settle without a frontend reply.
+
 - Bound PTY input backpressure and separate process control from input/state locks; shutdown advances to termination even when an interrupt adapter stalls.
 
 - Kept exit and diagnostic events on the live session ledger, preventing duplicate sequence numbers after `/quit` and late background events. Explicit saves now share the live snapshot writer so older snapshots cannot overwrite exit state.

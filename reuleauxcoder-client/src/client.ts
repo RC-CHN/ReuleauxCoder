@@ -1,30 +1,28 @@
 import {Events} from './events.js';
+import {InteractionInbox} from './interactions.js';
 import type {MessagePeer} from './message-peer.js';
 import type {ArtifactPage, HistoryOperation, HistoryPage} from './history.js';
 import type {AttachmentReference, GitWorkspace, ImageReference} from './wire.js';
-import {actionRequest, cancellation, decode, emptyState, enumValue, record, tuple, type Action, type Json, type PendingInteraction, type RuntimeState, type UIEvent} from './wire.js';
+import {actionRequest, decode, emptyState, enumValue, record, tuple, type Action, type Json, type RuntimeState, type UIEvent} from './wire.js';
 
 export class RuntimeClient extends Events {
   state: RuntimeState = emptyState;
   catalog: Action[] = [];
   info: any;
-  interactions: PendingInteraction[] = [];
+  private inbox = new InteractionInbox();
+  get interactions() {return this.inbox.items;}
   private closing = false;
 
   constructor(readonly peer: MessagePeer) {
     super();
+    this.inbox.on('interactions', () => this.emit('interactions'));
+    this.inbox.on('answered', (item, response) => this.emit('answered', item, response));
     peer.on('notification', (method, params) => this.notification(method, params));
     peer.on('close', (error) => {
-      for (const item of [...this.interactions]) this.answer(item.request.request_id, cancellation(item.kind));
+      this.inbox.close();
       if (!this.closing) this.emit('failure', error ?? new Error('Backend disconnected'));
     });
-    peer.methods.set('interaction.request', ({kind, request, timeout_seconds}) => new Promise<Json>(resolve => {
-      cancellation(kind); // Reject unsupported interaction kinds at the boundary.
-      const item: PendingInteraction = {kind, request: decode(request), expiresAt: timeout_seconds == null ? null : performance.now() + timeout_seconds * 1000, resolve};
-      if (timeout_seconds != null) item.timer = setTimeout(() => this.answer(item.request.request_id, cancellation(kind)), Math.max(0, timeout_seconds * 1000));
-      this.interactions.push(item);
-      this.emit('interactions');
-    }));
+    peer.methods.set('interaction.request', params => this.inbox.request(params));
   }
 
   async initialize(profile: UIProfile): Promise<void> {
@@ -50,21 +48,14 @@ export class RuntimeClient extends Events {
       case 'runtime.failed': this.emit('operationFailure', `${params.error_type}: ${params.message}`); break;
       case 'runtime.shutdown_progress': this.emit('shutdownProgress', params.message); break;
       case 'interaction.cancel': {
-        const item = this.interactions.find(item => item.request.request_id === params.request_id);
-        if (item) this.answer(item.request.request_id, cancellation(item.kind));
+        this.inbox.cancel(params.request_id);
         break;
       }
     }
   }
 
   answer(requestId: string, response: Json): void {
-    const index = this.interactions.findIndex(item => item.request.request_id === requestId);
-    if (index < 0) return;
-    const [item] = this.interactions.splice(index, 1);
-    clearTimeout(item.timer);
-    this.emit('answered', item, decode(response));
-    item.resolve(response);
-    this.emit('interactions');
+    this.inbox.answer(requestId, response);
   }
 
   async submit(value: Json): Promise<{status: string; state: RuntimeState}> {
@@ -120,12 +111,12 @@ export class RuntimeClient extends Events {
   /** Disconnect the transport; process ownership belongs to the host. */
   close(): void {
     this.closing = true;
-    for (const item of [...this.interactions]) this.answer(item.request.request_id, cancellation(item.kind));
+    this.inbox.close();
     this.peer.close();
   }
   async shutdown(): Promise<string | null> {
     this.closing = true;
-    for (const item of [...this.interactions]) this.answer(item.request.request_id, cancellation(item.kind));
+    this.inbox.close();
     if (this.peer.closed) return null;
     // Keep the transport alive until the durable save completes. Disconnects,
     // backend errors and an explicit host close still reject this request.
