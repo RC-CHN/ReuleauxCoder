@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from reuleauxcoder.app.runtime.approval import (
     apply_session_approval_grant,
+    build_approval_view,
     build_runtime_approval_provider,
     find_matching_rule,
     is_disabled_mcp_rule,
@@ -75,6 +76,24 @@ def test_parse_approval_target_supports_tool_and_mcp_targets() -> None:
     )
     effect = parse_approval_target("effect=network", "deny")
     assert effect == ApprovalRuleConfig(effect_class="network", action="deny")
+
+
+def test_approval_view_keeps_workspace_rule_shadowed_by_session(monkeypatch) -> None:
+    from reuleauxcoder.app.runtime import approval as module
+
+    workspace = ApprovalRuleConfig(tool_name="read_file", action="deny")
+    session = ApprovalRuleConfig(tool_name="read_file", action="require_approval")
+    monkeypatch.setattr(
+        module, "_load_raw_approval",
+        lambda path: {"rules": [workspace.to_dict()]}
+        if path == module.ConfigLoader.WORKSPACE_CONFIG_PATH else {},
+    )
+    config = SimpleNamespace(approval=ApprovalConfig(rules=[session]), mcp_servers={})
+    agent = SimpleNamespace(session_approval_rules=[session], tools=[])
+    view = build_approval_view(config, agent, builtin_tools=[], configured_rules=[workspace])
+    assert [(rule.source, rule.action) for rule in view.rules] == [
+        ("session", "require_approval"), ("workspace", "deny"),
+    ]
 
 
 def test_parse_approval_target_rejects_invalid_target_or_action() -> None:

@@ -149,6 +149,7 @@ def _build_approval_view(ctx):
     view = build_approval_view(
         SimpleNamespace(approval=approval, mcp_servers=ctx.config.mcp_servers),
         ctx.agent,
+        configured_rules=ctx.config.approval.rules,
     )
     return view
 

@@ -626,7 +626,10 @@ def _build_tool_catalog(
     return sorted(catalog.keys(), key=lambda item: (item[1], item[2] or "", item[0]))
 
 
-def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
+def build_approval_view(
+    config, agent=None, builtin_tools=None,
+    *, configured_rules: Sequence[ApprovalRuleConfig] | None = None,
+) -> ApprovalView:
     """Build a structured view for approval rules and effective tool policies."""
     if builtin_tools is None:
         builtin_tools = builtin_tool_types()
@@ -655,13 +658,20 @@ def build_approval_view(config, agent=None, builtin_tools=None) -> ApprovalView:
     else:
         default_mode_source = "builtin"
 
+    # The effective config merges away a workspace rule with the same target as
+    # a session override. Editors need both original scopes to show and edit
+    # the saved default without changing which rule the policy engine evaluates.
+    rule_inputs = [(rule, session_rules) for rule in config.approval.rules]
+    if configured_rules is not None:
+        rule_inputs = [(rule, session_rules) for rule in session_rules]
+        rule_inputs.extend((rule, []) for rule in configured_rules)
     visible_rules: list[ApprovalRuleView] = []
-    for rule in config.approval.rules:
+    for rule, session_candidates in rule_inputs:
         if is_disabled_mcp_rule(config, rule):
             continue
         source = _resolve_rule_source(
             rule,
-            session_rules=session_rules,
+            session_rules=session_candidates,
             workspace_rules=workspace_rules,
             global_rules=global_rules,
             builtin_rules=builtin_rules,
