@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show ordinary and steering messages immediately on Enter and clear the sent draft before RPC/history I/O. Track sending, queued and unconfirmed delivery separately, correlate applied events without duplicate user messages, preserve new drafts, and retry retained messages with the same submission ID via `/retry`.
+
 - Cancel timed-out automatic reviews, bound each reviewer's active worker to one, and prevent expired queued reviews from issuing later LLM requests; dispose reviewers with the runtime.
 
 - Preserve early interaction cancellation across Python/TypeScript request scheduling, close deferred modals on disconnect, and let backend cancellation settle without a frontend reply.

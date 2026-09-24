@@ -2,6 +2,13 @@
 
 ## Input rules
 
+Enter immediately moves a chat draft (including images) into a visible sending
+message and opens a fresh composer. Backend acceptance, steering queueing and
+application update that same message. Local input-history writes do not delay
+feedback. Failed or unconfirmed submissions remain in the transcript; `/retry`
+retries the latest one with the same ID without replacing the new draft. A session
+change invalidates retries from the previous session.
+
 | Input | Behavior |
 | --- | --- |
 | Mouse wheel | Scroll the current panel, or the transcript when no panel is open, three rows per report. Preserve draft, history position and selection. |

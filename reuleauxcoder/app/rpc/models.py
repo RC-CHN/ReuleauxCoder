@@ -34,3 +34,4 @@ class RuntimeSnapshot:
 class Submission:
     status: str
     state: RuntimeSnapshot
+    submission_id: str | None = None

@@ -58,8 +58,9 @@ export class RuntimeClient extends Events {
     this.inbox.answer(requestId, response);
   }
 
-  async submit(value: Json): Promise<{status: string; state: RuntimeState}> {
-    const result = decode(await this.peer.request('runtime.submit', {value}));
+  async submit(value: Json, submissionId?: string, generation = this.state.session_generation): Promise<{status: string; state: RuntimeState; submission_id?: string}> {
+    const params: Json = submissionId ? {value, submission_id: submissionId, session_generation: generation} : {value};
+    const result = decode(await this.peer.request('runtime.submit', params));
     this.update(result.state);
     return result;
   }

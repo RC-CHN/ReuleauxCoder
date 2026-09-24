@@ -57,11 +57,14 @@ class AgentEvent:
     error_message: Optional[str] = None
 
     @classmethod
-    def chat_start(cls, user_input: str) -> "AgentEvent":
+    def chat_start(cls, user_input: str, *, submission_id: str | None = None) -> "AgentEvent":
         """Create a chat start event."""
         return cls(
             event_type=AgentEventType.CHAT_START,
-            data={"user_input": user_input},
+            data={
+                "user_input": user_input,
+                **({"submission_id": submission_id} if submission_id is not None else {}),
+            },
         )
 
     @classmethod
@@ -230,6 +233,7 @@ class AgentEvent:
         *,
         steering_id: str | None = None,
         attempt_id: str | None = None,
+        submission_id: str | None = None,
     ) -> "AgentEvent":
         """Create an event for steering injected into the active turn."""
         return cls(
@@ -239,6 +243,7 @@ class AgentEvent:
                 "user_input": user_input,
                 "steering_id": steering_id,
                 "attempt_id": attempt_id,
+                "submission_id": submission_id,
             },
         )
 

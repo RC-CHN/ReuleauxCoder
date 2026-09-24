@@ -105,6 +105,7 @@ class ChatInput:
     session_id: str | None = None
     session_generation: int | None = None
     image_labels: tuple[str, ...] = ()
+    submission_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.text, str) or not isinstance(self.images, tuple):

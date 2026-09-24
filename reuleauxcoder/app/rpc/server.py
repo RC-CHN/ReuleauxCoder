@@ -15,6 +15,7 @@ from reuleauxcoder.app.commands.view_models import GoalViewModel
 from reuleauxcoder.app.rpc.codec import encode, decode
 from reuleauxcoder.app.rpc.models import RuntimeSnapshot, Submission
 from reuleauxcoder.app.rpc.remote_interactor import RemoteInteractor
+from reuleauxcoder.app.rpc.submissions import SubmissionAdmissions
 from reuleauxcoder.app.rpc.images import ImageUploads
 from reuleauxcoder.app.rpc.attachments import AttachmentUploads
 from reuleauxcoder.domain.images import ChatInput
@@ -60,6 +61,7 @@ class RuntimeServer:
         self._snapshot: RuntimeSnapshot | None = None
         self._published_revision = 0
         self._workers: set[threading.Thread] = set()
+        self._submissions = SubmissionAdmissions()
         if self.agent.image_store is None:
             self.agent.image_store = ImageStore(
                 commands.sessions_dir or self.config.session_dir or get_sessions_dir(),
@@ -223,6 +225,7 @@ class RuntimeServer:
                     "version": 1,
                     "workspace_git": self.agent.git_monitor is not None,
                     "conditional_snapshots": True,
+                    "submission_ids": True,
                     "history_query": True,
                     "goals": True,
                     "image_uploads": True,
@@ -312,13 +315,54 @@ class RuntimeServer:
         except (TypeError, ValueError) as error:
             raise RpcError(-32602, "Invalid action parameters") from error
 
-    def submit(self, value):
+    def submit(self, value, submission_id=None, session_generation=None):
+        if submission_id is None:
+            return self._submit(value)
+        if session_generation != self.agent.session_generation:
+            raise RpcError(-32002, "Session changed; submission was not accepted")
+        entry = self._submissions.get(
+            submission_id, value, generation=session_generation,
+        )
+        # Waiting for another delivery of the same ID never owns admission.
+        with entry.lock:
+            if session_generation != self.agent.session_generation:
+                raise RpcError(-32002, "Session changed; submission was not accepted")
+            if entry.receipt is not None:
+                if entry.status != "rejected":
+                    return encode(entry.receipt)
+                entry.receipt = None
+                entry.status = None
+            if entry.error is not None:
+                raise entry.error
+            try:
+                if entry.status is None:
+                    return self._submit(value, submission_id=submission_id, admission=entry)
+                # A prior attempt admitted the input but failed its snapshot.
+                if entry.status == "steering":
+                    self.agent.persist_runtime_snapshot()
+                entry.receipt = Submission(entry.status, self.snapshot(), submission_id)
+                return encode(entry.receipt)
+            except BaseException as error:
+                if entry.status is None and not (
+                    isinstance(error, RpcError) and error.code in {-32602, -32002}
+                ):
+                    entry.error = error
+                raise
+
+    def _submit(self, value, *, submission_id=None, admission=None):
         if not self._initialized:
             raise RpcError(-32002, "Initialize first")
         value = self._input(value)
         with self._lock:
             if self._closing:
                 raise RpcError(-32002, "Session is closing")
+            if admission is not None and admission.generation != self.agent.session_generation:
+                raise RpcError(-32002, "Session changed; submission was not accepted")
+            if submission_id is not None:
+                if isinstance(value, str) and not value.startswith("/"):
+                    value = ChatInput(text=value, submission_id=submission_id)
+                elif isinstance(value, ChatInput):
+                    value = replace(value, submission_id=submission_id)
             self._validate_chat_images(value)
             if isinstance(value, str) and value.startswith("/"):
                 self._notify("runtime.command", text=value)
@@ -345,11 +389,15 @@ class RuntimeServer:
                 self._running = True
                 status = "running"
                 self._spawn(value)
-            submission = Submission(status, self._publish_state())
+            if admission is not None:
+                admission.status = status
+            submission = Submission(status, self._publish_state(), submission_id)
         # Admission remains atomic and ledger-durable. Snapshot capture can
         # wait for context/goal work that itself publishes through this lock.
         if status == "steering":
             self.agent.persist_runtime_snapshot()
+        if admission is not None:
+            admission.receipt = submission
         return encode(submission)
 
     def _validate_chat_images(self, value, *, check_model=True):

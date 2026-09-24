@@ -30,6 +30,24 @@ export class SessionStore extends EventEmitter {
   private reasoning: Cell | undefined;
   private tools = new Map<string, Cell>();
   private reviewedDiffs = new Set<string>();
+  private submissions = new Map<string, Cell>();
+
+  submission(id: string, text: string, status: string, detail = '') {
+    const cell = this.submissions.get(id) ?? this.add('user', 'You', text);
+    this.submissions.set(id, cell);
+    // An applied event may precede the RPC acknowledgement.
+    if (cell.tone === 'applied' && status !== 'applied') return;
+    cell.title = status === 'applied' ? 'You' : `You · ${status}`;
+    cell.details = detail;
+    cell.tone = status;
+    this.touch(cell);
+    this.emit('change');
+  }
+
+  private appliedUser(text: string, id?: string, steering = false) {
+    if (id) this.submission(id, text, 'applied');
+    else this.add('user', steering ? 'You · steering applied' : 'You', text);
+  }
 
   add(kind: Cell['kind'], title: string, body: string, details = '', streaming = false): Cell {
     const cell: Cell = {id: String(++this.next), kind, title, body, details, revision: 0, streaming};
@@ -45,7 +63,7 @@ export class SessionStore extends EventEmitter {
     return cell;
   }
   notice(message: string, tone = 'info') {const cell = this.add('notice', tone === 'error' ? 'Error' : 'Notice', message); cell.tone = tone; this.emit('change');}
-  clear() {this.cells = []; this.streaming.clear(); this.dirtyIndex = 0; this.contentRevision++; this.sidebarRevision++; this.tools.clear(); this.jobs.clear(); this.processes.clear(); this.diagnostics.clear(); this.operations.clear(); this.reviewedDiffs.clear(); this.assistant = this.reasoning = undefined; this.plan = {items: []}; this.progress = {};}
+  clear() {this.cells = []; this.submissions.clear(); this.streaming.clear(); this.dirtyIndex = 0; this.contentRevision++; this.sidebarRevision++; this.tools.clear(); this.jobs.clear(); this.processes.clear(); this.diagnostics.clear(); this.operations.clear(); this.reviewedDiffs.clear(); this.assistant = this.reasoning = undefined; this.plan = {items: []}; this.progress = {};}
   get activeCell(): Cell | undefined {
     let latest: Cell | undefined, tool: Cell | undefined;
     for (const cell of this.streaming) {latest = cell; if (cell.kind === 'tool') tool = cell;}
@@ -110,7 +128,7 @@ export class SessionStore extends EventEmitter {
     switch (type) {
       case 'TurnStarted': case 'ChatStarted':
         this.assistant = this.reasoning = undefined;
-        if (p.user_input) this.add('user', 'You', p.user_input.replace(/^\[SESSION_RESUME\][^\n]*\n\n/, '')); break;
+        if (p.user_input) this.appliedUser(p.user_input.replace(/^\[SESSION_RESUME\][^\n]*\n\n/, ''), p.submission_id); break;
       case 'AssistantContentDelta': case 'StreamChunk':
         if (p.reasoning) {this.appendReasoning(p); break;}
         this.finishCell(this.reasoning); this.reasoning = undefined;
@@ -177,7 +195,7 @@ export class SessionStore extends EventEmitter {
       case 'PlanUpdated': this.plan = p; break;
       case 'ProgressReported': this.progress = p; break;
       case 'OperationPhaseChanged': this.operations.set(p.operation_id, p); break;
-      case 'UserSteeringApplied': this.add('user', 'You · steering applied', p.user_input); break;
+      case 'UserSteeringApplied': this.appliedUser(p.user_input, p.submission_id, true); break;
       case 'ApprovalRequested': break;
       case 'ApprovalResolved': this.add('notice', p.approved ? 'Approved' : 'Denied', [p.reason, p.grant_label, p.mode, p.released_count ? `${p.released_count} queued requests released` : null, p.resolution_source].filter(Boolean).join(' · ')); break;
       default: this.add('notice', type ?? 'Runtime event', fields(p));

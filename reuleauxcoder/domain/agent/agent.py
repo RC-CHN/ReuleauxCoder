@@ -90,6 +90,7 @@ class PendingUserSteering:
     content: str | list[dict]
     generation: int
     turn_id: str
+    submission_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -928,6 +929,7 @@ class Agent:
         )
         if not content:
             return None
+        submission_id = text.submission_id if isinstance(text, ChatInput) else None
         with self._steering_lock:
             if not self._accepting_user_steering or self._current_turn_id is None:
                 return None
@@ -941,6 +943,7 @@ class Agent:
                     "turn_id": turn_id,
                     "generation": generation,
                     "content": content,
+                    "submission_id": submission_id,
                 },
                 agent_id=self.agent_id,
                 turn_id=turn_id,
@@ -952,6 +955,7 @@ class Agent:
                     content=content,
                     generation=generation,
                     turn_id=turn_id,
+                    submission_id=submission_id,
                 )
             )
         if persist:
@@ -1049,6 +1053,7 @@ class Agent:
                         display_content(item.content),
                         steering_id=item.steering_id,
                         attempt_id=attempt_id,
+                        submission_id=item.submission_id,
                     )
                 )
         return len(applied)
@@ -1887,7 +1892,10 @@ class Agent:
         display = (
             user_input.display_text if isinstance(user_input, ChatInput) else user_input
         )
-        self._emit_event(AgentEvent.chat_start("" if goal_continuation else display))
+        self._emit_event(AgentEvent.chat_start(
+            "" if goal_continuation else display,
+            submission_id=user_input.submission_id if isinstance(user_input, ChatInput) else None,
+        ))
 
         # Run the loop
         try:

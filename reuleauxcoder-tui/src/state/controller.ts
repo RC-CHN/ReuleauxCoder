@@ -8,6 +8,7 @@ import {SessionStore} from './session.js';
 import {edit, editor, type Editor} from './editor.js';
 import {actionLabel, defaults, fieldValue, humanize, menusFromCatalog, type Menu} from './menus.js';
 import {InputHistory} from './history.js';
+import {SubmissionQueue} from './submissions.js';
 import {HistoryBrowser} from './history-browser.js';
 import type {HistoryOperation} from '@reuleauxcoder/client';
 import {fields} from '../ui/format.js';
@@ -23,6 +24,7 @@ export type Screen = ListScreen | DocumentScreen | FormScreen | HistoryScreen;
 
 export class TuiController extends EventEmitter {
   readonly session = new SessionStore();
+  readonly submissions: SubmissionQueue;
   menus: Menu[] = [];
   composer = editor();
   images: DraftImage[] = [];
@@ -75,6 +77,7 @@ export class TuiController extends EventEmitter {
 
   constructor(readonly client: RuntimeClient, readonly history = new InputHistory()) {
     super();
+    this.submissions = new SubmissionQueue(client, this.session, message => {this.status = message; this.changed();});
     const listen = (source: EventEmitter | RuntimeClient, event: string, listener: (...args: any[]) => void) => {
       source.on(event, listener);
       this.subscriptions.push(() => source.off(event, listener));
@@ -87,6 +90,7 @@ export class TuiController extends EventEmitter {
     listen(client, 'initialized', info => {this.menus = menusFromCatalog(client.catalog); this.session.initialize(info);});
     listen(client, 'state', state => {
       if (state.session_id !== this.session.state.session_id || state.session_generation !== this.session.state.session_generation) {
+        this.submissions.reset();
         this.leaveInputHistory();
         this.offset = null; this.readingRevision = undefined;
         if (this.images.length) this.status = 'Session changed; draft images cleared. Attach them again to use them here.';
@@ -467,17 +471,27 @@ export class TuiController extends EventEmitter {
         else throw new Error('Usage: /detach <image number|all>');
         this.composer = editor(this.images.map(item => item.label).join(' '));
         this.status = `${this.images.length} draft images remaining.`;
+      } else if (text === '/retry') {
+        this.composer = editor();
+        this.inputChanged();
+        await this.submissions.retry();
       } else if (text.startsWith('/')) {
         const menu = this.menus.find(menu => menu.name === text.split(/\s/)[0]);
         if (menu) {this.composer = editor(); await this.openMenu(menu);}
         else this.status = 'Choose a command from / or Ctrl+P.';
       } else {
-        const draft = this.composer;
         const images = this.images;
+        if (images.length && !this.client.state.support_modal?.includes('image')) throw new Error('Current model does not support images. Switch model or detach the images; your draft is preserved.');
         const value = images.length ? record('ChatInput', {text, images: tuple(images.map(item => record('ImageReference', {...item.image}))), image_labels: tuple(images.map(item => item.label)), session_id: this.client.state.session_id, session_generation: this.client.state.session_generation}) : text;
-        const admission = await this.client.submit(value);
-        if (admission.status !== 'rejected') {if (this.composer === draft) this.composer = editor(); if (this.images === images) {this.images = []; this.imageNumber = 0;} this.leaveInputHistory(); this.offset = null; this.readingRevision = undefined; if (text) await this.history.add(text);}
-        else this.status = 'The backend is stopping. Your draft is still here.';
+        this.composer = editor();
+        this.images = [];
+        this.imageNumber = 0;
+        this.leaveInputHistory();
+        this.offset = null; this.readingRevision = undefined;
+        const delivery = this.submissions.send(text, value);
+        this.inputChanged();
+        if (text) void this.history.add(text).catch(this.fail);
+        await delivery;
       }
     } else if ((key.upArrow || key.downArrow) && (key.meta || this.historyIndex !== null || !this.composer.text && !this.images.length)) {
       this.recallInput(key.upArrow ? -1 : 1);
@@ -525,6 +539,7 @@ export class TuiController extends EventEmitter {
     catch (error) {this.emit('exit', null, error);}
   }
   dispose() {
+    this.submissions.reset();
     if (this.disposed) return;
     this.disposed = true; this.viewEpoch++;
     clearInterval(this.refreshTimer); clearTimeout(this.updateTimer);

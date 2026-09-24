@@ -53,6 +53,7 @@ class RuntimeEventKind(str, Enum):
 @dataclass(frozen=True)
 class TurnStarted:
     user_input: str
+    submission_id: str | None = None
     kind: RuntimeEventKind = field(default=RuntimeEventKind.TURN_STARTED, init=False)
 
 
@@ -255,6 +256,7 @@ class UserSteeringApplied:
     user_input: str
     steering_id: str | None = None
     attempt_id: str | None = None
+    submission_id: str | None = None
     kind: RuntimeEventKind = field(
         default=RuntimeEventKind.USER_STEERING_APPLIED, init=False
     )
@@ -456,7 +458,9 @@ def agent_event_to_runtime_event(
     """
 
     if event.event_type is AgentEventType.CHAT_START:
-        payload: RuntimePayload = TurnStarted(event.data.get("user_input", ""))
+        payload: RuntimePayload = TurnStarted(
+            event.data.get("user_input", ""), submission_id=event.data.get("submission_id"),
+        )
     elif event.event_type is AgentEventType.CHAT_END:
         payload = TurnFinished(
             event.data.get("response", ""),
@@ -517,6 +521,7 @@ def agent_event_to_runtime_event(
             str(event.data.get("user_input", "")),
             steering_id=event.data.get("steering_id"),
             attempt_id=event.data.get("attempt_id"),
+            submission_id=event.data.get("submission_id"),
         )
     elif event.event_type is AgentEventType.ERROR:
         payload = ErrorOccurred(event.error_message or "Unknown agent error")
@@ -579,7 +584,9 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
     """Convert worker/runtime IPC events back to the legacy domain emitter."""
     payload = event.payload
     if isinstance(payload, (TurnStarted, ChatStarted)):
-        legacy = AgentEvent.chat_start(payload.user_input)
+        legacy = AgentEvent.chat_start(
+            payload.user_input, submission_id=getattr(payload, "submission_id", None),
+        )
     elif isinstance(payload, (TurnFinished, ChatCompleted)):
         legacy = AgentEvent.chat_end(
             payload.response,
@@ -644,6 +651,7 @@ def runtime_event_to_agent_event(event: RuntimeEvent) -> AgentEvent:
             payload.user_input,
             steering_id=payload.steering_id,
             attempt_id=payload.attempt_id,
+            submission_id=payload.submission_id,
         )
     elif isinstance(payload, ErrorOccurred):
         legacy = AgentEvent.error(payload.message)

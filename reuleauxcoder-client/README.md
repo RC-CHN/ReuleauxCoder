@@ -1,5 +1,13 @@
 # ReuleauxCoder TypeScript client
 
+Chat submissions may supply `submit(value, submissionId, sessionGeneration)`.
+The backend echoes the ID in admission receipts and ordinary/steering application
+events. Retries with the same ID and input share one admission even when snapshot
+confirmation fails. Reusing an ID for different input or another generation is
+rejected. Receipts are scoped to the live connection and session generation,
+with up to 4,096 retained IDs per generation; they are not a restart/reconnect
+deduplication contract. Legacy callers may omit the ID.
+
 `@reuleauxcoder/client` 是仓库内部共享的 JSON-RPC 客户端，供 TUI 和后续宿主使用。
 没有运行时 npm 依赖，不包含 React、Ink、界面状态、进程启动或 Python 业务实现。
 目前不独立发布 npm 包，也不包含 VS Code 扩展。
