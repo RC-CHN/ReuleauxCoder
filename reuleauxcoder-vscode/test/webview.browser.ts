@@ -199,6 +199,17 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert.equal(await page.locator('.markdown img, .markdown script, .markdown a[href^="command:"], .markdown a[href^="javascript:"]').count(), 0);
       await page.locator('.markdown a[href="https://example.com/docs"]').click();
       assert.equal(messages.filter(message => message.action === 'openLink').at(-1)!.data!.url, 'https://example.com/docs');
+      state.cells.push({id: 'file-links', role: 'assistant', text: 'AGENT.md 快照写的 0.9.3，README.md / README_CN.md 的 wheel 链接都指向 v0.9.3 ✓\n\ndocs/nested/guide.md:12 · `src/main.ts:42:3` · [说明](docs/My%20Notes.md#L2-L4) · https://example.com/releases/v0.9.3\n\n```text\nREADME.md stays code\n```'});
+      await publish();
+      await page.locator('a[data-file="AGENT.md"]').waitFor();
+      assert.equal(await page.locator('a[href="http://agent.md/"]').count(), 0);
+      assert.equal(await page.locator('.markdown pre a').count(), 0);
+      for (const path of ['AGENT.md', 'README.md', 'README_CN.md', 'docs/nested/guide.md:12', 'src/main.ts:42:3', 'docs/My%20Notes.md#L2-L4']) {
+        await page.locator('a[data-file]').filter({hasText: path.startsWith('docs/My') ? '说明' : path}).first().click();
+        assert.equal(messages.filter(message => message.action === 'openFile').at(-1)!.data!.path, path);
+      }
+      await page.locator('a[href="https://example.com/releases/v0.9.3"]').click();
+      assert.equal(messages.filter(message => message.action === 'openLink').at(-1)!.data!.url, 'https://example.com/releases/v0.9.3');
       state.overview = structuredClone(overview); state.mode = 'code';
       state.cells.push({id: 'assistant', role: 'assistant', text: language === 'zh' ? '已检查修改。请在中央原生 diff 中审阅并批准。' : 'The proposal is ready. Review and approve it in the native diff editor.'});
       state.reviews = [{id: 'review', title: 'edit_file', summary: language === 'zh' ? '让输入立即响应，并把命令操作留在会话中。' : 'Keep input responsive and command controls within the conversation.', documents: [{id: 'doc', path: 'src/runtime.ts'}], grants: [{id: 'scope-one', label: 'This session', description: 'Allow edits to this file for this session', broad: false}]}];
@@ -257,6 +268,9 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       });
       await preview.setViewportSize({width: 950, height: 900});
       await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-dark-compact-${language}.png`)});
+      await preview.locator('#overview-toggle').click();
+      await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-overview-dark-${language}.png`)});
+      await preview.locator('#overview-toggle').click();
       const accent = await preview.locator('.brand-mark').evaluate(node => getComputedStyle(node).color);
       assert.equal(accent, 'rgb(228, 183, 127)', 'Dark chart colors must not make the brand unreadable');
       await preview.locator('#permissions').click();

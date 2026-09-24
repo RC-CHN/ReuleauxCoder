@@ -7,6 +7,7 @@ import {managedCommand, installCore} from './core/install.js';
 import type {CoreCommand} from './core/runtime.js';
 import {NativeReviews} from './native/reviews.js';
 import {editorContext, diagnosticActions} from './native/context.js';
+import {openWorkspaceFile} from './native/file-links.js';
 
 let active: WorkspaceSession | undefined;
 let creating: Promise<WorkspaceSession> | undefined;
@@ -104,6 +105,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (typeof data.url !== 'string' || !/^https?:\/\//i.test(data.url)) throw new Error('Unsupported link.');
         return vscode.env.openExternal(vscode.Uri.parse(data.url));
       }
+      case 'openFile': await getSession(); return openWorkspaceFile(folder!, data.path);
       case 'addUri': {
         if (typeof data.uri !== 'string') throw new Error('Invalid workspace file.');
         const uri = vscode.Uri.parse(data.uri); const session = await getSession();

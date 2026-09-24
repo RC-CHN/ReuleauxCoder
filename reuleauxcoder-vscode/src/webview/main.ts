@@ -63,7 +63,7 @@ function cellNode(cell: ChatCell): HTMLElement {
   if (cell.status && cell.status !== 'applied') {const state = document.createElement('span'); state.textContent = t(cell.status as MessageKey) ?? cell.status; meta.append(state);}
   node.append(meta);
   const body = document.createElement('div'); body.className = 'body';
-  if (cell.role === 'assistant' || cell.role === 'reasoning') renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice));
+  if (cell.role === 'assistant' || cell.role === 'reasoning') renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice));
   else body.textContent = cell.text;
   if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = errorText(cell.title ?? t('Reasoning')); details.append(summary, body); node.append(details);} else node.append(body);
   if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.detail; (cell.role === 'tool' ? node.querySelector('details')! : node).append(detail);}

@@ -38,8 +38,8 @@ export class WorkOverviewView {
     const waiting = state.reviews.length + (state.interactions?.length ?? 0);
     if (waiting) stats.append(this.action(t('Waiting for you · {0}', waiting), undefined, 'shield', () => document.getElementById('reviews')!.scrollIntoView({block: 'start'})));
     const content = document.createElement('div'); content.className = 'overview-content';
-    if (data.goal) this.section(content, `${t('Goal')} · ${errorText(data.goal.status)}`, [data.goal.objective]);
-    if (data.progress) this.section(content, t('Progress'), [data.progress]);
+    if (data.goal) this.section(content, `${t('Goal')} · ${errorText(data.goal.status)}`, [data.goal.objective], 'goal');
+    if (data.progress) this.section(content, t('Progress'), [data.progress], 'progress');
     if (data.plan.length) {
       const completed = data.plan.filter(item => item.status === 'completed').length;
       const section = this.section(content, `${t('Plan')} · ${completed}/${data.plan.length}`, []);
@@ -58,7 +58,7 @@ export class WorkOverviewView {
     } else if (data.git?.reason) this.section(content, 'Git', [data.git.reason]);
     if (data.diagnostics.length) this.section(content, t('Diagnostics'), data.diagnostics.map(item => `${t('{0} errors · {1} warnings', item.errors, item.warnings)} · ${item.path}`));
     this.section(content, t('Context'), [`${compact(data.contextTokens)} / ${data.contextLimit ? compact(data.contextLimit) : '—'} tokens`, `MCP · ${data.mcpTools} ${t('Tool')}`]);
-    if (data.warnings.length) this.section(content, t('Attention'), data.warnings);
+    if (data.warnings.length) this.section(content, t('Attention'), data.warnings, 'warning');
     this.root.replaceChildren(summary, stats, content);
     this.goal.replaceChildren(); this.goal.hidden = !data.goal || data.goal.status === 'complete';
     if (data.goal) {
@@ -74,5 +74,10 @@ export class WorkOverviewView {
   private action(text: string, actionId?: string, name?: IconName, click?: () => void): HTMLButtonElement {
     const button = document.createElement('button'); button.type = 'button'; button.dataset.overviewAction = actionId ?? text; if (name) button.append(icon(name)); const label = document.createElement('span'); label.textContent = text; button.append(label); button.addEventListener('click', click ?? (() => void this.request('command.open', {actionId}).catch(this.notice))); return button;
   }
-  private section(root: HTMLElement, title: string, lines: string[]): HTMLElement {const section = document.createElement('section'); const heading = document.createElement('h3'); heading.textContent = title; section.append(heading); for (const line of lines) section.append(this.text(line, 'overview-detail')); root.append(section); return section;}
+  private section(root: HTMLElement, title: string, lines: string[], kind = 'default'): HTMLElement {
+    const section = document.createElement('section'); section.dataset.kind = kind;
+    const heading = document.createElement('h3'); const [label, ...detail] = title.split(' · '); heading.textContent = label;
+    if (detail.length) {const badge = document.createElement('span'); badge.className = 'overview-badge'; badge.textContent = detail.join(' · '); heading.append(badge);}
+    section.append(heading); for (const line of lines) section.append(this.text(line, 'overview-detail')); root.append(section); return section;
+  }
 }

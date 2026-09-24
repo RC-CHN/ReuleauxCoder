@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Open Markdown workspace file references (including plain/inline-code filenames, nested paths and line ranges) in the VS Code editor instead of treating `.md` names as websites. Preserve explicit HTTP links, Remote workspace authority and workspace boundaries. Clarify work overview typography and active/completed status colors.
+
 - Compact the VS Code conversation header and composer, grow multiline drafts automatically, collapse work overview and completed goals by default, remove the separate Pending Reviews view, and improve dark-theme contrast and Chinese UI coverage.
 - Replace nested tool-permission pickers with searchable per-tool policy controls and session/workspace scope tabs. Validate direct edits against the current core-owned action tree and refresh applied rules; preserve native diff guards and add readable command previews and denial feedback.
 - Keep workspace permission rules visible when a session override exists for the same tool, so scope editors can display and modify both values without changing policy precedence.

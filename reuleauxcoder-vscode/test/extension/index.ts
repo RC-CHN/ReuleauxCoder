@@ -4,6 +4,7 @@ import {readFile, writeFile} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import type {activate} from '../../src/extension.js';
 import {answerInteraction} from '../../src/core/interactions.js';
+import {openWorkspaceFile} from '../../src/native/file-links.js';
 
 async function until(predicate: () => unknown | Promise<unknown>, timeout = 10000): Promise<void> {
   const end = Date.now() + timeout;
@@ -92,6 +93,23 @@ export async function run(): Promise<void> {
     assert.equal((await api.getSession()).requireClient(), client);
     assert(!client.peer.closed);
     console.log('PASS editor context, diagnostic action and view-independent connection');
+
+    const folder = vscode.workspace.workspaceFolders![0];
+    const reference = vscode.Uri.joinPath(folder.uri, 'docs', 'nested', 'My Notes 中文.md');
+    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(folder.uri, 'docs', 'nested'));
+    await vscode.workspace.fs.writeFile(reference, Buffer.from('one\ntwo\nthree\n'));
+    await openWorkspaceFile(folder, 'docs/nested/My%20Notes%20%E4%B8%AD%E6%96%87.md:2:2');
+    assert.equal(vscode.window.activeTextEditor!.document.uri.toString(), reference.toString());
+    assert.equal(vscode.window.activeTextEditor!.selection.start.line, 1);
+    assert.equal(vscode.window.activeTextEditor!.selection.start.character, 1);
+    await openWorkspaceFile(folder, `${reference.fsPath}#L2-L3`);
+    assert.equal(vscode.window.activeTextEditor!.selection.end.line, 2);
+    assert.equal(vscode.window.activeTextEditor!.selection.end.character, 5);
+    await assert.rejects(openWorkspaceFile(folder, '../outside.md'), /outside/);
+    await assert.rejects(openWorkspaceFile(folder, 'command:workbench.action.closeWindow'), /Invalid file/);
+    await assert.rejects(openWorkspaceFile(folder, 'missing.md'), /not found/);
+    assert.equal(vscode.window.activeTextEditor!.document.uri.toString(), reference.toString());
+    console.log('PASS native workspace file links, nested Unicode paths and line selections');
 
     await until(() => !client.state.running);
     session.submit('native-question', 'question', [], client.state.session_generation);

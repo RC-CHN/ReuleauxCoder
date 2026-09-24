@@ -433,5 +433,9 @@
   "remove isolated worktree": "移除独立工作区",
   "request cancellation": "请求取消",
   "spawn one via ask or background delegation": "可通过委派操作创建子任务",
-  "Could not confirm the rule. Reopen permissions to check.": "未能确认规则状态，请重新打开权限面板核对。"
+  "Could not confirm the rule. Reopen permissions to check.": "未能确认规则状态，请重新打开权限面板核对。",
+  "Open workspace file: {0}": "在编辑器中打开：{0}",
+  "Invalid file reference.": "文件引用无效。",
+  "This link points outside the current workspace.": "此链接指向当前工作区之外。",
+  "File not found in this workspace: {0}": "在当前工作区中找不到文件：{0}"
 }

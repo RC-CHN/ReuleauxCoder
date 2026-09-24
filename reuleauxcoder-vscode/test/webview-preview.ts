@@ -47,7 +47,7 @@ window.acquireVsCodeApi = () => ({getState:()=>saved, setState:value=>{saved=val
   } else if(message.action==='command.back') {state.commandSurface={...stack.pop(),id:++serial,canBack:stack.length>0};publish();}
   else if(message.action==='command.close'||message.action==='command.submit') {state.commandSurface=undefined;publish();}
   else if(message.action==='approve'||message.action==='reject') {state.reviews=state.reviews.filter(item=>item.id!==data.id);publish();}
-  else if(message.action==='review'||message.action==='git') {state.notice=${JSON.stringify(zh ? '这是交互预览；安装到 VS Code 后会在原生编辑区打开。' : 'Interactive preview: the installed extension opens this in the native VS Code editor.')};publish();}
+  else if(message.action==='review'||message.action==='git'||message.action==='openFile') {state.notice=${JSON.stringify(zh ? '这是交互预览；安装到 VS Code 后会在原生编辑区打开。' : 'Interactive preview: the installed extension opens this in the native VS Code editor.')};publish();}
   else if(message.action==='stop') {state.running=false;publish();}
   window.postMessage({kind:'response',id:message.id,result},'*');
 },60)});`;

@@ -73,7 +73,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
         if (!item) throw new Error('Upload expired.'); session.add(item); return item.id;
       }
       case 'upload.cancel': await session.uploads?.cancel(owner, data.id); return;
-      case 'start': case 'install': case 'selectCore': case 'logs': case 'stop': case 'openEditor': case 'newSession': case 'sessions': case 'actions': case 'models': case 'review': case 'approve': case 'reject': case 'saveReview': case 'addUri': case 'openLink': case 'git': return this.command(request.action, data);
+      case 'start': case 'install': case 'selectCore': case 'logs': case 'stop': case 'openEditor': case 'newSession': case 'sessions': case 'actions': case 'models': case 'review': case 'approve': case 'reject': case 'saveReview': case 'addUri': case 'openLink': case 'openFile': case 'git': return this.command(request.action, data);
       default: throw new Error('Unknown view action.');
     }
   }
