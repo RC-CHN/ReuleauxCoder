@@ -2263,6 +2263,7 @@ def run_subagent_task(
         **subagent_context_strategies,
     )
     sub.runtime_config = getattr(parent_agent, "runtime_config", None)
+    sub.document_mutation_guard = getattr(parent_agent, "document_mutation_guard", None)
     sub.runtime_working_directory = (
         str(lease.path)
         if lease is not None

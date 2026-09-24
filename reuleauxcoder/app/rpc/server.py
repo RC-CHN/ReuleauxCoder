@@ -18,6 +18,7 @@ from reuleauxcoder.app.rpc.remote_interactor import RemoteInteractor
 from reuleauxcoder.app.rpc.submissions import SubmissionAdmissions
 from reuleauxcoder.app.rpc.images import ImageUploads
 from reuleauxcoder.app.rpc.attachments import AttachmentUploads
+from reuleauxcoder.app.rpc.editor_documents import EditorDocuments
 from reuleauxcoder.domain.images import ChatInput
 from reuleauxcoder.infrastructure.persistence.images import ImageStore
 from reuleauxcoder.app.runtime.approval import build_runtime_approval_provider
@@ -62,6 +63,8 @@ class RuntimeServer:
         self._published_revision = 0
         self._workers: set[threading.Thread] = set()
         self._submissions = SubmissionAdmissions()
+        self.editor_documents = EditorDocuments()
+        self.agent.document_mutation_guard = self.editor_documents.guard
         if self.agent.image_store is None:
             self.agent.image_store = ImageStore(
                 commands.sessions_dir or self.config.session_dir or get_sessions_dir(),
@@ -89,6 +92,7 @@ class RuntimeServer:
                 "goal.get": lambda: encode(self.agent.goal_controller.state),
                 "runtime.submit": self.submit,
                 "review.document": self.interactions.adapter.document,
+                "runtime.editor_documents": self.editor_documents.update,
                 "images.begin": self.images.begin,
                 "images.append": self.images.append,
                 "images.complete": self.images.complete,
@@ -228,6 +232,7 @@ class RuntimeServer:
                     "conditional_snapshots": True,
                     "submission_ids": True,
                     "review_documents": True,
+                    "editor_documents": True,
                     "history_query": True,
                     "goals": True,
                     "image_uploads": True,

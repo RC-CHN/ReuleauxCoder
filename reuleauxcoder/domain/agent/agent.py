@@ -174,6 +174,7 @@ class Agent:
             config, "active_sub_model_profile", None
         )
         self.runtime_working_directory: str | None = None
+        self.document_mutation_guard: Callable[[str], str | None] | None = None
         self.notes_store: NoteStore | None = None
         self.process_manager: ProcessManager | None = None
         self.mcp_manager: MCPManager | None = None

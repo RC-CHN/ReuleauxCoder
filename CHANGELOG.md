@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Track connection-owned unsaved editor documents with monotonic revisions and recheck them before built-in file mutations, including automatically approved and delegated edits.
+
 - Expose approval-bound before/after document snapshots through bounded RPC pages for native editor diffs. Text previews and document snapshots share one captured revision; cancellation invalidates the document reader.
 
 - Split provider request projection and prompt/schema caches out of the agent loop, with dedicated replay state and an explicit host capability contract.

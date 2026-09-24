@@ -88,6 +88,13 @@ flowchart LR
 版本，实际修改仍由核心校验版本后执行。客户端原生预览上限为 4 Mi 字符，超过后应
 展示文本预览和明确的大小提示。
 
+编辑器宿主通过 `initialize.editor_documents` 协商未保存文档保护，并调用
+`runtime.editor_documents(revision, paths)` 提交绝对路径集合。连接内 revision 单调
+递增，晚到的旧状态不会覆盖新状态。宿主应在 `runtime.ready` 前同步初始状态，防止
+恢复的 Goal 在编辑器状态到达前继续写入。核心在 `edit_file` / `write_file` 产生效果
+前再次检查此集合，包括自动批准和子代理工具；该保护不拦截任意 shell 命令的写文件。
+保存有冲突的编辑器后，宿主拒绝原审批并要求基于新的磁盘内容重新生成提案。
+
 ## 回归检查
 
 - `tests/architecture/test_rpc_imports.py`：新解释器内拦截间接导入。

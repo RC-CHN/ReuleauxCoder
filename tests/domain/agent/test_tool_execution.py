@@ -47,6 +47,21 @@ from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 from reuleauxcoder.extensions.tools.base import InterruptMode, Tool
 
 
+def test_unsaved_editor_guard_blocks_even_policy_allowed_writes(tmp_path):
+    path = tmp_path / "editor.txt"
+    path.write_text("saved content", encoding="utf-8")
+    tool = WriteFileTool(backend=LocalToolBackend(ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))))
+    agent = _AgentStub(tool)
+    agent.document_mutation_guard = lambda target: "Unsaved editor changes" if target == str(path.resolve()) else None
+    result = ToolExecutor(agent).execute(ToolCall(id="dirty", name="write_file", arguments={"file_path": str(path), "content": "replacement"}))
+    assert "Unsaved editor changes" in result
+    assert path.read_text(encoding="utf-8") == "saved content"
+    assert agent.events[-1].tool_outcome.metadata["effect_state"] == "not_started"
+    agent.document_mutation_guard = lambda target: None
+    ToolExecutor(agent).execute(ToolCall(id="saved", name="write_file", arguments={"file_path": str(path), "content": "replacement"}))
+    assert path.read_text(encoding="utf-8") == "replacement"
+
+
 class _ShellToolStub:
     """A minimal stub mimicking ShellTool, with _cwd tracking."""
 

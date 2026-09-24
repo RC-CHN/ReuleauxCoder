@@ -1355,6 +1355,18 @@ class ToolExecutor:
                 message,
             )
 
+        # Editor state is a host capability, separate from whether policy grants approval.
+        # Recheck immediately before effects, including session/automatically allowed edits.
+        document_guard = getattr(self.agent, "document_mutation_guard", None)
+        if callable(document_guard) and tc.name in {"edit_file", "write_file"} and workspace is not None:
+            pre_effect.phase = "editor_document_check"
+            with _workspace_access_scope(workspace, external_target):
+                blocked = document_guard(str(workspace.resolve(tc.arguments["file_path"])))
+            if blocked:
+                return self._pre_effect_denial_outcome(
+                    blocked, phase="editor_document_check", error_type="UnsavedEditorChanges"
+                )
+
         pre_effect.phase = "execution_setup"
         tool_returned = False
         raw_result: object = _UNRESOLVED_TOOL
