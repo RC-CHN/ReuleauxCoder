@@ -135,6 +135,15 @@ jobs:
         run: npx playwright install chromium
       - name: Test bilingual webview and attachments
         run: npm run test:webview --prefix reuleauxcoder-vscode
+      - name: Upload interface previews
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reuleauxcoder-vscode-previews-${{ matrix.os }}-node${{ matrix.node }}
+          path: |
+            artifacts/vscode-concept/*.png
+            artifacts/vscode-concept/*.html
+          if-no-files-found: warn
       - name: Package compatible core and VSIX
         run: npm run package --prefix reuleauxcoder-vscode
       - name: Install packaged core outside checkout and check protocol
