@@ -66,7 +66,8 @@ export async function run(): Promise<void> {
     assert(client.interactions.some(item => item.request.request_id === reviewId), 'An old editor URI must not approve a replacement review');
     const pendingEdit = new vscode.WorkspaceEdit(); pendingEdit.insert(uri, new vscode.Position(0, 0), '# changed after proposal\r\n');
     assert(await vscode.workspace.applyEdit(pendingEdit));
-    assert(api.reviews.summaries().find(item => item.id === reviewId)?.dirty);
+    await until(() => vscode.workspace.textDocuments.some(item => item.uri.toString() === uri.toString() && item.isDirty));
+    assert(api.reviews.summaries().find(item => item.id === reviewId)?.dirty, JSON.stringify({proposal: api.reviews.summaries().find(item => item.id === reviewId)?.documents, dirty: vscode.workspace.textDocuments.filter(item => item.isDirty).map(item => item.uri.fsPath)}));
     await assert.rejects(api.reviews.decide(true, reviewId), /unsaved editor/);
     await assert.rejects(api.reviews.decide(true, reviewId, 'invented-scope'), /expired/);
     await api.reviews.saveAndRepropose(reviewId);

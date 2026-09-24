@@ -4,6 +4,7 @@
 
 - Redesign the VS Code conversation around a clickable, searchable composer menu, inline command panels and parameter forms. Keep model, mode, permissions, goals, skills, MCP, sessions and process controls in the conversation; replace top-bar confirmation and secret-input dialogs with stable inline cards. Preserve drafts, validate form and review responses, and invalidate stale panel actions across navigation and session changes.
 - Restore safe Markdown replies with tables and copyable code. Add a theme-aware Reuleaux icon system, conversation review cards with file-by-file native diff links, explicit approval scopes and denial feedback, and a responsive work overview for plans, progress, processes, agents, Git, diagnostics and context usage. Extend Chinese/English UI, real core/native-host regressions and browser coverage, including offline HTML previews.
+- Resolve Windows short-path aliases when matching pending review files to unsaved editor documents, so inline approval guards recognize the same file under either path spelling.
 
 ## 0.11.0 - 2026-09-24
 

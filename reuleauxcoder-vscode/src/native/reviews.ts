@@ -1,10 +1,24 @@
 import {t} from '../i18n.js';
 import * as vscode from 'vscode';
-import {basename, normalize} from 'node:path';
+import {basename, dirname, join, normalize, resolve} from 'node:path';
+import {realpathSync} from 'node:fs';
 import {record, type PendingInteraction, type RuntimeClient} from '@reuleauxcoder/client';
 import type {ReviewSummary} from '../shared.js';
 
 function pathKey(path: string): string {const value = normalize(path); return process.platform === 'win32' ? value.toLowerCase() : value;}
+/** Editor URIs and Python-resolved proposals can use different Windows 8.3 names. */
+function canonicalPathKey(path: string): string {
+  let ancestor = resolve(path); const missing: string[] = [];
+  for (;;) {
+    try {return pathKey(join(realpathSync.native(ancestor), ...missing));}
+    catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) return pathKey(resolve(path));
+      missing.unshift(basename(ancestor)); ancestor = parent;
+    }
+  }
+}
 interface ReviewNode {id: string; label: string; path?: string; documentId?: string}
 
 export class NativeReviews implements vscode.TextDocumentContentProvider, vscode.TreeDataProvider<ReviewNode>, vscode.Disposable {
@@ -96,8 +110,16 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     this.client!.answer(id!, record('ReviewResponse', {approved, cancelled: false, action: approved ? scopeId ? 'allow_session' : 'allow_once' : 'deny', selected_id: typeof scopeId === 'string' ? scopeId : null, reason: typeof feedback === 'string' && feedback.trim() ? feedback : approved ? 'Approved in the workspace conversation.' : 'Denied in the workspace conversation.'}));
   }
   private dirtyDocuments(pending: PendingInteraction): vscode.TextDocument[] {
-    const paths = new Set((pending.request.documents ?? []).map((document: any) => pathKey(document.path)));
-    return vscode.workspace.textDocuments.filter(document => document.isDirty && paths.has(pathKey(document.uri.fsPath)));
+    const dirty = vscode.workspace.textDocuments.filter(document => document.isDirty && ['file', 'vscode-remote'].includes(document.uri.scheme));
+    if (!dirty.length) return [];
+    const paths: string[] = (pending.request.documents ?? []).map((document: any) => document.path);
+    if (!paths.length) return [];
+    const direct = new Set(paths.map(pathKey)); let canonical: Set<string> | undefined;
+    return dirty.filter(document => {
+      if (direct.has(pathKey(document.uri.fsPath))) return true;
+      canonical ??= new Set(paths.map(canonicalPathKey));
+      return canonical.has(canonicalPathKey(document.uri.fsPath));
+    });
   }
   async saveAndRepropose(id: string): Promise<void> {
     const pending = this.find(id); if (pending?.kind !== 'review') throw new Error(t('This review has expired.'));
