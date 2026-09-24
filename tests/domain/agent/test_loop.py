@@ -41,7 +41,7 @@ class _AgentStub:
             state=PlanState(owner_agent_id="agent", session_generation=0),
             progress=ProgressState(),
         )
-        self._subagent_manager = None
+        self.subagent_status_source = None
         self.goal_controller = GoalController(self)
         self.runtime_issues = ()
 
@@ -209,7 +209,7 @@ def test_runtime_tail_snapshot_keyboard_interrupt_propagates() -> None:
 def test_runtime_tail_reports_directory_listing_base_exception(monkeypatch) -> None:
     loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
     monkeypatch.setattr(
-        loop,
+        loop._projection,
         "_dir_listing",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             GeneratorExit("directory-secret")
@@ -229,7 +229,7 @@ def test_runtime_tail_directory_listing_keyboard_interrupt_propagates(
 ) -> None:
     loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
     monkeypatch.setattr(
-        loop,
+        loop._projection,
         "_dir_listing",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
@@ -241,7 +241,7 @@ def test_runtime_tail_directory_listing_keyboard_interrupt_propagates(
 def test_runtime_tail_reports_working_directory_base_exception(monkeypatch) -> None:
     loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
     monkeypatch.setattr(
-        "reuleauxcoder.domain.agent.loop.os.getcwd",
+        "reuleauxcoder.domain.agent.request_projection.os.getcwd",
         lambda: (_ for _ in ()).throw(SystemExit("cwd-secret")),
     )
 
@@ -258,7 +258,7 @@ def test_runtime_tail_working_directory_keyboard_interrupt_propagates(
 ) -> None:
     loop = AgentLoop(_AgentStub(), prompt_fn=system_prompt, shell_name="bash")
     monkeypatch.setattr(
-        "reuleauxcoder.domain.agent.loop.os.getcwd",
+        "reuleauxcoder.domain.agent.request_projection.os.getcwd",
         lambda: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
 
@@ -333,7 +333,7 @@ def test_runtime_tail_honors_notes_inject_false() -> None:
 
 def test_runtime_tail_distinguishes_running_and_delivered_subagents() -> None:
     agent = _AgentStub()
-    agent._subagent_manager = SimpleNamespace(
+    agent.subagent_status_source = SimpleNamespace(
         list_jobs=lambda: [
             SimpleNamespace(
                 id="sj_running",

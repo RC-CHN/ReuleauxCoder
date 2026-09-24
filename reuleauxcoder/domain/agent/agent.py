@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
 from reuleauxcoder.domain.agent.loop import AgentLoop
+from reuleauxcoder.domain.agent.request_projection import RequestProjectionState
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.cancellation import CancellationView
 from reuleauxcoder.domain.config.models import ModeConfig, resolve_context_strategies
@@ -232,6 +233,7 @@ class Agent:
             performance_monitor=self.performance_monitor,
         )
         self.history_completeness = "complete"
+        self.request_projection_state = RequestProjectionState()
         self.replay_envelope = None
         self.request_envelopes: list = []
         self._restored_replay_envelope = None
@@ -316,6 +318,49 @@ class Agent:
             default_mode = active_mode or next(iter(self.available_modes.keys()), None)
             if default_mode in self.available_modes:
                 self.active_mode = default_mode
+
+    @property
+    def current_turn_id(self) -> str | None:
+        return self._current_turn_id
+
+    @property
+    def subagent_status_source(self):
+        return self._subagent_manager
+
+    @property
+    def replay_envelope(self):
+        return self.request_projection_state.replay
+
+    @replay_envelope.setter
+    def replay_envelope(self, value):
+        self.request_projection_state.replay = value
+
+    @property
+    def request_envelopes(self):
+        return self.request_projection_state.requests
+
+    @request_envelopes.setter
+    def request_envelopes(self, value):
+        self.request_projection_state.requests = value
+
+    @property
+    def _restored_replay_envelope(self):
+        return self.request_projection_state.restored_replay
+
+    @_restored_replay_envelope.setter
+    def _restored_replay_envelope(self, value):
+        self.request_projection_state.restored_replay = value
+
+    @property
+    def _resume_runtime_descriptor_hash(self):
+        return self.request_projection_state.resume_descriptor_hash
+
+    @_resume_runtime_descriptor_hash.setter
+    def _resume_runtime_descriptor_hash(self, value):
+        self.request_projection_state.resume_descriptor_hash = value
+
+    def append_context_message(self, message: dict, *, source: str) -> None:
+        self._append_message(message, source=source)
 
     def bind_performance_monitor(
         self, monitor: RuntimePerformanceMonitor

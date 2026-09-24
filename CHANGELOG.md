@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Split provider request projection and prompt/schema caches out of the agent loop, with dedicated replay state and an explicit host capability contract.
+
 - Separate tool-result validation and failure aggregation, session payload validation, stable LSP document reads, and delegated result projection from their execution/storage managers. Delegated result projection receives an explicit evidence snapshot instead of parent/child agents.
 
 - Move tool contracts and pure prompt policy into domain, assemble integration hooks and subagent restore in the host/extension layer, and inject platform shell selection at agent construction. Enforce the domain's runtime dependency direction with an architecture check.

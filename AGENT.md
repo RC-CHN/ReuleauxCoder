@@ -53,7 +53,7 @@ Layer rules:
 
 `domain/agent/agent.py` owns conversation state, session generation, active mode, stop state, lifecycle coordination, hook scope, and subagent result injection.
 
-`domain/agent/loop.py` owns the LLM/tool round loop, context compression checks, runtime-tail context, token accounting, tool-call adjacency, and max-round handling.
+`domain/agent/loop.py` owns the LLM/tool round loop, context compression checks, token accounting, tool-call adjacency, and max-round handling. `request_projection.py` owns runtime-tail context, prompt/schema caches and provider replay projections through `RequestProjectionHost`; `RequestProjectionState` holds session-scoped replay state.
 
 Canonical provider messages use exactly one leading `system` message. Project context, summaries, resume/runtime updates, subagent data, diagnostics and the volatile execution state are application-generated synthetic `user` messages with reserved provenance tags documented by that fixed system prompt. The provider boundary fail-closes legacy or extension-injected later system messages into `<legacy_runtime_context>`. Only nested/standalone runtime-instruction regions receive runtime-control authority; file, tool, note, Git, LSP and delegated payloads remain untrusted data.
 
