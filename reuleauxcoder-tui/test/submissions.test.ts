@@ -96,3 +96,20 @@ test('late acknowledgement after session reset cannot recreate the old user cell
     assert.equal(f.c.session.cells.length, 0);
   } finally {f.close();}
 });
+
+test('application proof takes precedence over a later RPC failure', async () => {
+  const f = fixture(true);
+  try {
+    f.c.composer = editor('already applied');
+    const send = f.c.key('', {return: true});
+    await tick();
+    f.apply(0);
+    f.peer.receive({jsonrpc: '2.0', id: f.requests[0].id, error: {code: -32603, message: 'late failure'}});
+    await send;
+    assert.equal(f.c.session.cells[0].title, 'You');
+    assert.doesNotMatch(f.c.status, /late failure|unconfirmed/);
+    await f.c.submissions.retry();
+    assert.equal(f.requests.length, 1);
+    assert.equal(f.c.status, 'No failed submission to retry.');
+  } finally {f.close();}
+});

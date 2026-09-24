@@ -83,6 +83,7 @@ export class TuiController extends EventEmitter {
       this.subscriptions.push(() => source.off(event, listener));
     };
     listen(this.session, 'change', this.changed);
+    listen(this.session, 'submissionApplied', id => this.submissions.applied(id));
     listen(this.session, 'view', (view, wire) => {
       const epoch = this.viewEpoch;
       this.pendingView = this.pendingView.then(() => this.openView(view, wire, epoch)).catch(this.fail);

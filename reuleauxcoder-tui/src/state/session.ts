@@ -45,7 +45,7 @@ export class SessionStore extends EventEmitter {
   }
 
   private appliedUser(text: string, id?: string, steering = false) {
-    if (id) this.submission(id, text, 'applied');
+    if (id) {this.submission(id, text, 'applied'); this.emit('submissionApplied', id);}
     else this.add('user', steering ? 'You · steering applied' : 'You', text);
   }
 

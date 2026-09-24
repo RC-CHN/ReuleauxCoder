@@ -7,7 +7,7 @@ interface PendingSubmission {
   text: string;
   value: Json;
   generation: number;
-  status: 'sending' | 'accepted' | 'queued' | 'rejected' | 'unconfirmed';
+  status: 'sending' | 'accepted' | 'queued' | 'rejected' | 'unconfirmed' | 'applied';
   inFlight: boolean;
 }
 
@@ -23,6 +23,13 @@ export class SubmissionQueue {
   }
 
   reset(): void {this.entries.clear();}
+
+  applied(id: string): void {
+    const item = this.entries.get(id);
+    if (item && this.current(item)) item.status = 'applied';
+  }
+
+  private isApplied(item: PendingSubmission): boolean {return item.status === 'applied';}
 
   async retry(): Promise<void> {
     const item = [...this.entries.values()].reverse().find(item => ['rejected', 'unconfirmed'].includes(item.status));
@@ -41,12 +48,12 @@ export class SubmissionQueue {
     this.session.submission(item.id, item.text, 'sending');
     try {
       const receipt = await this.client.submit(item.value, item.id, item.generation);
-      if (!this.current(item)) return;
+      if (!this.current(item) || this.isApplied(item)) return;
       item.status = receipt.status === 'rejected' ? 'rejected' : ['queued', 'steering'].includes(receipt.status) ? 'queued' : 'accepted';
       this.session.submission(item.id, item.text, item.status);
       if (item.status === 'rejected') this.report('The backend is stopping. Message retained; /retry resends it.');
     } catch (error) {
-      if (!this.current(item)) return;
+      if (!this.current(item) || this.isApplied(item)) return;
       item.status = error instanceof RpcError && [-32602, -32002].includes(error.code) ? 'rejected' : 'unconfirmed';
       const detail = error instanceof Error ? error.message : String(error);
       this.session.submission(item.id, item.text, item.status, detail);

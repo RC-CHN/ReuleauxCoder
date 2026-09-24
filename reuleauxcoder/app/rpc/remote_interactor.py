@@ -82,4 +82,3 @@ class RemoteInteractor:
 
     def notify(self, event):
         self.peer.notify("runtime.event", {"event": encode(event)})
-
