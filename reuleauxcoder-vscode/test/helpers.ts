@@ -11,9 +11,9 @@ export async function until(predicate: () => unknown | Promise<unknown>, timeout
   const deadline = Date.now() + timeout;
   while (!await predicate()) {if (Date.now() >= deadline) throw new Error('Condition timed out.'); await delay(10);}
 }
-export async function backend() {
-  const cwd = await mkdtemp(join(tmpdir(), 'rcoder-vscode-'));
-  await writeFile(join(cwd, 'example.py'), 'old = 1\n', 'utf8');
+export async function backend(newline = '\n') {
+  const cwd = await mkdtemp(join(tmpdir(), 'rcoder vscode 中文-'));
+  await writeFile(join(cwd, 'example.py'), `old = 1${newline}`, 'utf8');
   const session = new WorkspaceSession(cwd, 'Test host');
   let log = ''; session.on('log', text => {log += text;});
   try {await session.start({cwd, commands: [{command: python, args: [backendScript]}]});}

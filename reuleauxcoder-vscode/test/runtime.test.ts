@@ -21,24 +21,28 @@ test('real core streams Unicode, owns sent drafts, and survives view listeners d
   assert.equal(session.transcript.cells[0].status, 'applied');
 });
 
-test('native diff pages are frozen until approval and the core applies the approved edit', async t => {
-  const b = await backend(); t.after(() => b.close());
-  b.session.submit('edit-submission', 'edit', [], b.client.state.session_generation);
-  await until(() => b.client.interactions.length);
-  const request = b.client.interactions[0].request; const document = request.documents[0];
-  assert.equal(document.before, null); assert.equal(document.after, null);
-  assert.equal(await b.client.reviewDocument(request.request_id, document.id, 'before'), 'old = 1\n');
-  assert.equal(await b.client.reviewDocument(request.request_id, document.id, 'after'), 'new = 1\n');
-  assert.equal(await readFile(join(b.cwd, 'example.py'), 'utf8'), 'old = 1\n');
-  b.client.answer(request.request_id, record('ReviewResponse', {approved: true, action: 'allow_once'}));
-  await until(() => !b.client.state.running);
-  assert.equal(await readFile(join(b.cwd, 'example.py'), 'utf8'), 'new = 1\n');
-  await assert.rejects(b.client.reviewDocument(request.request_id, document.id, 'before'), /no longer active/);
-});
+for (const newline of ['\n', '\r\n']) {
+  test(`native diff preserves ${newline === '\n' ? 'LF' : 'CRLF'} through review and approval`, async t => {
+    const b = await backend(newline); t.after(() => b.close());
+    b.session.submit('edit-submission', 'edit', [], b.client.state.session_generation);
+    await until(() => b.client.interactions.length);
+    const request = b.client.interactions[0].request; const document = request.documents[0];
+    assert.equal(document.before, null); assert.equal(document.after, null);
+    assert.equal(await b.client.reviewDocument(request.request_id, document.id, 'before'), `old = 1${newline}`);
+    assert.equal(await b.client.reviewDocument(request.request_id, document.id, 'after'), `new = 1${newline}`);
+    assert.equal(await readFile(join(b.cwd, 'example.py'), 'utf8'), `old = 1${newline}`);
+    b.client.answer(request.request_id, record('ReviewResponse', {approved: true, action: 'allow_once'}));
+    await until(() => !b.client.state.running);
+    assert.equal(await readFile(join(b.cwd, 'example.py'), 'utf8'), `new = 1${newline}`);
+    await assert.rejects(b.client.reviewDocument(request.request_id, document.id, 'before'), /no longer active/);
+  });
+}
 
 test('unsaved documents block policy-allowed core edits and release after save', async t => {
   const b = await backend(); t.after(() => b.close()); const path = join(b.cwd, 'example.py');
-  await b.client.peer.request('runtime.editor_documents', {revision: 1, paths: [path]});
+  // Windows editor/file URIs may disagree on drive and filename casing.
+  const reportedPath = process.platform === 'win32' ? path.toUpperCase() : path;
+  await b.client.peer.request('runtime.editor_documents', {revision: 1, paths: [reportedPath]});
   b.session.submit('dirty-edit', 'auto-edit', [], b.client.state.session_generation);
   await until(() => !b.client.state.running && b.session.transcript.cells.some(cell => cell.text.includes('Unsaved editor changes')));
   assert.equal(await readFile(path, 'utf8'), 'old = 1\n');

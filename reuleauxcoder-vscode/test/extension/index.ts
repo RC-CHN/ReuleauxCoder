@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile, writeFile} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import type {activate} from '../../src/extension.js';
 
@@ -19,32 +19,37 @@ export async function run(): Promise<void> {
   const session = await api.getSession(); const client = session.requireClient();
   const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'example.py');
   try {
-    session.submit('native-edit', 'edit', [], client.state.session_generation);
-    await until(() => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputTextDiff));
-    const input = vscode.window.tabGroups.all.flatMap(group => group.tabs).find(tab => tab.input instanceof vscode.TabInputTextDiff)!.input as vscode.TabInputTextDiff;
-    assert.equal(input.modified.scheme, 'reuleaux-review');
-    assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), 'old = 1\n');
-    assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), 'new = 1\n');
-    assert.equal(await readFile(uri.fsPath, 'utf8'), 'old = 1\n');
-    await vscode.commands.executeCommand('reuleaux.approve', input.modified);
-    await until(async () => (await readFile(uri.fsPath, 'utf8')) === 'new = 1\n');
-    await until(() => !client.state.running);
-    assert.equal(client.interactions.length, 0);
-    // Expired editor buttons must never approve a later request.
-    await vscode.commands.executeCommand('reuleaux.approve', input.modified);
-    console.log('PASS native readonly diff, approval and expired actions');
+    for (const newline of ['\n', '\r\n']) {
+      await writeFile(uri.fsPath, `old = 1${newline}`);
+      session.submit(`native-edit-${newline.length}`, 'edit', [], client.state.session_generation);
+      await until(() => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputTextDiff));
+      const input = vscode.window.tabGroups.all.flatMap(group => group.tabs).find(tab => tab.input instanceof vscode.TabInputTextDiff)!.input as vscode.TabInputTextDiff;
+      assert.equal(input.modified.scheme, 'reuleaux-review');
+      assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), `old = 1${newline}`);
+      assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), `new = 1${newline}`);
+      assert.equal(await readFile(uri.fsPath, 'utf8'), `old = 1${newline}`);
+      await vscode.commands.executeCommand('reuleaux.approve', input.modified);
+      await until(async () => (await readFile(uri.fsPath, 'utf8')) === `new = 1${newline}`);
+      await until(() => !client.state.running);
+      assert.equal(client.interactions.length, 0);
+      // Expired editor buttons must never approve a later request.
+      await vscode.commands.executeCommand('reuleaux.approve', input.modified);
+      await vscode.window.tabGroups.close(vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputTextDiff));
+      console.log(`PASS native readonly diff, approval and expired actions (${newline.length === 1 ? 'LF' : 'CRLF'})`);
+    }
 
     const document = await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(document);
-    await editor.edit(edit => edit.replace(new vscode.Range(0, 0, document.lineCount, 0), 'old = 1\n'));
+    assert.equal(document.eol, vscode.EndOfLine.CRLF);
+    await editor.edit(edit => edit.replace(new vscode.Range(0, 0, document.lineCount, 0), 'old = 1\r\n'));
     await document.save();
-    await editor.edit(edit => edit.replace(new vscode.Range(0, 0, document.lineCount, 0), 'old = 1\n# unsaved\n'));
+    await editor.edit(edit => edit.replace(new vscode.Range(0, 0, document.lineCount, 0), 'old = 1\r\n# unsaved\r\n'));
     assert(document.isDirty);
     await until(() => client.peer.request('test.is_dirty', {path: uri.fsPath}));
     session.submit('dirty-edit', 'auto-edit', [], client.state.session_generation);
     await until(() => session.transcript.cells.some(cell => cell.text.includes('Unsaved editor changes')));
-    assert.equal(await readFile(uri.fsPath, 'utf8'), 'old = 1\n');
-    assert.equal(document.getText(), 'old = 1\n# unsaved\n');
+    assert.equal(await readFile(uri.fsPath, 'utf8'), 'old = 1\r\n');
+    assert.equal(document.getText(), 'old = 1\r\n# unsaved\r\n');
     await document.save();
     await until(async () => !await client.peer.request('test.is_dirty', {path: uri.fsPath}));
     console.log('PASS real unsaved editor synchronization and automatic edit guard');

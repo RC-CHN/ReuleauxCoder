@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 const root = resolve('..');
 const temporary = await mkdtemp(join(tmpdir(), 'rcoder-extension-test-'));
-const workspace = join(temporary, 'workspace');
+const workspace = join(temporary, 'workspace 中文 with spaces');
 await mkdir(join(workspace, '.vscode'), {recursive: true});
 await writeFile(join(workspace, 'example.py'), 'old = 1\n');
 await writeFile(join(workspace, '.vscode', 'settings.json'), JSON.stringify({

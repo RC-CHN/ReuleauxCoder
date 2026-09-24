@@ -6,7 +6,7 @@ import {installCore, managedCommand} from '../src/core/install.js';
 import {CoreRuntime} from '../src/core/runtime.js';
 import {python} from './helpers.js';
 
-const root = await mkdtemp(join(tmpdir(), 'rcoder-packaged-smoke-'));
+const root = await mkdtemp(join(tmpdir(), 'rcoder packaged 中文-'));
 const runtime = new CoreRuntime();
 runtime.on('log', text => process.stdout.write(text));
 try {
