@@ -1,5 +1,10 @@
 # Runtime persistence lock ordering
 
+Process state locks never cover terminal I/O or waits for process completion.
+PTY data writes have a finite backpressure window and report partial writes;
+interrupt, resize and close do not wait for the data writer. Shutdown control
+phases share deadlines, so a blocked soft interrupt cannot prevent termination.
+
 The v0.10.5 audit started from a live `report_progress` hang on an ext4 HDD
 workspace. Python stack sampling showed the tool waiting in snapshot `flush`
 while a background snapshot waited in `PlanController.state`. This was a lock

@@ -11,7 +11,7 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Any, Protocol
+from typing import Any
 import uuid
 
 from reuleauxcoder.domain.process import (
@@ -30,9 +30,13 @@ from reuleauxcoder.domain.process import (
     ProcessStreamMode,
 )
 from reuleauxcoder.domain.cancellation import CancellationSignal
+from reuleauxcoder.domain.process_control import run_process_controls
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.infrastructure.shells import LocalShellSelection, shell_argv
 from reuleauxcoder.infrastructure.process.buffer import BoundedTextBuffer
+from reuleauxcoder.infrastructure.process.pty import (
+    _FdPtyTransport, _PtyTransport, _WinPtyProcessAdapter, _WinPtyTransport,
+)
 
 
 _DEFAULT_RETAINED_BYTES_PER_STREAM = 512 * 1024
@@ -55,134 +59,6 @@ def _replace_surrogate_bytes(text: str) -> tuple[str, bool]:
     )
 
 
-class _PtyTransport(Protocol):
-    def read(self, size: int) -> bytes: ...
-
-    def write(self, data: bytes) -> int: ...
-
-    def resize(self, rows: int, columns: int) -> None: ...
-
-    def interrupt(self) -> None: ...
-
-    def close(self) -> None: ...
-
-
-class _FdPtyTransport:
-    """Small adapter around a POSIX PTY master descriptor."""
-
-    def __init__(self, fd: int) -> None:
-        self._fd: int | None = fd
-        self._write_lock = threading.Lock()
-
-    def read(self, size: int) -> bytes:
-        fd = self._fd
-        if fd is None:
-            return b""
-        return os.read(fd, size)
-
-    def write(self, data: bytes) -> int:
-        with self._write_lock:
-            fd = self._fd
-            if fd is None:
-                raise OSError(errno.EBADF, "PTY is closed")
-            written = 0
-            while written < len(data):
-                count = os.write(fd, data[written:])
-                if count <= 0:
-                    raise OSError(errno.EIO, "PTY write made no progress")
-                written += count
-            return written
-
-    def interrupt(self) -> None:
-        self.write(b"\x03")
-
-    def resize(self, rows: int, columns: int) -> None:
-        import fcntl
-        import struct
-        import termios
-
-        with self._write_lock:
-            fd = self._fd
-            if fd is None:
-                raise OSError(errno.EBADF, "PTY is closed")
-            fcntl.ioctl(
-                fd,
-                termios.TIOCSWINSZ,
-                struct.pack("HHHH", rows, columns, 0, 0),
-            )
-
-    def close(self) -> None:
-        with self._write_lock:
-            fd = self._fd
-            self._fd = None
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-
-class _WinPtyProcessAdapter:
-    """Expose pywinpty's ConPTY process through the local Popen subset."""
-
-    stdout = None
-    stderr = None
-
-    def __init__(self, process: Any) -> None:
-        self._process = process
-        self.pid = int(process.pid)
-
-    def wait(self) -> int:
-        return int(self._process.wait())
-
-    def poll(self) -> int | None:
-        if self._process.isalive():
-            return None
-        return int(self._process.exitstatus)
-
-
-class _WinPtyTransport:
-    """Transport adapter for a native Windows ConPTY session."""
-
-    def __init__(self, process: Any) -> None:
-        self._process = process
-        self._lock = threading.Lock()
-        self._closed = False
-
-    def read(self, size: int) -> bytes:
-        try:
-            return str(self._process.read(size)).encode("utf-8")
-        except EOFError:
-            return b""
-
-    def write(self, data: bytes) -> int:
-        text = data.decode("utf-8")
-        with self._lock:
-            if self._closed:
-                raise OSError(errno.EBADF, "ConPTY is closed")
-            return int(self._process.write(text))
-
-    def interrupt(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._process.sendcontrol("c")
-
-    def resize(self, rows: int, columns: int) -> None:
-        with self._lock:
-            if self._closed:
-                raise OSError(errno.EBADF, "ConPTY is closed")
-            self._process.setwinsize(rows, columns)
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-        try:
-            self._process.close(force=False)
-        except (EOFError, OSError):
-            pass
 
 
 class _WindowsJob:
@@ -931,27 +807,29 @@ class LocalProcessPort:
                 return self._snapshot(entry, ProcessCursor())
             if entry.interrupt_requested or entry.termination_requested:
                 return self._snapshot(entry, ProcessCursor())
-            try:
-                if entry.stream_mode is ProcessStreamMode.PTY:
-                    if entry.pty_transport is None:
-                        raise OSError(errno.EBADF, "PTY is closed")
-                    entry.pty_transport.interrupt()
-                elif os.name == "nt":
-                    entry.process.send_signal(signal.CTRL_BREAK_EVENT)
-                else:
-                    os.killpg(entry.process.pid, signal.SIGINT)
-            except ProcessLookupError as error:
-                if entry.process.poll() is not None:
-                    entry.done.wait(0.1)
-                    return self._snapshot(entry, ProcessCursor())
-                raise ProcessOperationUnsupported(
-                    f"interrupt was not delivered to session '{session_id}': {error}"
-                ) from error
-            except (OSError, ValueError, EOFError) as error:
-                raise ProcessOperationUnsupported(
-                    f"interrupt was not delivered to session '{session_id}': {error}"
-                ) from error
             entry.interrupt_requested = True
+        try:
+            if entry.stream_mode is ProcessStreamMode.PTY:
+                if entry.pty_transport is None:
+                    raise OSError(errno.EBADF, "PTY is closed")
+                try:
+                    entry.pty_transport.interrupt()
+                except BlockingIOError:
+                    # A full terminal input queue cannot delay process control.
+                    os.killpg(entry.process.pid, signal.SIGINT)
+            elif os.name == "nt":
+                entry.process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                os.killpg(entry.process.pid, signal.SIGINT)
+        except (OSError, ValueError, EOFError) as error:
+            with entry.condition:
+                entry.interrupt_requested = False
+            if isinstance(error, ProcessLookupError) and entry.process.poll() is not None:
+                entry.done.wait(0.1)
+                return self._snapshot(entry, ProcessCursor())
+            raise ProcessOperationUnsupported(
+                f"interrupt was not delivered to session '{session_id}': {error}"
+            ) from error
         return self._snapshot(entry, ProcessCursor())
 
     def terminate(
@@ -1095,19 +973,19 @@ class LocalProcessPort:
             entry.state is ProcessState.EXITED for entry in entries
         )
         live = [entry for entry in entries if entry.state is ProcessState.RUNNING]
-        for entry in live:
-            try:
-                self.interrupt(entry.session_id)
-            except ProcessSessionNotFound:
-                pass
         deadline = time.monotonic() + max(0.0, grace_seconds)
+        run_process_controls(
+            live, lambda entry: self.interrupt(entry.session_id), deadline=deadline,
+        )
         for entry in live:
             entry.done.wait(max(0.0, deadline - time.monotonic()))
         remaining = [entry for entry in live if not entry.done.is_set()]
-        for entry in remaining:
-            self._request_termination(entry, reason="shutdown")
         reap_timeouts = start_reap_timeouts
         reap_deadline = time.monotonic() + 2.0
+        run_process_controls(
+            remaining, lambda entry: self._request_termination(entry, reason="shutdown"),
+            deadline=reap_deadline,
+        )
         for entry in remaining:
             if not entry.done.wait(
                 max(0.0, reap_deadline - time.monotonic())

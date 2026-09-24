@@ -20,6 +20,85 @@ def _python_command(source: str) -> str:
     return f"{shlex.quote(sys.executable)} -u -c {shlex.quote(source)}"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX PTY backpressure")
+def test_full_pty_input_cannot_block_interrupt_or_termination(tmp_path):
+    port = LocalProcessPort()
+    handle = port.start(
+        "stty -icanon -echo; trap '' INT; printf ready; sleep 30",
+        cwd=str(tmp_path), runtime_timeout=0, tty=True,
+    )
+    entry = port._lookup(handle.session_id)
+    written = []
+    errors = []
+
+    def write():
+        try:
+            written.append(port.write_input(handle.session_id, "x" * 65536))
+        except OSError as error:
+            errors.append(error)
+
+    writer = threading.Thread(target=write, daemon=True)
+    try:
+        output = ""
+        deadline = time.monotonic() + 5
+        cursor = ProcessCursor()
+        while "ready" not in output:
+            assert time.monotonic() < deadline
+            snapshot = port.poll(handle.session_id, cursor=cursor, wait_ms=100)
+            cursor = snapshot.cursor
+            output += snapshot.stdout
+        writer.start()
+        time.sleep(0.05)
+        started = time.monotonic()
+        port.interrupt(handle.session_id)
+        port.terminate(handle.session_id)
+        assert time.monotonic() - started < 0.5
+        writer.join(timeout=1)
+        assert not writer.is_alive()
+        assert written or errors
+        assert entry.done.wait(2)
+    finally:
+        if entry.process.poll() is None:
+            os.killpg(entry.process.pid, signal.SIGKILL)
+        port.shutdown(grace_seconds=0)
+
+
+def test_blocked_transport_interrupt_does_not_own_process_state(tmp_path):
+    port = LocalProcessPort()
+    handle = port.start(
+        _python_command("import time; time.sleep(30)"), cwd=str(tmp_path), runtime_timeout=0,
+    )
+    entry = port._lookup(handle.session_id)
+    from reuleauxcoder.domain.process import ProcessStreamMode
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockedControl:
+        def interrupt(self):
+            started.set()
+            release.wait(3)
+
+        def close(self):
+            pass
+
+    entry.stream_mode = ProcessStreamMode.PTY
+    entry.pty_transport = BlockedControl()
+    interrupter = threading.Thread(target=lambda: port.interrupt(handle.session_id), daemon=True)
+    interrupter.start()
+    try:
+        assert started.wait(1)
+        closer = threading.Thread(target=lambda: port.terminate(handle.session_id), daemon=True)
+        closer.start()
+        closer.join(timeout=1)
+        assert not closer.is_alive()
+        assert entry.done.wait(2)
+    finally:
+        release.set()
+        interrupter.join(timeout=1)
+        port.shutdown(grace_seconds=0)
+
+
 def test_cancel_long_poll_preserves_running_process_and_later_output(tmp_path):
     port = LocalProcessPort()
     cancellation = threading.Event()

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from reuleauxcoder.domain.cancellation import CancellationSignal
+from reuleauxcoder.domain.process_control import run_process_controls
 from reuleauxcoder.domain.process import (
     MAX_PROCESS_INPUT_BYTES,
     MAX_PROCESS_SESSION_INPUT_BYTES,
@@ -739,11 +740,9 @@ class ProcessManager:
             except Exception:
                 return
 
-        if entries:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(self._max_sessions, len(entries))
-            ) as pool:
-                tuple(pool.map(terminate_entry, entries))
+        run_process_controls(
+            entries, terminate_entry, deadline=time.monotonic() + 2.0,
+        )
         return len(entries)
 
     def shutdown(self, *, grace_seconds: float = 0.5) -> ProcessShutdownReport:
@@ -783,12 +782,8 @@ class ProcessManager:
             except Exception:
                 return
 
-        if live:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(self._max_sessions, len(live))
-            ) as pool:
-                tuple(pool.map(interrupt_entry, live))
         deadline = time.monotonic() + max(0.0, grace_seconds)
+        run_process_controls(live, interrupt_entry, deadline=deadline)
         for entry in live:
             watcher = entry.watcher
             if watcher is not None:
@@ -819,12 +814,10 @@ class ProcessManager:
                         entry.terminal_at = entry.terminal_at or time.monotonic()
             return True
 
-        confirmations: tuple[bool, ...] = ()
-        if force_targets:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(self._max_sessions, len(force_targets))
-            ) as pool:
-                confirmations = tuple(pool.map(terminate_entry, force_targets))
+        reap_deadline = time.monotonic() + 2.0
+        confirmations = run_process_controls(
+            force_targets, terminate_entry, deadline=reap_deadline,
+        )
         fallback_unknown_by_port: dict[int, int] = {}
         for entry, confirmed in zip(
             force_targets,
@@ -837,7 +830,6 @@ class ProcessManager:
                     fallback_unknown_by_port.get(port_id, 0) + 1
                 )
         reap_timeouts = start_reap_timeouts
-        reap_deadline = time.monotonic() + 2.0
         for entry in force_targets:
             watcher = entry.watcher
             if watcher is not None:
@@ -845,15 +837,18 @@ class ProcessManager:
                 if watcher.is_alive():
                     reap_timeouts += 1
         remaining_manager_entries_by_port: dict[int, int] = {}
+
+        def release_entry(entry: _ManagedEntry) -> bool:
+            if entry.last_snapshot.state is not ProcessState.EXITED:
+                return False
+            entry.port.release(entry.handle.session_id)
+            return True
+
+        releases = run_process_controls(
+            entries, release_entry, deadline=time.monotonic() + 0.5,
+        )
         with self._lock:
-            for entry in tuple(self._entries.values()):
-                released = False
-                if entry.last_snapshot.state is ProcessState.EXITED:
-                    try:
-                        entry.port.release(entry.handle.session_id)
-                        released = True
-                    except Exception:
-                        pass
+            for entry, released in zip(entries, releases, strict=True):
                 if not released:
                     port_id = id(entry.port)
                     remaining_manager_entries_by_port[port_id] = (
@@ -864,9 +859,12 @@ class ProcessManager:
         unknown_after_cleanup = 0
         orphan_total = 0
         orphan_terminated = 0
-        for port in ports:
-            try:
-                report = port.shutdown(grace_seconds=0)
+        reports = run_process_controls(
+            ports, lambda port: port.shutdown(grace_seconds=0),
+            deadline=time.monotonic() + 2.5,
+        )
+        for port, report in zip(ports, reports, strict=True):
+            if report is not None:
                 reap_timeouts += report.reap_timeouts
                 extra_sessions = max(
                     0,
@@ -879,7 +877,7 @@ class ProcessManager:
                     if report.total > 0
                     else fallback_unknown_by_port.get(id(port), 0)
                 )
-            except Exception:
+            else:
                 reap_timeouts += 1
                 unknown_after_cleanup += fallback_unknown_by_port.get(
                     id(port),

@@ -615,6 +615,46 @@ def test_manager_shutdown_reports_port_session_not_registered_after_start() -> N
     assert port.shutdown_calls == 1
 
 
+def test_manager_shutdown_escalates_when_interrupt_never_returns() -> None:
+    release = threading.Event()
+    interrupted = threading.Event()
+
+    class BlockedInterruptPort(_UnknownPort):
+        def __init__(self):
+            super().__init__()
+            self.state = ProcessState.RUNNING
+
+        def interrupt(self, session_id):
+            interrupted.set()
+            release.wait(5)
+            return self.poll(session_id)
+
+    port = BlockedInterruptPort()
+    manager = ProcessManager()
+    handle = manager.start(
+        port, "blocked-control", cwd=".", runtime_timeout=0, tty=False,
+        owner_agent_id="agent", owner_session_id="session", session_generation=0,
+        origin_turn_id="turn",
+    )
+    manager.publish(handle.session_id)
+    reports = []
+    closer = threading.Thread(
+        target=lambda: reports.append(manager.shutdown(grace_seconds=0.05)),
+        daemon=True,
+    )
+    closer.start()
+    try:
+        assert interrupted.wait(1)
+        closer.join(timeout=1)
+        assert not closer.is_alive()
+        assert port.terminate_calls == 1
+        assert reports[0].terminated == 1
+        assert reports[0].reap_timeouts == 0
+    finally:
+        release.set()
+        closer.join(timeout=2)
+
+
 def test_manager_shutdown_controls_independent_sessions_concurrently() -> None:
     active = 0
     max_active = 0
