@@ -3885,14 +3885,15 @@ def test_default_after_transform_does_not_renormalize_runtime_outcome(
     tool, calls = _outcome_tool(primary)
     agent = _AgentStub(tool)
     normalized = []
-    original_normalize = tool_execution_module._normalize_tool_outcome
+    from reuleauxcoder.domain.agent import tool_outcome_validation
+    original_normalize = tool_outcome_validation._normalize_tool_outcome
 
     def track_normalize(outcome):
         normalized.append(outcome)
         return original_normalize(outcome)
 
     monkeypatch.setattr(
-        tool_execution_module,
+        tool_outcome_validation,
         "_normalize_tool_outcome",
         track_normalize,
     )

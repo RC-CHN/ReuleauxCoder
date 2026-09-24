@@ -71,6 +71,12 @@ The volatile execution overlay is rebuilt for each request and is never appended
 
 `domain/agent/tool_execution.py` is the shared tool pipeline:
 
+Result validation, bounded metadata projection and failure aggregation live in
+`domain/agent/tool_outcome_validation.py`; the executor retains ordering,
+approval and effect delivery. Session payload validation lives in
+`infrastructure/persistence/session_validation.py`, separate from file I/O and
+writer coordination.
+
 1. resolve the scoped tool;
 2. build a typed execution context;
 3. run authorization guards;
@@ -232,6 +238,11 @@ Subagents receive rebuilt scoped tools/hooks instead of sharing mutable instance
 ## LSP
 
 `extensions/lsp/manager.py` owns the worker thread, workspace/language clients, document versions, generation watermarks and diagnostic batches. `client.py` owns JSON-RPC/LSP transport. `registry.py` owns language detection and server commands.
+
+`documents.py` owns bounded stable file reads and handle cleanup. Subagent prompt
+and result projection live in `extensions/subagent/result_projection.py`, whose
+result input is a typed evidence snapshot; scheduling and transcript writes stay
+with their runtime owners.
 
 Key invariants:
 

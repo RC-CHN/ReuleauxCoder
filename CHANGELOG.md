@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Separate tool-result validation and failure aggregation, session payload validation, stable LSP document reads, and delegated result projection from their execution/storage managers. Delegated result projection receives an explicit evidence snapshot instead of parent/child agents.
+
 - Move tool contracts and pure prompt policy into domain, assemble integration hooks and subagent restore in the host/extension layer, and inject platform shell selection at agent construction. Enforce the domain's runtime dependency direction with an architecture check.
 
 - Show ordinary and steering messages immediately on Enter and clear the sent draft before RPC/history I/O. Track sending, queued and unconfirmed delivery separately, correlate applied events without duplicate user messages, preserve new drafts, and retry retained messages with the same submission ID via `/retry`.

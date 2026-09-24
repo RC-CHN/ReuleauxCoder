@@ -12,16 +12,22 @@ from collections.abc import Iterable
 from pathlib import Path
 import hashlib
 import json
-import re
 import threading
 import time
 import uuid
-from typing import Callable, Literal, TypedDict, cast
+from typing import Callable, Literal, cast
 
 from reuleauxcoder.domain.agent.events import AgentEvent
 from reuleauxcoder.domain.config.models import resolve_context_strategies
 from reuleauxcoder.services.llm.factory import llm_runtime_kwargs
 from reuleauxcoder.extensions.subagent.context import project_parent_context
+from reuleauxcoder.extensions.subagent.result_projection import (
+    ResultSnapshot, project_result,
+    _normalize_subagent_terminal_status as _normalize_subagent_terminal_status,
+    _parse_delegated_final_response as _parse_delegated_final_response,
+    _resume_workspace_notice as _resume_workspace_notice,
+    build_delegated_prompt as build_delegated_prompt,
+)
 from reuleauxcoder.extensions.subagent.models import (
     SubagentResult,
     SubagentTranscriptStore,
@@ -2409,79 +2415,6 @@ def run_subagent_task(
     return final_result
 
 
-def _normalize_subagent_terminal_status(status: str, summary: str) -> str:
-    """Fail closed when a nominal worker terminal is really budget exhaustion."""
-    if status != "ok":
-        return status
-    normalized = summary.lower()
-    budget_markers = (
-        "sub-agent token budget exhausted",
-        "sub-agent round budget exhausted",
-        "reached maximum tool-call rounds",
-        "maximum tool-call rounds reached",
-        "max rounds reached",
-        "sub-agent tool-call budget exhausted",
-    )
-    return (
-        "failed" if any(marker in normalized for marker in budget_markers) else status
-    )
-
-
-def build_delegated_prompt(
-    *,
-    task: str,
-    parent_context: str,
-    context_mode: str,
-    worktree_path: str | None = None,
-    working_directory: str | None = None,
-) -> str:
-    """Build the stable child contract used by fresh and resumed workers."""
-    sections = [
-        (
-            "You are a delegated worker with a narrow assigned scope. Do not "
-            "create or delegate to other agents and do not modify the root plan. "
-            "Use report_progress only for low-frequency human-visible status, "
-            "report_to_parent for non-blocking findings/replies, and "
-            "request_guidance only when you cannot safely continue without a decision."
-        ),
-        f"[Parent context mode={context_mode}]\n{parent_context}\n[/Parent context]",
-    ]
-    if worktree_path:
-        sections.append(
-            "[Isolated worktree]\n"
-            f"{worktree_path}\n"
-            "Re-read relevant files because inherited paths or contents may be stale.\n"
-            "[/Isolated worktree]"
-        )
-    elif working_directory:
-        sections.append(f"[Execution root]\n{working_directory}\n[/Execution root]")
-    sections.extend(
-        [
-            f"[Assigned task]\n{task}\n[/Assigned task]",
-            (
-                "When the task is complete, return one final assistant response with "
-                "no tool calls. Use exactly these sections in this order:\n"
-                "1. Conclusion — answer the assigned task directly.\n"
-                "2. Evidence — cite actual reads, commands, tests, or diagnostics.\n"
-                "3. Changes and artifacts — list files/artifacts/worktree state, or None.\n"
-                "4. Unresolved issues — list blockers/risks/parent decisions, or None.\n"
-                "5. Confidence — high, medium, or low, including why confidence is reduced."
-            ),
-        ]
-    )
-    return "\n\n".join(sections)
-
-
-def _resume_workspace_notice() -> str:
-    return (
-        "[Resume workspace notice]\n"
-        "The workspace and parent-owned LSP document generations may have changed "
-        "while this worker was parked. Re-read every relevant file or symbol before "
-        "relying on observations from the checkpoint. Guidance is not tool approval.\n"
-        "[/Resume workspace notice]"
-    )
-
-
 def _coerce_subagent_result(value: object) -> SubagentResult:
     if isinstance(value, SubagentResult):
         return value
@@ -2502,59 +2435,22 @@ def _result_from_agent(
     transcript_ref: str | None = None,
 ) -> SubagentResult:
     messages = list(getattr(sub, "messages", []))
-    reported = _parse_delegated_final_response(summary)
-    files = sorted(
-        {match.group(0) for match in re.finditer(r"(?:[\w.-]+/)+[\w.-]+", summary)}
-    )
-    tool_facts = [
-        event
-        for event in getattr(getattr(sub, "history_ledger", None), "events", ())
+    tool_facts = tuple(
+        event for event in getattr(getattr(sub, "history_ledger", None), "events", ())
         if event.kind == "tool_call_finished"
-    ]
-    failures = [event for event in tool_facts if not event.payload.get("success")]
-    runtime_evidence = [
-        (
-            f"tool {event.payload.get('tool_name') or 'unknown'}: "
-            f"{event.payload.get('status') or 'unknown'}"
-            + (
-                f" (exit {event.payload['exit_code']})"
-                if event.payload.get("exit_code") is not None
-                else ""
-            )
-        )
-        for event in tool_facts[-20:]
-    ]
-    evidence = list(dict.fromkeys([*reported["evidence"], *runtime_evidence]))
-    unresolved = list(reported["unresolved"])
-    missing_sections = reported["missing"]
-    confidence = reported["confidence"]
-    if missing_sections and not partial:
-        unresolved.append(
-            "Delegated final response omitted required sections: "
-            + ", ".join(missing_sections)
-        )
-        confidence = "low"
-    if getattr(sub, "subagent_mode", None) == "verify" and failures:
-        status = "failed"
-        summary = (
-            "Verification observed one or more failed tool outcomes.\n" + summary
-        ).strip()
-    result = SubagentResult(
-        status=status,
-        summary=reported["conclusion"] or summary,
-        evidence=evidence,
-        files=files[:100],
-        changes=reported["artifacts"],
-        unresolved=unresolved,
-        confidence=confidence,
-        duration_seconds=max(0.0, time.monotonic() - started_at),
-        partial=partial,
-        tool_uses=int(getattr(sub.state, "total_tool_calls", 0)),
+    )
+    snapshot = ResultSnapshot(
+        tool_facts=tool_facts,
+        mode=getattr(sub, "subagent_mode", None),
+        elapsed_seconds=max(0.0, time.monotonic() - started_at),
+        tool_calls=int(getattr(sub.state, "total_tool_calls", 0)),
         prompt_tokens=int(getattr(sub.state, "total_prompt_tokens", 0)),
         completion_tokens=int(getattr(sub.state, "total_completion_tokens", 0)),
         model_calls=int(getattr(sub.state, "total_model_calls", 0)),
-        usage_uncertain=usage_uncertain,
-        resume_ready=resume_ready,
+    )
+    result = project_result(
+        snapshot, status=status, summary=summary, partial=partial,
+        usage_uncertain=usage_uncertain, resume_ready=resume_ready,
         transcript_ref=transcript_ref,
     )
     if job_id and transcript_ref is None:
@@ -2564,68 +2460,14 @@ def _result_from_agent(
                 job_id,
                 messages,
                 {
-                    "status": status,
+                    "status": result.status,
                     "partial": partial,
-                    "failed_tool_outcomes": len(failures),
+                    "failed_tool_outcomes": sum(not event.payload.get("success") for event in tool_facts),
                 },
             )
         except OSError:
             pass
     return result
-
-
-_FINAL_SECTION_PATTERN = re.compile(
-    r"(?im)^\s*(?:#{1,6}\s*)?(?:\d+[.)]\s*)?"
-    r"(Conclusion|Evidence|Changes and artifacts|Unresolved issues|Confidence)"
-    r"\s*(?:—|–|-|:)\s*"
-)
-
-
-class _DelegatedFinalSections(TypedDict):
-    conclusion: str
-    evidence: list[str]
-    artifacts: list[str]
-    unresolved: list[str]
-    confidence: str | None
-    missing: list[str]
-
-
-def _parse_delegated_final_response(text: str) -> _DelegatedFinalSections:
-    """Parse the child contract while keeping runtime facts authoritative."""
-    matches = list(_FINAL_SECTION_PATTERN.finditer(text))
-    sections: dict[str, str] = {}
-    aliases = {
-        "conclusion": "conclusion",
-        "evidence": "evidence",
-        "changes and artifacts": "artifacts",
-        "unresolved issues": "unresolved",
-        "confidence": "confidence",
-    }
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        sections[aliases[match.group(1).lower()]] = text[match.end() : end].strip()
-
-    def _items(name: str) -> list[str]:
-        value = sections.get(name, "").strip()
-        if not value or value.lower() in {"none", "n/a", "unknown"}:
-            return []
-        lines = [
-            re.sub(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip()
-            for line in value.splitlines()
-        ]
-        return [line for line in lines if line]
-
-    confidence_text = sections.get("confidence", "").strip()
-    confidence_match = re.match(r"(?i)^(high|medium|low)\b", confidence_text)
-    required = ("conclusion", "evidence", "artifacts", "unresolved", "confidence")
-    return {
-        "conclusion": sections.get("conclusion", "").strip(),
-        "evidence": _items("evidence"),
-        "artifacts": _items("artifacts"),
-        "unresolved": _items("unresolved"),
-        "confidence": confidence_match.group(1).lower() if confidence_match else None,
-        "missing": [name for name in required if name not in sections],
-    }
 
 
 def _retarget_tools(tools: list, cwd: Path) -> None:
