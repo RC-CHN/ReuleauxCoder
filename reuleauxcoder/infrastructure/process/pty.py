@@ -134,6 +134,7 @@ class _WinPtyTransport:
     def __init__(self, process: Any) -> None:
         self._process = process
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._closed = False
 
     def read(self, size: int) -> bytes:
@@ -144,10 +145,15 @@ class _WinPtyTransport:
 
     def write(self, data: bytes) -> int:
         text = data.decode("utf-8")
-        with self._lock:
-            if self._closed:
-                raise OSError(errno.EBADF, "ConPTY is closed")
-        return int(self._process.write(text))
+        if not self._write_lock.acquire(timeout=_INPUT_WAIT_SECONDS):
+            raise TimeoutError("ConPTY input is busy; no input was sent")
+        try:
+            with self._lock:
+                if self._closed:
+                    raise OSError(errno.EBADF, "ConPTY is closed")
+            return int(self._process.write(text))
+        finally:
+            self._write_lock.release()
 
     def interrupt(self) -> None:
         with self._lock:
@@ -170,4 +176,3 @@ class _WinPtyTransport:
             self._process.close(force=False)
         except (EOFError, OSError):
             pass
-
