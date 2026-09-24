@@ -1,1 +1,141 @@
-:root{color-scheme:light dark;--accent:var(--vscode-button-background,#836538);--line:var(--vscode-panel-border,#383b43);--muted:var(--vscode-descriptionForeground,#979da9)}*{box-sizing:border-box}body{padding:0;margin:0;background:var(--vscode-sideBar-background,#202228);color:var(--vscode-foreground,#d5d9e0);font-family:var(--vscode-font-family,system-ui);font-size:var(--vscode-font-size,13px);display:flex;flex-direction:column;height:100vh;overflow:hidden}button,input,textarea{font:inherit}button{border:1px solid transparent;border-radius:4px;padding:5px 9px;background:transparent;color:inherit;cursor:pointer}button:hover{background:var(--vscode-toolbar-hoverBackground,#ffffff10)}button:focus-visible,textarea:focus-visible{outline:1px solid var(--vscode-focusBorder,#a2b8d4);outline-offset:1px}button:disabled{opacity:.45;cursor:default}.primary{background:var(--vscode-button-background,#9b7740);color:var(--vscode-button-foreground,#fff)}.primary:hover{background:var(--vscode-button-hoverBackground,#ad8b51)}header{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding:12px 15px;flex-shrink:0}header strong{font-size:14px;font-weight:600}header small{display:block;color:var(--muted);font-size:10px;overflow-wrap:anywhere;margin-top:4px}header nav{margin-left:auto;display:flex;gap:2px}header button{font-size:17px}#setup{padding:17px;border-bottom:1px solid var(--line);flex-shrink:0;max-height:45vh;overflow:auto}#setup h2{font-size:17px;font-weight:500;margin:0 0 8px}#setup p{color:var(--muted);line-height:1.6;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:7px}.actions button{border-color:var(--line);font-size:11px}#transcript{flex:1;min-height:0;overflow:auto;padding:18px 15px;scrollbar-gutter:stable}#empty{padding:25px 3px}#empty h2{font-size:20px;font-weight:500}#empty p{line-height:1.8;color:var(--muted)}.cell{margin-bottom:20px;overflow-wrap:anywhere}.cell .meta{font-size:10px;color:var(--muted);display:flex;gap:8px;align-items:center;margin-bottom:7px}.cell .body{white-space:pre-wrap;font-size:12px;line-height:1.8;tab-size:4}.cell.user .body{border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:var(--vscode-input-background,#1a1d23)}.cell details{border:1px solid var(--line);border-radius:5px;padding:8px 10px}.cell summary{cursor:pointer;font-size:11px;color:var(--muted)}.cell details .body{margin-top:10px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px}.cell.notice{border-left:2px solid var(--vscode-editorWarning-foreground,#cba76e);padding-left:10px;color:var(--muted)}.cell .detail{font-size:11px;color:var(--muted);white-space:pre-wrap;margin-top:7px}.cell .retry{font-size:11px;color:var(--vscode-textLink-foreground,#93bce8)}#new-output{position:absolute;right:18px;bottom:190px;background:var(--vscode-button-secondaryBackground,#303b4d);border-color:var(--line);box-shadow:0 3px 14px #0003}#reviews{max-height:30vh;overflow:auto}.review{margin:0 13px 10px;padding:11px;border:1px solid var(--vscode-editorWarning-foreground,#bfa275);border-radius:5px}.review strong{font-size:12px;display:block}.review p{font-size:11px;color:var(--muted);white-space:pre-wrap;margin:7px 0;overflow-wrap:anywhere}.review .actions{margin-top:8px}.review button{font-size:10px}#notice{margin:0;padding:8px 15px;font-size:11px;color:var(--vscode-editorWarning-foreground,#d9b67a);border-top:1px solid var(--line);overflow-wrap:anywhere;max-height:90px;overflow:auto}footer{padding:12px;border-top:1px solid var(--line);flex-shrink:0}.composer{border:1px solid var(--vscode-input-border,#5b5d66);background:var(--vscode-input-background,#181b20);border-radius:7px;padding:9px}.composer:focus-within{border-color:var(--vscode-focusBorder,#b9a475)}textarea{display:block;background:transparent;color:var(--vscode-input-foreground,inherit);border:0;outline:0!important;resize:vertical;width:100%;min-height:65px;max-height:35vh;font-size:12px;line-height:1.7}textarea::placeholder{color:var(--vscode-input-placeholderForeground,#969ba6)}.composer-actions{display:flex;align-items:center;gap:5px;margin-top:7px}.composer-actions button{padding:3px 7px}.composer-actions #model{font-size:10px;color:var(--muted);max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#activity{font-size:10px;color:var(--muted);margin-left:auto}#send{min-width:27px}.hint{display:flex;justify-content:space-between;gap:10px;font-size:9px;color:var(--muted);margin-top:7px;flex-wrap:wrap}#attachments{display:flex;gap:5px;flex-wrap:wrap}.attachment{display:flex;align-items:center;gap:5px;max-width:100%;font-size:10px;padding:3px 6px;margin-bottom:8px;border:1px solid var(--line);border-radius:4px}.attachment span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.attachment button{padding:0 3px;font-size:10px}.attachment.failed{border-color:var(--vscode-errorForeground,#cf7b80)}.drop-active{outline:2px dashed var(--vscode-focusBorder,#bdad89);outline-offset:-5px}[hidden]{display:none!important}@media(min-width:700px){header,#setup,footer,#reviews,#notice{padding-left:max(20px,calc((100vw - 850px)/2));padding-right:max(20px,calc((100vw - 850px)/2))}#transcript{padding:28px max(20px,calc((100vw - 820px)/2))}.cell .body{font-size:13px}.composer{padding:13px}.review{margin-left:0;margin-right:0}}@media(prefers-reduced-motion:no-preference){.cell{animation:appear .1s ease-out}@keyframes appear{from{opacity:.7}to{opacity:1}}}
+:root {
+  color-scheme: light dark;
+  --canvas: var(--vscode-sideBar-background, #1c2024);
+  --surface: var(--vscode-editor-background, #24292e);
+  --input: var(--vscode-input-background, #24292e);
+  --ink: var(--vscode-foreground, #e1e5e8);
+  --muted: var(--vscode-descriptionForeground, #a4acb3);
+  --line: var(--vscode-panel-border, #41484f);
+  --accent: var(--vscode-charts-orange, #cda873);
+  --accent-wash: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  --focus: var(--vscode-focusBorder, #d8b685);
+  --hover: var(--vscode-list-hoverBackground, #ffffff0b);
+}
+* {box-sizing: border-box}
+[hidden] {display: none !important}
+body {padding: 0; margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; background: var(--canvas); color: var(--ink); font: var(--vscode-font-size, 13px)/1.5 var(--vscode-font-family, system-ui, sans-serif)}
+button, input, textarea, select {font: inherit; color: inherit}
+button {display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid transparent; border-radius: 7px; padding: 6px 9px; background: transparent; cursor: pointer; min-height: 30px; text-align: left}
+button:hover {background: var(--hover)}
+button:disabled {opacity: .5; cursor: default}
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible {outline: 2px solid var(--focus); outline-offset: 2px}
+button.primary {background: var(--vscode-button-background, #cfad79); color: var(--vscode-button-foreground, #1e252a); border-color: transparent}
+button.primary:hover {background: var(--vscode-button-hoverBackground, #e0c396)}
+input, select, .command-form textarea {width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--input); padding: 9px 10px; min-width: 0}
+.icon {width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round}
+.app-header {display: flex; align-items: center; gap: 8px; padding: 14px 16px 12px; flex: 0 0 auto; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent)}
+.identity {display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1}
+.identity > div {min-width: 0}
+.identity strong {font-size: 15px; font-weight: 650; letter-spacing: -.4px}
+.identity small {display: block; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%}
+.brand-mark {color: var(--accent); display: flex}
+.brand-mark .icon {width: 27px; height: 27px; stroke-width: 1.3}
+.app-header nav {display: flex; flex: 0 0 auto; gap: 1px}
+.app-header nav button {padding: 5px}
+#setup {padding: 18px; flex-shrink: 0; max-height: 40vh; overflow: auto; border-bottom: 1px solid var(--line)}
+#setup h2 {font-size: 18px; margin: 0 0 8px; font-weight: 550}
+#setup p {color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere}
+.actions {display: flex; flex-wrap: wrap; gap: 7px}
+.actions button {border-color: var(--line); font-size: 12px}
+#transcript {flex: 1; min-height: 0; overflow: auto; padding: 24px 18px 18px; scrollbar-gutter: stable; scroll-padding: 20px}
+#empty {max-width: 540px; margin: 6vh auto 35px}
+.hero-mark {color: var(--accent); margin-bottom: 20px}
+.hero-mark .icon {width: 52px; height: 52px; stroke-width: 1}
+.eyebrow {color: var(--muted); font-size: 9px; letter-spacing: 2px}
+#empty h1 {font-size: clamp(25px, 4vw, 36px); font-weight: 520; letter-spacing: -1.2px; line-height: 1.25; margin: 12px 0}
+#empty p {color: var(--muted); max-width: 38em; line-height: 1.8}
+.starter-actions {display: flex; flex-wrap: wrap; gap: 7px; margin-top: 24px}
+.starter-actions button {border: 1px solid var(--line); background: var(--surface); font-size: 12px; padding: 8px 10px}
+.starter-actions .icon {color: var(--accent); width: 16px; height: 16px}
+.cell {margin: 0 0 24px; overflow-wrap: anywhere; min-width: 0}
+.cell .meta {display: flex; align-items: center; gap: 8px; font-size: 10px; letter-spacing: .3px; color: var(--muted); margin-bottom: 8px}
+.cell.assistant > .meta {color: var(--accent); font-weight: 600}
+.cell .meta span {font-weight: normal; color: var(--muted); font-size: 10px}
+.body {white-space: pre-wrap; line-height: 1.8; tab-size: 4}
+.cell.user {margin-left: 22px}
+.cell.user .body {padding: 12px 15px; border: 1px solid var(--line); border-radius: 12px 12px 3px 12px; background: var(--surface)}
+.cell.user .meta {justify-content: flex-end}
+.cell details {border-left: 2px solid var(--line); padding: 3px 0 3px 12px}
+.cell summary {color: var(--muted); cursor: pointer; font-size: 12px}
+.cell details .body {margin-top: 10px; font-size: 12px}
+.cell.tool .body {font: 11px/1.7 var(--vscode-editor-font-family, monospace); max-height: 380px; overflow: auto}
+.cell.notice {color: var(--muted); border-left: 2px solid var(--accent); padding-left: 12px}
+.cell .detail {font-size: 11px; white-space: pre-wrap; color: var(--muted); margin: 8px 0}
+.cell .retry {color: var(--vscode-textLink-foreground, #97bddd)}
+.markdown {white-space: normal; line-height: 1.8}
+.markdown > :first-child {margin-top: 0}
+.markdown > :last-child {margin-bottom: 0}
+.markdown p {margin: 0 0 12px}
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {line-height: 1.4; font-weight: 600; margin: 22px 0 10px}
+.markdown h1 {font-size: 1.55em}.markdown h2 {font-size: 1.3em}.markdown h3 {font-size: 1.15em}
+.markdown ul, .markdown ol {padding-left: 24px; margin: 10px 0}
+.markdown li {padding-left: 3px; margin: 4px 0}
+.markdown blockquote {border-left: 3px solid var(--accent); padding: 1px 14px; margin: 16px 0; color: var(--muted)}
+.markdown a {color: var(--vscode-textLink-foreground, #9bbde1); text-underline-offset: 3px}
+.markdown code {font: .92em var(--vscode-editor-font-family, monospace); background: var(--vscode-textCodeBlock-background, #80808018); border-radius: 4px; padding: 2px 5px; overflow-wrap: anywhere}
+.code-block {border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 16px 0; background: var(--surface)}
+.code-toolbar {display: flex; align-items: center; justify-content: space-between; padding: 3px 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px}
+.code-toolbar button {min-height: 25px; font-size: 10px; padding: 2px 5px}.code-toolbar .icon {width: 13px; height: 13px}
+.markdown pre {margin: 0; padding: 14px; overflow: auto; line-height: 1.7}.markdown pre code {padding: 0; background: transparent; overflow-wrap: normal; border: 0}
+.table-scroll {overflow: auto; margin: 14px 0}.markdown table {border-collapse: collapse; width: 100%; font-size: 12px}.markdown th, .markdown td {border: 1px solid var(--line); padding: 8px 12px; text-align: left}.markdown th {background: var(--surface)}
+.markdown hr {border: 0; border-top: 1px solid var(--line); margin: 24px 0}
+#reviews {min-width: 0}
+.attention-card {border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line)); background: var(--surface); border-radius: 12px; margin: 12px 0 24px; overflow: hidden; box-shadow: 0 4px 18px #00000008}
+.attention-heading {display: flex; align-items: center; gap: 12px; padding: 16px 16px 12px; background: var(--accent-wash)}
+.attention-heading > .icon {width: 28px; height: 28px; color: var(--accent); stroke-width: 1.3}
+.attention-heading small {color: var(--accent); font-size: 10px; letter-spacing: .4px}
+.attention-heading h3 {font-size: 14px; font-weight: 550; margin: 2px 0 0; overflow-wrap: anywhere}
+.attention-description {font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 13px 16px; line-height: 1.75; color: var(--muted)}
+.attention-description:empty {display: none}
+.review-files {margin: 12px 10px; display: grid; gap: 3px}.review-files:empty {display: none}
+.review-file {width: 100%; justify-content: flex-start; padding: 9px; background: var(--canvas); border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-size: 11px}
+.review-file span {min-width: 0; overflow-wrap: anywhere; flex: 1; font-family: var(--vscode-editor-font-family, monospace)}.review-file .icon {width: 14px; height: 14px; color: var(--muted)}
+.review-decision {border-top: 1px solid var(--line); padding: 13px 16px; display: flex; flex-direction: column; gap: 12px}.review-decision small {color: var(--muted); font-size: 10px}.review-decision .actions {justify-content: flex-end}
+.review-warning {margin: 12px 16px; color: var(--vscode-editorWarning-foreground, #ddbc87); font-size: 12px}
+.review-alternatives {border-top: 1px solid var(--line); padding: 8px 16px 12px}.review-alternatives summary {cursor: pointer; font-size: 10px; color: var(--muted); padding: 4px 0}.review-alternatives fieldset {border: 0; margin: 10px 0; padding: 0}.review-alternatives legend {font-size: 11px; color: var(--muted); margin-bottom: 8px}.review-alternatives label {display: flex; align-items: flex-start; gap: 8px; font-size: 12px; padding: 7px 0; cursor: pointer}.review-alternatives input {width: auto; accent-color: var(--accent); margin-top: 4px}.review-alternatives small {display: block; font-size: 10px; color: var(--muted)}.review-alternatives form {display: grid; gap: 8px; margin-top: 10px}.review-alternatives textarea {background: var(--input); width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 9px; min-height: 64px; resize: vertical}.review-alternatives button {justify-self: end; border-color: var(--line); font-size: 11px}
+.attention-card > .actions {margin: 12px 16px}.answer-form {display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 16px}.answer-form input {flex: 1; min-width: 150px}.answer-options {display: grid; gap: 8px; padding: 0 16px}.answer-options button {display: block; border-color: var(--line); padding: 10px 12px}.answer-options small {display: block; color: var(--muted); margin-top: 3px}
+#notice {flex-shrink: 0; padding: 8px 16px; margin: 0; color: var(--vscode-editorWarning-foreground, #d9b67a); font-size: 11px; max-height: 85px; overflow: auto; overflow-wrap: anywhere}
+#new-output {position: absolute; right: 24px; bottom: 210px; z-index: 2; background: var(--surface); border-color: var(--line); box-shadow: 0 4px 18px #0003; font-size: 11px}
+footer {padding: 0 12px 12px; flex-shrink: 0; position: relative}
+.context-strip {display: flex; align-items: center; gap: 2px; padding: 4px 0 7px; flex-wrap: wrap; color: var(--muted)}
+.context-strip button {font-size: 10px; padding: 4px 6px; min-height: 26px}.context-strip .icon {width: 13px; height: 13px}
+#attention-jump {color: var(--accent)}#activity {margin-left: auto; font-size: 10px}
+.composer-wrap {position: relative}.composer {border: 1px solid var(--vscode-input-border, var(--line)); background: var(--input); border-radius: 13px; padding: 12px; box-shadow: 0 6px 24px #0000000b}
+.composer:focus-within {border-color: var(--focus); box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus) 15%, transparent)}
+#composer {width: 100%; display: block; border: 0; background: transparent; padding: 0 1px; outline: none; resize: vertical; min-height: 62px; max-height: 25vh; line-height: 1.75; font-size: 13px; color: var(--vscode-input-foreground, var(--ink))}
+#composer::placeholder {color: var(--vscode-input-placeholderForeground, var(--muted))}
+.composer-actions {display: flex; align-items: center; gap: 3px; margin-top: 9px}.composer-actions button {padding: 5px 6px; flex-shrink: 0}
+#model {font-size: 10px; max-width: 43%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; display: block; color: var(--muted); flex-shrink: 1}
+.composer-spacer {flex: 1}#send {border-radius: 50%; width: 32px; height: 32px; padding: 6px}#stop:disabled {display: none}
+.hint {display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; margin: 8px 2px 0; color: var(--muted); font-size: 9px}
+#attachments {display: flex; flex-wrap: wrap; gap: 6px}.attachment {display: flex; align-items: center; gap: 5px; max-width: 100%; font-size: 10px; padding: 3px 6px; margin-bottom: 9px; border: 1px solid var(--line); border-radius: 6px}.attachment span {text-overflow: ellipsis; overflow: hidden; white-space: nowrap}.attachment button {padding: 0 3px; min-height: 20px}.attachment.failed {border-color: var(--vscode-errorForeground, #cf7b80)}.drop-active .composer {outline: 2px dashed var(--focus)}
+.workbench {position: absolute; bottom: calc(100% + 9px); left: 0; width: 100%; max-width: 540px; z-index: 5; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 45px #0004; display: flex; flex-direction: column; max-height: min(520px, 65vh); overflow: hidden}
+.workbench-heading {display: flex; align-items: center; gap: 4px; padding: 10px 10px 8px; flex-shrink: 0; border-bottom: 1px solid var(--line)}.workbench-heading strong {flex: 1; font-size: 12px; font-weight: 550; padding-left: 5px; overflow-wrap: anywhere}.workbench-heading button {padding: 4px; min-height: 26px}
+.workbench-body {padding: 8px; overflow: auto; min-height: 0}.menu-search {margin: 9px; width: calc(100% - 18px); font-size: 12px}.workbench-body .menu-search {position: sticky; top: 0; z-index: 1}
+.menu-group {font-size: 10px; color: var(--muted); padding: 9px 9px 5px; letter-spacing: .5px}.menu-group:not(:first-child) {border-top: 1px solid var(--line); margin-top: 7px}
+.menu-row {width: 100%; display: flex; justify-content: flex-start; gap: 11px; padding: 10px; border-radius: 8px; min-height: 47px}.menu-row > .icon {color: var(--accent); width: 20px; height: 20px}.menu-row.selected, .menu-row:hover {background: var(--hover)}.menu-row.selected {box-shadow: inset 2px 0 var(--accent)}.menu-row:disabled {opacity: 1; cursor: default}.menu-row:disabled:hover {background: none}
+.menu-copy {flex: 1; min-width: 0}.menu-title {font-size: 12px; display: block; overflow-wrap: anywhere}.menu-copy small {display: block; color: var(--muted); margin-top: 3px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere}
+.menu-row.current {background: var(--accent-wash)}.switch {width: 28px; height: 16px; border-radius: 10px; background: var(--line); padding: 3px; flex-shrink: 0}.switch:after {content: ''; display: block; border-radius: 50%; height: 10px; width: 10px; background: var(--ink)}.switch.on {background: var(--accent)}.switch.on:after {margin-left: 12px; background: var(--surface)}
+.panel-output {font: 11px/1.7 var(--vscode-editor-font-family, monospace); white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px}.surface-empty {margin: 15px; color: var(--muted); font-size: 12px}.more-actions {border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px}.more-actions summary {cursor: pointer; font-size: 11px; padding: 6px 10px; color: var(--muted)}
+.permission-steps {display: flex; gap: 8px; padding: 9px 7px; border-bottom: 1px solid var(--line); font-size: 10px; color: var(--muted)}.permission-steps span {flex: 1; padding-bottom: 5px}.permission-steps .active {color: var(--accent); border-bottom: 2px solid var(--accent)}.permission-hint {margin: 13px 9px; font-size: 11px; color: var(--muted)}.permission-row {border: 1px solid var(--line); margin: 6px 0; padding: 12px}.permission-row.current {border-color: var(--accent)}.permission-row[data-policy="deny"] .menu-title {color: var(--vscode-errorForeground, #d89999)}.permission-row.broad-scope small {color: var(--vscode-editorWarning-foreground, var(--accent))}
+.command-form {padding: 6px; display: grid; gap: 15px}.command-form label {display: grid; gap: 6px; font-size: 12px}.command-form textarea {min-height: 92px; resize: vertical}.command-form > button {justify-self: end}.scope-chip {font-size: 10px; color: var(--accent); padding: 5px 8px; background: var(--accent-wash); border-radius: 4px; width: fit-content}.form-error {color: var(--vscode-errorForeground, #dd8e91); font-size: 12px; margin: 8px 16px; overflow-wrap: anywhere}
+@media (min-width: 700px) { .app-header, #setup, footer, #notice {padding-left: max(24px, calc((100vw - 800px) / 2)); padding-right: max(24px, calc((100vw - 800px) / 2))} #transcript {padding: 30px max(24px, calc((100vw - 780px) / 2)) 20px}.body {font-size: 14px}.review-decision {flex-direction: row; align-items: center; justify-content: space-between}.review-decision small {max-width: 40%}.composer {padding: 15px}.workbench {max-width: 520px} }
+@media (prefers-reduced-motion: no-preference) {.attention-card, .workbench {animation: appear 120ms ease-out}@keyframes appear {from {opacity: .5; transform: translateY(3px)} to {opacity: 1; transform: translateY(0)}}}
+body.vscode-high-contrast, body.vscode-high-contrast-light {--line: var(--vscode-contrastBorder, currentColor)}
+#overview {flex-shrink: 0; border-bottom: 1px solid var(--line); padding: 6px 12px; max-height: 27vh; overflow: auto; font-size: 11px}
+.overview-stats {display: flex; flex-wrap: wrap; gap: 2px; align-items: center; color: var(--muted)}.overview-stats button {min-height: 24px; padding: 3px 5px; font-size: 10px}.overview-stats .icon {width: 12px; height: 12px}.stat-warning {color: var(--vscode-editorWarning-foreground, var(--accent)); padding: 4px}
+.overview-title {font-size: 10px; color: var(--muted); cursor: pointer; padding: 5px}.overview-title .icon {width: 12px; height: 12px; vertical-align: middle; margin-right: 6px}.overview-live {float: right; color: var(--accent)}
+.overview-content {display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; padding: 4px 5px 9px}.overview-content section {min-width: 0}.overview-content h3 {font-size: 10px; letter-spacing: .5px; font-weight: 550; color: var(--muted); margin: 7px 0}.overview-content button {justify-content: flex-start; font-size: 11px; padding: 4px 0; width: 100%; overflow-wrap: anywhere}.overview-content .icon {width: 14px; height: 14px; color: var(--accent)}.overview-detail {color: var(--muted); overflow-wrap: anywhere; margin-top: 5px}.plan-step {padding: 4px 0; overflow-wrap: anywhere}.plan-step.in_progress {color: var(--accent)}.plan-step.completed {color: var(--muted)}.process-tail {white-space: pre-wrap; max-height: 65px; overflow: auto; font: 10px/1.6 var(--vscode-editor-font-family, monospace); color: var(--muted); border-left: 1px solid var(--line); padding-left: 8px}.git-file {font: 10px/1.8 var(--vscode-editor-font-family, monospace); overflow-wrap: anywhere}
+#goal-strip {display: grid; grid-template-columns: 1fr auto; margin-bottom: 8px; padding: 7px 10px; background: var(--accent-wash); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 8px; align-items: center; column-gap: 8px}.goal-objective {grid-column: 1; padding: 0; min-height: 22px; justify-content: flex-start; min-width: 0}.goal-objective span {text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-size: 11px}.goal-objective .icon {color: var(--accent); width: 14px; height: 14px}.goal-meta {grid-row: 2; font-size: 9px; color: var(--muted); padding-left: 21px}#goal-strip > button:last-child:not(.goal-objective) {grid-column: 2; grid-row: 1 / 3; font-size: 10px}
+@media (min-width: 1000px) {
+  body {display: grid; grid-template-columns: minmax(0, 1fr) 265px; grid-template-rows: auto auto minmax(0, 1fr) auto auto}
+  .app-header {grid-column: 1 / 3; grid-row: 1; padding: 14px 24px}
+  #setup {grid-column: 1; grid-row: 2; padding: 18px 28px}
+  #transcript {grid-column: 1; grid-row: 3; padding: 28px max(28px, calc((100vw - 1000px) / 2))}
+  #overview {grid-column: 2; grid-row: 2 / 6; max-height: none; padding: 18px 15px; border-left: 1px solid var(--line); border-bottom: 0; background: color-mix(in srgb, var(--surface) 35%, var(--canvas))}
+  .overview-content {display: block}.overview-content section {border-top: 1px solid var(--line); padding: 10px 0}.overview-stats {margin-bottom: 14px}.overview-title {padding: 8px 0 14px}
+  #notice {grid-column: 1; grid-row: 4; padding: 8px 28px}
+  footer {grid-column: 1; grid-row: 5; padding: 0 max(24px, calc((100vw - 1000px) / 2)) 14px}
+  #new-output {right: 290px}
+}
+@media (forced-colors: active) {button, .attention-card, .composer, .workbench {border: 1px solid ButtonText}.switch {outline: 1px solid ButtonText}.menu-row.selected {outline: 1px solid Highlight}}

@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {EventEmitter} from 'node:events';
+import {decode, record, emptyState, type Action, type Panel, type RuntimeClient} from '@reuleauxcoder/client';
+import {ConversationCommands} from '../src/core/commands.js';
+import {answerInteraction, inlineInteractions} from '../src/core/interactions.js';
+import {WorkOverviewStore} from '../src/core/overview.js';
+import {backend, until} from './helpers.js';
+
+const action: Action = {action_id: 'goal.show', feature_id: 'goal', description: 'View goal', preview: true, parameters: [], triggers: [{kind: 'slash', value: '/goal'}]};
+const panel: Panel = {view_type: 'goal', title: 'Goal', items: [{id: 'child', label: 'Open child', description: '', current: false, action: null}], children: [['child', {view_type: 'child', title: 'Child', items: [{label: 'Pause', description: '', current: false, action: {action_id: 'goal.pause', command: {}}}], children: [], filterable: false, keep_open_on_submit: true, return_to_parent_on_submit: false}]], filterable: true, keep_open_on_submit: true, return_to_parent_on_submit: false};
+function fixture() {
+  const events = new EventEmitter(); const calls: unknown[] = [];
+  const client = Object.assign(events, {catalog: [action], state: {...emptyState}, interactions: [] as any[], submitAction: async (...args: unknown[]) => {calls.push(args);}, panel: async () => ({definition: structuredClone(panel), refresh: 'update'}), answer: (...args: unknown[]) => {calls.push(args); client.interactions = [];} });
+  const failures: unknown[] = [];
+  const commands = new ConversationCommands(() => {}, error => failures.push(error)); commands.bind(client as unknown as RuntimeClient);
+  const view = (focus = true) => events.emit('event', decode(record('UIEvent', {payload: record('ViewEventPayload', {focus, action: focus ? 'open' : 'refresh'})})), {fields: {payload: {}}}, client.state.session_generation);
+  return {client, commands, calls, failures, view};
+}
+test('closed or replaced panels reject delayed projections and stale click tokens', async () => {
+  const f = fixture(); let resolve!: (value: any) => void;
+  f.client.panel = () => new Promise(done => {resolve = done;});
+  await f.commands.open('goal.show'); f.view(); f.commands.close(); resolve({definition: panel});
+  await new Promise(done => setImmediate(done)); assert.equal(Boolean(f.commands.surface), false);
+  f.client.panel = async () => ({definition: structuredClone(panel), refresh: 'update'});
+  await f.commands.open('goal.show'); f.view(); await until(() => f.commands.surface?.panel);
+  const old = f.commands.surface!.id; await f.commands.select(old, 0);
+  assert.throws(() => f.commands.dismiss(old), /panel changed/);
+  assert.equal(f.commands.surface?.panel?.title, 'Child');
+  await assert.rejects(f.commands.select(old, 0), /panel changed/);
+  const child = f.commands.surface!.id; await f.commands.select(child, 0);
+  await assert.rejects(f.commands.select(child, 0), /panel changed/);
+  assert.equal(f.calls.filter((call: any) => call[0] === 'goal.pause').length, 1);
+  f.commands.surface!.panel!.keep_open_on_submit = false;
+  await f.commands.select(f.commands.surface!.id, 0);
+  assert.equal(Boolean(f.commands.surface), false, 'A completed choice closes its menu');
+  f.client.state.session_generation++; f.client.emit('state', f.client.state); assert.equal(f.commands.surface, undefined);
+  assert.deepEqual(f.failures, []); f.commands.dispose();
+});
+test('forms validate primitive values at host boundary without dispatching invalid values', async () => {
+  const f = fixture(); f.client.catalog.push({...action, action_id: 'goal.budget', preview: false, parameters: [{name: 'token_budget', kind: 'integer', required: true, nullable: false, default: null}]});
+  await f.commands.open('goal.budget'); const id = f.commands.surface!.id;
+  await assert.rejects(f.commands.submit(id, {token_budget: '1'}), /field values/);
+  await assert.rejects(f.commands.submit(id, {token_budget: 1.1}), /field values/);
+  assert.deepEqual(f.calls, []); await f.commands.submit(id, {token_budget: 500});
+  assert.deepEqual(f.calls, [['goal.budget', {token_budget: 500}]]);
+  await assert.rejects(f.commands.submit(id, {token_budget: 600}), /panel changed/); f.commands.dispose();
+});
+test('inline answers do not expose secrets or accept expired and invented choices', () => {
+  const f = fixture(); const client = f.client as unknown as RuntimeClient;
+  f.client.interactions = [{kind: 'input_text', request: {request_id: 'secret', title: 'Secret', secret: true, initial_value: 'must never project', allow_empty: false}}];
+  assert.equal(inlineInteractions(client)[0].initial, '');
+  assert.throws(() => answerInteraction(client, {id: 'secret', value: ''}), /Required/);
+  answerInteraction(client, {id: 'secret', value: 'typed once'});
+  assert.throws(() => answerInteraction(client, {id: 'secret', value: 'replay'}), /expired/);
+  f.client.interactions = [{kind: 'choose_one', request: {request_id: 'choice', allow_cancel: false, items: [{id: 'one'}]}}];
+  assert.throws(() => answerInteraction(client, {id: 'choice', selected: 'invented'}), /option/);
+  assert.throws(() => answerInteraction(client, {id: 'choice', cancel: true}), /option/);
+  answerInteraction(client, {id: 'choice', selected: 'one'}); assert.equal(f.calls.length, 2); f.commands.dispose();
+});
+test('overview retains process tails, plans and jobs, then clears them at generation change', () => {
+  const f = fixture(); const store = new WorkOverviewStore(() => {}); store.bind(f.client as unknown as RuntimeClient);
+  const emit = (kind: string, fields: Record<string, any>, generation = 0, agent_id?: string) => f.client.emit('event', decode(record('UIEvent', {payload: record('RuntimeEventPayload', {event: record('RuntimeEvent', {agent_id: agent_id ?? null, payload: record(kind, fields)})})})), {}, generation);
+  emit('PlanUpdated', {items: [{step: 'Test', status: 'in_progress'}]});
+  emit('ProcessSessionChanged', {process_session_id: 'process', command: 'pytest', state: 'running', stdout: 'first'});
+  emit('ProcessSessionChanged', {process_session_id: 'process', state: 'exited', stdout: ' second'});
+  emit('SubagentJobChanged', {job_id: 'job', task: 'Audit', status: 'blocked', blocker: 'Needs input'}, 0, 'child');
+  assert.equal(store.snapshot().processes[0].output, 'first second'); assert.equal(store.snapshot().plan.length, 1); assert.equal(store.snapshot().jobs[0].detail, 'Needs input');
+  f.client.state.session_generation = 1; f.client.emit('state', f.client.state); emit('PlanUpdated', {items: [{step: 'Stale'}]});
+  assert.equal(store.snapshot().plan.length, 0); assert.equal(store.snapshot().processes.length, 0); store.dispose(); f.commands.dispose();
+});
+test('real core catalog, model panels, goal controls and secret input use conversation surfaces', async t => {
+  const b = await backend(); t.after(() => b.close());
+  const commands = b.session.commands;
+  await commands.open('model.show'); await until(() => commands.surface?.panel?.view_type === 'model_slots');
+  const root = commands.surface!; await commands.select(root.id, 0);
+  assert.equal(commands.surface?.panel?.view_type, 'model_profiles'); assert(commands.surface?.canBack);
+  commands.back(commands.surface!.id); assert.equal(commands.surface?.panel?.view_type, 'model_slots');
+  await commands.open('approval.show'); await until(() => commands.surface?.panel?.view_type === 'approval_rules');
+  await commands.select(commands.surface!.id, 0); assert.equal(commands.surface?.panel?.view_type, 'approval_lifetime');
+  await commands.select(commands.surface!.id, 0); assert.equal(commands.surface?.panel?.view_type, 'approval_actions');
+  assert(commands.surface!.panel!.items.some(item => item.action?.command.action === 'require_approval'));
+  await commands.open('goal.show'); await until(() => commands.surface?.panel?.view_type === 'goal');
+  const create = commands.surface!.panel!.items.findIndex(item => item.action?.action_id === 'goal.create');
+  assert(create >= 0); await commands.select(commands.surface!.id, create);
+  await until(() => b.session.snapshot().interactions?.length);
+  const prompt = b.session.snapshot().interactions![0]; assert.equal(prompt.kind, 'input_text');
+  answerInteraction(b.client, {id: prompt.id, cancel: true}); await until(() => !b.client.state.running);
+  commands.close();
+  b.session.submit('inline-secret', 'question', [], b.client.state.session_generation);
+  await until(() => b.client.interactions.length);
+  assert(b.session.snapshot().interactions![0].secret);
+  answerInteraction(b.client, {id: b.client.interactions[0].request.request_id, value: 'secret'});
+  await until(() => !b.client.state.running);
+  assert(!JSON.stringify(b.session.snapshot()).includes('"value":"secret"'));
+});

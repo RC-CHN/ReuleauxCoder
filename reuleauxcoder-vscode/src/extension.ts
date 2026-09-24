@@ -6,7 +6,6 @@ import {WorkspaceSession} from './core/session.js';
 import {managedCommand, installCore} from './core/install.js';
 import type {CoreCommand} from './core/runtime.js';
 import {NativeReviews} from './native/reviews.js';
-import {NativeActions} from './native/actions.js';
 import {editorContext, diagnosticActions} from './native/context.js';
 
 let active: WorkspaceSession | undefined;
@@ -20,9 +19,8 @@ export function activate(context: vscode.ExtensionContext) {
   const logs = vscode.window.createOutputChannel('Reuleaux Core');
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   status.command = 'reuleaux.open'; status.text = '$(comment-discussion) Reuleaux'; status.show();
-  const error = (reason: unknown) => {const text = errorText(reason); logs.appendLine(text); active?.report(reason); void vscode.window.showErrorMessage(text, t('Show logs')).then(choice => {if (choice) logs.show(true);});};
+  const error = (reason: unknown) => {const text = errorText(reason); logs.appendLine(text); if (active) active.report(reason); else void vscode.window.showErrorMessage(text);};
   const reviews = new NativeReviews(() => views.changed(), error);
-  const actions = new NativeActions(error);
   let editorRevision = 0;
   let editorSync: Promise<unknown> = Promise.resolve();
   const syncEditors = () => {
@@ -45,7 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
       const target = vscode.env.remoteName ? `${vscode.env.remoteName}: ${folder.uri.authority || folder.name}` : t('Local');
       const session = new WorkspaceSession(folder.uri.fsPath, target); active = session;
       session.on('log', text => logs.append(text));
-      session.on('client', client => {reviews.bind(client); actions.bind(client);});
+      session.on('client', client => reviews.bind(client));
       session.on('change', () => {
         views.changed();
         const label = {idle: t('Idle'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Saving and stopping…'), failed: t('Failed'), ready: session.client?.state.running ? t('Running') : ''}[session.phase];
@@ -87,6 +85,7 @@ export function activate(context: vscode.ExtensionContext) {
     switch (command) {
       case 'openEditor': views.openEditor(); return;
       case 'logs': logs.show(true); return;
+      case 'git': return vscode.commands.executeCommand('workbench.view.scm');
       case 'start': return start();
       case 'install': return install();
       case 'selectCore': {
@@ -98,8 +97,13 @@ export function activate(context: vscode.ExtensionContext) {
         return start();
       }
       case 'review': return reviews.open(data.id, data.documentId);
-      case 'approve': return reviews.decide(true, data.id);
-      case 'reject': return reviews.decide(false, data.id);
+      case 'approve': return reviews.decide(true, data.id, data.scopeId);
+      case 'reject': return reviews.decide(false, data.id, undefined, data.feedback);
+      case 'saveReview': return reviews.saveAndRepropose(data.id);
+      case 'openLink': {
+        if (typeof data.url !== 'string' || !/^https?:\/\//i.test(data.url)) throw new Error('Unsupported link.');
+        return vscode.env.openExternal(vscode.Uri.parse(data.url));
+      }
       case 'addUri': {
         if (typeof data.uri !== 'string') throw new Error('Invalid workspace file.');
         const uri = vscode.Uri.parse(data.uri); const session = await getSession();
@@ -107,13 +111,13 @@ export function activate(context: vscode.ExtensionContext) {
         session.add(await editorContext(uri)); return;
       }
     }
-    const client = (await getSession()).requireClient();
+    const session = await getSession(); const client = session.requireClient();
     switch (command) {
       case 'stop': return client.peer.request('runtime.stop');
       case 'newSession': return client.submitAction('sessions.new');
-      case 'sessions': return client.submitAction('sessions.list');
-      case 'actions': return actions.choose(client);
-      case 'models': return client.submitAction('model.show');
+      case 'sessions': return session.commands.open('sessions.list');
+      case 'actions': await vscode.commands.executeCommand('reuleaux.chat.focus'); return views.showCommands();
+      case 'models': return session.commands.open('model.show');
       default: throw new Error('Unknown Reuleaux command.');
     }
   };
@@ -134,7 +138,7 @@ export function activate(context: vscode.ExtensionContext) {
   register('addContext', (uri?: vscode.Uri) => addContext(uri));
   register('explainSelection', async () => {await addContext(); active!.insertDraft(t('Explain this code.'));});
   register('fixDiagnostic', (uri, range, diagnostics) => addContext(uri, range, diagnostics));
-  context.subscriptions.push(logs, status, reviews, actions, views,
+  context.subscriptions.push(logs, status, reviews, views,
     vscode.window.registerWebviewViewProvider('reuleaux.chat', views),
     vscode.workspace.registerTextDocumentContentProvider('reuleaux-review', reviews),
     vscode.window.registerTreeDataProvider('reuleaux.reviews', reviews),

@@ -5,11 +5,16 @@ import {record, tuple, SubmissionQueue, type Json, type RuntimeClient} from '@re
 import {CoreFailure, CoreRuntime, type RuntimeOptions} from './runtime.js';
 import {Transcript} from './transcript.js';
 import {Uploads} from './uploads.js';
+import {ConversationCommands} from './commands.js';
+import {inlineInteractions} from './interactions.js';
+import {WorkOverviewStore} from './overview.js';
 import type {DraftItem, HostSnapshot, ReviewSummary} from '../shared.js';
 
 export class WorkspaceSession extends EventEmitter {
   readonly runtime = new CoreRuntime();
   readonly transcript = new Transcript();
+  readonly commands = new ConversationCommands(() => this.changed(), error => this.report(error));
+  readonly overview = new WorkOverviewStore(() => this.changed());
   phase: HostSnapshot['phase'] = 'idle';
   error?: HostSnapshot['error'];
   notice = '';
@@ -39,6 +44,8 @@ export class WorkspaceSession extends EventEmitter {
     this.hostId = randomUUID();
     for (const off of this.clientListeners.splice(0)) off();
     this.transcript.bind(client);
+    this.commands.bind(client);
+    this.overview.bind(client);
     this.submissions = new SubmissionQueue(client, this.transcript, text => {this.notice = text; this.changed();}, {
       empty: t('No failed submission to retry.'), stopped: t('The core is stopping. Your message is retained; use Retry to send it again.'),
       uncertain: detail => t('{0}. Your message is retained; Retry uses the same submission ID.', detail),
@@ -54,6 +61,7 @@ export class WorkspaceSession extends EventEmitter {
       this.changed();
     });
     listen('failure', error => this.fail(error));
+    listen('interactions', () => this.changed());
     listen('shutdownProgress', text => {this.notice = text; this.changed();});
     listen('completed', result => {if (result.control === 'exit') void this.shutdown().catch(error => this.fail(error));});
     this.emit('client', client);
@@ -91,7 +99,7 @@ export class WorkspaceSession extends EventEmitter {
   }
   snapshot(reviews: ReviewSummary[] = []): HostSnapshot {
     const state = this.client?.state;
-    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: this.transcript.cells, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice};
+    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: this.transcript.cells, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot()};
   }
   add(item: DraftItem): void {if (this.draftItems.length >= 30) throw new Error(t('The draft already has 30 attachments or context items.')); this.draftItems.push(item); this.changed();}
   remove(id: string): void {this.draftItems = this.draftItems.filter(item => item.id !== id); this.changed();}
@@ -99,5 +107,5 @@ export class WorkspaceSession extends EventEmitter {
   changed(): void {this.revision++; this.emit('change');}
   report(error: unknown): void {this.notice = error instanceof Error ? error.message : String(error); this.transcript.notice(this.notice);}
   fail(error: unknown): void {this.error = {kind: error instanceof CoreFailure ? error.kind : 'startup', message: error instanceof Error ? error.message : String(error)}; this.phase = 'failed'; this.changed();}
-  dispose(): void {void this.uploads?.cancel().catch(() => {}); for (const off of this.clientListeners.splice(0)) off(); this.transcript.dispose(); this.runtime.dispose(); this.removeAllListeners();}
+  dispose(): void {void this.uploads?.cancel().catch(() => {}); for (const off of this.clientListeners.splice(0)) off(); this.commands.dispose(); this.overview.dispose(); this.transcript.dispose(); this.runtime.dispose(); this.removeAllListeners();}
 }

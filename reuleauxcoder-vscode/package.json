@@ -36,6 +36,7 @@
     "dist/extension.cjs",
     "dist/webview.js",
     "dist/webview.css",
+    "dist/THIRD_PARTY_NOTICES.txt",
     "dist/core/**",
     "media",
     "README.md",
@@ -55,17 +56,19 @@
     "package": "vsce package --no-dependencies"
   },
   "dependencies": {
-    "@reuleauxcoder/client": "file:../reuleauxcoder-client"
+    "@reuleauxcoder/client": "file:../reuleauxcoder-client",
+    "markdown-it": "14.3.2"
   },
   "devDependencies": {
+    "@types/markdown-it": "14.1.2",
     "@types/node": "22.20.2",
     "@types/vscode": "1.106.0",
     "@vscode/test-electron": "2.5.2",
     "@vscode/vsce": "3.6.2",
     "esbuild": "0.28.2",
+    "playwright": "1.58.2",
     "tsx": "4.23.13",
-    "typescript": "7.0.2",
-    "playwright": "1.58.2"
+    "typescript": "7.0.2"
   },
   "contributes": {
     "configuration": {

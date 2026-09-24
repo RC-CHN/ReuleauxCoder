@@ -12,6 +12,8 @@ test('English fallback, Chinese locale selection and substitution preserve dynam
   assert.equal(errorText(new Error('model/provider output')), 'model/provider output'); setLocale('en');
 });
 test('all translations preserve placeholders and both manifest catalogs cover every label', async () => {
+  const sourceKeys = [...(await readFile(new URL('../l10n/bundle.l10n.zh-cn.json', import.meta.url), 'utf8')).matchAll(/^  "([^"\\]+)":/gm)].map(match => match[1]);
+  assert.equal(new Set(sourceKeys).size, sourceKeys.length, 'Translation keys must be unique');
   for (const [source, translated] of Object.entries(chinese)) {
     assert(translated.trim(), source);
     assert.deepEqual([...translated.matchAll(/\{\d+\}/g)].map(match => match[0]).sort(), [...source.matchAll(/\{\d+\}/g)].map(match => match[0]).sort(), source);

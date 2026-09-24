@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Redesign the VS Code conversation around a clickable, searchable composer menu, inline command panels and parameter forms. Keep model, mode, permissions, goals, skills, MCP, sessions and process controls in the conversation; replace top-bar confirmation and secret-input dialogs with stable inline cards. Preserve drafts, validate form and review responses, and invalidate stale panel actions across navigation and session changes.
+- Restore safe Markdown replies with tables and copyable code. Add a theme-aware Reuleaux icon system, conversation review cards with file-by-file native diff links, explicit approval scopes and denial feedback, and a responsive work overview for plans, progress, processes, agents, Git, diagnostics and context usage. Extend Chinese/English UI, real core/native-host regressions and browser coverage, including offline HTML previews.
+
 ## 0.11.0 - 2026-09-24
 
 - Add a workspace-host VS Code extension for local and Remote workspaces, with automatic core discovery, a checksum-verified private installer, persistent sidebar/editor conversations, native frozen diff approvals, selection/diagnostic context and clipboard/file uploads. Ordinary and steering input appears immediately; uploads finish in the background before the owning message is submitted. Include Chinese/English UI, VS Code language selection and native host/browser integration tests.

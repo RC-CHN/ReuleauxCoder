@@ -5,6 +5,7 @@ import type {NativeReviews} from './native/reviews.js';
 import type {WebRequest} from './shared.js';
 import {t, errorText} from './i18n.js';
 import {webviewHtml} from './webview/html.js';
+import {answerInteraction} from './core/interactions.js';
 
 export class ConversationViews implements vscode.WebviewViewProvider, vscode.Disposable {
   private views = new Map<vscode.Webview, {owner: string; disposables: vscode.Disposable[]; session?: WorkspaceSession}>();
@@ -13,6 +14,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
   private sequence = 0;
   constructor(private extension: vscode.Uri, private session: () => Promise<WorkspaceSession>, private reviews: NativeReviews, private command: (action: string, data?: Record<string, any>) => Promise<unknown>) {}
   resolveWebviewView(view: vscode.WebviewView): void {this.attach(view.webview, view);}
+  showCommands(): void {for (const webview of this.views.keys()) void webview.postMessage({kind: 'commands'});}
   openEditor(): void {
     if (this.editor) {this.editor.reveal(vscode.ViewColumn.One); return;}
     const panel = vscode.window.createWebviewPanel('reuleaux.conversation', 'Reuleaux', vscode.ViewColumn.One, {enableScripts: true, retainContextWhenHidden: false});
@@ -44,7 +46,9 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
     const entry = [...this.views.values()].find(entry => entry.owner === owner);
     if (!entry) throw new Error('View closed.');
     entry.session = session;
-    if (['send', 'retry', 'upload.begin'].includes(request.action) && (data.hostId !== session.snapshot().hostId || data.generation !== session.snapshot().generation)) throw new Error(t('Session changed. Review your draft and send it again.'));
+    if (['send', 'retry', 'upload.begin', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.')) {
+      if (data.hostId !== session.snapshot().hostId || data.generation !== session.snapshot().generation) throw new Error(t('Session changed. Review your draft and send it again.'));
+    }
     switch (request.action) {
       case 'ready': {
         const snapshot = {...session.snapshot(this.reviews.summaries()), revision: ++this.sequence};
@@ -55,6 +59,12 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
       case 'send': session.submit(data.id, data.text, data.items, data.generation); return;
       case 'retry': await session.submissions?.retry(data.id); return;
       case 'remove': session.remove(data.id); return;
+      case 'command.open': session.requireClient(); return session.commands.open(data.actionId);
+      case 'command.submit': session.requireClient(); return session.commands.submit(data.surfaceId, data.values);
+      case 'command.select': session.requireClient(); return session.commands.select(data.surfaceId, data.index);
+      case 'command.back': return session.commands.back(data.surfaceId);
+      case 'command.close': session.commands.dismiss(data.surfaceId); return;
+      case 'answer': return answerInteraction(session.requireClient(), data);
       case 'upload.begin': return await session.uploads?.begin(owner, data.name, data.size, data.image === true) ?? Promise.reject(new Error('Start the core before uploading.'));
       case 'upload.append': return await session.uploads?.append(owner, data.id, data.offset, data.data);
       case 'upload.complete': {
@@ -62,7 +72,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
         if (!item) throw new Error('Upload expired.'); session.add(item); return item.id;
       }
       case 'upload.cancel': await session.uploads?.cancel(owner, data.id); return;
-      case 'start': case 'install': case 'selectCore': case 'logs': case 'stop': case 'openEditor': case 'newSession': case 'sessions': case 'actions': case 'models': case 'review': case 'approve': case 'reject': case 'addUri': return this.command(request.action, data);
+      case 'start': case 'install': case 'selectCore': case 'logs': case 'stop': case 'openEditor': case 'newSession': case 'sessions': case 'actions': case 'models': case 'review': case 'approve': case 'reject': case 'saveReview': case 'addUri': case 'openLink': case 'git': return this.command(request.action, data);
       default: throw new Error('Unknown view action.');
     }
   }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile, writeFile} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import type {activate} from '../../src/extension.js';
+import {answerInteraction} from '../../src/core/interactions.js';
 
 async function until(predicate: () => unknown | Promise<unknown>, timeout = 10000): Promise<void> {
   const end = Date.now() + timeout;
@@ -18,6 +19,7 @@ export async function run(): Promise<void> {
   await vscode.commands.executeCommand('reuleaux.start');
   const session = await api.getSession(); const client = session.requireClient();
   const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'example.py');
+  let previousReviewUri: vscode.Uri | undefined;
   try {
     for (const newline of ['\n', '\r\n']) {
       await writeFile(uri.fsPath, `old = 1${newline}`);
@@ -25,6 +27,7 @@ export async function run(): Promise<void> {
       await until(() => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputTextDiff));
       const input = vscode.window.tabGroups.all.flatMap(group => group.tabs).find(tab => tab.input instanceof vscode.TabInputTextDiff)!.input as vscode.TabInputTextDiff;
       assert.equal(input.modified.scheme, 'reuleaux-review');
+      previousReviewUri = input.modified;
       assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), `old = 1${newline}`);
       assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), `new = 1${newline}`);
       assert.equal(await readFile(uri.fsPath, 'utf8'), `old = 1${newline}`);
@@ -39,7 +42,7 @@ export async function run(): Promise<void> {
     }
 
     const document = await vscode.workspace.openTextDocument(uri);
-    const editor = await vscode.window.showTextDocument(document);
+    let editor = await vscode.window.showTextDocument(document);
     assert.equal(document.eol, vscode.EndOfLine.CRLF);
     await editor.edit(edit => edit.replace(new vscode.Range(0, 0, document.lineCount, 0), 'old = 1\r\n'));
     await document.save();
@@ -54,7 +57,26 @@ export async function run(): Promise<void> {
     await until(async () => !await client.peer.request('test.is_dirty', {path: uri.fsPath}));
     console.log('PASS real unsaved editor synchronization and automatic edit guard');
 
-    editor.selection = new vscode.Selection(0, 0, 0, 3);
+    await until(() => !client.state.running);
+    session.submit('review-dirty-after-proposal', 'edit', [], client.state.session_generation);
+    await until(() => client.interactions.some(item => item.kind === 'review'));
+    const reviewId = client.interactions.find(item => item.kind === 'review')!.request.request_id;
+    api.reviews.bind(client);
+    await api.reviews.decide(true, previousReviewUri);
+    assert(client.interactions.some(item => item.request.request_id === reviewId), 'An old editor URI must not approve a replacement review');
+    const pendingEdit = new vscode.WorkspaceEdit(); pendingEdit.insert(uri, new vscode.Position(0, 0), '# changed after proposal\r\n');
+    assert(await vscode.workspace.applyEdit(pendingEdit));
+    assert(api.reviews.summaries().find(item => item.id === reviewId)?.dirty);
+    await assert.rejects(api.reviews.decide(true, reviewId), /unsaved editor/);
+    await assert.rejects(api.reviews.decide(true, reviewId, 'invented-scope'), /expired/);
+    await api.reviews.saveAndRepropose(reviewId);
+    await until(() => !client.state.running);
+    assert((await readFile(uri.fsPath, 'utf8')).startsWith('# changed after proposal\r\nold = 1'));
+    assert.equal(client.interactions.length, 0);
+    console.log('PASS inline dirty-review handling rejects stale writes and validates grant IDs');
+
+    editor = await vscode.window.showTextDocument(document);
+    editor.selection = new vscode.Selection(1, 0, 1, 3);
     await vscode.commands.executeCommand('reuleaux.addContext', uri);
     assert(session.draftItems.some(item => item.text?.includes('old')));
     const collection = vscode.languages.createDiagnosticCollection('reuleaux-test');
@@ -73,8 +95,13 @@ export async function run(): Promise<void> {
     await until(() => !client.state.running);
     session.submit('native-question', 'question', [], client.state.session_generation);
     await until(() => client.interactions.some(item => item.kind === 'input_text'));
+    assert(session.snapshot().interactions![0].secret);
+    answerInteraction(client, {id: client.interactions[0].request.request_id, value: 'inline answer'});
+    await until(() => !client.state.running);
+    session.submit('cancel-question', 'question', [], client.state.session_generation);
+    await until(() => client.interactions.some(item => item.kind === 'input_text'));
     await client.interrupt();
     await until(() => !client.interactions.length && !client.state.running);
-    console.log('PASS cancellation of native input and backend interaction');
+    console.log('PASS inline secret answer and backend cancellation');
   } finally {await client.interrupt(); await session.shutdown();}
 }

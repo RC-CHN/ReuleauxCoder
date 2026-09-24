@@ -1,5 +1,10 @@
 import {setLocale, t, errorText, type MessageKey} from '../i18n.js';
 import type {ChatCell, HostSnapshot, WebRequest} from '../shared.js';
+import {decorateIcons, icon} from './icons.js';
+import {renderMarkdown} from './markdown.js';
+import {ComposerWorkbench} from './workbench.js';
+import {AttentionCards} from './attention.js';
+import {WorkOverviewView} from './overview.js';
 
 interface SavedView {draft?: string; outbox?: {input: Omit<LocalSend, 'uploads'>; cell: ChatCell}[]}
 declare function acquireVsCodeApi(): {postMessage(message: unknown): void; getState(): SavedView | undefined; setState(state: unknown): void};
@@ -8,6 +13,10 @@ setLocale(document.documentElement.lang);
 const element = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const composer = element<HTMLTextAreaElement>('composer');
 const transcript = element('transcript');
+decorateIcons();
+const workbench = new ComposerWorkbench(element('workbench'), composer, request, notice, saveDraft);
+const attention = new AttentionCards(element('reviews'), request);
+const overview = new WorkOverviewView(element('overview'), element('goal-strip'), request, notice);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
 const optimistic = new Map<string, ChatCell>();
@@ -38,7 +47,7 @@ function saveDraft(): void {persist(); void request('draft', {text: composer.val
 function button(text: string, action: () => void, title = text): HTMLButtonElement {const node = document.createElement('button'); node.textContent = text; node.title = title; node.addEventListener('click', action); return node;}
 function cellNode(cell: ChatCell): HTMLElement {
   let node = nodes.get(cell.id);
-  if (!node) {node = document.createElement('article'); node.className = `cell ${cell.role}`; node.dataset.id = cell.id; nodes.set(cell.id, node); transcript.append(node);}
+  if (!node) {node = document.createElement('article'); node.className = `cell ${cell.role}`; node.dataset.id = cell.id; nodes.set(cell.id, node); transcript.insertBefore(node, element('reviews'));}
   const content = JSON.stringify(cell); if (node.dataset.content === content) return node;
   const expanded = node.querySelector('details')?.open ?? false;
   node.dataset.content = content; node.replaceChildren();
@@ -46,9 +55,11 @@ function cellNode(cell: ChatCell): HTMLElement {
   meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'reasoning' ? t('Reasoning') : cell.role === 'tool' ? cell.title ?? t('Tool') : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
   if (cell.status && cell.status !== 'applied') {const state = document.createElement('span'); state.textContent = t(cell.status as MessageKey) ?? cell.status; meta.append(state);}
   node.append(meta);
-  const body = document.createElement('div'); body.className = 'body'; body.textContent = cell.text;
+  const body = document.createElement('div'); body.className = 'body';
+  if (cell.role === 'assistant' || cell.role === 'reasoning') renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice));
+  else body.textContent = cell.text;
   if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = cell.title ?? t('Reasoning'); details.append(summary, body); node.append(details);} else node.append(body);
-  if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.detail; node.append(detail);}
+  if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.detail; (cell.role === 'tool' ? node.querySelector('details')! : node).append(detail);}
   if (['unconfirmed', 'rejected'].includes(cell.status ?? '')) {const retry = button(t('Retry'), () => void retrySend(cell.id)); retry.className = 'retry'; node.append(retry);}
   if (cell.status === 'uploading' || cell.status === 'rejected' && (localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles)) node.append(button(t('Return to draft'), () => restoreSend(cell.id)));
   return node;
@@ -63,6 +74,8 @@ function render(state: HostSnapshot): void {
   }
   const insertDraft = snapshot && state.draftRevision > snapshot.draftRevision;
   snapshot = state;
+  workbench.update(state);
+  overview.update(state);
   if (initial) {
     const saved = vscode.getState(); composer.value = saved?.draft ?? state.draftText;
     for (const entry of saved?.outbox ?? []) {
@@ -70,10 +83,12 @@ function render(state: HostSnapshot): void {
       optimistic.set(entry.input.id, {...entry.cell, status: 'rejected', detail: t('The view reopened before delivery was confirmed. Review this message before retrying.')});
     }
     initial = false;
+    workbench.input();
   }
   else if (insertDraft) {composer.value = state.draftText; persist(); composer.focus();}
   element('environment').textContent = `${state.environment} · ${state.workspace.split(/[\\/]/).at(-1) ?? ''}`;
   element('model').textContent = state.model || t('Select model');
+  element('mode').replaceChildren(icon('mode'), document.createTextNode(state.mode ? errorText(state.mode) : t('Mode')));
   element('activity').textContent = state.running ? t('Running') : state.phase === 'ready' ? t('Ready') : '';
   element<HTMLButtonElement>('stop').disabled = !state.running;
   const known = new Set(state.cells.map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}
@@ -92,13 +107,8 @@ function render(state: HostSnapshot): void {
   setup.querySelector<HTMLButtonElement>('[data-command="start"]')!.classList.toggle('primary', !needsInstall);
   setup.querySelector<HTMLButtonElement>('[data-command="start"]')!.textContent = state.phase === 'failed' ? t('Retry') : t('Start core');
   setup.querySelector<HTMLButtonElement>('[data-command="install"]')!.classList.toggle('primary', needsInstall);
-  element('reviews').replaceChildren(...state.reviews.map(review => {
-    const card = document.createElement('div'); card.className = 'review'; const title = document.createElement('strong'); title.textContent = review.title;
-    const summary = document.createElement('p'); summary.textContent = review.documents.length ? review.documents.map(doc => doc.path).join('\n') : review.summary;
-    const actions = document.createElement('div'); actions.className = 'actions';
-    actions.append(button(t('Review in editor'), () => void request('review', {id: review.id}).catch(notice)), button(t('Approve once'), () => void request('approve', {id: review.id}).catch(notice)), button(t('Deny'), () => void request('reject', {id: review.id}).catch(notice)));
-    card.append(title, summary, actions); return card;
-  }));
+  attention.update(state);
+  if (follow) transcript.scrollTop = transcript.scrollHeight;
   if (state.notice) notice(state.notice);
   renderAttachments();
   persist();
@@ -121,6 +131,7 @@ function renderAttachments(): void {
   element('upload-hint').textContent = [...uploads.values()].some(upload => !upload.submission) ? t('Attachments upload automatically when you send') : t('Add instructions while a task is running');
 }
 async function send(): Promise<void> {
+  if (workbench.consumeSend()) return;
   if (!snapshot || snapshot.phase !== 'ready') {notice(t('Start the workspace core first.')); return;}
   const text = composer.value; const availableItems = snapshot.draftItems.filter(item => !consumedItems.has(item.id)); const items = availableItems.map(item => item.id);
   const attached = [...uploads.values()].filter(upload => !upload.submission);
@@ -204,13 +215,16 @@ window.addEventListener('message', event => {
   if (message?.kind === 'response') {const entry = pending.get(message.id); if (!entry) return; pending.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.result);}
   else if (message?.kind === 'snapshot') render(message.snapshot);
   else if (message?.kind === 'error') notice(message.error);
+  else if (message?.kind === 'commands') workbench.show();
 });
-composer.addEventListener('input', saveDraft);
-composer.addEventListener('keydown', event => {if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {event.preventDefault(); void send();}});
+composer.addEventListener('input', () => {saveDraft(); workbench.input();});
+composer.addEventListener('keydown', event => {if (workbench.key(event)) return; if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {event.preventDefault(); void send();}});
 composer.addEventListener('paste', event => {const files = [...(event.clipboardData?.files ?? [])]; if (files.length) {event.preventDefault(); addFiles(files);}});
 element('send').addEventListener('click', () => void send());
 element('new-output').addEventListener('click', () => {transcript.scrollTop = transcript.scrollHeight; element('new-output').hidden = true;});
 element('attach').addEventListener('click', () => element<HTMLInputElement>('files').click());
+element('commands').addEventListener('click', () => workbench.show());
+element('attention-jump').addEventListener('click', () => element('reviews').scrollIntoView({block: 'start', behavior: 'smooth'}));
 element<HTMLInputElement>('files').addEventListener('change', event => {const input = event.target as HTMLInputElement; addFiles([...input.files ?? []]); input.value = '';});
 element('drop-zone').addEventListener('dragover', event => {event.preventDefault(); element('drop-zone').classList.add('drop-active');});
 element('drop-zone').addEventListener('dragleave', () => element('drop-zone').classList.remove('drop-active'));
@@ -220,4 +234,5 @@ element('drop-zone').addEventListener('drop', event => {
   else for (const uri of (event.dataTransfer?.getData('text/uri-list') ?? '').split(/\r?\n/).filter(line => line && !line.startsWith('#'))) void request('addUri', {uri}).catch(notice);
 });
 document.querySelectorAll<HTMLButtonElement>('[data-command]').forEach(button => button.addEventListener('click', () => void request(button.dataset.command!).catch(notice)));
+document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => button.addEventListener('click', () => void request('command.open', {actionId: button.dataset.action!}).catch(notice)));
 void request('ready').then(render).catch(notice);

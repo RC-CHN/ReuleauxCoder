@@ -15,20 +15,17 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
   private cache = new Map<string, string>();
   private opened = new Set<string>();
   private presenting = new Set<string>();
-  private tokens = new Map<string, vscode.CancellationTokenSource>();
   private epoch = 0;
   constructor(private readonly onChange: () => void, private readonly fail: (error: unknown) => void) {}
   bind(client: RuntimeClient): void {
-    for (const token of this.tokens.values()) {token.cancel(); token.dispose();} this.tokens.clear();
     this.detach?.(); this.client = client; this.epoch++; this.cache.clear(); this.opened.clear();
     const listener = () => {
-      for (const [id, token] of this.tokens) if (!this.find(id)) {token.cancel(); token.dispose(); this.tokens.delete(id);}
       for (const id of this.opened) if (!this.find(id)) this.opened.delete(id);
       this.changed.fire(undefined); this.onChange(); void this.present().catch(this.fail);
     };
     client.on('interactions', listener); this.detach = () => client.off('interactions', listener);
   }
-  summaries(): ReviewSummary[] {return (this.client?.interactions ?? []).filter(item => item.kind === 'review').map(item => ({id: item.request.request_id, title: item.request.title, summary: item.request.summary, documents: (item.request.documents ?? []).map((doc: any) => ({id: doc.id, path: doc.path}))}));}
+  summaries(): ReviewSummary[] {return (this.client?.interactions ?? []).filter(item => item.kind === 'review').map(item => ({id: item.request.request_id, title: item.request.title, summary: item.request.summary, dirty: this.dirtyDocuments(item).length > 0, grants: item.request.grant_options, context: item.request.context?.subagent_task ?? '', documents: (item.request.documents ?? []).map((doc: any) => ({id: doc.id, path: doc.path}))}));}
   getChildren(node?: ReviewNode): ReviewNode[] {
     if (!node) return this.summaries().map(item => ({id: item.id, label: item.title}));
     return this.summaries().find(item => item.id === node.id)?.documents.map(doc => ({id: node.id, label: basename(doc.path), path: doc.path, documentId: doc.id})) ?? [];
@@ -39,10 +36,6 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     item.command = {command: 'reuleaux.review', title: t('Review'), arguments: [node.id, node.documentId]}; return item;
   }
   private find(id: string): PendingInteraction | undefined {return this.client?.interactions.find(item => item.request.request_id === id);}
-  private token(id: string): vscode.CancellationToken {
-    let source = this.tokens.get(id); if (!source) {source = new vscode.CancellationTokenSource(); this.tokens.set(id, source);}
-    return source.token;
-  }
   private uri(requestId: string, documentId: string, side: string, path: string): vscode.Uri {
     return vscode.Uri.from({scheme: 'reuleaux-review', path: `/${requestId}/${documentId}/${basename(path)}`, query: new URLSearchParams({side, epoch: String(this.epoch)}).toString()});
   }
@@ -76,8 +69,6 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     {
       const text = [request.request.summary, ...(request.request.sections ?? []).map((section: any) => `${section.title}\n${typeof section.content === 'string' ? section.content : JSON.stringify(section.content, null, 2)}`)].join('\n\n');
       await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({content: text, language: 'diff'}), {preview: false});
-      const choice = await vscode.window.showQuickPick([t('Approve once'), t('Deny')], {title: request.request.title}, this.token(request.request.request_id));
-      if (choice) await this.decide(choice === t('Approve once'), request.request.request_id);
     }
   }
   private currentId(argument?: string | vscode.Uri): string | undefined {
@@ -86,33 +77,39 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     const uri = argument ?? (tab instanceof vscode.TabInputTextDiff ? tab.modified : vscode.window.activeTextEditor?.document.uri);
     return uri?.scheme === 'reuleaux-review' && new URLSearchParams(uri.query).get('epoch') === String(this.epoch) ? uri.path.split('/')[1] : undefined;
   }
-  async decide(approved: boolean, argument?: string | vscode.Uri): Promise<void> {
+  async decide(approved: boolean, argument?: string | vscode.Uri, scopeId?: unknown, feedback?: unknown): Promise<void> {
     let id = this.currentId(argument);
+    // An editor URI from an earlier core must never fall back to today's sole review.
+    if (argument && !id) return;
     if (!id) {
-      const selected = await vscode.window.showQuickPick(this.summaries().map(item => ({label: item.title, id: item.id})), {placeHolder: t('Choose the proposal to review')});
-      id = selected?.id;
+      const items = this.summaries();
+      if (items.length === 1) id = items[0].id;
+      else {await vscode.commands.executeCommand('reuleaux.chat.focus'); return;}
     }
-    const pending = id ? this.find(id) : undefined; if (!pending) return;
+    const pending = id ? this.find(id) : undefined; if (!pending || pending.kind !== 'review') return;
+    if (scopeId !== undefined && (typeof scopeId !== 'string' || !(pending.request.grant_options ?? []).some((option: any) => option.id === scopeId))) throw new Error(t('This request has expired.'));
+    if (feedback !== undefined && (typeof feedback !== 'string' || feedback.length > 8192)) throw new Error(t('Check the field values.'));
     if (approved) {
-      const paths = new Set((pending.request.documents ?? []).map((document: any) => pathKey(document.path)));
-      const dirty = vscode.workspace.textDocuments.filter(document => document.isDirty && paths.has(pathKey(document.uri.fsPath)));
-      if (dirty.length) {
-        const action = await vscode.window.showQuickPick([t('Save and request new proposal'), t('Deny this proposal')], {title: t('This proposal targets unsaved editor changes. Save them and ask the core for a new proposal.')}, this.token(id!));
-        if (!action) return;
-        if (action === t('Save and request new proposal')) {
-          for (const document of dirty) if (!await document.save()) throw new Error(t('The document could not be saved. Approval remains pending.'));
-        }
-        if (this.find(id!) !== pending) return;
-        this.client!.answer(id!, record('ReviewResponse', {approved: false, cancelled: false, action: 'deny', reason: 'The editor contained unsaved changes. Re-read the current file and propose the edit again against its saved content.'}));
-        return;
-      }
+      if (this.dirtyDocuments(pending).length) {this.onChange(); throw new Error(t('This proposal targets unsaved editor changes. Save them and ask the core for a new proposal.'));}
     }
     if (this.find(id!) !== pending) return;
-    this.client!.answer(id!, record('ReviewResponse', {approved, cancelled: false, action: approved ? 'allow_once' : 'deny', reason: approved ? 'Approved in the native editor.' : 'Denied in the native editor.'}));
+    this.client!.answer(id!, record('ReviewResponse', {approved, cancelled: false, action: approved ? scopeId ? 'allow_session' : 'allow_once' : 'deny', selected_id: typeof scopeId === 'string' ? scopeId : null, reason: typeof feedback === 'string' && feedback.trim() ? feedback : approved ? 'Approved in the workspace conversation.' : 'Denied in the workspace conversation.'}));
+  }
+  private dirtyDocuments(pending: PendingInteraction): vscode.TextDocument[] {
+    const paths = new Set((pending.request.documents ?? []).map((document: any) => pathKey(document.path)));
+    return vscode.workspace.textDocuments.filter(document => document.isDirty && paths.has(pathKey(document.uri.fsPath)));
+  }
+  async saveAndRepropose(id: string): Promise<void> {
+    const pending = this.find(id); if (pending?.kind !== 'review') throw new Error(t('This review has expired.'));
+    for (const document of this.dirtyDocuments(pending)) {
+      if (this.find(id) !== pending) return;
+      if (!await document.save()) throw new Error(t('The document could not be saved. Approval remains pending.'));
+    }
+    if (this.find(id) === pending) this.client!.answer(id, record('ReviewResponse', {approved: false, cancelled: false, action: 'deny', reason: 'The editor contained unsaved changes. Re-read the current file and propose the edit again against its saved content.'}));
   }
   private async present(): Promise<void> {
     const item = this.client?.interactions[0]; if (!item || this.presenting.has(item.request.request_id)) return;
-    const id = item.request.request_id; const epoch = this.epoch; this.presenting.add(id);
+    const id = item.request.request_id; this.presenting.add(id);
     try {
       if (item.kind === 'review') {
         if (!this.opened.has(id)) {
@@ -121,12 +118,7 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
         }
         return;
       }
-      let response;
-      if (item.kind === 'confirm') {const result = await vscode.window.showQuickPick([t('Confirm'), t('Cancel')], {title: item.request.title, placeHolder: item.request.message}, this.token(id)); response = record('ConfirmResponse', {confirmed: result === t('Confirm'), cancelled: result === undefined});}
-      else if (item.kind === 'choose_one') {const result = await vscode.window.showQuickPick((item.request.items ?? []).map((choice: any) => ({label: choice.label, description: choice.description, id: choice.id})), {title: item.request.title}, this.token(id)); response = record('ChooseOneResponse', {selected_id: (result as any)?.id ?? null, cancelled: !result});}
-      else if (item.kind === 'input_text') {const result = await vscode.window.showInputBox({title: item.request.title, prompt: item.request.prompt, value: item.request.initial_value, password: item.request.secret, ignoreFocusOut: true}, this.token(id)); response = record('InputTextResponse', {value: result ?? null, cancelled: result === undefined});}
-      if (response && epoch === this.epoch && this.find(id) === item) this.client!.answer(id, response);
     } finally {this.presenting.delete(id);}
   }
-  dispose(): void {this.detach?.(); this.epoch++; this.cache.clear(); for (const token of this.tokens.values()) {token.cancel(); token.dispose();} this.tokens.clear(); this.changed.dispose();}
+  dispose(): void {this.detach?.(); this.epoch++; this.cache.clear(); this.changed.dispose();}
 }
