@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-09-24
+
 - Add a workspace-host VS Code extension for local and Remote workspaces, with automatic core discovery, a checksum-verified private installer, persistent sidebar/editor conversations, native frozen diff approvals, selection/diagnostic context and clipboard/file uploads. Ordinary and steering input appears immediately; uploads finish in the background before the owning message is submitted. Include Chinese/English UI, VS Code language selection and native host/browser integration tests.
+
+- Publish the VS Code VSIX with the matching bundled core alongside the Python distributions, peer binaries and host images. Run Windows CI on Node 22/24 for native VS Code, bilingual Chromium UI, TUI and packaged installation, including LF/CRLF preservation, Unicode/space-containing paths, dirty-file protection and process cleanup.
 
 - Cancel pending RPC input and approval interactions when stopping or interrupting a turn, so a native dialog cannot leave the task waiting after Stop.
 
