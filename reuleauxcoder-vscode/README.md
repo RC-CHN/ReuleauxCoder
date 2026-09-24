@@ -50,6 +50,8 @@ npm run test:install
 
 `package` 会构建扩展、从当前源码打包兼容核心 wheel，再生成 VSIX。无运行时 npm 安装步骤。`test:install` 在临时私有环境安装打包核心并检查真实 RPC 初始化和退出，需要下载 Python 依赖。其余测试使用确定性模型夹具和真实 Python RuntimeServer，不访问模型服务。Linux 扩展宿主测试需要显示器或 `xvfb-run -a npm run test:extension`。可设置 `VSCODE_EXECUTABLE_PATH` 使用本地 VS Code，默认下载最低支持版本；`RCODER_TEST_PYTHON` 指定夹具 Python，`PLAYWRIGHT_CHROMIUM_EXECUTABLE` 可指定浏览器。
 
+CI 在 Linux 和 Windows 上运行核心协议、真实 VS Code 宿主、Chromium 中英界面与打包安装测试，Windows 同时覆盖 Node 22/24。工作区和私有安装目录包含中文及空格；原生 diff 检查 LF/CRLF 从预览到批准落盘的保留，脏文件保护检查 Windows 路径大小写差异。TUI 也在两个系统的 Node 22/24 上运行，POSIX PTY 用例仅在 Linux 执行。
+
 ## English
 
 ReuleauxCoder runs a persistent Python core on the workspace host, locally or inside VS Code Remote SSH/WSL/Containers. Chat defaults to the secondary sidebar; change approvals open frozen before/after documents in the native editor. Requires VS Code 1.106+ and host Python 3.10+.
@@ -58,4 +60,4 @@ Open **Reuleaux → Conversation** to connect automatically. If the core is miss
 
 Enter shows ordinary/steering input immediately and preserves the next draft. Files and clipboard images transfer as bounded byte chunks to the workspace host; sending during an upload waits for that message's attachments in the background. Failed messages can retry with the same ID or return to the draft. Context actions capture selected code and diagnostics. Approval revalidates disk content; built-in edits refuse to overwrite known unsaved editor documents. Closing a view leaves the host session connected. UI language follows VS Code (Chinese/English, English fallback); provider output and core catalogs remain verbatim.
 
-Build and validation commands are shared above. Tests cover real core RPC, native VS Code diff and buffer handling, cancellation, browser input/upload behavior and translation resources. Windows and genuine Remote transports require validation in their respective environments; local extension-host tests do not simulate an SSH server.
+Build and validation commands are shared above. Linux and Windows CI run real core RPC, native VS Code diff and buffer handling, cancellation, bilingual Chromium input/upload tests and packaged installation; Windows covers Node 22/24. Tests use Unicode/space-containing paths, preserve both LF and CRLF through approval, and check Windows path casing in dirty-file protection. TUI tests also run on both systems with Node 22/24; POSIX PTY cases run on Linux only. Genuine Remote transports still require validation in their respective environments; local extension-host tests do not simulate an SSH server.

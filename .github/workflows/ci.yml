@@ -56,9 +56,12 @@ jobs:
         run: uv run python scripts/smoke-install.py
 
   tui-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         node: [22, 24]
     steps:
       - name: Checkout
@@ -79,15 +82,22 @@ jobs:
         run: uv sync --locked --extra dev
       - name: Install TUI dependencies
         run: npm ci --prefix reuleauxcoder-tui
-      - name: Build and test TUI with real Python runtime and PTY
+      - name: Build and test TUI with real Python runtime (PTY on Linux)
         run: npm test --prefix reuleauxcoder-tui
 
   vscode-test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            node: 22
+          - os: windows-latest
+            node: 22
+          - os: windows-latest
+            node: 24
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -100,7 +110,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: reuleauxcoder-vscode/package-lock.json
       - name: Sync Python dependencies
@@ -109,15 +119,21 @@ jobs:
         run: npm ci --prefix reuleauxcoder-vscode
       - name: Test extension with real core
         run: npm test --prefix reuleauxcoder-vscode
-      - name: Test native VS Code editor integration
+      - name: Test native VS Code editor integration on Linux
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:extension --prefix reuleauxcoder-vscode
-      - name: Install browser
+      - name: Test native VS Code editor integration on Windows
+        if: runner.os == 'Windows'
+        run: npm run test:extension --prefix reuleauxcoder-vscode
+      - name: Install browser and Linux dependencies
         if: runner.os == 'Linux'
         working-directory: reuleauxcoder-vscode
         run: npx playwright install --with-deps chromium
+      - name: Install Windows browser
+        if: runner.os == 'Windows'
+        working-directory: reuleauxcoder-vscode
+        run: npx playwright install chromium
       - name: Test bilingual webview and attachments
-        if: runner.os == 'Linux'
         run: npm run test:webview --prefix reuleauxcoder-vscode
       - name: Package compatible core and VSIX
         run: npm run package --prefix reuleauxcoder-vscode
@@ -126,7 +142,7 @@ jobs:
       - name: Upload extension smoke artifact
         uses: actions/upload-artifact@v7
         with:
-          name: reuleauxcoder-vscode-${{ matrix.os }}
+          name: reuleauxcoder-vscode-${{ matrix.os }}-node${{ matrix.node }}
           path: reuleauxcoder-vscode/*.vsix
           if-no-files-found: error
 
