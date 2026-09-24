@@ -582,6 +582,7 @@ class RuntimeServer:
         if discarded:
             self.agent.persist_runtime_snapshot()
         self.interactions.shutdown(reason="session closed")
+        self.agent.approval_provider.close()
         with self._lock:
             if not self._lock.wait_for(lambda: not self._workers, timeout=10):
                 raise TimeoutError("Backend operations did not stop within 10 seconds")

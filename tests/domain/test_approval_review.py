@@ -76,6 +76,64 @@ def test_auto_review_timeout_fails_closed() -> None:
     assert "timed out" in (decision.reason or "")
 
 
+def test_timed_out_reviewer_is_cancelled_and_expired_waiters_never_run() -> None:
+    release = threading.Event()
+    started = threading.Event()
+    calls = []
+
+    class StalledLLM:
+        def chat(self, **kwargs):
+            calls.append(kwargs)
+            started.set()
+            release.wait(2)
+            return SimpleNamespace(content='{"decision":"deny"}')
+
+    judge = AutoReviewJudge(agent=_agent(), llm=StalledLLM())
+    judge.timeout_seconds = 0.03
+    try:
+        assert not judge(ApprovalRequest(tool_name="first")).approved
+        assert started.is_set()
+        assert calls[0]["cancellation_event"].is_set()
+        for _ in range(3):
+            assert not judge(ApprovalRequest(tool_name="expired")).approved
+        assert len(calls) == 1
+        release.set()
+        assert judge._review_lock.acquire(timeout=1)
+        judge._review_lock.release()
+        assert len(calls) == 1
+    finally:
+        release.set()
+        judge.close()
+
+
+def test_close_cancels_active_review_and_rejects_new_work() -> None:
+    entered = threading.Event()
+    cancelled = threading.Event()
+    closed = threading.Event()
+
+    class CancellableLLM:
+        def chat(self, *, cancellation_event, **kwargs):
+            entered.set()
+            assert cancellation_event.wait(2)
+            cancelled.set()
+            return SimpleNamespace(content='{"decision":"deny"}')
+
+        def close(self):
+            closed.set()
+
+    judge = AutoReviewJudge(agent=_agent(), llm=CancellableLLM())
+    decisions = []
+    worker = threading.Thread(target=lambda: decisions.append(judge(ApprovalRequest(tool_name="shell"))))
+    worker.start()
+    assert entered.wait(1)
+    judge.close()
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert cancelled.wait(1) and closed.is_set()
+    assert not decisions[0].approved
+    assert "closed" in judge(ApprovalRequest(tool_name="again")).reason
+
+
 def test_auto_review_allow_requires_known_authorization_event() -> None:
     judge = AutoReviewJudge(
         agent=_agent(),

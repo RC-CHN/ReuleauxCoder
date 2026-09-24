@@ -269,6 +269,13 @@ class SharedApprovalProvider(ApprovalProvider):
         """The human handler (CLI interactor or TUI queue pusher)."""
         return self._coordinator.handler
 
+    def close(self) -> None:
+        """Cancel and dispose owned reviewers when the root runtime closes."""
+        for judge in self._judges:
+            close = getattr(judge, "close", None)
+            if callable(close):
+                close()
+
     @property
     def coordinator(self) -> "ApprovalCoordinator":
         """Root-scoped coordinator shared by parent and child requests."""
