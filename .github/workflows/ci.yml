@@ -82,6 +82,54 @@ jobs:
       - name: Build and test TUI with real Python runtime and PTY
         run: npm test --prefix reuleauxcoder-tui
 
+  vscode-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v8.3.2
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: reuleauxcoder-vscode/package-lock.json
+      - name: Sync Python dependencies
+        run: uv sync --frozen --extra dev
+      - name: Install extension dependencies
+        run: npm ci --prefix reuleauxcoder-vscode
+      - name: Test extension with real core
+        run: npm test --prefix reuleauxcoder-vscode
+      - name: Test native VS Code editor integration
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:extension --prefix reuleauxcoder-vscode
+      - name: Install browser
+        if: runner.os == 'Linux'
+        working-directory: reuleauxcoder-vscode
+        run: npx playwright install --with-deps chromium
+      - name: Test bilingual webview and attachments
+        if: runner.os == 'Linux'
+        run: npm run test:webview --prefix reuleauxcoder-vscode
+      - name: Package compatible core and VSIX
+        run: npm run package --prefix reuleauxcoder-vscode
+      - name: Install packaged core outside checkout and check protocol
+        run: npm run test:install --prefix reuleauxcoder-vscode
+      - name: Upload extension smoke artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: reuleauxcoder-vscode-${{ matrix.os }}
+          path: reuleauxcoder-vscode/*.vsix
+          if-no-files-found: error
+
   peer-test:
     runs-on: ubuntu-latest
 
