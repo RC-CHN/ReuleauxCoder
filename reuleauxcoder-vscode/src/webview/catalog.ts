@@ -1,5 +1,5 @@
 import type {Action} from '@reuleauxcoder/client';
-import {t, errorText, type MessageKey} from '../i18n.js';
+import {t, errorText, coreText, type MessageKey} from '../i18n.js';
 import type {IconName} from './icons.js';
 
 const features: Record<string, [MessageKey, MessageKey, IconName, MessageKey]> = {
@@ -31,11 +31,7 @@ export function actionScope(action: Action): string {
   return '';
 }
 export function panelText(text: string): string {
-  return text.split(' · ').map(part => {
-    if (part.startsWith('currently ')) return t('Currently {0}', errorText(part.slice(10)));
-    if (part.startsWith('inherits ')) return t('Inherits {0}', errorText(part.slice(9)));
-    return errorText(part);
-  }).join(' · ');
+  return coreText(text);
 }
 export function commandItems(catalog: Action[], query: string): {action: Action; label: string; description: string; icon: IconName; group: string}[] {
   const search = query.replace(/^\//, '').trim().toLowerCase();
@@ -49,7 +45,7 @@ export function commandItems(catalog: Action[], query: string): {action: Action;
     for (const action of candidates) {
       const main = action === primary && feature !== 'system';
       const label = main ? info.label : actionLabel(action);
-      const description = main ? info.description : actionScope(action) || action.description;
+      const description = main ? info.description : actionScope(action) || errorText(action.description);
       if (search && ![label, description, action.action_id, action.description, ...action.triggers.map(trigger => trigger.value)].join(' ').toLowerCase().includes(search)) continue;
       result.push({action, label, description, icon: info.icon, group: info.group});
     }

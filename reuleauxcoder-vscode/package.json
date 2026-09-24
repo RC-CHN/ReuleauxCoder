@@ -219,10 +219,6 @@
           "type": "webview",
           "id": "reuleaux.chat",
           "name": "%reuleaux.chat%"
-        },
-        {
-          "id": "reuleaux.reviews",
-          "name": "%reuleaux.reviews%"
         }
       ]
     },

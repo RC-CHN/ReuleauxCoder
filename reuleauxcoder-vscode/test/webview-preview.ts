@@ -35,6 +35,15 @@ window.acquireVsCodeApi = () => ({getState:()=>saved, setState:value=>{saved=val
     else if(item.action?.action_id.startsWith('skills.')||item.action?.action_id.startsWith('mcp.')) {item.current=!item.current;surface.id=++serial;}
     else if(item.action?.action_id==='goal.create') state.commandSurface={id:++serial,feature:'goal',busy:false,canBack:false,action:state.catalog.find(item=>item.action_id==='goal.create')};
     else state.commandSurface=undefined; publish();
+  } else if(message.action==='command.policy') {
+    let panel=state.commandSurface.panel;
+    for(const index of data.path.slice(0,-1)) panel=panel.children.find(entry=>entry[0]===panel.items[index].label)[1];
+    panel.items.forEach((item,index)=>item.current=index===data.path.at(-1)&&!!item.action?.command.action);
+    const root=state.commandSurface.panel, scope=root.children.find(entry=>entry[0]===root.items[data.path[0]].label)[1];
+    const selected=panel.items.find(item=>item.current)?.action.command.action;
+    scope.items[data.path[1]].description=selected?'currently '+selected:'no override';
+    root.items[data.path[0]].description=scope.children.map((entry,index)=>(index?'workspace: ':'session: ')+(entry[1].items.find(item=>item.current)?.action.command.action||'no override')).join(' · ');
+    state.commandSurface.id=++serial;demo.panels['approval.show']=structuredClone(state.commandSurface.panel);publish();
   } else if(message.action==='command.back') {state.commandSurface={...stack.pop(),id:++serial,canBack:stack.length>0};publish();}
   else if(message.action==='command.close'||message.action==='command.submit') {state.commandSurface=undefined;publish();}
   else if(message.action==='approve'||message.action==='reject') {state.reviews=state.reviews.filter(item=>item.id!==data.id);publish();}

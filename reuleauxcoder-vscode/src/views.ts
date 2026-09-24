@@ -62,6 +62,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
       case 'command.open': session.requireClient(); return session.commands.open(data.actionId);
       case 'command.submit': session.requireClient(); return session.commands.submit(data.surfaceId, data.values);
       case 'command.select': session.requireClient(); return session.commands.select(data.surfaceId, data.index);
+      case 'command.policy': session.requireClient(); return session.commands.policy(data.surfaceId, data.path);
       case 'command.back': return session.commands.back(data.surfaceId);
       case 'command.close': session.commands.dismiss(data.surfaceId); return;
       case 'answer': return answerInteraction(session.requireClient(), data);

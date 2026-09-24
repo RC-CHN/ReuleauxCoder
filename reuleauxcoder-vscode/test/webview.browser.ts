@@ -61,6 +61,12 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
             await publish(); break;
           }
           case 'command.submit': case 'command.close': state.commandSurface = undefined; await publish(); break;
+          case 'command.policy': {
+            let panel = state.commandSurface!.panel!;
+            for (const index of data.path.slice(0, -1)) panel = panel.children.find(([id]) => id === panel.items[index].label)![1];
+            panel.items.forEach((item, index) => item.current = index === data.path.at(-1) && !!item.action?.command.action);
+            state.commandSurface!.id = ++surfaceId; await publish(); break;
+          }
           case 'command.back': state.commandSurface = {...state.commandSurface!, id: ++surfaceId, canBack: false, panel: panels['model.show']}; await publish(); break;
           case 'answer': state.interactions = state.interactions?.filter(item => item.id !== data.id); await publish(); break;
         }
@@ -72,6 +78,15 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.waitForFunction(() => document.querySelector('#environment')!.textContent?.includes('SSH: workbench'));
       await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('#send')!.disabled);
       assert.equal(await page.locator('#composer').getAttribute('aria-label'), language === 'zh' ? '消息' : 'Message');
+      const compactHeight = (await page.locator('#composer').boundingBox())!.height;
+      assert(compactHeight <= 28);
+      assert((await page.locator('.app-header').boundingBox())!.height <= 42);
+      assert((await page.locator('footer').boundingBox())!.height < 115);
+      await page.locator('#composer').fill('a long wrapped draft '.repeat(40));
+      const expandedHeight = (await page.locator('#composer').boundingBox())!.height;
+      assert(expandedHeight > compactHeight && expandedHeight <= 200);
+      await page.locator('#composer').fill('');
+      assert.equal((await page.locator('#composer').boundingBox())!.height, compactHeight);
       await page.locator('#composer').fill('ordinary <img src=x onerror=alert(1)>');
       await page.locator('#composer').press('Enter');
       assert.equal(await page.locator('#composer').inputValue(), '');
@@ -149,14 +164,25 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.waitForFunction(() => document.querySelector('[role="switch"]')?.getAttribute('aria-checked') === 'false');
       await page.locator('.workbench-heading button').last().click();
 
-      await page.locator('.context-strip [data-action="approval.show"]').click();
-      await page.locator('.panel-rows button').first().click();
-      await page.waitForFunction(() => document.querySelector('.permission-steps .active')?.textContent?.startsWith('2'));
-      await page.locator('.panel-rows button').first().click();
-      await page.waitForFunction(() => document.querySelectorAll('.permission-row').length === 4);
-      assert.equal(await page.locator('.permission-row[aria-current="true"]').count(), 1);
-      await page.locator('.permission-row[data-policy="require_approval"]').click();
-      await page.waitForFunction(() => document.querySelector('#workbench')!.hasAttribute('hidden'));
+      await page.locator('#permissions').click();
+      await page.locator('.policy-tool select').first().waitFor();
+      const policyCount = messages.filter(message => message.action === 'command.policy').length;
+      await page.locator('.policy-scopes button').last().click();
+      assert.equal(messages.filter(message => message.action === 'command.policy').length, policyCount);
+      await page.locator('.policy-tool select').first().selectOption('3');
+      await page.waitForFunction(() => document.querySelector('.policy-tool')?.getAttribute('data-policy') === 'deny');
+      assert.deepEqual(messages.filter(message => message.action === 'command.policy').at(-1)!.data!.path, [0, 1, 3]);
+      assert.equal(await page.locator('.policy-scopes button').last().getAttribute('aria-pressed'), 'true');
+      await page.locator('.policy-scopes button').first().click();
+      await page.locator('.policy-tool select').first().selectOption('0');
+      await page.waitForFunction(() => document.querySelector('.policy-tool')?.getAttribute('data-policy') === 'allow');
+      assert.deepEqual(messages.filter(message => message.action === 'command.policy').at(-1)!.data!.path, [0, 0, 0]);
+      await page.locator('.policy-tool select').first().selectOption('4');
+      await page.waitForFunction(() => document.querySelector('.policy-tool')?.getAttribute('data-policy') === 'inherit');
+      assert.deepEqual(messages.filter(message => message.action === 'command.policy').at(-1)!.data!.path, [0, 0, 4]);
+      await page.locator('[data-policy-filter]').fill('shell');
+      assert.equal(await page.locator('.policy-tool:visible').count(), 1);
+      await page.locator('.workbench-heading button').last().click();
 
       state.interactions = [{id: 'secret', kind: 'input_text', title: 'Authentication', message: 'Enter a secret', secret: true, allowEmpty: false, allowCancel: true}]; await publish();
       await page.locator('.answer-form input').fill('not-persisted'); await publish();
@@ -177,8 +203,23 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       state.cells.push({id: 'assistant', role: 'assistant', text: language === 'zh' ? '已检查修改。请在中央原生 diff 中审阅并批准。' : 'The proposal is ready. Review and approve it in the native diff editor.'});
       state.reviews = [{id: 'review', title: 'edit_file', summary: language === 'zh' ? '让输入立即响应，并把命令操作留在会话中。' : 'Keep input responsive and command controls within the conversation.', documents: [{id: 'doc', path: 'src/runtime.ts'}], grants: [{id: 'scope-one', label: 'This session', description: 'Allow edits to this file for this session', broad: false}]}];
       await publish();
+      assert(await page.locator('#overview').isHidden());
+      await page.locator('#overview-toggle').click();
+      assert(await page.locator('#overview').isVisible());
+      state.overview!.goal!.status = 'complete'; await publish();
+      await page.waitForFunction(() => document.querySelector('#goal-strip')!.hasAttribute('hidden'));
+      assert(await page.locator('#overview').isVisible());
+      assert(await page.locator('#goal-strip').isHidden());
+      await page.locator('#overview-toggle').click();
+      assert(await page.locator('#overview').isHidden());
       await page.locator('.review-file').click(); assert.equal(messages.filter(message => message.action === 'review').at(-1)!.data!.documentId, 'doc');
       await page.locator('.review-alternatives summary').click();
+      await page.locator('.review-feedback-toggle').click();
+      await page.locator('.review-feedback textarea').fill('Use a smaller change');
+      await publish(); assert.equal(await page.locator('.review-feedback textarea').inputValue(), 'Use a smaller change');
+      await page.locator('.review-feedback button').click();
+      assert.equal(messages.filter(message => message.action === 'reject').at(-1)!.data!.feedback, 'Use a smaller change');
+      await page.locator('.review-feedback-toggle').click();
       await page.locator('input[value="scope-one"]').check();
       await page.locator('.review-decision .primary').click();
       assert.equal(messages.filter(message => message.action === 'approve').at(-1)!.data!.scopeId, 'scope-one');
@@ -197,19 +238,30 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert.deepEqual(errors, []);
       await page.close();
       const preview = await browser.newPage({viewport: {width: 1200, height: 1000}});
+      await preview.emulateMedia({reducedMotion: 'reduce'});
       await preview.goto(pathToFileURL(await writePreview(language)).toString());
       await preview.waitForFunction(() => document.querySelector('.attention-card'));
       await delay(200); await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-${language}.png`)});
       await preview.locator('#commands').click(); await delay(150); await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-menu-${language}.png`)});
       await preview.locator('.workbench-heading button').last().click();
-      await preview.locator('.context-strip [data-action="approval.show"]').click();
-      await preview.locator('.panel-rows button').first().click();
-      await preview.waitForFunction(() => document.querySelector('.permission-steps .active')?.textContent?.startsWith('2'));
-      await preview.locator('.panel-rows button').first().click();
-      await preview.waitForFunction(() => document.querySelectorAll('.permission-row').length === 4);
+      await preview.locator('#permissions').click();
+      await preview.locator('.policy-tool select').first().waitFor();
       await delay(150); await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-permissions-${language}.png`)});
-      await preview.locator('.workbench-heading button').first().click();
-      await preview.waitForFunction(() => document.querySelector('.permission-steps .active')?.textContent?.startsWith('2'));
+      await preview.locator('.policy-scopes button').last().click();
+      await preview.locator('.policy-tool select').first().selectOption('3');
+      await preview.waitForFunction(() => document.querySelector('.policy-tool')?.getAttribute('data-policy') === 'deny');
+      await preview.locator('.workbench-heading button').last().click();
+      await preview.evaluate(() => {
+        document.body.classList.add('vscode-dark');
+        for (const [name, value] of Object.entries({'sideBar-background': '#1e1f1c', 'editor-background': '#20211d', 'input-background': '#414438', foreground: '#d9d9d5', descriptionForeground: '#b5b7aa', 'charts-orange': '#803900', 'panel-border': '#45483c'})) document.documentElement.style.setProperty(`--vscode-${name}`, value);
+      });
+      await preview.setViewportSize({width: 950, height: 900});
+      await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-dark-compact-${language}.png`)});
+      const accent = await preview.locator('.brand-mark').evaluate(node => getComputedStyle(node).color);
+      assert.equal(accent, 'rgb(228, 183, 127)', 'Dark chart colors must not make the brand unreadable');
+      await preview.locator('#permissions').click();
+      await preview.locator('.policy-tool select').first().waitFor();
+      await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-policy-dark-${language}.png`)});
       await preview.locator('.workbench-heading button').last().click();
       await preview.evaluate(() => {
         document.body.classList.add('vscode-light');

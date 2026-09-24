@@ -1,5 +1,5 @@
 import type {HostSnapshot, WebRequest} from '../shared.js';
-import {t, errorText} from '../i18n.js';
+import {t, errorText, coreText} from '../i18n.js';
 import {icon} from './icons.js';
 
 /** Stable cards preserve in-progress answers through streaming snapshots. */
@@ -11,42 +11,79 @@ export class AttentionCards {
     for (const review of state.reviews) {
       const key = `${state.hostId}:${state.generation}:${review.id}`; live.add(key);
       if (this.nodes.get(key)?.signature === JSON.stringify(review)) continue;
-      const card = this.card(t('Review changes'), errorText(review.title), 'shield');
+      const previous = this.nodes.get(key)?.node;
+      const title = review.tool === 'shell' ? t('Run this command?') : review.documents.length ? t('Apply these changes?') : coreText(review.title);
+      const card = this.card(t('Tool approval'), title, 'shield');
+      if (review.tool) {
+        const tool = document.createElement('div'); tool.className = 'review-tool';
+        tool.textContent = `${review.tool}${review.source ? ' · ' + coreText(review.source) : ''}`; card.querySelector('.attention-heading > div')!.append(tool);
+      }
       if (review.context) {const context = document.createElement('p'); context.className = 'attention-description'; context.textContent = `${t('Agents')} · ${review.context}`; card.append(context);}
-      const description = document.createElement('p'); description.className = 'attention-description'; description.textContent = review.summary; card.append(description);
+      const description = document.createElement('p'); description.className = 'attention-description'; description.textContent = coreText(review.summary); card.append(description);
+      if (review.reason && !review.summary.includes(review.reason)) {
+        const reason = document.createElement('p'); reason.className = 'review-reason'; reason.textContent = `${t('Reason')} · ${coreText(review.reason)}`; card.append(reason);
+      }
+      if (review.cwd !== undefined) {
+        const location = document.createElement('div'); location.className = 'review-location'; location.append(icon('terminal'));
+        location.append(document.createTextNode(`${state.environment} · ${review.cwd ?? t('Current core directory')}`)); card.append(location);
+      }
+      for (const section of review.preview ?? []) {
+        const preview = document.createElement(section.secondary ? 'details' : 'section'); preview.className = 'review-preview';
+        const title = document.createElement(section.secondary ? 'summary' : 'div'); title.textContent = coreText(section.title);
+        const text = document.createElement('pre'); text.textContent = section.title === 'Outside workspace' ? coreText(section.content) : section.content;
+        preview.append(title, text);
+        if (section.truncated) preview.append(this.button(t('Preview shortened · View full details'), () => this.act(card, 'review', {id: review.id})));
+        card.append(preview);
+      }
       const files = document.createElement('div'); files.className = 'review-files';
-      for (const document of review.documents) {
-        const button = this.button(document.path, () => this.act(card, 'review', {id: review.id, documentId: document.id}));
-        button.prepend(icon('expand')); button.append(icon('chevron')); button.className = 'review-file'; button.title = t('Review in editor'); files.append(button);
+      for (const file of review.documents) {
+        const button = this.button(file.path, () => this.act(card, 'review', {id: review.id, documentId: file.id}));
+        const path = file.path.replaceAll('\\', '/'); const name = path.split('/').at(-1)!;
+        const label = button.querySelector('span')!; label.textContent = name;
+        const directory = document.createElement('small'); directory.textContent = path.slice(0, -name.length); label.append(directory);
+        const action = document.createElement('span'); action.className = 'file-action'; action.textContent = t('View diff');
+        button.prepend(icon('commands')); button.append(action, icon('chevron')); button.className = 'review-file'; button.title = `${t('Review in editor')} · ${file.path}`; files.append(button);
       }
       card.append(files);
       if (review.dirty) {const warning = document.createElement('p'); warning.className = 'review-warning'; warning.textContent = t('This proposal targets unsaved editor changes. Save them and ask the core for a new proposal.'); card.append(warning);}
       const foot = document.createElement('div'); foot.className = 'review-decision';
       const scope = document.createElement('small'); scope.textContent = t('Your approval applies only to this proposal.'); foot.append(scope);
       const buttons = document.createElement('div'); buttons.className = 'actions';
-      if (!review.documents.length) buttons.append(this.button(t('View details'), () => this.act(card, 'review', {id: review.id})));
-      buttons.append(this.button(t('Deny'), () => this.act(card, 'reject', {id: review.id})));
       let scopeId: string | undefined;
-      const approve = this.button(review.dirty ? t('Save and request new proposal') : t('Approve once'), () => this.act(card, review.dirty ? 'saveReview' : 'approve', {id: review.id, scopeId}));
-      approve.className = 'primary'; approve.prepend(icon(review.dirty ? 'history' : 'check')); buttons.append(approve); foot.append(buttons); card.append(foot); this.put(key, card, review);
-      const alternatives = document.createElement('details'); alternatives.className = 'review-alternatives'; const heading = document.createElement('summary'); heading.textContent = t('Scope and feedback'); alternatives.append(heading);
+      const approve = this.button(review.dirty ? t('Save and request new proposal') : t('Allow once'), () => this.act(card, review.dirty ? 'saveReview' : 'approve', {id: review.id, scopeId}));
+      approve.className = 'primary'; approve.prepend(icon(review.dirty ? 'history' : 'check'));
       if (review.grants?.length && !review.dirty) {
+        const alternatives = document.createElement('details'); alternatives.className = 'review-alternatives';
+        alternatives.open = previous?.querySelector<HTMLDetailsElement>('.review-alternatives')?.open ?? false;
+        const heading = document.createElement('summary'); heading.textContent = t('Allow similar calls for this session…'); alternatives.append(heading);
         const fieldset = document.createElement('fieldset'); const legend = document.createElement('legend'); legend.textContent = t('Approval scope'); fieldset.append(legend);
-        for (const option of [{id: '', label: t('Approve once'), description: t('Your approval applies only to this proposal.'), broad: false}, ...review.grants]) {
+        for (const option of [{id: '', label: t('Allow once'), description: t('Your approval applies only to this proposal.'), broad: false}, ...review.grants]) {
           const label = document.createElement('label'); const input = document.createElement('input'); input.type = 'radio'; input.name = `scope-${review.id}`; input.value = option.id; input.checked = !option.id;
-          const text = document.createElement('span'); text.textContent = errorText(option.label); const description = document.createElement('small'); description.textContent = `${option.broad ? t('Broad permission') + ' · ' : ''}${errorText(option.description)}`; text.append(description); label.append(input, text); fieldset.append(label);
-          input.addEventListener('change', () => {if (!input.checked) return; scopeId = option.id || undefined; scope.textContent = option.description; approve.querySelector('span')!.textContent = scopeId ? t('Approve selected scope') : t('Approve once');});
+          label.classList.toggle('broad-scope', option.broad);
+          const text = document.createElement('span'); text.textContent = coreText(option.label); const description = document.createElement('small'); description.textContent = `${option.broad ? t('Broad permission') + ' · ' : ''}${coreText(option.description)}`; text.append(description); label.append(input, text); fieldset.append(label);
+          input.addEventListener('change', () => {if (!input.checked) return; scopeId = option.id || undefined; scope.textContent = scopeId ? `${t('This session')} · ${coreText(option.label)} · ${coreText(option.description)}` : t('Your approval applies only to this proposal.'); approve.querySelector('span')!.textContent = scopeId ? t('Allow for this session') : t('Allow once');});
         }
-        alternatives.append(fieldset);
+        alternatives.append(fieldset); card.append(alternatives);
       }
-      const form = document.createElement('form'); const input = document.createElement('textarea'); input.placeholder = t('Explain what should change…'); input.setAttribute('aria-label', input.placeholder); input.required = true; input.maxLength = 8192;
-      const reject = this.button(t('Send feedback and deny'), () => {}); reject.type = 'submit'; form.append(input, reject); form.addEventListener('submit', event => {event.preventDefault(); this.act(card, 'reject', {id: review.id, feedback: input.value});}); alternatives.append(form); card.append(alternatives);
+      const form = document.createElement('form'); form.className = 'review-feedback'; form.hidden = true;
+      const input = document.createElement('textarea'); input.placeholder = t('Explain what should change…'); input.required = true; input.maxLength = 8192;
+      const label = document.createElement('label'); label.textContent = t('What should the agent do differently?'); label.append(input);
+      const reject = this.button(t('Send feedback and deny'), () => {}); reject.type = 'submit'; form.append(label, reject);
+      form.addEventListener('submit', event => {event.preventDefault(); this.act(card, 'reject', {id: review.id, feedback: input.value});});
+      const feedback = this.button(t('Give feedback'), () => {form.hidden = !form.hidden; feedback.setAttribute('aria-expanded', String(!form.hidden)); if (!form.hidden) {input.focus(); form.scrollIntoView({block: 'nearest'});}});
+      feedback.className = 'review-feedback-toggle'; feedback.setAttribute('aria-expanded', 'false');
+      input.value = previous?.querySelector<HTMLTextAreaElement>('.review-feedback textarea')?.value ?? '';
+      if (previous?.querySelector<HTMLElement>('.review-feedback')?.hidden === false) {form.hidden = false; feedback.setAttribute('aria-expanded', 'true');}
+      const deny = this.button(t('Deny'), () => this.act(card, 'reject', {id: review.id})); deny.className = 'review-deny';
+      buttons.append(feedback, deny, approve); foot.append(buttons); card.append(foot, form);
+      if (!review.documents.length && !review.preview?.length) card.append(this.button(t('View details'), () => this.act(card, 'review', {id: review.id})));
+      this.put(key, card, review);
     }
     for (const item of state.interactions ?? []) {
       const key = `${state.hostId}:${state.generation}:${item.id}`; live.add(key);
       if (this.nodes.get(key)?.signature === JSON.stringify(item)) continue;
-      const card = this.card(t('Your input is needed'), item.title, 'goal');
-      const message = document.createElement('p'); message.className = 'attention-description'; message.textContent = item.message; card.append(message);
+      const card = this.card(t('Your input is needed'), coreText(item.title), 'goal');
+      const message = document.createElement('p'); message.className = 'attention-description'; message.textContent = coreText(item.message); card.append(message);
       const actions = document.createElement('div'); actions.className = 'actions';
       if (item.kind === 'input_text') {
         const form = document.createElement('form'); form.className = 'answer-form';
@@ -55,7 +92,7 @@ export class AttentionCards {
         form.append(input, submit); form.addEventListener('submit', event => {event.preventDefault(); const value = input.value; if (item.secret) input.value = ''; this.act(card, 'answer', {id: item.id, value});}); card.append(form);
       } else if (item.kind === 'choose_one') {
         const options = document.createElement('div'); options.className = 'answer-options';
-        for (const option of item.items ?? []) {const button = this.button(option.label, () => this.act(card, 'answer', {id: item.id, selected: option.id})); const description = document.createElement('small'); description.textContent = option.description; button.append(description); options.append(button);} card.append(options);
+        for (const option of item.items ?? []) {const button = this.button(coreText(option.label), () => this.act(card, 'answer', {id: item.id, selected: option.id})); const description = document.createElement('small'); description.textContent = coreText(option.description); button.append(description); options.append(button);} card.append(options);
       } else if (item.kind === 'confirm') {
         const confirm = this.button(t('Confirm'), () => this.act(card, 'answer', {id: item.id, confirmed: true})); confirm.className = 'primary'; actions.append(confirm);
       }
@@ -64,7 +101,8 @@ export class AttentionCards {
     }
     for (const [key, entry] of this.nodes) if (!live.has(key)) {entry.node.querySelectorAll('input').forEach(input => input.value = ''); entry.node.remove(); this.nodes.delete(key);}
     const jump = document.getElementById('attention-jump')!; jump.hidden = live.size === 0;
-    jump.querySelector('span')!.textContent = t('Waiting for you · {0}', live.size);
+    jump.querySelector('span')!.textContent = String(live.size);
+    jump.title = t('Waiting for you · {0}', live.size); jump.setAttribute('aria-label', jump.title);
   }
   private card(eyebrow: string, title: string, name: 'shield' | 'goal'): HTMLElement {
     const card = document.createElement('article'); card.className = 'attention-card';

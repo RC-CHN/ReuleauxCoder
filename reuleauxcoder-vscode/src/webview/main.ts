@@ -16,7 +16,7 @@ const transcript = element('transcript');
 decorateIcons();
 const workbench = new ComposerWorkbench(element('workbench'), composer, request, notice, saveDraft);
 const attention = new AttentionCards(element('reviews'), request);
-const overview = new WorkOverviewView(element('overview'), element('goal-strip'), request, notice);
+const overview = new WorkOverviewView(element('overview'), element('goal-strip'), element<HTMLButtonElement>('overview-toggle'), request, notice);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
 const optimistic = new Map<string, ChatCell>();
@@ -43,7 +43,14 @@ function persist(): void {
   const value: SavedView = {draft: composer.value, outbox: [...localSends.values()].filter(input => optimistic.has(input.id)).map(input => ({input: {id: input.id, text: input.text, items: input.items, generation: input.generation, hostId: input.hostId, needsFiles: input.needsFiles || input.uploads.length > 0}, cell: optimistic.get(input.id)!}))};
   const encoded = JSON.stringify(value); if (encoded !== persisted) {persisted = encoded; vscode.setState(value);}
 }
-function saveDraft(): void {persist(); void request('draft', {text: composer.value}).catch(notice);}
+let measuredDraft = '', measuredWidth = -1;
+function resizeComposer(): void {
+  if (measuredDraft === composer.value && measuredWidth === composer.clientWidth) return;
+  measuredDraft = composer.value; measuredWidth = composer.clientWidth;
+  composer.style.height = 'auto'; composer.style.height = `${composer.scrollHeight}px`;
+}
+new ResizeObserver(resizeComposer).observe(composer);
+function saveDraft(): void {resizeComposer(); persist(); void request('draft', {text: composer.value}).catch(notice);}
 function button(text: string, action: () => void, title = text): HTMLButtonElement {const node = document.createElement('button'); node.textContent = text; node.title = title; node.addEventListener('click', action); return node;}
 function cellNode(cell: ChatCell): HTMLElement {
   let node = nodes.get(cell.id);
@@ -52,13 +59,13 @@ function cellNode(cell: ChatCell): HTMLElement {
   const expanded = node.querySelector('details')?.open ?? false;
   node.dataset.content = content; node.replaceChildren();
   const meta = document.createElement('div'); meta.className = 'meta';
-  meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'reasoning' ? t('Reasoning') : cell.role === 'tool' ? cell.title ?? t('Tool') : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
+  meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'reasoning' ? t('Reasoning') : cell.role === 'tool' ? errorText(cell.title ?? t('Tool')) : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
   if (cell.status && cell.status !== 'applied') {const state = document.createElement('span'); state.textContent = t(cell.status as MessageKey) ?? cell.status; meta.append(state);}
   node.append(meta);
   const body = document.createElement('div'); body.className = 'body';
   if (cell.role === 'assistant' || cell.role === 'reasoning') renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice));
   else body.textContent = cell.text;
-  if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = cell.title ?? t('Reasoning'); details.append(summary, body); node.append(details);} else node.append(body);
+  if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = errorText(cell.title ?? t('Reasoning')); details.append(summary, body); node.append(details);} else node.append(body);
   if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.detail; (cell.role === 'tool' ? node.querySelector('details')! : node).append(detail);}
   if (['unconfirmed', 'rejected'].includes(cell.status ?? '')) {const retry = button(t('Retry'), () => void retrySend(cell.id)); retry.className = 'retry'; node.append(retry);}
   if (cell.status === 'uploading' || cell.status === 'rejected' && (localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles)) node.append(button(t('Return to draft'), () => restoreSend(cell.id)));
@@ -86,9 +93,15 @@ function render(state: HostSnapshot): void {
     workbench.input();
   }
   else if (insertDraft) {composer.value = state.draftText; persist(); composer.focus();}
+  resizeComposer();
   element('environment').textContent = `${state.environment} · ${state.workspace.split(/[\\/]/).at(-1) ?? ''}`;
+  element('environment').title = `${state.environment} · ${state.workspace}`;
   element('model').textContent = state.model || t('Select model');
-  element('mode').replaceChildren(icon('mode'), document.createTextNode(state.mode ? errorText(state.mode) : t('Mode')));
+  const mode = state.mode ? errorText(state.mode) : t('Mode');
+  const modeLabel = document.createElement('span'); modeLabel.textContent = mode;
+  element('mode').replaceChildren(icon('mode'), modeLabel);
+  element('mode').title = `${t('Mode')} · ${mode}`;
+  element('mode').setAttribute('aria-label', element('mode').title);
   element('activity').textContent = state.running ? t('Running') : state.phase === 'ready' ? t('Ready') : '';
   element<HTMLButtonElement>('stop').disabled = !state.running;
   const known = new Set(state.cells.map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}

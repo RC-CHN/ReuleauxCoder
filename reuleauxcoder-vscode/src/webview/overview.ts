@@ -6,19 +6,22 @@ const compact = (value: number) => new Intl.NumberFormat('en', {notation: 'compa
 const duration = (seconds: number) => seconds < 60 ? `${Math.floor(seconds)}s` : `${Math.floor(seconds / 60)}m`;
 export class WorkOverviewView {
   private signature = '';
-  constructor(private root: HTMLElement, private goal: HTMLElement, private request: (action: string, data?: WebRequest['data']) => Promise<any>, private notice: (error: unknown) => void) {}
+  private open = false;
+  constructor(private root: HTMLElement, private goal: HTMLElement, private toggle: HTMLButtonElement, private request: (action: string, data?: WebRequest['data']) => Promise<any>, private notice: (error: unknown) => void) {
+    toggle.addEventListener('click', () => {this.open = !this.open; root.hidden = !this.open; toggle.setAttribute('aria-expanded', String(this.open));});
+    root.addEventListener('keydown', event => {if (event.key === 'Escape') {this.open = false; root.hidden = true; toggle.setAttribute('aria-expanded', 'false'); toggle.focus();}});
+  }
   update(state: HostSnapshot): void {
     const data = state.overview;
-    const signature = JSON.stringify([data, state.running, state.reviews.length, state.interactions?.length]);
+    const signature = JSON.stringify([data, state.phase, state.running, state.reviews.length, state.interactions?.length]);
     if (this.signature === signature) return; this.signature = signature;
-    if (!data) {this.root.hidden = true; this.goal.hidden = true; return;}
-    this.root.hidden = false;
+    this.toggle.disabled = !data;
+    if (!data) {this.root.hidden = true; this.goal.hidden = true; this.toggle.setAttribute('aria-expanded', 'false'); return;}
+    this.root.hidden = !this.open; this.toggle.setAttribute('aria-expanded', String(this.open));
     const scroll = this.root.scrollTop;
     const focusKey = (document.activeElement as HTMLElement)?.dataset.overviewAction;
-    const open = this.root.querySelector('details')?.open ?? true;
-    const details = document.createElement('details'); details.open = open; details.className = 'overview-details';
-    const summary = document.createElement('summary'); summary.className = 'overview-title'; summary.append(icon('brand'), document.createTextNode(t('Work overview')));
-    const live = document.createElement('span'); live.className = 'overview-live'; live.textContent = state.phase === 'ready' ? errorText(data.activity) || (state.running ? t('Running') : t('Ready')) : ({idle: t('Idle'), starting: t('Connecting…'), failed: t('Failed'), installing: t('Installing…'), stopping: t('Saving and stopping…')})[state.phase]; summary.append(live); details.append(summary);
+    const summary = document.createElement('div'); summary.className = 'overview-title'; summary.textContent = t('Work overview');
+    const live = document.createElement('span'); live.className = 'overview-live'; live.textContent = state.phase === 'ready' ? errorText(data.activity) || (state.running ? t('Running') : t('Ready')) : ({idle: t('Idle'), starting: t('Connecting…'), failed: t('Failed'), installing: t('Installing…'), stopping: t('Saving and stopping…')})[state.phase]; summary.append(live);
     const stats = document.createElement('div'); stats.className = 'overview-stats';
     const ratio = data.contextLimit ? Math.round(data.contextTokens / data.contextLimit * 100) : null;
     stats.append(this.action(`${t('Context')} ${ratio === null ? '—' : `${ratio}%`}`, 'system.tokens', 'model'));
@@ -35,6 +38,7 @@ export class WorkOverviewView {
     const waiting = state.reviews.length + (state.interactions?.length ?? 0);
     if (waiting) stats.append(this.action(t('Waiting for you · {0}', waiting), undefined, 'shield', () => document.getElementById('reviews')!.scrollIntoView({block: 'start'})));
     const content = document.createElement('div'); content.className = 'overview-content';
+    if (data.goal) this.section(content, `${t('Goal')} · ${errorText(data.goal.status)}`, [data.goal.objective]);
     if (data.progress) this.section(content, t('Progress'), [data.progress]);
     if (data.plan.length) {
       const completed = data.plan.filter(item => item.status === 'completed').length;
@@ -52,11 +56,11 @@ export class WorkOverviewView {
       for (const file of git.files.slice(0, 6)) section.append(this.text(`${file.index}${file.worktree}  ${file.path}`, file.conflict ? 'stat-warning git-file' : 'git-file'));
       section.append(this.action(t('View details'), undefined, 'expand', () => void this.request('git').catch(this.notice)));
     } else if (data.git?.reason) this.section(content, 'Git', [data.git.reason]);
-    if (data.diagnostics.length) this.section(content, t('Diagnostics'), data.diagnostics.map(item => `${item.errors} E · ${item.warnings} W · ${item.path}`));
+    if (data.diagnostics.length) this.section(content, t('Diagnostics'), data.diagnostics.map(item => `${t('{0} errors · {1} warnings', item.errors, item.warnings)} · ${item.path}`));
     this.section(content, t('Context'), [`${compact(data.contextTokens)} / ${data.contextLimit ? compact(data.contextLimit) : '—'} tokens`, `MCP · ${data.mcpTools} ${t('Tool')}`]);
     if (data.warnings.length) this.section(content, t('Attention'), data.warnings);
-    details.append(content); this.root.replaceChildren(stats, details);
-    this.goal.replaceChildren(); this.goal.hidden = !data.goal;
+    this.root.replaceChildren(summary, stats, content);
+    this.goal.replaceChildren(); this.goal.hidden = !data.goal || data.goal.status === 'complete';
     if (data.goal) {
       const goal = data.goal; const title = this.action(goal.objective, 'goal.show', 'goal'); title.className = 'goal-objective'; title.title = goal.objective;
       const meta = this.text(`${errorText(goal.status)} · ${compact(goal.tokens_used)} / ${goal.token_budget === null ? t('No limit') : compact(goal.token_budget)} · ${duration(goal.time_used_seconds)}`, 'goal-meta');

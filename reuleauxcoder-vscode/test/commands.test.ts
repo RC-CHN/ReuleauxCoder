@@ -6,6 +6,8 @@ import {ConversationCommands} from '../src/core/commands.js';
 import {answerInteraction, inlineInteractions} from '../src/core/interactions.js';
 import {WorkOverviewStore} from '../src/core/overview.js';
 import {backend, until} from './helpers.js';
+import {panels} from './webview-fixture.js';
+import {reviewSummary} from '../src/core/review-summary.js';
 
 const action: Action = {action_id: 'goal.show', feature_id: 'goal', description: 'View goal', preview: true, parameters: [], triggers: [{kind: 'slash', value: '/goal'}]};
 const panel: Panel = {view_type: 'goal', title: 'Goal', items: [{id: 'child', label: 'Open child', description: '', current: false, action: null}], children: [['child', {view_type: 'child', title: 'Child', items: [{label: 'Pause', description: '', current: false, action: {action_id: 'goal.pause', command: {}}}], children: [], filterable: false, keep_open_on_submit: true, return_to_parent_on_submit: false}]], filterable: true, keep_open_on_submit: true, return_to_parent_on_submit: false};
@@ -46,6 +48,23 @@ test('forms validate primitive values at host boundary without dispatching inval
   assert.deepEqual(f.calls, [['goal.budget', {token_budget: 500}]]);
   await assert.rejects(f.commands.submit(id, {token_budget: 600}), /panel changed/); f.commands.dispose();
 });
+test('direct permission edits resolve only core-owned action paths and reject stale edits', async () => {
+  const f = fixture(); f.client.catalog.push({...action, action_id: 'approval.show', feature_id: 'approval'});
+  f.client.panel = async () => ({definition: structuredClone(panels['approval.show']), refresh: 'update'});
+  await f.commands.open('approval.show'); f.view(); await until(() => f.commands.surface?.panel);
+  const id = f.commands.surface!.id; const before = f.calls.length;
+  for (const path of [[0, 0, 99], [0, 0, -1], [0], [0, 0, 'allow'], [0, 5, 0]]) await assert.rejects(f.commands.policy(id, path));
+  assert.equal(f.calls.length, before);
+  await f.commands.policy(id, [0, 1, 3]);
+  assert.deepEqual(f.calls.at(-2), ['approval.set_global', {target: 'tool=edit_file', action: 'deny'}]);
+  assert.deepEqual(f.calls.at(-1), ['approval.show', {}]);
+  await assert.rejects(f.commands.policy(id, [0, 0, 0]), /panel changed/);
+  f.commands.dispose();
+});
+test('tool review summaries retain shell location and bound command previews', () => {
+  const summary = reviewSummary({request_id: 'r', title: 'Approval required: shell', summary: 'Requires approval', context: {tool_name: 'shell', tool_source: 'builtin'}, sections: [{id: 'args', title: 'Arguments', kind: 'json', content: {command: 'x'.repeat(7000), cwd: '/workspace/中文 a'}}], documents: []}, false);
+  assert.equal(summary.cwd, '/workspace/中文 a'); assert.equal(summary.preview![0].content.length, 6000); assert.equal(summary.preview![0].truncated, true); assert.equal(summary.preview![1].secondary, true);
+});
 test('inline answers do not expose secrets or accept expired and invented choices', () => {
   const f = fixture(); const client = f.client as unknown as RuntimeClient;
   f.client.interactions = [{kind: 'input_text', request: {request_id: 'secret', title: 'Secret', secret: true, initial_value: 'must never project', allow_empty: false}}];
@@ -80,6 +99,27 @@ test('real core catalog, model panels, goal controls and secret input use conver
   await commands.select(commands.surface!.id, 0); assert.equal(commands.surface?.panel?.view_type, 'approval_lifetime');
   await commands.select(commands.surface!.id, 0); assert.equal(commands.surface?.panel?.view_type, 'approval_actions');
   assert(commands.surface!.panel!.items.some(item => item.action?.command.action === 'require_approval'));
+  await commands.open('approval.show'); await until(() => commands.surface?.panel?.view_type === 'approval_rules');
+  const policyRoot = commands.surface!.panel!;
+  const target = policyRoot.items.findIndex(item => item.label === 'read_file'); assert(target >= 0);
+  const lifetime = policyRoot.children.find(([key]) => key === policyRoot.items[target].label)![1];
+  const sessionRules = lifetime.children.find(([key]) => key === lifetime.items[0].label)![1];
+  const ask = sessionRules.items.findIndex(item => item.action?.command.action === 'require_approval');
+  await commands.policy(commands.surface!.id, [target, 0, ask]);
+  await until(() => commands.surface?.panel?.view_type === 'approval_rules' && !commands.surface.busy);
+  const updated = commands.surface!.panel!.children.find(([key]) => key === 'read_file')![1].children[0][1];
+  assert(updated.items.some(item => item.current && item.action?.command.action === 'require_approval'));
+  const deny = updated.items.findIndex(item => item.action?.command.action === 'deny');
+  const refreshedIndex = commands.surface!.panel!.items.findIndex(item => item.label === 'read_file');
+  await commands.policy(commands.surface!.id, [refreshedIndex, 1, deny]);
+  await until(() => commands.surface?.panel?.view_type === 'approval_rules' && !commands.surface.busy);
+  const scoped = commands.surface!.panel!.children.find(([key]) => key === 'read_file')![1];
+  assert(scoped.children[0][1].items.some(item => item.current && item.action?.command.action === 'require_approval'));
+  assert(scoped.children[1][1].items.some(item => item.current && item.action?.command.action === 'deny'));
+  const unset = scoped.children[0][1].items.findIndex(item => item.action?.action_id === 'approval.unset');
+  await commands.policy(commands.surface!.id, [commands.surface!.panel!.items.findIndex(item => item.label === 'read_file'), 0, unset]);
+  await until(() => commands.surface?.panel?.view_type === 'approval_rules' && !commands.surface.busy);
+  assert(!commands.surface!.panel!.children.find(([key]) => key === 'read_file')![1].children[0][1].items.some(item => item.current));
   await commands.open('goal.show'); await until(() => commands.surface?.panel?.view_type === 'goal');
   const create = commands.surface!.panel!.items.findIndex(item => item.action?.action_id === 'goal.create');
   assert(create >= 0); await commands.select(commands.surface!.id, create);

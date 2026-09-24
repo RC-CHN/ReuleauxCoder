@@ -11,7 +11,12 @@ export interface CommandSurface {id: number; feature: string; busy: boolean; pan
 export interface InlineInteraction {id: string; kind: string; title: string; message: string; secret?: boolean; initial?: string; placeholder?: string; allowEmpty?: boolean; allowCancel: boolean; items?: {id: string; label: string; description: string}[]}
 export interface ChatCell {id: string; role: 'user' | 'assistant' | 'reasoning' | 'tool' | 'notice'; text: string; title?: string; status?: string; detail?: string}
 export interface DraftItem {id: string; name: string; kind: 'context' | 'file' | 'image'; text?: string; reference?: any}
-export interface ReviewSummary {id: string; title: string; summary: string; documents: {id: string; path: string}[]; dirty?: boolean; grants?: {id: string; label: string; description: string; broad: boolean}[]; context?: string}
+export interface ReviewSummary {
+  id: string; title: string; summary: string; documents: {id: string; path: string}[];
+  dirty?: boolean; grants?: {id: string; label: string; description: string; broad: boolean}[]; context?: string;
+  tool?: string; source?: string; reason?: string; cwd?: string | null;
+  preview?: {title: string; content: string; truncated: boolean; secondary?: boolean}[];
+}
 export interface HostSnapshot {
   hostId: string; revision: number; draftRevision: number;
   phase: 'idle' | 'starting' | 'ready' | 'failed' | 'installing' | 'stopping';

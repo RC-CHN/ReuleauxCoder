@@ -3,6 +3,7 @@ import type {CommandSurface, HostSnapshot, WebRequest} from '../shared.js';
 import {t, errorText} from '../i18n.js';
 import {actionLabel, actionScope, commandItems, featureInfo, panelText} from './catalog.js';
 import {icon} from './icons.js';
+import {PermissionPolicies} from './permissions.js';
 
 type Request = (action: string, data?: WebRequest['data']) => Promise<any>;
 export class ComposerWorkbench {
@@ -17,7 +18,9 @@ export class ComposerWorkbench {
   private busy = false;
   private focusReturn: HTMLElement | null = null;
   private search = '';
+  private permissions: PermissionPolicies;
   constructor(private root: HTMLElement, private composer: HTMLTextAreaElement, private request: Request, private notice: (error: unknown) => void, private save: () => void) {
+    this.permissions = new PermissionPolicies(request, notice);
     document.addEventListener('pointerdown', event => {if (this.menu && !root.contains(event.target as Node) && event.target !== composer && !(event.target as Element).closest('#commands')) this.dismiss();});
     root.addEventListener('keydown', event => {if (event.key === 'Escape' && !event.isComposing) {event.preventDefault(); this.dismiss();} });
   }
@@ -71,7 +74,7 @@ export class ComposerWorkbench {
       this.root.querySelector('.workbench-body')!.scrollTop = scroll;
     }
     this.root.setAttribute('aria-busy', String(surface.busy));
-    this.root.querySelectorAll<HTMLButtonElement>('button[data-submit]').forEach(button => button.disabled = surface.busy || button.dataset.readonly === 'true');
+    this.root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('[data-submit]').forEach(button => button.disabled = surface.busy || button.dataset.readonly === 'true');
   }
   private header(title: string, back?: () => void): HTMLElement {
     const head = document.createElement('div'); head.className = 'workbench-heading';
@@ -130,6 +133,7 @@ export class ComposerWorkbench {
     if (surface.action) {this.form(body, surface); return;}
     const panel = surface.panel;
     if (!panel) {const loading = document.createElement('p'); loading.className = 'surface-empty'; loading.textContent = surface.busy ? t('Loading…') : t('Command sent. Results appear in the conversation.'); body.append(loading); return;}
+    if (surface.feature === 'approval' && panel.view_type === 'approval_rules') {this.permissions.draw(body, surface); return;}
     if (surface.feature === 'approval') {
       const steps = document.createElement('div'); steps.className = 'permission-steps';
       const active = panel.view_type === 'approval_actions' ? 2 : panel.view_type === 'approval_lifetime' ? 1 : 0;

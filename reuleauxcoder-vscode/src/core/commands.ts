@@ -87,6 +87,23 @@ export class ConversationCommands {
       await this.run(item.action.action_id, item.action.command);
     }
   }
+  async policy(id: number, path: unknown): Promise<void> {
+    const surface = this.current(id);
+    if (surface.feature !== 'approval' || surface.panel?.view_type !== 'approval_rules' || !Array.isArray(path) || path.length !== 3 || !path.every(Number.isInteger)) throw new Error(t('This action is no longer available.'));
+    let panel = surface.panel;
+    for (const index of path.slice(0, -1)) {
+      const item = panel.items[index];
+      const child = item && panel.children.find(([key]) => key === (item.id ?? item.label))?.[1];
+      if (!child || child.on_open) throw new Error(t('This panel changed. Choose the action again.'));
+      panel = child;
+    }
+    const action = panel.items[path.at(-1)!]?.action;
+    if (panel.view_type !== 'approval_actions' || !action?.action_id.startsWith('approval.')) throw new Error(t('This action is no longer available.'));
+    const epoch = this.epoch;
+    await this.run(action.action_id, action.command);
+    // Refresh facts without reopening a dismissed panel or a different session.
+    if (epoch === this.epoch && this.accepting) await this.open('approval.show');
+  }
   back(id: number): void {this.current(id); this.epoch++; if (this.stack.length > 1) {this.stack.pop(); this.showPanel();} else this.close();}
   dismiss(id: number): void {
     if (this.surface && this.surface.id !== id) throw new Error(t('This panel changed. Choose the action again.'));

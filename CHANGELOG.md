@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Compact the VS Code conversation header and composer, grow multiline drafts automatically, collapse work overview and completed goals by default, remove the separate Pending Reviews view, and improve dark-theme contrast and Chinese UI coverage.
+- Replace nested tool-permission pickers with searchable per-tool policy controls and session/workspace scope tabs. Validate direct edits against the current core-owned action tree and refresh applied rules; preserve native diff guards and add readable command previews and denial feedback.
 - Keep workspace permission rules visible when a session override exists for the same tool, so scope editors can display and modify both values without changing policy precedence.
 
 - Redesign the VS Code conversation around a clickable, searchable composer menu, inline command panels and parameter forms. Keep model, mode, permissions, goals, skills, MCP, sessions and process controls in the conversation; replace top-bar confirmation and secret-input dialogs with stable inline cards. Preserve drafts, validate form and review responses, and invalidate stale panel actions across navigation and session changes.

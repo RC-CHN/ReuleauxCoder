@@ -6,7 +6,8 @@
   --ink: var(--vscode-foreground, #e1e5e8);
   --muted: var(--vscode-descriptionForeground, #a4acb3);
   --line: var(--vscode-panel-border, #41484f);
-  --accent: var(--vscode-charts-orange, #cda873);
+  --accent: #e4b77f;
+  --accent-ink: #291d0e;
   --accent-wash: color-mix(in srgb, var(--accent) 9%, var(--surface));
   --focus: var(--vscode-focusBorder, #d8b685);
   --hover: var(--vscode-list-hoverBackground, #ffffff0b);
@@ -23,21 +24,22 @@ button.primary {background: var(--vscode-button-background, #cfad79); color: var
 button.primary:hover {background: var(--vscode-button-hoverBackground, #e0c396)}
 input, select, .command-form textarea {width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--input); padding: 9px 10px; min-width: 0}
 .icon {width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round}
-.app-header {display: flex; align-items: center; gap: 8px; padding: 14px 16px 12px; flex: 0 0 auto; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent)}
-.identity {display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1}
-.identity > div {min-width: 0}
-.identity strong {font-size: 15px; font-weight: 650; letter-spacing: -.4px}
-.identity small {display: block; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%}
+.app-header {display: flex; align-items: center; gap: 8px; padding: 5px 12px; flex: 0 0 auto; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent)}
+.identity {display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1}
+.identity strong {font-size: 12px; font-weight: 650; letter-spacing: -.2px}
+.identity small {color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap}
 .brand-mark {color: var(--accent); display: flex}
-.brand-mark .icon {width: 27px; height: 27px; stroke-width: 1.3}
+.brand-mark .icon {width: 20px; height: 20px; stroke-width: 1.5}
 .app-header nav {display: flex; flex: 0 0 auto; gap: 1px}
-.app-header nav button {padding: 5px}
+.app-header nav button {padding: 5px; min-height: 28px}
+.app-header nav .icon {width: 16px; height: 16px}
+#overview-toggle[aria-expanded="true"] {color: var(--accent); background: var(--accent-wash); border-color: var(--line)}
 #setup {padding: 18px; flex-shrink: 0; max-height: 40vh; overflow: auto; border-bottom: 1px solid var(--line)}
 #setup h2 {font-size: 18px; margin: 0 0 8px; font-weight: 550}
 #setup p {color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere}
 .actions {display: flex; flex-wrap: wrap; gap: 7px}
 .actions button {border-color: var(--line); font-size: 12px}
-#transcript {flex: 1; min-height: 0; overflow: auto; padding: 24px 18px 18px; scrollbar-gutter: stable; scroll-padding: 20px}
+#transcript {flex: 1; min-height: 0; overflow: auto; padding: 16px 16px 10px; scrollbar-gutter: stable; scroll-padding: 12px}
 #empty {max-width: 540px; margin: 6vh auto 35px}
 .hero-mark {color: var(--accent); margin-bottom: 20px}
 .hero-mark .icon {width: 52px; height: 52px; stroke-width: 1}
@@ -47,9 +49,10 @@ input, select, .command-form textarea {width: 100%; border: 1px solid var(--line
 .starter-actions {display: flex; flex-wrap: wrap; gap: 7px; margin-top: 24px}
 .starter-actions button {border: 1px solid var(--line); background: var(--surface); font-size: 12px; padding: 8px 10px}
 .starter-actions .icon {color: var(--accent); width: 16px; height: 16px}
-.cell {margin: 0 0 24px; overflow-wrap: anywhere; min-width: 0}
+.cell {margin: 0 0 18px; overflow-wrap: anywhere; min-width: 0}
 .cell .meta {display: flex; align-items: center; gap: 8px; font-size: 10px; letter-spacing: .3px; color: var(--muted); margin-bottom: 8px}
-.cell.assistant > .meta {color: var(--accent); font-weight: 600}
+.cell.assistant > .meta {color: var(--ink); font-weight: 650; font-size: 11px}
+.cell.assistant > .meta:before {content: ''; width: 4px; height: 12px; background: var(--accent); border-radius: 2px}
 .cell .meta span {font-weight: normal; color: var(--muted); font-size: 10px}
 .body {white-space: pre-wrap; line-height: 1.8; tab-size: 4}
 .cell.user {margin-left: 22px}
@@ -80,34 +83,37 @@ input, select, .command-form textarea {width: 100%; border: 1px solid var(--line
 .table-scroll {overflow: auto; margin: 14px 0}.markdown table {border-collapse: collapse; width: 100%; font-size: 12px}.markdown th, .markdown td {border: 1px solid var(--line); padding: 8px 12px; text-align: left}.markdown th {background: var(--surface)}
 .markdown hr {border: 0; border-top: 1px solid var(--line); margin: 24px 0}
 #reviews {min-width: 0}
-.attention-card {border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line)); background: var(--surface); border-radius: 12px; margin: 12px 0 24px; overflow: hidden; box-shadow: 0 4px 18px #00000008}
-.attention-heading {display: flex; align-items: center; gap: 12px; padding: 16px 16px 12px; background: var(--accent-wash)}
-.attention-heading > .icon {width: 28px; height: 28px; color: var(--accent); stroke-width: 1.3}
-.attention-heading small {color: var(--accent); font-size: 10px; letter-spacing: .4px}
-.attention-heading h3 {font-size: 14px; font-weight: 550; margin: 2px 0 0; overflow-wrap: anywhere}
-.attention-description {font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 13px 16px; line-height: 1.75; color: var(--muted)}
+.attention-card {border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line)); border-left: 3px solid var(--accent); background: var(--surface); border-radius: 10px; margin: 10px 0 18px; overflow: hidden}
+.attention-heading {display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px; background: var(--accent-wash)}
+.attention-heading > .icon {width: 22px; height: 22px; color: var(--accent)}
+.attention-heading small {color: var(--accent); font-size: 11px}
+.attention-heading h3 {font-size: 14px; font-weight: 600; margin: 2px 0 0; overflow-wrap: anywhere}
+.attention-description {font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 14px; line-height: 1.65; color: var(--ink)}
 .attention-description:empty {display: none}
 .review-files {margin: 12px 10px; display: grid; gap: 3px}.review-files:empty {display: none}
-.review-file {width: 100%; justify-content: flex-start; padding: 9px; background: var(--canvas); border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-size: 11px}
-.review-file span {min-width: 0; overflow-wrap: anywhere; flex: 1; font-family: var(--vscode-editor-font-family, monospace)}.review-file .icon {width: 14px; height: 14px; color: var(--muted)}
-.review-decision {border-top: 1px solid var(--line); padding: 13px 16px; display: flex; flex-direction: column; gap: 12px}.review-decision small {color: var(--muted); font-size: 10px}.review-decision .actions {justify-content: flex-end}
+.review-file {width: 100%; justify-content: flex-start; padding: 9px; background: var(--canvas); border: 1px solid var(--line); font-size: 12px}
+.review-file > span {min-width: 0; overflow-wrap: anywhere; flex: 1; font-family: var(--vscode-editor-font-family, monospace)}.review-file small {display: block; color: var(--muted); font-size: 10px; margin-top: 2px}.review-file .file-action {flex: 0 0 auto; font: 11px var(--vscode-font-family, system-ui); color: var(--accent)}.review-file .icon {width: 15px; height: 15px; color: var(--accent)}
+.review-decision {border-top: 1px solid var(--line); padding: 10px 14px; display: flex; flex-direction: column; gap: 9px}.review-decision small {color: var(--muted); font-size: 11px; overflow-wrap: anywhere}.review-decision .actions {justify-content: flex-end; gap: 6px}.review-decision button {min-height: 34px; font-size: 12px}.review-decision .review-deny {border-color: var(--line)}.review-decision .review-feedback-toggle {margin-right: auto; font-size: 11px; padding: 5px 0; color: var(--muted)}
+.attention-card .primary {background: var(--accent); color: var(--accent-ink); font-weight: 600}.attention-card .primary:hover {filter: brightness(1.1)}
 .review-warning {margin: 12px 16px; color: var(--vscode-editorWarning-foreground, #ddbc87); font-size: 12px}
-.review-alternatives {border-top: 1px solid var(--line); padding: 8px 16px 12px}.review-alternatives summary {cursor: pointer; font-size: 10px; color: var(--muted); padding: 4px 0}.review-alternatives fieldset {border: 0; margin: 10px 0; padding: 0}.review-alternatives legend {font-size: 11px; color: var(--muted); margin-bottom: 8px}.review-alternatives label {display: flex; align-items: flex-start; gap: 8px; font-size: 12px; padding: 7px 0; cursor: pointer}.review-alternatives input {width: auto; accent-color: var(--accent); margin-top: 4px}.review-alternatives small {display: block; font-size: 10px; color: var(--muted)}.review-alternatives form {display: grid; gap: 8px; margin-top: 10px}.review-alternatives textarea {background: var(--input); width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 9px; min-height: 64px; resize: vertical}.review-alternatives button {justify-self: end; border-color: var(--line); font-size: 11px}
+.review-alternatives {padding: 0 14px 10px}.review-alternatives summary {cursor: pointer; font-size: 11px; color: var(--ink); padding: 6px 0}.review-alternatives fieldset {border: 0; margin: 4px 0; padding: 0}.review-alternatives legend {font-size: 11px; color: var(--muted); margin-bottom: 8px}.review-alternatives label {display: flex; align-items: flex-start; gap: 8px; font-size: 12px; padding: 9px; margin-top: 5px; border: 1px solid var(--line); border-radius: 7px; cursor: pointer; overflow-wrap: anywhere}.review-alternatives label:has(:checked) {border-color: var(--accent); background: var(--accent-wash)}.review-alternatives input {width: auto; accent-color: var(--accent); margin-top: 4px; flex-shrink: 0}.review-alternatives small {display: block; font-size: 11px; color: var(--muted); margin-top: 3px}.review-alternatives label.broad-scope small {color: var(--accent)}
+.review-feedback {display: grid; gap: 8px; margin: 0 14px 12px; font-size: 12px}.review-feedback label {display: grid; gap: 6px}.review-feedback textarea {background: var(--input); width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 9px; min-height: 64px; resize: vertical}.review-feedback button {justify-self: end; border-color: var(--line)}
+.review-preview {margin: 10px 14px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden}.review-preview > div {padding: 4px 9px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line)}.review-preview pre {margin: 0; padding: 9px; max-height: 150px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--vscode-editor-font-family, monospace)}.review-preview button {font-size: 11px; color: var(--accent)}
+.review-tool {font: 10px/1.6 var(--vscode-editor-font-family, monospace); color: var(--muted); margin-top: 4px}.review-reason, .review-location {font-size: 11px; color: var(--muted); margin: 8px 14px; overflow-wrap: anywhere}.review-location {display: flex; align-items: center; gap: 7px}.review-location .icon {width: 14px; height: 14px}.review-preview summary {cursor: pointer; padding: 6px 9px; font-size: 11px; color: var(--muted)}
 .attention-card > .actions {margin: 12px 16px}.answer-form {display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 16px}.answer-form input {flex: 1; min-width: 150px}.answer-options {display: grid; gap: 8px; padding: 0 16px}.answer-options button {display: block; border-color: var(--line); padding: 10px 12px}.answer-options small {display: block; color: var(--muted); margin-top: 3px}
 #notice {flex-shrink: 0; padding: 8px 16px; margin: 0; color: var(--vscode-editorWarning-foreground, #d9b67a); font-size: 11px; max-height: 85px; overflow: auto; overflow-wrap: anywhere}
-#new-output {position: absolute; right: 24px; bottom: 210px; z-index: 2; background: var(--surface); border-color: var(--line); box-shadow: 0 4px 18px #0003; font-size: 11px}
-footer {padding: 0 12px 12px; flex-shrink: 0; position: relative}
-.context-strip {display: flex; align-items: center; gap: 2px; padding: 4px 0 7px; flex-wrap: wrap; color: var(--muted)}
-.context-strip button {font-size: 10px; padding: 4px 6px; min-height: 26px}.context-strip .icon {width: 13px; height: 13px}
-#attention-jump {color: var(--accent)}#activity {margin-left: auto; font-size: 10px}
-.composer-wrap {position: relative}.composer {border: 1px solid var(--vscode-input-border, var(--line)); background: var(--input); border-radius: 13px; padding: 12px; box-shadow: 0 6px 24px #0000000b}
+#new-output {position: absolute; right: 18px; bottom: calc(100% + 6px); z-index: 2; background: var(--surface); border-color: var(--line); box-shadow: 0 4px 18px #0003; font-size: 11px}
+footer {padding: 6px 12px 10px; flex-shrink: 0; position: relative}
+#attention-jump {color: var(--accent); font-size: 11px}#activity {font-size: 10px; color: var(--muted); white-space: nowrap}
+.composer-wrap {position: relative}.composer {border: 1px solid var(--vscode-input-border, var(--line)); background: var(--input); border-radius: 10px; padding: 9px 10px 6px}
 .composer:focus-within {border-color: var(--focus); box-shadow: 0 0 0 1px color-mix(in srgb, var(--focus) 15%, transparent)}
-#composer {width: 100%; display: block; border: 0; background: transparent; padding: 0 1px; outline: none; resize: vertical; min-height: 62px; max-height: 25vh; line-height: 1.75; font-size: 13px; color: var(--vscode-input-foreground, var(--ink))}
+#composer {width: 100%; display: block; border: 0; background: transparent; padding: 0 1px; outline: none; resize: none; min-height: 24px; max-height: min(200px, 30vh); overflow-y: auto; line-height: 24px; font-size: 13px; color: var(--vscode-input-foreground, var(--ink))}
 #composer::placeholder {color: var(--vscode-input-placeholderForeground, var(--muted))}
-.composer-actions {display: flex; align-items: center; gap: 3px; margin-top: 9px}.composer-actions button {padding: 5px 6px; flex-shrink: 0}
-#model {font-size: 10px; max-width: 43%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; display: block; color: var(--muted); flex-shrink: 1}
+.composer-actions {display: flex; align-items: center; gap: 2px; margin-top: 4px}.composer-actions button {padding: 4px; flex-shrink: 0}
+#model {font-size: 11px; max-width: 35%; min-width: 24px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; display: block; color: var(--ink); flex-shrink: 1}
+#mode {font-size: 11px; color: var(--muted)}
 .composer-spacer {flex: 1}#send {border-radius: 50%; width: 32px; height: 32px; padding: 6px}#stop:disabled {display: none}
-.hint {display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; margin: 8px 2px 0; color: var(--muted); font-size: 9px}
+.hint {display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; margin: 4px 2px 0; color: var(--muted); font-size: 9px}
 #attachments {display: flex; flex-wrap: wrap; gap: 6px}.attachment {display: flex; align-items: center; gap: 5px; max-width: 100%; font-size: 10px; padding: 3px 6px; margin-bottom: 9px; border: 1px solid var(--line); border-radius: 6px}.attachment span {text-overflow: ellipsis; overflow: hidden; white-space: nowrap}.attachment button {padding: 0 3px; min-height: 20px}.attachment.failed {border-color: var(--vscode-errorForeground, #cf7b80)}.drop-active .composer {outline: 2px dashed var(--focus)}
 .workbench {position: absolute; bottom: calc(100% + 9px); left: 0; width: 100%; max-width: 540px; z-index: 5; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 12px 45px #0004; display: flex; flex-direction: column; max-height: min(520px, 65vh); overflow: hidden}
 .workbench-heading {display: flex; align-items: center; gap: 4px; padding: 10px 10px 8px; flex-shrink: 0; border-bottom: 1px solid var(--line)}.workbench-heading strong {flex: 1; font-size: 12px; font-weight: 550; padding-left: 5px; overflow-wrap: anywhere}.workbench-heading button {padding: 4px; min-height: 26px}
@@ -118,24 +124,21 @@ footer {padding: 0 12px 12px; flex-shrink: 0; position: relative}
 .menu-row.current {background: var(--accent-wash)}.switch {width: 28px; height: 16px; border-radius: 10px; background: var(--line); padding: 3px; flex-shrink: 0}.switch:after {content: ''; display: block; border-radius: 50%; height: 10px; width: 10px; background: var(--ink)}.switch.on {background: var(--accent)}.switch.on:after {margin-left: 12px; background: var(--surface)}
 .panel-output {font: 11px/1.7 var(--vscode-editor-font-family, monospace); white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px}.surface-empty {margin: 15px; color: var(--muted); font-size: 12px}.more-actions {border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px}.more-actions summary {cursor: pointer; font-size: 11px; padding: 6px 10px; color: var(--muted)}
 .permission-steps {display: flex; gap: 8px; padding: 9px 7px; border-bottom: 1px solid var(--line); font-size: 10px; color: var(--muted)}.permission-steps span {flex: 1; padding-bottom: 5px}.permission-steps .active {color: var(--accent); border-bottom: 2px solid var(--accent)}.permission-hint {margin: 13px 9px; font-size: 11px; color: var(--muted)}.permission-row {border: 1px solid var(--line); margin: 6px 0; padding: 12px}.permission-row.current {border-color: var(--accent)}.permission-row[data-policy="deny"] .menu-title {color: var(--vscode-errorForeground, #d89999)}.permission-row.broad-scope small {color: var(--vscode-editorWarning-foreground, var(--accent))}
+.workbench[data-feature="approval"] {max-width: 620px}
+.policy-scopes {display: flex; gap: 3px; background: var(--canvas); border: 1px solid var(--line); border-radius: 7px; padding: 3px}.policy-scopes button {flex: 1; font-size: 12px}.policy-scopes [aria-pressed="true"] {color: var(--accent); background: var(--surface); border-color: var(--line)}
+.policy-help {margin: 9px 4px; font-size: 11px; line-height: 1.65; color: var(--muted)}.policy-list {display: grid; gap: 6px}.policy-tool {display: grid; grid-template-columns: minmax(0, 1fr) minmax(115px, 36%); gap: 3px 8px; padding: 10px; border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 7px; background: var(--canvas)}.policy-tool[data-policy="require_approval"] {border-left-color: var(--accent)}.policy-tool[data-policy="allow"] {border-left-color: var(--vscode-testing-iconPassed, #82ac88)}.policy-tool[data-policy="deny"] {border-left-color: var(--vscode-errorForeground, #d78f8f)}
+.policy-tool-copy {min-width: 0}.policy-tool label {font-size: 12px; font-weight: 600; overflow-wrap: anywhere}.policy-tool small {display: block; font-size: 10px; color: var(--muted); overflow-wrap: anywhere}.policy-tool select {align-self: start; font-size: 11px; padding: 7px 5px; min-height: 34px}.policy-source, .policy-explanation {grid-column: 1 / -1; font-size: 10px; color: var(--muted); overflow-wrap: anywhere}.policy-broad {display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; font-size: 10px; color: var(--accent)}.policy-broad .icon {width: 12px; height: 12px}
 .command-form {padding: 6px; display: grid; gap: 15px}.command-form label {display: grid; gap: 6px; font-size: 12px}.command-form textarea {min-height: 92px; resize: vertical}.command-form > button {justify-self: end}.scope-chip {font-size: 10px; color: var(--accent); padding: 5px 8px; background: var(--accent-wash); border-radius: 4px; width: fit-content}.form-error {color: var(--vscode-errorForeground, #dd8e91); font-size: 12px; margin: 8px 16px; overflow-wrap: anywhere}
-@media (min-width: 700px) { .app-header, #setup, footer, #notice {padding-left: max(24px, calc((100vw - 800px) / 2)); padding-right: max(24px, calc((100vw - 800px) / 2))} #transcript {padding: 30px max(24px, calc((100vw - 780px) / 2)) 20px}.body {font-size: 14px}.review-decision {flex-direction: row; align-items: center; justify-content: space-between}.review-decision small {max-width: 40%}.composer {padding: 15px}.workbench {max-width: 520px} }
+@media (min-width: 700px) { #setup, footer, #notice {padding-left: max(20px, calc((100vw - 860px) / 2)); padding-right: max(20px, calc((100vw - 860px) / 2))} #transcript {padding: 18px max(20px, calc((100vw - 840px) / 2)) 12px}.body {font-size: 14px}.workbench {max-width: 520px} }
+@media (max-width: 540px) {.identity small, #mode span, #activity, .hint {display: none}.app-header {gap: 4px; padding: 4px 10px}.identity {gap: 6px}.app-header nav {gap: 0}.app-header nav button {padding: 4px}.composer-actions .icon {width: 16px; height: 16px}}
+@media (max-width: 300px) {.identity strong {display: none}}
 @media (prefers-reduced-motion: no-preference) {.attention-card, .workbench {animation: appear 120ms ease-out}@keyframes appear {from {opacity: .5; transform: translateY(3px)} to {opacity: 1; transform: translateY(0)}}}
 body.vscode-high-contrast, body.vscode-high-contrast-light {--line: var(--vscode-contrastBorder, currentColor)}
-#overview {flex-shrink: 0; border-bottom: 1px solid var(--line); padding: 6px 12px; max-height: 27vh; overflow: auto; font-size: 11px}
+body.vscode-light, body.vscode-high-contrast-light {--accent: #805421; --accent-ink: #fffaf2; color-scheme: light}
+body.vscode-high-contrast, body.vscode-high-contrast-light {--accent: var(--vscode-textLink-foreground, var(--ink)); --accent-ink: var(--canvas)}
+#overview {flex-shrink: 0; border-bottom: 1px solid var(--line); padding: 6px 12px; max-height: 35vh; overflow: auto; font-size: 11px; background: var(--surface)}
 .overview-stats {display: flex; flex-wrap: wrap; gap: 2px; align-items: center; color: var(--muted)}.overview-stats button {min-height: 24px; padding: 3px 5px; font-size: 10px}.overview-stats .icon {width: 12px; height: 12px}.stat-warning {color: var(--vscode-editorWarning-foreground, var(--accent)); padding: 4px}
-.overview-title {font-size: 10px; color: var(--muted); cursor: pointer; padding: 5px}.overview-title .icon {width: 12px; height: 12px; vertical-align: middle; margin-right: 6px}.overview-live {float: right; color: var(--accent)}
+.overview-title {font-size: 11px; color: var(--ink); padding: 5px}.overview-live {float: right; color: var(--accent)}
 .overview-content {display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; padding: 4px 5px 9px}.overview-content section {min-width: 0}.overview-content h3 {font-size: 10px; letter-spacing: .5px; font-weight: 550; color: var(--muted); margin: 7px 0}.overview-content button {justify-content: flex-start; font-size: 11px; padding: 4px 0; width: 100%; overflow-wrap: anywhere}.overview-content .icon {width: 14px; height: 14px; color: var(--accent)}.overview-detail {color: var(--muted); overflow-wrap: anywhere; margin-top: 5px}.plan-step {padding: 4px 0; overflow-wrap: anywhere}.plan-step.in_progress {color: var(--accent)}.plan-step.completed {color: var(--muted)}.process-tail {white-space: pre-wrap; max-height: 65px; overflow: auto; font: 10px/1.6 var(--vscode-editor-font-family, monospace); color: var(--muted); border-left: 1px solid var(--line); padding-left: 8px}.git-file {font: 10px/1.8 var(--vscode-editor-font-family, monospace); overflow-wrap: anywhere}
 #goal-strip {display: grid; grid-template-columns: 1fr auto; margin-bottom: 8px; padding: 7px 10px; background: var(--accent-wash); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 8px; align-items: center; column-gap: 8px}.goal-objective {grid-column: 1; padding: 0; min-height: 22px; justify-content: flex-start; min-width: 0}.goal-objective span {text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-size: 11px}.goal-objective .icon {color: var(--accent); width: 14px; height: 14px}.goal-meta {grid-row: 2; font-size: 9px; color: var(--muted); padding-left: 21px}#goal-strip > button:last-child:not(.goal-objective) {grid-column: 2; grid-row: 1 / 3; font-size: 10px}
-@media (min-width: 1000px) {
-  body {display: grid; grid-template-columns: minmax(0, 1fr) 265px; grid-template-rows: auto auto minmax(0, 1fr) auto auto}
-  .app-header {grid-column: 1 / 3; grid-row: 1; padding: 14px 24px}
-  #setup {grid-column: 1; grid-row: 2; padding: 18px 28px}
-  #transcript {grid-column: 1; grid-row: 3; padding: 28px max(28px, calc((100vw - 1000px) / 2))}
-  #overview {grid-column: 2; grid-row: 2 / 6; max-height: none; padding: 18px 15px; border-left: 1px solid var(--line); border-bottom: 0; background: color-mix(in srgb, var(--surface) 35%, var(--canvas))}
-  .overview-content {display: block}.overview-content section {border-top: 1px solid var(--line); padding: 10px 0}.overview-stats {margin-bottom: 14px}.overview-title {padding: 8px 0 14px}
-  #notice {grid-column: 1; grid-row: 4; padding: 8px 28px}
-  footer {grid-column: 1; grid-row: 5; padding: 0 max(24px, calc((100vw - 1000px) / 2)) 14px}
-  #new-output {right: 290px}
-}
 @media (forced-colors: active) {button, .attention-card, .composer, .workbench {border: 1px solid ButtonText}.switch {outline: 1px solid ButtonText}.menu-row.selected {outline: 1px solid Highlight}}

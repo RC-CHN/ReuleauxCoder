@@ -22,6 +22,5 @@
   "reuleaux.openDiffAutomatically": "Open native editor diffs for incoming file approvals.",
   "reuleaux.pythonPath": "Python 3.10+ executable used to create the managed core installation.",
   "description": "Workspace-native coding sessions, steering and diff approvals for local and Remote development.",
-  "reuleaux.chat": "Conversation",
-  "reuleaux.reviews": "Pending Reviews"
+  "reuleaux.chat": "Conversation"
 }

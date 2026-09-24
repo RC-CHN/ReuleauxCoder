@@ -4,6 +4,7 @@ import {basename, dirname, join, normalize, resolve} from 'node:path';
 import {realpathSync} from 'node:fs';
 import {record, type PendingInteraction, type RuntimeClient} from '@reuleauxcoder/client';
 import type {ReviewSummary} from '../shared.js';
+import {reviewSummary} from '../core/review-summary.js';
 
 function pathKey(path: string): string {const value = normalize(path); return process.platform === 'win32' ? value.toLowerCase() : value;}
 /** Editor URIs and Python-resolved proposals can use different Windows 8.3 names. */
@@ -19,13 +20,9 @@ function canonicalPathKey(path: string): string {
     }
   }
 }
-interface ReviewNode {id: string; label: string; path?: string; documentId?: string}
-
-export class NativeReviews implements vscode.TextDocumentContentProvider, vscode.TreeDataProvider<ReviewNode>, vscode.Disposable {
+export class NativeReviews implements vscode.TextDocumentContentProvider, vscode.Disposable {
   private client?: RuntimeClient;
   private detach?: () => void;
-  private changed = new vscode.EventEmitter<ReviewNode | undefined>();
-  readonly onDidChangeTreeData = this.changed.event;
   private cache = new Map<string, string>();
   private opened = new Set<string>();
   private presenting = new Set<string>();
@@ -35,20 +32,11 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     this.detach?.(); this.client = client; this.epoch++; this.cache.clear(); this.opened.clear();
     const listener = () => {
       for (const id of this.opened) if (!this.find(id)) this.opened.delete(id);
-      this.changed.fire(undefined); this.onChange(); void this.present().catch(this.fail);
+      this.onChange(); void this.present().catch(this.fail);
     };
     client.on('interactions', listener); this.detach = () => client.off('interactions', listener);
   }
-  summaries(): ReviewSummary[] {return (this.client?.interactions ?? []).filter(item => item.kind === 'review').map(item => ({id: item.request.request_id, title: item.request.title, summary: item.request.summary, dirty: this.dirtyDocuments(item).length > 0, grants: item.request.grant_options, context: item.request.context?.subagent_task ?? '', documents: (item.request.documents ?? []).map((doc: any) => ({id: doc.id, path: doc.path}))}));}
-  getChildren(node?: ReviewNode): ReviewNode[] {
-    if (!node) return this.summaries().map(item => ({id: item.id, label: item.title}));
-    return this.summaries().find(item => item.id === node.id)?.documents.map(doc => ({id: node.id, label: basename(doc.path), path: doc.path, documentId: doc.id})) ?? [];
-  }
-  getTreeItem(node: ReviewNode): vscode.TreeItem {
-    const item = new vscode.TreeItem(node.label, node.documentId ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Expanded);
-    item.description = node.path; item.iconPath = new vscode.ThemeIcon(node.documentId ? 'diff' : 'shield');
-    item.command = {command: 'reuleaux.review', title: t('Review'), arguments: [node.id, node.documentId]}; return item;
-  }
+  summaries(): ReviewSummary[] {return (this.client?.interactions ?? []).filter(item => item.kind === 'review').map(item => reviewSummary(item.request, this.dirtyDocuments(item).length > 0));}
   private find(id: string): PendingInteraction | undefined {return this.client?.interactions.find(item => item.request.request_id === id);}
   private uri(requestId: string, documentId: string, side: string, path: string): vscode.Uri {
     return vscode.Uri.from({scheme: 'reuleaux-review', path: `/${requestId}/${documentId}/${basename(path)}`, query: new URLSearchParams({side, epoch: String(this.epoch)}).toString()});
@@ -142,5 +130,5 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
       }
     } finally {this.presenting.delete(id);}
   }
-  dispose(): void {this.detach?.(); this.epoch++; this.cache.clear(); this.changed.dispose();}
+  dispose(): void {this.detach?.(); this.epoch++; this.cache.clear();}
 }

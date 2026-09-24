@@ -141,7 +141,6 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(logs, status, reviews, views,
     vscode.window.registerWebviewViewProvider('reuleaux.chat', views),
     vscode.workspace.registerTextDocumentContentProvider('reuleaux-review', reviews),
-    vscode.window.registerTreeDataProvider('reuleaux.reviews', reviews),
     vscode.languages.registerCodeActionsProvider([{scheme: 'file'}, {scheme: 'vscode-remote'}], diagnosticActions, {providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]}),
     vscode.workspace.onDidChangeTextDocument(() => {void syncEditors();}),
     vscode.workspace.onDidSaveTextDocument(() => {void syncEditors();}),
