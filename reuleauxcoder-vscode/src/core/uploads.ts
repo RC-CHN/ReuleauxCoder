@@ -18,7 +18,7 @@ export class Uploads {
       const result = await this.client.peer.request(`${namespace}.begin`, {name, size_bytes: size, session_id: this.client.state.session_id, session_generation: generation}) as any;
       upload.backend = result.upload_id;
       if (this.active !== upload || generation !== this.client.state.session_generation) {await this.client.peer.request(`${namespace}.cancel`, {upload_id: upload.backend}); throw new Error(t('Session or attachment changed during upload.'));}
-      if (!Number.isSafeInteger(result.chunk_bytes) || result.chunk_bytes < 1 || result.chunk_bytes > 262144) throw new Error('Invalid attachment chunk limit.');
+      if (!Number.isSafeInteger(result.chunk_bytes) || result.chunk_bytes < 1 || result.chunk_bytes > 262144) throw new Error(t('Invalid attachment chunk limit.'));
       upload.chunk = result.chunk_bytes; upload.busy = false;
       return {id: upload.id, chunk: upload.chunk};
     } catch (error) {
@@ -34,14 +34,14 @@ export class Uploads {
   }
   async append(owner: string, id: string, offset: number, data: string): Promise<number> {
     const upload = this.current(owner, id);
-    if (offset !== upload.offset || typeof data !== 'string' || data.length > Math.ceil(upload.chunk / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) throw new Error('Invalid attachment chunk.');
+    if (offset !== upload.offset || typeof data !== 'string' || data.length > Math.ceil(upload.chunk / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) throw new Error(t('Invalid attachment chunk.'));
     const length = Buffer.byteLength(data, 'base64');
-    if (!length || length > upload.chunk || offset + length > upload.size) throw new Error('Attachment chunk exceeds its declared size.');
+    if (!length || length > upload.chunk || offset + length > upload.size) throw new Error(t('Attachment chunk exceeds its declared size.'));
     upload.busy = true;
     try {
       const next = await this.client.peer.request(`${upload.namespace}.append`, {upload_id: upload.backend, offset, data});
       if (this.active !== upload || upload.generation !== this.client.state.session_generation) throw new Error(t('Session changed during upload.'));
-      if (next !== offset + length) throw new Error('Invalid attachment acknowledgement.');
+      if (next !== offset + length) throw new Error(t('Invalid attachment acknowledgement.'));
       return upload.offset = next as number;
     } finally {upload.busy = false;}
   }

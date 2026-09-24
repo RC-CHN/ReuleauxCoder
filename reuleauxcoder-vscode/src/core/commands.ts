@@ -54,7 +54,7 @@ export class ConversationCommands {
   }
   async submit(id: number, input: unknown): Promise<void> {
     const surface = this.current(id); const action = surface.action;
-    if (!action || !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid command form.');
+    if (!action || !input || typeof input !== 'object' || Array.isArray(input)) throw new Error(t('Invalid command form.'));
     const fields = input as Record<string, unknown>; const values: Record<string, Json> = {};
     for (const parameter of action.parameters) {
       const value = fields[parameter.name];
@@ -73,7 +73,7 @@ export class ConversationCommands {
   }
   async select(id: number, index: number): Promise<void> {
     const surface = this.current(id); const panel = surface.panel;
-    if (!Number.isInteger(index) || !panel?.items[index]) throw new Error('Invalid panel selection.');
+    if (!Number.isInteger(index) || !panel?.items[index]) throw new Error(t('Invalid panel selection.'));
     const item = panel.items[index]; const key = item.id ?? item.label;
     const child = panel.children.find(([id]) => id === key)?.[1];
     if (child) {

@@ -145,6 +145,8 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.locator('.panel-rows button').first().click();
       await page.waitForFunction(() => document.querySelectorAll('.panel-rows button').length === 2);
       assert.equal(await page.locator('.panel-rows button').count(), 2);
+      assert.equal(await page.locator('.workbench-heading strong').textContent(), language === 'zh' ? '模型配置 · 当前会话 · 主模型' : 'Model Profiles · Session · Main model');
+      assert((await page.locator('.panel-rows').textContent())?.includes(language === 'zh' ? '上下文：128000' : 'ctx 128000'));
       assert.equal(await page.locator('#composer').inputValue(), 'keep this next draft');
       await page.locator('.workbench-heading button').first().click();
       await page.locator('.workbench-heading button').last().click();
@@ -195,14 +197,28 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert.equal(await page.locator('.policy-tool:visible').count(), 1);
       await page.locator('.workbench-heading button').last().click();
 
-      state.interactions = [{id: 'secret', kind: 'input_text', title: 'Authentication', message: 'Enter a secret', secret: true, allowEmpty: false, allowCancel: true}]; await publish();
+      state.interactions = [{id: 'secret', kind: 'input_text', title: 'Hidden input · p1', message: 'Enter one hidden line. It will be sent directly to the PTY followed by Enter and will not be added to model context or history', placeholder: 'blank cancels', secret: true, allowEmpty: false, allowCancel: true}]; await publish();
       await page.locator('.answer-form input').fill('not-persisted'); await publish();
+      assert.equal(await page.locator('.answer-form input').getAttribute('placeholder'), language === 'zh' ? '留空即可取消' : 'blank cancels');
+      assert((await page.locator('.answer-form input').getAttribute('aria-label'))?.startsWith(language === 'zh' ? '输入一行隐藏内容' : 'Enter one hidden line'));
       assert.equal(await page.locator('.answer-form input').inputValue(), 'not-persisted');
       assert(!(await page.evaluate(() => sessionStorage.getItem('vscode-state')!)).includes('not-persisted'));
       await page.locator('.answer-form button').click();
       await page.waitForFunction(() => !document.querySelector('.answer-form'));
       assert.equal(messages.filter(message => message.action === 'answer').at(-1)!.data!.value, 'not-persisted');
       assert.equal(await page.locator('#composer').inputValue(), 'keep this next draft');
+
+      const processCommand = 'echo "enabled · Running"';
+      state.commandSurface = {id: ++surfaceId, feature: 'processes', busy: false, canBack: false, panel: {...panels['goal.show'], view_type: 'process_session:enabled', title: `running · local · ${processCommand}`, items: [], body: `${processCommand}\nrunning · 12.5s · local/pty\nDirectory: /tmp/code\nSession: enabled`, output: 'Directory: enabled\nRunning', show_auxiliary_actions: false}};
+      await publish(); await page.locator('.panel-output').waitFor();
+      assert.equal(await page.locator('.panel-output').textContent(), language === 'zh' ? `${processCommand}\n执行中 · 12.5秒 · local/pty\n目录：/tmp/code\n会话：enabled\n\nDirectory: enabled\nRunning` : `${processCommand}\nrunning · 12.5s · local/pty\nDirectory: /tmp/code\nSession: enabled\n\nDirectory: enabled\nRunning`);
+      await page.locator('.workbench-heading button').last().click();
+      state.cells.push({id: 'translated-notice', role: 'notice', text: 'Session saved: code'}, {id: 'literal-reply', role: 'assistant', text: 'Session saved: code'}, {id: 'literal-output', role: 'tool', title: 'web_search', text: 'Session saved: code', status: 'succeeded'}); await publish();
+      await page.locator('[data-id="translated-notice"]').waitFor();
+      assert.equal(await page.locator('[data-id="translated-notice"] .body').textContent(), language === 'zh' ? '会话已保存：code' : 'Session saved: code');
+      assert.equal((await page.locator('[data-id="literal-reply"] .body').textContent())?.trim(), 'Session saved: code');
+      assert.equal(await page.locator('[data-id="literal-output"] .body').textContent(), 'Session saved: code');
+      assert.equal(await page.locator('[data-id="literal-output"] summary').textContent(), language === 'zh' ? '搜索网页' : 'web_search');
 
       state.cells.push({id: 'markdown', role: 'assistant', text: '## Ready to review\n\n**Input stays responsive.**\n\n- Commands open beside the composer\n- Reviews open in the editor\n\n| Check | Result |\n| --- | --- |\n| Steering | Passed |\n\n```ts\nconst ready = true;\n```\n\n[Docs](https://example.com/docs) [bad](javascript:alert(1)) [command](command:workbench.action.closeWindow)\n\n<img src=x onerror=alert(1)> ![remote](https://example.com/tracker.png)'});
       await publish();
@@ -228,6 +244,8 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert(await page.locator('#overview').isHidden());
       await page.locator('#overview-toggle').click();
       assert(await page.locator('#overview').isVisible());
+      assert((await page.locator('#overview').textContent())?.includes(language === 'zh' ? '18秒' : '18s'));
+      assert((await page.locator('#overview').textContent())?.includes(language === 'zh' ? '12 个工具' : '12 tools'));
       state.overview!.goal!.status = 'complete'; await publish();
       await page.waitForFunction(() => document.querySelector('#goal-strip')!.hasAttribute('hidden'));
       assert(await page.locator('#overview').isVisible());

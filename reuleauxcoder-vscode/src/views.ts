@@ -44,7 +44,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
   private async receive(owner: string, request: WebRequest): Promise<unknown> {
     const session = await this.session(); const data = request.data ?? {};
     const entry = [...this.views.values()].find(entry => entry.owner === owner);
-    if (!entry) throw new Error('View closed.');
+    if (!entry) throw new Error(t('View closed.'));
     entry.session = session;
     if (['send', 'retry', 'upload.begin', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.')) {
       if (data.hostId !== session.snapshot().hostId || data.generation !== session.snapshot().generation) throw new Error(t('Session changed. Review your draft and send it again.'));
@@ -66,15 +66,15 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
       case 'command.back': return session.commands.back(data.surfaceId);
       case 'command.close': session.commands.dismiss(data.surfaceId); return;
       case 'answer': return answerInteraction(session.requireClient(), data);
-      case 'upload.begin': return await session.uploads?.begin(owner, data.name, data.size, data.image === true) ?? Promise.reject(new Error('Start the core before uploading.'));
+      case 'upload.begin': return await session.uploads?.begin(owner, data.name, data.size, data.image === true) ?? Promise.reject(new Error(t('Start the core before uploading.')));
       case 'upload.append': return await session.uploads?.append(owner, data.id, data.offset, data.data);
       case 'upload.complete': {
         const item = await session.uploads?.complete(owner, data.id);
-        if (!item) throw new Error('Upload expired.'); session.add(item); return item.id;
+        if (!item) throw new Error(t('Upload expired.')); session.add(item); return item.id;
       }
       case 'upload.cancel': await session.uploads?.cancel(owner, data.id); return;
       case 'start': case 'install': case 'selectCore': case 'logs': case 'stop': case 'openEditor': case 'newSession': case 'sessions': case 'actions': case 'models': case 'review': case 'approve': case 'reject': case 'saveReview': case 'addUri': case 'openLink': case 'openFile': case 'git': return this.command(request.action, data);
-      default: throw new Error('Unknown view action.');
+      default: throw new Error(t('Unknown view action.'));
     }
   }
   changed(): void {
@@ -83,7 +83,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
   private async broadcast(): Promise<void> {
     if (!this.views.size) return;
     try {const session = await this.session(); const snapshot = {...session.snapshot(this.reviews.summaries()), revision: ++this.sequence}; for (const webview of this.views.keys()) void webview.postMessage({kind: 'snapshot', snapshot});}
-    catch (error) {for (const webview of this.views.keys()) void webview.postMessage({kind: 'error', error: String(error)});}
+    catch (error) {for (const webview of this.views.keys()) void webview.postMessage({kind: 'error', error: errorText(error)});}
   }
   private html(webview: vscode.Webview): string {
     const nonce = randomBytes(18).toString('base64');

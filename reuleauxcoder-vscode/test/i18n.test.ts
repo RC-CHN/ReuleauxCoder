@@ -8,7 +8,7 @@ test('English fallback, Chinese locale selection and substitution preserve dynam
   setLocale('zh-cn'); assert.equal(t('Start core'), '启动核心');
   assert.equal(translate('zh-TW', 'Start core'), '启动核心');
   assert.equal(translate('de', 'Start core'), 'Start core');
-  assert.equal(translate('zh-cn', 'Install Reuleaux core on {0}', 'SSH: build-host'), '在SSH: build-host安装 Reuleaux 核心');
+  assert.equal(translate('zh-cn', 'Install Reuleaux core on {0}', 'SSH: build-host'), '在 SSH: build-host 安装 Reuleaux 核心');
   assert.equal(errorText(new Error('model/provider output')), 'model/provider output'); setLocale('en');
 });
 test('all translations preserve placeholders and both manifest catalogs cover every label', async () => {
@@ -31,7 +31,7 @@ test('core permission labels translate without changing tool names, paths or com
   assert.equal(coreText('session: allow · workspace: require_approval'), '会话规则: 自动允许 · 工作区规则: 需要审批');
   assert.equal(coreText('Approval required: edit_file'), '需要确认：修改文件');
   assert.equal(coreText('Targets: /workspace/a b.ts'), '目标: /workspace/a b.ts');
-  assert.equal(coreText("Tool 'mcp.custom' from source 'builtin' requires approval."), '来自内置工具的工具 mcp.custom 需要你的许可。');
+  assert.equal(coreText("Tool 'mcp.custom' from source 'builtin' requires approval."), '工具 mcp.custom（来源：内置工具）需要你的许可。');
   assert.equal(coreText('This 3 files'), '这 3 个资源');
   assert.equal(coreText('node -e "console.log(1)"'), 'node -e "console.log(1)"');
   setLocale('en');

@@ -27,7 +27,7 @@ export async function run(command: CoreCommand, args: string[], log: (text: stri
     let failure: Error | undefined;
     child.once('error', error => {failure = error;});
     // Abort emits error before close. Wait for the process to stop before deleting its environment.
-    child.once('close', code => failure ? reject(failure) : code === 0 ? resolve() : reject(new Error(`${command.command} exited with code ${code}. See Reuleaux logs.`)));
+    child.once('close', code => failure ? reject(failure) : code === 0 ? resolve() : reject(new Error(t('{0} exited with code {1}. See Reuleaux logs.', command.command, code ?? t('unknown')))));
   });
 }
 

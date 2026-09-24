@@ -1,4 +1,6 @@
-import {setLocale, t, errorText, type MessageKey} from '../i18n.js';
+import {setLocale, t, errorText, toolLabel, type MessageKey} from '../i18n.js';
+import {coreMessage} from '../core-messages.js';
+import {modeLabel} from '../panel-i18n.js';
 import type {ChatCell, HostSnapshot, WebRequest} from '../shared.js';
 import {decorateIcons, icon} from './icons.js';
 import {renderMarkdown} from './markdown.js';
@@ -38,7 +40,7 @@ function request(action: string, data: WebRequest['data'] = {}): Promise<any> {
     pending.set(id, {resolve, reject, timer}); vscode.postMessage({id, action, data: {hostId: snapshot?.hostId, generation: snapshot?.generation, ...data}});
   });
 }
-function notice(error: unknown): void {element('notice').textContent = errorText(error); element('notice').hidden = !element('notice').textContent;}
+function notice(error: unknown): void {element('notice').textContent = coreMessage(errorText(error)); element('notice').hidden = !element('notice').textContent;}
 function persist(): void {
   const value: SavedView = {draft: composer.value, outbox: [...localSends.values()].filter(input => optimistic.has(input.id)).map(input => ({input: {id: input.id, text: input.text, items: input.items, generation: input.generation, hostId: input.hostId, needsFiles: input.needsFiles || input.uploads.length > 0}, cell: optimistic.get(input.id)!}))};
   const encoded = JSON.stringify(value); if (encoded !== persisted) {persisted = encoded; vscode.setState(value);}
@@ -59,14 +61,15 @@ function cellNode(cell: ChatCell): HTMLElement {
   const expanded = node.querySelector('details')?.open ?? false;
   node.dataset.content = content; node.replaceChildren();
   const meta = document.createElement('div'); meta.className = 'meta';
-  meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'reasoning' ? t('Reasoning') : cell.role === 'tool' ? errorText(cell.title ?? t('Tool')) : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
+  meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'reasoning' ? t('Reasoning') : cell.role === 'tool' ? toolLabel(cell.title ?? t('Tool')) : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
+  if (cell.role === 'tool') meta.title = cell.title ?? '';
   if (cell.status && cell.status !== 'applied') {const state = document.createElement('span'); state.textContent = t(cell.status as MessageKey) ?? cell.status; meta.append(state);}
   node.append(meta);
   const body = document.createElement('div'); body.className = 'body';
   if (cell.role === 'assistant' || cell.role === 'reasoning') renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice));
-  else body.textContent = cell.text;
-  if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = errorText(cell.title ?? t('Reasoning')); details.append(summary, body); node.append(details);} else node.append(body);
-  if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.detail; (cell.role === 'tool' ? node.querySelector('details')! : node).append(detail);}
+  else body.textContent = cell.role === 'notice' ? coreMessage(cell.text) : cell.text;
+  if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = cell.role === 'tool' ? toolLabel(cell.title ?? t('Tool')) : t('Reasoning'); details.append(summary, body); node.append(details);} else node.append(body);
+  if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.role === 'tool' ? cell.detail : coreMessage(cell.detail); (cell.role === 'tool' ? node.querySelector('details')! : node).append(detail);}
   if (['unconfirmed', 'rejected'].includes(cell.status ?? '')) {const retry = button(t('Retry'), () => void retrySend(cell.id)); retry.className = 'retry'; node.append(retry);}
   if (cell.status === 'uploading' || cell.status === 'rejected' && (localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles)) node.append(button(t('Return to draft'), () => restoreSend(cell.id)));
   return node;
@@ -97,9 +100,9 @@ function render(state: HostSnapshot): void {
   element('environment').textContent = `${state.environment} · ${state.workspace.split(/[\\/]/).at(-1) ?? ''}`;
   element('environment').title = `${state.environment} · ${state.workspace}`;
   element('model').textContent = state.model || t('Select model');
-  const mode = state.mode ? errorText(state.mode) : t('Mode');
-  const modeLabel = document.createElement('span'); modeLabel.textContent = mode;
-  element('mode').replaceChildren(icon('mode'), modeLabel);
+  const mode = state.mode ? modeLabel(state.mode) : t('Mode');
+  const modeText = document.createElement('span'); modeText.textContent = mode;
+  element('mode').replaceChildren(icon('mode'), modeText);
   element('mode').title = `${t('Mode')} · ${mode}`;
   element('mode').setAttribute('aria-label', element('mode').title);
   element('activity').textContent = state.running ? t('Running') : state.phase === 'ready' ? t('Ready') : '';

@@ -1,10 +1,11 @@
-import {t} from '../i18n.js';
+import {t, coreText} from '../i18n.js';
 import * as vscode from 'vscode';
 import {basename, dirname, join, normalize, resolve} from 'node:path';
 import {realpathSync} from 'node:fs';
 import {record, type PendingInteraction, type RuntimeClient} from '@reuleauxcoder/client';
 import type {ReviewSummary} from '../shared.js';
 import {reviewSummary} from '../core/review-summary.js';
+import {approvalText} from '../core-messages.js';
 
 function pathKey(path: string): string {const value = normalize(path); return process.platform === 'win32' ? value.toLowerCase() : value;}
 /** Editor URIs and Python-resolved proposals can use different Windows 8.3 names. */
@@ -69,7 +70,7 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
       }
     }
     {
-      const text = [request.request.summary, ...(request.request.sections ?? []).map((section: any) => `${section.title}\n${typeof section.content === 'string' ? section.content : JSON.stringify(section.content, null, 2)}`)].join('\n\n');
+      const text = [approvalText(request.request.summary), ...(request.request.sections ?? []).map((section: any) => `${coreText(section.title)}\n${typeof section.content === 'string' ? section.title === 'Outside workspace' ? approvalText(section.content) : section.content : JSON.stringify(section.content, null, 2)}`)].join('\n\n');
       await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({content: text, language: 'diff'}), {preview: false});
     }
   }

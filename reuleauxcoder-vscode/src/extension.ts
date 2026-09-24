@@ -17,7 +17,7 @@ let installAbort: AbortController | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   setLocale(vscode.env.language);
-  const logs = vscode.window.createOutputChannel('Reuleaux Core');
+  const logs = vscode.window.createOutputChannel(t('Reuleaux Core'));
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   status.command = 'reuleaux.open'; status.text = '$(comment-discussion) Reuleaux'; status.show();
   const error = (reason: unknown) => {const text = errorText(reason); logs.appendLine(text); if (active) active.report(reason); else void vscode.window.showErrorMessage(text);};
@@ -102,12 +102,12 @@ export function activate(context: vscode.ExtensionContext) {
       case 'reject': return reviews.decide(false, data.id, undefined, data.feedback);
       case 'saveReview': return reviews.saveAndRepropose(data.id);
       case 'openLink': {
-        if (typeof data.url !== 'string' || !/^https?:\/\//i.test(data.url)) throw new Error('Unsupported link.');
+        if (typeof data.url !== 'string' || !/^https?:\/\//i.test(data.url)) throw new Error(t('Unsupported link.'));
         return vscode.env.openExternal(vscode.Uri.parse(data.url));
       }
       case 'openFile': await getSession(); return openWorkspaceFile(folder!, data.path);
       case 'addUri': {
-        if (typeof data.uri !== 'string') throw new Error('Invalid workspace file.');
+        if (typeof data.uri !== 'string') throw new Error(t('Invalid workspace file.'));
         const uri = vscode.Uri.parse(data.uri); const session = await getSession();
         if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() !== folder!.uri.toString()) throw new Error(t('This file is outside the selected workspace. Use the local file upload button instead.'));
         session.add(await editorContext(uri)); return;
@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext) {
       case 'sessions': return session.commands.open('sessions.list');
       case 'actions': await vscode.commands.executeCommand('reuleaux.chat.focus'); return views.showCommands();
       case 'models': return session.commands.open('model.show');
-      default: throw new Error('Unknown Reuleaux command.');
+      default: throw new Error(t('Unknown Reuleaux command.'));
     }
   };
   const views = new ConversationViews(context.extensionUri, getSession, reviews, dispatch);

@@ -80,7 +80,7 @@ export class WorkspaceSession extends EventEmitter {
   submit(id: string, text: string, itemIds: string[], generation: number): void {
     const client = this.requireClient();
     if (generation !== client.state.session_generation) throw new Error(t('Session changed. Review your draft and send it again.'));
-    if (typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id) || typeof text !== 'string' || text.length > 1024 * 1024 || !Array.isArray(itemIds) || itemIds.length > 30) throw new Error('Invalid chat submission.');
+    if (typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id) || typeof text !== 'string' || text.length > 1024 * 1024 || !Array.isArray(itemIds) || itemIds.length > 30) throw new Error(t('Invalid chat submission.'));
     if (this.submissions!.has(id)) return;
     const items = itemIds.map(id => {const item = this.draftItems.find(item => item.id === id); if (!item) throw new Error(t('An attachment has expired. Attach it again.')); return item;});
     const images = items.filter(item => item.kind === 'image');
@@ -89,7 +89,7 @@ export class WorkspaceSession extends EventEmitter {
     const input = [text.trim(), context].filter(Boolean).join('\n\n');
     if (!input && !images.length) return;
     const value: Json = images.length ? record('ChatInput', {text: input, images: tuple(images.map(item => record('ImageReference', item.reference)))}) : input;
-    const display = [text, ...items.map(item => `[${item.kind}: ${item.name}]`)].filter(Boolean).join('\n');
+    const display = [text, ...items.map(item => `[${t(item.kind)}: ${item.name}]`)].filter(Boolean).join('\n');
     const sending = this.submissions!.send(display, value, id);
     this.draftItems = this.draftItems.filter(item => !itemIds.includes(item.id));
     // Only clear the sent text; a later view message may already own a new draft.

@@ -2,6 +2,7 @@ import type {Panel} from '@reuleauxcoder/client';
 import type {CommandSurface, WebRequest} from '../shared.js';
 import {t, coreText} from '../i18n.js';
 import {icon} from './icons.js';
+import {permissionTarget} from '../panel-i18n.js';
 
 const policies = {
   allow: ['Allow automatically', 'Matching calls run without asking'],
@@ -35,8 +36,8 @@ export class PermissionPolicies {
       const actions = childAt(scopes, this.scope); if (!actions || actions.view_type !== 'approval_actions') continue;
       const row = document.createElement('div'); row.className = 'policy-tool'; row.dataset.target = item.id ?? item.label;
       const copy = document.createElement('div'); copy.className = 'policy-tool-copy';
-      const label = document.createElement('label'); label.textContent = coreText(item.label); label.htmlFor = `policy-${index}`;
-      const raw = document.createElement('small'); raw.textContent = coreText(item.label) !== item.label ? item.label : '';
+      const label = document.createElement('label'); label.textContent = permissionTarget(item.label); label.htmlFor = `policy-${index}`;
+      const raw = document.createElement('small'); raw.textContent = permissionTarget(item.label) !== item.label ? item.label : '';
       const source = document.createElement('small'); source.className = 'policy-source'; source.textContent = coreText(item.description);
       copy.append(label, raw);
       const select = document.createElement('select'); select.id = label.htmlFor; select.dataset.submit = ''; select.dataset.row = item.id ?? item.label; select.disabled = surface.busy;

@@ -1,9 +1,10 @@
 import type {Action} from '@reuleauxcoder/client';
 import type {CommandSurface, HostSnapshot, WebRequest} from '../shared.js';
 import {t, errorText} from '../i18n.js';
-import {actionLabel, actionScope, commandItems, featureInfo, panelText} from './catalog.js';
+import {actionLabel, actionScope, commandItems, featureInfo} from './catalog.js';
 import {icon} from './icons.js';
 import {PermissionPolicies} from './permissions.js';
+import {panelTitle, panelItemText, panelBody, parameterLabel} from '../panel-i18n.js';
 
 type Request = (action: string, data?: WebRequest['data']) => Promise<any>;
 export class ComposerWorkbench {
@@ -126,7 +127,7 @@ export class ComposerWorkbench {
     finally {this.busy = false;}
   }
   private drawSurface(surface: CommandSurface, filter: string): void {
-    const title = surface.action ? actionLabel(surface.action) : panelText(surface.panel?.title ?? featureInfo(surface.feature).label);
+    const title = surface.action ? actionLabel(surface.action) : surface.panel ? panelTitle(surface.panel) : featureInfo(surface.feature).label;
     this.root.dataset.feature = surface.feature;
     this.root.replaceChildren(this.header(title, surface.canBack ? () => void this.request('command.back', {surfaceId: surface.id}).catch(this.notice) : undefined));
     const body = document.createElement('div'); body.className = 'workbench-body'; this.root.append(body);
@@ -141,11 +142,12 @@ export class ComposerWorkbench {
       body.append(steps);
       const hint = document.createElement('p'); hint.className = 'permission-hint'; hint.textContent = active === 0 ? t('Choose which tools this permission applies to.') : active === 1 ? t('Choose whether the rule belongs to this conversation or the workspace.') : t('Select how matching tool calls should be handled.'); body.append(hint);
     }
-    if (panel.body || panel.output) {const output = document.createElement('div'); output.className = 'panel-output'; output.textContent = [panel.body, panel.output].filter(Boolean).join('\n\n'); body.append(output);}
+    if (panel.body || panel.output) {const output = document.createElement('div'); output.className = 'panel-output'; output.textContent = [panelBody(panel), panel.output].filter(Boolean).join('\n\n'); body.append(output);}
     const rows = document.createElement('div'); rows.className = 'panel-rows';
     for (const [index, item] of panel.items.entries()) {
       const child = panel.children.some(([id]) => id === (item.id ?? item.label));
-      const row = this.row(panelText(item.label), panelText(item.description), () => void this.request('command.select', {surfaceId: surface.id, index}).catch(this.notice));
+      const translated = panelItemText(panel, item);
+      const row = this.row(translated.label, translated.description, () => void this.request('command.select', {surfaceId: surface.id, index}).catch(this.notice));
       row.dataset.row = item.id ?? item.label; row.dataset.submit = ''; row.disabled = !item.action && !child; row.dataset.readonly = String(row.disabled);
       if (child) row.append(icon('chevron'));
       else if (item.action?.action_id.startsWith('skills.') || item.action?.action_id.startsWith('mcp.')) {
@@ -170,7 +172,7 @@ export class ComposerWorkbench {
     const action = surface.action!; const form = document.createElement('form'); form.className = 'command-form';
     const scope = actionScope(action); if (scope) {const hint = document.createElement('div'); hint.className = 'scope-chip'; hint.textContent = scope; form.append(hint);}
     for (const parameter of action.parameters) {
-      const label = document.createElement('label'); const caption = document.createElement('span'); caption.textContent = `${errorText(parameter.name)}${parameter.required ? ' *' : ''}`;
+      const label = document.createElement('label'); const caption = document.createElement('span'); caption.textContent = `${parameterLabel(action, parameter.name)}${parameter.required ? ' *' : ''}`;
       const input = parameter.kind === 'boolean' ? document.createElement('select') : parameter.name === 'objective' || parameter.name === 'message' ? document.createElement('textarea') : document.createElement('input');
       input.name = parameter.name; input.required = parameter.required && !parameter.nullable;
       if (input instanceof HTMLSelectElement) {for (const [value, text] of [...(!input.required ? [['', t('Default')]] : []), ['true', t('Enabled')], ['false', t('Disabled')]]) {const option = document.createElement('option'); option.value = value; option.textContent = text; input.append(option);}}

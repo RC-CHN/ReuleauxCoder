@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Complete Chinese/English VS Code translations for built-in command forms, goal controls, MCP/skill status, process facts, approval feedback, installation/upload errors and runtime notices. Localize overview counts and durations while preserving custom names, identifiers, paths, command output and model text; check coverage against the real core catalog.
+
 - Check core release versions and editor integration revisions before VS Code startup resumes saved goals. Detect same-version outdated builds, show an inline update action, and explain installation of the checksum-verified bundled wheel on the workspace host while preserving external installations.
 
 - Open Markdown workspace file references (including plain/inline-code filenames, nested paths and line ranges) in the VS Code editor instead of treating `.md` names as websites. Preserve explicit HTTP links, Remote workspace authority and workspace boundaries. Clarify work overview typography and active/completed status colors.

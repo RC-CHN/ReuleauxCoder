@@ -22,7 +22,7 @@ export function answerInteraction(client: RuntimeClient, data: Record<string, un
   }
   switch (pending.kind) {
     case 'confirm':
-      if (typeof data.confirmed !== 'boolean') throw new Error('Invalid confirmation.');
+      if (typeof data.confirmed !== 'boolean') throw new Error(t('Invalid confirmation.'));
       client.answer(request.request_id, record('ConfirmResponse', {confirmed: data.confirmed, cancelled: false})); return;
     case 'choose_one':
       if (typeof data.selected !== 'string' || !request.items.some((item: any) => item.id === data.selected)) throw new Error(t('Choose an option to continue.'));
@@ -30,6 +30,6 @@ export function answerInteraction(client: RuntimeClient, data: Record<string, un
     case 'input_text':
       if (typeof data.value !== 'string' || data.value.length > 1024 * 1024 || (!request.allow_empty && !data.value.trim())) throw new Error(t('Required'));
       client.answer(request.request_id, record('InputTextResponse', {value: data.value, cancelled: false})); return;
-    default: throw new Error('Unsupported interaction.');
+    default: throw new Error(t('Unsupported interaction.'));
   }
 }

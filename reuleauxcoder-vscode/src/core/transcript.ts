@@ -1,6 +1,8 @@
 import {EventEmitter} from 'node:events';
 import {typeOf, type RuntimeClient, type RecordData, type SubmissionSink} from '@reuleauxcoder/client';
 import type {ChatCell} from '../shared.js';
+import {t, coreText} from '../i18n.js';
+import {approvalReason} from '../core-messages.js';
 
 /** Host-owned, serializable presentation. Browser views receive snapshots, never RPC ownership. */
 export class Transcript extends EventEmitter implements SubmissionSink {
@@ -65,7 +67,7 @@ export class Transcript extends EventEmitter implements SubmissionSink {
       case 'ToolCallStarted': {this.assistant = this.reasoning = undefined; const cell = this.add('tool', ''); cell.detail = JSON.stringify(payload.arguments ?? {}, null, 2); cell.title = payload.tool_name; cell.status = 'running'; this.tools.set(payload.tool_call_id, cell); break;}
       case 'ToolOutputDelta': {const cell = this.tools.get(payload.tool_call_id); if (cell) cell.text = (cell.text + payload.text).slice(-65536); break;}
       case 'ToolCallFinished': {const cell = this.tools.get(payload.tool_call_id); if (cell) {const out = payload.outcome; cell.status = out?.status ?? 'complete'; cell.text = [out?.summary, out?.content, out?.stdout, out?.stderr ? `[stderr]\n${out.stderr}` : '', out?.diff?.unified].filter(Boolean).join('\n').slice(-65536) || cell.text;} this.tools.delete(payload.tool_call_id); break;}
-      case 'ApprovalResolved': this.notice([payload.approved ? 'Approved' : 'Denied', payload.reason, payload.grant_label].filter(Boolean).join(' · ')); break;
+      case 'ApprovalResolved': this.notice([payload.approved ? t('Approved') : t('Denied'), payload.reason ? approvalReason(payload.reason) : '', payload.grant_label ? coreText(payload.grant_label) : ''].filter(Boolean).join(' · ')); break;
     }
   }
   clear(): void {this.cells = []; this.tools.clear(); this.sent.clear(); this.assistant = this.reasoning = undefined; this.emit('reset');}

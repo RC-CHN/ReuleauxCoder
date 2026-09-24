@@ -1,9 +1,8 @@
 import type {HostSnapshot, WebRequest} from '../shared.js';
-import {t, errorText} from '../i18n.js';
+import {t, errorText, toolLabel, compactNumber as compact, shortDuration as duration} from '../i18n.js';
+import {coreMessage} from '../core-messages.js';
 import {icon, type IconName} from './icons.js';
 
-const compact = (value: number) => new Intl.NumberFormat('en', {notation: 'compact', maximumFractionDigits: 1}).format(value);
-const duration = (seconds: number) => seconds < 60 ? `${Math.floor(seconds)}s` : `${Math.floor(seconds / 60)}m`;
 export class WorkOverviewView {
   private signature = '';
   private open = false;
@@ -21,20 +20,20 @@ export class WorkOverviewView {
     const scroll = this.root.scrollTop;
     const focusKey = (document.activeElement as HTMLElement)?.dataset.overviewAction;
     const summary = document.createElement('div'); summary.className = 'overview-title'; summary.textContent = t('Work overview');
-    const live = document.createElement('span'); live.className = 'overview-live'; live.textContent = state.phase === 'ready' ? errorText(data.activity) || (state.running ? t('Running') : t('Ready')) : ({idle: t('Idle'), starting: t('Connecting…'), failed: t('Failed'), installing: t('Installing…'), stopping: t('Saving and stopping…')})[state.phase]; summary.append(live);
+    const live = document.createElement('span'); live.className = 'overview-live'; live.textContent = state.phase === 'ready' ? (['Reasoning', 'Writing'].includes(data.activity) ? errorText(data.activity) : toolLabel(data.activity)) || (state.running ? t('Running') : t('Ready')) : ({idle: t('Idle'), starting: t('Connecting…'), failed: t('Failed'), installing: t('Installing…'), stopping: t('Saving and stopping…')})[state.phase]; summary.append(live);
     const stats = document.createElement('div'); stats.className = 'overview-stats';
     const ratio = data.contextLimit ? Math.round(data.contextTokens / data.contextLimit * 100) : null;
     stats.append(this.action(`${t('Context')} ${ratio === null ? '—' : `${ratio}%`}`, 'system.tokens', 'model'));
     const policy = ({require_approval: t('Ask'), allow: t('Allow'), warn: t('Warn'), deny: t('Deny')} as Record<string, string>)[data.approvalPolicy] ?? data.approvalPolicy;
     stats.append(this.action(`${t('Permissions')} · ${policy || '—'}`, 'approval.show', 'shield'));
-    if (data.git?.available) stats.append(this.action(`${data.git.branch} · ${data.git.files.length}${data.git.truncated ? '+' : ''} ${t('changed')}`, undefined, 'history', () => void this.request('git').catch(this.notice)));
+    if (data.git?.available) stats.append(this.action(`${data.git.branch} · ${t(data.git.files.length === 1 && !data.git.truncated ? '{0} changed file' : '{0} changed files', `${data.git.files.length}${data.git.truncated ? '+' : ''}`)}`, undefined, 'history', () => void this.request('git').catch(this.notice)));
     const processes = data.processes.filter(item => item.state !== 'exited');
     const jobs = data.jobs.filter(item => !['completed', 'cancelled', 'stale'].includes(item.status));
     if (processes.length) stats.append(this.action(`${t('Processes')} ${processes.length}`, 'processes.list', 'terminal'));
     if (jobs.length) stats.append(this.action(`${t('Agents')} ${jobs.length}`, 'subagent.jobs.list', 'agents'));
     if (data.queued) stats.append(this.text(`${t('Queue')} · ${data.queued}`, 'stat-warning'));
     const conflicts = data.git?.files.filter(file => file.conflict).length ?? 0;
-    if (conflicts) stats.append(this.text(`${conflicts} ${t('conflicts')}`, 'stat-warning'));
+    if (conflicts) stats.append(this.text(t(conflicts === 1 ? '{0} conflict' : '{0} conflicts', conflicts), 'stat-warning'));
     const waiting = state.reviews.length + (state.interactions?.length ?? 0);
     if (waiting) stats.append(this.action(t('Waiting for you · {0}', waiting), undefined, 'shield', () => document.getElementById('reviews')!.scrollIntoView({block: 'start'})));
     const content = document.createElement('div'); content.className = 'overview-content';
@@ -55,10 +54,10 @@ export class WorkOverviewView {
       if (git.upstream) section.append(this.text(`${git.upstream} · ↑${git.ahead ?? '—'} ↓${git.behind ?? '—'}`, 'overview-detail'));
       for (const file of git.files.slice(0, 6)) section.append(this.text(`${file.index}${file.worktree}  ${file.path}`, file.conflict ? 'stat-warning git-file' : 'git-file'));
       section.append(this.action(t('View details'), undefined, 'expand', () => void this.request('git').catch(this.notice)));
-    } else if (data.git?.reason) this.section(content, 'Git', [data.git.reason]);
+    } else if (data.git?.reason) this.section(content, 'Git', [['git_timed_out', 'git_not_installed', 'git_unavailable', 'not_initialized', 'status_timed_out', 'status_failed'].includes(data.git.reason) ? errorText(data.git.reason) : coreMessage(data.git.reason)]);
     if (data.diagnostics.length) this.section(content, t('Diagnostics'), data.diagnostics.map(item => `${t('{0} errors · {1} warnings', item.errors, item.warnings)} · ${item.path}`));
-    this.section(content, t('Context'), [`${compact(data.contextTokens)} / ${data.contextLimit ? compact(data.contextLimit) : '—'} tokens`, `MCP · ${data.mcpTools} ${t('Tool')}`]);
-    if (data.warnings.length) this.section(content, t('Attention'), data.warnings, 'warning');
+    this.section(content, t('Context'), [t('{0} tokens', `${compact(data.contextTokens)} / ${data.contextLimit ? compact(data.contextLimit) : '—'}`), `MCP · ${t(data.mcpTools === 1 ? '{0} tool' : '{0} tools', data.mcpTools)}`]);
+    if (data.warnings.length) this.section(content, t('Attention'), data.warnings.map(coreMessage), 'warning');
     this.root.replaceChildren(summary, stats, content);
     this.goal.replaceChildren(); this.goal.hidden = !data.goal || data.goal.status === 'complete';
     if (data.goal) {
