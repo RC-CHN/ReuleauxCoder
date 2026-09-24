@@ -7,6 +7,7 @@ import hashlib
 from typing import cast
 
 from reuleauxcoder.domain.approval import (
+    ApprovalDocumentDiff,
     ApprovalPreview,
     ApprovalRequest,
     ApprovalSection,
@@ -101,10 +102,15 @@ def build_approval_preview(
     request: ApprovalRequest,
     *,
     workspace: WorkspacePort | None,
+    document: ApprovalDocumentSnapshot | None = None,
 ) -> ApprovalPreview:
     """Build the review payload against the Tool's actual workspace view."""
     boundary = _workspace_boundary_section(request)
-    diff = _build_diff(request, workspace=workspace)
+    proposal = _document_diff(request, workspace=workspace, document=document)
+    diff = (
+        _unified_diff(proposal.before, proposal.after, proposal.path)
+        if proposal is not None else None
+    )
     if diff is not None:
         title = (
             "Proposed file diff"
@@ -112,6 +118,7 @@ def build_approval_preview(
             else "Proposed edit diff"
         )
         return ApprovalPreview(
+            documents=(proposal,) if proposal is not None else (),
             sections=boundary
             + (
                 ApprovalSection(
@@ -195,50 +202,44 @@ def _read_only_preview(request: ApprovalRequest) -> str | None:
     return None
 
 
-def _build_diff(
+def _document_diff(
     request: ApprovalRequest,
     *,
     workspace: WorkspacePort | None,
-) -> str | None:
+    document: ApprovalDocumentSnapshot | None,
+) -> ApprovalDocumentDiff | None:
     if workspace is None:
         return None
     file_path = request.tool_args.get("file_path")
     if not isinstance(file_path, str):
         return None
 
+    if request.tool_name not in {"edit_file", "write_file"}:
+        return None
+    try:
+        document = document or capture_approval_document(request, workspace=workspace)
+    except WorkspaceError:
+        return None
+    if document is None:
+        return None
+    content = document.content or ""
     if request.tool_name == "edit_file":
         old_string = request.tool_args.get("old_string")
         new_string = request.tool_args.get("new_string")
         if not isinstance(old_string, str) or not isinstance(new_string, str):
             return None
-        try:
-            content = workspace.read_text(file_path)
-        except WorkspaceError:
-            return None
         if content.count(old_string) != 1:
             return None
-        return _unified_diff(
-            content,
-            content.replace(old_string, new_string, 1),
-            str(workspace.resolve(file_path)),
-        )
-
-    if request.tool_name == "write_file":
+        after = content.replace(old_string, new_string, 1)
+    else:
         new_content = request.tool_args.get("content")
         if not isinstance(new_content, str):
             return None
-        try:
-            old_content = workspace.read_text(file_path)
-        except WorkspaceError as error:
-            if error.code is not WorkspaceErrorCode.NOT_FOUND:
-                return None
-            old_content = ""
-        return _unified_diff(
-            old_content,
-            new_content,
-            str(workspace.resolve(file_path)),
-        )
-    return None
+        after = new_content
+    return ApprovalDocumentDiff(
+        document.path, content, after,
+        document.revision.exists, document.revision.sha256,
+    )
 
 
 def _unified_diff(old: str, new: str, filename: str, context: int = 3) -> str | None:

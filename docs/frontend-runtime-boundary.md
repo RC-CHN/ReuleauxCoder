@@ -81,6 +81,13 @@ flowchart LR
 后端尚未完成初始化时的启动进度、stderr 和致命错误由宿主展示，属于启动诊断通道；
 它们不承载聊天、命令或审批操作。
 
+原生编辑器审批通过 `initialize.review_documents` 协商。`ReviewRequest.documents`
+只携带快照元数据，`review.document(request_id, document_id, side, offset, limit)`
+按最多 65,536 个 Unicode 字符读取审批期间冻结的修改前/后文本。路径不能作为读取
+参数，审批取消或结束后快照立即失效。文本 diff 与原生预览都来自同一次捕获的文档
+版本，实际修改仍由核心校验版本后执行。客户端原生预览上限为 4 Mi 字符，超过后应
+展示文本预览和明确的大小提示。
+
 ## 回归检查
 
 - `tests/architecture/test_rpc_imports.py`：新解释器内拦截间接导入。

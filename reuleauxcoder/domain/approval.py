@@ -30,10 +30,22 @@ class ApprovalSection:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalDocumentDiff:
+    """Immutable mutation proposal bound to the reviewed document revision."""
+
+    path: str
+    before: str
+    after: str
+    before_exists: bool
+    before_sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ApprovalPreview:
     """Adapter-neutral review content built once before user interaction."""
 
     sections: tuple[ApprovalSection, ...] = ()
+    documents: tuple[ApprovalDocumentDiff, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

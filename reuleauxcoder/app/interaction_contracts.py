@@ -113,6 +113,20 @@ class ReviewGrantOption:
 
 
 @dataclass(slots=True)
+class ReviewDocument:
+    """Snapshot metadata on the wire; contents are read in bounded RPC pages."""
+
+    id: str
+    path: str
+    before_exists: bool
+    before_sha256: str | None
+    before_length: int
+    after_length: int
+    before: str | None = None
+    after: str | None = None
+
+
+@dataclass(slots=True)
 class ReviewRequest:
     """Structured review/approval request with optional preview sections."""
 
@@ -121,6 +135,7 @@ class ReviewRequest:
     approve_label: str = "Approve"
     reject_label: str = "Reject"
     sections: tuple[ApprovalSection, ...] = ()
+    documents: tuple[ReviewDocument, ...] = ()
     context: ReviewContext | None = None
     grant_options: tuple[ReviewGrantOption, ...] = ()
     queue_status: ApprovalQueueStatus = field(default_factory=ApprovalQueueStatus)

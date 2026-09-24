@@ -1919,7 +1919,7 @@ def test_malformed_pre_effect_callback_results_fail_closed(
             monkeypatch.setattr(
                 tool_execution_module,
                 "build_approval_preview",
-                lambda request, workspace: object(),
+                lambda request, workspace, document: object(),
             )
 
     result = ToolExecutor(agent).execute(

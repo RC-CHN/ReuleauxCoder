@@ -1145,7 +1145,8 @@ class ToolExecutor:
                                 "Run command"
                             )
                         preview = build_approval_preview(
-                            approval_request, workspace=workspace
+                            approval_request, workspace=workspace,
+                            document=before_approval,
                         )
                         if not isinstance(preview, ApprovalPreview):
                             raise InvalidApprovalPreview

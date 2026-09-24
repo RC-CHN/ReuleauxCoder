@@ -9,6 +9,7 @@ from reuleauxcoder.domain.approval import (
 )
 from reuleauxcoder.app.interaction_contracts import (
     ReviewContext,
+    ReviewDocument,
     ReviewGrantOption,
     ReviewRequest,
     UIInteractor,
@@ -68,6 +69,16 @@ def make_approval_handler(ui_interactor: UIInteractor) -> ApprovalHandler:
                 summary=approval_summary,
                 sections=(
                     request.preview.sections if request.preview is not None else ()
+                ),
+                documents=tuple(
+                    ReviewDocument(
+                        str(index), document.path, document.before_exists,
+                        document.before_sha256, len(document.before),
+                        len(document.after), document.before, document.after,
+                    )
+                    for index, document in enumerate(
+                        request.preview.documents if request.preview is not None else ()
+                    )
                 ),
                 context=ReviewContext(
                     tool_name=request.tool_name,

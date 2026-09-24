@@ -4,7 +4,7 @@ from reuleauxcoder.domain.approval import (
     ApprovalRequest,
     ApprovalSectionKind,
 )
-from reuleauxcoder.domain.approval_preview import build_approval_preview
+from reuleauxcoder.domain.approval_preview import build_approval_preview, capture_approval_document
 from reuleauxcoder.infrastructure.workspace import LocalWorkspacePort
 
 
@@ -63,3 +63,31 @@ def test_read_only_approval_has_compact_target_instead_of_json() -> None:
     assert preview.sections[0].kind is ApprovalSectionKind.TEXT
     assert preview.sections[0].title == "Target"
     assert preview.sections[0].content == "CHANGELOG.md · from line 1 · limit 10"
+
+
+def test_native_diff_and_text_preview_share_the_captured_revision(tmp_path):
+    path = tmp_path / "example.py"
+    path.write_text("before = 1\n", encoding="utf-8")
+    workspace = LocalWorkspacePort(tmp_path, cwd=tmp_path)
+    request = ApprovalRequest("edit_file", {"file_path": "example.py", "old_string": "1", "new_string": "2"})
+    snapshot = capture_approval_document(request, workspace=workspace)
+    path.write_text("editor changed this\n", encoding="utf-8")
+    preview = build_approval_preview(request, workspace=workspace, document=snapshot)
+    document = preview.documents[0]
+    assert document.before == "before = 1\n"
+    assert document.after == "before = 2\n"
+    assert document.before_sha256 == snapshot.revision.sha256
+    assert "-before = 1" in preview.sections[0].content
+    assert "+before = 2" in preview.sections[0].content
+    assert "editor changed" not in preview.sections[0].content
+
+
+def test_new_file_preview_retains_absent_base_revision(tmp_path):
+    preview = build_approval_preview(
+        ApprovalRequest("write_file", {"file_path": "new.py", "content": "中文\n"}),
+        workspace=LocalWorkspacePort(tmp_path, cwd=tmp_path),
+    )
+    assert preview.documents[0].before == ""
+    assert preview.documents[0].after == "中文\n"
+    assert preview.documents[0].before_exists is False
+    assert preview.documents[0].before_sha256 is None

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expose approval-bound before/after document snapshots through bounded RPC pages for native editor diffs. Text previews and document snapshots share one captured revision; cancellation invalidates the document reader.
+
 - Split provider request projection and prompt/schema caches out of the agent loop, with dedicated replay state and an explicit host capability contract.
 
 - Separate tool-result validation and failure aggregation, session payload validation, stable LSP document reads, and delegated result projection from their execution/storage managers. Delegated result projection receives an explicit evidence snapshot instead of parent/child agents.
