@@ -1,7 +1,33 @@
 import threading
 
+import pytest
+
 from reuleauxcoder.app.interaction_contracts import ConfirmRequest
 from reuleauxcoder.app.rpc.codec import decode, encode
+
+
+@pytest.mark.parametrize("method", ["runtime.interrupt", "runtime.stop"])
+def test_stop_cancels_input_without_waiting_for_frontend_reply(runtime, method):
+    entered, release = threading.Event(), threading.Event()
+    responses = []
+    runtime.client.peer.methods["interaction.request"] = lambda **_: (
+        entered.set(), release.wait(3), None
+    )[-1]
+
+    def run():
+        responses.append(runtime.agent.ui_interactor.confirm(ConfirmRequest("Question", "Continue?")))
+        return "cancelled"
+
+    runtime.loop.run = run
+    try:
+        runtime.client.submit("ask")
+        assert entered.wait(2)
+        runtime.client.peer.request(method)
+        runtime.client.wait_idle()
+        assert responses[0].cancelled
+        assert not runtime.server.interactions.pending_request_ids
+    finally:
+        release.set()
 
 
 def test_frontend_retains_cancel_before_request_worker_registration(runtime):

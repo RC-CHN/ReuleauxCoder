@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Cancel pending RPC input and approval interactions when stopping or interrupting a turn, so a native dialog cannot leave the task waiting after Stop.
+
 - Track connection-owned unsaved editor documents with monotonic revisions and recheck them before built-in file mutations, including automatically approved and delegated edits.
 
 - Expose approval-bound before/after document snapshots through bounded RPC pages for native editor diffs. Text previews and document snapshots share one captured revision; cancellation invalidates the document reader.

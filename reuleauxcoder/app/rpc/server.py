@@ -589,12 +589,14 @@ class RuntimeServer:
     def stop(self):
         with self._lock:
             self.agent.request_stop()
+        self.interactions.cancel_all(reason="turn stopped")
         self.agent.goal_controller.stop("paused")
         self._publish_state()
 
     def interrupt(self):
         with self._lock:
             result = self.agent.request_interrupt_intent()
+        self.interactions.cancel_all(reason="turn interrupted")
         self.agent.goal_controller.stop("paused")
         self._publish_state()
         return {
