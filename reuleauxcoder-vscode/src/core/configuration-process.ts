@@ -22,7 +22,7 @@ export class ConfigurationProcess {
   private async connect(options: RuntimeOptions & {env?: NodeJS.ProcessEnv}, epoch: number): Promise<ConfigurationClient> {
     await this.stopChild();
     for (const command of options.commands) {
-      if (epoch !== this.epoch) throw new Error(t('Configuration recovery was closed.'));
+      if (epoch !== this.epoch) throw new Error(t('Configuration inspection was closed.'));
       const child = spawn(command.command, [...command.args, '--config-management-stdio'], {
         cwd: options.cwd, env: options.env, stdio: 'pipe', windowsHide: true, shell: false,
       });
@@ -35,16 +35,16 @@ export class ConfigurationProcess {
       child.on('error', error => {spawnError = error; peer.close(error);});
       // Drain stderr but never forward raw configuration/provider diagnostics to the view.
       child.stderr.resume();
-      child.once('exit', () => peer.close(new Error(t('Configuration recovery disconnected.'))));
+      child.once('exit', () => peer.close(new Error(t('Configuration inspection disconnected.'))));
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const info = await Promise.race([
           client.initialize(),
-          new Promise<never>((_, reject) => {timer = setTimeout(() => reject(new Error(t('Configuration recovery timed out.'))), options.startupTimeout ?? 15_000);}),
+          new Promise<never>((_, reject) => {timer = setTimeout(() => reject(new Error(t('Configuration inspection timed out.'))), options.startupTimeout ?? 15_000);}),
         ]);
-        if (epoch !== this.epoch) throw new Error(t('Configuration recovery was closed.'));
-        if (!info.editor_documents || !['profile_probes', 'reviewer_protection', 'recovery'].every(name => info.capabilities?.includes(name))) {
-          throw new Error(t('Update the core to use configuration recovery.'));
+        if (epoch !== this.epoch) throw new Error(t('Configuration inspection was closed.'));
+        if (!['buffer_checks', 'profile_probes'].every(name => info.capabilities?.includes(name))) {
+          throw new Error(t('Update the core to use configuration inspection.'));
         }
         return client;
       } catch (error) {
@@ -55,7 +55,7 @@ export class ConfigurationProcess {
         throw error;
       } finally {clearTimeout(timer);}
     }
-    throw new Error(t('No core installation is available for configuration recovery.'));
+    throw new Error(t('No core installation is available for configuration inspection.'));
   }
 
   async close(): Promise<void> {

@@ -7,11 +7,13 @@ import {managedCommand, installCore} from './core/install.js';
 import type {CoreCommand} from './core/runtime.js';
 import {NativeReviews} from './native/reviews.js';
 import {editorContext, diagnosticActions} from './native/context.js';
+import {ConfigurationDocuments} from './native/configuration.js';
 import {openWorkspaceFile} from './native/file-links.js';
 
 let active: WorkspaceSession | undefined;
 let creating: Promise<WorkspaceSession> | undefined;
 let folder: vscode.WorkspaceFolder | undefined;
+let configurationDocuments: ConfigurationDocuments | undefined;
 let installing: Promise<void> | undefined;
 let installAbort: AbortController | undefined;
 
@@ -27,7 +29,6 @@ export function activate(context: vscode.ExtensionContext) {
   const dirtyPaths = () => vscode.workspace.textDocuments.filter(document => document.isDirty && ['file', 'vscode-remote'].includes(document.uri.scheme)).map(document => document.uri.fsPath);
   const syncEditors = () => {
     const client = active?.client;
-    void active?.recovery.syncEditors(dirtyPaths()).catch(error);
     if (!client?.info?.editor_documents || client.peer.closed) return Promise.resolve();
     const paths = dirtyPaths();
     editorSync = client.peer.request('runtime.editor_documents', {revision: ++editorRevision, paths});
@@ -45,6 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (!folder) throw new Error(t('No workspace selected.'));
       const target = vscode.env.remoteName ? `${vscode.env.remoteName}: ${folder.uri.authority || folder.name}` : t('Local');
       const session = new WorkspaceSession(folder.uri.fsPath, target); active = session;
+      configurationDocuments = new ConfigurationDocuments(session.configuration, folder);
       session.on('log', text => logs.append(text));
       session.on('client', client => reviews.bind(client));
       session.on('change', () => {
@@ -74,8 +76,8 @@ export function activate(context: vscode.ExtensionContext) {
     installing = (async () => {
       const session = await getSession();
       if (session.phase === 'ready' || session.phase === 'starting' || session.phase === 'stopping') throw new Error(t('Save and stop the existing core before installing another version.'));
-      if (session.recovery.state?.busy) throw new Error(t('Wait for configuration recovery to finish.'));
-      await session.recovery.close();
+      if (session.configuration.state?.busy) throw new Error(t('Wait for configuration check to finish.'));
+      await session.configuration.close();
       session.phase = 'installing'; session.error = undefined; session.changed();
       try {
         await vscode.window.withProgress({location: vscode.ProgressLocation.Notification, title: t('Install Reuleaux core on {0}', session.environment), cancellable: true}, async (_progress, token) => {
@@ -93,21 +95,29 @@ export function activate(context: vscode.ExtensionContext) {
   const dispatch = async (command: string, data: Record<string, any> = {}): Promise<unknown> => {
     if (command.startsWith('configuration.')) {
       const session = await getSession();
-      if (!['failed', 'idle'].includes(session.phase)) throw new Error(t('Stop the core before opening configuration recovery.'));
+      if (['starting', 'stopping', 'installing'].includes(session.phase)) throw new Error(t('Wait for the core operation to finish.'));
       switch (command) {
-        case 'configuration.open': await session.recovery.open(await runtimeOptions(session)); return session.recovery.syncEditors(dirtyPaths());
-        case 'configuration.check': return session.recovery.check();
-        case 'configuration.select': return session.recovery.select(data.id);
-        case 'configuration.test': return session.recovery.testModels(data.id);
-        case 'configuration.apply': return session.recovery.apply(data.id, data.offline === true, dirtyPaths());
-        case 'configuration.close': if (session.recovery.state?.busy) throw new Error(t('Wait for configuration recovery to finish.')); return session.recovery.close();
-        case 'configuration.file': {
-          const path = session.recovery.source(data.scope);
-          const uri = folder!.uri.with({path: vscode.Uri.file(path).path});
-          const edit = new vscode.WorkspaceEdit(); edit.createFile(uri, {ignoreIfExists: true});
-          if (!await vscode.workspace.applyEdit(edit)) throw new Error(t('Could not open the configuration file.'));
-          return vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), {preview: false});
+        case 'configuration.open': await session.configuration.open(await runtimeOptions(session)); configurationDocuments!.sync(); return;
+        case 'configuration.check': return configurationDocuments!.check();
+        case 'configuration.test': {
+          if (typeof data.profile !== 'string') throw new Error(t('Choose a model profile to test.'));
+          return configurationDocuments!.check(data.profile);
         }
+        case 'configuration.save': return configurationDocuments!.save();
+        case 'configuration.restart': {
+          if (session.client?.state.running) throw new Error(t('Wait for the current turn to finish before restarting.'));
+          configurationDocuments!.sync();
+          if (session.configuration.state?.dirty) throw new Error(t('Save configuration files before restarting.'));
+          const result = await configurationDocuments!.check();
+          if (!result?.valid || !result.checks.every(check => check.status === 'passed')) throw new Error(t('Fix configuration errors before restarting. The current core is still running.'));
+          configurationDocuments!.sync();
+          if (session.configuration.state?.dirty) throw new Error(t('Save configuration files before restarting.'));
+          if (session.client?.state.running) throw new Error(t('Wait for the current turn to finish before restarting.'));
+          if (session.phase === 'ready') await session.shutdown();
+          return start();
+        }
+        case 'configuration.close': if (session.configuration.state?.busy) throw new Error(t('Wait for configuration check to finish.')); return session.configuration.close();
+        case 'configuration.file': return configurationDocuments!.open(data.scope);
       }
       throw new Error(t('Unknown view action.'));
     }
@@ -119,8 +129,8 @@ export function activate(context: vscode.ExtensionContext) {
       case 'install': return install();
       case 'selectCore': {
         if (active && ['ready', 'starting', 'stopping'].includes(active.phase)) throw new Error(t('Save and stop the existing core before installing another version.'));
-        if (active?.recovery.state?.busy) throw new Error(t('Wait for configuration recovery to finish.'));
-        await active?.recovery.close();
+        if (active?.configuration.state?.busy) throw new Error(t('Wait for configuration check to finish.'));
+        await active?.configuration.close();
         const selected = await vscode.window.showOpenDialog({title: t('Select rcoder on the workspace host'), canSelectMany: false, canSelectFiles: true, canSelectFolders: false});
         if (!selected?.[0]) return;
         await getSession();
@@ -174,9 +184,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider('reuleaux.chat', views),
     vscode.workspace.registerTextDocumentContentProvider('reuleaux-review', reviews),
     vscode.languages.registerCodeActionsProvider([{scheme: 'file'}, {scheme: 'vscode-remote'}], diagnosticActions, {providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]}),
-    vscode.workspace.onDidChangeTextDocument(() => {void syncEditors();}),
-    vscode.workspace.onDidSaveTextDocument(() => {void syncEditors();}),
-    vscode.workspace.onDidCloseTextDocument(() => {void syncEditors();}),
+    vscode.workspace.onDidChangeTextDocument(event => {void syncEditors(); if (configurationDocuments?.owns(event.document)) configurationDocuments.sync(true);}),
+    vscode.workspace.onDidSaveTextDocument(document => {void syncEditors(); if (configurationDocuments?.owns(document)) configurationDocuments.sync(true);}),
+    vscode.workspace.onDidCloseTextDocument(document => {void syncEditors(); if (configurationDocuments?.owns(document)) configurationDocuments.sync(true);}),
     vscode.workspace.onDidChangeWorkspaceFolders(event => {if (folder && event.removed.some(item => item.uri.toString() === folder!.uri.toString())) {active?.dispose(); active = undefined; folder = undefined; views.changed();}}),
     {dispose: () => {active?.dispose(); active = undefined;}},
   );
@@ -186,7 +196,7 @@ export function activate(context: vscode.ExtensionContext) {
 export async function deactivate(): Promise<void> {
   installAbort?.abort();
   await installing?.catch(() => {});
-  await active?.recovery.close();
+  await active?.configuration.close();
   if (active?.phase === 'ready') await active.shutdown();
   active?.dispose(); active = undefined;
 }

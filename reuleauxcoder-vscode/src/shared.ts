@@ -1,11 +1,9 @@
 import type {Action, Panel, Goal, GitWorkspace} from '@reuleauxcoder/client';
-import type {ConfigChange, ConfigDiagnostic, ConfigValidation, ConfigScope} from '@reuleauxcoder/client';
-export interface RecoverySnapshot {
-  busy: boolean; valid?: boolean; error?: string; message?: string;
-  sources: {scope: ConfigScope; path: string; exists: boolean}[];
-  diagnostics: ConfigDiagnostic[];
-  history: {id: string; date: string; path: string; scope: ConfigScope}[];
-  candidate?: ConfigChange; validation?: ConfigValidation;
+import type {ConfigDiagnostic, ConfigValidation, ConfigScope, ConfigModelTarget} from '@reuleauxcoder/client';
+export interface ConfigurationSnapshot {
+  busy: boolean; valid?: boolean; error?: string; dirty: boolean;
+  sources: {scope: ConfigScope; path: string; exists: boolean; dirty?: boolean}[];
+  diagnostics: ConfigDiagnostic[]; validation?: ConfigValidation; modelTargets: ConfigModelTarget[];
 }
 export interface WorkOverview {
   goal?: Goal | null; contextTokens: number; contextLimit: number; approvalPolicy: string; mcpTools: number; queued: number;
@@ -33,6 +31,6 @@ export interface HostSnapshot {
   error?: {kind: string; message: string}; notice?: string;
   catalog?: Action[]; commandSurface?: CommandSurface; interactions?: InlineInteraction[]; mode?: string;
   overview?: WorkOverview;
-  recovery?: RecoverySnapshot;
+  configuration?: ConfigurationSnapshot;
 }
 export interface WebRequest {id: string; action: string; data?: Record<string, any>}

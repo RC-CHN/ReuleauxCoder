@@ -2,6 +2,7 @@ import type {Action, Panel} from '@reuleauxcoder/client';
 import type {WorkOverview} from '../src/shared.js';
 
 export const catalog: Action[] = [
+  {action_id: 'system.config', feature_id: 'system', description: 'Show effective configuration values, sources and diagnostics', preview: true, parameters: [], triggers: [{kind: 'slash', value: '/config'}]},
   {action_id: 'goal.show', feature_id: 'goal', description: 'View goal and controls', preview: true, parameters: [], triggers: [{kind: 'slash', value: '/goal'}]},
   {action_id: 'goal.create', feature_id: 'goal', description: 'Create a persistent goal', preview: false, parameters: [{name: 'objective', kind: 'text', required: true, nullable: false, default: null}], triggers: [{kind: 'slash', value: '/goal create'}]},
   {action_id: 'model.show', feature_id: 'model', description: 'Model Profiles', preview: true, parameters: [], triggers: [{kind: 'slash', value: '/model'}]},

@@ -15,7 +15,6 @@ export function translate(language: string, message: MessageKey, ...args: (strin
 }
 export function t(message: MessageKey, ...args: (string | number)[]): string {return translate(locale, message, ...args);}
 const builtinTools = new Set<string>(['read_file', 'write_file', 'edit_file', 'list_file', 'glob', 'grep', 'shell', 'shell_session', 'lsp', 'lsp_status', 'lsp_diagnostics', 'lsp_restart', 'view_image', 'web_fetch', 'web_search', 'spawn_agent', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent', 'write_note', 'edit_note', 'delete_note', 'history_search', 'history_read', 'artifact_read', 'get_goal', 'create_goal', 'update_goal', 'update_plan', 'report_progress', 'report_to_parent', 'request_guidance']);
-['config_read', 'config_prepare', 'config_validate', 'config_apply'].forEach(name => builtinTools.add(name));
 export function toolLabel(name: string): string {return builtinTools.has(name) ? errorText(name) : name;}
 /** Preserve backend/model diagnostics verbatim; translate only known extension messages. */
 export function errorText(error: unknown): string {

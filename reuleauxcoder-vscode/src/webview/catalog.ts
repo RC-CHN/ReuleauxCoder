@@ -21,6 +21,7 @@ export function featureInfo(feature: string) {
   return entry ? {label: t(entry[0]), description: t(entry[1]), icon: entry[2], group: t(entry[3])} : {label: feature, description: '', icon: 'commands' as IconName, group: t('More')};
 }
 export function actionLabel(action: Action): string {
+  if (action.action_id === 'system.config') return t('Configuration files');
   const trigger = action.triggers.find(trigger => trigger.kind === 'slash')?.value ?? action.action_id;
   const description = action.description.replace(/^(?:\[[^\]]+\]\s*)+/, '');
   return errorText(description || trigger);

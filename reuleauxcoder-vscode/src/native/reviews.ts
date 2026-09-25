@@ -1,26 +1,12 @@
 import {t, coreText} from '../i18n.js';
 import * as vscode from 'vscode';
-import {basename, dirname, join, normalize, resolve} from 'node:path';
-import {realpathSync} from 'node:fs';
+import {basename, resolve} from 'node:path';
+import {canonicalPathKey, pathKey} from './paths.js';
 import {record, type PendingInteraction, type RuntimeClient} from '@reuleauxcoder/client';
 import type {ReviewSummary} from '../shared.js';
 import {reviewSummary} from '../core/review-summary.js';
 import {approvalText} from '../core-messages.js';
 
-function pathKey(path: string): string {const value = normalize(path); return process.platform === 'win32' ? value.toLowerCase() : value;}
-/** Editor URIs and Python-resolved proposals can use different Windows 8.3 names. */
-function canonicalPathKey(path: string): string {
-  let ancestor = resolve(path); const missing: string[] = [];
-  for (;;) {
-    try {return pathKey(join(realpathSync.native(ancestor), ...missing));}
-    catch (error) {
-      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-      const parent = dirname(ancestor);
-      if (parent === ancestor) return pathKey(resolve(path));
-      missing.unshift(basename(ancestor)); ancestor = parent;
-    }
-  }
-}
 export class NativeReviews implements vscode.TextDocumentContentProvider, vscode.Disposable {
   private client?: RuntimeClient;
   private detach?: () => void;

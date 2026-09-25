@@ -124,7 +124,7 @@ export class ComposerWorkbench {
     const draft = this.slash ? this.composer.value : undefined;
     if (draft !== undefined) {this.composer.value = ''; this.save();}
     this.menu = false; this.slash = false; this.composer.setAttribute('aria-expanded', 'false'); this.composer.removeAttribute('aria-activedescendant'); this.signature = ''; this.root.hidden = true;
-    try {await this.request('command.open', {actionId: action.action_id});}
+    try {await (action.action_id === 'system.config' ? this.request('configuration.open') : this.request('command.open', {actionId: action.action_id}));}
     catch (error) {if (draft !== undefined && !this.composer.value) {this.composer.value = draft; this.save();} this.notice(error);}
     finally {this.busy = false;}
   }

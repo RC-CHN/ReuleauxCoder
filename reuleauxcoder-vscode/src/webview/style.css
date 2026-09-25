@@ -147,46 +147,43 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {--accent: var(--vsco
 #goal-strip {display: grid; grid-template-columns: 1fr auto; margin-bottom: 8px; padding: 7px 10px; background: var(--accent-wash); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 8px; align-items: center; column-gap: 8px}.goal-objective {grid-column: 1; padding: 0; min-height: 22px; justify-content: flex-start; min-width: 0}.goal-objective span {text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-size: 11px}.goal-objective .icon {color: var(--accent); width: 14px; height: 14px}.goal-meta {grid-row: 2; font-size: 9px; color: var(--muted); padding-left: 21px}#goal-strip > button:last-child:not(.goal-objective) {grid-column: 2; grid-row: 1 / 3; font-size: 10px}
 @media (forced-colors: active) {button, .attention-card, .composer, .workbench {border: 1px solid ButtonText}.switch {outline: 1px solid ButtonText}.menu-row.selected {outline: 1px solid Highlight}}
 
-/* Configuration recovery stays beside the failed connection; documents open in the editor. */
-#setup.recovering {flex: 1; min-height: 0; max-height: none; padding-top: 12px}
-body.recovering #transcript, body.recovering #drop-zone, body.recovering #overview, body.recovering #setup-install-hint {display: none}
-#configuration-recovery {margin-top: 16px; border: 1px solid var(--line); border-top: 2px solid var(--accent); border-radius: 9px; padding: 12px; background: var(--surface)}
-.recovery-heading {display: flex; align-items: center; gap: 8px; color: var(--accent)}
-.recovery-heading h3 {margin: 0; font-size: 14px; flex: 1; color: var(--ink)}
-.recovery-heading button {font-size: 11px; color: var(--muted)}
-#configuration-recovery h4 {margin: 0 0 5px; font-size: 13px}
-#configuration-recovery p {margin: 7px 0}
-#configuration-recovery code, #configuration-recovery pre {display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; font-family: var(--vscode-editor-font-family, monospace)}
-#configuration-recovery pre {max-height: 180px; overflow: auto; margin: 4px 0; padding: 7px; border-radius: 4px}
-.recovery-hint, .recovery-label, .recovery-source code, .recovery-history code, .recovery-history time {font-size: 11px; color: var(--muted)}
-.recovery-source, .recovery-history-row {padding: 8px 0; border-bottom: 1px solid var(--line)}
-.recovery-source {display: flex; align-items: flex-start; flex-wrap: wrap; gap: 4px}
-.recovery-source > div {flex: 1; min-width: 140px}
-.recovery-source strong {font-size: 12px; font-weight: 550}
-.recovery-source button, .recovery-history button {font-size: 11px; border: 1px solid var(--line)}
-.recovery-diagnostic, .recovery-preview {border-left: 2px solid var(--accent); margin: 12px 0; padding: 0 0 0 9px}
-#configuration-recovery summary {cursor: pointer; padding: 5px 0; overflow-wrap: anywhere}
-.recovery-checks {list-style: none; padding: 0; font-size: 12px}
-.recovery-checks li {padding: 3px 0}
-#setup .recovery-error, .check-failed {color: var(--vscode-errorForeground, #ee9694)}
-#setup .recovery-success, .check-passed {color: var(--vscode-testing-iconPassed, #98bfaa)}
-#setup .recovery-progress, .check-unknown {color: var(--accent)}
-.recovery-before {background: var(--vscode-diffEditor-removedTextBackground, #e26e7420)}
-.recovery-after {background: var(--vscode-diffEditor-insertedTextBackground, #8abb9820)}
-.recovery-offline {display: flex; align-items: flex-start; gap: 7px; margin: 12px 0; font-size: 12px}
-.recovery-offline input {width: auto; margin: 4px 0 0; accent-color: var(--accent)}
-.recovery-history {border-top: 1px solid var(--line); margin-top: 14px; padding-top: 5px}
+/* Configuration guidance stays in the conversation; documents open in the editor. */
+#configuration-editor {flex: 1; min-height: 0; overflow: auto}
+body.configuring #transcript, body.configuring #drop-zone, body.configuring #overview, body.configuring #setup-install-hint {display: none}
+#configuration-editor {margin: 10px; border: 1px solid var(--line); border-top: 2px solid var(--accent); border-radius: 9px; padding: 12px; background: var(--surface)}
+.configuration-heading {display: flex; align-items: center; gap: 8px; color: var(--accent)}
+.configuration-heading h3 {margin: 0; font-size: 14px; flex: 1; color: var(--ink)}
+.configuration-heading button {font-size: 11px; color: var(--muted)}
+#configuration-editor h4 {margin: 0 0 5px; font-size: 13px}
+#configuration-editor p {margin: 7px 0}
+#configuration-editor code, #configuration-editor pre {display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; font-family: var(--vscode-editor-font-family, monospace)}
+#configuration-editor pre {max-height: 180px; overflow: auto; margin: 4px 0; padding: 7px; border-radius: 4px}
+.configuration-hint, .configuration-source code {font-size: 11px; color: var(--muted)}
+.configuration-source {padding: 8px 0; border-bottom: 1px solid var(--line)}
+.configuration-source {display: flex; align-items: flex-start; flex-wrap: wrap; gap: 4px}
+.configuration-source > div {flex: 1; min-width: 140px}
+.configuration-source strong {font-size: 12px; font-weight: 550}
+.configuration-source button {font-size: 11px; border: 1px solid var(--line)}
+.configuration-diagnostic {border-left: 2px solid var(--accent); margin: 12px 0; padding: 0 0 0 9px}
+#configuration-editor summary {cursor: pointer; padding: 5px 0; overflow-wrap: anywhere}
+.configuration-checks {list-style: none; padding: 0; font-size: 12px}
+.configuration-checks li {padding: 3px 0}
+.configuration-error, .check-failed {color: var(--vscode-errorForeground, #ee9694)}
+.configuration-success, .check-passed {color: var(--vscode-testing-iconPassed, #98bfaa)}
+.configuration-progress, .check-unknown {color: var(--accent)}
 
 /* Motion communicates navigation and feedback; approval targets never translate. */
 @media (prefers-reduced-motion: no-preference) {
   button, input, textarea, select, summary {transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out, box-shadow 120ms ease-out}
   .workbench {animation: surface-enter 160ms cubic-bezier(.2, .7, .2, 1)}
-  #overview, #configuration-recovery, .attention-card, .recovery-preview, .recovery-error, .recovery-success, .recovery-diagnostic, .form-error, .review-warning, #goal-strip {animation: feedback-enter 160ms ease-out}
-  #configuration-recovery details[open] > :not(summary), .more-actions[open] > :not(summary), .review-alternatives[open] > :not(summary) {animation: feedback-enter 140ms ease-out}
+  #overview, #configuration-editor, .attention-card, .configuration-error, .configuration-success, .configuration-diagnostic, .form-error, .review-warning, #goal-strip {animation: feedback-enter 160ms ease-out}
+  #configuration-editor details[open] > :not(summary), .more-actions[open] > :not(summary), .review-alternatives[open] > :not(summary) {animation: feedback-enter 140ms ease-out}
   .switch, .switch:after {transition: background-color 140ms ease-out, transform 140ms ease-out}
-  .recovery-progress::before {animation: working-pulse 1200ms ease-in-out infinite}
+  .configuration-progress::before {animation: working-pulse 1200ms ease-in-out infinite}
   @keyframes surface-enter {from {opacity: .7; transform: translateY(4px)} to {opacity: 1; transform: translateY(0)}}
   @keyframes feedback-enter {from {opacity: .6} to {opacity: 1}}
   @keyframes working-pulse {0%, 100% {opacity: .4} 50% {opacity: 1}}
 }
-.recovery-progress::before {content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 7px; vertical-align: middle}
+.configuration-progress::before {content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 7px; vertical-align: middle}
+
+.configuration-status {min-height: 36px}.configuration-actions {display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0}.configuration-dirty {color: var(--accent)}.model-diagnostics select {max-width: 100%; margin-right: 6px}
