@@ -493,6 +493,7 @@ class ConfigurationService:
                             "coverage": "text_request_with_configured_parameters",
                             "not_checked": ["tools", "images", "mcp", "lsp"],
                         })
+        results = [{**item, "checked_at": time.time()} for item in results]
         if record:
             with self.store.locked():
                 self._check_revision(record)
@@ -504,7 +505,7 @@ class ConfigurationService:
                 previous = {(item["check"], item.get("profile")): item for item in latest["checks"]}
                 previous.update(
                     {
-                        (item["check"], item.get("profile")): {**item, "checked_at": time.time()}
+                        (item["check"], item.get("profile")): item
                         for item in results
                     }
                 )

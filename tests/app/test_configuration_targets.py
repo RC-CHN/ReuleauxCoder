@@ -72,6 +72,9 @@ def test_each_changed_profile_needs_its_own_fresh_success(service):
         service.apply(change_id=candidate["id"])
     result = service.validate(change_id=candidate["id"], checks=["model"], profiles=["review"])
     assert result["checks"][-1]["profile"] == "review"
+    assert result["checks"][-1]["checked_at"] > 0
+    recorded = service.store.read(candidate["id"])["checks"]
+    assert result["checks"][-1] in recorded
     assert "images" in result["checks"][-1]["not_checked"]
     assert service.apply(change_id=candidate["id"])["model_verified"] is True
     assert ("model", "sub") in calls and ("model", "review") in calls
