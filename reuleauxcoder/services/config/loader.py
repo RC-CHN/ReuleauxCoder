@@ -1,8 +1,8 @@
 """Configuration loader - loads config.yaml with global + workspace merge."""
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal, Optional, cast
-import yaml
 
 from reuleauxcoder.compat import migrate_bash_to_shell, migrate_legacy_config
 from reuleauxcoder.domain.config.models import (
@@ -100,15 +100,23 @@ class ConfigLoader:
         return params
 
     def _load_yaml(self, path: Path) -> dict:
-        """Load YAML file, return empty dict if not exists or invalid."""
-        if not path.exists():
-            return {}
+        """Distinguish missing files from invalid configuration; never erase errors."""
+        from reuleauxcoder.domain.config.management import ConfigOperationError
+        from reuleauxcoder.services.config.validation import MAX_CONFIG_BYTES, parse_document
+
         try:
-            with open(path) as f:
-                data = yaml.safe_load(f)
-                return data if data else {}
-        except (yaml.YAMLError, IOError):
+            with path.open("rb") as stream:
+                content = stream.read(MAX_CONFIG_BYTES + 1)
+        except FileNotFoundError:
             return {}
+        except OSError as error:
+            raise ConfigOperationError("unreadable_config", f"Cannot read configuration: {path}") from error
+        data, issues = parse_document(content, str(path))
+        if issues:
+            issue = issues[0]
+            location = f"{path}:{issue.line}" if issue.line else str(path)
+            raise ConfigOperationError(issue.code, f"{location}: {issue.message} Run rcoder config check to diagnose or repair it.")
+        return data
 
     def _merge_dicts(self, base: dict, override: dict) -> dict:
         """Merge two dicts, override takes priority.
@@ -116,7 +124,7 @@ class ConfigLoader:
         For nested dicts, merge recursively.
         For profile maps (MCP/model/mode), merge by key (override wins for same key).
         """
-        result = dict(base)
+        result = deepcopy(base)
 
         for key, value in override.items():
             if key in {"mcp", "models", "modes"} and isinstance(value, dict):
@@ -171,6 +179,19 @@ class ConfigLoader:
                 result[key] = value
 
         return result
+
+    def parse_layers(self, layers: list[tuple[str, dict]]) -> Config:
+        """Resolve explicit input layers without reading, generating or writing files."""
+        data = {"modes": {"active": DEFAULT_ACTIVE_MODE, "profiles": deepcopy(BUILTIN_MODES)}}
+        self._effective_sources = {}
+        for source, values in layers:
+            self._record_sources(values, source)
+            data = self._merge_dicts(data, values)
+        migrated, diagnostics = self._migrate_config(data)
+        migrated, _ = migrate_bash_to_shell(migrated)
+        config = self._parse_config(migrated)
+        config.diagnostics[:0] = diagnostics
+        return config
 
     def load(self) -> Config:
         """Load configuration with global + workspace merge."""

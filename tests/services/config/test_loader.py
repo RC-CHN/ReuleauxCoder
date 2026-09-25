@@ -1,4 +1,7 @@
 from pathlib import Path
+import pytest
+
+from reuleauxcoder.domain.config.management import ConfigOperationError
 
 from reuleauxcoder.services.config.loader import ConfigLoader
 
@@ -8,12 +11,13 @@ def test_load_yaml_returns_empty_dict_for_missing_file(tmp_path: Path) -> None:
     assert loader._load_yaml(tmp_path / "missing.yaml") == {}
 
 
-def test_load_yaml_returns_empty_dict_for_invalid_yaml(tmp_path: Path) -> None:
+def test_load_yaml_reports_invalid_yaml_without_treating_it_as_missing(tmp_path: Path) -> None:
     path = tmp_path / "broken.yaml"
     path.write_text("foo: [unterminated", encoding="utf-8")
 
     loader = ConfigLoader()
-    assert loader._load_yaml(path) == {}
+    with pytest.raises(ConfigOperationError, match="invalid|Invalid"):
+        loader._load_yaml(path)
 
 
 def test_merge_dicts_recursively_merges_nested_dicts() -> None:

@@ -3,6 +3,8 @@
 from pathlib import Path
 import yaml
 
+from reuleauxcoder.infrastructure.fs.atomic import atomic_write
+
 
 def load_yaml_config(path: Path) -> dict:
     """Load a YAML configuration file."""
@@ -17,10 +19,10 @@ def load_yaml_config(path: Path) -> dict:
 
 def save_yaml_config(path: Path, data: dict) -> None:
     """Save data to a YAML configuration file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+    # Preserve symlink semantics for existing command stores; management APIs
+    # explicitly reject symlink replacement and require an explicit target.
+    target = path.resolve() if path.is_symlink() else path
+    atomic_write(target, yaml.safe_dump(data, default_flow_style=False, allow_unicode=True).encode("utf-8"))
 
 
 def merge_yaml_configs(base: dict, override: dict) -> dict:

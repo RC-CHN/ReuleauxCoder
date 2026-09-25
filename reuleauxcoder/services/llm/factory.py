@@ -54,6 +54,38 @@ def build_llm_from_settings(settings: Any, *, debug_trace: bool = False) -> LLM:
     return LLM(**llm_runtime_kwargs(settings, debug_trace=debug_trace))
 
 
+def probe_model_connection(client: LLM) -> None:
+    """One minimal transport request, without retry, tools, hooks or diagnostic files.
+
+    The caller owns the client and a process-level timeout. A successful probe
+    verifies the configured model's basic protocol, not an entire agent task.
+    """
+    stream = client._provider_adapter.open_stream(
+        {
+            "model": client.model,
+            "messages": [{"role": "user", "content": "Reply OK."}],
+            "stream": True,
+            "temperature": client.temperature,
+            "max_tokens": 16,
+        }
+    )
+    completed = False
+    try:
+        for chunk in stream:
+            for choice in getattr(chunk, "choices", ()):
+                delta = getattr(choice, "delta", None)
+                if getattr(delta, "content", None) or getattr(
+                    delta, "reasoning_content", None
+                ):
+                    completed = True
+        if not completed:
+            raise ValueError("Provider returned no model output")
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+
+
 def reconfigure_llm_from_settings(
     llm: LLM, settings: Any, *, debug_trace: bool | None = None
 ) -> None:
