@@ -74,10 +74,5 @@ def test_schema_reports_limits_and_model_authority():
     assert schema["models"]["properties"]["active"]["deprecated"]
     assert not schema["models"]["properties"]["active_main"].get("deprecated")
     assert schema["context"]["properties"]["safety_margin_tokens"]["minimum"] == 0
-    assert schema["approval"]["x-rcoder"]["model_write"] == "user_required"
-    model = schema["models"]["properties"]["profiles"]["additionalProperties"]
-    assert model["x-rcoder"]["model_write"] == "conditional"
-    assert model["properties"]["api_key"]["x-rcoder"]["model_write"] == "user_required"
-    server = schema["mcp"]["properties"]["servers"]["additionalProperties"]
-    assert server["properties"]["command"]["x-rcoder"]["reason"] == "process_launch"
+    assert "x-rcoder" not in schema["approval"]
     assert schema["skills"]["properties"]["disabled"]["default"] == []

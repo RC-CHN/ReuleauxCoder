@@ -248,7 +248,7 @@ class RuntimeServer:
                     "presentation": asdict(self.config.ui),
                     "host_mode": self.host_mode,
                     "model_configured": bool(self.config.api_key),
-                    "configuration_api": 1 if self.configuration_api else None,
+                    "configuration_api": 2 if self.configuration_api else None,
                     "runtime_environment": {
                         "system": get_platform_info().system,
                         "shell": get_platform_info().get_preferred_shell().value,

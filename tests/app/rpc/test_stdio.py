@@ -46,8 +46,8 @@ main()
         try:
             info = client.initialize(UIProfile("tui", "TUI", frozenset(UICapability)))
             assert info["version"] == 1
-            assert info["configuration_api"] == 1
-            assert client.configuration.describe()["api_version"] == 1
+            assert info["configuration_api"] == 2
+            assert client.configuration.describe()["api_version"] == 2
             inspected = client.configuration.inspect()
             assert inspected["valid"]
             assert inspected["sources"][-1]["path"] == str(config)

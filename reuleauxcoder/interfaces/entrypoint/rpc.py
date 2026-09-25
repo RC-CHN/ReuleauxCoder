@@ -36,7 +36,7 @@ def create_server(ctx, peer, profile):
     configuration = getattr(ctx, "configuration_service", None)
     if configuration is not None:
         from reuleauxcoder.app.rpc.configuration import bind_configuration
-        bind_configuration(peer, configuration, writable=not server.host_mode)
+        bind_configuration(peer, configuration, allow_checks=not server.host_mode)
         server.configuration_api = True
     ctx.ui_interactor = server.interactions
     return server

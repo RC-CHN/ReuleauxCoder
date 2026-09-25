@@ -210,43 +210,7 @@ def config_schema() -> dict:
     schema["properties"]["models"]["properties"]["active"]["deprecated"] = True
     schema["properties"]["context"]["properties"]["token_fudge_factor"]["exclusiveMinimum"] = 0
     schema["properties"]["goal"]["properties"]["default_token_budget"]["anyOf"][0]["minimum"] = 1
-    annotate_access(schema)
     return schema
-
-
-def model_write_restriction(parts) -> str | None:
-    if parts and parts[0] in {"approval", "modes", "remote_exec", "meta"}:
-        return "human_policy"
-    if sensitive_path(parts):
-        return "credential_or_process_arguments"
-    if len(parts) >= 4 and parts[:2] in (("mcp", "servers"), ("lsp", "servers")) and parts[3] in {
-        "command", "cmd", "cwd", "workspace_root", "init_opts",
-    }:
-        return "process_launch"
-    return None
-
-
-def annotate_access(schema: dict, parts=()) -> None:
-    restriction = model_write_restriction(parts)
-    schema["x-rcoder"] = {
-        "activation": "next_start",
-        "model_write": "user_required" if restriction else (
-            "conditional" if parts and parts[0] in {"app", "models"} else "allowed"
-        ),
-    }
-    if restriction:
-        schema["x-rcoder"]["reason"] = restriction
-    elif parts and parts[0] in {"app", "models"}:
-        schema["x-rcoder"]["reason"] = "Cannot change the effective auto-reviewer configuration."
-    for name, child in schema.get("properties", {}).items():
-        annotate_access(child, (*parts, name))
-    additional = schema.get("additionalProperties")
-    if isinstance(additional, dict):
-        annotate_access(additional, (*parts, "{name}"))
-    if "items" in schema:
-        annotate_access(schema["items"], (*parts, "[]"))
-    for alternative in schema.get("anyOf", ()):
-        annotate_access(alternative, parts)
 
 
 def pointer(parts) -> str:

@@ -450,24 +450,3 @@ def test_is_example_config_detects_example_flag() -> None:
     assert not ConfigLoader._is_example_config({"meta": {}})
     assert not ConfigLoader._is_example_config({"meta": {"example": False}})
     assert not ConfigLoader._is_example_config({"models": {"profiles": {}}})
-
-
-def test_generate_example_config_creates_valid_yaml(tmp_path: Path) -> None:
-    """Generated example config should be syntactically correct."""
-    from unittest.mock import patch
-
-    loader = ConfigLoader()
-    example_path = tmp_path / "config.yaml"
-
-    with patch.object(ConfigLoader, "GLOBAL_CONFIG_PATH", example_path):
-        loader._generate_example_global_config()
-
-    assert example_path.exists()
-    data = loader._load_yaml(example_path)
-    assert data["meta"]["example"] is True
-    assert "models" in data
-    assert "profiles" in data["models"]
-    assert "default" in data["models"]["profiles"]
-    assert data["models"]["profiles"]["default"]["api_key"] == "your-api-key-here"
-    assert "modes" in data
-    assert data["modes"]["active"] == "coder"

@@ -137,32 +137,18 @@ class AppRunner:
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
         from reuleauxcoder.app.configuration import ConfigurationService
         from reuleauxcoder.app.runtime.effective_config import build_effective_config_view
-        from reuleauxcoder.infrastructure.persistence.config_transactions import (
-            ConfigPaths, ConfigTransactionStore,
-        )
+        from reuleauxcoder.infrastructure.persistence.config_files import ConfigFiles, ConfigPaths
         from reuleauxcoder.services.config.loader import ConfigLoader
         from dataclasses import asdict
 
         configuration_service = ConfigurationService(
-            ConfigTransactionStore(
-                ConfigPaths(
-                    ConfigLoader.GLOBAL_CONFIG_PATH,
-                    ConfigLoader.WORKSPACE_CONFIG_PATH,
-                    self.options.config_path,
-                ),
-                Path.home() / ".rcoder/config-management",
-            ),
+            ConfigFiles(ConfigPaths(
+                ConfigLoader.GLOBAL_CONFIG_PATH,
+                ConfigLoader.WORKSPACE_CONFIG_PATH,
+                self.options.config_path,
+            )),
             runtime=lambda: asdict(build_effective_config_view(config, agent)),
-            mutation_guard=lambda path: (
-                guard(path)
-                if callable(guard := getattr(agent, "document_mutation_guard", None))
-                else None
-            ),
         )
-        for tool in agent.tools:
-            bind_configuration = getattr(tool, "bind_configuration", None)
-            if callable(bind_configuration):
-                bind_configuration(configuration_service)
         record_runtime_issue = getattr(agent, "record_runtime_issue", None)
         if callable(record_runtime_issue):
             ui_bus.bind_subscriber_failure_sink(

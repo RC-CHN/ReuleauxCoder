@@ -81,8 +81,6 @@ DEFAULTS = {
     "max_context_tokens": 128_000,
     "approval_default_mode": "require_approval",
     "approval_rules": [
-        {"tool_name": "config_validate", "action": "require_approval"},
-        {"tool_name": "config_apply", "action": "require_approval"},
         {"tool_name": "read_file", "action": "allow"},
         {"tool_name": "view_image", "action": "allow"},
         {"tool_name": "write_note", "action": "allow"},

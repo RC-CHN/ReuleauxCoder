@@ -1,17 +1,6 @@
-"""Configuration-management contracts shared by tools and human interfaces."""
+"""Configuration diagnostics shared by loading, CLI and editor interfaces."""
 
 from dataclasses import asdict, dataclass
-from typing import Literal, Protocol
-
-ConfigActor = Literal["user", "model"]
-ConfigScope = Literal["user", "workspace", "explicit"]
-
-
-class ConfigurationPort(Protocol):
-    def execute(
-        self, operation: str, parameters: dict, *, actor: ConfigActor
-    ) -> dict: ...
-    def review(self, change_id: str, *, actor: ConfigActor) -> dict: ...
 
 
 @dataclass(frozen=True, slots=True)

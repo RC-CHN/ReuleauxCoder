@@ -1,5 +1,4 @@
-"""Real RPC and recovery CLI entry points share transaction and error semantics."""
-
+"""Read-only RPC/CLI works even when Agent startup is impossible."""
 import json
 import os
 import subprocess
@@ -18,64 +17,37 @@ def isolated_environment(home):
     return {**os.environ, "HOME": str(home), "USERPROFILE": str(home)}
 
 
-def test_normal_runtime_configuration_client_uses_shared_service(runtime, tmp_path):
-    root, home = tmp_path / "project", tmp_path / "home"
-    path = root / ".rcoder/config.yaml"
-    path.parent.mkdir(parents=True)
-    path.write_text("app:\n  api_key: test-secret\n", encoding="utf-8")
-    service = ConfigurationService.for_workspace(root, home=home)
+def test_runtime_and_relay_expose_only_readonly_configuration(runtime, tmp_path):
+    service = ConfigurationService.for_workspace(tmp_path, home=tmp_path / "home")
     bind_configuration(runtime.server.peer, service)
     client = runtime.client.configuration
-    assert client.describe()["api_version"] == 1
-    before = client.inspect()
-    candidate = client.prepare(
-        base_revision=before["revision"],
-        changes=[{"path": "/ui/verbosity", "value": "debug"}],
-    )
-    assert client.validate(change_id=candidate["id"])["valid"]
-    applied = client.apply(candidate["id"])
-    assert applied["status"] == "applied" and applied["activation"] == "next_start"
-    assert "test-secret" not in json.dumps(client.history())
-    assert runtime.agent.llm.model == "test-model"
-    revert = client.revert(candidate["id"])
-    client.apply(revert["id"])
-    assert client.inspect()["next_start"]["ui"]["verbosity"] == "compact"
+    assert client.describe()["operations"] == ["describe", "inspect", "check"]
+    assert client.describe()["api_version"] == 2
+    assert not client.inspect()["valid"]
+    content = "app:\n  api_key: private-key\n"
+    result = client.check(documents=[{"scope": "workspace", "content": content}], checks=["static"])
+    assert result["valid"] and result["buffer_check"]
+    assert "private-key" not in json.dumps(result)
+    for operation in ("prepare", "apply", "revert", "recover", "history", "validate", "editor_documents"):
+        with pytest.raises(RpcError) as caught:
+            runtime.client.peer.request("config." + operation, {})
+        assert caught.value.code == -32601
+    bind_configuration(runtime.server.peer, service, allow_checks=False)
+    assert client.inspect()["valid"] is False
     with pytest.raises(RpcError) as caught:
-        client.prepare(actor="model", changes=[])
-    assert caught.value.data["code"] == "invalid_operation"
-
-
-def test_relay_configuration_cannot_change_host_files(runtime, tmp_path):
-    service = ConfigurationService.for_workspace(tmp_path, home=tmp_path)
-    bind_configuration(runtime.server.peer, service, writable=False)
-    assert runtime.client.configuration.describe()["api_version"] == 1
-    with pytest.raises(RpcError) as caught:
-        runtime.client.configuration.prepare(
-            changes=[{"path": "/ui/verbosity", "value": "debug"}]
-        )
+        client.check()
     assert caught.value.data["code"] == "local_only"
 
 
-def test_management_stdio_can_repair_broken_configuration_without_agent(tmp_path):
+def test_stdio_checks_buffers_without_writing_or_starting_agent(tmp_path):
     root, home = tmp_path / "项目 with spaces", tmp_path / "home"
     path = root / ".rcoder/config.yaml"
     path.parent.mkdir(parents=True)
     path.write_text("app: [broken", encoding="utf-8")
     with (tmp_path / "stderr.log").open("w+") as errors:
         process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "reuleauxcoder",
-                "config",
-                "rpc",
-                "--workspace",
-                str(root),
-            ],
-            env=isolated_environment(home),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=errors,
+            [sys.executable, "-m", "reuleauxcoder", "config", "rpc", "--workspace", str(root)],
+            env=isolated_environment(home), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
         )
         peer = RpcPeer(StreamTransport(process.stdout, process.stdin))
         client = ConfigurationClient(peer)
@@ -83,18 +55,14 @@ def test_management_stdio_can_repair_broken_configuration_without_agent(tmp_path
         try:
             assert client.initialize()["mode"] == "configuration"
             initial = client.inspect()
-            assert not initial["valid"]
-            assert initial["diagnostics"][0]["code"] == "invalid_yaml"
-            candidate = client.prepare(
-                document={"app": {"api_key": "repair-secret"}},
-                base_revision=initial["revision"],
-            )
-            applied = client.apply(candidate["id"], allow_unverified_model=True)
-            assert applied["status"] == "applied"
+            assert not initial["valid"] and initial["diagnostics"][0]["code"] == "invalid_yaml"
+            content = "# preserved\napp:\n  api_key: repair-secret\n"
+            result = client.check(documents=[{"scope": "workspace", "content": content}])
+            assert result["valid"] and all(check["status"] == "passed" for check in result["checks"])
+            assert path.read_text() == "app: [broken"
+            path.write_text(content, encoding="utf-8")
             assert client.inspect()["valid"]
-            assert "repair-secret" not in json.dumps(
-                [initial, candidate, applied, client.history()]
-            )
+            assert "repair-secret" not in json.dumps([initial, result, client.inspect()])
         finally:
             peer.close()
             try:
@@ -108,10 +76,7 @@ def test_management_stdio_can_repair_broken_configuration_without_agent(tmp_path
         assert "Traceback" not in errors.read()
 
 
-def test_recovery_cli_is_independent_of_agent_provider_and_frontend_imports(tmp_path):
-    path = tmp_path / ".rcoder/config.yaml"
-    path.parent.mkdir()
-    path.write_text("app: [broken", encoding="utf-8")
+def test_static_cli_is_independent_of_agent_provider_and_frontend_imports(tmp_path):
     script = """
 import importlib.abc, sys
 class Boundary(importlib.abc.MetaPathFinder):
@@ -122,59 +87,30 @@ sys.meta_path.insert(0, Boundary())
 from reuleauxcoder.interfaces.configuration import main
 raise SystemExit(main(['check', '--check', 'static', '--workspace', sys.argv[1]]))
 """
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)],
-        env=isolated_environment(tmp_path / "home"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=10,
-    )
+    completed = subprocess.run([sys.executable, "-c", script, str(tmp_path)],
+        env=isolated_environment(tmp_path / "home"), capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert completed.returncode == 1, completed.stderr
     assert json.loads(completed.stdout)["valid"] is False
-    assert path.read_text() == "app: [broken"
+    assert not (tmp_path / ".rcoder").exists()
 
 
-def test_cli_candidates_survive_between_commands_and_exit_codes_distinguish_errors(
-    tmp_path,
-):
-    env = isolated_environment(tmp_path / "home")
-
-    def command(operation, *args, input=None):
+def test_cli_raw_yaml_stdin_and_revision_conflict(tmp_path):
+    def command(*args, input=None):
         return subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "reuleauxcoder",
-                "config",
-                operation,
-                "--workspace",
-                str(tmp_path),
-                *args,
-            ],
-            input=input,
-            env=env,
-            text=True,
-            encoding="utf-8",
-            capture_output=True,
-            timeout=15,
+            [sys.executable, "-m", "reuleauxcoder", "config", *args, "--workspace", str(tmp_path)],
+            input=input, env=isolated_environment(tmp_path / "home"), text=True, encoding="utf-8",
+            capture_output=True, timeout=15,
         )
-
-    broken = command("check", "--check", "static")
-    assert broken.returncode == 1
-    prepared = command(
-        "prepare",
-        "--document",
-        "-",
-        input=json.dumps({"app": {"api_key": "cli-secret"}}),
-    )
-    assert prepared.returncode == 0, prepared.stderr
-    change_id = json.loads(prepared.stdout)["id"]
-    rejected = command("apply", change_id)
-    assert rejected.returncode == 2
-    assert json.loads(rejected.stdout)["error"]["code"] == "validation_required"
-    applied = command("apply", change_id, "--allow-unverified-model")
-    assert applied.returncode == 0, applied.stderr
-    checked = command("check")
+    revision = json.loads(command("inspect").stdout)["revision"]
+    checked = command("check", "--content", "-", "--scope", "workspace", input="app:\n  api_key: cli-secret\n")
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert "cli-secret" not in prepared.stdout + applied.stdout + checked.stdout
+    assert json.loads(checked.stdout)["buffer_check"]
+    assert "cli-secret" not in checked.stdout
+    assert not (tmp_path / ".rcoder").exists()
+    path = tmp_path / ".rcoder/config.yaml"
+    path.parent.mkdir()
+    path.write_text("app: [broken", encoding="utf-8")
+    assert command("check").returncode == 1
+    conflict = command("check", "--revision", revision)
+    assert conflict.returncode == 2
+    assert json.loads(conflict.stdout)["error"]["code"] == "conflict"

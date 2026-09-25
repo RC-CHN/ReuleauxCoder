@@ -1,16 +1,16 @@
 # config.yaml 配置参考
 
-本文对应配置管理加固后的源码行为（Unreleased），用于查阅配置和编写 rcoder 配置 skill。接口调用见 [Configuration management API](configuration-api.md)。字段集合应以运行中的 `config_read(operation="describe", section=...)` 为准；本文补充 schema 不能表达的加载规则、用途和已知限制。
+本文对应以文件为配置源的源码行为（Unreleased），用于查阅配置和编写 rcoder 配置 skill。接口调用见 [Configuration inspection API](configuration-api.md)。字段集合应以运行中的 `rcoder config describe --section models`（或对应 `config.describe` RPC） 为准；本文补充 schema 不能表达的加载规则、用途和已知限制。
 
 ## 范围与读取规则
 
-当前管理 schema 有 **19 个顶层分区、133 个字段模式**。统计将动态 profile/server 名称归并为 `{name}`，列表元素归并为 `[]`，任意值字典按一个字段统计；`meta` 是开放对象，不代表只有一个可能的键。schema 的 `x-rcoder` 标明生效时机和模型写入权限；提供方能力及外部程序可用性仍需要单独验证。
+当前管理 schema 有 **19 个顶层分区、133 个字段模式**。统计将动态 profile/server 名称归并为 `{name}`，列表元素归并为 `[]`，任意值字典按一个字段统计；`meta` 是开放对象，不代表只有一个可能的键。接口只读，配置由原生编辑器或普通文件工具修改；提供方能力及外部程序可用性仍需要单独验证。
 
 配置来源从低到高为：内置默认值 → 用户 `~/.rcoder/config.yaml` → 工作区 `.rcoder/config.yaml` → 显式 `--config` 文件。普通字典递归合并；同名模型、模式、MCP server 也合并字段；列表整体替换。删除工作区字段会重新露出用户层或默认值，不能理解为全局禁用。`null` 也不是通用的“删除/恢复默认”操作。
 
 配置文件路径属于核心所在主机。VS Code Remote 场景下是远端工作区和远端用户目录。相对路径由对应运行时组件解释，不统一相对 YAML 文件；目录配置优先使用主机上的绝对路径。不存在通用 `${ENV_VAR}` 插值，不能把 `${OPENAI_API_KEY}` 等占位文本当成已读取的密钥。
 
-通过 `config.*` 写入的持久化变更在**下次核心启动**时生效。现有 `/model`、`/mode` 等会话命令和会话恢复另有运行时状态，不能把“写入成功”“下次启动配置”和“当前会话生效”混为一谈。`inspect.sources` 是原始分层值，`inspect.next_start` 是转换后的 `Config`，两者字段布局不同；后者不能整份作为 YAML 文档写回。
+编辑 YAML 文件产生的持久化变更在**下次核心启动**时生效。现有 `/model`、`/mode` 等会话命令和会话恢复另有运行时状态，不能把“写入成功”“下次启动配置”和“当前会话生效”混为一谈。`inspect.sources` 是原始分层值，`inspect.next_start` 是转换后的 `Config`，两者字段布局不同；后者不能整份作为 YAML 文档写回。
 
 表中默认值指当前源码缺省值，不代表所有模型提供方都支持该值；实际模型名、价格、上下文容量和推理参数需按用户提供的信息或供应商资料确认。`?` 表示字段接受 `null`。通用参数校验只说明本地结构有效。
 
@@ -20,19 +20,19 @@
 
 | 路径 | 类型 / 默认值 | 用途与约束 |
 | --- | --- | --- |
-| `/models/active_main` | string? / 第一个 profile | 主模型 profile 名称；管理接口拒绝不存在的引用 |
+| `/models/active_main` | string? / 第一个 profile | 主模型 profile 名称；启动与检查均拒绝不存在的引用 |
 | `/models/active_sub` | string? / 主 profile | 子 agent 默认 profile，不影响主模型 |
 | `/models/active` | string? / 未设置 | 兼容旧名称；仅在没有 `active_main` 时迁移为主选择，不用于新配置 |
 | `/models/profiles/{name}/model` | string / `gpt-4o` | 提供方模型 ID，不是本地 profile 名；必须非空 |
-| `/models/profiles/{name}/api_key` | string / 空字符串 | 每个 profile 都需要非空密钥；LLM 管理接口禁止修改，读取脱敏 |
+| `/models/profiles/{name}/api_key` | string / 空字符串 | 每个 profile 都需要非空密钥；inspect 读取脱敏 |
 | `/models/profiles/{name}/provider` | string / `openai-compatible` | `openai-compatible` 或 `anthropic` |
 | `/models/profiles/{name}/request_mode` | string? / `null` | `chat-completions`、`responses`、`messages`；省略时按提供方推导 |
 | `/models/profiles/{name}/responses/state` | string / `local` | 当前只支持 `local`，本地持有历史，不使用服务端会话链 |
 | `/models/profiles/{name}/responses/cache/mode` | string / `implicit` | `implicit` / `explicit`；后者需模型支持，不是通用省钱开关 |
 | `/models/profiles/{name}/support_modal` | string[] / `[text]` | 必须含 `text`，可加 `image`；声明能力，不会让纯文本模型获得视觉能力 |
-| `/models/profiles/{name}/base_url` | string? / `null` | 提供方端点；管理接口要求 HTTP(S)，禁止内嵌认证、query、fragment |
+| `/models/profiles/{name}/base_url` | string? / `null` | 提供方端点；校验要求 HTTP(S)，禁止内嵌认证、query、fragment |
 | `/models/profiles/{name}/max_tokens` | integer / `4096` | 单次输出上限，必须正数，不是 Goal 累计预算 |
-| `/models/profiles/{name}/temperature` | number / `0.0` | 管理接口范围 `[0, 2]`，提供方可能更严格 |
+| `/models/profiles/{name}/temperature` | number / `0.0` | 校验范围 `[0, 2]`，提供方可能更严格 |
 | `/models/profiles/{name}/max_context_tokens` | integer / `128000` | 本地上下文容量估计，必须正数，不能靠增大它扩展模型真实容量 |
 | `/models/profiles/{name}/preserve_reasoning_content` | boolean / `true` | 保留兼容接口返回的 reasoning 内容以供后续轮次使用 |
 | `/models/profiles/{name}/backfill_reasoning_content_for_tool_calls` | boolean / `false` | 为缺少 reasoning 内容的 assistant 工具调用消息补位，服务于特定网关兼容 |
@@ -46,7 +46,7 @@
 | `/models/profiles/{name}/context/auto_summarize` | boolean? / `null` | 覆盖全局自动摘要策略 |
 | `/models/profiles/{name}/context/auto_collapse` | boolean? / `null` | 覆盖全局旧轮次折叠策略 |
 
-提供方与协议搭配：`openai-compatible` 支持 Chat Completions（默认）和 Responses；`anthropic` 只支持 Messages（默认）。不能只改 provider 而保留不兼容的 request_mode。新增、修改或新选为主模型/子代理/审批模型的 profile 都要求独立模型探测；候选 `model_targets` 列出必须验证的目标。未启用但有变更的 profile 也包含在内。
+提供方与协议搭配：`openai-compatible` 支持 Chat Completions（默认）和 Responses；`anthropic` 只支持 Messages（默认）。不能只改 provider 而保留不兼容的 request_mode。所有 profile 都会进行静态与启动构造检查，连通性测试由用户按需选择。`model_targets` 列出合并后的配置，主模型连通不能代表其他模型连通；网络测试不会阻止保存文件。
 
 ## 2. app：兼容模型参数与诊断开关
 
@@ -85,7 +85,7 @@
 | `/context/auto_summarize` | boolean / `true` | 自动摘要，可能额外调用模型，profile 可覆盖 |
 | `/context/auto_collapse` | boolean / `true` | 自动折叠旧轮次，profile 可覆盖 |
 | `/context/image_retention` | string / `history` | `history` 保留历史图片；`user_turn` 限定当前用户轮，steering 延续同一轮 |
-| `/context/snip_keep_recent_tools` | integer / `2` | 保护最近 agent round 数，不是简单工具调用数；管理接口要求非负 |
+| `/context/snip_keep_recent_tools` | integer / `2` | 保护最近 agent round 数，不是简单工具调用数；校验要求非负 |
 | `/context/snip_threshold_chars` | integer / `1500` | 裁剪字符阈值；非负 |
 | `/context/snip_min_lines` | integer / `6` | 裁剪行数条件；非负 |
 | `/context/summarize_keep_recent_turns` | integer / `5` | 摘要时保留最近轮次；非负 |
@@ -162,10 +162,10 @@ skill 只应按用户所需改变这部分行为，避免把配置任务本身�
 
 | 路径 | 类型 / 默认值 | 用途与约束 |
 | --- | --- | --- |
-| `/mcp/servers/{name}/command` | string / `""` | 可执行文件名或路径，不是整段 shell 命令；启用时必须非空，LLM 管理接口禁止修改 |
-| `/mcp/servers/{name}/args` | string[] / `[]` | 逐项 argv；LLM 管理接口禁止修改，读取整体脱敏 |
-| `/mcp/servers/{name}/env` | string→string object / `{}` | 覆盖进程环境；LLM 管理接口禁止修改，读取整体脱敏 |
-| `/mcp/servers/{name}/cwd` | string? / `null` | 子进程工作目录，建议主机绝对路径；LLM 管理接口禁止修改 |
+| `/mcp/servers/{name}/command` | string / `""` | 可执行文件名或路径，不是整段 shell 命令；启用时必须非空 |
+| `/mcp/servers/{name}/args` | string[] / `[]` | 逐项 argv，读取整体脱敏 |
+| `/mcp/servers/{name}/env` | string→string object / `{}` | 覆盖进程环境，读取整体脱敏 |
+| `/mcp/servers/{name}/cwd` | string? / `null` | 子进程工作目录，建议主机绝对路径 |
 | `/mcp/servers/{name}/enabled` | boolean / `true` | 启停此 server |
 
 当前 YAML 没有 `url`、`transport`、`headers` 或 SSE/HTTP server 配置字段；不能照搬其他客户端的 `mcpServers` 配置。MCP client 会查找 command、合并环境后启动 stdio 进程。配置校验不会安装依赖、启动 server 或完成 MCP 握手。
@@ -182,10 +182,10 @@ skill 只应按用户所需改变这部分行为，避免把配置任务本身�
 | `/lsp/max_message_chars` | integer / `1000` | 单条诊断文本上限，正数 |
 | `/lsp/include_warnings` | boolean / `true` | 是否包含 warning 诊断 |
 | `/lsp/typescript_mode` | string / `auto` | `auto` / `native` / `legacy`，选择 TS7 native 或传统 language-server 链路 |
-| `/lsp/servers/{name}/cmd` | string? / `null` | 覆盖内置语言启动命令；LLM 管理接口禁止修改 |
-| `/lsp/servers/{name}/args` | string[]? / `null` | 覆盖 argv；`null` 继承，`[]` 清空；LLM 管理接口禁止修改 |
-| `/lsp/servers/{name}/workspace_root` | string? / `null` | 覆盖根目录检测；LLM 管理接口禁止修改 |
-| `/lsp/servers/{name}/init_opts` | object? / `null` | 初始化选项；依赖具体语言服务器，LLM 管理接口禁止修改 |
+| `/lsp/servers/{name}/cmd` | string? / `null` | 覆盖内置语言启动命令 |
+| `/lsp/servers/{name}/args` | string[]? / `null` | 覆盖 argv；`null` 继承，`[]` 清空 |
+| `/lsp/servers/{name}/workspace_root` | string? / `null` | 覆盖根目录检测 |
+| `/lsp/servers/{name}/init_opts` | object? / `null` | 初始化选项；依赖具体语言服务器 |
 
 实际支持的 `{name}`：`python`、`rust`、`go`、`typescript`、`javascript`、`c`、`cpp`、`bash`、`yaml`。未知语言名会被静态校验拒绝。配置校验不会验证程序已安装或可初始化；`init_opts` 也没有各厂商的完整 schema。
 
@@ -198,7 +198,7 @@ skill 只应按用户所需改变这部分行为，避免把配置任务本身�
 | `/web/search_provider` | string / `auto` | `auto` / `exa` / `parallel` |
 | `/web/allow_private_networks` | boolean / `true` | 是否允许访问私网目标，涉及网络访问边界 |
 
-搜索 API key 由 `EXA_API_KEY` / `PARALLEL_API_KEY` 环境变量读取，不存在 `web.api_key` 字段。代理 URL 可以包含认证信息，读取会脱敏；当前 LLM 字段限制主要按键名判断，不能把“未被接口拦截”解释为允许模型生成或复制代理凭证。
+搜索 API key 由 `EXA_API_KEY` / `PARALLEL_API_KEY` 环境变量读取，不存在 `web.api_key` 字段。代理 URL 可以包含认证信息，inspect 读取会脱敏。普通文件读取可能包含凭证，操作和汇报时应避免泄露。
 
 ## 12. shell：RTK 提示
 
@@ -221,7 +221,7 @@ CLI history 和部分归档路径会展开 `~`，session 入口等并不统一�
 
 ## 16. modes：工具集合与模式提示词
 
-整个分区只允许人类管理入口修改，LLM 配置工具只能读取和解释。工具暴露与工具审批是不同步骤。
+这组设置通过编辑文件修改，使用现有文件工具审批规则。工具暴露与工具审批是不同步骤。
 
 | 路径 | 类型 / 默认值 | 用途与约束 |
 | --- | --- | --- |
@@ -235,7 +235,7 @@ CLI history 和部分归档路径会展开 `~`，session 入口等并不统一�
 
 ## 17. approval：工具调用策略
 
-整个分区只允许人类管理入口修改。默认模式为 `require_approval`，但省略 rules 时还有内置规则，并不表示每个工具都会弹窗。显式 rules 列表替换内置/低优先级列表；`[]` 也有含义，不会自动补齐默认规则。
+这组设置通过编辑文件修改。默认模式为 `require_approval`，但省略 rules 时还有内置规则，并不表示每个工具都会弹窗。显式 rules 列表替换内置/低优先级列表；`[]` 也有含义，不会自动补齐默认规则。
 
 | 路径 | 类型 / 默认值 | 用途与约束 |
 | --- | --- | --- |
@@ -253,11 +253,11 @@ CLI history 和部分归档路径会展开 `~`，session 入口等并不统一�
 | `/approval/rules/[]/scope_key` | string? / `null` | 精确匹配运行时范围键，常用于作用域约束 |
 | `/approval/rules/[]/action` | string / `require_approval` | 四种 action 同 default_mode |
 
-引擎先按规则具体程度排序，同分保留列表顺序；多个资源分别匹配，再取最严格动作。不能声称“所有规则从上到下第一条命中”。完整默认规则见 `domain/config/schema.py`；目前 config_validate/config_apply 默认 require_approval。
+引擎先按规则具体程度排序，同分保留列表顺序；多个资源分别匹配，再取最严格动作。不能声称“所有规则从上到下第一条命中”。完整默认规则见 `domain/config/schema.py`。
 
 ## 18. remote_exec：rcoder relay 主机
 
-这组设置属于 rcoder 自有远程执行协议，不是 VS Code Remote SSH 的安装/连接设置。整个分区只允许人类管理入口修改。
+这组设置属于 rcoder 自有远程执行协议，不是 VS Code Remote SSH 的安装/连接设置。这组设置通过编辑文件修改。
 
 | 路径 | 类型 / 默认值 | 用途 |
 | --- | --- | --- |
@@ -276,55 +276,41 @@ CLI history 和部分归档路径会展开 `~`，session 入口等并不统一�
 
 ## 19. meta：程序维护的标记
 
-`/meta` 是任意 JSON 对象，LLM 管理接口禁止修改。执行代码已知使用 `meta.example`（示例模板标记）和 `meta.workspace_bootstrapped`（工作区模式初始化标记）。所有现有配置都仍标记 example 时，普通启动会要求用户完成配置。不要为“让检查变绿”自动删除用户尚未完成配置的标记。
+`/meta` 是任意 JSON 对象。执行代码已知使用 `meta.example`（示例模板标记）；旧 `meta.workspace_bootstrapped` 标记保留但不再触发自动回填。所有现有配置都仍标记 example 时，普通启动会要求用户完成配置。不要为“让检查变绿”自动删除用户尚未完成配置的标记。
 
 ## 不属于 config.yaml 的项目
 
 - `Config.notes_workspace_max`、`notes_global_max`、`notes_inject` 在内部有默认值和消费者，但当前 YAML loader/schema 没有入口；不能发明 `notes.*` 配置。
-- 没有通用 `hooks`、`plugins`、`subagents`、`retry`、`timeout`、`skills.paths`、`env` 顶层分区；未知字段会被管理接口拒绝。
+- 没有通用 `hooks`、`plugins`、`subagents`、`retry`、`timeout`、`skills.paths`、`env` 顶层分区；未知字段会被启动与检查共同拒绝。
 - 普通附件上传限额、VS Code 扩展自身设置、终端快捷键/主题不因为内部存在常量就自动成为 YAML 配置。
 - MCP HTTP/SSE 传输、任意模型参数 `extra_body` / `headers` 不在当前配置结构中。
 
-## 配置 skill 的操作依据
+## 配置 skill 的操作路径
 
-skill 适合围绕“配置 rcoder 自己”这一意图触发；项目的任意 YAML 编辑不应自动触发。字段结构实时读取，本文按需查阅对应分区，不把所有字段及默认值塞进 skill 主体。
+1. 用 `describe` 查询运行中版本的字段定义，用 `inspect` 确认全局、工作区、专用启动文件及合并结果。
+2. 先明确修改范围：项目专属设置写工作区；所有项目的默认值写核心所在主机的用户配置；显式文件有最高优先级。删除覆盖项可恢复继承。
+3. 使用普通文件读取、编辑工具修改目标 YAML，保留注释和格式，避免覆盖别人的新修改。编辑器中的未保存内容可用 `check.documents` 检查，不产生候选文件。
+4. 运行 `rcoder config check`；格式/引用有效与模型在线可用分别判断。只有需要确认模型连接时才显式执行 `--check model --profile <name>`。
+5. 保存后报告具体范围和“下次核心启动生效”，根据任务授权选择合适时机重启。不存在通用热重载；不要把 skills reload 当成配置重载。
 
-| 任务 | 当前可走的管理工具 | 验证与交付重点 |
-| --- | --- | --- |
-| UI、上下文策略、图片、工具输出等调整 | read → prepare → validate → apply | 展示具体字段差异，确认源层和下次启动值 |
-| 已有模型 profile 调参/切换 | 同上，按候选 model_targets 逐 profile 探测 | 确认提供方能力；探测成功不能证明推理、图片、工具调用都通过 |
-| 新增模型凭证、MCP/LSP 进程启动设置 | 人类入口补齐受限字段；模型可解释所需结构 | 不索要把密钥贴进对话，不绕道 shell 执行人类权限 CLI |
-| 工具审批、模式工具集合、relay、meta | 人类管理入口 | 模型解释影响和所需变更，不自己升级权限 |
-| 文件 YAML 已损坏 | 独立 CLI / VS Code 配置恢复入口 | LLM 接口不接受整份 document；修复后再检查静态值和启动 |
-| 当前会话立即切换模型等 | 现有会话命令/动作 | 与持久化写入分开，明确生效范围 |
-
-共享流程：
-
-1. 读取 `inspect` 的 revision、分层来源和当前/下次启动区别；通过 `describe(section)` 获取准确字段结构。
-2. 选择用户要求的 scope，准备最小字段变更。用 RFC 6901 JSON Pointer；profile 名中的点是普通字符，`/` 转义为 `~1`、`~` 转义为 `~0`。数组作为整体字段替换。不要把 `[configured]` 当成真实密钥写回。
-3. 检查候选 diff、diagnostics 和 required probes。static、startup、model 结果分开解释；unknown 不是 invalid，也不是 passed。候选有效期一小时，各 profile 探测结果有效期五分钟。
-4. 通过工具的已有审批流程应用同一个候选；冲突后重新读取并准备。`allow_unverified_model` 是人类离线修复入口的显式例外，不提供给 LLM。
-5. 应用后再读持久化结果，报告“已保存，下次核心启动生效”。重启后的实际服务可用性应另行确认；不自动中断当前任务。撤销用 revert 生成新候选再验证应用，不能直接覆盖外部新修改。
-
-这些是基于现有接口的操作依据，不是额外审批层。用户对当前任务已有的授权继续有效。
+配置 API 只保留 describe/inspect/check，无专用 LLM 写配置工具、字段权限分支、候选状态机或验证有效期。普通文件/shell 权限及其审批仍然适用。模型可以按授权编辑配置，接口不能被当作阻止文件修改的安全边界。不要把凭证输出到对话，也不要将脱敏占位值写回原文件。
 
 ## 接口能力与验证边界
 
-先读取 `describe.capabilities`，需要 `effective_profiles`、`profile_probes`、`reviewer_protection`、`field_authority` 和 `recovery`；不要仅依赖包版本号判断同版本开发构建是否支持这些行为。schema 的 `x-rcoder.model_write` 分为 `allowed`、`user_required`、`conditional`；app/models 中能改变有效自动审批模型的字段属于条件限制，实际修改仍由核心裁决。
-
-- 静态检查覆盖类型、范围、引用、LSP 语言名称、relay 地址/超时与推理重放模式，不验证外部服务可用性。
+- `describe.api_version` 为 2，能力包括 `buffer_checks` 与 `profile_probes`；旧写配置协议已移除。
+- 启动、inspect、check 共用严格解析与合并校验；读取不会生成示例文件或补写工作区字段。
+- static 覆盖类型、范围、引用、LSP 语言名称、relay 地址/超时与推理重放模式，不验证外部服务可用性。
 - startup 在隔离进程中构造所有 profile 的 provider 客户端，不启动 Agent、恢复 Goal、运行 hooks 或启动 MCP/LSP。
-- model 使用对应 profile 和真实请求参数构建逻辑，带上配置的输出上限、effort 映射/参数名及 thinking 开关；每个目标最多 20 秒，每次可显式选择 1–8 个 profile，较大候选可分批验证。会消耗提供方 Token。
-- 每个成功结果绑定 profile 指纹和验证时间。主模型成功不能替代子代理、审批或其他受影响模型的成功结果；失败/unknown 会替换该 profile 的旧成功记录。
-- 探测覆盖文本请求及所配置参数，不覆盖工具调用、图片、MCP/LSP、hooks、外部依赖或所有实际任务。不能把连通性描述为完整功能验证。
-- LLM 无法通过 app 默认值、跨文件继承或修改被引用 profile 间接改变自动审批模型。MCP command/cwd/args/env 与 LSP cmd/workspace_root/args/init_opts 由人类管理。
-- VS Code 在启动失败面板中提供检查、打开真实配置文件、预览历史恢复、按需模型测试与恢复操作；独立管理进程不依赖正常 Agent 启动。跳过在线验证需明确勾选，静态与启动检查仍不能跳过；未保存编辑内容和外部并发修改都会阻止恢复。
-- 升级前生成的待应用候选必须重新准备；已应用记录及历史备份仍可用于恢复。
+- model 使用对应 profile 的实际请求参数，每个目标最多 20 秒，每次可选择 1–8 个 profile，会消耗提供方 Token。失败或 unknown 不等于 YAML 无效，也不会禁止保存。
+- 连通性测试不覆盖工具调用、图片、MCP/LSP、hooks 或所有实际任务。检查结果不缓存为后续修改的权限。
+- VS Code 默认展示当前工作区，把全局默认设置折叠展示，并提示专用启动文件的优先级。原生编辑器负责修改与保存；缓冲区变化会清除旧检查结果。
+- 重启前检查已保存文件，未保存/无效配置或执行中的任务会阻止重启，保留当前核心。无自动热重载。可通过原生撤销或已有文件时间线恢复；时间线不保证覆盖外部编辑。
+- 以前开发版本产生的私有备份原样保留，但新接口不再创建、应用或管理候选与备份。
 
 ## 源码依据
 
 - [字段类型和配置校验](../reuleauxcoder/domain/config/models.py)、[默认值与内置模式/审批规则](../reuleauxcoder/domain/config/schema.py)
 - [管理 schema 与脱敏](../reuleauxcoder/services/config/definition.py)、[YAML 加载与合并](../reuleauxcoder/services/config/loader.py)、[兼容迁移](../reuleauxcoder/compat/config_migration.py)
 - [纯验证器](../reuleauxcoder/services/config/validation.py)、[隔离探测](../reuleauxcoder/services/config/probe.py)、[模型请求构建与探测](../reuleauxcoder/services/llm/factory.py)
-- [配置事务与 LLM 权限](../reuleauxcoder/app/configuration.py)、[审批规则匹配](../reuleauxcoder/domain/approval_engine.py)
+- [只读配置检查服务](../reuleauxcoder/app/configuration.py)、[审批规则匹配](../reuleauxcoder/domain/approval_engine.py)
 - [图片配置](../reuleauxcoder/domain/images.py)、[LSP 配置](../reuleauxcoder/extensions/lsp/config.py)、[技能发现](../reuleauxcoder/extensions/skills/discovery.py)

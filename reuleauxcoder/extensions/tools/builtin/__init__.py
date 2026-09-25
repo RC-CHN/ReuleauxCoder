@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 from reuleauxcoder.extensions.tools.base import Tool
-from reuleauxcoder.extensions.tools.builtin.configuration import (
-    ConfigApplyTool, ConfigPrepareTool, ConfigReadTool, ConfigValidateTool,
-)
 from reuleauxcoder.extensions.tools.builtin.control import (
     ReportProgressTool,
     ReportToParentTool,
@@ -51,10 +48,6 @@ from reuleauxcoder.extensions.tools.builtin.web import WebFetchTool, WebSearchTo
 from reuleauxcoder.extensions.tools.builtin.write import WriteFileTool
 
 _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
-    ConfigReadTool,
-    ConfigPrepareTool,
-    ConfigValidateTool,
-    ConfigApplyTool,
     CreateGoalTool,
     GetGoalTool,
     UpdateGoalTool,

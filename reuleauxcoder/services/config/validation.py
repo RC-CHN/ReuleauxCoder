@@ -13,8 +13,7 @@ from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.extensions.lsp.config import LspConfig
 from reuleauxcoder.services.config.definition import config_schema, shape_issues
 from reuleauxcoder.services.config.loader import ConfigLoader
-
-MAX_CONFIG_BYTES = 1024 * 1024
+from reuleauxcoder.infrastructure.persistence.config_files import MAX_CONFIG_BYTES
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -113,7 +112,7 @@ def resolve_layers(
         merged = loader._merge_dicts(merged, data)
     # Reject invalid explicit references before the legacy parser can select a fallback.
     models = merged.get("models", {})
-    for key in ("active", "active_main", "active_sub"):
+    for key in (("active_main", "active_sub") if "active_main" in models else ("active", "active_sub")):
         if models.get(key) is not None and models[key] not in models.get(
             "profiles", {}
         ):

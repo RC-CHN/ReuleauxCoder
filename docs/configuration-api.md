@@ -1,178 +1,119 @@
-# Configuration management API
+# Configuration inspection API
 
-For the complete field inventory, defaults, loading semantics and current
-limitations, see [config.yaml 配置参考](configuration-reference.md).
-
-The core exposes one `ConfigurationService` to model tools, JSON-RPC clients and
-`rcoder config`. Management does not require an Agent, a valid model credential,
-session restoration or a terminal frontend to start. An invalid configuration
-can therefore be inspected and repaired through the standalone management process.
+Configuration files are the editable source of truth. The core owns merging,
+defaults and validation; editors and ordinary file tools own edits. The
+[configuration reference](configuration-reference.md) lists every YAML field.
 
 ## Contract
 
-Normal runtime initialization advertises `configuration_api: 1`. Python clients
-use `RuntimeClient.configuration`; TypeScript clients use the same property or
-the exported `ConfigurationClient` from `@reuleauxcoder/client`. Management
-responses are plain JSON, independent of the runtime's dataclass codec.
+API version **2** exposes exactly three read-only operations. Normal runtime
+initialization advertises `configuration_api: 2`. Python and TypeScript clients
+use `RuntimeClient.configuration`; the shared TypeScript package also exports
+`ConfigurationClient`. Responses are plain JSON.
 
 | RPC method | Parameters | Result |
 | --- | --- | --- |
-| `config.describe` | Optional `section`, e.g. `models` | API/core versions, editable JSON schema, scopes, activation and probe capabilities |
-| `config.inspect` | None | Revision, redacted source files, next-start configuration, running configuration summary when attached, diagnostics |
-| `config.prepare` | `scope`, optional `base_revision`, exactly one of `changes` / `document` | Durable candidate ID, redacted diff, target path, diagnostics, required probes |
-| `config.validate` | Optional `change_id`, `checks`, `profiles` (1–8 names for model checks) | Static validity, separate probe results and diagnostics |
-| `config.apply` | `change_id`, optional human-only `allow_unverified_model` | Applied record with `activation: next_start` |
-| `config.history` | Optional `limit`, 1–100 | Recent candidate/commit records without credentials or backup contents |
-| `config.revert` | `change_id` | A new candidate restoring the previous target file; later edits cause a conflict |
-| `config.recover` | `change_id`, current `base_revision`, optional `side: before/after` | A human-requested recovery candidate, including repair of externally corrupted YAML |
+| `config.describe` | Optional `section` | API/core versions, JSON schema, scopes, checks, capabilities |
+| `config.inspect` | None | Disk revision, redacted source layers, effective next-start values, running configuration summary when attached, model targets, diagnostics |
+| `config.check` | Optional `checks`, `profiles`, `documents`, `base_revision` | Static validity, separate check results, model targets, diagnostics, revision and whether buffers were included |
 
-Persistent scopes are `workspace`, `user` and, when the process was launched with
-an explicit configuration path, `explicit`. Paths belong to the workspace host;
-in VS Code Remote this is the remote host. `user` does not mean the desktop's user
-configuration. The service binds its paths once and never changes them after a
-shell tool changes directory. Remote relay clients cannot mutate host configuration
-through the management RPC methods.
+Capabilities are `buffer_checks` and `profile_probes`. There are no dedicated
+model configuration tools, write RPC methods, prepared candidates, apply/revert
+operations or validation leases. Existing private backups from earlier development
+builds are left untouched; this API does not read or manage them.
 
-This API version saves persistent settings for the **next core start**. It does
-not replace the running Agent, terminate the current request, or claim that a
-saved change has taken effect. Existing session model/mode commands keep their
-runtime behavior. Session-only configuration mutation is not part of this API
-version. VS Code provides a recovery interface on the failed/idle startup panel. `inspect.runtime` is null in a standalone process.
+The independent `rcoder config rpc` process works without a valid configuration,
+Agent, restored session or frontend. VS Code launches the configured workspace-host
+command with `--config-management-stdio`, preserving its explicit `--config`
+and `--cwd`. Its initialization includes `mode: configuration` and
+`api_version: 2`. An old core requires an update, not a write-protocol fallback.
+Relay clients can describe/inspect; probing is local-only.
 
-Changes use RFC 6901 JSON pointers, preserving profile names containing dots:
+## Sources and editing
+
+Precedence, low to high: built-in defaults → `user`
+(`~/.rcoder/config.yaml`) → `workspace` (`.rcoder/config.yaml`) →
+`explicit` (the optional `--config` file). All paths belong to the core host;
+in VS Code Remote, global means the remote user's defaults, not desktop settings.
+
+Ordinary dictionaries merge recursively and lists replace the previous list.
+Removing a workspace override reveals the inherited value. `null` only clears
+fields that support it; it is not a universal reset. Inspection returns both
+raw source values and the resolved next-start Config; they have different layouts.
+Do not serialize the resolved Config back as a YAML source.
+
+Reading, inspection, checks and startup never generate example files or backfill
+workspace settings. File edits take effect at the next core start; runtime
+session actions keep their existing behavior. There is no automatic config reload.
+
+Unsaved documents are checked in memory using the same core resolver:
 
 ```json
 {
-  "scope": "workspace",
-  "base_revision": "<revision returned by inspect>",
-  "changes": [
-    {"path": "/ui/verbosity", "value": "standard"},
-    {"path": "/models/profiles/my.model/temperature", "value": 0.2},
-    {"path": "/ui/max_preview_lines", "remove": true}
+  "checks": ["static", "startup"],
+  "base_revision": "<revision from inspect>",
+  "documents": [
+    {"scope": "workspace", "content": "ui:\n  verbosity: standard\n"}
   ]
 }
 ```
 
-Removal removes the value from that source, allowing lower-priority defaults to
-be inherited. Lists are replaced as complete fields. A complete `document` is
-available to human clients to repair an unparseable file. Prepare never modifies
-the target file. Candidates expire after one hour; at most 128 unexpired prepared
-candidates are accepted in one workspace context.
+Supply one to three complete UTF-8 YAML buffers, each at most 1 MiB. Unspecified
+layers come from disk. Buffers referring to the same physical file must agree;
+the replacement applies to all aliases. Content is not returned in diagnostics.
+Every source, including shadowed layers, contributes to the disk revision. An
+optional stale `base_revision` or disk changes during checks produce a conflict.
+This is diagnostic consistency, not a lock on arbitrary external editors.
 
-## Validation and activation
+VS Code uses native TextDocuments for edits, saves and undo, preserving comments,
+ordering and line endings. It checks dirty configuration buffers, invalidates
+results on edits/saves, and rejects results received after a buffer changed.
+Saving only touches dirty configuration documents and uses VS Code's external
+file conflict handling. Use editor Undo or available file Timeline history for
+manual recovery; Timeline is not guaranteed to record external edits.
 
-Validation distinguishes:
+The UI starts with **Current workspace only**, folds **Global defaults · all
+projects**, and identifies an explicit launch file as highest priority. Checking
+always combines the layers. Model connection tests are optional. Save and restart
+are separate actions; restarting checks saved files before stopping a running
+core, and refuses dirty files or an active turn. Invalid configuration leaves the
+existing core running.
 
-- `static`: strict UTF-8/YAML shape, duplicate keys, field types/ranges, references,
-  provider/request-mode compatibility and the merged persistent configuration.
-  Reading or checking never creates example files, backfills settings or starts
-  external services. `valid` describes these static checks only.
-- `startup`: a bounded child process constructs configuration and the provider
-  clients for all resolved profiles. It does not start an Agent, restore goals, run hooks, launch MCP/LSP
-  servers or make a model request. This checks the configuration/provider startup
-  path, not every possible runtime dependency.
-- `model`: a bounded text request for each selected profile through its Chat
-  Completions, Responses or Anthropic Messages adapter, with the actual configured
-  output limit, effort mapping/parameter name and thinking setting. Startup,
-  session switches and probes share effective profile resolution and request
-  parameter construction. Each probe is bounded to 20 seconds, without workspace
-  data, tools, images, orchestration retries or diagnostic dumps. It can consume
-  provider tokens; it does not verify tool/image capability.
-  Authentication/request errors fail; timeouts, throttling and unavailable
-  services are reported as `unknown`, separately from invalid configuration.
+## Checks
 
-Candidates list required `model_targets` and all `available_model_targets`, with
-profile names, roles and effective fingerprints. New/changed profiles (including
-inactive profiles) and newly selected main/subagent/reviewer roles require probes.
-Apply always rechecks static validity and isolated startup, and requires a
-successful result within five minutes for every required profile/fingerprint.
-`profiles` selects one to eight targets per call; larger changes can be validated
-in batches. A later failure/unknown replaces that target’s previous success. Human clients can explicitly use `allow_unverified_model` to save an
-offline recovery/setup configuration; the result records `model_verified: false`.
-Models cannot request this override. Probe success is evidence about that check,
-not a guarantee of future network availability or success on arbitrary tasks.
+- `static`: strict UTF-8/YAML, duplicate keys, unknown fields, types/ranges,
+  references, provider/request-mode compatibility and merged configuration.
+  This is the same validation used by ordinary startup. `valid` means static
+  validity only.
+- `startup`: bounded isolated construction of provider clients for all resolved
+  profiles. No Agent, goal restoration, hooks, MCP/LSP launch or model request.
+- `model`: optional bounded text request through the selected profile's actual
+  provider and configured request parameters. Select one to eight profile names;
+  without `profiles`, check the main profile. Each probe is bounded to 20 seconds
+  and may consume provider tokens. No workspace data, tools or images are sent.
+  Authentication/request failures are failed checks; transient failures/timeouts
+  may be `unknown`. A failed connection does not make valid YAML invalid.
 
-Every source file contributes to the revision, including shadowed layers. Probes
-and human approval do not hold configuration locks. Commit acquires a short
-cross-process lock, rechecks the revision and any connected editor's unsaved-file
-guard, journals the change, then atomically replaces the target file. The current
-runtime remains usable throughout. Arbitrary external editors do not participate
-in the lock; edits observed before commit invalidate the candidate.
+Checks default to static plus startup. A static result is always included.
+There are no cached verification permissions or online checks required for saving.
+Credentials, MCP environment/argument values and credential-bearing URLs are
+redacted in inspection. File/shell access and ordinary tool approvals govern
+Agent editing; the read-only API is not an authorization boundary for files.
 
-An interrupted commit remains visible as `committing`. Retrying apply identifies
-whether the replacement occurred and finishes the journal without repeating a
-completed write; divergent files require an explicit repair. Revert and recover
-prepare new candidates and go through the same validation/application gates.
-Recovery never automatically resumes tasks, installs services or relaxes a policy.
-
-Private candidates and before/after snapshots live under
-`~/.rcoder/config-management/<workspace-context>/`, outside the project. Files are
-created with private permissions on POSIX; Windows uses the owning directory's
-ACL. Backups can contain credentials and are never returned by the API. API keys,
-MCP environment/argument values and credential-bearing URLs are redacted from
-inspection, diffs and history. Generated errors do not echo provider responses or
-invalid YAML contents.
-
-## Model tools and authorization
-
-`config_read` exposes describe/inspect/history. `config_prepare` prepares edits or
-revert candidates. `config_validate` runs selected checks. `config_apply` applies
-one immutable candidate ID. The latter two use ordinary tool authorization;
-defaults request approval. Apply's review includes the target, scope, actual field
-changes and validation results. A change made during review is rejected at commit.
-
-The core fixes caller identity; parameters cannot promote a model to a human.
-Models cannot replace whole documents, submit credentials or process-launch
-settings (MCP command/cwd/args/env; LSP cmd/workspace_root/args/init_opts),
-change approval/mode/relay policy (including indirectly changing the effective
-auto-review model through profiles or app defaults), use human-prepared candidates,
-or bypass live model validation. Root configuration services are not copied into subagent tools.
-These checks govern management interfaces; ordinary filesystem/shell access
-continues to follow its own tool policies.
-
-## CLI and recovery transport
-
-All CLI commands return UTF-8 JSON. Exit code 0 is success, 1 means failed/unknown
-validation, and 2 means an invalid request, conflict or operation failure.
+## CLI examples
 
 ```bash
 rcoder config describe --section models
 rcoder config inspect
-rcoder config check                    # offline static + isolated startup
-rcoder config prepare --changes changes.json --revision <revision>
-rcoder config validate <change-id> --check startup --check model --profile main --profile sub
-rcoder config apply <change-id>
-rcoder config history
-rcoder config revert <change-id>       # returns a new candidate; apply separately
-rcoder config recover <change-id> --revision <revision> --side before
-rcoder config rpc                      # standalone JSON-RPC over stdio
+rcoder config check
+rcoder config check --content draft.yaml --scope workspace
+rcoder config check --check model --profile main --profile sub
+rcoder config inspect --config /absolute/path/to/config.yaml
+rcoder config rpc --workspace /path/to/project
 ```
 
-Use `--workspace` and `--config` to select the same host/workspace/explicit layer
-when recovering. JSON inputs can use `--document -` or `--changes -` to read stdin;
-credentials need not appear in process arguments. A standalone RPC client calls
-`initialize` with `{"version":1}` and receives `mode: configuration`. Close stdin
-to stop it. Do not call runtime readiness or task methods on this transport.
-
-VS Code starts the same configured command with `--config-management-stdio`,
-preserving `--config` and `--cwd`; runtime-only options are ignored by this mode.
-The launcher intercepts the flag before normal configuration/Agent startup.
-The standalone handshake advertises `editor_documents: true`; hosts synchronize
-unsaved absolute paths using `config.editor_documents` with monotonic `revision`
-and `paths` parameters, including immediately before apply. Source file buttons
-only open host-inspected paths in the workspace host's native editor. Recovery
-does not automatically start the Agent. Online probes are explicit; an initially unchecked option must be selected to
-allow offline restoration after static/startup validation.
-
-Read `describe.capabilities` for `effective_profiles`, `profile_probes`,
-`reviewer_protection`, `field_authority` and `recovery`, rather than inferring
-capabilities from a release number. Schema `x-rcoder` annotations describe
-`activation` and `model_write` (`allowed`, `user_required`, `conditional`).
-Effective reviewer protection is also enforced after layered resolution.
-Prepared records from before this validation policy must be prepared again;
-applied history remains recoverable.
-
-Regression coverage includes all three provider transports with local fake
-servers, cross-process locking, interrupted writes, expired candidates/probes,
-concurrent edits during approval, dirty editor buffers, secret redaction, Unicode
-paths, model authority, and actual Python/TypeScript recovery processes.
+`--content -` reads raw YAML from stdin. `--revision` passes an expected disk
+revision. Exit codes: 0 for successful requested checks, 1 for invalid config or
+failed/unknown checks, 2 for invalid inputs/conflicts. To change configuration,
+read the intended source, edit the file, check it, then explicitly restart when
+appropriate. Never echo credentials into a task report.
