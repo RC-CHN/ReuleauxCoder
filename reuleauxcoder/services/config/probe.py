@@ -7,10 +7,10 @@ import subprocess
 import sys
 
 
-def run_probe(layers: list[tuple[str, dict]], check: str, timeout: float = 20) -> dict:
+def run_probe(layers: list[tuple[str, dict]], check: str, timeout: float = 20, *, profile: str | None = None) -> dict:
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", "reuleauxcoder.services.config.probe", check],
+            [sys.executable, "-m", "reuleauxcoder.services.config.probe", check, *([profile] if profile is not None else [])],
             input=json.dumps(layers, allow_nan=False),
             text=True,
             capture_output=True,
@@ -48,9 +48,15 @@ def main():
         if config is None or any(issue.severity == "error" for issue in issues):
             result = {"status": "failed", "code": "invalid_config"}
         else:
-            client = build_llm_from_settings(config, debug_trace=False)
-            if sys.argv[1] == "model":
-                probe_model_connection(client)
+            profiles = config.model_profiles
+            selected = sys.argv[2] if len(sys.argv) > 2 else config.active_main_model_profile
+            settings = [profiles[selected]] if sys.argv[1] == "model" else list(profiles.values())
+            for model in settings:
+                client = build_llm_from_settings(model, debug_trace=False)
+                if sys.argv[1] == "model":
+                    probe_model_connection(client)
+                client.close()
+                client = None
             result = {"status": "passed", "code": "ok"}
     except Exception as error:
         status = getattr(error, "status_code", None)

@@ -16,7 +16,6 @@ from reuleauxcoder.domain.config.models import (
     ModelProfileConfig,
     PromptConfig,
     RemoteExecConfig,
-    ResponsesConfig,
     SkillsConfig,
     UIConfig,
 )
@@ -63,6 +62,8 @@ class ConfigLoader:
         "thinking_enabled",
         "reasoning_replay_mode",
         "reasoning_replay_placeholder",
+        "reasoning_effort_values",
+        "reasoning_effort_param",
     ]
 
     def __init__(self, config_path: Optional[Path] = None):
@@ -79,25 +80,13 @@ class ConfigLoader:
             self._effective_sources[prefix] = source
 
     def _resolve_llm_params(self, active_profile, app_config: dict) -> dict:
-        """Resolve LLM params with active_profile > app_config > default priority."""
-        params: dict = {}
-        for field in self._LLM_PARAM_FIELDS:
-            profile_val = (
-                getattr(active_profile, field, None)
-                if active_profile is not None
-                else None
-            )
-            if profile_val is not None:
-                params[field] = profile_val
-            elif field in app_config:
-                params[field] = app_config[field]
-            elif field in DEFAULTS:
-                params[field] = DEFAULTS[field]
-            else:
-                params[field] = None
-        if not isinstance(params["responses"], ResponsesConfig):
-            params["responses"] = ResponsesConfig.from_dict(params["responses"])
-        return params
+        """Use the same resolved profile for startup, probes and session changes.
+
+        Omitted profile fields inherit app before constructing defaults. An
+        explicit null on a nullable field deliberately clears that inheritance.
+        """
+        profile = active_profile or ModelProfileConfig.from_dict("default", app_config)
+        return {name: getattr(profile, name) for name in self._LLM_PARAM_FIELDS}
 
     def _load_yaml(self, path: Path) -> dict:
         """Distinguish missing files from invalid configuration; never erase errors."""
@@ -318,7 +307,13 @@ class ConfigLoader:
         for name, profile_data in profiles_data.items():
             if not isinstance(profile_data, dict):
                 continue
-            model_profiles[name] = ModelProfileConfig.from_dict(name, profile_data)
+            defaults = {
+                key: value for key, value in app_config.items()
+                if key in self._LLM_PARAM_FIELDS
+            }
+            model_profiles[name] = ModelProfileConfig.from_dict(
+                name, self._merge_dicts(defaults, profile_data)
+            )
 
         requested_main = models_config.get("active_main")
         active_main_model_profile = requested_main
@@ -489,6 +484,18 @@ class ConfigLoader:
                 ),
                 token_fudge_factor=context_config.get(
                     "token_fudge_factor", DEFAULTS["token_fudge_factor"]
+                ),
+                reserved_output_tokens=context_config.get(
+                    "reserved_output_tokens", DEFAULTS["reserved_output_tokens"]
+                ),
+                fixed_prompt_tokens=context_config.get(
+                    "fixed_prompt_tokens", DEFAULTS["fixed_prompt_tokens"]
+                ),
+                tool_schema_tokens=context_config.get(
+                    "tool_schema_tokens", DEFAULTS["tool_schema_tokens"]
+                ),
+                safety_margin_tokens=context_config.get(
+                    "safety_margin_tokens", DEFAULTS["safety_margin_tokens"]
                 ),
             ),
             remote_exec=RemoteExecConfig(

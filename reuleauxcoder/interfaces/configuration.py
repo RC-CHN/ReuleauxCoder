@@ -19,12 +19,17 @@ def run_stdio(service: ConfigurationService):
 
     writer = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
     peer = RpcPeer(StreamTransport(sys.stdin.buffer, writer))
+    from reuleauxcoder.app.rpc.editor_documents import EditorDocuments
+
+    documents = EditorDocuments()
+    service.mutation_guard = documents.guard
+    peer.methods["config.editor_documents"] = documents.update
     bind_configuration(peer, service)
 
     def initialize(version=1):
         if version != 1:
             raise RpcError(-32602, "Unsupported configuration API version")
-        return {"mode": "configuration", **service.describe()}
+        return {"mode": "configuration", "editor_documents": True, **service.describe()}
 
     peer.methods["initialize"] = initialize
     peer.start()
@@ -33,6 +38,20 @@ def run_stdio(service: ConfigurationService):
     finally:
         peer.close()
         peer.wait_closed(timeout=10)
+
+
+def recovery_stdio(argv):
+    """Use the same launcher/arguments as a failed core, without loading its runtime."""
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("-c", "--config")
+    parser.add_argument("--cwd")
+    args, _ = parser.parse_known_args(argv)
+    options = ["rpc"]
+    if args.config:
+        options.extend(("--config", args.config))
+    if args.cwd:
+        options.extend(("--workspace", args.cwd))
+    return main(options)
 
 
 def main(argv=None):
@@ -82,6 +101,7 @@ def main(argv=None):
         "--check", action="append", choices=("static", "startup", "model")
     )
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--profile", action="append", help="Profile to probe; repeat up to eight times")
     parser.add_argument("--side", choices=("before", "after"), default="before")
     parser.add_argument(
         "--allow-unverified-model",
@@ -128,6 +148,10 @@ def main(argv=None):
             if not args.revision:
                 parser.error("recover requires --revision from a fresh inspect")
             parameters.update(base_revision=args.revision, side=args.side)
+        if args.profile:
+            if operation != "validate":
+                parser.error("--profile requires validate with --check model")
+            parameters["profiles"] = args.profile
         result = dispatch(service, operation, parameters)
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         if result.get("valid") is False or any(

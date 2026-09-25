@@ -10,8 +10,6 @@ import base64
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
-import hashlib
-import json
 from pathlib import Path
 import re
 import time
@@ -31,9 +29,10 @@ from reuleauxcoder.services.config.definition import (
     pointer,
     redact,
     sensitive_path,
+    model_write_restriction,
 )
-from reuleauxcoder.services.config.loader import ConfigLoader
 from reuleauxcoder.services.config.probe import run_probe
+from reuleauxcoder.services.config.targets import changed_targets, model_targets, protect_reviewer
 from reuleauxcoder.services.config.validation import (
     json_document,
     parse_document,
@@ -100,16 +99,8 @@ def _diff(before, after, parts=()) -> list[dict]:
     ]
 
 
-def _model_identity(config) -> str | None:
-    if config is None:
-        return None
-    values = {name: getattr(config, name) for name in ConfigLoader._LLM_PARAM_FIELDS}
-    values["responses"] = config.responses.to_dict()
-    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
-
-
 def _secret_fields(value, parts=()) -> dict:
-    if sensitive_path(parts):
+    if model_write_restriction(parts):
         return {parts: value}
     if isinstance(value, dict):
         return {
@@ -198,6 +189,7 @@ class ConfigurationService:
             schema = schema["properties"][section]
         return {
             "api_version": 1,
+            "capabilities": ["effective_profiles", "profile_probes", "reviewer_protection", "field_authority", "recovery"],
             "core_version": __version__,
             "schema": schema,
             "scopes": [name for name, _ in self.store.paths.layers()],
@@ -219,7 +211,7 @@ class ConfigurationService:
                 "model": "One bounded model request without workspace data; may consume provider tokens.",
             },
             "model_restricted_sections": ["approval", "modes", "remote_exec", "meta"],
-            "sensitive_values": "Values are redacted; models cannot submit credential fields.",
+            "sensitive_values": "Values are redacted; credentials, process launch settings and effective reviewer changes require a human interface.",
         }
 
     def _layers(self, contents):
@@ -251,6 +243,7 @@ class ConfigurationService:
             if config and not any(issue.severity == "error" for issue in issues)
             else None,
             "runtime": redact(self.runtime()) if self.runtime else None,
+            "model_targets": redact(model_targets(config)),
             "diagnostics": [issue.to_dict() for issue in issues],
             "valid": not any(issue.severity == "error" for issue in issues),
         }
@@ -269,7 +262,7 @@ class ConfigurationService:
             if _secret_fields(before) != _secret_fields(after):
                 raise ConfigOperationError(
                     "user_required",
-                    "Credential and process argument fields must be supplied through a human management interface.",
+                    "Credential and process launch fields must be supplied through a human management interface.",
                 )
 
     def prepare(
@@ -356,7 +349,11 @@ class ConfigurationService:
         issues.extend(found)
         old_layers, _ = self._layers(contents)
         old_config, _ = resolve_layers(old_layers)
+        if actor == "model":
+            protect_reviewer(old_layers, layers)
+        targets = changed_targets(old_config, config)
         record = {
+            "policy_revision": 2,
             "id": uuid.uuid4().hex,
             "scope": scope,
             "target_path": str(self.store.paths.target(scope)),
@@ -371,8 +368,9 @@ class ConfigurationService:
             "diff": _diff(before, after or {}),
             "diagnostics": [issue.to_dict() for issue in issues],
             "checks": [],
-            "requires_model_probe": _model_identity(config)
-            != _model_identity(old_config),
+            "requires_model_probe": bool(targets),
+            "model_targets": redact(targets),
+            "available_model_targets": redact(model_targets(config)),
             "model_preview": redact(
                 {
                     "model": config.model,
@@ -417,6 +415,8 @@ class ConfigurationService:
             raise ConfigOperationError(
                 "expired", "Configuration candidate expired; prepare it again."
             )
+        if record["status"] == "prepared" and record.get("policy_revision") != 2:
+            raise ConfigOperationError("expired", "Configuration validation changed; prepare this candidate again.")
         before, _ = parse_document(_decode(record["before"]), record["scope"])
         after, _ = parse_document(_decode(record["after"]), record["scope"])
         self._authorize(actor, before, after)
@@ -437,7 +437,7 @@ class ConfigurationService:
         return self._public(record)
 
     def validate(
-        self, *, change_id=None, checks=None, actor: ConfigActor = "user"
+        self, *, change_id=None, checks=None, profiles=None, actor: ConfigActor = "user"
     ) -> dict:
         checks = ["static"] if checks is None else checks
         if (
@@ -448,6 +448,11 @@ class ConfigurationService:
             raise ConfigOperationError(
                 "invalid_check", "Checks must be static, startup or model."
             )
+        if profiles is not None and (
+            "model" not in checks or not isinstance(profiles, list) or not 1 <= len(profiles) <= 8
+            or any(not isinstance(name, str) or not name for name in profiles)
+        ):
+            raise ConfigOperationError("invalid_profile", "Select one to eight profile names for a model check.")
         record = self._candidate(change_id, actor) if change_id else None
         contents = self._check_revision(record) if record else self.store.snapshot()[1]
         if record:
@@ -459,7 +464,7 @@ class ConfigurationService:
                 contents, record["scope"], _decode(record["after"])
             )
         layers, issues = self._layers(contents)
-        _, found = resolve_layers(layers)
+        config, found = resolve_layers(layers)
         issues.extend(found)
         valid = not any(issue.severity == "error" for issue in issues)
         results = [
@@ -471,8 +476,23 @@ class ConfigurationService:
         ]
         if valid:
             for check in dict.fromkeys(checks):
-                if check != "static":
+                if check == "startup":
                     results.append(self.probe(layers, check))
+                elif check == "model":
+                    targets = {item["profile"]: item for item in model_targets(config)}
+                    names = profiles if profiles is not None else (
+                        [item["profile"] for item in record["model_targets"]]
+                        if record and record["model_targets"] else [config.active_main_model_profile]
+                    )
+                    if len(names) > 8 or any(name not in targets for name in names):
+                        raise ConfigOperationError("invalid_profile", "Select up to eight existing profiles; validate larger changes in batches.")
+                    for name in dict.fromkeys(names):
+                        result = self.probe(layers, "model", profile=name)
+                        results.append({
+                            **result, "profile": name, "fingerprint": targets[name]["fingerprint"],
+                            "coverage": "text_request_with_configured_parameters",
+                            "not_checked": ["tools", "images", "mcp", "lsp"],
+                        })
         if record:
             with self.store.locked():
                 self._check_revision(record)
@@ -481,10 +501,10 @@ class ConfigurationService:
                     raise ConfigOperationError(
                         "invalid_state", "Configuration candidate was already applied."
                     )
-                previous = {item["check"]: item for item in latest["checks"]}
+                previous = {(item["check"], item.get("profile")): item for item in latest["checks"]}
                 previous.update(
                     {
-                        item["check"]: {**item, "checked_at": time.time()}
+                        (item["check"], item.get("profile")): {**item, "checked_at": time.time()}
                         for item in results
                     }
                 )
@@ -544,19 +564,22 @@ class ConfigurationService:
                 if item["status"] == "passed"
                 and time.time() - item["checked_at"] < _PROBE_TTL
             }
-            required = {"static", "startup"} | (
-                {"model"}
-                if record["requires_model_probe"] and not allow_unverified_model
-                else set()
-            )
-            if not required <= passed:
+            verified = {
+                (item.get("profile"), item.get("fingerprint"))
+                for item in record["checks"] if item["check"] == "model"
+                and item["status"] == "passed" and time.time() - item["checked_at"] < _PROBE_TTL
+            }
+            required_models = {(item["profile"], item["fingerprint"]) for item in record["model_targets"]}
+            if not {"static", "startup"} <= passed or (
+                not allow_unverified_model and not required_models <= verified
+            ):
                 raise ConfigOperationError(
                     "validation_required",
-                    "Candidate requires successful static/startup checks and, when changing the active model, a recent model connection test.",
+                    "Candidate requires successful static/startup checks and a recent model connection test for every affected profile.",
                 )
             record["status"] = "committing"
             record["model_verified"] = (
-                "model" in passed if record["requires_model_probe"] else None
+                required_models <= verified if record["requires_model_probe"] else None
             )
             self.store.write(record)
             self.store.replace(record["scope"], _decode(record["after"]))

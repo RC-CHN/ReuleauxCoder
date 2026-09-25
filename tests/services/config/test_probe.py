@@ -160,3 +160,25 @@ def test_timeout_is_reported_as_unknown():
         [("workspace", {"app": {"api_key": "test"}})], "startup", timeout=0.001
     )
     assert result == {"check": "startup", "status": "unknown", "code": "timeout"}
+
+
+@pytest.mark.parametrize("settings,wire", [
+    ({"reasoning_effort": "high", "reasoning_effort_values": {"high": "strong"}}, {"reasoning_effort": "strong"}),
+    ({"thinking_enabled": True}, {"thinking": {"type": "enabled"}}),
+])
+def test_probe_uses_selected_profile_and_actual_request_parameters(endpoint, settings, wire):
+    url, captured, _ = endpoint
+    layers = [("workspace", {
+        "app": {"api_key": "synthetic", "base_url": url},
+        "models": {"active_main": "main", "profiles": {
+            "main": {"model": "main-model"},
+            "sub": {"model": "selected-sub", "max_tokens": 1234, "temperature": 0.3, **settings},
+        }},
+    })]
+    assert run_probe(layers, "model", profile="sub")["status"] == "passed"
+    assert len(captured) == 1
+    body = captured[0]
+    assert body["model"] == "selected-sub" and body["max_tokens"] == 1234
+    assert body["temperature"] == 0.3
+    for key, value in wire.items():
+        assert body[key] == value

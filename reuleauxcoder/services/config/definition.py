@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import MISSING, fields, is_dataclass
+from copy import deepcopy
+from dataclasses import MISSING, asdict, fields, is_dataclass
+import json
 import math
 import types
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
@@ -76,6 +78,20 @@ def dataclass_schema(cls, *, exclude=()) -> dict:
             value["minimum"] = 1
         if field.name == "temperature":
             value.update(minimum=0, maximum=2)
+        if field.name in {
+            "snip_keep_recent_tools", "snip_threshold_chars", "snip_min_lines",
+            "summarize_keep_recent_turns", "reserved_output_tokens", "fixed_prompt_tokens",
+            "tool_schema_tokens", "safety_margin_tokens", "edit_wait_timeout_ms",
+        }:
+            value["minimum"] = 0
+        if field.name in {
+            "bootstrap_token_ttl_sec", "peer_token_ttl_sec", "heartbeat_interval_sec",
+            "heartbeat_timeout_sec", "default_tool_timeout_sec", "shell_timeout_sec",
+            "poll_timeout_ms", "max_diagnostics", "max_message_chars",
+        }:
+            value["minimum"] = 1
+        if field.name == "max_injection_chars":
+            value["minimum"] = 512
         choices = {
             "provider": ["openai-compatible", "anthropic"],
             "verbosity": ["compact", "standard", "debug"],
@@ -83,6 +99,7 @@ def dataclass_schema(cls, *, exclude=()) -> dict:
             "reasoning_display": ["hidden", "indicator", "inline"],
             "notification_threshold": ["debug", "info", "warning", "error"],
             "typescript_mode": ["auto", "native", "legacy"],
+            "reasoning_replay_mode": [None, "none", "tool_calls"],
         }
         if field.name in choices:
             value["enum"] = choices[field.name]
@@ -90,6 +107,9 @@ def dataclass_schema(cls, *, exclude=()) -> dict:
             value["writeOnly"] = True
         if field.default is not MISSING:
             value["default"] = field.default
+        elif field.default_factory is not MISSING:
+            default = field.default_factory()
+            value["default"] = json.loads(json.dumps(asdict(default) if is_dataclass(default) else default))
         properties[field.name] = value
     return object_schema(properties)
 
@@ -116,7 +136,7 @@ def config_schema() -> dict:
             "models": object_schema(
                 {
                     **{
-                        key: nullable_string
+                        key: deepcopy(nullable_string)
                         for key in ("active", "active_main", "active_sub")
                     },
                     "profiles": {"type": "object", "additionalProperties": profile},
@@ -182,7 +202,51 @@ def config_schema() -> dict:
             "meta": {"type": "object", "additionalProperties": {}},
         }
     )
+    from reuleauxcoder.extensions.lsp.registry import LanguageId
+
+    lsp["properties"]["servers"]["propertyNames"] = {
+        "enum": [language.name.lower() for language in LanguageId]
+    }
+    schema["properties"]["models"]["properties"]["active"]["deprecated"] = True
+    schema["properties"]["context"]["properties"]["token_fudge_factor"]["exclusiveMinimum"] = 0
+    schema["properties"]["goal"]["properties"]["default_token_budget"]["anyOf"][0]["minimum"] = 1
+    annotate_access(schema)
     return schema
+
+
+def model_write_restriction(parts) -> str | None:
+    if parts and parts[0] in {"approval", "modes", "remote_exec", "meta"}:
+        return "human_policy"
+    if sensitive_path(parts):
+        return "credential_or_process_arguments"
+    if len(parts) >= 4 and parts[:2] in (("mcp", "servers"), ("lsp", "servers")) and parts[3] in {
+        "command", "cmd", "cwd", "workspace_root", "init_opts",
+    }:
+        return "process_launch"
+    return None
+
+
+def annotate_access(schema: dict, parts=()) -> None:
+    restriction = model_write_restriction(parts)
+    schema["x-rcoder"] = {
+        "activation": "next_start",
+        "model_write": "user_required" if restriction else (
+            "conditional" if parts and parts[0] in {"app", "models"} else "allowed"
+        ),
+    }
+    if restriction:
+        schema["x-rcoder"]["reason"] = restriction
+    elif parts and parts[0] in {"app", "models"}:
+        schema["x-rcoder"]["reason"] = "Cannot change the effective auto-reviewer configuration."
+    for name, child in schema.get("properties", {}).items():
+        annotate_access(child, (*parts, name))
+    additional = schema.get("additionalProperties")
+    if isinstance(additional, dict):
+        annotate_access(additional, (*parts, "{name}"))
+    if "items" in schema:
+        annotate_access(schema["items"], (*parts, "[]"))
+    for alternative in schema.get("anyOf", ()):
+        annotate_access(alternative, parts)
 
 
 def pointer(parts) -> str:
@@ -196,7 +260,9 @@ def shape_issues(value, schema, path="", *, unknown="error") -> list[ConfigIssue
         alternatives = [
             shape_issues(value, part, path, unknown=unknown) for part in schema["anyOf"]
         ]
-        return min(alternatives, key=len)
+        issues = min(alternatives, key=len)
+        if issues:
+            return issues
     if "enum" in schema and (
         value not in schema["enum"] or isinstance(value, (dict, list))
     ):
@@ -220,6 +286,7 @@ def shape_issues(value, schema, path="", *, unknown="error") -> list[ConfigIssue
     if type(value) in (int, float) and (
         value < schema.get("minimum", -math.inf)
         or value > schema.get("maximum", math.inf)
+        or value <= schema.get("exclusiveMinimum", -math.inf)
     ):
         return [
             ConfigIssue("invalid_range", path, "Value is outside the documented range.")
@@ -228,6 +295,8 @@ def shape_issues(value, schema, path="", *, unknown="error") -> list[ConfigIssue
     if isinstance(value, dict) and kind == "object":
         for key, item in value.items():
             child_path = path + pointer((key,))
+            if "propertyNames" in schema and key not in schema["propertyNames"]["enum"]:
+                result.append(ConfigIssue("unknown_name", child_path, "Unsupported configuration name."))
             spec = schema.get("properties", {}).get(
                 key, schema.get("additionalProperties", {})
             )

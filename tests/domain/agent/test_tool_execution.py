@@ -1848,7 +1848,7 @@ def test_config_apply_reviews_exact_changes_and_refuses_stale_approval(tmp_path,
     path.parent.mkdir()
     path.write_text("app:\n  api_key: private-config-key\n", encoding="utf-8")
     service = ConfigurationService.for_workspace(tmp_path, home=tmp_path / "home")
-    service.probe = lambda layers, check: {"check": check, "status": "passed", "code": "ok"}
+    service.probe = lambda layers, check, **kwargs: {"check": check, "status": "passed", "code": "ok"}
     candidate = service.prepare(changes=[{"path": "/ui/verbosity", "value": "debug"}], actor="model")
     tool = ConfigApplyTool(backend=LocalToolBackend(ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))))
     tool.bind_configuration(service)

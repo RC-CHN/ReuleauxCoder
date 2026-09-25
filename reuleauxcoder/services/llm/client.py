@@ -893,45 +893,14 @@ class LLM:
                     message_indices=backfilled_indices,
                     count=len(backfilled_indices),
                 )
-        params: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "stream": True,
-            "temperature": self.temperature,
-            "max_tokens": (
-                max(1, int(max_output_tokens))
-                if max_output_tokens is not None
-                else self.max_tokens
-            ),
-        }
+        from reuleauxcoder.services.llm.request_parameters import model_request_parameters
+
+        params = model_request_parameters(self, messages, max_output_tokens=max_output_tokens)
         if self.request_mode == "responses":
             if session_id:
                 params["_rc_session_id"] = session_id
             if (metadata or {}).get("volatile_tail"):
                 params["_rc_volatile_tail_count"] = 1
-        if self.reasoning_effort:
-            # Resolve CLI label → API value via the reasoning_effort_values mapping.
-            # Default mapping: {"low":"low","medium":"medium","high":"high"}
-            mapping = self.reasoning_effort_values or {
-                "low": "low",
-                "medium": "medium",
-                "high": "high",
-            }
-            api_value = mapping.get(self.reasoning_effort, self.reasoning_effort)
-            effort_param = (
-                "reasoning_effort"
-                if self.request_mode == "responses"
-                else self.reasoning_effort_param
-            )
-            params[effort_param] = api_value
-        elif self.thinking_enabled is not None:
-            # Only send thinking via extra_body when reasoning_effort is *not*
-            # being used — they are mutually exclusive mechanisms for the same
-            # feature and many API proxies reject requests that specify both.
-            params["extra_body"] = {
-                "thinking": {"type": "enabled" if self.thinking_enabled else "disabled"}
-            }
-
         if tools:
             params["tools"] = tools
 

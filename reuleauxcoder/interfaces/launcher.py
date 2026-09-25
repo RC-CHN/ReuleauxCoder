@@ -43,6 +43,9 @@ def _is_terminal():
 
 
 def _launch(*, explicit_tui: bool):
+    if "--config-management-stdio" in sys.argv[1:]:
+        from reuleauxcoder.interfaces.configuration import recovery_stdio
+        return recovery_stdio(sys.argv[1:])
     if sys.argv[1:2] == ["config"]:
         from reuleauxcoder.interfaces.configuration import main
         return main(sys.argv[2:])

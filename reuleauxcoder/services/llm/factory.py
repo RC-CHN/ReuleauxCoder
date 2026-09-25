@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from reuleauxcoder.services.llm.client import LLM
+from reuleauxcoder.services.llm.request_parameters import model_request_parameters
 
 
 _LLM_RUNTIME_FIELDS = (
@@ -46,6 +47,8 @@ def llm_runtime_kwargs(settings: Any, *, debug_trace: bool = False) -> dict[str,
     kwargs["responses_state"] = getattr(responses, "state", "local")
     kwargs["responses_cache_mode"] = getattr(cache, "mode", "implicit")
     kwargs["debug_trace"] = debug_trace
+    kwargs["reasoning_effort_values"] = getattr(settings, "reasoning_effort_values", None)
+    kwargs["reasoning_effort_param"] = getattr(settings, "reasoning_effort_param", "reasoning_effort")
     return kwargs
 
 
@@ -60,15 +63,9 @@ def probe_model_connection(client: LLM) -> None:
     The caller owns the client and a process-level timeout. A successful probe
     verifies the configured model's basic protocol, not an entire agent task.
     """
-    stream = client._provider_adapter.open_stream(
-        {
-            "model": client.model,
-            "messages": [{"role": "user", "content": "Reply OK."}],
-            "stream": True,
-            "temperature": client.temperature,
-            "max_tokens": 16,
-        }
-    )
+    stream = client._provider_adapter.open_stream(model_request_parameters(
+        client, [{"role": "user", "content": "Reply OK."}]
+    ))
     completed = False
     try:
         for chunk in stream:
@@ -94,8 +91,4 @@ def reconfigure_llm_from_settings(
         settings,
         debug_trace=llm.debug_trace if debug_trace is None else debug_trace,
     )
-    # Profile-level fields not in _LLM_RUNTIME_FIELDS (not available on top-level Config)
-    for field in ("reasoning_effort_values", "reasoning_effort_param"):
-        if hasattr(settings, field):
-            kwargs[field] = getattr(settings, field)
     llm.reconfigure(**kwargs)

@@ -1079,7 +1079,6 @@ class RemoteRelayHTTPService:
 
 
 def _parse_bind(bind: str) -> tuple[str, int]:
-    host, sep, port = bind.rpartition(":")
-    if not sep or not host:
-        raise ValueError(f"Invalid relay bind address: {bind!r}")
-    return host, int(port)
+    from reuleauxcoder.domain.config.validation import parse_relay_bind
+
+    return parse_relay_bind(bind)

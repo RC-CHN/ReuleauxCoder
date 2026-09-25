@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve app defaults and model profiles consistently across startup, session switches and validation; connect all context budget fields to the runtime. Validate relay addresses/timeouts, reasoning replay options and LSP language names, expose field authority/capability metadata, and protect the effective automatic reviewer across layered configuration. Verify every affected model profile with its actual request parameters and fix the skill-directory hint.
+
 - Add a shared configuration management API for model tools, Python/TypeScript RPC clients and a recovery-capable `rcoder config` CLI. Describe and inspect settings, prepare redacted candidates, validate merged configuration and model connectivity, atomically apply changes for the next start, and inspect/revert/recover journaled changes. Keep broken configuration diagnosable without an Agent; protect against stale approvals, unsaved editor files, interrupted commits and model attempts to change human-owned policy or credentials.
 
 ## 0.11.1 - 2026-09-25

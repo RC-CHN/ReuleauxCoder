@@ -130,6 +130,11 @@ class ConfigValidateTool(_ConfigurationTool):
                 "maxItems": 3,
                 "items": {"type": "string", "enum": ["static", "startup", "model"]},
             },
+            "profiles": {
+                "type": "array", "minItems": 1, "maxItems": 8,
+                "items": {"type": "string"},
+                "description": "Profile names for model checks. Defaults to affected profiles for a candidate, or the current main profile.",
+            },
         },
         "additionalProperties": False,
     }
@@ -142,16 +147,15 @@ class ConfigValidateTool(_ConfigurationTool):
             return None
         if change_id := arguments.get("change_id"):
             candidate = self._configuration.review(change_id, actor="model")
-            model = candidate["model_preview"]
+            targets = candidate["available_model_targets"]
+            required = [item["profile"] for item in candidate["model_targets"]]
             changes = candidate["diff"]
         else:
             state = self._configuration.execute("inspect", {}, actor="model")
-            config = state["next_start"] or {}
-            model = {
-                name: config.get(name)
-                for name in ("model", "provider", "request_mode", "base_url")
-            }
+            targets = state["model_targets"]
+            required = []
             changes = []
+        names = arguments.get("profiles", required or [item["profile"] for item in targets if "main" in item["roles"]])
         return ApprovalPreview(
             sections=(
                 ApprovalSection(
@@ -160,7 +164,8 @@ class ConfigValidateTool(_ConfigurationTool):
                     kind=ApprovalSectionKind.JSON,
                     content={
                         "checks": arguments.get("checks", ["static"]),
-                        "model": model,
+                        "models": [item for item in targets if item["profile"] in names],
+                        "coverage": "Configured text request parameters; tools, images, MCP and LSP are not checked.",
                         "changes": changes,
                     },
                 ),
@@ -201,6 +206,7 @@ class ConfigApplyTool(_ConfigurationTool):
                         "target": candidate["target_path"],
                         "changes": candidate["diff"],
                         "checks": candidate["checks"],
+                        "required_models": candidate["model_targets"],
                     },
                 ),
             )

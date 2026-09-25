@@ -34,6 +34,12 @@ class LspConfig:
     server_overrides: dict[str, LspServerOverride] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        from reuleauxcoder.extensions.lsp.registry import LanguageId
+
+        if set(self.server_overrides) - {language.name.lower() for language in LanguageId}:
+            raise ValueError("lsp.servers contains an unsupported language")
+        if any(server.cmd is not None and not server.cmd.strip() for server in self.server_overrides.values()):
+            raise ValueError("lsp server cmd must not be empty")
         if self.edit_wait_timeout_ms < 0:
             raise ValueError("lsp.edit_wait_timeout_ms cannot be negative")
         for name in ("poll_timeout_ms", "max_diagnostics", "max_message_chars"):

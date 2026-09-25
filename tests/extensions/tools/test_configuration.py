@@ -17,7 +17,7 @@ def test_model_tools_share_candidates_and_apply_authority(tmp_path):
     path.parent.mkdir()
     path.write_text("app:\n  api_key: private-config-token\n", encoding="utf-8")
     service = ConfigurationService.for_workspace(tmp_path, home=tmp_path / "home")
-    service.probe = lambda layers, check: {
+    service.probe = lambda layers, check, **kwargs: {
         "check": check,
         "status": "passed",
         "code": "ok",
@@ -49,7 +49,7 @@ def test_model_tools_share_candidates_and_apply_authority(tmp_path):
     preview = validate.approval_preview(
         {"change_id": candidate["id"], "checks": ["model"]}
     )
-    assert preview.sections[0].content["model"]["model"] == "gpt-4o"
+    assert preview.sections[0].content["models"][0]["model"] == "gpt-4o"
     assert "private-config-token" not in json.dumps(dict(preview.sections[0].content))
     assert json.loads(apply.execute(candidate["id"]).content)["status"] == "applied"
     assert "private-config-token" not in json.dumps(service.history())

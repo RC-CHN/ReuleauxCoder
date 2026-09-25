@@ -23,6 +23,31 @@ def test_discover_skills_returns_empty_when_roots_missing(tmp_path: Path) -> Non
     assert missing == ()
 
 
+def test_installed_skill_can_be_discovered_read_and_check_configuration_capabilities(tmp_path):
+    import json
+
+    from reuleauxcoder.app.configuration import ConfigurationService
+    from reuleauxcoder.extensions.skills.service import SkillsService
+    from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
+    from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
+    from reuleauxcoder.extensions.tools.builtin.configuration import ConfigReadTool
+
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    _write_skill(project / ".rcoder/skills", "config-fixture", "config-fixture")
+    service = SkillsService(workspace_dir=project, home_dir=home)
+    loaded = service.reload()
+    assert len(loaded.active_skills) == 1
+    skill = loaded.active_skills[0]
+    backend = LocalToolBackend(ExecutionContext(cwd=str(project), workspace_root=str(project)))
+    content = ReadFileTool(backend).execute(skill.location).model_text
+    assert "Body for config-fixture" in content
+    config = ConfigReadTool()
+    config.bind_configuration(ConfigurationService.for_workspace(project, home=home))
+    capabilities = json.loads(config.execute("describe").content)["capabilities"]
+    assert "profile_probes" in capabilities and "reviewer_protection" in capabilities
+
+
 def test_discover_skills_discovers_project_and_user_skills(tmp_path: Path) -> None:
     workspace_dir = tmp_path / "workspace"
     home_dir = tmp_path / "home"

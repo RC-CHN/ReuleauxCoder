@@ -397,6 +397,8 @@ class Config:
     reasoning_replay_mode: Optional[str] = None
     reasoning_replay_placeholder: Optional[str] = None
     mcp_servers: list[MCPServerConfig] = field(default_factory=list)
+    reasoning_effort_values: Optional[dict[str, object]] = None
+    reasoning_effort_param: str = "reasoning_effort"
     model_profiles: dict[str, ModelProfileConfig] = field(default_factory=dict)
     active_model_profile: Optional[str] = None
     active_main_model_profile: Optional[str] = None
@@ -463,6 +465,40 @@ class Config:
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors."""
         errors = []
+        from reuleauxcoder.domain.config.validation import parse_relay_bind
+
+        try:
+            parse_relay_bind(self.remote_exec.relay_bind)
+        except ValueError as error:
+            errors.append(str(error))
+        for name in (
+            "bootstrap_token_ttl_sec", "peer_token_ttl_sec", "heartbeat_interval_sec",
+            "heartbeat_timeout_sec", "default_tool_timeout_sec", "shell_timeout_sec",
+        ):
+            value = getattr(self.remote_exec, name)
+            if type(value) is not int or value < 1:
+                errors.append(f"remote_exec.{name} must be a positive integer")
+        if self.remote_exec.heartbeat_timeout_sec <= self.remote_exec.heartbeat_interval_sec:
+            errors.append("remote_exec.heartbeat_timeout_sec must exceed heartbeat_interval_sec")
+        for name in (
+            "snip_keep_recent_tools", "snip_threshold_chars", "snip_min_lines",
+            "summarize_keep_recent_turns", "reserved_output_tokens", "fixed_prompt_tokens",
+            "tool_schema_tokens", "safety_margin_tokens",
+        ):
+            value = getattr(self.context, name)
+            if type(value) is not int or value < 0:
+                errors.append(f"context.{name} must be a non-negative integer")
+        if self.context.token_fudge_factor <= 0:
+            errors.append("context.token_fudge_factor must be positive")
+        for settings in (self, *self.model_profiles.values()):
+            if settings.reasoning_replay_mode not in {None, "none", "tool_calls"}:
+                errors.append("reasoning_replay_mode must be none or tool_calls")
+            param = settings.reasoning_effort_param
+            if not param or param.startswith("_") or any(char.isspace() for char in param) or param in {
+                "model", "messages", "input", "tools", "stream", "max_tokens",
+                "max_output_tokens", "temperature", "extra_body", "headers",
+            }:
+                errors.append("reasoning_effort_param must name a dedicated reasoning parameter")
         from reuleauxcoder.domain.images import input_modalities
 
         try:

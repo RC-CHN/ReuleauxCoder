@@ -198,7 +198,7 @@ def command_panel_spec() -> CommandPanelSpec:
         ) or (
             PanelItem(
                 label="(no skills discovered)",
-                description="create skills under .agents/skills/ or ~/.agents/skills/",
+                description="create skills under .rcoder/skills/ or ~/.rcoder/skills/",
                 action=None,
             ),
         )

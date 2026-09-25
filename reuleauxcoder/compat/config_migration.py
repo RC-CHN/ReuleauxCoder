@@ -57,8 +57,9 @@ def migrate_legacy_config(data: dict) -> tuple[dict, bool]:
                 migrated["models"]["active_main"] = next(iter(profiles.keys()))
                 changed = True
 
-    # Cleanup legacy fields in app section after migration.
-    if isinstance(migrated.get("app"), dict):
+    # Only consume old fields when converting an app-only configuration. With
+    # named profiles, app remains the shared defaults layer for those profiles.
+    if not has_profiles and isinstance(migrated.get("app"), dict):
         app_data = migrated["app"]
         legacy_keys = {
             "model",

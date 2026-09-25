@@ -38,7 +38,7 @@ def service(tmp_path):
     return ConfigurationService(
         ConfigTransactionStore(ConfigPaths(user, workspace), tmp_path / "state"),
         runtime=lambda: {"model": "running-model", "api_key": SECRET},
-        probe=lambda layers, check: {"check": check, "status": "passed", "code": "ok"},
+        probe=lambda layers, check, **kwargs: {"check": check, "status": "passed", "code": "ok"},
     )
 
 
@@ -134,7 +134,7 @@ def test_active_model_requires_live_validation_and_unknown_does_not_pass(service
     with pytest.raises(ConfigOperationError) as caught:
         service.apply(change_id=candidate["id"])
     assert caught.value.code == "validation_required"
-    service.probe = lambda layers, check: {
+    service.probe = lambda layers, check, **kwargs: {
         "check": check,
         "status": "unknown",
         "code": "timeout",
@@ -142,7 +142,7 @@ def test_active_model_requires_live_validation_and_unknown_does_not_pass(service
     validation = service.validate(change_id=candidate["id"], checks=["model"])
     assert validation["valid"] and validation["checks"][-1]["status"] == "unknown"
     assert service.store.paths.workspace.read_bytes() == before
-    service.probe = lambda layers, check: {
+    service.probe = lambda layers, check, **kwargs: {
         "check": check,
         "status": "passed",
         "code": "ok",
@@ -184,7 +184,7 @@ def test_probes_do_not_hold_commit_lock_and_recheck_after_concurrent_edit(servic
     entered, release = threading.Event(), threading.Event()
     candidate = prepare(service)
 
-    def probe(layers, check):
+    def probe(layers, check, **kwargs):
         entered.set()
         assert release.wait(5)
         return {"check": check, "status": "passed", "code": "ok"}
