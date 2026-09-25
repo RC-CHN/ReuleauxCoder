@@ -280,6 +280,8 @@ LLM-wide defaults use `app.request_mode` and `app.responses`; a profile may over
 
 Use `/config` to inspect effective values and their sources. Session overrides layer over config defaults and must not silently rewrite persisted global settings.
 
+`app/configuration.py` owns the shared configuration management service. Model tools, `config.*` RPC methods and `rcoder config` use its candidate/validation/commit/recovery contracts. Persistent changes activate on the next start; inspection distinguishes them from the running configuration. The standalone `rcoder config rpc` transport starts without an Agent or valid model configuration. Typed schema and pure validation live in `services/config`; journaled atomic replacement lives in `infrastructure/persistence/config_transactions.py`. See `docs/configuration-api.md` for authorization, probe limits and recovery semantics.
+
 ## Development rules
 
 - Prefer typed dataclasses and ports over dict/string protocols.

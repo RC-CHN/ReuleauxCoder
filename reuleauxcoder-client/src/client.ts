@@ -1,11 +1,13 @@
 import {Events} from './events.js';
 import {InteractionInbox} from './interactions.js';
+import {ConfigurationClient} from './configuration.js';
 import type {MessagePeer} from './message-peer.js';
 import type {ArtifactPage, HistoryOperation, HistoryPage} from './history.js';
 import type {AttachmentReference, GitWorkspace, ImageReference} from './wire.js';
 import {actionRequest, decode, emptyState, enumValue, record, tuple, type Action, type Json, type RuntimeState, type UIEvent} from './wire.js';
 
 export class RuntimeClient extends Events {
+  readonly configuration: ConfigurationClient;
   state: RuntimeState = emptyState;
   catalog: Action[] = [];
   info: any;
@@ -15,6 +17,7 @@ export class RuntimeClient extends Events {
 
   constructor(readonly peer: MessagePeer) {
     super();
+    this.configuration = new ConfigurationClient(peer);
     this.inbox.on('interactions', () => this.emit('interactions'));
     this.inbox.on('answered', (item, response) => this.emit('answered', item, response));
     peer.on('notification', (method, params) => this.notification(method, params));

@@ -4,3 +4,4 @@ export {MessagePeer, RpcError} from './message-peer.js';
 export {SubmissionQueue, type SubmissionSink} from './submissions.js';
 export * from './wire.js';
 export type * from './history.js';
+export * from './configuration.js';

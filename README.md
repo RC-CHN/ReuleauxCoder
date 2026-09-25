@@ -89,6 +89,8 @@ mkdir -p .rcoder
 cp config.yaml.example .rcoder/config.yaml   # or write your own
 ```
 
+Use `rcoder config inspect` to inspect redacted settings and `rcoder config check` to validate them without starting an Agent. The shared [configuration API](docs/configuration-api.md) supports prepared changes, model connection tests, atomic saves and recovery through CLI or RPC even when normal startup fails. Persistent changes take effect on the next core start.
+
 ## React TUI
 
 Paste a local image path into CLI or TUI to insert an `[Image #1]` attachment marker. `/attach <path>` remains available. Set `support_modal: [text, image]` on a vision model profile; the default is `[text]`. Images use compact 256 KiB previews and follow history; switching to a text model preserves saved references. See [image input and retention](docs/images.md) for compression, user-turn retention and remote paths.

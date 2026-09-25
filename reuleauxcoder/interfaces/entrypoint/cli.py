@@ -17,6 +17,7 @@ from reuleauxcoder.domain.context.manager import (
     prepare_tiktoken_encoder,
 )
 from reuleauxcoder.services.config.loader import ExampleConfigError
+from reuleauxcoder.domain.config.management import ConfigOperationError
 from reuleauxcoder.infrastructure.persistence.session_store import SessionRestoreError
 
 
@@ -74,7 +75,7 @@ def main():
         runner = AppRunner(options, startup_progress=startup_progress)
         ctx = runner.initialize()
         startup_progress_active = False
-    except ExampleConfigError as e:
+    except (ExampleConfigError, ConfigOperationError) as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
     except SessionRestoreError as error:

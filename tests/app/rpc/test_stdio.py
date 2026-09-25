@@ -46,6 +46,12 @@ main()
         try:
             info = client.initialize(UIProfile("tui", "TUI", frozenset(UICapability)))
             assert info["version"] == 1
+            assert info["configuration_api"] == 1
+            assert client.configuration.describe()["api_version"] == 1
+            inspected = client.configuration.inspect()
+            assert inspected["valid"]
+            assert inspected["sources"][-1]["path"] == str(config)
+            assert "test-key" not in str(inspected)
             assert client.state.model == "test-model"
             client.submit("/help")
             client.wait_idle()

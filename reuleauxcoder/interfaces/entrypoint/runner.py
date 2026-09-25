@@ -135,6 +135,34 @@ class AppRunner:
             action_registry = self.dependencies.create_action_registry()
             self._init_remote_relay(config, ui_bus)
         config, ui_bus, llm, agent = self._build_core(config, ui_bus)
+        from reuleauxcoder.app.configuration import ConfigurationService
+        from reuleauxcoder.app.runtime.effective_config import build_effective_config_view
+        from reuleauxcoder.infrastructure.persistence.config_transactions import (
+            ConfigPaths, ConfigTransactionStore,
+        )
+        from reuleauxcoder.services.config.loader import ConfigLoader
+        from dataclasses import asdict
+
+        configuration_service = ConfigurationService(
+            ConfigTransactionStore(
+                ConfigPaths(
+                    ConfigLoader.GLOBAL_CONFIG_PATH,
+                    ConfigLoader.WORKSPACE_CONFIG_PATH,
+                    self.options.config_path,
+                ),
+                Path.home() / ".rcoder/config-management",
+            ),
+            runtime=lambda: asdict(build_effective_config_view(config, agent)),
+            mutation_guard=lambda path: (
+                guard(path)
+                if callable(guard := getattr(agent, "document_mutation_guard", None))
+                else None
+            ),
+        )
+        for tool in agent.tools:
+            bind_configuration = getattr(tool, "bind_configuration", None)
+            if callable(bind_configuration):
+                bind_configuration(configuration_service)
         record_runtime_issue = getattr(agent, "record_runtime_issue", None)
         if callable(record_runtime_issue):
             ui_bus.bind_subscriber_failure_sink(
@@ -184,6 +212,7 @@ class AppRunner:
                 ) = self._restore_session(config, agent, ui_bus)
 
         app_ctx = AppContext(
+            configuration_service=configuration_service,
             config=config,
             llm=llm,
             agent=agent,

@@ -351,3 +351,85 @@ def test_symlink_is_not_replaced_by_management(service, tmp_path):
     assert caught.value.code == "symlink_target"
     assert path.is_symlink()
     assert yaml.safe_load(target.read_text())["ui"]["verbosity"] == "compact"
+
+
+def test_unsaved_editor_configuration_blocks_apply(service):
+    candidate = prepare(service)
+    original = service.store.paths.workspace.read_bytes()
+    service.mutation_guard = lambda path: "dirty document"
+    with pytest.raises(ConfigOperationError) as caught:
+        service.apply(change_id=candidate["id"])
+    assert caught.value.code == "unsaved_document"
+    assert service.store.paths.workspace.read_bytes() == original
+    service.mutation_guard = lambda path: None
+    assert service.apply(change_id=candidate["id"])["status"] == "applied"
+
+
+def test_expired_candidates_and_model_checks_require_revalidation(service):
+    candidate = prepare(service)
+    record = service.store.read(candidate["id"])
+    record["expires_at"] = 0
+    service.store.write(record)
+    with pytest.raises(ConfigOperationError) as caught:
+        service.apply(change_id=candidate["id"])
+    assert caught.value.code == "expired"
+    candidate = prepare(service, "/app/model", "other")
+    service.validate(change_id=candidate["id"], checks=["model"])
+    record = service.store.read(candidate["id"])
+    for check in record["checks"]:
+        check["checked_at"] = 0
+    service.store.write(record)
+    with pytest.raises(ConfigOperationError) as caught:
+        service.apply(change_id=candidate["id"])
+    assert caught.value.code == "validation_required"
+
+
+def test_alias_layers_cannot_hide_removal_of_required_settings(service):
+    paths = service.store.paths
+    store = ConfigTransactionStore(
+        ConfigPaths(paths.user, paths.workspace, paths.workspace),
+        service.store.state_dir,
+    )
+    aliased = ConfigurationService(store, probe=service.probe)
+    candidate = aliased.prepare(changes=[{"path": "/app/api_key", "remove": True}])
+    assert candidate["diagnostics"]
+    with pytest.raises(ConfigOperationError) as caught:
+        aliased.apply(change_id=candidate["id"])
+    assert caught.value.code == "validation_required"
+    assert aliased.inspect()["valid"]
+
+
+def test_source_paths_are_pinned_before_process_directory_changes(
+    service, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(service.store.paths.workspace.parent)
+    paths = ConfigPaths(
+        service.store.paths.user,
+        service.store.paths.workspace,
+        type(tmp_path)("config.yaml"),
+    )
+    configured = ConfigurationService(
+        ConfigTransactionStore(paths, service.store.state_dir)
+    )
+    before = configured.inspect()
+    monkeypatch.chdir(tmp_path)
+    assert configured.inspect()["revision"] == before["revision"]
+
+
+def test_yaml_merge_keys_keep_explicit_override_semantics():
+    data, issues = parse_document(
+        b"app: &defaults {api_key: test, model: base}\nmodels:\n  profiles:\n    custom: {<<: *defaults, model: custom}\n",
+        "workspace",
+    )
+    assert not issues
+    assert data["models"]["profiles"]["custom"]["model"] == "custom"
+
+
+def test_oversized_source_is_not_truncated_into_a_recovery_backup(service):
+    path = service.store.paths.workspace
+    content = b"#" + b"x" * (1024 * 1024)
+    path.write_bytes(content)
+    with pytest.raises(ConfigOperationError) as caught:
+        service.prepare(document={"app": {"api_key": "test"}})
+    assert caught.value.code == "too_large"
+    assert path.read_bytes() == content

@@ -18,7 +18,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcome,
     ToolOutcomeStatus,
 )
-from reuleauxcoder.domain.approval import ApprovalGrantScope
+from reuleauxcoder.domain.approval import ApprovalGrantScope, ApprovalPreview
 
 
 ToolResult = str | ToolOutcome
@@ -346,6 +346,10 @@ class Tool(ABC):
                 patterns=subjects,
             ),
         )
+
+    def approval_preview(self, arguments: Mapping[str, Any]) -> ApprovalPreview | None:
+        """Optional tool-owned, read-only proposal; execution must recheck its revision."""
+        return None
 
     def _argument_failure(self, issue: _ArgumentIssue) -> ToolOutcome:
         missing = f" Missing: {list(issue.missing)!r}." if issue.missing else ""

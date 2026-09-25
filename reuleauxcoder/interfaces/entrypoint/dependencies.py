@@ -12,6 +12,7 @@ import threading
 from typing import Any, Callable
 
 from reuleauxcoder.app.commands.loader import create_builtin_action_registry
+from reuleauxcoder.app.configuration import ConfigurationService
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.infrastructure.platform import get_platform_info
@@ -281,6 +282,7 @@ class AppContext:
     current_session_id: str | None = None
     session_exit_time: str | None = None
     sessions_dir: Path | None = None
+    configuration_service: ConfigurationService | None = None
 
 
 @dataclass

@@ -90,6 +90,8 @@ mkdir -p .rcoder
 cp config.yaml.example .rcoder/config.yaml   # 或自行编写
 ```
 
+可用 `rcoder config inspect` 查看脱敏后的配置及来源，用 `rcoder config check` 在不启动 Agent 的情况下检查配置。[统一配置接口](docs/configuration-api.md) 提供候选变更、模型连接测试、原子保存和恢复功能；即使正常启动失败，也能通过 CLI 或独立 RPC 修复。持久化变更在下次核心启动时生效。
+
 ## React TUI
 
 独立的 React + Ink 前端位于 [`reuleauxcoder-tui/`](reuleauxcoder-tui/README.md)，通过 JSON-RPC 使用 Python 运行时，提供一级 slash 菜单、命令面板、审批和固定输入区。安装发布 wheel 后，在具备 Node.js 22+ 的交互终端中运行 `rcoder` 或 `rcoder-tui` 即可启动 TUI。以下为前端开发方式：

@@ -19,16 +19,17 @@ MAX_CONFIG_BYTES = 1024 * 1024
 
 class _UniqueLoader(yaml.SafeLoader):
     def construct_mapping(self, node, deep=False):
-        self.flatten_mapping(node)
-        result = {}
-        for key_node, value_node in node.value:
+        seen = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
             key = self.construct_object(key_node, deep=deep)
-            if not isinstance(key, str) or key in result:
+            if not isinstance(key, str) or key in seen:
                 raise yaml.constructor.ConstructorError(
                     None, None, "Keys must be unique strings", key_node.start_mark
                 )
-            result[key] = self.construct_object(value_node, deep=deep)
-        return result
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 def _bounded_json(value, depth=0, budget=None):

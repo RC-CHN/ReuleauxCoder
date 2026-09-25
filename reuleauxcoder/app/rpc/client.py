@@ -11,6 +11,7 @@ from concurrent.futures import Future
 
 from reuleauxcoder.app.rpc.codec import encode, decode
 from reuleauxcoder.app.rpc.models import RuntimeSnapshot
+from reuleauxcoder.app.rpc.configuration_client import ConfigurationClient
 from reuleauxcoder.app.interaction_contracts import cancelled_response
 from reuleauxcoder.infrastructure.rpc.peer import RpcError, RpcPeer
 
@@ -20,6 +21,7 @@ class RuntimeClient:
         self, peer: RpcPeer, ui_bus, interactor, *, foreground_interactions=False
     ):
         self.peer, self.ui_bus, self.interactor = peer, ui_bus, interactor
+        self.configuration = ConfigurationClient(peer)
         self.state = RuntimeSnapshot()
         self._condition = threading.Condition()
         self._foreground_interactions = foreground_interactions

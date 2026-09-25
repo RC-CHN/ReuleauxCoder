@@ -2,6 +2,10 @@
 
 
 def main():
+    import sys
+    if sys.argv[1:2] == ["config"]:
+        from reuleauxcoder.interfaces.configuration import main as configure
+        return configure(sys.argv[2:])
     from reuleauxcoder.interfaces.cli.args import parse_args
 
     args = parse_args()

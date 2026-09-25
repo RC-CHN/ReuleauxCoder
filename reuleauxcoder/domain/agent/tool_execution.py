@@ -1144,10 +1144,16 @@ class ToolExecutor:
                             approval_request.metadata["approval_operation"] = (
                                 "Run command"
                             )
-                        preview = build_approval_preview(
-                            approval_request, workspace=workspace,
-                            document=before_approval,
+                        custom_preview = getattr(tool, "approval_preview", None)
+                        preview = (
+                            custom_preview(deepcopy(tc.arguments))
+                            if callable(custom_preview) else None
                         )
+                        if preview is None:
+                            preview = build_approval_preview(
+                                approval_request, workspace=workspace,
+                                document=before_approval,
+                            )
                         if not isinstance(preview, ApprovalPreview):
                             raise InvalidApprovalPreview
                         approval_request.preview = preview

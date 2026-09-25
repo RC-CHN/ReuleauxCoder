@@ -21,6 +21,12 @@ class ConfigPaths:
     workspace: Path
     explicit: Path | None = None
 
+    def __post_init__(self):
+        for name in ("user", "workspace", "explicit"):
+            path = getattr(self, name)
+            if path is not None:
+                object.__setattr__(self, name, path.absolute())
+
     def layers(self) -> tuple[tuple[str, Path], ...]:
         layers = (("user", self.user), ("workspace", self.workspace))
         return (*layers, ("explicit", self.explicit)) if self.explicit else layers
@@ -38,11 +44,11 @@ class ConfigPaths:
 class ConfigTransactionStore:
     def __init__(self, paths: ConfigPaths, state_dir: Path):
         self.paths = paths
-        self.state_dir = state_dir
+        self.state_dir = state_dir.absolute()
         identity = json.dumps(
             [(name, str(path.absolute())) for name, path in paths.layers()]
         )
-        self.directory = state_dir / hashlib.sha256(identity.encode()).hexdigest()[:24]
+        self.directory = self.state_dir / hashlib.sha256(identity.encode()).hexdigest()[:24]
 
     @contextmanager
     def locked(self):
@@ -94,6 +100,11 @@ class ConfigTransactionStore:
                 raise ConfigOperationError(
                     "unreadable_config", f"Cannot read the {scope} configuration file."
                 ) from error
+            if content is not None and len(content) > 1024 * 1024:
+                raise ConfigOperationError(
+                    "too_large",
+                    f"The {scope} configuration exceeds the 1 MiB management limit; reduce it before preparing changes.",
+                )
             contents[scope] = content
             digest.update(
                 json.dumps(
@@ -107,6 +118,16 @@ class ConfigTransactionStore:
             )
             digest.update(hashlib.sha256(content or b"").digest())
         return digest.hexdigest(), contents
+
+    def candidate_contents(
+        self, contents: dict, scope: str, content: bytes | None
+    ) -> dict:
+        """Replacing one physical file changes every source alias of that file."""
+        target = self.paths.target(scope).resolve()
+        return {
+            name: content if path.resolve() == target else contents[name]
+            for name, path in self.paths.layers()
+        }
 
     def read(self, change_id: str) -> dict:
         if not isinstance(change_id, str) or not re.fullmatch(

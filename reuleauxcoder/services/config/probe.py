@@ -60,8 +60,10 @@ def main():
             result = {"status": "failed", "code": "request_rejected"}
         elif (
             status == 429
+            or (isinstance(status, int) and status >= 500)
             or isinstance(error, (TimeoutError, ConnectionError))
-            or type(error).__name__ in ("APIConnectionError", "APITimeoutError")
+            or type(error).__name__
+            in ("APIConnectionError", "APITimeoutError", "ProviderTransportError")
         ):
             result = {"status": "unknown", "code": "provider_unavailable"}
         else:

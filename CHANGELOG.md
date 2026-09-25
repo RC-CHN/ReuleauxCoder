@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a shared configuration management API for model tools, Python/TypeScript RPC clients and a recovery-capable `rcoder config` CLI. Describe and inspect settings, prepare redacted candidates, validate merged configuration and model connectivity, atomically apply changes for the next start, and inspect/revert/recover journaled changes. Keep broken configuration diagnosable without an Agent; protect against stale approvals, unsaved editor files, interrupted commits and model attempts to change human-owned policy or credentials.
+
 ## 0.11.1 - 2026-09-25
 
 - Complete Chinese/English VS Code translations for built-in command forms, goal controls, MCP/skill status, process facts, approval feedback, installation/upload errors and runtime notices. Localize overview counts and durations while preserving custom names, identifiers, paths, command output and model text; check coverage against the real core catalog.

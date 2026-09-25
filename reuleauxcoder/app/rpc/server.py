@@ -48,6 +48,7 @@ class RuntimeServer:
     def __init__(self, commands: CommandService, peer: RpcPeer, *, host_mode=False):
         self.commands, self.peer = commands, peer
         self.host_mode = host_mode
+        self.configuration_api = False
         self.agent, self.config, self.bus = (
             commands.agent,
             commands.config,
@@ -247,6 +248,7 @@ class RuntimeServer:
                     "presentation": asdict(self.config.ui),
                     "host_mode": self.host_mode,
                     "model_configured": bool(self.config.api_key),
+                    "configuration_api": 1 if self.configuration_api else None,
                     "runtime_environment": {
                         "system": get_platform_info().system,
                         "shell": get_platform_info().get_preferred_shell().value,

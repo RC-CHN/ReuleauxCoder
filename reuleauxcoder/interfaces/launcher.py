@@ -43,6 +43,9 @@ def _is_terminal():
 
 
 def _launch(*, explicit_tui: bool):
+    if sys.argv[1:2] == ["config"]:
+        from reuleauxcoder.interfaces.configuration import main
+        return main(sys.argv[2:])
     parser = create_parser(prog="rcoder-tui" if explicit_tui else "rcoder")
     parser.epilog = (
         "rcoder selects TUI when compatible Node is available; otherwise CLI. "

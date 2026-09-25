@@ -127,10 +127,12 @@ class ConfigurationService:
         *,
         runtime: Callable[[], dict] | None = None,
         probe=run_probe,
+        mutation_guard: Callable[[str], str | None] | None = None,
     ):
         self.store = store
         self.runtime = runtime
         self.probe = probe
+        self.mutation_guard = mutation_guard
 
     def execute(
         self, operation: str, parameters: dict, *, actor: ConfigActor = "user"
@@ -170,6 +172,7 @@ class ConfigurationService:
         home: Path | None = None,
         explicit: Path | None = None,
         runtime=None,
+        mutation_guard=None,
     ):
         home = (home or Path.home()).absolute()
         return cls(
@@ -182,13 +185,21 @@ class ConfigurationService:
                 home / ".rcoder/config-management",
             ),
             runtime=runtime,
+            mutation_guard=mutation_guard,
         )
 
-    def describe(self) -> dict:
+    def describe(self, section: str | None = None) -> dict:
+        schema = config_schema()
+        if section is not None:
+            if not isinstance(section, str) or section not in schema["properties"]:
+                raise ConfigOperationError(
+                    "invalid_section", "Unknown configuration section."
+                )
+            schema = schema["properties"][section]
         return {
             "api_version": 1,
             "core_version": __version__,
-            "schema": config_schema(),
+            "schema": schema,
             "scopes": [name for name, _ in self.store.paths.layers()],
             "activation": "next_start",
             "candidate_ttl_seconds": _TTL,
@@ -339,7 +350,7 @@ class ConfigurationService:
             if after is not None
             else None
         )
-        candidate_contents = {**contents, scope: content}
+        candidate_contents = self.store.candidate_contents(contents, scope, content)
         layers, issues = self._layers(candidate_contents)
         config, found = resolve_layers(layers)
         issues.extend(found)
@@ -348,6 +359,7 @@ class ConfigurationService:
         record = {
             "id": uuid.uuid4().hex,
             "scope": scope,
+            "target_path": str(self.store.paths.target(scope)),
             "actor": actor,
             "base_revision": revision,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -361,6 +373,16 @@ class ConfigurationService:
             "checks": [],
             "requires_model_probe": _model_identity(config)
             != _model_identity(old_config),
+            "model_preview": redact(
+                {
+                    "model": config.model,
+                    "provider": config.provider,
+                    "request_mode": config.request_mode,
+                    "base_url": config.base_url,
+                }
+            )
+            if config
+            else None,
         }
         with self.store.locked():
             if self.store.snapshot()[0] != revision:
@@ -433,7 +455,9 @@ class ConfigurationService:
                 raise ConfigOperationError(
                     "invalid_state", "Only prepared changes may be validated."
                 )
-            contents[record["scope"]] = _decode(record["after"])
+            contents = self.store.candidate_contents(
+                contents, record["scope"], _decode(record["after"])
+            )
         layers, issues = self._layers(contents)
         _, found = resolve_layers(layers)
         issues.extend(found)
@@ -507,6 +531,13 @@ class ConfigurationService:
         with self.store.locked():
             record = self._candidate(change_id, actor)
             self._check_revision(record)
+            if self.mutation_guard and self.mutation_guard(
+                str(self.store.paths.target(record["scope"]).resolve())
+            ):
+                raise ConfigOperationError(
+                    "unsaved_document",
+                    "Save or discard unsaved editor changes before applying this configuration.",
+                )
             passed = {
                 item["check"]
                 for item in record["checks"]

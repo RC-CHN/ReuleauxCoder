@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {mkdtemp, mkdir, readFile, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import test from 'node:test';
+import {ConfigurationClient} from '@reuleauxcoder/client';
+import {RpcPeer} from '@reuleauxcoder/client/node';
+import {python} from './helpers.js';
+
+test('shared configuration client repairs broken core settings through standalone RPC', {timeout: 30000}, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'rcoder config 中文-'));
+  const home = join(root, 'home');
+  const file = join(root, '.rcoder', 'config.yaml');
+  await mkdir(join(root, '.rcoder'));
+  await writeFile(file, 'app: [broken');
+  const child = spawn(python, ['-m', 'reuleauxcoder', 'config', 'rpc', '--workspace', root], {
+    cwd: root, env: {...process.env, HOME: home, USERPROFILE: home}, stdio: 'pipe', windowsHide: true,
+  });
+  let errors = ''; child.stderr.on('data', chunk => {errors += chunk.toString();});
+  const closed = new Promise<number | null>(resolve => child.once('close', resolve));
+  const peer = new RpcPeer(child.stdout, child.stdin);
+  child.once('error', error => peer.close(error));
+  t.after(async () => {peer.close(); child.kill(); await closed; await rm(root, {recursive: true, force: true});});
+  const client = new ConfigurationClient(peer);
+  assert.equal((await client.initialize()).api_version, 1);
+  const before = await client.inspect();
+  assert.equal(before.valid, false);
+  assert.equal(before.diagnostics[0].code, 'invalid_yaml');
+  const draft = await client.prepare({document: {app: {api_key: 'private-sdk-key'}, prompt: {system_append: '中文项目'}}, base_revision: before.revision});
+  assert.equal(draft.status, 'prepared');
+  assert.equal(await readFile(file, 'utf8'), 'app: [broken');
+  assert(!JSON.stringify(draft).includes('private-sdk-key'));
+  assert.equal((await client.validate({change_id: draft.id})).valid, true);
+  await assert.rejects(client.apply(draft.id), /successful static\/startup checks/);
+  const saved = await client.apply(draft.id, {allow_unverified_model: true});
+  assert.equal(saved.activation, 'next_start');
+  assert.equal(saved.status, 'applied');
+  const current = await client.inspect();
+  assert.equal(current.valid, true);
+  assert.equal(current.runtime, null);
+  assert(!JSON.stringify(current).includes('private-sdk-key'));
+  const second = await client.prepare({changes: [{path: '/ui/verbosity', value: 'debug'}], base_revision: current.revision});
+  await client.apply(second.id);
+  const revert = await client.revert(second.id);
+  await client.apply(revert.id);
+  assert.equal((await client.history()).changes.length, 3);
+  const stale = await client.prepare({changes: [{path: '/ui/verbosity', value: 'standard'}]});
+  await writeFile(file, (await readFile(file, 'utf8')) + '\n# external edit\n');
+  await assert.rejects(client.apply(stale.id), /changed after preparation/);
+  peer.close();
+  assert.equal(await closed, 0, errors);
+});

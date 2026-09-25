@@ -138,7 +138,8 @@ def test_probe_uses_selected_protocol_without_workspace_payload(
 
 
 @pytest.mark.parametrize(
-    "status,expected", [(401, "failed"), (404, "failed"), (429, "unknown")]
+    "status,expected",
+    [(401, "failed"), (404, "failed"), (429, "unknown"), (503, "unknown")],
 )
 def test_failed_probe_never_leaks_provider_errors_or_retries(
     endpoint, status, expected, tmp_path
