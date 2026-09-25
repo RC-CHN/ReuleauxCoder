@@ -2,11 +2,10 @@
 
 ## Unreleased
 
-- Add inline Chinese/English VS Code configuration recovery using an independent management process. Guide failed startup through diagnostics, native file editing, history previews, explicit model checks/offline recovery and a deliberate restart; guard dirty buffers and stale previews, keep unrelated controls folded, and cover the actual repair paths with native-host and browser tests. Document the full config.yaml field inventory and verification boundaries. Add short navigation/feedback transitions and busy indicators across command panels, permission scopes, overview, approvals and recovery, respecting reduced motion and keeping confirmation targets stationary.
-
-- Resolve app defaults and model profiles consistently across startup, session switches and validation; connect all context budget fields to the runtime. Validate relay addresses/timeouts, reasoning replay options and LSP language names, expose field authority/capability metadata, and protect the effective automatic reviewer across layered configuration. Verify every affected model profile with its actual request parameters and fix the skill-directory hint.
-
-- Add a shared configuration management API for model tools, Python/TypeScript RPC clients and a recovery-capable `rcoder config` CLI. Describe and inspect settings, prepare redacted candidates, validate merged configuration and model connectivity, atomically apply changes for the next start, and inspect/revert/recover journaled changes. Keep broken configuration diagnosable without an Agent; protect against stale approvals, unsaved editor files, interrupted commits and model attempts to change human-owned policy or credentials.
+- Make YAML the configuration source and reduce the shared CLI/RPC API to read-only describe, inspect and check. Remove dedicated model configuration tools, prepared changes, write/recovery protocols and verification leases; leave existing private backups untouched. Startup and checks share strict validation, and loading never generates or backfills files.
+- Add bilingual VS Code configuration editing through native documents: distinguish workspace overrides, host-global defaults and explicit launch files, validate unsaved buffers, preserve editor save/undo/conflict behavior, and check saved settings before restarting. Failed preflight leaves the running core intact; model connection tests stay optional. Cover real native-editor and browser journeys and document the complete YAML inventory.
+- Resolve app defaults and named profiles consistently across startup, session switches and probes; connect all context budget fields. Validate relay addresses/timeouts, reasoning replay and LSP names, share actual model request parameters, and fix the skill-directory hint.
+- Add short navigation/feedback transitions and busy indicators across command panels, permission scopes, overview, approvals and configuration, respecting reduced motion and keeping confirmation targets stationary.
 
 ## 0.11.1 - 2026-09-25
 

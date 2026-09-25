@@ -67,18 +67,15 @@ uv run rcoder
 
 ## 快速开始
 
-首次运行时，`rcoder` 会自动在 `~/.rcoder/config.yaml` 生成全局配置模板。编辑该文件，填入你的 API 凭据：
+在核心运行的主机上创建 `~/.rcoder/config.yaml`，填入模型凭据：
 
-```bash
-rcoder
-# → 已生成 ~/.rcoder/config.yaml，请编辑它并填入 API key 和模型。
+```yaml
+app:
+  api_key: "你的 API key"
+  model: "提供方的模型 ID"
 ```
 
-编辑 `~/.rcoder/config.yaml` 中的 API key 后，再次运行：
-
-```bash
-rcoder
-```
+然后执行 `rcoder config check` 检查配置，再运行 `rcoder`。加载配置不会自动生成或改写文件。仓库中的 `config.yaml.example` 提供更多字段示例。
 
 ### 项目级配置（可选）
 
@@ -90,7 +87,7 @@ mkdir -p .rcoder
 cp config.yaml.example .rcoder/config.yaml   # 或自行编写
 ```
 
-可用 `rcoder config inspect` 查看脱敏后的配置及来源，用 `rcoder config check` 在不启动 Agent 的情况下检查配置。[统一配置接口](docs/configuration-api.md) 提供候选变更、模型连接测试、原子保存和恢复功能；即使正常启动失败，也能通过 CLI 或独立 RPC 修复。持久化变更在下次核心启动时生效。
+可用 `rcoder config inspect` 查看脱敏后的配置及来源，用 `rcoder config check` 在不启动 Agent 的情况下检查配置。[只读配置接口](docs/configuration-api.md) 提供字段说明、分层检查及未保存 YAML 检查；即使正常启动失败也能使用。修改通过编辑器或普通文件工具完成，模型连接测试为可选操作。持久化变更在下次核心启动时生效。
 
 ## React TUI
 
@@ -179,8 +176,8 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 /new              开启新对话（会自动保存上一段对话）
 /model            列出模型配置与当前激活配置
 /model <profile>  切换当前会话的主模型配置
-/model set-main <profile>  持久化全局主模型配置
-/model set-sub <profile>   持久化全局 subagent 模型配置
+/model set-main <profile>  持久化工作区主模型配置
+/model set-sub <profile>   持久化工作区 subagent 模型配置
 /mode             查看可用模式
 /mode switch <n>  切换当前会话模式
 /skills           查看已发现的 skills
@@ -220,7 +217,7 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 
 - `/reset` 只会清空当前内存中的对话，不会删除已保存的会话。
 - `/new` 在 `session.auto_save` 开启时先保存上一段对话，再开启新会话。
-- `/model` 展示模型档案和路由；会话级切换不会改写全局默认值，持久化默认值请使用 `/model set-main` 或 `/model set-sub`。
+- `/model` 展示模型档案和路由；会话级切换不会改写全局默认值，持久化工作区默认值请使用 `/model set-main` 或 `/model set-sub`。
 - `/skills` 会展示当前发现的 skills；`/skills reload` 会重新扫描工作区和用户目录；`/skills enable|disable <name>` 会把状态持久化到工作区配置。
 - `/session` 按当前 fingerprint 展示最新优先的编号列表，预览取最近一条真实用户请求而不是生命周期标记。恢复可使用编号、完整 ID 或 `latest`；启用 auto-save 时会先保存正要离开的会话，并在 CLI 回放最近三个用户轮次。也可以用 `rcoder -r <id>` 在启动时恢复。
 - `/approval set` 当前支持的目标格式包括 `tool:<name>`、`mcp`、`mcp:<server>`、`mcp:<server>:<tool>`；动作支持 `allow`、`warn`、`require_approval`、`deny`。

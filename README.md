@@ -66,18 +66,15 @@ uv run rcoder
 
 ## Quick Start
 
-On first run, `rcoder` auto-generates a global config template at `~/.rcoder/config.yaml`. Edit it with your API credentials:
+Create `~/.rcoder/config.yaml` on the host where the core runs and enter your model credentials:
 
-```bash
-rcoder
-# → ~/.rcoder/config.yaml created. Edit it with your API key and model.
+```yaml
+app:
+  api_key: "your-api-key"
+  model: "your-provider-model-id"
 ```
 
-After editing the API key in `~/.rcoder/config.yaml`, run again:
-
-```bash
-rcoder
-```
+Then run `rcoder config check` and `rcoder`. Loading configuration does not create or rewrite files. The repository's `config.yaml.example` documents more settings.
 
 ### Workspace-level config (optional)
 
@@ -89,7 +86,7 @@ mkdir -p .rcoder
 cp config.yaml.example .rcoder/config.yaml   # or write your own
 ```
 
-Use `rcoder config inspect` to inspect redacted settings and `rcoder config check` to validate them without starting an Agent. The shared [configuration API](docs/configuration-api.md) supports prepared changes, model connection tests, atomic saves and recovery through CLI or RPC even when normal startup fails. Persistent changes take effect on the next core start.
+Use `rcoder config inspect` to inspect redacted settings and `rcoder config check` to validate them without starting an Agent. The read-only [configuration API](docs/configuration-api.md) describes fields, inspects layers and checks files or unsaved buffers even when normal startup fails. Edit YAML through your editor or file tools; model connection tests are optional. Persistent changes take effect on the next core start.
 
 ## React TUI
 
@@ -187,8 +184,8 @@ All LSP operations are read-only and do **not** require approval.
 /new               Start a new conversation (auto-save previous)
 /model             List model profiles and current active profile
 /model <profile>   Switch the session main model profile
-/model set-main <profile>  Persist the global main profile
-/model set-sub <profile>   Persist the global subagent profile
+/model set-main <profile>  Persist the workspace main profile
+/model set-sub <profile>   Persist the workspace subagent profile
 /mode              Show available modes
 /mode switch <n>   Switch the current session mode
 /shell             Choose an execution shell by name, path and environment
@@ -239,7 +236,7 @@ known command if within edit distance ≤ 2.
 
 - `/reset` only clears the current in-memory conversation. It does not delete saved sessions.
 - `/new` starts a fresh conversation and saves the previous one first when `session.auto_save` is enabled.
-- `/model` lists configured profiles and routing. Session switches do not rewrite global defaults; use `/model set-main` or `/model set-sub` for persisted defaults.
+- `/model` lists configured profiles and routing. Session switches do not rewrite global defaults; use `/model set-main` or `/model set-sub` for persisted workspace defaults.
 - `/shell` selects the shell for new local commands in this runtime. Windows users can also choose a WSL distribution and its shell. Existing processes keep running with their original shell. See [Shell selection](docs/shell-selection.md).
 - `/skills` shows discovered skills; `/skills reload` rescans workspace/user skill directories; `/skills enable|disable <name>` persists skill state in workspace config.
 - `/session` shows a numbered, newest-first list for the current fingerprint. Its preview is the latest real user request, or the goal objective when no user message exists. Restore accepts the displayed number, a full ID, or `latest`; it saves the session being left when auto-save is enabled and replays the latest three user turns in the CLI. `rcoder -r <id>` restores directly on startup.
