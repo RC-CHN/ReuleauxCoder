@@ -122,5 +122,38 @@ export async function run(): Promise<void> {
     await client.interrupt();
     await until(() => !client.interactions.length && !client.state.running);
     console.log('PASS inline secret answer and backend cancellation');
-  } finally {await client.interrupt(); await session.shutdown();}
+    await session.shutdown();
+    const recoveryFile = vscode.Uri.joinPath(folder.uri, 'recovery 中文.yaml');
+    const launcher = vscode.Uri.joinPath(folder.uri, 'recovery-launcher.py');
+    await writeFile(launcher.fsPath, "import os\nfrom pathlib import Path\nos.environ['HOME'] = str(Path(__file__).parent / 'test-home')\nos.environ['USERPROFILE'] = os.environ['HOME']\nfrom reuleauxcoder.interfaces.launcher import main\nraise SystemExit(main())\n");
+    const settings = vscode.workspace.getConfiguration('reuleaux', folder.uri);
+    await settings.update('coreArguments', [launcher.fsPath, '--config', recoveryFile.fsPath], vscode.ConfigurationTarget.WorkspaceFolder);
+    await writeFile(recoveryFile.fsPath, 'app: [broken');
+    await assert.rejects(api.dispatch('start'));
+    assert.equal(session.phase, 'failed');
+    await api.dispatch('configuration.open');
+    assert.equal(session.recovery.state!.valid, false);
+    assert.equal((await session.recovery.process.client!.inspect()).runtime, null);
+    const draft = await session.recovery.process.client!.prepare({scope: 'explicit', document: {app: {api_key: 'native-test', model: 'test'}}});
+    await session.recovery.process.client!.apply(draft.id, {allow_unverified_model: true});
+    const saved = await session.recovery.process.client!.prepare({scope: 'explicit', changes: [{path: '/ui/verbosity', value: 'debug'}]});
+    await session.recovery.process.client!.apply(saved.id);
+    await api.dispatch('configuration.check');
+    await api.dispatch('configuration.select', {id: saved.id});
+    await api.dispatch('configuration.file', {scope: 'explicit'});
+    editor = vscode.window.activeTextEditor!;
+    assert.equal(editor.document.uri.path.split('/').at(-1), 'recovery 中文.yaml');
+    assert.equal(editor.document.uri.scheme, folder.uri.scheme);
+    await editor.edit(edit => edit.insert(new vscode.Position(0, 0), '# unsaved recovery edit\n'));
+    const candidate = session.recovery.state!.candidate!.id;
+    await assert.rejects(api.dispatch('configuration.apply', {id: candidate, offline: true}), /unsaved changes/);
+    assert(!(await readFile(recoveryFile.fsPath, 'utf8')).includes('unsaved'));
+    await editor.document.save();
+    await api.dispatch('configuration.check');
+    await api.dispatch('configuration.select', {id: saved.id});
+    await api.dispatch('configuration.apply', {id: session.recovery.state!.candidate!.id, offline: true});
+    assert(!(await readFile(recoveryFile.fsPath, 'utf8')).includes('debug'));
+    assert.equal(session.phase, 'failed', 'Recovery must not automatically restart the Agent');
+    console.log('PASS independent configuration recovery, native editor and dirty-file guard');
+  } finally {if (!client.peer.closed) await client.interrupt(); await session.recovery.close(); await session.shutdown();}
 }

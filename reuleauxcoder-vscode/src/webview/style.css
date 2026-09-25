@@ -123,7 +123,7 @@ footer {padding: 6px 12px 10px; flex-shrink: 0; position: relative}
 .menu-group {font-size: 10px; color: var(--muted); padding: 9px 9px 5px; letter-spacing: .5px}.menu-group:not(:first-child) {border-top: 1px solid var(--line); margin-top: 7px}
 .menu-row {width: 100%; display: flex; justify-content: flex-start; gap: 11px; padding: 10px; border-radius: 8px; min-height: 47px}.menu-row > .icon {color: var(--accent); width: 20px; height: 20px}.menu-row.selected, .menu-row:hover {background: var(--hover)}.menu-row.selected {box-shadow: inset 2px 0 var(--accent)}.menu-row:disabled {opacity: 1; cursor: default}.menu-row:disabled:hover {background: none}
 .menu-copy {flex: 1; min-width: 0}.menu-title {font-size: 12px; display: block; overflow-wrap: anywhere}.menu-copy small {display: block; color: var(--muted); margin-top: 3px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere}
-.menu-row.current {background: var(--accent-wash)}.switch {width: 28px; height: 16px; border-radius: 10px; background: var(--line); padding: 3px; flex-shrink: 0}.switch:after {content: ''; display: block; border-radius: 50%; height: 10px; width: 10px; background: var(--ink)}.switch.on {background: var(--accent)}.switch.on:after {margin-left: 12px; background: var(--surface)}
+.menu-row.current {background: var(--accent-wash)}.switch {width: 28px; height: 16px; border-radius: 10px; background: var(--line); padding: 3px; flex-shrink: 0}.switch:after {content: ''; display: block; border-radius: 50%; height: 10px; width: 10px; background: var(--ink)}.switch.on {background: var(--accent)}.switch.on:after {transform: translateX(12px); background: var(--surface)}
 .panel-output {font: 11px/1.7 var(--vscode-editor-font-family, monospace); white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px}.surface-empty {margin: 15px; color: var(--muted); font-size: 12px}.more-actions {border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px}.more-actions summary {cursor: pointer; font-size: 11px; padding: 6px 10px; color: var(--muted)}
 .permission-steps {display: flex; gap: 8px; padding: 9px 7px; border-bottom: 1px solid var(--line); font-size: 10px; color: var(--muted)}.permission-steps span {flex: 1; padding-bottom: 5px}.permission-steps .active {color: var(--accent); border-bottom: 2px solid var(--accent)}.permission-hint {margin: 13px 9px; font-size: 11px; color: var(--muted)}.permission-row {border: 1px solid var(--line); margin: 6px 0; padding: 12px}.permission-row.current {border-color: var(--accent)}.permission-row[data-policy="deny"] .menu-title {color: var(--vscode-errorForeground, #d89999)}.permission-row.broad-scope small {color: var(--vscode-editorWarning-foreground, var(--accent))}
 .workbench[data-feature="approval"] {max-width: 620px}
@@ -134,7 +134,7 @@ footer {padding: 6px 12px 10px; flex-shrink: 0; position: relative}
 @media (min-width: 700px) { #setup, footer, #notice {padding-left: max(20px, calc((100vw - 860px) / 2)); padding-right: max(20px, calc((100vw - 860px) / 2))} #transcript {padding: 18px max(20px, calc((100vw - 840px) / 2)) 12px}.body {font-size: 14px}.workbench {max-width: 520px} }
 @media (max-width: 540px) {.identity small, #mode span, #activity, .hint {display: none}.app-header {gap: 4px; padding: 4px 10px}.identity {gap: 6px}.app-header nav {gap: 0}.app-header nav button {padding: 4px}.composer-actions .icon {width: 16px; height: 16px}}
 @media (max-width: 300px) {.identity strong {display: none}}
-@media (prefers-reduced-motion: no-preference) {.attention-card, .workbench {animation: appear 120ms ease-out}@keyframes appear {from {opacity: .5; transform: translateY(3px)} to {opacity: 1; transform: translateY(0)}}}
+
 body.vscode-high-contrast, body.vscode-high-contrast-light {--line: var(--vscode-contrastBorder, currentColor)}
 body.vscode-light, body.vscode-high-contrast-light {--accent: #805421; --accent-ink: #fffaf2; color-scheme: light}
 body.vscode-high-contrast, body.vscode-high-contrast-light {--accent: var(--vscode-textLink-foreground, var(--ink)); --accent-ink: var(--canvas)}
@@ -146,3 +146,47 @@ body.vscode-high-contrast, body.vscode-high-contrast-light {--accent: var(--vsco
 .overview-content h3 {display: flex; align-items: baseline; gap: 8px; font-size: 11px; letter-spacing: 0; font-weight: 650; color: var(--ink)}.overview-badge {font-size: 10px; font-weight: 500; color: var(--accent)}.overview-content [data-kind="goal"] .overview-detail {font-size: 12px; font-weight: 550; color: var(--ink)}.overview-content [data-kind="progress"] h3 {color: var(--accent)}.overview-content [data-kind="progress"] .overview-detail {color: var(--ink); border-left: 2px solid var(--accent); padding-left: 8px}.overview-content [data-kind="warning"] h3, .overview-content [data-kind="warning"] .overview-detail {color: var(--vscode-editorWarning-foreground, #e0b66e)}.plan-step.in_progress {font-weight: 650; border-left: 2px solid var(--accent); padding-left: 7px}.plan-step.pending {color: var(--ink)}.plan-step.completed {font-size: 10px}
 #goal-strip {display: grid; grid-template-columns: 1fr auto; margin-bottom: 8px; padding: 7px 10px; background: var(--accent-wash); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); border-radius: 8px; align-items: center; column-gap: 8px}.goal-objective {grid-column: 1; padding: 0; min-height: 22px; justify-content: flex-start; min-width: 0}.goal-objective span {text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-size: 11px}.goal-objective .icon {color: var(--accent); width: 14px; height: 14px}.goal-meta {grid-row: 2; font-size: 9px; color: var(--muted); padding-left: 21px}#goal-strip > button:last-child:not(.goal-objective) {grid-column: 2; grid-row: 1 / 3; font-size: 10px}
 @media (forced-colors: active) {button, .attention-card, .composer, .workbench {border: 1px solid ButtonText}.switch {outline: 1px solid ButtonText}.menu-row.selected {outline: 1px solid Highlight}}
+
+/* Configuration recovery stays beside the failed connection; documents open in the editor. */
+#setup.recovering {flex: 1; min-height: 0; max-height: none; padding-top: 12px}
+body.recovering #transcript, body.recovering #drop-zone, body.recovering #overview, body.recovering #setup-install-hint {display: none}
+#configuration-recovery {margin-top: 16px; border: 1px solid var(--line); border-top: 2px solid var(--accent); border-radius: 9px; padding: 12px; background: var(--surface)}
+.recovery-heading {display: flex; align-items: center; gap: 8px; color: var(--accent)}
+.recovery-heading h3 {margin: 0; font-size: 14px; flex: 1; color: var(--ink)}
+.recovery-heading button {font-size: 11px; color: var(--muted)}
+#configuration-recovery h4 {margin: 0 0 5px; font-size: 13px}
+#configuration-recovery p {margin: 7px 0}
+#configuration-recovery code, #configuration-recovery pre {display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; font-family: var(--vscode-editor-font-family, monospace)}
+#configuration-recovery pre {max-height: 180px; overflow: auto; margin: 4px 0; padding: 7px; border-radius: 4px}
+.recovery-hint, .recovery-label, .recovery-source code, .recovery-history code, .recovery-history time {font-size: 11px; color: var(--muted)}
+.recovery-source, .recovery-history-row {padding: 8px 0; border-bottom: 1px solid var(--line)}
+.recovery-source {display: flex; align-items: flex-start; flex-wrap: wrap; gap: 4px}
+.recovery-source > div {flex: 1; min-width: 140px}
+.recovery-source strong {font-size: 12px; font-weight: 550}
+.recovery-source button, .recovery-history button {font-size: 11px; border: 1px solid var(--line)}
+.recovery-diagnostic, .recovery-preview {border-left: 2px solid var(--accent); margin: 12px 0; padding: 0 0 0 9px}
+#configuration-recovery summary {cursor: pointer; padding: 5px 0; overflow-wrap: anywhere}
+.recovery-checks {list-style: none; padding: 0; font-size: 12px}
+.recovery-checks li {padding: 3px 0}
+#setup .recovery-error, .check-failed {color: var(--vscode-errorForeground, #ee9694)}
+#setup .recovery-success, .check-passed {color: var(--vscode-testing-iconPassed, #98bfaa)}
+#setup .recovery-progress, .check-unknown {color: var(--accent)}
+.recovery-before {background: var(--vscode-diffEditor-removedTextBackground, #e26e7420)}
+.recovery-after {background: var(--vscode-diffEditor-insertedTextBackground, #8abb9820)}
+.recovery-offline {display: flex; align-items: flex-start; gap: 7px; margin: 12px 0; font-size: 12px}
+.recovery-offline input {width: auto; margin: 4px 0 0; accent-color: var(--accent)}
+.recovery-history {border-top: 1px solid var(--line); margin-top: 14px; padding-top: 5px}
+
+/* Motion communicates navigation and feedback; approval targets never translate. */
+@media (prefers-reduced-motion: no-preference) {
+  button, input, textarea, select, summary {transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out, box-shadow 120ms ease-out}
+  .workbench {animation: surface-enter 160ms cubic-bezier(.2, .7, .2, 1)}
+  #overview, #configuration-recovery, .attention-card, .recovery-preview, .recovery-error, .recovery-success, .recovery-diagnostic, .form-error, .review-warning, #goal-strip {animation: feedback-enter 160ms ease-out}
+  #configuration-recovery details[open] > :not(summary), .more-actions[open] > :not(summary), .review-alternatives[open] > :not(summary) {animation: feedback-enter 140ms ease-out}
+  .switch, .switch:after {transition: background-color 140ms ease-out, transform 140ms ease-out}
+  .recovery-progress::before {animation: working-pulse 1200ms ease-in-out infinite}
+  @keyframes surface-enter {from {opacity: .7; transform: translateY(4px)} to {opacity: 1; transform: translateY(0)}}
+  @keyframes feedback-enter {from {opacity: .6} to {opacity: 1}}
+  @keyframes working-pulse {0%, 100% {opacity: .4} 50% {opacity: 1}}
+}
+.recovery-progress::before {content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 7px; vertical-align: middle}

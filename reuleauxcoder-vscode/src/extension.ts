@@ -24,10 +24,12 @@ export function activate(context: vscode.ExtensionContext) {
   const reviews = new NativeReviews(() => views.changed(), error);
   let editorRevision = 0;
   let editorSync: Promise<unknown> = Promise.resolve();
+  const dirtyPaths = () => vscode.workspace.textDocuments.filter(document => document.isDirty && ['file', 'vscode-remote'].includes(document.uri.scheme)).map(document => document.uri.fsPath);
   const syncEditors = () => {
     const client = active?.client;
+    void active?.recovery.syncEditors(dirtyPaths()).catch(error);
     if (!client?.info?.editor_documents || client.peer.closed) return Promise.resolve();
-    const paths = vscode.workspace.textDocuments.filter(document => document.isDirty && ['file', 'vscode-remote'].includes(document.uri.scheme)).map(document => document.uri.fsPath);
+    const paths = dirtyPaths();
     editorSync = client.peer.request('runtime.editor_documents', {revision: ++editorRevision, paths});
     void editorSync.catch(error);
     return editorSync;
@@ -55,12 +57,16 @@ export function activate(context: vscode.ExtensionContext) {
     })().finally(() => {creating = undefined;});
     return creating;
   };
-  const start = async () => {
-    const session = await getSession(); const config = vscode.workspace.getConfiguration('reuleaux', folder!.uri);
+  const runtimeOptions = async (session: WorkspaceSession) => {
+    const config = vscode.workspace.getConfiguration('reuleaux', folder!.uri);
     const path = config.get<string>('corePath', '').trim(); const args = config.get<string[]>('coreArguments', []);
     const managed = path ? undefined : await managedCommand(context.globalStorageUri.fsPath);
     const commands: CoreCommand[] = path ? [{command: path, args}] : [...(managed ? [managed] : []), {command: 'rcoder', args}];
-    try {await session.start({cwd: session.workspace, commands, beforeReady: () => syncEditors()});}
+    return {cwd: session.workspace, commands, beforeReady: () => syncEditors()};
+  };
+  const start = async () => {
+    const session = await getSession();
+    try {await session.start(await runtimeOptions(session));}
     catch (reason) {logs.appendLine(String(reason)); throw reason;}
   };
   const install = async () => {
@@ -68,6 +74,8 @@ export function activate(context: vscode.ExtensionContext) {
     installing = (async () => {
       const session = await getSession();
       if (session.phase === 'ready' || session.phase === 'starting' || session.phase === 'stopping') throw new Error(t('Save and stop the existing core before installing another version.'));
+      if (session.recovery.state?.busy) throw new Error(t('Wait for configuration recovery to finish.'));
+      await session.recovery.close();
       session.phase = 'installing'; session.error = undefined; session.changed();
       try {
         await vscode.window.withProgress({location: vscode.ProgressLocation.Notification, title: t('Install Reuleaux core on {0}', session.environment), cancellable: true}, async (_progress, token) => {
@@ -83,6 +91,26 @@ export function activate(context: vscode.ExtensionContext) {
     return installing;
   };
   const dispatch = async (command: string, data: Record<string, any> = {}): Promise<unknown> => {
+    if (command.startsWith('configuration.')) {
+      const session = await getSession();
+      if (!['failed', 'idle'].includes(session.phase)) throw new Error(t('Stop the core before opening configuration recovery.'));
+      switch (command) {
+        case 'configuration.open': await session.recovery.open(await runtimeOptions(session)); return session.recovery.syncEditors(dirtyPaths());
+        case 'configuration.check': return session.recovery.check();
+        case 'configuration.select': return session.recovery.select(data.id);
+        case 'configuration.test': return session.recovery.testModels(data.id);
+        case 'configuration.apply': return session.recovery.apply(data.id, data.offline === true, dirtyPaths());
+        case 'configuration.close': if (session.recovery.state?.busy) throw new Error(t('Wait for configuration recovery to finish.')); return session.recovery.close();
+        case 'configuration.file': {
+          const path = session.recovery.source(data.scope);
+          const uri = folder!.uri.with({path: vscode.Uri.file(path).path});
+          const edit = new vscode.WorkspaceEdit(); edit.createFile(uri, {ignoreIfExists: true});
+          if (!await vscode.workspace.applyEdit(edit)) throw new Error(t('Could not open the configuration file.'));
+          return vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), {preview: false});
+        }
+      }
+      throw new Error(t('Unknown view action.'));
+    }
     switch (command) {
       case 'openEditor': views.openEditor(); return;
       case 'logs': logs.show(true); return;
@@ -91,6 +119,8 @@ export function activate(context: vscode.ExtensionContext) {
       case 'install': return install();
       case 'selectCore': {
         if (active && ['ready', 'starting', 'stopping'].includes(active.phase)) throw new Error(t('Save and stop the existing core before installing another version.'));
+        if (active?.recovery.state?.busy) throw new Error(t('Wait for configuration recovery to finish.'));
+        await active?.recovery.close();
         const selected = await vscode.window.showOpenDialog({title: t('Select rcoder on the workspace host'), canSelectMany: false, canSelectFiles: true, canSelectFolders: false});
         if (!selected?.[0]) return;
         await getSession();
@@ -150,12 +180,13 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeWorkspaceFolders(event => {if (folder && event.removed.some(item => item.uri.toString() === folder!.uri.toString())) {active?.dispose(); active = undefined; folder = undefined; views.changed();}}),
     {dispose: () => {active?.dispose(); active = undefined;}},
   );
-  return {getSession, reviews, views};
+  return {getSession, reviews, views, dispatch};
 }
 
 export async function deactivate(): Promise<void> {
   installAbort?.abort();
   await installing?.catch(() => {});
+  await active?.recovery.close();
   if (active?.phase === 'ready') await active.shutdown();
   active?.dispose(); active = undefined;
 }

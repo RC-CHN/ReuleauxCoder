@@ -1,4 +1,6 @@
 import {setLocale, t, errorText, toolLabel, type MessageKey} from '../i18n.js';
+import {ConfigurationView} from './configuration.js';
+import {reveal} from './motion.js';
 import {coreMessage} from '../core-messages.js';
 import {modeLabel} from '../panel-i18n.js';
 import type {ChatCell, HostSnapshot, WebRequest} from '../shared.js';
@@ -19,6 +21,7 @@ decorateIcons();
 const workbench = new ComposerWorkbench(element('workbench'), composer, request, notice, saveDraft);
 const attention = new AttentionCards(element('reviews'), request);
 const overview = new WorkOverviewView(element('overview'), element('goal-strip'), element<HTMLButtonElement>('overview-toggle'), request, notice);
+const configuration = new ConfigurationView(element('configuration-recovery'), request, error => {if (!snapshot?.recovery?.error) notice(error);});
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
 const optimistic = new Map<string, ChatCell>();
@@ -36,11 +39,17 @@ const uploads = new Map<string, LocalUpload>();
 function request(action: string, data: WebRequest['data'] = {}): Promise<any> {
   const id = `view-${++next}`;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {pending.delete(id); reject(new Error(t('The view request timed out. Check the core status before retrying.')));}, action === 'install' ? 15 * 60 * 1000 : 45000);
+    const timeout = action === 'install' ? 15 * 60 * 1000 : action === 'configuration.test' ? 220_000 : action.startsWith('configuration.') ? 60_000 : 45_000;
+    const timer = setTimeout(() => {pending.delete(id); reject(new Error(t('The view request timed out. Check the core status before retrying.')));}, timeout);
     pending.set(id, {resolve, reject, timer}); vscode.postMessage({id, action, data: {hostId: snapshot?.hostId, generation: snapshot?.generation, ...data}});
   });
 }
-function notice(error: unknown): void {element('notice').textContent = coreMessage(errorText(error)); element('notice').hidden = !element('notice').textContent;}
+function notice(error: unknown): void {
+  const node = element('notice'), text = coreMessage(errorText(error));
+  const changed = node.textContent !== text;
+  node.textContent = text; node.hidden = !text;
+  if (changed && text) reveal(node);
+}
 function persist(): void {
   const value: SavedView = {draft: composer.value, outbox: [...localSends.values()].filter(input => optimistic.has(input.id)).map(input => ({input: {id: input.id, text: input.text, items: input.items, generation: input.generation, hostId: input.hostId, needsFiles: input.needsFiles || input.uploads.length > 0}, cell: optimistic.get(input.id)!}))};
   const encoded = JSON.stringify(value); if (encoded !== persisted) {persisted = encoded; vscode.setState(value);}
@@ -83,6 +92,7 @@ function render(state: HostSnapshot): void {
     consumedItems.clear();
   }
   const insertDraft = snapshot && state.draftRevision > snapshot.draftRevision;
+  const phaseChanged = snapshot?.phase !== state.phase;
   snapshot = state;
   workbench.update(state);
   overview.update(state);
@@ -118,15 +128,21 @@ function render(state: HostSnapshot): void {
   const phaseTitles = {idle: t('Connect your workspace'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Saving and stopping…'), ready: t('Ready'), failed: state.error?.kind === 'missing' ? t('Core not found') : state.error?.kind === 'incompatible' ? t('Core update required') : t('Could not start the core')};
   element('setup-title').textContent = phaseTitles[state.phase];
   element('setup-message').textContent = state.error ? errorText(state.error.message) : t('Start the core on {0} to begin.', state.environment);
-  setup.querySelectorAll<HTMLButtonElement>('button').forEach(button => {button.disabled = ['starting', 'stopping', 'installing'].includes(state.phase) && button.dataset.command !== 'logs';});
+  setup.querySelectorAll<HTMLButtonElement>('[data-command]').forEach(button => {button.disabled = (['starting', 'stopping', 'installing'].includes(state.phase) || !!state.recovery?.busy) && button.dataset.command !== 'logs';});
   const needsInstall = state.phase === 'failed' && ['missing', 'incompatible'].includes(state.error?.kind ?? '');
   setup.querySelector<HTMLButtonElement>('[data-command="start"]')!.classList.toggle('primary', !needsInstall);
   setup.querySelector<HTMLButtonElement>('[data-command="start"]')!.textContent = state.phase === 'failed' ? t('Retry') : t('Start core');
   setup.querySelector<HTMLButtonElement>('[data-command="install"]')!.classList.toggle('primary', needsInstall);
   setup.querySelector<HTMLButtonElement>('[data-command="install"]')!.textContent = state.error?.kind === 'incompatible' ? t('Update core') : t('Install compatible core');
+  setup.querySelector<HTMLButtonElement>('[data-command="configuration.open"]')!.hidden = needsInstall || !!state.recovery;
+  setup.classList.toggle('recovering', !!state.recovery);
+  document.body.classList.toggle('recovering', !!state.recovery);
+  if (state.recovery) notice('');
+  configuration.update(state.recovery);
+  if (phaseChanged && !setup.hidden) reveal(element('setup-message'));
   attention.update(state);
   if (follow) transcript.scrollTop = transcript.scrollHeight;
-  if (state.notice) notice(state.notice);
+  if (state.notice && !state.recovery) notice(state.notice);
   renderAttachments();
   persist();
 }

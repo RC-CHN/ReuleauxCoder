@@ -1,5 +1,8 @@
 # Configuration management API
 
+For the complete field inventory, defaults, loading semantics and current
+limitations, see [config.yaml 配置参考](configuration-reference.md).
+
 The core exposes one `ConfigurationService` to model tools, JSON-RPC clients and
 `rcoder config`. Management does not require an Agent, a valid model credential,
 session restoration or a terminal frontend to start. An invalid configuration
@@ -17,7 +20,7 @@ responses are plain JSON, independent of the runtime's dataclass codec.
 | `config.describe` | Optional `section`, e.g. `models` | API/core versions, editable JSON schema, scopes, activation and probe capabilities |
 | `config.inspect` | None | Revision, redacted source files, next-start configuration, running configuration summary when attached, diagnostics |
 | `config.prepare` | `scope`, optional `base_revision`, exactly one of `changes` / `document` | Durable candidate ID, redacted diff, target path, diagnostics, required probes |
-| `config.validate` | Optional `change_id`, `checks` | Static validity, separate probe results and diagnostics |
+| `config.validate` | Optional `change_id`, `checks`, `profiles` (1–8 names for model checks) | Static validity, separate probe results and diagnostics |
 | `config.apply` | `change_id`, optional human-only `allow_unverified_model` | Applied record with `activation: next_start` |
 | `config.history` | Optional `limit`, 1–100 | Recent candidate/commit records without credentials or backup contents |
 | `config.revert` | `change_id` | A new candidate restoring the previous target file; later edits cause a conflict |
@@ -33,8 +36,8 @@ through the management RPC methods.
 This API version saves persistent settings for the **next core start**. It does
 not replace the running Agent, terminate the current request, or claim that a
 saved change has taken effect. Existing session model/mode commands keep their
-runtime behavior. Session-only configuration mutation and a configuration UI are
-not part of this API version. `inspect.runtime` is null in a standalone process.
+runtime behavior. Session-only configuration mutation is not part of this API
+version. VS Code provides a recovery interface on the failed/idle startup panel. `inspect.runtime` is null in a standalone process.
 
 Changes use RFC 6901 JSON pointers, preserving profile names containing dots:
 
@@ -65,18 +68,26 @@ Validation distinguishes:
   Reading or checking never creates example files, backfills settings or starts
   external services. `valid` describes these static checks only.
 - `startup`: a bounded child process constructs configuration and the provider
-  client. It does not start an Agent, restore goals, run hooks, launch MCP/LSP
+  clients for all resolved profiles. It does not start an Agent, restore goals, run hooks, launch MCP/LSP
   servers or make a model request. This checks the configuration/provider startup
   path, not every possible runtime dependency.
-- `model`: one bounded minimal request through the selected Chat Completions,
-  Responses or Anthropic Messages adapter, without workspace data, tools,
-  orchestration retries or diagnostic dumps. It can consume provider tokens.
+- `model`: a bounded text request for each selected profile through its Chat
+  Completions, Responses or Anthropic Messages adapter, with the actual configured
+  output limit, effort mapping/parameter name and thinking setting. Startup,
+  session switches and probes share effective profile resolution and request
+  parameter construction. Each probe is bounded to 20 seconds, without workspace
+  data, tools, images, orchestration retries or diagnostic dumps. It can consume
+  provider tokens; it does not verify tool/image capability.
   Authentication/request errors fail; timeouts, throttling and unavailable
   services are reported as `unknown`, separately from invalid configuration.
 
-Apply always rechecks static validity and isolated startup. When effective active
-model settings change, it also requires a successful model probe within five
-minutes. Human clients can explicitly use `allow_unverified_model` to save an
+Candidates list required `model_targets` and all `available_model_targets`, with
+profile names, roles and effective fingerprints. New/changed profiles (including
+inactive profiles) and newly selected main/subagent/reviewer roles require probes.
+Apply always rechecks static validity and isolated startup, and requires a
+successful result within five minutes for every required profile/fingerprint.
+`profiles` selects one to eight targets per call; larger changes can be validated
+in batches. A later failure/unknown replaces that target’s previous success. Human clients can explicitly use `allow_unverified_model` to save an
 offline recovery/setup configuration; the result records `model_verified: false`.
 Models cannot request this override. Probe success is evidence about that check,
 not a guarantee of future network availability or success on arbitrary tasks.
@@ -111,9 +122,11 @@ defaults request approval. Apply's review includes the target, scope, actual fie
 changes and validation results. A change made during review is rejected at commit.
 
 The core fixes caller identity; parameters cannot promote a model to a human.
-Models cannot replace whole documents, submit credential/process-argument fields,
-change approval/mode/relay policy, use human-prepared candidates, or bypass live
-model validation. Root configuration services are not copied into subagent tools.
+Models cannot replace whole documents, submit credentials or process-launch
+settings (MCP command/cwd/args/env; LSP cmd/workspace_root/args/init_opts),
+change approval/mode/relay policy (including indirectly changing the effective
+auto-review model through profiles or app defaults), use human-prepared candidates,
+or bypass live model validation. Root configuration services are not copied into subagent tools.
 These checks govern management interfaces; ordinary filesystem/shell access
 continues to follow its own tool policies.
 
@@ -127,7 +140,7 @@ rcoder config describe --section models
 rcoder config inspect
 rcoder config check                    # offline static + isolated startup
 rcoder config prepare --changes changes.json --revision <revision>
-rcoder config validate <change-id> --check startup --check model
+rcoder config validate <change-id> --check startup --check model --profile main --profile sub
 rcoder config apply <change-id>
 rcoder config history
 rcoder config revert <change-id>       # returns a new candidate; apply separately
@@ -140,6 +153,24 @@ when recovering. JSON inputs can use `--document -` or `--changes -` to read std
 credentials need not appear in process arguments. A standalone RPC client calls
 `initialize` with `{"version":1}` and receives `mode: configuration`. Close stdin
 to stop it. Do not call runtime readiness or task methods on this transport.
+
+VS Code starts the same configured command with `--config-management-stdio`,
+preserving `--config` and `--cwd`; runtime-only options are ignored by this mode.
+The launcher intercepts the flag before normal configuration/Agent startup.
+The standalone handshake advertises `editor_documents: true`; hosts synchronize
+unsaved absolute paths using `config.editor_documents` with monotonic `revision`
+and `paths` parameters, including immediately before apply. Source file buttons
+only open host-inspected paths in the workspace host's native editor. Recovery
+does not automatically start the Agent. Online probes are explicit; an initially unchecked option must be selected to
+allow offline restoration after static/startup validation.
+
+Read `describe.capabilities` for `effective_profiles`, `profile_probes`,
+`reviewer_protection`, `field_authority` and `recovery`, rather than inferring
+capabilities from a release number. Schema `x-rcoder` annotations describe
+`activation` and `model_write` (`allowed`, `user_required`, `conditional`).
+Effective reviewer protection is also enforced after layered resolution.
+Prepared records from before this validation policy must be prepared again;
+applied history remains recoverable.
 
 Regression coverage includes all three provider transports with local fake
 servers, cross-process locking, interrupted writes, expired candidates/probes,

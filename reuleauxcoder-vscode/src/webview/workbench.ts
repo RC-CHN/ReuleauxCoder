@@ -3,6 +3,7 @@ import type {CommandSurface, HostSnapshot, WebRequest} from '../shared.js';
 import {t, errorText} from '../i18n.js';
 import {actionLabel, actionScope, commandItems, featureInfo} from './catalog.js';
 import {icon} from './icons.js';
+import {reveal} from './motion.js';
 import {PermissionPolicies} from './permissions.js';
 import {panelTitle, panelItemText, panelBody, parameterLabel} from '../panel-i18n.js';
 
@@ -70,6 +71,7 @@ export class ComposerWorkbench {
       const scroll = this.root.querySelector('.workbench-body')?.scrollTop ?? 0;
       const sameSurface = this.surfaceId === surface.id;
       this.signature = signature; this.surfaceId = surface.id; this.drawSurface(surface, filter);
+      if (!sameSurface) reveal(this.root.querySelector<HTMLElement>('.workbench-body')!);
       if (focus) this.root.querySelector<HTMLElement>(`[data-row="${CSS.escape(focus)}"]`)?.focus();
       else if (!sameSurface && surface.action) this.root.querySelector<HTMLInputElement>('input, textarea, select')?.focus();
       this.root.querySelector('.workbench-body')!.scrollTop = scroll;

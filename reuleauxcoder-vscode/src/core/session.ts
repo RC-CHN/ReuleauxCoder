@@ -8,6 +8,7 @@ import {Uploads} from './uploads.js';
 import {ConversationCommands} from './commands.js';
 import {inlineInteractions} from './interactions.js';
 import {WorkOverviewStore} from './overview.js';
+import {ConfigurationRecovery} from './configuration-recovery.js';
 import type {DraftItem, HostSnapshot, ReviewSummary} from '../shared.js';
 
 export class WorkspaceSession extends EventEmitter {
@@ -15,6 +16,7 @@ export class WorkspaceSession extends EventEmitter {
   readonly transcript = new Transcript();
   readonly commands = new ConversationCommands(() => this.changed(), error => this.report(error));
   readonly overview = new WorkOverviewStore(() => this.changed());
+  readonly recovery = new ConfigurationRecovery(() => this.changed());
   phase: HostSnapshot['phase'] = 'idle';
   error?: HostSnapshot['error'];
   notice = '';
@@ -27,6 +29,7 @@ export class WorkspaceSession extends EventEmitter {
   private revision = 0;
   private draftRevision = 0;
   private clientListeners: (() => void)[] = [];
+  private lifecycle = 0;
   constructor(readonly workspace: string, readonly environment: string) {
     super();
     this.runtime.on('client', client => this.bind(client));
@@ -68,11 +71,20 @@ export class WorkspaceSession extends EventEmitter {
   }
   async start(options: RuntimeOptions): Promise<void> {
     if (this.phase === 'starting' || this.phase === 'ready') return;
+    if (this.recovery.state?.busy) throw new Error(t('Wait for configuration recovery to finish.'));
+    const lifecycle = ++this.lifecycle;
     this.phase = 'starting'; this.error = undefined; this.changed();
-    try {await this.runtime.start(options); this.phase = 'ready'; this.changed();}
-    catch (error) {this.fail(error); throw error;}
+    try {
+      await this.recovery.close();
+      if (lifecycle !== this.lifecycle) throw new Error(t('Core startup was cancelled.'));
+      await this.runtime.start(options);
+      if (lifecycle !== this.lifecycle) throw new Error(t('Core startup was cancelled.'));
+      this.phase = 'ready'; this.changed();
+    }
+    catch (error) {if (lifecycle === this.lifecycle) this.fail(error); throw error;}
   }
   async shutdown(): Promise<void> {
+    this.lifecycle++;
     this.phase = 'stopping'; this.changed();
     try {await this.uploads?.cancel(); await this.runtime.shutdown(); this.phase = 'idle'; this.changed();}
     catch (error) {this.fail(error); throw error;}
@@ -99,7 +111,7 @@ export class WorkspaceSession extends EventEmitter {
   }
   snapshot(reviews: ReviewSummary[] = []): HostSnapshot {
     const state = this.client?.state;
-    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: this.transcript.cells, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot()};
+    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: this.transcript.cells, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), recovery: this.recovery.state};
   }
   add(item: DraftItem): void {if (this.draftItems.length >= 30) throw new Error(t('The draft already has 30 attachments or context items.')); this.draftItems.push(item); this.changed();}
   remove(id: string): void {this.draftItems = this.draftItems.filter(item => item.id !== id); this.changed();}
@@ -107,5 +119,5 @@ export class WorkspaceSession extends EventEmitter {
   changed(): void {this.revision++; this.emit('change');}
   report(error: unknown): void {this.notice = error instanceof Error ? error.message : String(error); this.transcript.notice(this.notice);}
   fail(error: unknown): void {this.error = {kind: error instanceof CoreFailure ? error.kind : 'startup', message: error instanceof Error ? error.message : String(error)}; this.phase = 'failed'; this.changed();}
-  dispose(): void {void this.uploads?.cancel().catch(() => {}); for (const off of this.clientListeners.splice(0)) off(); this.commands.dispose(); this.overview.dispose(); this.transcript.dispose(); this.runtime.dispose(); this.removeAllListeners();}
+  dispose(): void {this.lifecycle++; void this.uploads?.cancel().catch(() => {}); void this.recovery.close().catch(() => {}); for (const off of this.clientListeners.splice(0)) off(); this.commands.dispose(); this.overview.dispose(); this.transcript.dispose(); this.runtime.dispose(); this.removeAllListeners();}
 }

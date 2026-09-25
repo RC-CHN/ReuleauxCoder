@@ -2,6 +2,7 @@ import type {Panel} from '@reuleauxcoder/client';
 import type {CommandSurface, WebRequest} from '../shared.js';
 import {t, coreText} from '../i18n.js';
 import {icon} from './icons.js';
+import {reveal} from './motion.js';
 import {permissionTarget} from '../panel-i18n.js';
 
 const policies = {
@@ -24,7 +25,7 @@ export class PermissionPolicies {
     const tabs = document.createElement('div'); tabs.className = 'policy-scopes'; tabs.setAttribute('role', 'group'); tabs.setAttribute('aria-label', t('Approval scope'));
     for (const [index, title] of [t('This session'), t('This workspace')].entries()) {
       const tab = document.createElement('button'); tab.type = 'button'; tab.dataset.submit = ''; tab.textContent = title; tab.setAttribute('aria-pressed', String(this.scope === index)); tab.disabled = surface.busy;
-      tab.addEventListener('click', () => {this.scope = index; root.replaceChildren(); this.draw(root, surface); root.querySelector<HTMLButtonElement>(`.policy-scopes button:nth-child(${index + 1})`)!.focus();}); tabs.append(tab);
+      tab.addEventListener('click', () => {if (this.scope === index) return; this.scope = index; root.replaceChildren(); this.draw(root, surface); reveal(root.querySelector<HTMLElement>('.policy-list')!); root.querySelector<HTMLButtonElement>(`.policy-scopes button:nth-child(${index + 1})`)!.focus();}); tabs.append(tab);
     }
     const help = document.createElement('p'); help.className = 'policy-help';
     help.textContent = this.scope === 0 ? t('Choose how tools may run in this conversation. Changes apply immediately.') : t('Save defaults for this workspace. Existing session rules take priority.');
