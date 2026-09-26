@@ -87,10 +87,10 @@ jobs:
         uses: astral-sh/setup-uv@v8.3.2
 
       - name: Sync dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --locked --extra dev --group skill-tests
 
       - name: Run tests
-        run: uv run pytest -q
+        run: uv run --group skill-tests pytest -q
 
       - name: Setup Node for bundled distribution
         uses: actions/setup-node@v6
