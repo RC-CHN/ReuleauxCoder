@@ -39,6 +39,18 @@ test('closed or replaced panels reject delayed projections and stale click token
   f.client.state.session_generation++; f.client.emit('state', f.client.state); assert.equal(f.commands.surface, undefined);
   assert.deepEqual(f.failures, []); f.commands.dispose();
 });
+test('dismiss accepts a lagging refresh revision but cannot close a newly opened panel', async () => {
+  const f = fixture();
+  await f.commands.open('goal.show'); f.view(); await until(() => f.commands.surface?.panel);
+  const beforeRefresh = f.commands.surface!.id;
+  f.view(false); await until(() => f.commands.surface!.id !== beforeRefresh);
+  f.commands.dismiss(beforeRefresh);
+  assert.equal(f.commands.surface, undefined);
+  await f.commands.open('goal.show'); f.view(); await until(() => f.commands.surface?.panel);
+  assert.throws(() => f.commands.dismiss(beforeRefresh), /panel changed/);
+  assert(f.commands.surface);
+  f.commands.dispose();
+});
 test('forms validate primitive values at host boundary without dispatching invalid values', async () => {
   const f = fixture(); f.client.catalog.push({...action, action_id: 'goal.budget', preview: false, parameters: [{name: 'token_budget', kind: 'integer', required: true, nullable: false, default: null}]});
   await f.commands.open('goal.budget'); const id = f.commands.surface!.id;

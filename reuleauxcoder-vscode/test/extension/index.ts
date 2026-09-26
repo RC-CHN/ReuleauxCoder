@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, realpath, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import type {activate} from '../../src/extension.js';
@@ -36,7 +36,7 @@ export async function run(): Promise<void> {
     await until(() => session.commands.surface?.panel?.items.find(item => item.id === 'pptx')?.details?.source === 'project');
     const copied = vscode.window.activeTextEditor!.document;
     assert.equal(copied.uri.scheme, uri.scheme);
-    assert.equal(copied.uri.fsPath, join(vscode.workspace.workspaceFolders![0].uri.fsPath, '.rcoder', 'skills', 'pptx', 'SKILL.md'));
+    assert.equal(await realpath(copied.uri.fsPath), await realpath(join(vscode.workspace.workspaceFolders![0].uri.fsPath, '.rcoder', 'skills', 'pptx', 'SKILL.md')));
     assert.equal(await readFile(skill.details!.location, 'utf8'), bundled);
     assert((await readFile(join(copied.uri.fsPath, '..', 'references', 'creation.md'), 'utf8')).includes('Presentation'));
     await assert.rejects(api.dispatch('skill.open', {surfaceId: session.commands.surface!.id, name: '../../config.yaml'}), /no longer available/);

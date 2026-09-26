@@ -119,13 +119,18 @@ export class SkillBrowser {
     return button;
   }
   private lock(busy: boolean): void {
+    const focused = document.activeElement;
+    const losesFocus = focused instanceof HTMLButtonElement && this.body?.contains(focused) && focused.hasAttribute('data-skill-action') && (busy || this.pending);
     this.body?.querySelectorAll<HTMLButtonElement>('[data-skill-action]').forEach(button => {button.dataset.pending = String(this.pending); button.disabled = busy || this.pending || button.dataset.readonly === 'true';});
+    // Disabled buttons lose focus. Keep Escape available while a request is pending.
+    if (losesFocus) this.body?.closest<HTMLElement>('[aria-busy]')?.focus();
   }
   syncBusy(busy: boolean): void {
     this.lock(busy);
     if (!busy && !this.pending && this.focusAfter) {
       const row = this.focusAfter; this.focusAfter = undefined;
-      if (document.activeElement === document.body && this.body?.isConnected) this.body.querySelector<HTMLElement>(`[data-row="${CSS.escape(row)}"]`)?.focus();
+      const surface = this.body?.closest<HTMLElement>('[aria-busy]');
+      if ((document.activeElement === document.body || document.activeElement === surface) && this.body?.isConnected && !surface?.hidden) this.body.querySelector<HTMLElement>(`[data-row="${CSS.escape(row)}"]`)?.focus();
     }
   }
 }

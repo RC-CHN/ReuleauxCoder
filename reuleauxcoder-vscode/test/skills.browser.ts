@@ -7,7 +7,7 @@ import {chromium} from 'playwright';
 import {webviewHtml} from '../src/webview/html.js';
 import {copySkillToWorkspace} from '../src/core/skill-files.js';
 import type {WebRequest} from '../src/shared.js';
-import {backend} from './helpers.js';
+import {backend, until} from './helpers.js';
 
 test('skill journey: discover, filter, inspect, toggle, copy and reload with real core metadata', {timeout: 90000}, async t => {
   const b = await backend(); t.after(() => b.close());
@@ -33,6 +33,7 @@ test('skill journey: discover, filter, inspect, toggle, copy and reload with rea
     b.session.commands.close();
     const page = await browser.newPage({viewport: {width: 340, height: 850}});
     const errors: string[] = []; const actions: string[] = []; let revision = 0; let open = true;
+    let finishReload: (() => void) | undefined;
     page.on('pageerror', error => errors.push(error.message));
     const publish = async () => {
       if (open) await page.evaluate(encoded => window.postMessage({kind: 'snapshot', snapshot: JSON.parse(encoded)}, '*'), JSON.stringify({...b.session.snapshot(), revision: ++revision}));
@@ -50,7 +51,9 @@ test('skill journey: discover, filter, inspect, toggle, copy and reload with rea
             case 'command.open': await b.session.commands.open(data.actionId); break;
             case 'command.select': await b.session.commands.select(data.surfaceId, data.index); break;
             case 'command.close': b.session.commands.dismiss(data.surfaceId); break;
-            case 'skill.reload': await b.session.commands.reloadSkills(data.surfaceId); break;
+            case 'skill.reload':
+              await b.session.commands.reloadSkills(data.surfaceId);
+              await new Promise<void>(done => {finishReload = done;}); break;
             case 'skill.open': assert(b.session.commands.skill(data.surfaceId, data.name).details?.location); break;
             case 'skill.copy': {
               const item = b.session.commands.skill(data.surfaceId, data.name);
@@ -59,7 +62,7 @@ test('skill journey: discover, filter, inspect, toggle, copy and reload with rea
             }
             default: throw new Error('Unexpected browser request: ' + request.action);
           }
-        } catch (reason) {error = String(reason);}
+        } catch (reason) {error = String(reason); errors.push(`${request.action}: ${error}`); t.diagnostic(`${request.action}: ${error}`);}
         await page.evaluate(message => window.postMessage(message, '*'), {kind: 'response', id: request.id, result, error});
       });
       await page.addInitScript({content: 'window.acquireVsCodeApi = () => ({postMessage: value => void window.bridge(value), getState: () => null, setState: () => {}});'});
@@ -123,10 +126,16 @@ test('skill journey: discover, filter, inspect, toggle, copy and reload with rea
       assert.equal(await row.locator(`[data-row="skill.copy:${target}"]`).count(), 0);
       assert(await readFile(join(b.cwd, '.rcoder/skills', target, 'SKILL.md'), 'utf8'));
       await page.locator('[data-row="skill.reload"]').click();
+      await until(() => finishReload);
       assert.equal(await search.inputValue(), target);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      // Press the key at the user's actual focus while the reload reply is delayed.
+      await page.keyboard.press('Escape'); await page.locator('#workbench').waitFor({state: 'hidden'});
+      await until(() => !b.session.commands.surface);
+      finishReload!();
+      await page.waitForFunction(() => document.querySelector('[data-row="skill.reload"]')?.getAttribute('data-pending') === 'false');
+      assert(await page.locator('#workbench').isHidden(), 'A delayed reload reply must not reopen the panel');
       assert.deepEqual(errors, []);
-      await page.locator('#workbench').press('Escape'); await page.locator('#workbench').waitFor({state: 'hidden'});
-    } finally {open = false; b.session.off('change', changed); await page.close();}
+    } finally {finishReload?.(); open = false; b.session.off('change', changed); await page.close();}
   }
 });

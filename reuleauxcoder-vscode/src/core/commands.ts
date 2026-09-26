@@ -8,6 +8,7 @@ export class ConversationCommands {
   private detach?: () => void;
   private epoch = 0;
   private serial = 0;
+  private dismissFrom = 0;
   private accepting = false;
   private stack: {panel: Panel; path: string[]}[] = [];
   surface?: CommandSurface;
@@ -45,7 +46,7 @@ export class ConversationCommands {
     if (this.surface?.busy) throw new Error(t('This panel changed. Choose the action again.'));
     const action = this.client?.catalog.find(action => action.action_id === actionId);
     if (!action) throw new Error(t('This action is no longer available.'));
-    this.epoch++; this.accepting = true; this.stack = [];
+    this.epoch++; this.accepting = true; this.stack = []; this.dismissFrom = this.serial + 1;
     this.surface = {id: ++this.serial, feature: action.feature_id, busy: false, canBack: false};
     if (action.parameters.length && (!action.preview || action.parameters.some(parameter => parameter.required))) {
       this.surface.action = action; this.changed(); return;
@@ -77,7 +78,7 @@ export class ConversationCommands {
     const item = panel.items[index]; const key = item.id ?? item.label;
     const child = panel.children.find(([id]) => id === key)?.[1];
     if (child) {
-      this.stack.push({panel: child, path: [...this.stack.at(-1)!.path, key]}); this.showPanel();
+      this.stack.push({panel: child, path: [...this.stack.at(-1)!.path, key]}); this.showPanel(true);
       if (child.on_open) await this.run(child.on_open.action_id, child.on_open.command);
     } else if (item.action) {
       if (!panel.keep_open_on_submit) {
@@ -104,7 +105,7 @@ export class ConversationCommands {
     // Refresh facts without reopening a dismissed panel or a different session.
     if (epoch === this.epoch && this.accepting) await this.open('approval.show');
   }
-  back(id: number): void {this.current(id); this.epoch++; if (this.stack.length > 1) {this.stack.pop(); this.showPanel();} else this.close();}
+  back(id: number): void {this.current(id); this.epoch++; if (this.stack.length > 1) {this.stack.pop(); this.showPanel(true);} else this.close();}
   skill(id: number, name: unknown) {
     const surface = this.current(id);
     const item = surface.panel?.view_type === 'skills' && typeof name === 'string'
@@ -117,7 +118,9 @@ export class ConversationCommands {
     await this.run('skills.reload', {});
   }
   dismiss(id: number): void {
-    if (this.surface && this.surface.id !== id) throw new Error(t('This panel changed. Choose the action again.'));
+    // A refresh may reach the host before its snapshot reaches the webview.
+    // Closing is valid across revisions of this panel, never across navigation.
+    if (this.surface && (!Number.isSafeInteger(id) || id < this.dismissFrom || id > this.surface.id)) throw new Error(t('This panel changed. Choose the action again.'));
     this.close();
   }
   close(): void {this.epoch++; this.accepting = false; this.stack = []; this.surface = undefined; this.changed();}
@@ -125,8 +128,10 @@ export class ConversationCommands {
     if (!this.surface || this.surface.id !== id || this.surface.busy) throw new Error(t('This panel changed. Choose the action again.'));
     return this.surface;
   }
-  private showPanel(): void {
-    this.surface = {id: ++this.serial, feature: this.surface?.feature ?? '', busy: this.surface?.busy ?? false, panel: this.stack.at(-1)!.panel, canBack: this.stack.length > 1};
+  private showPanel(navigated = false): void {
+    const panel = this.stack.at(-1)!.panel;
+    if (navigated || this.surface?.panel && this.surface.panel.view_type !== panel.view_type) this.dismissFrom = this.serial + 1;
+    this.surface = {id: ++this.serial, feature: this.surface?.feature ?? '', busy: this.surface?.busy ?? false, panel, canBack: this.stack.length > 1};
     this.changed();
   }
   private async run(action: string, values: Record<string, Json>): Promise<void> {

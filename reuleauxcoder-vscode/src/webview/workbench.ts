@@ -26,6 +26,7 @@ export class ComposerWorkbench {
   constructor(private root: HTMLElement, private composer: HTMLTextAreaElement, private request: Request, private notice: (error: unknown) => void, private save: () => void) {
     this.permissions = new PermissionPolicies(request, notice);
     this.skills = new SkillBrowser(request, notice);
+    root.tabIndex = -1;
     document.addEventListener('pointerdown', event => {if (this.menu && !root.contains(event.target as Node) && event.target !== composer && !(event.target as Element).closest('#commands')) this.dismiss();});
     root.addEventListener('keydown', event => {if (event.key === 'Escape' && !event.isComposing) {event.preventDefault(); this.dismiss();} });
   }
