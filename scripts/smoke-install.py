@@ -50,6 +50,43 @@ with tempfile.TemporaryDirectory(prefix="rcoder-install-") as temporary:
             env={**env, "PATH": ""},
             check=True,
         )
+    subprocess.run(
+        [str(python), "-c", """
+from pathlib import Path
+import sys
+from reuleauxcoder.app.configuration import ConfigurationService
+from reuleauxcoder.extensions.skills.service import SkillsService
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
+from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
+
+work = Path.cwd()
+service = SkillsService(workspace_dir=work, home_dir=work / 'empty-home')
+loaded = service.reload()
+skill = next(item for item in loaded.active_skills if item.name == 'rcoder-config')
+assert skill.scope == 'builtin'
+assert Path(skill.location).is_relative_to(Path(sys.prefix).resolve())
+reader = ReadFileTool(LocalToolBackend(ExecutionContext(cwd=str(work))))
+for name in ('SKILL.md', 'references/configuration.md', 'references/reasoning.md', 'references/workflows.md'):
+    path = Path(skill.skill_dir) / name
+    first_line = path.read_text(encoding='utf-8').splitlines()[0]
+    assert first_line in reader.execute(str(path)).model_text
+configuration = ConfigurationService.for_workspace(work, home=work / 'empty-home')
+assert configuration.describe()['api_version'] == 2
+checked = configuration.check(documents=[{
+    'scope': 'workspace',
+    'content': 'app:\\n  api_key: offline-smoke-key\\n  model: example-model\\n',
+}])
+assert checked['valid'], checked
+assert all(check['status'] == 'passed' for check in checked['checks']), checked
+assert not (work / '.rcoder').exists()
+assert not (work / 'empty-home').exists()
+print('Installed configuration skill, references and offline configuration checks passed.')
+"""],
+        cwd=work,
+        env=env,
+        check=True,
+        timeout=60,
+    )
     bundle = subprocess.check_output(
         [
             str(python),
@@ -81,5 +118,5 @@ with tempfile.TemporaryDirectory(prefix="rcoder-install-") as temporary:
             timeout=30,
         )
 print(
-    "uv tool installation, all entry points and standalone TUI passed outside the checkout."
+    "uv tool installation, all entry points, bundled skill and standalone TUI passed outside the checkout."
 )

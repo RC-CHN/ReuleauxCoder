@@ -1,4 +1,4 @@
-"""Reject release artifacts that omit the bundled frontend or entry points."""
+"""Reject release artifacts that omit bundled runtime resources or entry points."""
 
 from pathlib import Path
 import sys
@@ -15,12 +15,21 @@ required = {
         "THIRD_PARTY_NOTICES.txt",
     )
 }
+required.update(
+    f"reuleauxcoder/extensions/skills/builtin/rcoder-config/{name}"
+    for name in (
+        "SKILL.md",
+        "references/configuration.md",
+        "references/reasoning.md",
+        "references/workflows.md",
+    )
+)
 wheels = list(directory.glob("*.whl"))
 sdists = list(directory.glob("*.tar.gz"))
 assert wheels and sdists, "Build both wheel and sdist before checking distributions"
 for wheel in wheels:
     with zipfile.ZipFile(wheel) as archive:
-        assert required <= set(archive.namelist()), f"TUI assets missing in {wheel}"
+        assert required <= set(archive.namelist()), f"Bundled resources missing in {wheel}"
         entrypoints = next(
             name
             for name in archive.namelist()
@@ -32,11 +41,11 @@ for wheel in wheels:
 for sdist in sdists:
     with tarfile.open(sdist) as archive:
         names = {name.split("/", 1)[1] for name in archive.getnames() if "/" in name}
-        assert required <= names, f"TUI assets missing in {sdist}"
+        assert required <= names, f"Bundled resources missing in {sdist}"
         assert not any("node_modules/" in name for name in names), (
             f"node_modules leaked into {sdist}"
         )
         assert "reuleauxcoder-agent/reuleauxcoder-agent" not in names, (
             f"Peer binary leaked into {sdist}"
         )
-print("Wheel and sdist contain the bundled TUI; all frontend entry points are present.")
+print("Wheel and sdist contain the bundled TUI and configuration skill; all frontend entry points are present.")
