@@ -6,6 +6,7 @@ import pytest
 
 from reuleauxcoder.domain.images import ChatInput
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
+from reuleauxcoder.app.rpc.codec import encode
 from tests.domain.test_images import picture
 
 
@@ -13,6 +14,30 @@ def attach(runtime, tmp_path):
     path = tmp_path / "screen.png"
     path.write_bytes(picture(size=(400, 300)))
     return runtime.client.attach_image(str(path))
+
+
+def test_image_preview_validates_session_import_metadata_and_size(runtime, tmp_path):
+    image = attach(runtime, tmp_path)
+    state = runtime.client.state
+    params = dict(session_id=state.session_id, session_generation=state.session_generation)
+
+    def preview(reference):
+        return runtime.client.peer.request("images.preview", {**params, "image": encode(reference)})
+
+    assert preview(image) == runtime.agent.image_store.data_url(state.session_id, image)
+    # A committed turn may add its correlation ID without changing the image.
+    assert preview(replace(image, turn_id="sent-turn")) == preview(image)
+    for invalid, message in [
+        (replace(image, width=image.width + 1), "metadata"),
+        (replace(image, size_bytes=3 * 1024 * 1024), "size"),
+        (replace(image, attachment_id="0" * 64), "not imported"),
+        ({"path": str(tmp_path / "screen.png")}, "reference"),
+    ]:
+        with pytest.raises(RpcError, match=message):
+            preview(invalid)
+    runtime.agent.reset()
+    with pytest.raises(RpcError, match="different session"):
+        preview(image)
 
 
 def test_attachment_admission_preserves_draft_until_capable_model(runtime, tmp_path):

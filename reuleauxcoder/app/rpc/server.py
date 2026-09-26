@@ -99,6 +99,7 @@ class RuntimeServer:
                 "images.append": self.images.append,
                 "images.complete": self.images.complete,
                 "images.cancel": self.images.cancel,
+                "images.preview": self.images.preview,
                 "attachments.begin": self.attachments.begin,
                 "attachments.append": self.attachments.append,
                 "attachments.complete": self.attachments.complete,
@@ -231,9 +232,8 @@ class RuntimeServer:
                 {
                     "version": 1,
                     "core_version": __version__,
-                    # Revision 1 includes separately visible session/workspace
-                    # approval rules. Increase for required editor integration fixes.
-                    "editor_api_version": 1,
+                    # Revision 2 adds bounded image previews and restore references.
+                    "editor_api_version": 2,
                     "workspace_git": self.agent.git_monitor is not None,
                     "conditional_snapshots": True,
                     "submission_ids": True,

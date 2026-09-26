@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reuleauxcoder.app.commands.matchers import match_template
+from reuleauxcoder.domain.images import ImageReference
 from reuleauxcoder.app.commands.models import CommandEffect
 from reuleauxcoder.app.commands.params import ParamParseError
 from reuleauxcoder.app.commands.panels import (
@@ -304,7 +305,8 @@ def _resume_session(command, ctx) -> CommandEffect:
         active_mode=runtime.active_mode,
         entries=tuple(
             SessionTranscriptEntryViewModel(
-                role=entry["role"], content=entry["content"]
+                role=entry["role"], content=entry["content"],
+                images=tuple(ImageReference(**image) for image in entry.get("images", ())),
             )
             for entry in loaded.get_recent_conversation(max_user_turns=3)
         ),

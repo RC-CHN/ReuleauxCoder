@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 from reuleauxcoder.domain.goal import Goal
+from reuleauxcoder.domain.images import ImageReference
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,6 +420,7 @@ class SessionsViewModel:
 class SessionTranscriptEntryViewModel:
     role: str
     content: str
+    images: tuple[ImageReference, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,7 +439,15 @@ class SessionResumeViewModel:
             "saved_at": self.saved_at,
             "active_mode": self.active_mode,
             "entries": [
-                {"role": entry.role, "content": entry.content} for entry in self.entries
+                {
+                    "role": entry.role,
+                    "content": entry.content,
+                    **(
+                        {"images": [asdict(image) for image in entry.images]}
+                        if entry.images else {}
+                    ),
+                }
+                for entry in self.entries
             ],
         }
 

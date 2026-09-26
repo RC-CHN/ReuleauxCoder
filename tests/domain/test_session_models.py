@@ -1,8 +1,10 @@
 import json
+from dataclasses import asdict
 
 import pytest
 
 from reuleauxcoder.domain.history import HistoryLedger
+from reuleauxcoder.domain.images import ImageReference
 from reuleauxcoder.domain.session.models import (
     MAX_RECENT_CONVERSATION_BYTES,
     MAX_RECENT_CONVERSATION_ENTRIES,
@@ -24,6 +26,19 @@ def test_recent_preview_preserves_small_messages_and_recent_turn_selection():
     ]
     session = Session(id="preview", model="test", saved_at="", messages=messages)
     assert session.get_recent_conversation() == messages[-6:]
+
+
+@pytest.mark.parametrize("with_ledger", [False, True])
+def test_recent_preview_keeps_image_references_in_bounded_projection(with_ledger):
+    image = ImageReference("a" * 64, "b" * 64, "image/png", 40, 30, 128, 400, 300, "粘贴.png")
+    message = {"role": "user", "content": [{"type": "text", "text": "Inspect this " * MAX_RECENT_ENTRY_BYTES}, image.to_part()]}
+    ledger = HistoryLedger(session_id="preview")
+    ledger.append("message_committed", {"message": message})
+    session = Session(id="preview", model="test", saved_at="", messages=[message], history_events=list(ledger.events) if with_ledger else [])
+    preview = session.get_recent_conversation()
+    assert preview[-1]["images"] == [asdict(image)]
+    assert len(_json_bytes(preview[-1])) <= MAX_RECENT_ENTRY_BYTES
+    assert "Preview truncated" in preview[-1]["content"]
 
 
 @pytest.mark.parametrize("text", ['中文🙂"\\\n\x00', "a"])

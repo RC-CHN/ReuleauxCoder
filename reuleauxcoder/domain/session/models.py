@@ -12,7 +12,7 @@ from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.history import HistoryEvent
 from reuleauxcoder.domain.output_journal import interrupted_output
 from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
-from reuleauxcoder.domain.images import content_text, display_content
+from reuleauxcoder.domain.images import ImageReference, content_text, display_content
 
 MAX_SESSION_PREVIEW_CHARS = 120
 # Human restore previews only; canonical messages and ledger records stay intact.
@@ -26,15 +26,15 @@ _PREVIEW_OMITTED = {
 }
 
 
-def _preview_size(entry: dict[str, str]) -> int:
+def _preview_size(entry: dict[str, Any]) -> int:
     return len(
         json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )
 
 
-def _bounded_recent_conversation(entries: list[dict[str, str]]) -> list[dict[str, str]]:
+def _bounded_recent_conversation(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep newest entries within a JSON byte budget, including escape expansion."""
-    selected: list[dict[str, str]] = []
+    selected: list[dict[str, Any]] = []
     # Reserve brackets, separators and an omission notice before choosing entries.
     remaining = MAX_RECENT_CONVERSATION_BYTES - 2 - _preview_size(_PREVIEW_OMITTED) - 1
     for entry in reversed(entries):
@@ -46,7 +46,7 @@ def _bounded_recent_conversation(entries: list[dict[str, str]]) -> list[dict[str
         if len(text) <= budget and _preview_size(entry) <= budget:
             preview = entry
         else:
-            preview = {"role": entry["role"], "content": _PREVIEW_TRUNCATED}
+            preview = {**entry, "content": _PREVIEW_TRUNCATED}
             if _preview_size(preview) > budget:
                 break
             low, high = 0, min(len(text), budget)
@@ -98,6 +98,25 @@ def _display_message_text(message: dict) -> str:
         _, separator, remainder = text.partition("\n\n")
         return remainder.strip() if separator else ""
     return text
+
+
+def _conversation_entry(message: dict, text: str) -> dict[str, Any]:
+    entry = {"role": message["role"], "content": text}
+    content = message.get("content")
+    if message["role"] == "user" and isinstance(content, list):
+        images = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image":
+                continue
+            try:
+                images.append(asdict(ImageReference.from_part(part)))
+            except (TypeError, ValueError):
+                continue  # A damaged old reference must not hide readable history.
+            if len(images) == 30:
+                break
+        if images:
+            entry["images"] = images
+    return entry
 
 
 @dataclass
@@ -353,16 +372,16 @@ class Session:
             else ""
         )
 
-    def get_recent_conversation(self, max_user_turns: int = 3) -> list[dict[str, str]]:
+    def get_recent_conversation(self, max_user_turns: int = 3) -> list[dict[str, Any]]:
         """Return a bounded human preview, excluding protocol/tool messages."""
-        entries: list[dict[str, str]] = []
+        entries: list[dict[str, Any]] = []
         for message in self.messages:
             role = message.get("role")
             if role not in ("user", "assistant"):
                 continue
             text = _display_message_text(message)
             if text:
-                entries.append({"role": role, "content": text})
+                entries.append(_conversation_entry(message, text))
 
         recovered = interrupted_output(self.history_events)
         if recovered or not self.history_behavior_projection_safe:
@@ -378,7 +397,7 @@ class Session:
                 if role in ("user", "assistant") and (
                     text := _display_message_text(message)
                 ):
-                    timeline.append((event.seq, {"role": role, "content": text}))
+                    timeline.append((event.seq, _conversation_entry(message, text)))
             history_entries = [
                 entry for _, entry in sorted(timeline, key=lambda item: item[0])
             ]

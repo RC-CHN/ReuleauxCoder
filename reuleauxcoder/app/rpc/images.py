@@ -7,7 +7,8 @@ import binascii
 import tempfile
 import uuid
 
-from reuleauxcoder.app.rpc.codec import encode
+from reuleauxcoder.app.rpc.codec import decode, encode
+from reuleauxcoder.domain.images import ImageReference
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
 
 
@@ -62,6 +63,23 @@ class ImageUploads:
                 "file": tempfile.TemporaryFile(),
             }
             return {"upload_id": self.pending["id"], "chunk_bytes": IMAGE_CHUNK_BYTES}
+
+    def preview(self, session_id, session_generation, image):
+        """Read an imported input variant; never accept paths or original-cache reads."""
+        with self.server._lock:
+            self._check_session(session_id, session_generation)
+            try:
+                reference = decode(image)
+                if (
+                    not isinstance(reference, ImageReference)
+                    or reference.size_bytes > 2 * 1024 * 1024
+                ):
+                    raise ValueError("Invalid image preview reference or size")
+                store = self.server.agent.image_store
+                store.validate_reference(session_id, reference)
+                return store.data_url(session_id, reference)
+            except (TypeError, ValueError, OSError) as error:
+                raise RpcError(-32602, str(error)) from error
 
     def _upload(self, upload_id):
         pending = self.pending

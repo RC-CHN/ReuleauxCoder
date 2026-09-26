@@ -14,7 +14,7 @@ from reuleauxcoder.infrastructure.rpc.peer import RpcError
 def test_initialization_describes_backend_without_exposing_local_history(runtime):
     info = runtime.client.info
     assert info["core_version"] == __version__
-    assert info["editor_api_version"] == 1
+    assert info["editor_api_version"] == 2
     assert (
         info["presentation"]["reasoning_display"] == runtime.config.ui.reasoning_display
     )
