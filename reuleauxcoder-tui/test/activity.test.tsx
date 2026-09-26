@@ -66,6 +66,8 @@ test('logo collapse shades the disappearing edge between whole-row layout change
   assert.equal(final.header.length, first.header.length - 3);
   assert(final.header.join('\n').includes('visible-model'));
   assert(final.header.join('\n').includes('/visible-workspace'));
+  const heights = [0, 1, 2, 3].map(hidden => consoleChrome(c, 138, 'Ready', hidden).header.length);
+  assert.deepEqual(heights, [heights[0], heights[0] - 1, heights[0] - 2, heights[0] - 3], 'each collapsed logo row releases one layout row');
 });
 
 test('composer motion keeps its geometry and stops for attention, idle and errors', async t => {
@@ -148,7 +150,9 @@ test('startup logo slides away once, returning rows to output without moving the
   await until(() => app.lastFrame()?.includes('REULEAUX') && !app.lastFrame()?.includes('██'));
   const frames = app.frames.slice(first);
   const bandRows = frames.map(frame => position(frame, '► SESSION'));
-  assert(bandRows.some(row => row > bandRows.at(-1)! && row < bandRows[0]), 'height is released progressively');
+  // A loaded runner can skip intermediate frames; sampled layout must never grow back.
+  assert(bandRows.every((row, index) => index === 0 || row <= bandRows[index - 1]), 'logo height only decreases');
+  assert.equal(bandRows[0] - bandRows.at(-1)!, 3);
   assert.equal(c.viewportRows, viewport + 3);
   assert.equal(c.snapshot(), revision, 'startup animation stays local to the UI');
   for (const frame of frames) {
