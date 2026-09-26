@@ -100,7 +100,10 @@ export class WorkspaceSession extends EventEmitter {
     const context = items.filter(item => item.kind !== 'image').map(item => item.kind === 'file' ? `Attached file: ${item.name}\nWorkspace path: ${item.reference.path}` : item.text).join('\n\n');
     const input = [text.trim(), context].filter(Boolean).join('\n\n');
     if (!input && !images.length) return;
-    const value: Json = images.length ? record('ChatInput', {text: input, images: tuple(images.map(item => record('ImageReference', item.reference)))}) : input;
+    const value: Json = images.length ? record('ChatInput', {
+      text: input, images: tuple(images.map(item => record('ImageReference', item.reference))),
+      session_id: client.state.session_id, session_generation: generation,
+    }) : input;
     const display = [text, ...items.map(item => `[${t(item.kind)}: ${item.name}]`)].filter(Boolean).join('\n');
     const sending = this.submissions!.send(display, value, id);
     this.draftItems = this.draftItems.filter(item => !itemIds.includes(item.id));

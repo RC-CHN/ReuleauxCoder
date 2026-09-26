@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bind VS Code image submissions to their owning core session and generation. Cover actual image delivery, same-ID retry and steering, beyond upload-to-draft checks.
+
 ## 0.11.2 - 2026-09-26
 
 - Keep keyboard focus and Escape dismissal available while skill actions are pending, and use current busy state when expanding skill details after a delayed response. Accept close requests across refreshes of the same panel while still rejecting stale actions after navigation; cover delayed replies and Windows long/short path aliases in editor tests.

@@ -12,6 +12,7 @@ from reuleauxcoder.app.ui_events import UIEventBus
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.tool_execution import ToolExecutor
 from reuleauxcoder.domain.config.models import Config
+from reuleauxcoder.domain.images import display_content
 from reuleauxcoder.domain.extensions.hook_adapter import HookExtensionAdapter
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.hooks.types import GuardDecision
@@ -57,7 +58,7 @@ server = create_server(ctx, peer, UIProfile("vscode", "Test", frozenset(UICapabi
 
 
 def run():
-    text = agent.messages[-1]["content"]
+    text = display_content(agent.messages[-1]["content"])
     if text in {"edit", "auto-edit"}:
         result = ToolExecutor(agent).execute(ToolCall(id="edit-test", name="edit_file", arguments={"file_path": "example.py", "old_string": "old", "new_string": "new"}))
     elif text == "question":
@@ -75,6 +76,8 @@ loop.run = run
 # ToolExecutor passes workspace.resolve() results; also expand Windows 8.3 aliases here.
 peer.methods["test.is_dirty"] = lambda path: bool(server.editor_documents.guard(str(Path(path).resolve())))
 peer.methods["test.state"] = lambda: encode(server._publish_state())
+peer.methods["test.messages"] = lambda: encode(agent.messages)
+peer.methods["test.drain_steering"] = lambda: agent._drain_user_steering()
 if "--legacy-core" in sys.argv:
     def legacy_initialize(**params):
         result = decode(server.initialize(**params))

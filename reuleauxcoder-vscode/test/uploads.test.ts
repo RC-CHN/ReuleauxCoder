@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {backend} from './helpers.js';
+import {decode} from '@reuleauxcoder/client';
+import {backend, until} from './helpers.js';
 
 test('browser bytes arrive on the workspace host with bounded ownership and offsets', async t => {
   const b = await backend(); t.after(() => b.close());
@@ -28,7 +29,7 @@ test('disposing a view cancels its upload and cannot cancel another owner', asyn
   assert(!b.client.peer.closed);
 });
 
-test('clipboard image bytes are validated by the real core and referenced in the draft', async t => {
+test('clipboard image upload reaches a real core turn and survives retry with the same submission ID', async t => {
   const b = await backend(); t.after(() => b.close());
   const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVR4nGP8//8/AwwwMSABFA4Aby0DAyMYAwQAAAAASUVORK5CYII=', 'base64');
   const upload = await b.session.uploads!.begin('clipboard', 'paste.png', bytes.length, true);
@@ -36,4 +37,42 @@ test('clipboard image bytes are validated by the real core and referenced in the
   const image = await b.session.uploads!.complete('clipboard', upload.id);
   assert.equal(image.kind, 'image'); assert.equal(image.reference.width, 4); assert.equal(image.reference.height, 3);
   b.session.add(image); assert.equal(b.session.draftItems.length, 1);
+  const submit = b.client.submit.bind(b.client);
+  const attempts: unknown[] = [];
+  b.client.submit = async (...args) => {
+    attempts.push(structuredClone(args));
+    if (attempts.length === 1) throw new Error('Temporary transport failure');
+    return submit(...args);
+  };
+  b.session.submit('clipboard-image', 'Inspect this image', [image.id], b.client.state.session_generation);
+  await until(() => b.session.transcript.cells.some(cell => cell.id === 'clipboard-image' && cell.status === 'unconfirmed'));
+  await b.session.submissions!.retry('clipboard-image');
+  await until(() => b.session.transcript.cells.some(cell => cell.id === 'clipboard-image' && ['applied', 'rejected'].includes(cell.status!)));
+  assert.equal(b.session.transcript.cells.find(cell => cell.id === 'clipboard-image')?.status, 'applied');
+  assert.deepEqual(attempts[0], attempts[1]);
+  await until(() => !b.client.state.running);
+  const messages = decode(await b.client.peer.request('test.messages'));
+  const users = messages.filter((message: any) => message.role === 'user');
+  assert.equal(users.length, 1);
+  assert.equal(users[0].content.find((part: any) => part.type === 'image').attachment_id, image.reference.attachment_id);
+  assert.equal(b.session.transcript.cells.filter(cell => cell.id === 'clipboard-image').length, 1);
+  assert.equal(b.session.draftItems.length, 0);
+});
+
+test('clipboard images keep their session when sent as steering', async t => {
+  const b = await backend(); t.after(() => b.close());
+  b.session.submit('working', 'wait', [], b.client.state.session_generation);
+  await until(() => b.client.state.running);
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVR4nGP8//8/AwwwMSABFA4Aby0DAyMYAwQAAAAASUVORK5CYII=', 'base64');
+  const upload = await b.session.uploads!.begin('clipboard', 'steering.png', bytes.length, true);
+  await b.session.uploads!.append('clipboard', upload.id, 0, bytes.toString('base64'));
+  const image = await b.session.uploads!.complete('clipboard', upload.id);
+  b.session.add(image);
+  b.session.submit('steering-image', 'Also check this', [image.id], b.client.state.session_generation);
+  await until(() => b.session.transcript.cells.some(cell => cell.id === 'steering-image' && ['queued', 'rejected'].includes(cell.status!)));
+  assert.equal(b.session.transcript.cells.find(cell => cell.id === 'steering-image')?.status, 'queued');
+  await b.client.peer.request('test.drain_steering');
+  await until(() => b.session.transcript.cells.some(cell => cell.id === 'steering-image' && cell.status === 'applied'));
+  const messages = decode(await b.client.peer.request('test.messages'));
+  assert(messages.some((message: any) => Array.isArray(message.content) && message.content.some((part: any) => part.type === 'image' && part.attachment_id === image.reference.attachment_id)));
 });
