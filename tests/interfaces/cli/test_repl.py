@@ -1,6 +1,7 @@
 """Exercise line editing and approvals against a real JSON-RPC runtime."""
 
 from io import StringIO
+import re
 from threading import Event, Thread
 from time import monotonic, sleep
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from reuleauxcoder.domain.runtime.events import (
     RuntimeEvent,
 )
 from reuleauxcoder.interfaces.cli.output import CLIOutputCoordinator
+from reuleauxcoder.interfaces.cli.input import CLIInput
 from reuleauxcoder.interfaces.cli.registration import create_cli_registration
 from reuleauxcoder.interfaces.cli.render import CLIRenderer
 from reuleauxcoder.interfaces.cli.repl import run_repl
@@ -248,6 +250,16 @@ def test_silent_stream_events_do_not_erase_the_prompt(cli_runtime, monkeypatch):
         enable_cpr=False,
     )
     failures = []
+    editors = []
+    redrawn = Event()
+
+    def create_editor(*args, **kwargs):
+        editor = CLIInput(*args, **kwargs)
+        editor.session.app.after_render += lambda app: redrawn.set()
+        editors.append(editor)
+        return editor
+
+    monkeypatch.setattr("reuleauxcoder.interfaces.cli.repl.CLIInput", create_editor)
 
     def emit(payload):
         rt.server.bus.emit_runtime(
@@ -278,11 +290,20 @@ def test_silent_stream_events_do_not_erase_the_prompt(cli_runtime, monkeypatch):
                     sleep(0.03)
                 emit(AssistantContentDelta("uncommitted paragraph"))
                 wait_for(lambda: rt.output.renderer.stream.active_block is not None)
-                assert terminal.getvalue() == baseline
+                # Empty renders can occur asynchronously on a loaded runner. Exercise
+                # one explicitly; only non-destructive terminal mode codes are legal.
+                redrawn.clear()
+                editors[0].session.app.invalidate()
+                assert redrawn.wait(5)
+                suffix = terminal.getvalue()[len(baseline):]
+                assert re.fullmatch(
+                    r"(?:\x1b\[\?(?:7|12|25)[hl]|\x1b\[0m)*", suffix
+                ), repr(suffix)
+                assert editors[0].session.default_buffer.text == "草稿"
                 rt.server.bus.warning("VISIBLE WARNING")
                 wait_for(lambda: "VISIBLE WARNING" in rt.transcript.getvalue())
                 assert rt.transcript.getvalue().count("VISIBLE WARNING") == 1
-                assert "草稿" in terminal.getvalue()[len(baseline):]
+                wait_for(lambda: "草稿" in terminal.getvalue()[len(baseline):])
                 pipe.send_text("\x03")
                 release.set()
                 wait_for(lambda: not rt.client.state.running)
