@@ -2407,6 +2407,26 @@ def test_external_readonly_workspace_tools_are_allowed_by_default(
     assert revoked.value.code is WorkspaceErrorCode.PATH_OUTSIDE_WORKSPACE
 
 
+def test_bundled_skill_and_references_are_readable_through_normal_tool_execution(tmp_path):
+    from reuleauxcoder.extensions.skills.discovery import discover_skills
+
+    skills, _, _ = discover_skills(workspace_dir=tmp_path, home_dir=tmp_path)
+    skill = next(skill for skill in skills if skill.name == "rcoder-config")
+    backend = LocalToolBackend(ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path)))
+    agent = _AgentStub(ReadFileTool(backend))
+    from pathlib import Path
+
+    for path in Path(skill.skill_dir).rglob("*.md"):
+        result = ToolExecutor(agent).execute(ToolCall(
+            id=path.name, name="read_file", arguments={"file_path": str(path)},
+        ))
+        assert agent.events[-1].tool_success is True
+        assert path.read_text(encoding="utf-8").splitlines()[0] in result
+        # Reading bundled instructions does not retain general access outside the workspace.
+        with pytest.raises(WorkspaceError):
+            backend.workspace.read_text(path)
+
+
 def test_external_readonly_tool_still_honors_explicit_approval_policy(
     tmp_path,
 ) -> None:

@@ -7,6 +7,8 @@ from pathlib import Path
 from reuleauxcoder.extensions.skills.models import Skill, SkillDiagnostic
 from reuleauxcoder.extensions.skills.parser import parse_skill_file
 
+BUILTIN_SKILLS_DIR = Path(__file__).with_name("builtin")
+
 
 def discover_skills(
     *,
@@ -16,13 +18,13 @@ def discover_skills(
     scan_user: bool = True,
     disabled_names: set[str] | None = None,
 ) -> tuple[tuple[Skill, ...], tuple[SkillDiagnostic, ...], tuple[str, ...]]:
-    """Discover skills from configured roots."""
+    """Discover packaged, user and project skills in increasing precedence."""
     disabled_names = set(disabled_names or set())
     diagnostics: list[SkillDiagnostic] = []
     missing: list[str] = []
 
     discovered: dict[str, Skill] = {}
-    roots: list[tuple[str, Path]] = []
+    roots: list[tuple[str, Path]] = [("builtin", BUILTIN_SKILLS_DIR)]
     if scan_user:
         roots.append(("user", home_dir / ".rcoder" / "skills"))
     if scan_project:

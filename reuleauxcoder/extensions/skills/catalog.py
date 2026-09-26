@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from xml.sax.saxutils import escape
 
 from reuleauxcoder.extensions.skills.models import Skill
@@ -15,7 +17,9 @@ root directory and prefer absolute paths in tool calls.
 """
 
 
-def build_skills_catalog(skills: tuple[Skill, ...]) -> str:
+def build_skills_catalog(
+    skills: tuple[Skill, ...], *, runtime: Mapping[str, str | None] | None = None
+) -> str:
     """Build stable prompt text for active skills."""
     if not skills:
         return ""
@@ -36,4 +40,12 @@ def build_skills_catalog(skills: tuple[Skill, ...]) -> str:
             ]
         )
     lines.append("</available_skills>")
+    if runtime:
+        lines.extend([
+            "",
+            "Core launch environment (JSON; paths belong to the core host):",
+            "<skill_runtime>",
+            escape(json.dumps(dict(runtime), ensure_ascii=False)),
+            "</skill_runtime>",
+        ])
     return "\n".join(lines)

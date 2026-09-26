@@ -282,6 +282,8 @@ Use `/config` to inspect effective values and their sources. Session overrides l
 
 `app/configuration.py` exposes only read-only describe/inspect/check operations (API v2) through CLI and RPC. YAML files are the editable source; the core alone resolves defaults, inheritance and validation. Startup, inspection and checks share strict parsing and never generate or backfill files. Checks accept unsaved YAML buffers and optional model probes without candidate state or online-save gates. VS Code opens native TextDocuments on the workspace host, distinguishes workspace overrides from global defaults and explicit launch files, invalidates checks on buffer changes, and checks saved settings before a deliberate restart. Invalid preflight leaves the running core intact. Existing private backups are untouched; old write APIs and dedicated model tools are removed. See `docs/configuration-api.md` and `docs/configuration-reference.md`.
 
+`extensions/skills/builtin/` contains skills shipped with the core, starting with `rcoder-config`. Discovery precedence is builtin < user < project; disabled names apply to the resolved winner. Presets are read in place, never copied over user files. The catalog includes core Python/workspace/explicit-config launch paths so skills use the owning core instead of an unrelated PATH installation. The self-configuration skill owns the canonical field reference and reasoning/workflow guides; the docs index links there. Tests compare field coverage with the public schema, exercise recipe behavior and verify wheel/sdist resources and installed use outside the checkout.
+
 ## Development rules
 
 - Prefer typed dataclasses and ports over dict/string protocols.

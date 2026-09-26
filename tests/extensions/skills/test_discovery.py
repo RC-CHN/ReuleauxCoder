@@ -1,6 +1,17 @@
 from pathlib import Path
 
+import pytest
+
 from reuleauxcoder.extensions.skills.discovery import discover_skills
+
+
+@pytest.fixture(autouse=True)
+def isolated_builtin_root(monkeypatch, tmp_path):
+    # This module exercises user/project discovery independently of packaged skills.
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.skills.discovery.BUILTIN_SKILLS_DIR",
+        tmp_path / "empty-builtins",
+    )
 
 
 def _write_skill(

@@ -17,6 +17,7 @@ test('panel translations preserve custom names, goals, IDs, shell commands and p
     assert.equal(panelTitle(panel('model_profiles', {title: 'Model Profiles · Session · Main model'})), '模型配置 · 当前会话 · 主模型');
     assert.deepEqual(panelItemText(panel('model_slots'), row('Session · Main model', 'code')), {label: '当前会话 · 主模型', description: 'code'});
     assert.deepEqual(panelItemText(panel('skills'), row('enabled', 'enabled · user · Running · code', 'skills.disable')), {label: 'enabled', description: '已启用 · 用户级 · Running · code'});
+    assert.deepEqual(panelItemText(panel('skills'), row('rcoder-config', 'enabled · builtin · 配置说明', 'skills.disable')), {label: 'rcoder-config', description: '已启用 · 内置技能 · 配置说明'});
     assert.deepEqual(panelItemText(panel('mcp_servers'), row('workspace', 'enabled · active · g3 · 12 tools · error=CustomError', 'mcp.disable')), {label: 'workspace', description: '已启用 · 可用 · 连接代次 3 · 12 个工具 · 错误：CustomError'});
     assert.equal(panelItemText(panel('goal'), row('Active', 'Create goal')).description, 'Create goal');
     assert.deepEqual(panelItemText(panel('goal'), row('Tokens', '1,200 · No limit · 30 estimated requests')), {label: 'Token 用量', description: '1,200 · 不限 · 预计还可请求 30 次'});

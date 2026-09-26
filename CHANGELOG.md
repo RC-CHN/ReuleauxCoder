@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bundle the `rcoder-config` self-configuration skill with the core, including the complete field reference, reasoning/thinking/replay semantics and checked configuration recipes. Discover packaged skills before user/workspace overrides, honor existing disable controls, and provide the owning core's launch paths. Verify field coverage, ordinary tool reads and installed wheel resources on CI.
+
 - Make YAML the configuration source and reduce the shared CLI/RPC API to read-only describe, inspect and check. Remove dedicated model configuration tools, prepared changes, write/recovery protocols and verification leases; leave existing private backups untouched. Startup and checks share strict validation, and loading never generates or backfills files.
 - Add bilingual VS Code configuration editing through native documents: distinguish workspace overrides, host-global defaults and explicit launch files, validate unsaved buffers, preserve editor save/undo/conflict behavior, and check saved settings before restarting. Failed preflight leaves the running core intact; model connection tests stay optional. Cover real native-editor and browser journeys and document the complete YAML inventory.
 - Resolve app defaults and named profiles consistently across startup, session switches and probes; connect all context budget fields. Validate relay addresses/timeouts, reasoning replay and LSP names, share actual model request parameters, and fix the skill-directory hint.

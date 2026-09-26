@@ -14,6 +14,7 @@ and only need to implement their own UI-specific rendering.
 from __future__ import annotations
 
 import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -468,6 +469,12 @@ class AppRunner:
             scan_project=config.skills.scan_project,
             scan_user=config.skills.scan_user,
             disabled_names=list(config.skills.disabled),
+            runtime={
+                "python": sys.executable,
+                "workspace": str(Path.cwd()),
+                "config": str(Path(self.options.config_path).absolute())
+                if self.options.config_path else None,
+            },
         )
         reload_result = skills_service.reload()
         agent.skills_service = skills_service

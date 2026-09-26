@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
 
@@ -33,6 +34,7 @@ class SkillsService:
         scan_user: bool = True,
         disabled_names: list[str] | None = None,
         config_store: SkillsConfigStore | None = None,
+        runtime: Mapping[str, str | None] | None = None,
     ):
         self.workspace_dir = workspace_dir
         self.home_dir = home_dir
@@ -41,6 +43,7 @@ class SkillsService:
         self.scan_user = scan_user
         self._disabled_names: set[str] = set(disabled_names or [])
         self._config_store = config_store or SkillsConfigStore()
+        self._runtime = dict(runtime) if runtime else None
 
         self._skills: dict[str, Skill] = {}
         self._active_skills: tuple[Skill, ...] = ()
@@ -81,7 +84,7 @@ class SkillsService:
         )
 
         active = tuple(skill for skill in discovered if skill.enabled)
-        catalog = build_skills_catalog(active)
+        catalog = build_skills_catalog(active, runtime=self._runtime)
         signature = self._signature(catalog)
         changed = bool(
             added or removed or updated or signature != self._catalog_signature

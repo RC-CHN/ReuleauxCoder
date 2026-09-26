@@ -30,7 +30,7 @@ export function panelItemText(panel: Panel, item: Panel['items'][number]): {labe
   if (['mode_profiles', 'modes'].includes(kind)) return {label: modeLabel(label), description};
   if (['skills', 'mcp_servers', 'mcp'].includes(kind) && item.action) {
     const parts = description.split(' · ');
-    if (kind === 'skills') return {label, description: [errorText(parts[0]), errorText(parts[1] ?? ''), ...parts.slice(2)].filter(Boolean).join(' · ')};
+    if (kind === 'skills') return {label, description: [errorText(parts[0]), parts[1] === 'builtin' ? t('Bundled skill') : errorText(parts[1] ?? ''), ...parts.slice(2)].filter(Boolean).join(' · ')};
     return {label, description: parts.map(part => part === 'active' ? t('Available') : /^(?:enabled|disabled|unstarted|connected|connecting|refreshing|disconnecting|suppressed|error|reconnecting|unavailable|failed|disconnected)$/.test(part) ? errorText(part) : templateText(part, '{0} tools') ?? (/^g\d+$/.test(part) ? t('Generation {0}', part.slice(1)) : part.startsWith('error=') ? t('Error: {0}', part.slice(6)) : part)).join(' · ')};
   }
   if (kind === 'sessions' && item.action) return {label, description: item.current && description.endsWith(' [active]') ? `${description.slice(0, -9)} [${t('Active session')}]` : description};

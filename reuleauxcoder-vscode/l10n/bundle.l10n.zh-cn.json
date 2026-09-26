@@ -514,6 +514,7 @@
   "Generation {0}": "连接代次 {0}",
   "Error: {0}": "错误：{0}",
   "project": "项目级",
+  "Bundled skill": "内置技能",
   "user": "用户级",
   "Active session": "当前会话",
   "Describe an objective · Default budget: {0}": "描述目标 · 默认预算：{0}",
