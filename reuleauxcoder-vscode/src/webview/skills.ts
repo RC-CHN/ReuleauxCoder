@@ -12,6 +12,7 @@ export class SkillBrowser {
   private source = '';
   private expanded?: string;
   private pending = false;
+  private busy = false;
   private epoch = 0;
   private refresh?: () => void;
   private focusAfter?: string;
@@ -21,6 +22,7 @@ export class SkillBrowser {
 
   draw(body: HTMLElement, surface: CommandSurface): void {
     this.body = body;
+    this.busy = surface.busy;
     const items = surface.panel!.items.map((item, index) => ({item, index})).filter(({item}) => item.details && item.id);
     const toolbar = document.createElement('div'); toolbar.className = 'skill-toolbar';
     const summary = document.createElement('span'); summary.className = 'skill-count';
@@ -58,7 +60,7 @@ export class SkillBrowser {
       }
       empty.hidden = matches.length > 0;
       if (focus && focus !== 'skill.search') body.querySelector<HTMLElement>(`[data-row="${CSS.escape(focus)}"]`)?.focus();
-      this.lock(surface.busy);
+      this.lock(this.busy);
     };
     search.addEventListener('input', () => {this.query = search.value; render();});
     this.refresh = render;
@@ -126,6 +128,7 @@ export class SkillBrowser {
     if (losesFocus) this.body?.closest<HTMLElement>('[aria-busy]')?.focus();
   }
   syncBusy(busy: boolean): void {
+    this.busy = busy;
     this.lock(busy);
     if (!busy && !this.pending && this.focusAfter) {
       const row = this.focusAfter; this.focusAfter = undefined;

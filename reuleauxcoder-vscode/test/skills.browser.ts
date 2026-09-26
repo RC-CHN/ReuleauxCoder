@@ -11,6 +11,13 @@ import {backend, until} from './helpers.js';
 
 test('skill journey: discover, filter, inspect, toggle, copy and reload with real core metadata', {timeout: 90000}, async t => {
   const b = await backend(); t.after(() => b.close());
+  const submitAction = b.client.submitAction.bind(b.client);
+  let finishOpen: (() => void) | undefined;
+  b.client.submitAction = async (...args) => {
+    const result = await submitAction(...args);
+    if (args[0] === 'skills.show') await new Promise<void>(done => {finishOpen = done;});
+    return result;
+  };
   for (const [name, extra] of [['plain-skill', ''], ['partial-skill', 'metadata:\n  rcoder.display-name.zh-CN: 部分翻译\n  rcoder.icon: future-icon\n  rcoder.summary: []\n  rcoder.category: unknown\n']]) {
     const dir = join(b.cwd, '.rcoder/skills', name); await mkdir(dir, {recursive: true});
     await writeFile(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: Custom standard skill\n${extra}---\nInstructions`);
@@ -71,6 +78,9 @@ test('skill journey: discover, filter, inspect, toggle, copy and reload with rea
       await page.locator('.menu-search').fill(language === 'zh' ? '技能' : 'skills');
       await page.locator('[data-action="skills.show"][role="option"]').click();
       const search = page.locator('.skill-search'); await search.waitFor();
+      // Force the first panel projection to render before its action reply.
+      await until(() => finishOpen); finishOpen!(); finishOpen = undefined;
+      await page.waitForFunction(() => document.querySelector('#workbench')?.getAttribute('aria-busy') === 'false');
       await page.evaluate(() => Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => {}))));
       await page.screenshot({path: resolve(`../artifacts/vscode-concept/skills-${language}.png`)});
       // Name and localized title both find the same backend-owned entry.
@@ -136,6 +146,6 @@ test('skill journey: discover, filter, inspect, toggle, copy and reload with rea
       await page.waitForFunction(() => document.querySelector('[data-row="skill.reload"]')?.getAttribute('data-pending') === 'false');
       assert(await page.locator('#workbench').isHidden(), 'A delayed reload reply must not reopen the panel');
       assert.deepEqual(errors, []);
-    } finally {finishReload?.(); open = false; b.session.off('change', changed); await page.close();}
+    } finally {finishOpen?.(); finishReload?.(); open = false; b.session.off('change', changed); await page.close();}
   }
 });
