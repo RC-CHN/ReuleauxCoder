@@ -20,7 +20,7 @@ HTTP/SOCKS5 代理。详见[网页工具网络配置](docs/web-tools.md)。
 
 [VS Code 扩展](reuleauxcoder-vscode/README.md) 支持本机和 Remote 工作区：右侧会话、中央原生 diff 审批、编辑器上下文与文件/图片粘贴上传。界面默认跟随 VS Code 使用中文或英文，缺少核心时可在工作区主机安装附带的兼容版本。
 
-下载 [reuleauxcoder-0.11.2.vsix](https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.2/reuleauxcoder-0.11.2.vsix)，在 VS Code 中运行 **Extensions: Install from VSIX** 安装；Remote 窗口需安装到对应的工作区主机。
+下载 [reuleauxcoder-0.11.3.vsix](https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.3/reuleauxcoder-0.11.3.vsix)，在 VS Code 中运行 **Extensions: Install from VSIX** 安装；Remote 窗口需安装到对应的工作区主机。
 
 ## 安装
 
@@ -29,13 +29,13 @@ HTTP/SOCKS5 代理。详见[网页工具网络配置](docs/web-tools.md)。
 先安装 [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/)，再用 release 中的 wheel 进行全局安装：
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.2/reuleauxcoder-0.11.2-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.3/reuleauxcoder-0.11.3-py3-none-any.whl
 ```
 
 或者使用 [`uv`](https://docs.astral.sh/uv/)：
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.2/reuleauxcoder-0.11.2-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.3/reuleauxcoder-0.11.3-py3-none-any.whl
 ```
 
 wheel 内含 TUI 及其 JavaScript 依赖，安装不需要 Node 或 npm。

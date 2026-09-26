@@ -18,7 +18,7 @@ Inspired by and started as a complete rewrite of [CoreCoder](https://github.com/
 
 ## VS Code extension
 
-Download [reuleauxcoder-0.11.2.vsix](https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.2/reuleauxcoder-0.11.2.vsix) and run **Extensions: Install from VSIX** in VS Code. In a Remote window, install it on the workspace host. The extension provides a right-side conversation, native diff approvals, editor context and file/image uploads, with Chinese/English UI and a bundled compatible core installer. See the [extension guide](reuleauxcoder-vscode/README.md) for setup and requirements.
+Download [reuleauxcoder-0.11.3.vsix](https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.3/reuleauxcoder-0.11.3.vsix) and run **Extensions: Install from VSIX** in VS Code. In a Remote window, install it on the workspace host. The extension provides a right-side conversation, native diff approvals, editor context and file/image uploads, with Chinese/English UI and a bundled compatible core installer. See the [extension guide](reuleauxcoder-vscode/README.md) for setup and requirements.
 
 ## Install
 
@@ -27,13 +27,13 @@ Download [reuleauxcoder-0.11.2.vsix](https://github.com/RC-CHN/ReuleauxCoder/rel
 Install [`pipx`](https://pipx.pypa.io/stable/how-to/install-pipx/) first, then install the release wheel globally:
 
 ```bash
-pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.2/reuleauxcoder-0.11.2-py3-none-any.whl
+pipx install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.3/reuleauxcoder-0.11.3-py3-none-any.whl
 ```
 
 Or use [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.2/reuleauxcoder-0.11.2-py3-none-any.whl
+uv tool install https://github.com/RC-CHN/ReuleauxCoder/releases/download/v0.11.3/reuleauxcoder-0.11.3-py3-none-any.whl
 ```
 
 The wheel includes the React TUI and its JavaScript dependencies. Installation
