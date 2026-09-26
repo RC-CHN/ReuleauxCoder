@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.11.2 - 2026-09-26
+
+- Keep keyboard focus and Escape dismissal available while skill actions are pending. Accept close requests across refreshes of the same panel while still rejecting stale actions after navigation; cover delayed replies and Windows long/short path aliases in editor tests.
 - Present skills from core-owned discovery metadata with bilingual names/summaries, source filters, search, independent details and toggles, and native instruction viewing. Keep bundled instructions read-only and copy complete skills into the workspace for customization without overwriting edits. Optional `rcoder.*` presentation hints fall back independently; plain skills and legacy panels remain usable, metadata-only reloads refresh the view, and failed toggle saves preserve runtime state for retry.
 - Add a self-contained UI acceptance recipe covering browser operation and viewed screenshots, delayed-response journeys, motion inspection and explicit native-editor, clipboard, Remote and terminal test boundaries.
 - Expand the bundled catalog to 17 self-contained English skills, including editable PowerPoint, Word, Excel and PDF workflows, development/review/testing, skill authoring/installation and writing/data tasks. Include document inspection and PDF helpers, preserve user overrides and keep optional Office dependencies out of the core install. Validate real document operations, complete resource packaging and installed script entry points; enable the document tests on Linux/Windows CI.
