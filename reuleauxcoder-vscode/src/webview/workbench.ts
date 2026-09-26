@@ -5,6 +5,7 @@ import {actionLabel, actionScope, commandItems, featureInfo} from './catalog.js'
 import {icon} from './icons.js';
 import {reveal} from './motion.js';
 import {PermissionPolicies} from './permissions.js';
+import {SkillBrowser} from './skills.js';
 import {panelTitle, panelItemText, panelBody, parameterLabel} from '../panel-i18n.js';
 
 type Request = (action: string, data?: WebRequest['data']) => Promise<any>;
@@ -21,8 +22,10 @@ export class ComposerWorkbench {
   private focusReturn: HTMLElement | null = null;
   private search = '';
   private permissions: PermissionPolicies;
+  private skills: SkillBrowser;
   constructor(private root: HTMLElement, private composer: HTMLTextAreaElement, private request: Request, private notice: (error: unknown) => void, private save: () => void) {
     this.permissions = new PermissionPolicies(request, notice);
+    this.skills = new SkillBrowser(request, notice);
     document.addEventListener('pointerdown', event => {if (this.menu && !root.contains(event.target as Node) && event.target !== composer && !(event.target as Element).closest('#commands')) this.dismiss();});
     root.addEventListener('keydown', event => {if (event.key === 'Escape' && !event.isComposing) {event.preventDefault(); this.dismiss();} });
   }
@@ -56,7 +59,7 @@ export class ComposerWorkbench {
   }
   update(state: HostSnapshot): void {
     if (!state) return;
-    if (this.state && (state.hostId !== this.state.hostId || state.generation !== this.state.generation)) {this.menu = false; this.signature = '';}
+    if (this.state && (state.hostId !== this.state.hostId || state.generation !== this.state.generation)) {this.menu = false; this.signature = ''; this.skills.reset();}
     this.state = state;
     if (this.menu) {this.drawMenu(); return;}
     if (state.interactions?.length) {this.root.hidden = true; this.signature = ''; return;}
@@ -77,7 +80,8 @@ export class ComposerWorkbench {
       this.root.querySelector('.workbench-body')!.scrollTop = scroll;
     }
     this.root.setAttribute('aria-busy', String(surface.busy));
-    this.root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('[data-submit]').forEach(button => button.disabled = surface.busy || button.dataset.readonly === 'true');
+    this.root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('[data-submit]').forEach(button => button.disabled = surface.busy || button.dataset.readonly === 'true' || button.dataset.pending === 'true');
+    if (surface.panel?.view_type === 'skills') this.skills.syncBusy(surface.busy);
   }
   private header(title: string, back?: () => void): HTMLElement {
     const head = document.createElement('div'); head.className = 'workbench-heading';
@@ -136,6 +140,7 @@ export class ComposerWorkbench {
     if (surface.action) {this.form(body, surface); return;}
     const panel = surface.panel;
     if (!panel) {const loading = document.createElement('p'); loading.className = 'surface-empty'; loading.textContent = surface.busy ? t('Loading…') : t('Command sent. Results appear in the conversation.'); body.append(loading); return;}
+    if (panel.view_type === 'skills' && panel.items.some(item => item.details)) {this.skills.draw(body, surface); return;}
     if (surface.feature === 'approval' && panel.view_type === 'approval_rules') {this.permissions.draw(body, surface); return;}
     if (surface.feature === 'approval') {
       const steps = document.createElement('div'); steps.className = 'permission-steps';

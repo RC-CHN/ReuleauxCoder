@@ -23,6 +23,29 @@ export async function run(): Promise<void> {
   const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'example.py');
   let previousReviewUri: vscode.Uri | undefined;
   try {
+    await session.commands.open('skills.show');
+    await until(() => session.commands.surface?.panel?.view_type === 'skills' && !session.commands.surface.busy);
+    const skill = session.commands.skill(session.commands.surface!.id, 'pptx');
+    const bundled = await readFile(skill.details!.location, 'utf8');
+    await api.dispatch('skill.open', {surfaceId: session.commands.surface!.id, name: 'pptx'});
+    assert.equal(vscode.window.activeTextEditor!.document.uri.scheme, 'reuleaux-skill');
+    assert.equal(vscode.window.activeTextEditor!.document.getText(), bundled);
+    await vscode.commands.executeCommand('type', {text: 'blocked'});
+    assert.equal(vscode.window.activeTextEditor!.document.getText(), bundled, 'Typing must not edit bundled instructions');
+    await api.dispatch('skill.copy', {surfaceId: session.commands.surface!.id, name: 'pptx'});
+    await until(() => session.commands.surface?.panel?.items.find(item => item.id === 'pptx')?.details?.source === 'project');
+    const copied = vscode.window.activeTextEditor!.document;
+    assert.equal(copied.uri.scheme, uri.scheme);
+    assert.equal(copied.uri.fsPath, join(vscode.workspace.workspaceFolders![0].uri.fsPath, '.rcoder', 'skills', 'pptx', 'SKILL.md'));
+    assert.equal(await readFile(skill.details!.location, 'utf8'), bundled);
+    assert((await readFile(join(copied.uri.fsPath, '..', 'references', 'creation.md'), 'utf8')).includes('Presentation'));
+    await assert.rejects(api.dispatch('skill.open', {surfaceId: session.commands.surface!.id, name: '../../config.yaml'}), /no longer available/);
+    const staleSkillSurface = session.commands.surface!.id;
+    await api.dispatch('skill.reload', {surfaceId: staleSkillSurface});
+    await assert.rejects(api.dispatch('skill.open', {surfaceId: staleSkillSurface, name: 'pptx'}), /panel changed/);
+    session.commands.close();
+    console.log('PASS native readonly skill instructions, complete workspace customization and stale action guards');
+
     for (const newline of ['\n', '\r\n']) {
       await writeFile(uri.fsPath, `old = 1${newline}`);
       session.submit(`native-edit-${newline.length}`, 'edit', [], client.state.session_generation);

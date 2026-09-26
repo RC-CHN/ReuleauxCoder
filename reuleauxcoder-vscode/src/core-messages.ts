@@ -49,6 +49,17 @@ const notices: readonly [MessageKey, ...number[]][] = [
 /** Apply only to notices/errors, never to assistant text, tool output or user input. */
 export function coreMessage(text: string): string {
   if (!isChinese()) return text;
+  const skills = /^Skills reloaded: (\d+) discovered, (\d+) active((?:, [~+\-]?\d+ (?:added|updated|removed|missing))*)\.$/.exec(text);
+  if (skills) {
+    const counts = [t('{0} available', skills[1]), t('{0} enabled', skills[2])];
+    for (const [, count, change] of skills[3].matchAll(/, ([~+\-]?\d+) (added|updated|removed|missing)/g)) {
+      counts.push(t(change === 'added' ? '{0} added' : change === 'updated' ? '{0} updated' : change === 'removed' ? '{0} removed' : '{0} missing', count));
+    }
+    return t('Skills reloaded: {0}.', counts.join(' · '));
+  }
+  for (const key of ["Invalid optional skill metadata '{0}'; using the default.", "Skill '{0}' from {1} overrides {2}."] as const) {
+    const translated = templateText(text, key); if (translated !== undefined) return translated;
+  }
   for (const [key, ...labels] of notices) {const result = templateText(text, key, labels); if (result !== undefined) return result;}
   return /\s|[.!?…]/.test(text) ? errorText(text) : text;
 }

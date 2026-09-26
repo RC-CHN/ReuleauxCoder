@@ -46,6 +46,8 @@ test('known notices and confirmation wrappers translate without changing embedde
     assert.equal(coreMessage("Switched session main model profile to 'code' (provider/enabled)"), '当前会话主模型已切换为“code”（provider/enabled）');
     assert.equal(coreMessage('Updated workspace approval rule and saved to C:\\My Code\\config.yaml'), '已更新工作区权限规则，并保存到 C:\\My Code\\config.yaml');
     assert.equal(coreMessage("Skill 'enabled' disabled."), '技能“enabled”已停用。');
+    assert.equal(coreMessage('Skills reloaded: 19 discovered, 17 active, +2 added, ~1 updated.'), '已刷新技能：共 19 个 · 已启用 17 个 · 新增 +2 · 更新 ~1。');
+    assert.equal(coreMessage("Invalid optional skill metadata 'rcoder.summary'; using the default."), '可选技能展示字段“rcoder.summary”无效，已使用默认显示。');
     assert.equal(coreMessage("MCP server 'code' enabled and saved to /workspace/enabled/config.yaml"), 'MCP 服务“code”已启用，已保存到 /workspace/enabled/config.yaml');
     assert.equal(coreMessage('Goal paused · Tokens 1,234 / No limit'), '目标：已暂停 · Token 用量：1,234 / 不限');
     assert.equal(coreMessage('Job code completed.\nRunning\nSession saved: user text'), '子任务 code 已完成。\nRunning\nSession saved: user text');

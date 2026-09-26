@@ -19,6 +19,8 @@ from reuleauxcoder.domain.llm.models import ToolCall
 from reuleauxcoder.domain.runtime.events import AssistantContentDelta, RuntimeEvent
 from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
+from reuleauxcoder.extensions.skills.service import SkillsService
+from reuleauxcoder.infrastructure.persistence.skills_config_store import SkillsConfigStore
 from reuleauxcoder.infrastructure.rpc.peer import RpcPeer
 from reuleauxcoder.infrastructure.rpc.transport import StreamTransport
 from reuleauxcoder.interfaces.entrypoint.rpc import create_server
@@ -46,7 +48,10 @@ agent = Agent(FakeLLM(), tools=[tool], config=config, loop=loop, extension_runti
 agent.current_session_id = "test-vscode"
 agent.runtime_working_directory = str(root)
 bus = UIEventBus()
-ctx = SimpleNamespace(agent=agent, config=config, ui_bus=bus, action_registry=create_builtin_action_registry(), sessions_dir=root / "sessions", session_exit_time=None, skills_service=None)
+skills = SkillsService(workspace_dir=root, home_dir=root / "test-home", config_store=SkillsConfigStore(root / ".rcoder/config.yaml"))
+agent.skills_service = skills
+agent.skills_catalog = skills.reload().catalog
+ctx = SimpleNamespace(agent=agent, config=config, ui_bus=bus, action_registry=create_builtin_action_registry(), sessions_dir=root / "sessions", session_exit_time=None, skills_service=skills)
 peer = RpcPeer(StreamTransport(sys.stdin.buffer, sys.stdout.buffer))
 server = create_server(ctx, peer, UIProfile("vscode", "Test", frozenset(UICapability)))
 

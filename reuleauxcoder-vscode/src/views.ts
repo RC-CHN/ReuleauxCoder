@@ -46,10 +46,11 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
     const entry = [...this.views.values()].find(entry => entry.owner === owner);
     if (!entry) throw new Error(t('View closed.'));
     entry.session = session;
-    if (['send', 'retry', 'upload.begin', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.') || request.action.startsWith('configuration.')) {
+    if (['send', 'retry', 'upload.begin', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.') || request.action.startsWith('configuration.') || request.action.startsWith('skill.')) {
       if (data.hostId !== session.snapshot().hostId || data.generation !== session.snapshot().generation) throw new Error(t('Session changed. Review your draft and send it again.'));
     }
     if (request.action.startsWith('configuration.')) return this.command(request.action, data);
+    if (request.action.startsWith('skill.')) return this.command(request.action, data);
     switch (request.action) {
       case 'ready': {
         const snapshot = {...session.snapshot(this.reviews.summaries()), revision: ++this.sequence};

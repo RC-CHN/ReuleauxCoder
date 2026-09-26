@@ -1,6 +1,7 @@
 import type {Action, Panel} from '@reuleauxcoder/client';
 import {coreText, errorText, isChinese, t, toolLabel} from './i18n.js';
 import {templateText} from './core-messages.js';
+import {skillText, skillSource} from './skill-text.js';
 
 const processPanel = (panel: Panel) => panel.view_type.startsWith('process_session:');
 const processList = (panel: Panel) => ['process_sessions', 'process_sessions_ended'].includes(panel.view_type);
@@ -22,6 +23,10 @@ export function panelTitle(panel: Panel): string {
 
 export function panelItemText(panel: Panel, item: Panel['items'][number]): {label: string; description: string} {
   const {label, description} = item;
+  if (panel.view_type === 'skills' && item.details) {
+    const text = skillText(item);
+    return {label: text.label, description: [t(item.current ? 'Enabled' : 'Disabled'), skillSource(item.details.source), text.description].join(' · ')};
+  }
   if (!isChinese()) return {label, description};
   const kind = panel.view_type;
   // Names, goals, previews and commands are content, even if they equal a UI key.

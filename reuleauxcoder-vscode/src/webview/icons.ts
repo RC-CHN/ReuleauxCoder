@@ -1,4 +1,8 @@
 const paths = {
+  presentation: 'M3 4h18v12H3ZM12 16v5m-4 0 4-5 4 5M7 12V9m5 3V7m5 5v-2',
+  document: 'M14 3H5v18h14V8l-5-5Zm0 0v5h5M8 12h8m-8 4h6',
+  table: 'M3 4h18v16H3ZM3 9h18M8 9v11m6-11v11M3 15h18',
+  pen: 'm14 4 6 6M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14v6Z',
   brand: 'M12 2A20 20 0 0 1 22 19.32A20 20 0 0 1 2 19.32A20 20 0 0 1 12 2Z M8 10l3 3-3 3m5 0h3',
   goal: 'M20 10a8 8 0 1 1-6-6 M12 8a4 4 0 1 0 4 4 M12 12l9-9m-5 0h5v5',
   model: 'm12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5',
@@ -19,6 +23,7 @@ const paths = {
   commands: 'm8 5-5 7 5 7m8-14 5 7-5 7m-3-16-2 18',
 } as const;
 export type IconName = keyof typeof paths;
+export function skillIcon(name: string): IconName {return Object.hasOwn(paths, name) ? name as IconName : 'skills';}
 export function icon(name: IconName): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('class', 'icon'); svg.setAttribute('aria-hidden', 'true');

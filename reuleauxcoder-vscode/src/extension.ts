@@ -9,6 +9,8 @@ import {NativeReviews} from './native/reviews.js';
 import {editorContext, diagnosticActions} from './native/context.js';
 import {ConfigurationDocuments} from './native/configuration.js';
 import {openWorkspaceFile} from './native/file-links.js';
+import {SkillDocuments} from './native/skills.js';
+import {copySkillToWorkspace} from './core/skill-files.js';
 
 let active: WorkspaceSession | undefined;
 let creating: Promise<WorkspaceSession> | undefined;
@@ -24,6 +26,7 @@ export function activate(context: vscode.ExtensionContext) {
   status.command = 'reuleaux.open'; status.text = '$(comment-discussion) Reuleaux'; status.show();
   const error = (reason: unknown) => {const text = errorText(reason); logs.appendLine(text); if (active) active.report(reason); else void vscode.window.showErrorMessage(text);};
   const reviews = new NativeReviews(() => views.changed(), error);
+  const skillDocuments = new SkillDocuments();
   let editorRevision = 0;
   let editorSync: Promise<unknown> = Promise.resolve();
   const dirtyPaths = () => vscode.workspace.textDocuments.filter(document => document.isDirty && ['file', 'vscode-remote'].includes(document.uri.scheme)).map(document => document.uri.fsPath);
@@ -93,6 +96,21 @@ export function activate(context: vscode.ExtensionContext) {
     return installing;
   };
   const dispatch = async (command: string, data: Record<string, any> = {}): Promise<unknown> => {
+    if (command.startsWith('skill.')) {
+      const session = await getSession(); const client = session.requireClient();
+      if (command === 'skill.reload') return session.commands.reloadSkills(data.surfaceId);
+      const item = session.commands.skill(data.surfaceId, data.name);
+      const selectedFolder = folder!; const generation = client.state.session_generation;
+      if (command === 'skill.open') return skillDocuments.open(selectedFolder, item);
+      if (command === 'skill.copy') {
+        if (item.details!.source === 'project') throw new Error(t('This skill already belongs to the workspace.'));
+        const path = await copySkillToWorkspace(session.workspace, item.id!, item.details!.location);
+        if (active !== session || session.client !== client || client.state.session_generation !== generation || client.peer.closed) throw new Error(t('Session changed. The copied skill remains in its original workspace.'));
+        await client.submitAction('skills.reload', {});
+        return skillDocuments.open(selectedFolder, {...item, details: {...item.details!, source: 'project', location: path}});
+      }
+      throw new Error(t('Unknown view action.'));
+    }
     if (command.startsWith('configuration.')) {
       const session = await getSession();
       if (['starting', 'stopping', 'installing'].includes(session.phase)) throw new Error(t('Wait for the core operation to finish.'));
@@ -180,9 +198,10 @@ export function activate(context: vscode.ExtensionContext) {
   register('addContext', (uri?: vscode.Uri) => addContext(uri));
   register('explainSelection', async () => {await addContext(); active!.insertDraft(t('Explain this code.'));});
   register('fixDiagnostic', (uri, range, diagnostics) => addContext(uri, range, diagnostics));
-  context.subscriptions.push(logs, status, reviews, views,
+  context.subscriptions.push(logs, status, reviews, views, skillDocuments,
     vscode.window.registerWebviewViewProvider('reuleaux.chat', views),
     vscode.workspace.registerTextDocumentContentProvider('reuleaux-review', reviews),
+    vscode.workspace.registerTextDocumentContentProvider('reuleaux-skill', skillDocuments),
     vscode.languages.registerCodeActionsProvider([{scheme: 'file'}, {scheme: 'vscode-remote'}], diagnosticActions, {providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]}),
     vscode.workspace.onDidChangeTextDocument(event => {void syncEditors(); if (configurationDocuments?.owns(event.document)) configurationDocuments.sync(true);}),
     vscode.workspace.onDidSaveTextDocument(document => {void syncEditors(); if (configurationDocuments?.owns(document)) configurationDocuments.sync(true);}),

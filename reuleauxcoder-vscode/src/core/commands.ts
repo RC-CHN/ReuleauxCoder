@@ -105,6 +105,17 @@ export class ConversationCommands {
     if (epoch === this.epoch && this.accepting) await this.open('approval.show');
   }
   back(id: number): void {this.current(id); this.epoch++; if (this.stack.length > 1) {this.stack.pop(); this.showPanel();} else this.close();}
+  skill(id: number, name: unknown) {
+    const surface = this.current(id);
+    const item = surface.panel?.view_type === 'skills' && typeof name === 'string'
+      ? surface.panel.items.find(item => item.id === name && item.details?.location) : undefined;
+    if (!item) throw new Error(t('This action is no longer available.'));
+    return item;
+  }
+  async reloadSkills(id: number): Promise<void> {
+    if (this.current(id).panel?.view_type !== 'skills') throw new Error(t('This action is no longer available.'));
+    await this.run('skills.reload', {});
+  }
   dismiss(id: number): void {
     if (this.surface && this.surface.id !== id) throw new Error(t('This panel changed. Choose the action again.'));
     this.close();
