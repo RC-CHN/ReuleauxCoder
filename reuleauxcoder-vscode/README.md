@@ -15,6 +15,8 @@
 
 - 从输入框菜单打开 **技能**，按内置／全局／工作区筛选，也可搜索中英名称或技能 ID。点击名称查看详情，右侧开关独立启停；启用不会立即执行。内置说明在编辑区只读打开，**复制到工作区** 会复制完整目录并刷新发现结果，已有文件不会被覆盖。全局技能可直接编辑，也可复制为当前工作区的定制版本；保存后点击 **刷新技能**。展示来自核心发现结果和可选元数据，不维护前端技能名称列表；没有展示字段的普通技能仍可使用，旧核心保留基础列表。
 - Enter 立即清空输入并显示发送消息；Shift+Enter 换行。任务执行期间的消息作为 steering 补充要求。新草稿不受旧消息确认影响，失败消息可按原 ID 重试。
+- 补充要求默认在当前步骤后应用；等待时输入框上方出现 **立即引导**，可中断当前步骤、提前应用已发送的要求并继续任务，不暂停目标。重复点击不会变成停止；停止按钮单独保留。旧核心不支持此能力时会提示更新。顶部以文字和轻量动画区分思考、回复、执行与等待操作，尊重系统减少动态效果设置。
+- 连续工具调用默认折叠为摘要，点击展开调用参数、格式化输出和推理；失败项自动展开一次。全局展开按钮可查看所有调用，连续进程轮询也保留每一次结果。手动展开状态在后续输出中保持；向上阅读时暂停自动滚动，滚回底部或点击 **新输出** 恢复跟随。
 - 粘贴图片、拖放本机文件，或点输入框旁的附件图标。文件字节分块上传到工作区主机，不会把本机路径误当作远端路径。上传中也能发送，消息会等待自己的附件完成；失败时可以重试或退回草稿。单文件上限 64 MiB，图片支持 PNG/JPEG/WebP，并要求模型支持图像。
 - 文件管理器与编辑器右键可添加文件或选区；诊断灯泡提供“用 Reuleaux 解释或修复”。未保存内容作为标记过的编辑器快照加入上下文。
 - 修改提案出现在会话中的审阅卡片，点文件行打开中央原生 diff；也可自动打开并保留当前输入焦点。默认仅批准本次；展开 **授权范围与反馈** 可选择核心提供的会话范围，或拒绝并说明原因。两侧是冻结的只读版本，批准后核心再次核对文件版本并实际写入。输入框附近的待处理入口可跳回卡片。
@@ -60,6 +62,10 @@ CI 在 Linux 和 Windows 上运行核心协议、真实 VS Code 宿主、Chromiu
 本地化覆盖内置菜单、表单、目标控制、MCP／技能状态、进程详情、审批结果与常见操作提示；数字和耗时按语言显示。模型名、配置名、技能名、工具标识、路径、用户目标及程序／模型输出保留原文。翻译测试直接检查真实核心的命令目录与参数，并验证这些动态内容不会被误翻译；未知插件文案和原始诊断保留原文。
 
 ## English
+
+While a task runs, new messages apply after the current step. **Guide now** appears beside queued messages to interrupt that step and apply guidance without stopping the task or pausing its goal. Repeated clicks remain safe; Stop is separate. Older cores show an update hint. Thinking, responding, running and waiting have distinct labels and subtle motion, with reduced-motion support. Process and goal clocks advance locally without rebuilding controls, including command panels, and stop on exit, pause or disconnection.
+
+Consecutive tool calls collapse into an inspectable summary. Expand a call for arguments, formatted output and reasoning, or use the global disclosure control for all details. Failures open once; manual choices survive streaming. Repeated process checks retain every result. Scrolling upward pauses following; scroll to the bottom or select **New output** to resume. Git counts, statuses and diagnostic links use theme colors for easier inspection.
 
 Open **Skills** from the composer menu to search localized names or IDs and filter bundled, global and workspace sources. Names expand details; separate switches enable skills without running them. Bundled instructions open read-only in the editor. **Copy to workspace** copies all resources, refuses existing targets and refreshes discovery; edit and save the local variant, then reload skills. Global edits affect other workspaces. Optional presentation metadata comes from the core, with standard-field fallbacks and a basic list for older cores.
 

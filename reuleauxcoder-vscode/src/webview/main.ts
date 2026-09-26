@@ -11,6 +11,8 @@ import {AttentionCards} from './attention.js';
 import {WorkOverviewView} from './overview.js';
 import {ImageGallery} from './images.js';
 import {TranscriptScroll} from './transcript-scroll.js';
+import {LiveClock} from './clock.js';
+import {ActivityView} from './activity.js';
 import {ToolCells} from './tool-cells.js';
 
 interface SavedView {draft?: string; outbox?: {input: Omit<LocalSend, 'uploads'>; cell: ChatCell}[]}
@@ -21,10 +23,12 @@ const element = <T extends HTMLElement = HTMLElement>(id: string) => document.ge
 const composer = element<HTMLTextAreaElement>('composer');
 const transcript = element('transcript');
 const transcriptScroll = new TranscriptScroll(transcript, element('new-output'));
+const clock = new LiveClock();
+const activity = new ActivityView(element('activity'), element('steering-status'), request, notice);
 decorateIcons();
-const workbench = new ComposerWorkbench(element('workbench'), composer, request, notice, saveDraft);
+const workbench = new ComposerWorkbench(element('workbench'), composer, request, notice, saveDraft, clock);
 const attention = new AttentionCards(element('reviews'), request);
-const overview = new WorkOverviewView(element('overview'), element('goal-strip'), element<HTMLButtonElement>('overview-toggle'), request, notice);
+const overview = new WorkOverviewView(element('overview'), element('goal-strip'), element<HTMLButtonElement>('overview-toggle'), request, notice, clock);
 const configuration = new ConfigurationView(element('configuration-editor'), request, error => {if (!snapshot?.configuration?.error) notice(error);});
 const images = new ImageGallery(request);
 const toolCells = new ToolCells(url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice), updateToolToggle);
@@ -122,6 +126,7 @@ function render(state: HostSnapshot): void {
   const insertDraft = snapshot && state.draftRevision > snapshot.draftRevision;
   const phaseChanged = snapshot?.phase !== state.phase;
   snapshot = state;
+  clock.update(state); activity.update(state);
   workbench.update(state);
   overview.update(state);
   if (initial) {
@@ -143,7 +148,6 @@ function render(state: HostSnapshot): void {
   element('mode').replaceChildren(icon('mode'), modeText);
   element('mode').title = `${t('Mode')} · ${mode}`;
   element('mode').setAttribute('aria-label', element('mode').title);
-  element('activity').textContent = state.running ? t('Running') : state.phase === 'ready' ? t('Ready') : '';
   element<HTMLButtonElement>('stop').disabled = !state.running;
   const known = new Set(state.cells.map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}
   for (const id of consumedItems) if (!state.draftItems.some(item => item.id === id)) consumedItems.delete(id);

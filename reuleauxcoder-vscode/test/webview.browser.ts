@@ -2,6 +2,7 @@ import './configuration.browser.js';
 import './skills.browser.js';
 import './images.browser.js';
 import './scroll.browser.js';
+import './live.browser.js';
 import './tools.browser.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';

@@ -116,7 +116,12 @@ export class WorkspaceSession extends EventEmitter {
   }
   snapshot(reviews: ReviewSummary[] = []): HostSnapshot {
     const state = this.client?.state;
-    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: foldToolCells(this.transcript.cells), reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), configuration: this.configuration.state};
+    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, sampledAt: Date.now(), steering: {queued: state?.queued_steering.length ?? 0, pending: state?.interrupt_pending ?? false, stopping: state?.stopping ?? false, supported: this.client?.info?.steering_promotion === true}, cells: foldToolCells(this.transcript.cells), reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), configuration: this.configuration.state};
+  }
+  async promoteSteering(): Promise<{outcome: string; discarded_count: number}> {
+    const client = this.requireClient();
+    if (client.info?.steering_promotion !== true) throw new Error(t('Update the core to apply guidance immediately.'));
+    return client.interrupt({steeringOnly: true});
   }
   async imagePreview(attachmentId: unknown, variantId: unknown): Promise<string> {
     const client = this.requireClient();

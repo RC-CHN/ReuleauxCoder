@@ -6,10 +6,10 @@ export interface ConfigurationSnapshot {
   diagnostics: ConfigDiagnostic[]; validation?: ConfigValidation; modelTargets: ConfigModelTarget[];
 }
 export interface WorkOverview {
-  goal?: Goal | null; contextTokens: number; contextLimit: number; approvalPolicy: string; mcpTools: number; queued: number;
+  goal?: Goal | null; goalObservedAt?: number; contextTokens: number; contextLimit: number; approvalPolicy: string; mcpTools: number; queued: number;
   plan: {step: string; status: string}[]; progress: string; activity: string;
   jobs: {id: string; task: string; status: string; detail: string}[];
-  processes: {id: string; command: string; state: string; elapsed: number; output: string}[];
+  processes: {id: string; command: string; state: string; elapsed: number; observedAt?: number; output: string}[];
   diagnostics: {path: string; errors: number; warnings: number}[];
   git?: GitWorkspace | null; warnings: string[];
 }
@@ -27,6 +27,8 @@ export interface HostSnapshot {
   hostId: string; revision: number; draftRevision: number;
   phase: 'idle' | 'starting' | 'ready' | 'failed' | 'installing' | 'stopping';
   environment: string; workspace: string; generation: number; model: string; running: boolean;
+  sampledAt?: number;
+  steering?: {queued: number; pending: boolean; stopping: boolean; supported: boolean};
   cells: ChatCell[]; reviews: ReviewSummary[]; draftItems: DraftItem[]; draftText: string;
   error?: {kind: string; message: string}; notice?: string;
   catalog?: Action[]; commandSurface?: CommandSurface; interactions?: InlineInteraction[]; mode?: string;

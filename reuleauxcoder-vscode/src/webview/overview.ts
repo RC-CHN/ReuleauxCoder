@@ -1,18 +1,19 @@
 import type {HostSnapshot, WebRequest} from '../shared.js';
-import {t, errorText, toolLabel, compactNumber as compact, shortDuration as duration} from '../i18n.js';
+import {t, errorText, toolLabel, compactNumber as compact} from '../i18n.js';
 import {coreMessage} from '../core-messages.js';
 import {icon, type IconName} from './icons.js';
+import type {LiveClock} from './clock.js';
 
 export class WorkOverviewView {
   private signature = '';
   private open = false;
-  constructor(private root: HTMLElement, private goal: HTMLElement, private toggle: HTMLButtonElement, private request: (action: string, data?: WebRequest['data']) => Promise<any>, private notice: (error: unknown) => void) {
+  constructor(private root: HTMLElement, private goal: HTMLElement, private toggle: HTMLButtonElement, private request: (action: string, data?: WebRequest['data']) => Promise<any>, private notice: (error: unknown) => void, private clock: LiveClock) {
     toggle.addEventListener('click', () => {this.open = !this.open; root.hidden = !this.open; toggle.setAttribute('aria-expanded', String(this.open));});
     root.addEventListener('keydown', event => {if (event.key === 'Escape') {this.open = false; root.hidden = true; toggle.setAttribute('aria-expanded', 'false'); toggle.focus();}});
   }
   update(state: HostSnapshot): void {
     const data = state.overview;
-    const signature = JSON.stringify([data, state.phase, state.running, state.reviews.length, state.interactions?.length]);
+    const signature = JSON.stringify([data ? {...data, goalObservedAt: 0, goal: data.goal ? {...data.goal, time_used_seconds: 0} : null, processes: data.processes.map(process => ({...process, elapsed: 0, observedAt: 0}))} : null, state.phase, state.running, state.reviews.length, state.interactions?.length]);
     if (this.signature === signature) return; this.signature = signature;
     this.toggle.disabled = !data;
     if (!data) {this.root.hidden = true; this.goal.hidden = true; this.toggle.setAttribute('aria-expanded', 'false'); return;}
@@ -46,23 +47,42 @@ export class WorkOverviewView {
     }
     if (processes.length) {
       const section = this.section(content, t('Processes'), []);
-      for (const process of processes) {section.append(this.action(`${errorText(process.state)} · ${duration(process.elapsed)} · ${process.command}`, 'processes.list', 'terminal')); if (process.output) section.append(this.text(process.output.split('\n').slice(-3).join('\n'), 'process-tail'));}
+      for (const process of processes) {
+        const row = this.action('', 'processes.list', 'terminal'); row.dataset.overviewAction = `process:${process.id}`;
+        const label = row.querySelector('span')!;
+        label.append(document.createTextNode(`${errorText(process.state)} · `), this.clock.element(`process:${process.id}`, process.elapsed), document.createTextNode(` · ${process.command}`));
+        section.append(row); if (process.output) section.append(this.text(process.output.split('\n').slice(-3).join('\n'), 'process-tail'));
+      }
     }
     if (jobs.length) {const section = this.section(content, t('Agents'), []); for (const job of jobs) {section.append(this.action(`${errorText(job.status)} · ${job.task}`, 'subagent.jobs.list', 'agents')); if (job.detail) section.append(this.text(job.detail, 'overview-detail'));}}
     if (data.git?.available) {
-      const git = data.git; const section = this.section(content, t('Git changes'), [git.files.length ? `${git.additions === null ? '—' : '+' + git.additions} / ${git.deletions === null ? '—' : '−' + git.deletions}${git.truncated ? ' · …' : ''}` : t('Working tree clean')]);
-      if (git.upstream) section.append(this.text(`${git.upstream} · ↑${git.ahead ?? '—'} ↓${git.behind ?? '—'}`, 'overview-detail'));
-      for (const file of git.files.slice(0, 6)) section.append(this.text(`${file.index}${file.worktree}  ${file.path}`, file.conflict ? 'stat-warning git-file' : 'git-file'));
+      const git = data.git; const section = this.section(content, t('Git changes'), [], 'git');
+      if (git.files.length) {
+        const counts = document.createElement('div'); counts.className = 'git-counts';
+        const additions = document.createElement('span'); additions.className = 'git-added'; additions.textContent = git.additions === null ? '—' : '+' + git.additions;
+        const deletions = document.createElement('span'); deletions.className = 'git-deleted'; deletions.textContent = git.deletions === null ? '—' : '−' + git.deletions;
+        counts.append(additions, document.createTextNode(' / '), deletions); if (git.truncated) counts.append(' · …'); section.append(counts);
+      } else section.append(this.text(t('Working tree clean'), 'git-added'));
+      if (git.upstream) {const upstream = this.text(git.upstream, 'git-upstream'); const ahead = document.createElement('span'); ahead.textContent = ` ↑${git.ahead ?? '—'} ↓${git.behind ?? '—'}`; ahead.className = 'git-sync'; upstream.append(ahead); section.append(upstream);}
+      for (const file of git.files.slice(0, 6)) {
+        const row = this.action('', undefined, undefined, () => void this.request('openFile', {path: file.path}).catch(this.notice)); row.className = 'git-file'; row.title = file.path;
+        const status = document.createElement('span'); status.textContent = `${file.index}${file.worktree}`; status.className = `git-status ${file.conflict ? 'conflict' : /D/.test(status.textContent) ? 'deleted' : /[A?]/.test(status.textContent) ? 'added' : 'modified'}`;
+        const path = document.createElement('span'); path.textContent = file.path; row.replaceChildren(status, path); section.append(row);
+      }
       section.append(this.action(t('View details'), undefined, 'expand', () => void this.request('git').catch(this.notice)));
     } else if (data.git?.reason) this.section(content, 'Git', [['git_timed_out', 'git_not_installed', 'git_unavailable', 'not_initialized', 'status_timed_out', 'status_failed'].includes(data.git.reason) ? errorText(data.git.reason) : coreMessage(data.git.reason)]);
-    if (data.diagnostics.length) this.section(content, t('Diagnostics'), data.diagnostics.map(item => `${t('{0} errors · {1} warnings', item.errors, item.warnings)} · ${item.path}`));
+    if (data.diagnostics.length) {
+      const section = this.section(content, t('Diagnostics'), [], 'diagnostics');
+      for (const item of data.diagnostics) {const row = this.action('', undefined, 'document', () => void this.request('openFile', {path: item.path}).catch(this.notice)); row.className = 'diagnostic-row'; const label = row.querySelector('span')!; const count = document.createElement('strong'); count.className = item.errors ? 'diagnostic-errors' : 'diagnostic-warnings'; count.textContent = t('{0} errors · {1} warnings', item.errors, item.warnings); label.append(count, document.createTextNode(' · ' + item.path)); section.append(row);}
+    }
     this.section(content, t('Context'), [t('{0} tokens', `${compact(data.contextTokens)} / ${data.contextLimit ? compact(data.contextLimit) : '—'}`), `MCP · ${t(data.mcpTools === 1 ? '{0} tool' : '{0} tools', data.mcpTools)}`]);
     if (data.warnings.length) this.section(content, t('Attention'), data.warnings.map(coreMessage), 'warning');
     this.root.replaceChildren(summary, stats, content);
     this.goal.replaceChildren(); this.goal.hidden = !data.goal || data.goal.status === 'complete';
     if (data.goal) {
       const goal = data.goal; const title = this.action(goal.objective, 'goal.show', 'goal'); title.className = 'goal-objective'; title.title = goal.objective;
-      const meta = this.text(`${errorText(goal.status)} · ${compact(goal.tokens_used)} / ${goal.token_budget === null ? t('No limit') : compact(goal.token_budget)} · ${duration(goal.time_used_seconds)}`, 'goal-meta');
+      const meta = this.text(`${errorText(goal.status)} · ${compact(goal.tokens_used)} / ${goal.token_budget === null ? t('No limit') : compact(goal.token_budget)} · `, 'goal-meta');
+      meta.append(this.clock.element('goal', goal.time_used_seconds));
       this.goal.append(title, meta);
       if (goal.status !== 'complete') this.goal.append(this.action(goal.status === 'active' ? t('Pause') : t('Resume'), goal.status === 'active' ? 'goal.pause' : 'goal.resume'));
     }

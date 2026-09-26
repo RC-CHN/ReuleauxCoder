@@ -96,6 +96,16 @@ test('overview retains process tails, plans and jobs, then clears them at genera
   emit('ProcessSessionChanged', {process_session_id: 'process', command: 'pytest', state: 'running', stdout: 'first'});
   emit('ProcessSessionChanged', {process_session_id: 'process', state: 'exited', stdout: ' second'});
   emit('SubagentJobChanged', {job_id: 'job', task: 'Audit', status: 'blocked', blocker: 'Needs input'}, 0, 'child');
+  emit('ToolCallStarted', {tool_call_id: 'one', tool_name: 'read_file'});
+  emit('ToolCallStarted', {tool_call_id: 'two', tool_name: 'shell'});
+  emit('ToolCallFinished', {tool_call_id: 'two', tool_name: 'shell'});
+  assert.equal(store.snapshot().activity, 'read_file', 'Another parallel call is still running');
+  emit('ToolCallFinished', {tool_call_id: 'one', tool_name: 'read_file'});
+  assert.equal(store.snapshot().activity, '');
+  emit('StreamChunk', {text: 'answer', reasoning: false});
+  assert.equal(store.snapshot().activity, 'Writing');
+  emit('StreamChunk', {text: 'thinking', reasoning: true});
+  assert.equal(store.snapshot().activity, 'Reasoning');
   assert.equal(store.snapshot().processes[0].output, 'first second'); assert.equal(store.snapshot().plan.length, 1); assert.equal(store.snapshot().jobs[0].detail, 'Needs input');
   f.client.state.session_generation = 1; f.client.emit('state', f.client.state); emit('PlanUpdated', {items: [{step: 'Stale'}]});
   assert.equal(store.snapshot().plan.length, 0); assert.equal(store.snapshot().processes.length, 0); store.dispose(); f.commands.dispose();

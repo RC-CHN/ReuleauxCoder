@@ -7,6 +7,7 @@ import {reveal} from './motion.js';
 import {PermissionPolicies} from './permissions.js';
 import {SkillBrowser} from './skills.js';
 import {panelTitle, panelItemText, panelBody, parameterLabel} from '../panel-i18n.js';
+import type {LiveClock} from './clock.js';
 
 type Request = (action: string, data?: WebRequest['data']) => Promise<any>;
 export class ComposerWorkbench {
@@ -23,7 +24,7 @@ export class ComposerWorkbench {
   private search = '';
   private permissions: PermissionPolicies;
   private skills: SkillBrowser;
-  constructor(private root: HTMLElement, private composer: HTMLTextAreaElement, private request: Request, private notice: (error: unknown) => void, private save: () => void) {
+  constructor(private root: HTMLElement, private composer: HTMLTextAreaElement, private request: Request, private notice: (error: unknown) => void, private save: () => void, private clock: LiveClock) {
     this.permissions = new PermissionPolicies(request, notice);
     this.skills = new SkillBrowser(request, notice);
     root.tabIndex = -1;
@@ -84,6 +85,10 @@ export class ComposerWorkbench {
     this.root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('[data-submit]').forEach(button => button.disabled = surface.busy || button.dataset.readonly === 'true' || button.dataset.pending === 'true');
     if (surface.panel?.view_type === 'skills') this.skills.syncBusy(surface.busy);
     if (surface.panel?.view_type === 'approval_rules') this.permissions.syncBusy(surface.busy);
+    for (const label of this.root.querySelectorAll<HTMLElement>('[data-process-state]')) {
+      const process = state.overview?.processes.find(process => process.id === label.dataset.processState);
+      if (process && label.textContent !== errorText(process.state)) label.textContent = errorText(process.state);
+    }
   }
   private header(title: string, back?: () => void): HTMLElement {
     const head = document.createElement('div'); head.className = 'workbench-heading';
@@ -151,12 +156,25 @@ export class ComposerWorkbench {
       body.append(steps);
       const hint = document.createElement('p'); hint.className = 'permission-hint'; hint.textContent = active === 0 ? t('Choose which tools this permission applies to.') : active === 1 ? t('Choose whether the rule belongs to this conversation or the workspace.') : t('Select how matching tool calls should be handled.'); body.append(hint);
     }
-    if (panel.body || panel.output) {const output = document.createElement('div'); output.className = 'panel-output'; output.textContent = [panelBody(panel), panel.output].filter(Boolean).join('\n\n'); body.append(output);}
+    if (panel.body || panel.output) {
+      const output = document.createElement('div'); output.className = 'panel-output';
+      const lines = panelBody(panel).split('\n');
+      const process = panel.view_type.startsWith('process_session:') ? this.state?.overview?.processes.find(process => process.id === panel.view_type.slice('process_session:'.length)) : undefined;
+      if (process && lines.length > 1) {
+        output.append(document.createTextNode(lines[0] + '\n'));
+        const facts = document.createElement('span'); this.processFacts(facts, lines[1], process); output.append(facts, document.createTextNode(lines.length > 2 ? '\n' + lines.slice(2).join('\n') : ''));
+        if (panel.output) output.append(document.createTextNode('\n\n' + panel.output));
+      } else output.textContent = [panelBody(panel), panel.output].filter(Boolean).join('\n\n');
+      body.append(output);
+    }
     const rows = document.createElement('div'); rows.className = 'panel-rows';
     for (const [index, item] of panel.items.entries()) {
       const child = panel.children.some(([id]) => id === (item.id ?? item.label));
       const translated = panelItemText(panel, item);
       const row = this.row(translated.label, translated.description, () => void this.request('command.select', {surfaceId: surface.id, index}).catch(this.notice));
+      const process = surface.feature === 'processes' ? this.state?.overview?.processes.find(process => process.id === item.id) : undefined;
+      if (process) this.processFacts(row.querySelector('small')!, translated.description, process);
+      if (panel.view_type === 'goal' && item.label === 'Elapsed' && this.state?.overview?.goal) row.querySelector('small')!.replaceChildren(this.clock.element('goal', this.state.overview.goal.time_used_seconds));
       row.dataset.row = item.id ?? item.label; row.dataset.submit = ''; row.disabled = !item.action && !child; row.dataset.readonly = String(row.disabled);
       if (child) row.append(icon('chevron'));
       else if (item.action?.action_id.startsWith('skills.') || item.action?.action_id.startsWith('mcp.')) {
@@ -197,6 +215,14 @@ export class ComposerWorkbench {
       submit.disabled = true;
       void this.request('command.submit', {surfaceId: surface.id, values}).catch(reason => {error.textContent = errorText(reason); error.hidden = false;}).finally(() => {submit.disabled = false;});
     }); body.append(form);
+  }
+  private processFacts(root: HTMLElement, description: string, process: NonNullable<HostSnapshot['overview']>['processes'][number]): void {
+    // The process panels use state · elapsed · backend/stream-mode. IDs bind the
+    // live facts; unknown/legacy descriptions keep their original presentation.
+    const parts = description.split(' · ');
+    if (parts.length < 3) {root.textContent = description; return;}
+    const state = document.createElement('span'); state.dataset.processState = process.id; state.textContent = errorText(process.state);
+    root.replaceChildren(state, document.createTextNode(' · '), this.clock.element(`process:${process.id}`, process.elapsed), document.createTextNode(' · ' + parts.slice(2).join(' · ')));
   }
   private button(text: string, click: () => void, name?: Parameters<typeof icon>[0], title = text): HTMLButtonElement {
     const button = document.createElement('button'); button.type = 'button'; button.title = title; button.setAttribute('aria-label', title); if (name) button.append(icon(name)); if (text) button.append(document.createTextNode(text)); button.addEventListener('click', click); return button;

@@ -209,6 +209,26 @@ body.configuring #transcript, body.configuring #drop-zone, body.configuring #ove
 
 .configuration-status {min-height: 36px}.configuration-actions {display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0}.configuration-dirty {color: var(--accent)}.model-diagnostics select {max-width: 100%; margin-right: 6px}
 
+#activity {display: inline-flex; align-items: center; gap: 5px; color: var(--ink); font-size: 11px; font-weight: 550}
+.activity-mark {display: flex; align-items: center; gap: 2px; height: 14px; color: var(--accent)}
+.activity-mark i {display: block; width: 2px; height: 8px; border-radius: 2px; background: currentColor}
+#activity[data-state="responding"] .activity-mark {color: var(--vscode-terminal-ansiCyan, #83c5cc)}
+#activity[data-state="tool"] .activity-mark {color: var(--vscode-terminal-ansiGreen, #a8c99a)}
+#activity[data-state="ready"] .activity-mark i {height: 3px}
+#activity[data-state="failed"] .activity-mark {color: var(--vscode-errorForeground, #ef9a9a)}
+#activity[data-state="waiting"] {color: var(--accent)}
+.elapsed {font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink)}
+.steering-status {display: flex; align-items: center; gap: 10px; padding: 6px 8px; margin: 0 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px}
+.steering-status > span {flex: 1; min-width: 0}.steering-status button {flex: 0 0 auto; color: var(--accent); font-weight: 600; padding: 3px 6px; min-height: 26px}
+@media (prefers-reduced-motion: no-preference) {
+  #activity:is([data-state="thinking"], [data-state="responding"], [data-state="tool"], [data-state="steering"], [data-state="starting"], [data-state="stopping"], [data-state="installing"]) .activity-mark i {animation: activity-wave 1200ms ease-in-out infinite}
+  #activity .activity-mark i:nth-child(2) {animation-delay: 120ms}#activity .activity-mark i:nth-child(3) {animation-delay: 240ms}
+  #activity[data-state="responding"] .activity-mark i {animation-duration: 700ms}
+  #activity[data-state="tool"] .activity-mark i {animation-duration: 1600ms}
+  @keyframes activity-wave {0%, 100% {transform: scaleY(.45); opacity: .55} 50% {transform: scaleY(1); opacity: 1}}
+}
+@media (max-width: 380px) {.identity strong {font-size: 10px}.identity {gap: 4px}.brand-mark .icon {width: 16px}.app-header nav button {padding: 3px}.app-header nav .icon {width: 14px}#activity {font-size: 10px}}
+
 .cell > .tool-disclosure {border: 1px solid var(--line); border-radius: 8px; padding: 0; background: color-mix(in srgb, var(--surface) 75%, transparent)}
 .tool-disclosure > summary {display: flex; align-items: center; gap: 8px; padding: 9px 10px; list-style: none; color: var(--ink); cursor: pointer; min-width: 0}
 .tool-disclosure > summary::-webkit-details-marker {display: none}
@@ -227,3 +247,16 @@ body.configuring #transcript, body.configuring #drop-zone, body.configuring #ove
 .tool-arguments dt {color: var(--vscode-symbolIcon-propertyForeground, #c2acd7); max-width: 130px; overflow-wrap: anywhere}.tool-arguments dd {margin: 0; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto}
 .tool-output {margin: 0; padding: 10px; max-height: 420px; overflow: auto; border-radius: 5px; background: var(--canvas); color: var(--ink); font: 11px/1.65 var(--vscode-editor-font-family, monospace); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2}
 @media (prefers-reduced-motion: no-preference) {.tool-disclosure > summary::before {transition: transform 120ms ease-out}.tool-disclosure[open] > .tool-content {animation: feedback-enter 140ms ease-out}}
+
+.overview-detail {color: var(--ink); line-height: 1.6}.overview-content h3 {color: var(--vscode-textLink-foreground, #98c5e9); font-weight: 700}.overview-badge {font-weight: 650}
+.overview-content section[data-kind="git"] h3 {color: var(--accent)}
+.git-counts {font: 600 13px/1.8 var(--vscode-editor-font-family, monospace); color: var(--muted)}
+.git-added, .git-status.added {color: var(--vscode-gitDecoration-addedResourceForeground, #a8c99a)}
+.git-deleted, .git-status.deleted, .diagnostic-errors {color: var(--vscode-gitDecoration-deletedResourceForeground, #ee9b9b)}
+.git-status.modified {color: var(--vscode-gitDecoration-modifiedResourceForeground, #dbbb80)}
+.git-status.conflict, .diagnostic-warnings {color: var(--vscode-editorWarning-foreground, #e8bc71)}
+.git-upstream {color: var(--vscode-textLink-foreground, #98c5e9); margin: 4px 0 7px; overflow-wrap: anywhere}.git-sync {font-weight: 650; color: var(--ink)}
+.overview-content .git-file {display: flex; gap: 8px; align-items: baseline; padding: 3px 4px; color: var(--ink); font-size: 11px; border-radius: 4px}
+.git-status {font-weight: 750; white-space: pre; min-width: 2ch}.git-file > span:last-child {overflow: hidden; text-overflow: ellipsis; white-space: nowrap}
+.overview-content .diagnostic-row {align-items: baseline; line-height: 1.6}.diagnostic-row strong {font-weight: 600}
+.plan-step.completed {color: var(--vscode-testing-iconPassed, #a8c99a); font-size: 11px}.process-tail {color: var(--ink); font-size: 11px}
