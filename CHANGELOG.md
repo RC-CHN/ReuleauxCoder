@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep VS Code streaming replies responsive while scrolling: preserve unchanged Markdown blocks, avoid rebuilding completed reply content on every chunk, and pause automatic following as soon as the reader scrolls upward. Resume at the actual bottom or through New output; cover reading position, retained selections, Markdown references and return-to-latest interactions in Chromium.
+
 ## 0.11.3 - 2026-09-27
 
 - Bind VS Code image submissions to their owning core session and generation. Cover actual image delivery, same-ID retry and steering, beyond upload-to-draft checks.

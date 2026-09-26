@@ -10,6 +10,7 @@ import {ComposerWorkbench} from './workbench.js';
 import {AttentionCards} from './attention.js';
 import {WorkOverviewView} from './overview.js';
 import {ImageGallery} from './images.js';
+import {TranscriptScroll} from './transcript-scroll.js';
 
 interface SavedView {draft?: string; outbox?: {input: Omit<LocalSend, 'uploads'>; cell: ChatCell}[]}
 declare function acquireVsCodeApi(): {postMessage(message: unknown): void; getState(): SavedView | undefined; setState(state: unknown): void};
@@ -18,6 +19,7 @@ setLocale(document.documentElement.lang);
 const element = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const composer = element<HTMLTextAreaElement>('composer');
 const transcript = element('transcript');
+const transcriptScroll = new TranscriptScroll(transcript, element('new-output'));
 decorateIcons();
 const workbench = new ComposerWorkbench(element('workbench'), composer, request, notice, saveDraft);
 const attention = new AttentionCards(element('reviews'), request);
@@ -26,6 +28,8 @@ const configuration = new ConfigurationView(element('configuration-editor'), req
 const images = new ImageGallery(request);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
+const cellContent = new Map<string, {text: string; metadata: string}>();
+let transcriptVersion = 0;
 const optimistic = new Map<string, ChatCell>();
 interface LocalSend {id: string; text: string; items: string[]; generation: number; hostId: string; uploads: LocalUpload[]; busy?: boolean; cancelled?: boolean; needsFiles?: boolean}
 const localSends = new Map<string, LocalSend>();
@@ -68,16 +72,24 @@ function button(text: string, action: () => void, title = text): HTMLButtonEleme
 function cellNode(cell: ChatCell): HTMLElement {
   let node = nodes.get(cell.id);
   if (!node) {node = document.createElement('article'); node.className = `cell ${cell.role}`; node.dataset.id = cell.id; nodes.set(cell.id, node); transcript.insertBefore(node, element('reviews'));}
-  const content = JSON.stringify(cell); if (node.dataset.content === content) return node;
+  const {text, ...attributes} = cell;
+  const metadata = JSON.stringify(attributes);
+  const previous = cellContent.get(cell.id);
+  if (previous?.metadata === metadata && previous.text === text) return node;
+  cellContent.set(cell.id, {text, metadata}); transcriptVersion++;
+  const renderBody = (body: HTMLElement) => renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice));
+  if (previous?.metadata === metadata && !cell.images?.length && (cell.role === 'assistant' || cell.role === 'reasoning')) {
+    renderBody(node.querySelector<HTMLElement>('.body')!); return node;
+  }
   const expanded = node.querySelector('details')?.open ?? false;
-  node.dataset.content = content; node.replaceChildren();
+  node.replaceChildren();
   const meta = document.createElement('div'); meta.className = 'meta';
   meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'reasoning' ? t('Reasoning') : cell.role === 'tool' ? toolLabel(cell.title ?? t('Tool')) : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
   if (cell.role === 'tool') meta.title = cell.title ?? '';
   if (cell.status && cell.status !== 'applied') {const state = document.createElement('span'); state.textContent = t(cell.status as MessageKey) ?? cell.status; meta.append(state);}
   node.append(meta);
   const body = document.createElement('div'); body.className = 'body';
-  if (cell.role === 'assistant' || cell.role === 'reasoning') renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice));
+  if (cell.role === 'assistant' || cell.role === 'reasoning') renderBody(body);
   else body.textContent = cell.role === 'notice' ? coreMessage(cell.text) : cell.text;
   if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = cell.role === 'tool' ? toolLabel(cell.title ?? t('Tool')) : t('Reasoning'); details.append(summary, body); node.append(details);} else node.append(body);
   if (cell.images?.length) images.draw(body, cell.images);
@@ -88,12 +100,12 @@ function cellNode(cell: ChatCell): HTMLElement {
 }
 function render(state: HostSnapshot): void {
   if (snapshot && state.revision < snapshot.revision) return;
-  const follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 70;
+  const previousVersion = transcriptVersion;
   if (snapshot && (snapshot.hostId !== state.hostId || snapshot.generation !== state.generation)) {
     images.reset();
     // Restore events may render before the matching state snapshot arrives.
     // Rebuild retained tiles so reset observers and discarded loads get retried.
-    for (const node of nodes.values()) delete node.dataset.content;
+    cellContent.clear(); transcriptScroll.reset();
     // Preserve unsent input visibly, but never replay it automatically into a different session.
     for (const cell of optimistic.values()) {cell.status = 'rejected'; cell.detail = t('Session changed. Review your draft and send it again.');}
     consumedItems.clear();
@@ -127,10 +139,9 @@ function render(state: HostSnapshot): void {
   const known = new Set(state.cells.map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}
   for (const id of consumedItems) if (!state.draftItems.some(item => item.id === id)) consumedItems.delete(id);
   const cells = [...state.cells, ...optimistic.values()];
-  const visible = new Set(cells.map(cell => cell.id)); for (const [id, node] of nodes) if (!visible.has(id)) {node.remove(); nodes.delete(id);}
+  const visible = new Set(cells.map(cell => cell.id)); for (const [id, node] of nodes) if (!visible.has(id)) {node.remove(); nodes.delete(id); cellContent.delete(id); transcriptVersion++;}
   for (const cell of cells) cellNode(cell);
   element('empty').hidden = cells.length > 0;
-  if (follow) {transcript.scrollTop = transcript.scrollHeight; element('new-output').hidden = true;} else element('new-output').hidden = false;
   const setup = element('setup'); setup.hidden = state.phase === 'ready' || !!state.configuration;
   const phaseTitles = {idle: t('Connect your workspace'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Saving and stopping…'), ready: t('Ready'), failed: state.error?.kind === 'missing' ? t('Core not found') : state.error?.kind === 'incompatible' ? t('Core update required') : t('Could not start the core')};
   element('setup-title').textContent = phaseTitles[state.phase];
@@ -148,10 +159,10 @@ function render(state: HostSnapshot): void {
   configuration.update(state.configuration, state.running, state.phase === 'ready');
   if (phaseChanged && !setup.hidden) reveal(element('setup-message'));
   attention.update(state);
-  if (follow) transcript.scrollTop = transcript.scrollHeight;
   if (state.notice && !state.configuration) notice(state.notice);
   renderAttachments();
   persist();
+  transcriptScroll.update(transcriptVersion !== previousVersion);
 }
 function renderAttachments(): void {
   const container = element('attachments'); container.replaceChildren();
@@ -262,7 +273,6 @@ composer.addEventListener('input', () => {saveDraft(); workbench.input();});
 composer.addEventListener('keydown', event => {if (workbench.key(event)) return; if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {event.preventDefault(); void send();}});
 composer.addEventListener('paste', event => {const files = [...(event.clipboardData?.files ?? [])]; if (files.length) {event.preventDefault(); addFiles(files);}});
 element('send').addEventListener('click', () => void send());
-element('new-output').addEventListener('click', () => {transcript.scrollTop = transcript.scrollHeight; element('new-output').hidden = true;});
 element('attach').addEventListener('click', () => element<HTMLInputElement>('files').click());
 element('commands').addEventListener('click', () => workbench.show());
 element('attention-jump').addEventListener('click', () => element('reviews').scrollIntoView({block: 'start', behavior: 'smooth'}));
