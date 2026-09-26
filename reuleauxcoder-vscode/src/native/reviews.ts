@@ -19,28 +19,51 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     this.detach?.(); this.client = client; this.epoch++; this.cache.clear(); this.opened.clear();
     const listener = () => {
       for (const id of this.opened) if (!this.find(id)) this.opened.delete(id);
-      this.onChange(); void this.present().catch(this.fail);
+      this.onChange(); void this.closeExpired().then(() => this.present()).catch(this.fail);
     };
     client.on('interactions', listener); this.detach = () => client.off('interactions', listener);
+    listener();
   }
   summaries(): ReviewSummary[] {return (this.client?.interactions ?? []).filter(item => item.kind === 'review').map(item => reviewSummary(item.request, this.dirtyDocuments(item).length > 0));}
   private find(id: string): PendingInteraction | undefined {return this.client?.interactions.find(item => item.request.request_id === id);}
   private uri(requestId: string, documentId: string, side: string, path: string): vscode.Uri {
     return vscode.Uri.from({scheme: 'reuleaux-review', path: `/${requestId}/${documentId}/${basename(path)}`, query: new URLSearchParams({side, epoch: String(this.epoch)}).toString()});
   }
+  private expired(uri: vscode.Uri): boolean {
+    return uri.scheme === 'reuleaux-review' && (new URLSearchParams(uri.query).get('epoch') !== String(this.epoch) || !this.find(uri.path.split('/')[1]));
+  }
+  private async closeExpired(): Promise<void> {
+    const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => {
+      const input = tab.input;
+      return input instanceof vscode.TabInputTextDiff ? this.expired(input.original) || this.expired(input.modified) : input instanceof vscode.TabInputText && this.expired(input.uri);
+    });
+    if (tabs.length) await vscode.window.tabGroups.close(tabs, true);
+    for (const key of this.cache.keys()) if (this.expired(vscode.Uri.parse(key))) this.cache.delete(key);
+  }
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     const key = uri.toString(); if (this.cache.has(key)) return this.cache.get(key)!;
     const [, requestId, documentId] = uri.path.split('/'); const params = new URLSearchParams(uri.query); const side = params.get('side');
-    if (params.get('epoch') !== String(this.epoch) || !this.find(requestId) || !['before', 'after'].includes(side ?? '')) throw new Error(t('This review has expired. Open the current proposal.'));
+    // VS Code may request content while an answered proposal's tab is still closing.
+    // A normal expiry must not turn into an editor error notification.
+    if (this.expired(uri)) return t('This review has expired. Open the current proposal.');
+    if (side === 'preview') {
+      const request = this.find(requestId)!.request;
+      return [approvalText(request.summary), ...(request.sections ?? []).map((section: any) => `${coreText(section.title)}\n${typeof section.content === 'string' ? section.title === 'Outside workspace' ? approvalText(section.content) : section.content : JSON.stringify(section.content, null, 2)}`)].join('\n\n');
+    }
+    if (!['before', 'after'].includes(side ?? '')) throw new Error(t('This review has expired. Open the current proposal.'));
     const client = this.client!; const epoch = this.epoch;
-    const content = await client.reviewDocument(requestId, documentId, side as 'before' | 'after');
-    if (epoch !== this.epoch || !this.find(requestId)) throw new Error(t('This review has expired.'));
+    let content: string;
+    try {content = await client.reviewDocument(requestId, documentId, side as 'before' | 'after');}
+    catch (error) {if (this.expired(uri)) return t('This review has expired.'); throw error;}
+    if (epoch !== this.epoch || !this.find(requestId)) return t('This review has expired.');
     while (this.cache.size >= 16) this.cache.delete(this.cache.keys().next().value!);
     this.cache.set(key, content); return content;
   }
   async open(id?: string, documentId?: string): Promise<void> {
     const request = id ? this.find(id) : this.client?.interactions.find(item => item.kind === 'review');
     if (!request) throw new Error(t('No active review.'));
+    const epoch = this.epoch;
+    const current = () => this.epoch === epoch && this.find(request.request.request_id) === request;
     const documents = request.request.documents ?? [];
     const document = documents.find((item: any) => item.id === documentId) ?? documents[0];
     if (document) {
@@ -48,16 +71,25 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
       const right = this.uri(request.request.request_id, document.id, 'after', document.path);
       try {
         await Promise.all([this.provideTextDocumentContent(left), this.provideTextDocumentContent(right)]);
+        if (!current()) return;
         await vscode.commands.executeCommand('vscode.diff', left, right, t('Proposal: {0}', basename(document.path)), {preview: false, preserveFocus: true, viewColumn: vscode.ViewColumn.One});
+        // The user may answer while VS Code is still creating the editor tab.
+        await this.closeExpired();
         return;
       } catch (error) {
+        if (!current()) return;
         if (!(error instanceof Error) || !error.message.includes('4 Mi-character')) throw error;
         void vscode.window.showInformationMessage(t('The proposal is too large for the native diff. Showing the text preview.'));
       }
     }
     {
-      const text = [approvalText(request.request.summary), ...(request.request.sections ?? []).map((section: any) => `${coreText(section.title)}\n${typeof section.content === 'string' ? section.title === 'Outside workspace' ? approvalText(section.content) : section.content : JSON.stringify(section.content, null, 2)}`)].join('\n\n');
-      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument({content: text, language: 'diff'}), {preview: false});
+      const uri = this.uri(request.request.request_id, 'preview', 'preview', 'proposal.diff');
+      try {
+        const document = await vscode.workspace.openTextDocument(uri);
+        if (!current()) return;
+        await vscode.window.showTextDocument(document, {preview: false, preserveFocus: true});
+        await this.closeExpired();
+      } catch (error) {if (current()) throw error;}
     }
   }
   private currentId(argument?: string | vscode.Uri): string | undefined {
@@ -105,8 +137,10 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     if (this.find(id) === pending) this.client!.answer(id, record('ReviewResponse', {approved: false, cancelled: false, action: 'deny', reason: 'The editor contained unsaved changes. Re-read the current file and propose the edit again against its saved content.'}));
   }
   private async present(): Promise<void> {
-    const item = this.client?.interactions[0]; if (!item || this.presenting.has(item.request.request_id)) return;
-    const id = item.request.request_id; this.presenting.add(id);
+    const item = this.client?.interactions[0]; if (!item) return;
+    const id = item.request.request_id, key = `${this.epoch}:${id}`;
+    if (this.presenting.has(key)) return;
+    this.presenting.add(key);
     try {
       if (item.kind === 'review') {
         if (!this.opened.has(id)) {
@@ -115,7 +149,7 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
         }
         return;
       }
-    } finally {this.presenting.delete(id);}
+    } finally {this.presenting.delete(key);}
   }
-  dispose(): void {this.detach?.(); this.epoch++; this.cache.clear();}
+  dispose(): void {this.detach?.(); this.client = undefined; this.epoch++; this.cache.clear(); void this.closeExpired().catch(this.fail);}
 }

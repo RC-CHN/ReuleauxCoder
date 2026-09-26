@@ -11,6 +11,12 @@ async function until(predicate: () => unknown | Promise<unknown>, timeout = 1000
   const end = Date.now() + timeout;
   while (!await predicate()) {if (Date.now() > end) throw new Error('VS Code integration condition timed out.'); await delay(25);}
 }
+function reviewTabs(): vscode.Tab[] {
+  return vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => {
+    const input = tab.input;
+    return input instanceof vscode.TabInputTextDiff ? input.modified.scheme === 'reuleaux-review' : input instanceof vscode.TabInputText && input.uri.scheme === 'reuleaux-review';
+  });
+}
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension<ReturnType<typeof activate>>('RC-CHN.reuleauxcoder');
   assert(extension, 'Extension is registered');
@@ -46,25 +52,57 @@ export async function run(): Promise<void> {
     session.commands.close();
     console.log('PASS native readonly skill instructions, complete workspace customization and stale action guards');
 
+    const comparison = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'comparison.py');
+    await writeFile(comparison.fsPath, 'user comparison\n');
+    await vscode.commands.executeCommand('vscode.diff', uri, comparison, 'User comparison', {preview: false, preserveFocus: true});
+    const userComparison = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.toString() === comparison.toString());
     for (const newline of ['\n', '\r\n']) {
       await writeFile(uri.fsPath, `old = 1${newline}`);
       session.submit(`native-edit-${newline.length}`, 'edit', [], client.state.session_generation);
-      await until(() => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputTextDiff));
-      const input = vscode.window.tabGroups.all.flatMap(group => group.tabs).find(tab => tab.input instanceof vscode.TabInputTextDiff)!.input as vscode.TabInputTextDiff;
+      await until(() => reviewTabs().length > 0);
+      const input = reviewTabs()[0].input as vscode.TabInputTextDiff;
       assert.equal(input.modified.scheme, 'reuleaux-review');
       previousReviewUri = input.modified;
       assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), `old = 1${newline}`);
       assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), `new = 1${newline}`);
       assert.equal(await readFile(uri.fsPath, 'utf8'), `old = 1${newline}`);
+      await vscode.commands.executeCommand('vscode.diff', input.original, input.modified, 'Second proposal view', {preview: false, preserveFocus: true, viewColumn: vscode.ViewColumn.Two});
+      await until(() => reviewTabs().length === 2);
       await vscode.commands.executeCommand('reuleaux.approve', input.modified);
       await until(async () => (await readFile(uri.fsPath, 'utf8')) === `new = 1${newline}`);
       await until(() => !client.state.running);
       assert.equal(client.interactions.length, 0);
       // Expired editor buttons must never approve a later request.
       await vscode.commands.executeCommand('reuleaux.approve', input.modified);
-      await vscode.window.tabGroups.close(vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputTextDiff));
+      await until(() => reviewTabs().length === 0);
+      assert(userComparison(), 'Resolving a proposal must preserve unrelated diff editors');
       console.log(`PASS native readonly diff, approval and expired actions (${newline.length === 1 ? 'LF' : 'CRLF'})`);
     }
+
+    await writeFile(uri.fsPath, 'old = 1\r\n');
+    session.submit('native-reject', 'edit', [], client.state.session_generation);
+    await until(() => reviewTabs().length > 0);
+    await api.dispatch('reject', {id: client.interactions.find(item => item.kind === 'review')!.request.request_id});
+    await until(() => !client.state.running && reviewTabs().length === 0);
+    assert.equal(await readFile(uri.fsPath, 'utf8'), 'old = 1\r\n');
+    assert(userComparison());
+
+    // Exercise a document-less text preview through the real interaction inbox.
+    // It must be read-only and disappear without an untitled save prompt.
+    const previewResult = client.peer.methods.get('interaction.request')!({kind: 'review', request: {request_id: 'preview-only', title: 'Preview', summary: 'Preview content', documents: [], sections: []}, timeout_seconds: null});
+    await until(() => reviewTabs().some(tab => tab.input instanceof vscode.TabInputText));
+    const previewUri = (reviewTabs().find(tab => tab.input instanceof vscode.TabInputText)!.input as vscode.TabInputText).uri;
+    const preview = await vscode.workspace.openTextDocument(previewUri);
+    assert.equal(preview.getText(), 'Preview content'); assert(!preview.isUntitled && !preview.isDirty);
+    await api.reviews.decide(false, previewUri); await previewResult;
+    await until(() => reviewTabs().length === 0); assert(userComparison());
+    // Cancellation also retires a displayed proposal through the same inbox event.
+    session.submit('native-cancel', 'edit', [], client.state.session_generation);
+    await until(() => reviewTabs().length > 0);
+    await api.dispatch('stop');
+    await until(() => !client.state.running && reviewTabs().length === 0);
+    assert(userComparison());
+    console.log('PASS approved/rejected proposal tabs close across editor groups; unrelated diffs remain');
 
     const document = await vscode.workspace.openTextDocument(uri);
     let editor = await vscode.window.showTextDocument(document);
@@ -87,6 +125,7 @@ export async function run(): Promise<void> {
     await until(() => client.interactions.some(item => item.kind === 'review'));
     const reviewId = client.interactions.find(item => item.kind === 'review')!.request.request_id;
     api.reviews.bind(client);
+    await until(() => reviewTabs().some(tab => tab.input instanceof vscode.TabInputTextDiff && new URLSearchParams(tab.input.modified.query).get('epoch') !== new URLSearchParams(previousReviewUri!.query).get('epoch')));
     await api.reviews.decide(true, previousReviewUri);
     assert(client.interactions.some(item => item.request.request_id === reviewId), 'An old editor URI must not approve a replacement review');
     const pendingEdit = new vscode.WorkspaceEdit(); pendingEdit.insert(uri, new vscode.Position(0, 0), '# changed after proposal\r\n');
@@ -94,11 +133,13 @@ export async function run(): Promise<void> {
     await until(() => vscode.workspace.textDocuments.some(item => item.uri.toString() === uri.toString() && item.isDirty));
     assert(api.reviews.summaries().find(item => item.id === reviewId)?.dirty, JSON.stringify({proposal: api.reviews.summaries().find(item => item.id === reviewId)?.documents, dirty: vscode.workspace.textDocuments.filter(item => item.isDirty).map(item => item.uri.fsPath)}));
     await assert.rejects(api.reviews.decide(true, reviewId), /unsaved editor/);
+    assert(reviewTabs().length > 0, 'Blocked approval must keep its preview open');
     await assert.rejects(api.reviews.decide(true, reviewId, 'invented-scope'), /expired/);
     await api.reviews.saveAndRepropose(reviewId);
     await until(() => !client.state.running);
     assert((await readFile(uri.fsPath, 'utf8')).startsWith('# changed after proposal\r\nold = 1'));
     assert.equal(client.interactions.length, 0);
+    await until(() => reviewTabs().length === 0);
     console.log('PASS inline dirty-review handling rejects stale writes and validates grant IDs');
 
     editor = await vscode.window.showTextDocument(document);
