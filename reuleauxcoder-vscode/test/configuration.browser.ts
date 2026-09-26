@@ -27,9 +27,22 @@ test('human configuration journey: choose scope, edit buffers, check, save and e
     res.end(webviewHtml({language: path.includes('zh') ? 'zh-CN' : 'en', nonce: 'journey', script: '/webview.js', style: '/webview.css', cspSource: "'self'"}));
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {publish = undefined; await editor.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(cwd, {recursive: true, force: true}); setLocale('en');});
-  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, args: ['--no-sandbox']});
-  t.after(() => browser.close());
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  t.after(async () => {
+    publish = undefined; setLocale('en');
+    // A Windows filesystem cleanup error must not skip closing Chromium and
+    // leave the test process alive after reporting a failed hook.
+    try {await browser?.close();}
+    finally {
+      try {await editor.close();}
+      finally {
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+        await rm(cwd, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
+      }
+    }
+  });
+  browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, args: ['--no-sandbox']});
   for (const language of ['en', 'zh']) {
     setLocale(language); await writeFile(file, 'app: [broken');
     const page = await browser.newPage({viewport: {width: 340, height: 850}});

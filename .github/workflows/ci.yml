@@ -134,6 +134,7 @@ jobs:
         working-directory: reuleauxcoder-vscode
         run: npx playwright install chromium
       - name: Test bilingual webview and attachments
+        timeout-minutes: 5
         run: npm run test:webview --prefix reuleauxcoder-vscode
       - name: Upload interface previews
         if: always()
