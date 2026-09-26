@@ -45,6 +45,13 @@ test('live workbench: clocks, readable facts, stable disclosures and motion in b
       await page.locator('#overview').evaluate(node => {node.scrollTop = 0;});
       await page.waitForTimeout(200);
       await page.screenshot({path: resolve(`../artifacts/vscode-concept/live-workbench-${language}.png`), animations: 'disabled'});
+      await page.evaluate(() => {
+        document.body.classList.add('vscode-light');
+        for (const [name, value] of Object.entries({'sideBar-background': '#f4f3ef', 'editor-background': '#fffdf9', 'input-background': '#fffefa', foreground: '#293238', descriptionForeground: '#626d74', 'panel-border': '#d3d4cf', 'textLink-foreground': '#326b92'})) document.documentElement.style.setProperty(`--vscode-${name}`, value);
+      });
+      await page.locator('.git-counts').scrollIntoViewIfNeeded();
+      await page.screenshot({path: resolve(`../artifacts/vscode-concept/live-overview-light-${language}.png`), animations: 'disabled'});
+      assert.equal(await page.locator('.git-added').first().evaluate(node => getComputedStyle(node).color), 'rgb(57, 113, 67)', 'Missing theme colors need a legible light fallback');
       // The native-style command panel shares the process clock and freezes on exit.
       state.commandSurface = {id: 1, feature: 'processes', busy: false, canBack: false, panel: {view_type: 'process_session:proc', title: 'npm test', body: 'npm test\nrunning · 6.0s · local/pipe', items: [], children: [], filterable: false, keep_open_on_submit: true, return_to_parent_on_submit: false}};
       await publish();
