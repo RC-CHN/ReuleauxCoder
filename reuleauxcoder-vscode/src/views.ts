@@ -46,7 +46,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
     const entry = [...this.views.values()].find(entry => entry.owner === owner);
     if (!entry) throw new Error(t('View closed.'));
     entry.session = session;
-    if (['send', 'retry', 'upload.begin', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.') || request.action.startsWith('configuration.') || request.action.startsWith('skill.')) {
+    if (['send', 'retry', 'upload.begin', 'image.preview', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.') || request.action.startsWith('configuration.') || request.action.startsWith('skill.')) {
       if (data.hostId !== session.snapshot().hostId || data.generation !== session.snapshot().generation) throw new Error(t('Session changed. Review your draft and send it again.'));
     }
     if (request.action.startsWith('configuration.')) return this.command(request.action, data);
@@ -61,6 +61,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
       case 'send': session.submit(data.id, data.text, data.items, data.generation); return;
       case 'retry': await session.submissions?.retry(data.id); return;
       case 'remove': session.remove(data.id); return;
+      case 'image.preview': return session.imagePreview(data.attachmentId, data.variantId);
       case 'command.open': session.requireClient(); return session.commands.open(data.actionId);
       case 'command.submit': session.requireClient(); return session.commands.submit(data.surfaceId, data.values);
       case 'command.select': session.requireClient(); return session.commands.select(data.surfaceId, data.index);

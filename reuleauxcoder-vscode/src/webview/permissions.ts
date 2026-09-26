@@ -1,6 +1,6 @@
 import type {Panel} from '@reuleauxcoder/client';
 import type {CommandSurface, WebRequest} from '../shared.js';
-import {t, coreText} from '../i18n.js';
+import {t, coreText, errorText, toolLabel} from '../i18n.js';
 import {icon} from './icons.js';
 import {reveal} from './motion.js';
 import {permissionTarget} from '../panel-i18n.js';
@@ -31,16 +31,30 @@ export class PermissionPolicies {
     help.textContent = this.scope === 0 ? t('Choose how tools may run in this conversation. Changes apply immediately.') : t('Save defaults for this workspace. Existing session rules take priority.');
     const search = document.createElement('input'); search.type = 'search'; search.className = 'menu-search'; search.placeholder = t('Find a tool, path or MCP server'); search.setAttribute('aria-label', search.placeholder); search.value = this.filter; search.dataset.policyFilter = '';
     const list = document.createElement('div'); list.className = 'policy-list';
-    root.append(tabs, help, search, list);
+    const toolbar = document.createElement('div'); toolbar.className = 'policy-toolbar'; toolbar.append(tabs, help, search);
+    root.append(toolbar, list);
     for (const [index, item] of panel.items.entries()) {
       const scopes = childAt(panel, index); if (!scopes) continue;
       const actions = childAt(scopes, this.scope); if (!actions || actions.view_type !== 'approval_actions') continue;
       const row = document.createElement('div'); row.className = 'policy-tool'; row.dataset.target = item.id ?? item.label;
       const copy = document.createElement('div'); copy.className = 'policy-tool-copy';
-      const label = document.createElement('label'); label.textContent = permissionTarget(item.label); label.htmlFor = `policy-${index}`;
-      const raw = document.createElement('small'); raw.textContent = permissionTarget(item.label) !== item.label ? item.label : '';
-      const source = document.createElement('small'); source.className = 'policy-source'; source.textContent = coreText(item.description);
-      copy.append(label, raw);
+      const command = actions.items.find(action => action.action)?.action?.command;
+      const selector = typeof command?.target === 'string' ? command.target : '';
+      const fields = Object.fromEntries(selector.split(',').map(part => {const at = part.indexOf('='); return at > 0 ? [part.slice(0, at), part.slice(at + 1)] : ['', ''];}));
+      const label = document.createElement('label'); label.htmlFor = `policy-${index}`;
+      label.textContent = fields.tool ? (fields.source === 'mcp' ? fields.tool : toolLabel(fields.tool)) : permissionTarget(item.label);
+      const scope = document.createElement('small'); scope.className = 'policy-target-scope';
+      scope.textContent = [fields.source === 'builtin' ? t('Built-in tools') : fields.source === 'mcp' ? 'MCP' : fields.source ? errorText(fields.source) : t('All sources'), fields.mcp_server,
+        fields.effect ? `${t('Effect')}: ${errorText(fields.effect)}` : '', fields.profile ? `${t('Profile')}: ${fields.profile}` : '', command?.pattern].filter(Boolean).join(' · ');
+      const source = document.createElement('small'); source.className = 'policy-source';
+      // Keep the backend's layer facts: rules with similar names may match different sources.
+      source.textContent = coreText(item.description.replace(/^⚠ broad scope · /i, '').replace(/ · no override$/, ''));
+      copy.append(label, scope);
+      const details = document.createElement('details'); details.className = 'policy-details';
+      const summary = document.createElement('summary'); summary.textContent = t('Rule details');
+      const raw = document.createElement('code'); raw.textContent = [selector || item.label, command?.pattern].filter(Boolean).join(' · ');
+      raw.setAttribute('aria-label', t('Rule selector')); details.append(summary, raw);
+      row.dataset.search = [item.label, selector, command?.pattern, scope.textContent].join(' ').toLowerCase();
       const select = document.createElement('select'); select.id = label.htmlFor; select.dataset.submit = ''; select.dataset.row = item.id ?? item.label; select.disabled = surface.busy;
       const active = actions.items.findIndex(item => item.current);
       const unset = actions.items.findIndex(item => item.action && !item.action.command.action);
@@ -64,10 +78,10 @@ export class PermissionPolicies {
           if (root.isConnected) root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button, select').forEach(control => control.disabled = false);
         });
       });
-      row.append(copy, select, source, explanation); list.append(row);
+      row.append(copy, select, source, details, explanation); list.append(row);
     }
     const empty = document.createElement('p'); empty.className = 'surface-empty'; empty.textContent = t('No matching tools'); list.append(empty);
-    const filter = () => {this.filter = search.value; let visible = 0; list.querySelectorAll<HTMLElement>('.policy-tool').forEach(row => {row.hidden = !row.textContent!.toLowerCase().includes(this.filter.toLowerCase()); if (!row.hidden) visible++;}); empty.hidden = visible > 0;};
+    const filter = () => {this.filter = search.value; let visible = 0; list.querySelectorAll<HTMLElement>('.policy-tool').forEach(row => {row.hidden = !`${row.dataset.search} ${row.textContent}`.toLowerCase().includes(this.filter.toLowerCase()); if (!row.hidden) visible++;}); empty.hidden = visible > 0;};
     search.addEventListener('input', filter); filter();
   }
 }

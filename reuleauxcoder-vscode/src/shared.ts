@@ -1,4 +1,4 @@
-import type {Action, Panel, Goal, GitWorkspace} from '@reuleauxcoder/client';
+import type {Action, Panel, Goal, GitWorkspace, ImageReference} from '@reuleauxcoder/client';
 import type {ConfigDiagnostic, ConfigValidation, ConfigScope, ConfigModelTarget} from '@reuleauxcoder/client';
 export interface ConfigurationSnapshot {
   busy: boolean; valid?: boolean; error?: string; dirty: boolean;
@@ -15,7 +15,7 @@ export interface WorkOverview {
 }
 export interface CommandSurface {id: number; feature: string; busy: boolean; panel?: Panel; action?: Action; canBack: boolean}
 export interface InlineInteraction {id: string; kind: string; title: string; message: string; secret?: boolean; initial?: string; placeholder?: string; allowEmpty?: boolean; allowCancel: boolean; items?: {id: string; label: string; description: string}[]}
-export interface ChatCell {id: string; role: 'user' | 'assistant' | 'reasoning' | 'tool' | 'notice'; text: string; title?: string; status?: string; detail?: string}
+export interface ChatCell {id: string; role: 'user' | 'assistant' | 'reasoning' | 'tool' | 'notice'; text: string; title?: string; status?: string; detail?: string; images?: ImageReference[]}
 export interface DraftItem {id: string; name: string; kind: 'context' | 'file' | 'image'; text?: string; reference?: any}
 export interface ReviewSummary {
   id: string; title: string; summary: string; documents: {id: string; path: string}[];

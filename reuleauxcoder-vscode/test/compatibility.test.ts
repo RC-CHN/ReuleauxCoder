@@ -12,7 +12,7 @@ test('core compatibility checks release versions and same-release editor revisio
   for (const version of [undefined, '', '0.11', 'v0.11.0', `${minimumCoreVersion}rc1`]) {
     assert.match(compatibilityProblem({...info, core_version: version})!, /release version/);
   }
-  for (const revision of [undefined, 0, '1', -1, 1.5]) {
+  for (const revision of [undefined, 0, 1, '1', -1, 1.5]) {
     assert.match(compatibilityProblem({...info, editor_api_version: revision})!, /integration revision/);
   }
   setLocale('zh-CN');

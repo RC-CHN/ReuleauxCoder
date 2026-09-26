@@ -3,7 +3,7 @@ import {t} from '../i18n.js';
 
 export const minimumCoreVersion = metadata.version;
 // Bump when editor integration needs a core fix not captured by capability flags.
-export const minimumEditorApiVersion = 1;
+export const minimumEditorApiVersion = 2;
 
 function release(value: unknown): number[] | undefined {
   if (typeof value !== 'string') return;

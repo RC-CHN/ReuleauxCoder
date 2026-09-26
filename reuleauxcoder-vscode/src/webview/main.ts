@@ -9,6 +9,7 @@ import {renderMarkdown} from './markdown.js';
 import {ComposerWorkbench} from './workbench.js';
 import {AttentionCards} from './attention.js';
 import {WorkOverviewView} from './overview.js';
+import {ImageGallery} from './images.js';
 
 interface SavedView {draft?: string; outbox?: {input: Omit<LocalSend, 'uploads'>; cell: ChatCell}[]}
 declare function acquireVsCodeApi(): {postMessage(message: unknown): void; getState(): SavedView | undefined; setState(state: unknown): void};
@@ -22,6 +23,7 @@ const workbench = new ComposerWorkbench(element('workbench'), composer, request,
 const attention = new AttentionCards(element('reviews'), request);
 const overview = new WorkOverviewView(element('overview'), element('goal-strip'), element<HTMLButtonElement>('overview-toggle'), request, notice);
 const configuration = new ConfigurationView(element('configuration-editor'), request, error => {if (!snapshot?.configuration?.error) notice(error);});
+const images = new ImageGallery(request);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
 const optimistic = new Map<string, ChatCell>();
@@ -78,6 +80,7 @@ function cellNode(cell: ChatCell): HTMLElement {
   if (cell.role === 'assistant' || cell.role === 'reasoning') renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice));
   else body.textContent = cell.role === 'notice' ? coreMessage(cell.text) : cell.text;
   if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = cell.role === 'tool' ? toolLabel(cell.title ?? t('Tool')) : t('Reasoning'); details.append(summary, body); node.append(details);} else node.append(body);
+  if (cell.images?.length) images.draw(body, cell.images);
   if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.role === 'tool' ? cell.detail : coreMessage(cell.detail); (cell.role === 'tool' ? node.querySelector('details')! : node).append(detail);}
   if (['unconfirmed', 'rejected'].includes(cell.status ?? '')) {const retry = button(t('Retry'), () => void retrySend(cell.id)); retry.className = 'retry'; node.append(retry);}
   if (cell.status === 'uploading' || cell.status === 'rejected' && (localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles)) node.append(button(t('Return to draft'), () => restoreSend(cell.id)));
@@ -87,6 +90,10 @@ function render(state: HostSnapshot): void {
   if (snapshot && state.revision < snapshot.revision) return;
   const follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 70;
   if (snapshot && (snapshot.hostId !== state.hostId || snapshot.generation !== state.generation)) {
+    images.reset();
+    // Restore events may render before the matching state snapshot arrives.
+    // Rebuild retained tiles so reset observers and discarded loads get retried.
+    for (const node of nodes.values()) delete node.dataset.content;
     // Preserve unsent input visibly, but never replay it automatically into a different session.
     for (const cell of optimistic.values()) {cell.status = 'rejected'; cell.detail = t('Session changed. Review your draft and send it again.');}
     consumedItems.clear();
@@ -151,7 +158,8 @@ function renderAttachments(): void {
   for (const item of snapshot?.draftItems ?? []) {
     if (consumedItems.has(item.id)) continue;
     const node = document.createElement('div'); node.className = 'attachment'; const name = document.createElement('span'); name.textContent = item.name;
-    node.append(name, button('×', () => void request('remove', {id: item.id}).catch(notice), t('Remove'))); container.append(node);
+    if (item.kind === 'image' && item.reference) images.draw(node, [item.reference], true); else node.append(name);
+    node.append(button('×', () => void request('remove', {id: item.id}).catch(notice), t('Remove'))); container.append(node);
   }
   for (const upload of uploads.values()) {
     if (upload.submission) continue;

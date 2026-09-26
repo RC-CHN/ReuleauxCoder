@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Bind VS Code image submissions to their owning core session and generation. Cover actual image delivery, same-ID retry and steering, beyond upload-to-draft checks.
+- Show inline image thumbnails with an accessible in-conversation viewer, fit/actual-size controls and restored-session previews. Fetch only validated, bounded image variants from the owning core; require editor integration revision 2 for this capability.
+- Simplify tool permission rows: show the localized tool name once, distinguish built-in/all-source matching, keep raw selectors in expandable details and retain scope/search controls while scrolling. Verify bilingual policy changes against the real core.
 
 ## 0.11.2 - 2026-09-26
 

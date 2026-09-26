@@ -1,4 +1,4 @@
-import {t} from '../i18n.js';
+import {t, errorText} from '../i18n.js';
 import {EventEmitter} from 'node:events';
 import {randomUUID} from 'node:crypto';
 import {record, tuple, SubmissionQueue, type Json, type RuntimeClient} from '@reuleauxcoder/client';
@@ -51,7 +51,7 @@ export class WorkspaceSession extends EventEmitter {
     this.overview.bind(client);
     this.submissions = new SubmissionQueue(client, this.transcript, text => {this.notice = text; this.changed();}, {
       empty: t('No failed submission to retry.'), stopped: t('The core is stopping. Your message is retained; use Retry to send it again.'),
-      uncertain: detail => t('{0}. Your message is retained; Retry uses the same submission ID.', detail),
+      uncertain: detail => t('{0}. Your message is retained; Retry uses the same submission ID.', errorText(detail)),
     });
     this.uploads = new Uploads(client);
     this.draftItems = []; this.generation = 0;
@@ -104,8 +104,9 @@ export class WorkspaceSession extends EventEmitter {
       text: input, images: tuple(images.map(item => record('ImageReference', item.reference))),
       session_id: client.state.session_id, session_generation: generation,
     }) : input;
-    const display = [text, ...items.map(item => `[${t(item.kind)}: ${item.name}]`)].filter(Boolean).join('\n');
+    const display = [text, ...items.filter(item => item.kind !== 'image').map(item => `[${t(item.kind)}: ${item.name}]`)].filter(Boolean).join('\n');
     const sending = this.submissions!.send(display, value, id);
+    this.transcript.images(id, images.map(item => item.reference));
     this.draftItems = this.draftItems.filter(item => !itemIds.includes(item.id));
     // Only clear the sent text; a later view message may already own a new draft.
     if (this.draftText === text) this.draftText = '';
@@ -115,6 +116,17 @@ export class WorkspaceSession extends EventEmitter {
   snapshot(reviews: ReviewSummary[] = []): HostSnapshot {
     const state = this.client?.state;
     return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: this.transcript.cells, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), configuration: this.configuration.state};
+  }
+  async imagePreview(attachmentId: unknown, variantId: unknown): Promise<string> {
+    const client = this.requireClient();
+    const reference = [...this.draftItems.filter(item => item.kind === 'image').map(item => item.reference), ...this.transcript.cells.flatMap(cell => cell.images ?? [])]
+      .find(image => image.attachment_id === attachmentId && image.variant_id === variantId);
+    if (!reference) throw new Error(t('This image is no longer available.'));
+    const generation = client.state.session_generation;
+    const result = await client.peer.request('images.preview', {session_id: client.state.session_id, session_generation: generation, image: record('ImageReference', reference)});
+    if (this.client !== client || client.state.session_generation !== generation) throw new Error(t('Session changed. Review your draft and send it again.'));
+    if (typeof result !== 'string' || result.length > 3 * 1024 * 1024 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(result)) throw new Error(t('Image preview is unavailable.'));
+    return result;
   }
   add(item: DraftItem): void {if (this.draftItems.length >= 30) throw new Error(t('The draft already has 30 attachments or context items.')); this.draftItems.push(item); this.changed();}
   remove(id: string): void {this.draftItems = this.draftItems.filter(item => item.id !== id); this.changed();}

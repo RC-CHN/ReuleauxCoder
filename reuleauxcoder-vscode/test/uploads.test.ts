@@ -37,6 +37,9 @@ test('clipboard image upload reaches a real core turn and survives retry with th
   const image = await b.session.uploads!.complete('clipboard', upload.id);
   assert.equal(image.kind, 'image'); assert.equal(image.reference.width, 4); assert.equal(image.reference.height, 3);
   b.session.add(image); assert.equal(b.session.draftItems.length, 1);
+  const preview = await b.session.imagePreview(image.reference.attachment_id, image.reference.variant_id);
+  assert.match(preview, /^data:image\/png;base64,/);
+  await assert.rejects(b.session.imagePreview('unknown', image.reference.variant_id), /no longer available/);
   const submit = b.client.submit.bind(b.client);
   const attempts: unknown[] = [];
   b.client.submit = async (...args) => {
@@ -57,6 +60,8 @@ test('clipboard image upload reaches a real core turn and survives retry with th
   assert.equal(users[0].content.find((part: any) => part.type === 'image').attachment_id, image.reference.attachment_id);
   assert.equal(b.session.transcript.cells.filter(cell => cell.id === 'clipboard-image').length, 1);
   assert.equal(b.session.draftItems.length, 0);
+  assert.equal(b.session.transcript.cells.find(cell => cell.id === 'clipboard-image')?.images?.[0].variant_id, image.reference.variant_id);
+  assert.equal(await b.session.imagePreview(image.reference.attachment_id, image.reference.variant_id), preview);
 });
 
 test('clipboard images keep their session when sent as steering', async t => {

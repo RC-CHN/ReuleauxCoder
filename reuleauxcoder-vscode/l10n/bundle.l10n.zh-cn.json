@@ -778,5 +778,21 @@
   "Wait for configuration check to finish.": "请等待配置检查完成。",
   "Wait for the core operation to finish.": "请等待核心操作完成。",
   "Wait for the current turn to finish before restarting.": "请等待当前任务完成后再重启。",
-  "Workspace settings override global defaults. Unset fields inherit the global value.": "工作区设置覆盖全局默认值，未设置的项会继承全局配置。"
+  "Workspace settings override global defaults. Unset fields inherit the global value.": "工作区设置覆盖全局默认值，未设置的项会继承全局配置。",
+  "This image is no longer available.": "这张图片已不可用。",
+  "Image preview is unavailable.": "暂时无法预览图片。",
+  "Enlarge {0}": "放大 {0}",
+  "Loading image…": "正在加载图片…",
+  "Preview unavailable · click to retry": "暂时无法预览 · 点击重试",
+  "Close image preview": "关闭图片预览",
+  "Sent image · {0} × {1}": "发送版本 · {0} × {1}",
+  "Actual size": "实际尺寸",
+  "Fit to view": "适应窗口",
+  "Image preview": "图片预览",
+  "All sources": "所有来源",
+  "Built-in tools": "内置工具",
+  "Rule details": "规则详情",
+  "Rule selector": "匹配条件",
+  "Image belongs to a different session; attach it again": "图片属于另一个会话，请重新添加",
+  "Image was not imported into this session; attach it again": "当前会话中没有这张图片，请重新添加"
 }

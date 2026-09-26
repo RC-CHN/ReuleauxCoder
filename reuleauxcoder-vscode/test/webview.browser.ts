@@ -1,5 +1,6 @@
 import './configuration.browser.js';
 import './skills.browser.js';
+import './images.browser.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createServer} from 'node:http';
@@ -48,7 +49,8 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
           case 'draft': state.draftText = data.text; break;
           case 'upload.begin': uploaded = Buffer.alloc(0); result = {id: 'test-upload', chunk: 32}; break;
           case 'upload.append': await delay(15); assert.equal(data.offset, uploaded.length); uploaded = Buffer.concat([uploaded, Buffer.from(data.data, 'base64')]); result = uploaded.length; break;
-          case 'upload.complete': state.draftItems.push({id: 'attachment-1', name: 'paste.png', kind: 'image'}); result = 'attachment-1'; await publish(); break;
+          case 'upload.complete': state.draftItems.push({id: 'attachment-1', name: 'paste.png', kind: 'image', reference: {attachment_id: 'a'.repeat(64), variant_id: 'b'.repeat(64), mime_type: 'image/png', name: 'paste.png', width: 4, height: 3, original_width: 4, original_height: 3, size_bytes: 77}}); result = 'attachment-1'; await publish(); break;
+          case 'image.preview': result = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVR4nGP8//8/AwwwMSABFA4Aby0DAyMYAwQAAAAASUVORK5CYII='; break;
           case 'models': data.actionId = 'model.show';
           // The browser fixture supplies protocol data; real command dispatch is tested in commands.test.ts.
           case 'command.open': {

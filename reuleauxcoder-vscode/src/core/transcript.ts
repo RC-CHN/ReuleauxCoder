@@ -1,5 +1,5 @@
 import {EventEmitter} from 'node:events';
-import {typeOf, type RuntimeClient, type RecordData, type SubmissionSink} from '@reuleauxcoder/client';
+import {typeOf, type RuntimeClient, type RecordData, type SubmissionSink, type ImageReference} from '@reuleauxcoder/client';
 import type {ChatCell} from '../shared.js';
 import {t, coreText} from '../i18n.js';
 import {approvalReason} from '../core-messages.js';
@@ -18,7 +18,7 @@ export class Transcript extends EventEmitter implements SubmissionSink {
     this.dispose(); this.clear();
     const listen = (name: string, callback: (...args: any[]) => void) => {client.on(name, callback); this.subscriptions.push(() => client.off(name, callback));};
     listen('initialized', info => {
-      for (const message of info.recent_conversation ?? []) this.add(message.role === 'user' ? 'user' : 'assistant', message.content);
+      for (const message of info.recent_conversation ?? []) this.add(message.role === 'user' ? 'user' : 'assistant', message.content).images = message.images;
       this.emit('change');
     });
     listen('state', state => {if (state.session_generation !== this.generation) {this.generation = state.session_generation; this.clear();} if (!state.running) this.assistant = this.reasoning = undefined; this.emit('change');});
@@ -27,7 +27,7 @@ export class Transcript extends EventEmitter implements SubmissionSink {
       if (generation !== undefined && generation > this.generation) {this.generation = generation; this.clear();}
       if (typeOf(event.payload) === 'RuntimeEventPayload') this.runtime(event.payload.event, client);
       else if (typeOf(event.payload) === 'ViewEventPayload' && typeOf(event.payload.view_model) === 'SessionResumeViewModel') {
-        this.clear(); for (const entry of event.payload.view_model.entries) this.add(entry.role === 'user' ? 'user' : 'assistant', entry.content);
+        this.clear(); for (const entry of event.payload.view_model.entries) this.add(entry.role === 'user' ? 'user' : 'assistant', entry.content).images = entry.images;
       } else if (event.message && !['ViewEventPayload', 'InteractionPromptPayload'].includes(typeOf(event.payload) ?? '')) this.add('notice', event.message);
       this.emit('change');
     });
@@ -41,6 +41,10 @@ export class Transcript extends EventEmitter implements SubmissionSink {
     this.emit('change');
   }
   notice(text: string): void {this.add('notice', text); this.emit('change');}
+  images(id: string, images: ImageReference[]): void {
+    const cell = this.sent.get(id);
+    if (cell && images.length) {cell.images = images; this.emit('change');}
+  }
   private add(role: ChatCell['role'], text: string, id = `cell-${++this.next}`): ChatCell {
     const cell = {id, role, text: String(text).slice(-262144)};
     this.cells.push(cell);
@@ -55,7 +59,7 @@ export class Transcript extends EventEmitter implements SubmissionSink {
         const value = payload.user_input;
         const text = typeof value === 'string' ? value : value?.text ?? '';
         const id = payload.submission_id ?? value?.submission_id;
-        if (id) {this.submission(id, text, 'applied'); this.emit('applied', id);} else this.add('user', text);
+        if (id) {this.submission(id, text, 'applied'); if (value?.images?.length) this.images(id, value.images); this.emit('applied', id);} else this.add('user', text).images = value?.images;
         this.assistant = this.reasoning = undefined; break;
       }
       case 'StreamChunk': if (payload.reasoning) {this.reasoning ??= this.add('reasoning', ''); this.reasoning.text = (this.reasoning.text + payload.text).slice(-262144); break;}
