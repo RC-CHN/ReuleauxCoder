@@ -9,13 +9,15 @@ Identify the entry point, desired outcome and visible success condition. Use sup
 
 Use browser/editor automation actually available in the session. Disclose missing GUI, screenshot viewing or native-host coverage. A web mock does not validate VS Code's native editor; a TUI needs an actual terminal/PTY path.
 
+For practical setup, a Playwright operation/screenshot example, native-host checks and evidence boundaries, read [Interaction testing](references/interaction-testing.md). Use the sections matching the interface under test; the recipe requires no agent-specific browser or image tool.
+
 ## Act and observe
 
 - Click, type, paste, scroll and use keys through visible controls. Fixture preparation may write data, but verification must not inject application state or call internal handlers to bypass the UI.
 - After the main path, test empty/long input, duplicate submission, waiting, failure/retry, cancellation, navigation back and focus recovery.
 - On message submission, check prompt clearing, immediate user-message display and preservation of a newer unsent draft.
 - Check whether the next action and current state are discoverable. Cover narrow layouts, light/dark themes, keyboard use, long/localized strings and reduced motion where relevant.
-- Actually view screenshots for hierarchy, contrast, clipping, overlap and animation; corroborate with read-only DOM or accessibility state. Saving a screenshot without viewing it is not visual validation.
+- Actually view screenshots for hierarchy, contrast, clipping and overlap; corroborate with read-only DOM or accessibility state. Inspect transitions through successive frames or a recording. Saving a screenshot without viewing it is not visual validation.
 - Wait for observable transitions. Animations must not move an approval target during interaction or delay essential feedback.
 
 Record blocked paths with steps, expected/actual behavior, environment and evidence; continue independent paths. When fixes are authorized, rerun the failed path and related regressions after editing.
