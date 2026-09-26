@@ -220,6 +220,7 @@ TypeScript 7 的 `tsc --lsp --stdio`，legacy 为 TypeScript 6 工作区使用
 - `/model` 展示模型档案和路由；会话级切换不会改写全局默认值，持久化工作区默认值请使用 `/model set-main` 或 `/model set-sub`。
 - `/skills` 展示内置、用户和工作区 skills；`/skills reload` 重新扫描这些来源；`/skills enable|disable <name>` 把状态持久化到工作区配置。同名技能优先级为工作区 > 用户 > 内置。
 - 核心预置 `rcoder-config`，让模型通过普通文件编辑和只读检查配置自身；[字段参考](docs/configuration-reference.md) 详细说明默认值、继承、推理强度、thinking、返回与回放，以及协议限制。CLI、TUI、VS Code 均无需另行安装，可用 `/skills disable rcoder-config` 禁用。配置文件修改在下次核心启动生效，skills reload 不等于配置热重载。
+- 核心共预置 17 个[自包含技能](docs/builtin-skills.md)，覆盖 PPTX、Word、Excel、PDF、技能创建/安装、项目指引、代码审查与精简、测试、GitHub CI、界面验收、文档、翻译、润色和结构化数据。技能说明与参考默认使用英文，回复沿用用户语言。办公库与渲染器按任务需要准备，不作为核心安装依赖。
 - `/session` 按当前 fingerprint 展示最新优先的编号列表，预览取最近一条真实用户请求而不是生命周期标记。恢复可使用编号、完整 ID 或 `latest`；启用 auto-save 时会先保存正要离开的会话，并在 CLI 回放最近三个用户轮次。也可以用 `rcoder -r <id>` 在启动时恢复。
 - `/approval set` 当前支持的目标格式包括 `tool:<name>`、`mcp`、`mcp:<server>`、`mcp:<server>:<tool>`；动作支持 `allow`、`warn`、`require_approval`、`deny`。
 - `/mcp enable <server>` 与 `/mcp disable <server>` 会更新工作区配置，并尝试在运行时立即生效。

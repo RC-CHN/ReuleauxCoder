@@ -47,6 +47,14 @@ exclude = ["**/node_modules/**", "/reuleauxcoder-agent/reuleauxcoder-agent", "/r
 dev = [
     "pytest>=9.0.2",
 ]
+skill-tests = [
+    "python-pptx>=1.0.2",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
+    "pypdf>=6.0",
+    "PyMuPDF>=1.26",
+    "reportlab>=4.4",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]

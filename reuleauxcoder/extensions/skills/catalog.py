@@ -12,8 +12,9 @@ _INSTRUCTIONS = """# Skills
 The following skills provide specialized instructions for specific tasks.
 When a task matches a skill's description, use the read_file tool to load
 the SKILL.md at the listed location before proceeding.
-When a skill references relative paths, resolve them against the skill's
-root directory and prefer absolute paths in tool calls.
+Resolve relative Markdown links against the file containing the link.
+Resolve other skill resource paths against the skill's root directory,
+and prefer absolute paths in tool calls.
 """
 
 

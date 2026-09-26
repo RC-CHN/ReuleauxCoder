@@ -22,33 +22,41 @@ from reuleauxcoder.services.llm.sanitizer import sanitize_messages_for_llm
 
 
 SKILL_DIR = BUILTIN_SKILLS_DIR / "rcoder-config"
+BUILTIN_NAMES = {
+    "rcoder-config", "skill-creator", "skill-installer", "project-guide",
+    "code-review", "code-simplify", "test-and-fix", "github-ci", "ui-acceptance",
+    "docs-writing", "docs-translate", "text-polish", "structured-data",
+    "pptx", "docx", "xlsx", "pdf",
+}
 
 
 def test_fresh_install_discovers_builtin_without_creating_user_files(tmp_path):
     service = SkillsService(workspace_dir=tmp_path / "project", home_dir=tmp_path / "home")
     loaded = service.reload()
-    assert [(skill.name, skill.scope) for skill in loaded.active_skills] == [("rcoder-config", "builtin")]
+    assert {skill.name for skill in loaded.active_skills} == BUILTIN_NAMES
+    assert all(skill.scope == "builtin" for skill in loaded.active_skills)
     assert not loaded.diagnostics
     assert not loaded.missing
     assert "rcoder-config" in loaded.catalog
-    assert "先定位，再修改" not in loaded.catalog  # Body is loaded on demand.
+    assert all(skill.body not in loaded.catalog for skill in loaded.active_skills)
     assert not list(tmp_path.iterdir())
     assert not service.reload().changed
 
 
 @pytest.mark.parametrize("scope", ["user", "project"])
-def test_custom_skill_overrides_builtin_and_removal_restores_it(tmp_path, scope):
+@pytest.mark.parametrize("name", ["rcoder-config", "pptx", "skill-installer"])
+def test_custom_skill_overrides_builtin_and_removal_restores_it(tmp_path, scope, name):
     workspace, home = tmp_path / "project", tmp_path / "home"
     root = workspace if scope == "project" else home
-    file = root / ".rcoder/skills/rcoder-config/SKILL.md"
+    file = root / f".rcoder/skills/{name}/SKILL.md"
     file.parent.mkdir(parents=True)
-    file.write_text("---\nname: rcoder-config\ndescription: Custom config\n---\nCustom body", encoding="utf-8")
+    file.write_text(f"---\nname: {name}\ndescription: Custom skill\n---\nCustom body", encoding="utf-8")
     service = SkillsService(workspace_dir=workspace, home_dir=home)
-    assert service.reload().active_skills[0].scope == scope
+    assert next(skill for skill in service.reload().active_skills if skill.name == name).scope == scope
     file.unlink()
     loaded = service.reload()
-    assert loaded.updated == ("rcoder-config",)
-    assert loaded.active_skills[0].scope == "builtin"
+    assert loaded.updated == (name,)
+    assert next(skill for skill in loaded.active_skills if skill.name == name).scope == "builtin"
 
 
 def test_builtin_respects_disable_and_existing_toggle_persistence(tmp_path):
@@ -60,11 +68,12 @@ def test_builtin_respects_disable_and_existing_toggle_persistence(tmp_path):
     )
     assert service.reload().active_skills  # Scan flags do not disable packaged skills.
     assert service.set_enabled("rcoder-config", False).changed
-    assert not service.active()
-    assert not service.build_catalog()
+    assert {skill.name for skill in service.active()} == BUILTIN_NAMES - {"rcoder-config"}
+    assert "<name>rcoder-config</name>" not in service.build_catalog()
     assert yaml.safe_load(path.read_text())["skills"]["disabled"] == ["rcoder-config"]
-    assert service.build_view().skills[0].scope == "builtin"
-    assert not service.build_view().skills[0].enabled
+    item = next(skill for skill in service.build_view().skills if skill.name == "rcoder-config")
+    assert item.scope == "builtin"
+    assert not item.enabled
     assert service.set_enabled("rcoder-config", True).changed
     assert service.active()
     assert not (workspace / ".rcoder/skills").exists()
@@ -77,9 +86,10 @@ def test_disabled_name_applies_after_user_override(tmp_path):
     file.parent.mkdir(parents=True)
     file.write_text("---\nname: rcoder-config\ndescription: Custom\n---\nBody", encoding="utf-8")
     skills, _, _ = discover_skills(workspace_dir=tmp_path, home_dir=tmp_path, disabled_names={"rcoder-config"})
-    assert len(skills) == 1
-    assert not skills[0].enabled
-    assert skills[0].scope == "user"
+    assert len(skills) == len(BUILTIN_NAMES)
+    skill = next(skill for skill in skills if skill.name == "rcoder-config")
+    assert not skill.enabled
+    assert skill.scope == "user"
 
 
 def test_runner_catalog_records_actual_core_and_explicit_config(monkeypatch, tmp_path):

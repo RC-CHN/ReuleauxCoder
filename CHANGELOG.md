@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Expand the bundled catalog to 17 self-contained English skills, including editable PowerPoint, Word, Excel and PDF workflows, development/review/testing, skill authoring/installation and writing/data tasks. Include document inspection and PDF helpers, preserve user overrides and keep optional Office dependencies out of the core install. Validate real document operations, complete resource packaging and installed script entry points; enable the document tests on Linux/Windows CI.
+- Translate the existing self-configuration skill and its complete 133-field, reasoning and workflow references to English without changing configuration behavior.
+
 - Bundle the `rcoder-config` self-configuration skill with the core, including the complete field reference, reasoning/thinking/replay semantics and checked configuration recipes. Discover packaged skills before user/workspace overrides, honor existing disable controls, and provide the owning core's launch paths. Verify field coverage, ordinary tool reads and installed wheel resources on CI.
 
 - Make YAML the configuration source and reduce the shared CLI/RPC API to read-only describe, inspect and check. Remove dedicated model configuration tools, prepared changes, write/recovery protocols and verification leases; leave existing private backups untouched. Startup and checks share strict validation, and loading never generates or backfills files.
