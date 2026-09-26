@@ -53,6 +53,8 @@ with tempfile.TemporaryDirectory(prefix="rcoder-install-") as temporary:
     subprocess.run(
         [str(python), "-c", """
 from pathlib import Path
+import runpy
+import subprocess
 import sys
 from reuleauxcoder.app.configuration import ConfigurationService
 from reuleauxcoder.extensions.skills.service import SkillsService
@@ -62,6 +64,22 @@ from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 work = Path.cwd()
 service = SkillsService(workspace_dir=work, home_dir=work / 'empty-home')
 loaded = service.reload()
+expected = {
+    'rcoder-config', 'skill-creator', 'skill-installer', 'project-guide',
+    'code-review', 'code-simplify', 'test-and-fix', 'github-ci', 'ui-acceptance',
+    'docs-writing', 'docs-translate', 'text-polish', 'structured-data',
+    'pptx', 'docx', 'xlsx', 'pdf',
+}
+assert {item.name for item in loaded.active_skills} == expected
+assert not loaded.diagnostics
+creator = next(item for item in loaded.active_skills if item.name == 'skill-creator')
+validate = runpy.run_path(str(Path(creator.skill_dir) / 'scripts/validate_skill.py'))['validate']
+for item in loaded.active_skills:
+    assert item.scope == 'builtin'
+    assert Path(item.location).is_relative_to(Path(sys.prefix).resolve())
+    assert not validate(Path(item.skill_dir)), item.name
+    for script in (Path(item.skill_dir) / 'scripts').glob('*.py'):
+        subprocess.run([sys.executable, str(script), '--help'], check=True, capture_output=True, timeout=20)
 skill = next(item for item in loaded.active_skills if item.name == 'rcoder-config')
 assert skill.scope == 'builtin'
 assert Path(skill.location).is_relative_to(Path(sys.prefix).resolve())
@@ -80,7 +98,7 @@ assert checked['valid'], checked
 assert all(check['status'] == 'passed' for check in checked['checks']), checked
 assert not (work / '.rcoder').exists()
 assert not (work / 'empty-home').exists()
-print('Installed configuration skill, references and offline configuration checks passed.')
+print('All 17 installed skills, resource links, script entry points and offline configuration checks passed.')
 """],
         cwd=work,
         env=env,
