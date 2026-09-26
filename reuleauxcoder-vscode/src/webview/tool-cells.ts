@@ -20,8 +20,9 @@ export class ToolCells {
   constructor(private openLink: (url: string) => void, private openFile: (path: string) => void, private changed: () => void) {}
 
   render(root: HTMLElement, cell: ChatCell): boolean {
-    const previous = this.entries.get(cell.id)?.cell;
-    const changed = !sameCell(previous, cell);
+    const previous = this.entries.get(cell.id);
+    const changed = !sameCell(previous?.cell, cell);
+    if (!changed && previous?.details.parentElement === root) return false;
     const entry = this.entry(cell);
     if (entry.details.parentElement !== root) root.replaceChildren(entry.details);
     return changed;

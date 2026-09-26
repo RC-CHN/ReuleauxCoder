@@ -144,10 +144,14 @@ function render(state: HostSnapshot): void {
   element('environment').title = `${state.environment} · ${state.workspace}`;
   element('model').textContent = state.model || t('Select model');
   const mode = state.mode ? modeLabel(state.mode) : t('Mode');
-  const modeText = document.createElement('span'); modeText.textContent = mode;
-  element('mode').replaceChildren(icon('mode'), modeText);
-  element('mode').title = `${t('Mode')} · ${mode}`;
-  element('mode').setAttribute('aria-label', element('mode').title);
+  const modeButton = element('mode');
+  if (modeButton.dataset.mode !== mode) {
+    modeButton.dataset.mode = mode;
+    const modeText = document.createElement('span'); modeText.textContent = mode;
+    modeButton.replaceChildren(icon('mode'), modeText);
+    modeButton.title = `${t('Mode')} · ${mode}`;
+    modeButton.setAttribute('aria-label', modeButton.title);
+  }
   element<HTMLButtonElement>('stop').disabled = !state.running;
   const known = new Set(state.cells.map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}
   for (const id of consumedItems) if (!state.draftItems.some(item => item.id === id)) consumedItems.delete(id);
@@ -183,23 +187,27 @@ function render(state: HostSnapshot): void {
   persist();
   transcriptScroll.update(transcriptVersion !== previousVersion);
 }
+let attachmentSignature = '';
 function renderAttachments(): void {
+  const items = (snapshot?.draftItems ?? []).filter(item => !consumedItems.has(item.id));
+  const pendingUploads = [...uploads.values()].filter(upload => !upload.submission);
+  const signature = JSON.stringify([snapshot?.hostId, snapshot?.generation, items.map(item => [item.id, item.kind, item.name, item.kind === 'image' ? item.reference : null]), pendingUploads.map(upload => [upload.id, upload.file.name, upload.progress, upload.error])]);
+  element<HTMLButtonElement>('send').disabled = snapshot?.phase !== 'ready';
+  element('upload-hint').textContent = pendingUploads.length ? t('Attachments upload automatically when you send') : t('Add instructions while a task is running');
+  if (signature === attachmentSignature) return;
+  attachmentSignature = signature;
   const container = element('attachments'); container.replaceChildren();
-  for (const item of snapshot?.draftItems ?? []) {
-    if (consumedItems.has(item.id)) continue;
+  for (const item of items) {
     const node = document.createElement('div'); node.className = 'attachment'; const name = document.createElement('span'); name.textContent = item.name;
     if (item.kind === 'image' && item.reference) images.draw(node, [item.reference], true); else node.append(name);
     node.append(button('×', () => void request('remove', {id: item.id}).catch(notice), t('Remove'))); container.append(node);
   }
-  for (const upload of uploads.values()) {
-    if (upload.submission) continue;
+  for (const upload of pendingUploads) {
     const node = document.createElement('div'); node.className = `attachment${upload.error ? ' failed' : ''}`; const name = document.createElement('span'); name.textContent = `${upload.file.name} · ${upload.error ? t('Upload failed') : t('Uploading {0}%', upload.progress)}`; node.title = upload.error ?? '';
     node.append(name, button('×', () => {upload.cancelled = true; uploads.delete(upload.id); if (upload.backendId) void request('upload.cancel', {id: upload.backendId}).catch(notice); renderAttachments();}, t('Cancel')));
     if (upload.error) node.append(button(t('Retry'), () => {upload.error = undefined; queueUpload(upload); renderAttachments();}));
     container.append(node);
   }
-  element<HTMLButtonElement>('send').disabled = snapshot?.phase !== 'ready';
-  element('upload-hint').textContent = [...uploads.values()].some(upload => !upload.submission) ? t('Attachments upload automatically when you send') : t('Add instructions while a task is running');
 }
 async function send(): Promise<void> {
   if (workbench.consumeSend()) return;

@@ -5,7 +5,19 @@ export class TranscriptScroll {
   private touchY = 0;
 
   constructor(private readonly transcript: HTMLElement, private readonly latest: HTMLElement) {
-    transcript.addEventListener('wheel', event => {if (event.deltaY < 0) this.following = false;}, {passive: true});
+    transcript.addEventListener('wheel', event => {
+      if (event.deltaY < 0) this.following = false;
+      else if (event.deltaY > 0) {
+        // Record a gesture that reaches the bottom before new output can move it
+        // between the compositor scroll and delivery of the scroll event.
+        for (const node of event.composedPath()) {
+          if (node === transcript) break;
+          if (node instanceof HTMLElement && node.scrollHeight - node.scrollTop - node.clientHeight > 1 && ['auto', 'scroll'].includes(getComputedStyle(node).overflowY)) return;
+        }
+        const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? transcript.clientHeight : 1);
+        if (transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= delta + 2) this.following = true;
+      }
+    }, {passive: true});
     transcript.addEventListener('touchstart', event => {this.touchY = event.touches[0]?.clientY ?? 0;}, {passive: true});
     transcript.addEventListener('touchmove', event => {
       const y = event.touches[0]?.clientY ?? this.touchY;

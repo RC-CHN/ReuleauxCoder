@@ -87,6 +87,30 @@ test('streaming: read history without snapping, preserve Markdown blocks and res
     await page.evaluate(() => {const state = window.scrollTest.fixture; state.cells.at(-1)!.text = 'Replacement reply'; state.revision++; window.postMessage({kind: 'snapshot', snapshot: state}, '*');});
     await page.waitForFunction(() => document.querySelector('[data-id="stream"] .body')?.textContent?.trim() === 'Replacement reply');
     assert.equal(await page.locator('[data-id="stream"] .code-block').count(), 0);
+    // Reading/copying a growing code fence must keep the same toolbar, text node
+    // and horizontal position, and copy the latest content rather than a closure.
+    const codeText = 'const selected = true;\n' + 'long_identifier_'.repeat(80);
+    await page.evaluate(text => {const state = window.scrollTest.fixture; state.cells.at(-1)!.text = '```ts\n' + text; state.revision++; window.postMessage({kind: 'snapshot', snapshot: state}, '*');}, codeText);
+    const growingCode = page.locator('[data-id="stream"] pre > code');
+    await growingCode.waitFor({state: 'attached'});
+    const codeHandle = await growingCode.elementHandle();
+    const textHandle = await growingCode.evaluateHandle(node => node.firstChild);
+    await growingCode.evaluate(node => {
+      node.parentElement!.scrollLeft = 120;
+      const range = document.createRange(); range.setStart(node.firstChild!, 0); range.setEnd(node.firstChild!, 22);
+      window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    });
+    const scrollLeft = await growingCode.evaluate(node => node.parentElement!.scrollLeft);
+    await page.evaluate(() => {const state = window.scrollTest.fixture; state.cells.at(-1)!.text += 'suffix\nconst next = 2;\n```'; state.revision++; window.postMessage({kind: 'snapshot', snapshot: state}, '*');});
+    await page.waitForFunction(() => document.querySelector('[data-id="stream"] pre > code')?.textContent?.includes('const next = 2;'));
+    assert(await growingCode.evaluate((node, before) => node === before, codeHandle));
+    assert(await growingCode.evaluate((node, before) => node.firstChild === before, textHandle));
+    assert.equal(await growingCode.evaluate(node => node.parentElement!.scrollLeft), scrollLeft);
+    assert.equal(await page.evaluate(() => window.getSelection()?.toString()), 'const selected = true;');
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.locator('[data-id="stream"] .code-toolbar button').click();
+    await page.waitForFunction(() => document.querySelector('[data-id="stream"] .code-toolbar button')?.textContent === 'Copied');
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), codeText + 'suffix\nconst next = 2;\n');
     // Incremental parsing must match a fresh render through unfinished nested syntax,
     // later link definitions, edits in the middle and deletion of the entire reply.
     let markdown = '# Heading\n\n[guide][ref]\n\n- one\n  - nested\n\n```ts\nconst value =';

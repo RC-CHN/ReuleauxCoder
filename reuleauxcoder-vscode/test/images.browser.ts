@@ -90,6 +90,14 @@ test('real core: paste, send, enlarge, reload and edit scoped permissions in bot
       await page.screenshot({path: resolve(`../artifacts/vscode-concept/image-viewer-${language}.png`)});
       await page.keyboard.press('Escape'); assert(await viewer.isHidden());
       assert(await tile.evaluate(node => node === document.activeElement));
+      // An unsent image stays loaded and focused during unrelated runtime updates.
+      const reference = b.session.transcript.cells.find(cell => cell.images?.length)!.images![0];
+      b.session.add({id: 'draft-image', kind: 'image', name: reference.name, reference});
+      const draftTile = page.locator('#attachments .image-thumbnail.loaded'); await draftTile.waitFor();
+      const retainedTile = await draftTile.elementHandle(); await draftTile.focus();
+      await publish(); await publish();
+      assert(await draftTile.evaluate((node, before) => node === before && node === document.activeElement, retainedTile));
+      b.session.remove('draft-image'); await page.locator('#attachments .image-thumbnail').waitFor({state: 'detached'});
       failPreview = true; await page.reload();
       await page.locator('#transcript .image-thumbnail.unavailable').waitFor();
       await tile.click(); await page.locator('.image-viewport img').waitFor();
