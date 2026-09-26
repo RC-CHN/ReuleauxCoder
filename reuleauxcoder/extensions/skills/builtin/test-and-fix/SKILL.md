@@ -1,5 +1,12 @@
 ---
 name: test-and-fix
+metadata:
+  rcoder.display-name: "Test and fix"
+  rcoder.display-name.zh-CN: "测试与修复"
+  rcoder.summary: "Reproduce failures, fix causes and verify behavior"
+  rcoder.summary.zh-CN: "复现失败、修复根因并验证行为"
+  rcoder.icon: "check"
+  rcoder.category: "development"
 description: Run tests, diagnose failures, fix their causes and verify results without weakening assertions.
 ---
 

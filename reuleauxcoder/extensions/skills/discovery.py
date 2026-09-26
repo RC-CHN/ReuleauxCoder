@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 from reuleauxcoder.extensions.skills.models import Skill, SkillDiagnostic
 from reuleauxcoder.extensions.skills.parser import parse_skill_file
@@ -99,15 +100,7 @@ def discover_skills(
                         path=skill.location,
                     )
                 )
-            discovered[skill.name] = Skill(
-                name=skill.name,
-                description=skill.description,
-                location=skill.location,
-                skill_dir=skill.skill_dir,
-                body=skill.body,
-                scope=scope,
-                enabled=enabled,
-            )
+            discovered[skill.name] = replace(skill, scope=scope, enabled=enabled)
 
     skills = tuple(sorted(discovered.values(), key=lambda s: s.name))
     return skills, tuple(diagnostics), tuple(sorted(set(missing)))

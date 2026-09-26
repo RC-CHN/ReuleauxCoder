@@ -1,5 +1,12 @@
 ---
 name: docx
+metadata:
+  rcoder.display-name: "Word documents"
+  rcoder.display-name.zh-CN: "Word 文档"
+  rcoder.summary: "Create and edit documents with structure and formatting"
+  rcoder.summary.zh-CN: "创建和修改具有结构与排版的文档"
+  rcoder.icon: "document"
+  rcoder.category: "documents"
 description: Create, edit and inspect Word documents, preserving structure and validating layout, comments and revisions.
 ---
 

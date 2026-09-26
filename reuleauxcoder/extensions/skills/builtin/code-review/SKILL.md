@@ -1,5 +1,12 @@
 ---
 name: code-review
+metadata:
+  rcoder.display-name: "Code review"
+  rcoder.display-name.zh-CN: "代码审查"
+  rcoder.summary: "Check correctness, concurrency and security risks"
+  rcoder.summary.zh-CN: "检查正确性、并发问题与安全风险"
+  rcoder.icon: "shield"
+  rcoder.category: "development"
 description: Review changes for correctness, deadlocks, security, compatibility and missing tests using concrete evidence.
 ---
 

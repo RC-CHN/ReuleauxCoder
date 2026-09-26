@@ -1,5 +1,12 @@
 ---
 name: project-guide
+metadata:
+  rcoder.display-name: "Project guidance"
+  rcoder.display-name.zh-CN: "项目指南"
+  rcoder.summary: "Maintain project instructions and verified development commands"
+  rcoder.summary.zh-CN: "维护项目指引与经过验证的开发命令"
+  rcoder.icon: "document"
+  rcoder.category: "development"
 description: Initialize or maintain project instructions using verified architecture, commands and conventions.
 ---
 

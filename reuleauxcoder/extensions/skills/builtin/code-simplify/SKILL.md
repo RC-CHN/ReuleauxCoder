@@ -1,5 +1,12 @@
 ---
 name: code-simplify
+metadata:
+  rcoder.display-name: "Code simplification"
+  rcoder.display-name.zh-CN: "代码精简"
+  rcoder.summary: "Reduce duplication and unnecessary coupling"
+  rcoder.summary.zh-CN: "减少重复逻辑与不必要的耦合"
+  rcoder.icon: "commands"
+  rcoder.category: "development"
 description: Simplify code by removing duplicated state, unnecessary abstractions and coupling while preserving behavior.
 ---
 

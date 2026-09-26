@@ -7,6 +7,12 @@ description: |
   language, stock AI words, bold labels, or filler. Preserve supported facts and the author's voice.
 license: MIT
 metadata:
+  rcoder.display-name: "Natural writing"
+  rcoder.display-name.zh-CN: "文字润色"
+  rcoder.summary: "Make prose clear and natural without changing the facts"
+  rcoder.summary.zh-CN: "保留事实，让文字更清晰自然"
+  rcoder.icon: "pen"
+  rcoder.category: "writing"
   version: "3.0.0"
 ---
 

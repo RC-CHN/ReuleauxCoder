@@ -15,6 +15,7 @@ from reuleauxcoder.extensions.skills.models import (
     SkillsViewModel,
     SkillsSummary,
     SkillViewItem,
+    SkillDisplay,
 )
 from reuleauxcoder.infrastructure.persistence.skills_config_store import (
     SkillsConfigStore,
@@ -118,21 +119,19 @@ class SkillsService:
                 message=f"Skill '{name}' not found.",
             )
 
-        changed = False
+        disabled_names = self._disabled_names.copy()
         if enabled:
-            if name in self._disabled_names:
-                self._disabled_names.remove(name)
-                changed = True
+            disabled_names.discard(name)
         else:
-            if name not in self._disabled_names:
-                self._disabled_names.add(name)
-                changed = True
+            disabled_names.add(name)
+        changed = disabled_names != self._disabled_names
 
         saved_path = None
         if changed:
             saved_path = str(
-                self._config_store.save_disabled_skills(sorted(self._disabled_names))
+                self._config_store.save_disabled_skills(sorted(disabled_names))
             )
+            self._disabled_names = disabled_names
             self.reload()
 
         return SkillToggleResult(
@@ -171,6 +170,7 @@ class SkillsService:
                     scope=skill.scope,
                     enabled=skill.enabled,
                     location=skill.location,
+                    display=skill.display,
                 )
                 for skill in skills
             ),
@@ -212,11 +212,12 @@ class SkillsService:
         return sha256(text.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _skill_fingerprint(skill: Skill) -> tuple[str, str, str, str, bool]:
+    def _skill_fingerprint(skill: Skill) -> tuple[str, str, str, str, bool, SkillDisplay]:
         return (
             skill.description,
             skill.location,
             skill.body,
             skill.scope,
             skill.enabled,
+            skill.display,
         )

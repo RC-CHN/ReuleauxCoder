@@ -1,5 +1,12 @@
 ---
 name: structured-data
+metadata:
+  rcoder.display-name: "Structured data"
+  rcoder.display-name.zh-CN: "结构化数据"
+  rcoder.summary: "Inspect and transform JSON, JSONL and CSV"
+  rcoder.summary.zh-CN: "检查和转换 JSON、JSONL 与 CSV"
+  rcoder.icon: "table"
+  rcoder.category: "documents"
 description: Query, transform and validate JSON, JSONL and CSV with explicit type, encoding and size handling.
 ---
 

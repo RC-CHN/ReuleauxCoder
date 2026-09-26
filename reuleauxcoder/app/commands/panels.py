@@ -10,6 +10,19 @@ from reuleauxcoder.app.commands.requests import ActionRequest
 
 
 @dataclass(frozen=True, slots=True)
+class PanelItemDetails:
+    """Structured source and display facts for richer frontend presentations."""
+
+    source: str = ""
+    location: str = ""
+    description: str = ""
+    titles: tuple[tuple[str, str], ...] = ()
+    summaries: tuple[tuple[str, str], ...] = ()
+    icon: str = ""
+    category: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class PanelItem:
     """One semantic panel row with an optional structured action."""
 
@@ -18,6 +31,7 @@ class PanelItem:
     action: ActionRequest | None = None
     current: bool = False
     id: str | None = None
+    details: PanelItemDetails | None = None
 
 
 @dataclass(frozen=True, slots=True)

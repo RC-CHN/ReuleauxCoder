@@ -1,5 +1,12 @@
 ---
 name: docs-translate
+metadata:
+  rcoder.display-name: "Documentation translation"
+  rcoder.display-name.zh-CN: "文档翻译"
+  rcoder.summary: "Translate documentation while preserving meaning and code"
+  rcoder.summary.zh-CN: "翻译文档并保持含义与代码一致"
+  rcoder.icon: "document"
+  rcoder.category: "writing"
 description: Translate or synchronize documentation while preserving facts, terminology, code, links and markup.
 ---
 

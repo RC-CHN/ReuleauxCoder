@@ -11,6 +11,7 @@ from reuleauxcoder.app.commands.panels import (
     CommandPanelSpec,
     PanelDefinition,
     PanelItem,
+    PanelItemDetails,
 )
 from reuleauxcoder.app.commands.registry import ActionRegistry
 from reuleauxcoder.app.commands.requests import ActionRequest
@@ -182,7 +183,8 @@ def command_panel_spec() -> CommandPanelSpec:
         assert isinstance(model, SkillsViewModel)
         items = tuple(
             PanelItem(
-                label=skill.name,
+                id=skill.name,
+                label=dict(skill.display.titles).get("en", skill.name),
                 description=(
                     f"{'enabled' if skill.enabled else 'disabled'}"
                     f" · {skill.scope}"
@@ -193,6 +195,12 @@ def command_panel_spec() -> CommandPanelSpec:
                     ToggleSkillCommand(skill.name, not skill.enabled),
                 ),
                 current=skill.enabled,
+                details=PanelItemDetails(
+                    source=skill.scope, location=skill.location,
+                    description=skill.description, titles=skill.display.titles,
+                    summaries=skill.display.summaries, icon=skill.display.icon,
+                    category=skill.display.category,
+                ),
             )
             for skill in model.skills
         ) or (
@@ -207,6 +215,7 @@ def command_panel_spec() -> CommandPanelSpec:
             title=title,
             items=items,
             keep_open_on_submit=True,
+            filterable=True,
         )
 
     return CommandPanelSpec("skills", SkillsViewModel, build)

@@ -1,5 +1,12 @@
 ---
 name: rcoder-config
+metadata:
+  rcoder.display-name: "Configuration assistant"
+  rcoder.display-name.zh-CN: "配置助手"
+  rcoder.summary: "Configure rcoder models, reasoning and workspace settings"
+  rcoder.summary.zh-CN: "配置模型、思考参数与工作区设置"
+  rcoder.icon: "settings"
+  rcoder.category: "configuration"
 description: Configure rcoder through config.yaml, including models, reasoning/thinking, context, tool approval, MCP/LSP, skills and global/workspace settings.
 ---
 

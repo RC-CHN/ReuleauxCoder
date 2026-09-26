@@ -1,5 +1,12 @@
 ---
 name: docs-writing
+metadata:
+  rcoder.display-name: "Technical writing"
+  rcoder.display-name.zh-CN: "技术写作"
+  rcoder.summary: "Explain product behavior with clear, accurate documentation"
+  rcoder.summary.zh-CN: "用清晰准确的文档解释产品行为"
+  rcoder.icon: "pen"
+  rcoder.category: "writing"
 description: Write or update READMEs, user guides and technical explanations based on verified product behavior.
 ---
 

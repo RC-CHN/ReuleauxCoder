@@ -1,5 +1,12 @@
 ---
 name: skill-installer
+metadata:
+  rcoder.display-name: "Skill installation"
+  rcoder.display-name.zh-CN: "技能安装"
+  rcoder.summary: "Install complete skills while preserving existing edits"
+  rcoder.summary.zh-CN: "安装完整技能并保留已有修改"
+  rcoder.icon: "attach"
+  rcoder.category: "development"
 description: Install complete skills from local directories or Git repositories, resolving scope and name conflicts.
 ---
 

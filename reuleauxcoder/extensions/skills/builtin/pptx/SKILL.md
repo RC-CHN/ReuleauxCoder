@@ -1,5 +1,12 @@
 ---
 name: pptx
+metadata:
+  rcoder.display-name: "Presentations"
+  rcoder.display-name.zh-CN: "演示文稿"
+  rcoder.summary: "Create, edit and inspect slide decks"
+  rcoder.summary.zh-CN: "创建、修改和检查幻灯片"
+  rcoder.icon: "presentation"
+  rcoder.category: "documents"
 description: Create, edit, inspect and preview PowerPoint presentations with deliberate visual design and slide-level validation.
 ---
 

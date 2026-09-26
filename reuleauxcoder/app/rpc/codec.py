@@ -81,6 +81,7 @@ _TYPES.update(
             specs.DuringTurnPolicy,
             panels.PanelDefinition,
             panels.PanelItem,
+            panels.PanelItemDetails,
             panels.PanelPresentation,
             panels.PanelRefreshPolicy,
             approval.ApprovalSection,

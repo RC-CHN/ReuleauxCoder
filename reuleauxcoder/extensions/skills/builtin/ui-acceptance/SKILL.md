@@ -1,5 +1,12 @@
 ---
 name: ui-acceptance
+metadata:
+  rcoder.display-name: "Interface acceptance"
+  rcoder.display-name.zh-CN: "界面验收"
+  rcoder.summary: "Test user journeys, visible feedback and screenshots"
+  rcoder.summary.zh-CN: "按用户路径检查交互、反馈与截图"
+  rcoder.icon: "expand"
+  rcoder.category: "development"
 description: Verify interfaces through real user journeys, visible feedback, keyboard interaction and visual evidence.
 ---
 

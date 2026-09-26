@@ -1,5 +1,12 @@
 ---
 name: github-ci
+metadata:
+  rcoder.display-name: "GitHub CI"
+  rcoder.display-name.zh-CN: "GitHub CI"
+  rcoder.summary: "Investigate checks and verify fixes through CI"
+  rcoder.summary.zh-CN: "排查检查失败并通过 CI 验证修复"
+  rcoder.icon: "terminal"
+  rcoder.category: "development"
 description: Diagnose GitHub Actions failures, follow pull-request checks and maintain accurate PR descriptions.
 ---
 

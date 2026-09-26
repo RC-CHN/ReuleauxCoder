@@ -1,5 +1,12 @@
 ---
 name: pdf
+metadata:
+  rcoder.display-name: "PDF documents"
+  rcoder.display-name.zh-CN: "PDF 文档"
+  rcoder.summary: "Create, extract, merge and render PDF files"
+  rcoder.summary.zh-CN: "创建、提取、合并和渲染 PDF 文件"
+  rcoder.icon: "document"
+  rcoder.category: "documents"
 description: Read, create, merge, split and render PDFs, including document conversion and checks for scanned content or layout problems.
 ---
 

@@ -1,5 +1,12 @@
 ---
 name: xlsx
+metadata:
+  rcoder.display-name: "Spreadsheets"
+  rcoder.display-name.zh-CN: "电子表格"
+  rcoder.summary: "Build workbooks and check formulas and calculated results"
+  rcoder.summary.zh-CN: "制作工作簿，检查公式与计算结果"
+  rcoder.icon: "table"
+  rcoder.category: "documents"
 description: Create, edit and analyze Excel workbooks with formulas, charts, explicit data types and calculation checks.
 ---
 

@@ -6,6 +6,16 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
+class SkillDisplay:
+    """Optional UI metadata; names and model-facing descriptions stay stable."""
+
+    titles: tuple[tuple[str, str], ...] = ()
+    summaries: tuple[tuple[str, str], ...] = ()
+    icon: str = ""
+    category: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class Skill:
     """Discovered skill metadata and instruction body."""
 
@@ -16,6 +26,7 @@ class Skill:
     body: str
     scope: str = "project"
     enabled: bool = True
+    display: SkillDisplay = SkillDisplay()
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +73,7 @@ class SkillViewItem:
     scope: str
     enabled: bool
     location: str
+    display: SkillDisplay = SkillDisplay()
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +110,12 @@ class SkillsViewModel:
                     "enabled": skill.enabled,
                     "status": "enabled" if skill.enabled else "disabled",
                     "location": skill.location,
+                    "display": {
+                        "titles": dict(skill.display.titles),
+                        "summaries": dict(skill.display.summaries),
+                        "icon": skill.display.icon,
+                        "category": skill.display.category,
+                    },
                 }
                 for skill in self.skills
             ],

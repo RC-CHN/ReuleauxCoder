@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from reuleauxcoder.extensions.skills.models import Skill, SkillDiagnostic
+from reuleauxcoder.extensions.skills.metadata import parse_display
 
 
 def parse_skill_file(
@@ -108,6 +109,8 @@ def parse_skill_file(
             )
         )
 
+    display, display_diagnostics = parse_display(data.get("metadata"), name=name, path=str(skill_md_path))
+    diagnostics.extend(display_diagnostics)
     skill = Skill(
         name=name,
         description=description,
@@ -116,5 +119,6 @@ def parse_skill_file(
         body=body.strip(),
         scope=scope,
         enabled=enabled,
+        display=display,
     )
     return skill, tuple(diagnostics)
