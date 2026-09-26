@@ -19,12 +19,14 @@ const childAt = (panel: Panel, index: number) => {
 export class PermissionPolicies {
   private scope = 0;
   private filter = '';
+  private busy = false;
   constructor(private request: (action: string, data?: WebRequest['data']) => Promise<any>, private notice: (error: unknown) => void) {}
+  syncBusy(busy: boolean): void {this.busy = busy;}
   draw(root: HTMLElement, surface: CommandSurface): void {
     const panel = surface.panel!;
     const tabs = document.createElement('div'); tabs.className = 'policy-scopes'; tabs.setAttribute('role', 'group'); tabs.setAttribute('aria-label', t('Approval scope'));
     for (const [index, title] of [t('This session'), t('This workspace')].entries()) {
-      const tab = document.createElement('button'); tab.type = 'button'; tab.dataset.submit = ''; tab.textContent = title; tab.setAttribute('aria-pressed', String(this.scope === index)); tab.disabled = surface.busy;
+      const tab = document.createElement('button'); tab.type = 'button'; tab.dataset.submit = ''; tab.textContent = title; tab.setAttribute('aria-pressed', String(this.scope === index)); tab.disabled = this.busy;
       tab.addEventListener('click', () => {if (this.scope === index) return; this.scope = index; root.replaceChildren(); this.draw(root, surface); reveal(root.querySelector<HTMLElement>('.policy-list')!); root.querySelector<HTMLButtonElement>(`.policy-scopes button:nth-child(${index + 1})`)!.focus();}); tabs.append(tab);
     }
     const help = document.createElement('p'); help.className = 'policy-help';
@@ -55,7 +57,7 @@ export class PermissionPolicies {
       const raw = document.createElement('code'); raw.textContent = [selector || item.label, command?.pattern].filter(Boolean).join(' · ');
       raw.setAttribute('aria-label', t('Rule selector')); details.append(summary, raw);
       row.dataset.search = [item.label, selector, command?.pattern, scope.textContent].join(' ').toLowerCase();
-      const select = document.createElement('select'); select.id = label.htmlFor; select.dataset.submit = ''; select.dataset.row = item.id ?? item.label; select.disabled = surface.busy;
+      const select = document.createElement('select'); select.id = label.htmlFor; select.dataset.submit = ''; select.dataset.row = item.id ?? item.label; select.disabled = this.busy;
       const active = actions.items.findIndex(item => item.current);
       const unset = actions.items.findIndex(item => item.action && !item.action.command.action);
       const inherit = document.createElement('option'); inherit.value = unset < 0 ? '' : String(unset); inherit.textContent = t('Use inherited rule'); inherit.disabled = active >= 0 && unset < 0; select.append(inherit);

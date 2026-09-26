@@ -83,6 +83,7 @@ export class ComposerWorkbench {
     this.root.setAttribute('aria-busy', String(surface.busy));
     this.root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('[data-submit]').forEach(button => button.disabled = surface.busy || button.dataset.readonly === 'true' || button.dataset.pending === 'true');
     if (surface.panel?.view_type === 'skills') this.skills.syncBusy(surface.busy);
+    if (surface.panel?.view_type === 'approval_rules') this.permissions.syncBusy(surface.busy);
   }
   private header(title: string, back?: () => void): HTMLElement {
     const head = document.createElement('div'); head.className = 'workbench-heading';

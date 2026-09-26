@@ -37,11 +37,11 @@ export class ImageGallery {
       tile.append(picture, caption, status); gallery.append(tile);
       const epoch = this.epoch;
       const load = async () => {
-        try {const source = await this.load(image); if (epoch === this.epoch && tile.isConnected) {picture.src = source; status.textContent = `${image.width} × ${image.height}`; tile.classList.add('loaded');}}
+        try {const source = await this.load(image); if (epoch === this.epoch && tile.isConnected) {picture.src = source; status.textContent = `${image.width} × ${image.height}`; tile.classList.add('loaded'); tile.classList.remove('unavailable');}}
         catch {if (epoch === this.epoch && tile.isConnected) {status.textContent = t('Preview unavailable · click to retry'); tile.classList.add('unavailable');}}
       };
       this.visible.set(tile, () => void load()); this.observer.observe(tile);
-      tile.addEventListener('click', () => void this.open(image, tile));
+      tile.addEventListener('click', () => {void load(); void this.open(image, tile);});
     }
     parent.append(gallery);
   }

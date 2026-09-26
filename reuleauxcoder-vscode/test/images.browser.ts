@@ -24,8 +24,15 @@ test('real core: paste, send, enlarge, reload and edit scoped permissions in bot
   await mkdir(resolve('../artifacts/vscode-concept'), {recursive: true});
   for (const language of ['en', 'zh']) {
     const b = await backend();
+    const submitAction = b.client.submitAction.bind(b.client);
+    let finishApproval: (() => void) | undefined; let delayApproval = true;
+    b.client.submitAction = async (...args) => {
+      const result = await submitAction(...args);
+      if (args[0] === 'approval.show' && delayApproval) {delayApproval = false; await new Promise<void>(done => {finishApproval = done;});}
+      return result;
+    };
     const page = await browser.newPage({viewport: {width: 340, height: 850}});
-    const errors: string[] = []; let revision = 0; let open = true;
+    const errors: string[] = []; let revision = 0; let open = true; let failPreview = false;
     page.on('pageerror', error => errors.push(error.message));
     const publish = async () => {
       if (open) await page.evaluate(encoded => window.postMessage({kind: 'snapshot', snapshot: JSON.parse(encoded)}, '*'), JSON.stringify({...b.session.snapshot(), revision: ++revision}));
@@ -44,7 +51,9 @@ test('real core: paste, send, enlarge, reload and edit scoped permissions in bot
             case 'upload.append': result = await b.session.uploads!.append('browser', data.id, data.offset, data.data); break;
             case 'upload.complete': {const item = await b.session.uploads!.complete('browser', data.id); b.session.add(item); result = item.id; break;}
             case 'upload.cancel': await b.session.uploads!.cancel('browser', data.id); break;
-            case 'image.preview': result = await b.session.imagePreview(data.attachmentId, data.variantId); break;
+            case 'image.preview':
+              if (failPreview) {failPreview = false; error = 'Temporary preview failure'; break;}
+              result = await b.session.imagePreview(data.attachmentId, data.variantId); break;
             case 'command.open': await b.session.commands.open(data.actionId); break;
             case 'command.policy': await b.session.commands.policy(data.surfaceId, data.path); break;
             case 'command.close': b.session.commands.dismiss(data.surfaceId); break;
@@ -81,12 +90,21 @@ test('real core: paste, send, enlarge, reload and edit scoped permissions in bot
       await page.screenshot({path: resolve(`../artifacts/vscode-concept/image-viewer-${language}.png`)});
       await page.keyboard.press('Escape'); assert(await viewer.isHidden());
       assert(await tile.evaluate(node => node === document.activeElement));
-      await page.reload();
+      failPreview = true; await page.reload();
+      await page.locator('#transcript .image-thumbnail.unavailable').waitFor();
+      await tile.click(); await page.locator('.image-viewport img').waitFor();
+      await page.keyboard.press('Escape');
       await page.waitForFunction(() => document.querySelector<HTMLImageElement>('#transcript .image-thumbnail img')?.naturalWidth === 640);
+      assert.equal(await page.locator('#transcript .image-thumbnail.unavailable').count(), 0);
       // These are distinct matching scopes, even though their tool names are identical.
       await b.client.submitAction('approval.set', {target: 'tool=edit_file', action: 'deny'});
       await b.client.submitAction('approval.set', {target: 'source=builtin,tool=edit_file', action: 'require_approval'});
       await page.locator('#permissions').click(); await page.locator('.policy-tool select').first().waitFor();
+      await until(() => finishApproval); finishApproval!(); finishApproval = undefined;
+      await page.waitForFunction(() => document.querySelector('#workbench')?.getAttribute('aria-busy') === 'false');
+      await page.locator('.policy-scopes button').last().click();
+      assert.equal(await page.locator('.policy-tool select').first().isDisabled(), false, 'Scope changes must use the latest busy state');
+      await page.locator('.policy-scopes button').first().click();
       await page.locator('[data-policy-filter]').fill('edit_file');
       const rows = page.locator('.policy-tool:visible'); assert.equal(await rows.count(), 2);
       for (const row of await rows.all()) {
@@ -123,6 +141,6 @@ test('real core: paste, send, enlarge, reload and edit scoped permissions in bot
       await until(() => b.session.transcript.cells.some(cell => cell.images?.length));
       await page.waitForFunction(() => document.querySelector<HTMLImageElement>('#transcript .image-thumbnail img')?.naturalWidth === 640);
       assert.deepEqual(errors, []);
-    } finally {open = false; b.session.off('change', changed); await page.close(); await b.close();}
+    } finally {finishApproval?.(); open = false; b.session.off('change', changed); await page.close(); await b.close();}
   }
 });
