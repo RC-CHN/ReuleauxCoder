@@ -107,6 +107,8 @@ class InterruptIntentOutcome(str, Enum):
     """Authoritative result of interpreting one active-turn interrupt gesture."""
 
     PROMOTED = "promoted"
+    ALREADY_PROMOTED = "already_promoted"
+    NOTHING_PENDING = "nothing_pending"
     STOP_REQUESTED = "stop_requested"
     ALREADY_STOPPING = "already_stopping"
 
@@ -904,7 +906,9 @@ class Agent:
             turn_id = self._current_turn_id or "turn"
             return f"{turn_id}:{round_num}:{self._turn_attempt_counter}"
 
-    def request_interrupt_intent(self) -> InterruptIntentResult:
+    def request_interrupt_intent(
+        self, *, steering_only: bool = False
+    ) -> InterruptIntentResult:
         """Atomically promote queued steering or request a true turn stop.
 
         The Agent owns this transition so local and remote interfaces cannot
@@ -918,6 +922,11 @@ class Agent:
                     epoch=self._round_interrupt_epoch,
                 )
             if self._round_interrupt_pending:
+                if steering_only:
+                    return InterruptIntentResult(
+                        InterruptIntentOutcome.ALREADY_PROMOTED,
+                        epoch=self._round_interrupt_epoch,
+                    )
                 discarded = self._discard_pending_user_steering_locked(
                     reason="turn_stop"
                 )
@@ -939,6 +948,11 @@ class Agent:
                 return InterruptIntentResult(
                     InterruptIntentOutcome.PROMOTED,
                     steering_ids=steering_ids,
+                    epoch=self._round_interrupt_epoch,
+                )
+            if steering_only:
+                return InterruptIntentResult(
+                    InterruptIntentOutcome.NOTHING_PENDING,
                     epoch=self._round_interrupt_epoch,
                 )
             self._stop_event.set()

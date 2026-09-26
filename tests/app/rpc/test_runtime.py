@@ -72,6 +72,42 @@ def test_snapshot_revision_tracks_changes_and_conditional_reads(runtime):
     assert client.state.model == "changed-model"
 
 
+def test_promote_steering_keeps_goal_and_does_not_stop_a_raced_or_repeated_click(
+    runtime,
+):
+    entered, release = threading.Event(), threading.Event()
+    runtime.loop.run = lambda: (entered.set(), release.wait(3), "done")[-1]
+    runtime.agent.goal_controller.create("Continue working", None)
+    runtime.client.submit("hello")
+    assert entered.wait(2)
+    try:
+        assert runtime.client.info["steering_promotion"] is True
+        assert (
+            runtime.client.interrupt(steering_only=True)["outcome"] == "nothing_pending"
+        )
+        assert runtime.client.admit_steering("new direction")
+        assert runtime.client.interrupt(steering_only=True)["outcome"] == "promoted"
+        assert (
+            runtime.client.interrupt(steering_only=True)["outcome"]
+            == "already_promoted"
+        )
+        assert runtime.agent._drain_user_steering() == 1
+        assert (
+            runtime.client.interrupt(steering_only=True)["outcome"] == "nothing_pending"
+        )
+        assert not runtime.agent.stop_requested()
+        assert runtime.agent.goal_controller.state.status == "active"
+        with pytest.raises(RpcError):
+            runtime.client.peer.request(
+                "runtime.interrupt", {"steering_only": True, "session_generation": -1}
+            )
+        assert not runtime.agent.stop_requested()
+    finally:
+        runtime.agent.goal_controller.stop("paused")
+        release.set()
+    runtime.client.wait_idle()
+
+
 def test_history_rpc_uses_the_same_saved_records_and_generation(runtime, tmp_path):
     from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
@@ -397,7 +433,9 @@ def test_shutdown_reports_progress_before_slow_manifest_commit(runtime, monkeypa
     from concurrent.futures import ThreadPoolExecutor
     from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
-    directory = runtime.server.commands.sessions_dir / runtime.server.commands.session_id
+    directory = (
+        runtime.server.commands.sessions_dir / runtime.server.commands.session_id
+    )
     directory.mkdir()
     runtime.agent.history_ledger.bind_jsonl(directory / "events.jsonl")
     runtime.client.submit("retain this")

@@ -237,6 +237,7 @@ class RuntimeServer:
                     "workspace_git": self.agent.git_monitor is not None,
                     "conditional_snapshots": True,
                     "submission_ids": True,
+                    "steering_promotion": True,
                     "review_documents": True,
                     "editor_documents": True,
                     "history_query": True,
@@ -600,11 +601,21 @@ class RuntimeServer:
         self.agent.goal_controller.stop("paused")
         self._publish_state()
 
-    def interrupt(self):
+    def interrupt(self, *, steering_only=False, session_generation=None):
+        if not isinstance(steering_only, bool):
+            raise RpcError(-32602, "steering_only must be a boolean")
         with self._lock:
-            result = self.agent.request_interrupt_intent()
+            if session_generation is not None and (
+                type(session_generation) is not int
+                or session_generation != self.agent.session_generation
+            ):
+                raise RpcError(-32002, "Session changed before steering was promoted")
+            result = self.agent.request_interrupt_intent(steering_only=steering_only)
+        if steering_only and result.outcome.value != "promoted":
+            return {"outcome": result.outcome.value, "discarded_count": 0}
         self.interactions.cancel_all(reason="turn interrupted")
-        self.agent.goal_controller.stop("paused")
+        if not steering_only:
+            self.agent.goal_controller.stop("paused")
         self._publish_state()
         return {
             "outcome": result.outcome.value,

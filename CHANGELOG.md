@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add capability-advertised, session-bound steering promotion. Explicit guidance interrupts the current step without pausing the goal; repeated or late clicks never become a stop request. Preserve the existing terminal interrupt gesture.
 - Close native proposal diff/text tabs when their review is approved, rejected, cancelled or superseded, including previews in multiple editor groups. Keep unrelated editors and blocked approvals open, and make fallback previews read-only instead of leaving unsaved untitled documents.
 - Keep VS Code streaming replies responsive while scrolling: preserve unchanged Markdown blocks, avoid rebuilding completed reply content on every chunk, and pause automatic following as soon as the reader scrolls upward. Resume at the actual bottom or through New output; cover reading position, retained selections, Markdown references and return-to-latest interactions in Chromium.
 

@@ -77,6 +77,12 @@ compaction. The model can use the existing history tools for original details.
 
 Pause lets the current turn finish but disables continuation. The interrupt
 gesture also pauses the goal and retains the existing stop/steering behavior.
+The explicit immediate-guidance action uses `runtime.interrupt` with
+`steering_only: true` and the current `session_generation`. It promotes admitted
+messages without pausing the goal or stopping the turn. Repeated requests and
+requests racing with message application are harmless; ordinary interrupt and
+stop gestures retain their existing semantics. Frontends check the
+`steering_promotion` initialization capability before offering this action.
 Creating or resuming through `/goal` waits for the current turn to exit and clears
 its old stop signal before starting work.
 Clear removes the goal without cancelling the current turn or managed processes.

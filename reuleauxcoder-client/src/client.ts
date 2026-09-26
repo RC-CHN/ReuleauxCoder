@@ -114,7 +114,9 @@ export class RuntimeClient extends Events {
   async history(operation: HistoryOperation, parameters: {[key: string]: Json}): Promise<{session_generation: number; page: HistoryPage | ArtifactPage}> {
     return decode(await this.peer.request(`history.${operation}`, parameters));
   }
-  async interrupt(): Promise<{outcome: string; discarded_count: number}> {return decode(await this.peer.request('runtime.interrupt'));}
+  async interrupt(options: {steeringOnly?: boolean} = {}): Promise<{outcome: string; discarded_count: number}> {
+    return decode(await this.peer.request('runtime.interrupt', options.steeringOnly ? {steering_only: true, session_generation: this.state.session_generation} : undefined));
+  }
   async reviewDocument(requestId: string, documentId: string, side: 'before' | 'after'): Promise<string> {
     if (!this.info?.review_documents) throw new Error('Update the core to support native review documents.');
     let result = '', offset = 0;

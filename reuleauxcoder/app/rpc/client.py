@@ -127,8 +127,13 @@ class RuntimeClient:
     def build_panel(self, payload):
         return decode(self.peer.request("view.panel", {"payload": encode(payload)}))
 
-    def interrupt(self):
-        return self.peer.request("runtime.interrupt")
+    def interrupt(self, *, steering_only=False):
+        params = (
+            {"steering_only": True, "session_generation": self.state.session_generation}
+            if steering_only
+            else None
+        )
+        return self.peer.request("runtime.interrupt", params)
 
     def admit_steering(self, text):
         return self.peer.request("runtime.admit_steering", {"text": text})
@@ -247,7 +252,9 @@ class RuntimeClient:
             if active is None:
                 self._cancelled_interactions[request_id] = None
                 if len(self._cancelled_interactions) > 1024:
-                    self._cancelled_interactions.pop(next(iter(self._cancelled_interactions)))
+                    self._cancelled_interactions.pop(
+                        next(iter(self._cancelled_interactions))
+                    )
                 return
             request, future = active
             request.deadline = time.monotonic()

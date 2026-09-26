@@ -160,9 +160,7 @@ def test_drain_emits_user_event_and_exposes_pending_preview() -> None:
     assert agent._drain_user_steering() == 2
 
     assert agent.pending_user_steering() == ()
-    assert [
-        (event.event_type, event.data["user_input"]) for event in emitted
-    ] == [
+    assert [(event.event_type, event.data["user_input"]) for event in emitted] == [
         (AgentEventType.USER_STEERING, "first direction"),
         (AgentEventType.USER_STEERING, "second direction"),
     ]
@@ -204,6 +202,32 @@ def test_interrupt_intent_promotes_then_second_gesture_stops_and_discards() -> N
     ]
 
 
+def test_steering_only_interrupt_is_idempotent_and_never_stops_after_apply() -> None:
+    agent = Agent(llm=_LLM(), tools=[])
+    agent._current_turn_id = "turn"
+    agent._accepting_user_steering = True
+    assert (
+        agent.request_interrupt_intent(steering_only=True).outcome
+        is InterruptIntentOutcome.NOTHING_PENDING
+    )
+    assert agent.submit_user_steering("pivot")
+    assert (
+        agent.request_interrupt_intent(steering_only=True).outcome
+        is InterruptIntentOutcome.PROMOTED
+    )
+    assert (
+        agent.request_interrupt_intent(steering_only=True).outcome
+        is InterruptIntentOutcome.ALREADY_PROMOTED
+    )
+    assert agent.round_interrupt_epoch() == 1
+    assert agent._drain_user_steering() == 1
+    assert (
+        agent.request_interrupt_intent(steering_only=True).outcome
+        is InterruptIntentOutcome.NOTHING_PENDING
+    )
+    assert not agent.stop_requested()
+
+
 class _ImmediateSteeringLLM:
     model = "test-model"
     max_tokens = 128
@@ -227,7 +251,8 @@ class _ImmediateSteeringLLM:
 @pytest.mark.parametrize("stream_callback", ["on_token", "on_reasoning_token"])
 @pytest.mark.parametrize("display_mode", ["quiet", "inline"])
 def test_immediate_steering_retries_same_round_with_marker_before_steering(
-    stream_callback, display_mode,
+    stream_callback,
+    display_mode,
 ) -> None:
     llm = _ImmediateSteeringLLM()
     llm.stream_callback = stream_callback
@@ -302,10 +327,7 @@ def test_restore_discards_uncommitted_admission_but_not_committed_steering() -> 
     assert restored.take_recovered_steering_discard_count() == 1
     assert restored.messages == []
     assert restored.history_ledger.events[-1].kind == "steering_discarded"
-    assert (
-        restored.history_ledger.events[-1].payload["reason"]
-        == "session_recovery"
-    )
+    assert restored.history_ledger.events[-1].payload["reason"] == "session_recovery"
 
     committed_source = Agent(llm=_LLM(), tools=[])
     committed_source._current_turn_id = "turn"
