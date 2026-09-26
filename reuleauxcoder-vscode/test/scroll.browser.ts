@@ -110,7 +110,9 @@ test('streaming: read history without snapping, preserve Markdown blocks and res
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.locator('[data-id="stream"] .code-toolbar button').click();
     await page.waitForFunction(() => document.querySelector('[data-id="stream"] .code-toolbar button')?.textContent === 'Copied');
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), codeText + 'suffix\nconst next = 2;\n');
+    // Windows' system clipboard converts text line endings to CRLF.
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    assert.equal(copied.replace(/\r\n/g, '\n'), codeText + 'suffix\nconst next = 2;\n');
     // Incremental parsing must match a fresh render through unfinished nested syntax,
     // later link definitions, edits in the middle and deletion of the entire reply.
     let markdown = '# Heading\n\n[guide][ref]\n\n- one\n  - nested\n\n```ts\nconst value =';
