@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {record, tuple, SubmissionQueue, type Json, type RuntimeClient} from '@reuleauxcoder/client';
 import {CoreFailure, CoreRuntime, type RuntimeOptions} from './runtime.js';
 import {Transcript} from './transcript.js';
+import {foldToolCells} from './tool-groups.js';
 import {Uploads} from './uploads.js';
 import {ConversationCommands} from './commands.js';
 import {inlineInteractions} from './interactions.js';
@@ -115,7 +116,7 @@ export class WorkspaceSession extends EventEmitter {
   }
   snapshot(reviews: ReviewSummary[] = []): HostSnapshot {
     const state = this.client?.state;
-    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: this.transcript.cells, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), configuration: this.configuration.state};
+    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, cells: foldToolCells(this.transcript.cells), reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), configuration: this.configuration.state};
   }
   async imagePreview(attachmentId: unknown, variantId: unknown): Promise<string> {
     const client = this.requireClient();

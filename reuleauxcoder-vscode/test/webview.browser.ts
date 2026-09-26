@@ -2,6 +2,7 @@ import './configuration.browser.js';
 import './skills.browser.js';
 import './images.browser.js';
 import './scroll.browser.js';
+import './tools.browser.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createServer} from 'node:http';
@@ -256,8 +257,9 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.locator('[data-id="translated-notice"]').waitFor();
       assert.equal(await page.locator('[data-id="translated-notice"] .body').textContent(), language === 'zh' ? '会话已保存：code' : 'Session saved: code');
       assert.equal((await page.locator('[data-id="literal-reply"] .body').textContent())?.trim(), 'Session saved: code');
-      assert.equal(await page.locator('[data-id="literal-output"] .body').textContent(), 'Session saved: code');
-      assert.equal(await page.locator('[data-id="literal-output"] summary').textContent(), language === 'zh' ? '搜索网页' : 'web_search');
+      await page.locator('[data-id="literal-output"] > details > summary').click();
+      assert.equal(await page.locator('[data-id="literal-output"] .tool-output').textContent(), 'Session saved: code');
+      assert.equal(await page.locator('[data-id="literal-output"] .tool-name').textContent(), language === 'zh' ? '搜索网页' : 'web_search');
 
       state.cells.push({id: 'markdown', role: 'assistant', text: '## Ready to review\n\n**Input stays responsive.**\n\n- Commands open beside the composer\n- Reviews open in the editor\n\n| Check | Result |\n| --- | --- |\n| Steering | Passed |\n\n```ts\nconst ready = true;\n```\n\n[Docs](https://example.com/docs) [bad](javascript:alert(1)) [command](command:workbench.action.closeWindow)\n\n<img src=x onerror=alert(1)> ![remote](https://example.com/tracker.png)'});
       await publish();

@@ -794,5 +794,21 @@
   "Rule details": "规则详情",
   "Rule selector": "匹配条件",
   "Image belongs to a different session; attach it again": "图片属于另一个会话，请重新添加",
-  "Image was not imported into this session; attach it again": "当前会话中没有这张图片，请重新添加"
+  "Image was not imported into this session; attach it again": "当前会话中没有这张图片，请重新添加",
+  "{0} tool calls": "{0} 次工具调用",
+  "{0} completed": "{0} 已完成",
+  "{0} running": "{0} 执行中",
+  "{0} reads": "{0} 次读取",
+  "{0} searches": "{0} 次搜索",
+  "{0} listings": "{0} 次列出",
+  "{0} commands": "{0} 条命令",
+  "{0} edits": "{0} 次编辑",
+  "{0} writes": "{0} 次写入",
+  "{0} reasoning": "{0} 段推理",
+  "Waiting on process {0} · {1} checks": "等待进程 {0} · {1} 次检查",
+  "Expand tool activity": "展开全部工具调用",
+  "Collapse tool activity": "折叠全部工具调用",
+  "No output": "无输出",
+  "Waiting for output…": "等待输出…",
+  "{0} checks": "已检查 {0} 次"
 }

@@ -208,3 +208,22 @@ body.configuring #transcript, body.configuring #drop-zone, body.configuring #ove
 .configuration-progress::before {content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 7px; vertical-align: middle}
 
 .configuration-status {min-height: 36px}.configuration-actions {display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0}.configuration-dirty {color: var(--accent)}.model-diagnostics select {max-width: 100%; margin-right: 6px}
+
+.cell > .tool-disclosure {border: 1px solid var(--line); border-radius: 8px; padding: 0; background: color-mix(in srgb, var(--surface) 75%, transparent)}
+.tool-disclosure > summary {display: flex; align-items: center; gap: 8px; padding: 9px 10px; list-style: none; color: var(--ink); cursor: pointer; min-width: 0}
+.tool-disclosure > summary::-webkit-details-marker {display: none}
+.tool-disclosure > summary::before {content: ''; flex: 0 0 auto; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); margin-right: 2px; color: var(--muted)}
+.tool-disclosure[open] > summary::before {transform: rotate(45deg)}
+.tool-disclosure > summary > .icon {width: 15px; height: 15px; color: var(--accent); align-self: flex-start; margin-top: 3px}
+.tool-copy {display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px}.tool-name {font-weight: 600; font-size: 12px; color: var(--ink)}
+.tool-target {font-size: 11px; color: var(--vscode-textLink-foreground, #98c5e9); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%}
+.tool-state {font-size: 10px; flex: 0 0 auto; color: var(--vscode-terminal-ansiGreen, #a8c99a)}
+.tool-disclosure[data-status="running"] > summary .tool-state {color: var(--accent)}
+.tool-disclosure:is([data-status="failed"], [data-status="error"], [data-status="timeout"], [data-status="denied"], [data-status="cancelled"]) > summary .tool-state {color: var(--vscode-errorForeground, #ef9a9a)}
+.tool-disclosure:is([data-status="failed"], [data-status="error"], [data-status="timeout"]) {border-color: var(--vscode-inputValidation-errorBorder, #ce7171)}
+.tool-members {padding: 0 7px 7px}.tool-members > .tool-disclosure {border-left: 2px solid var(--line); margin: 4px 0 0 6px; padding: 0}
+.tool-content {padding: 0 12px 12px; min-width: 0}.tool-arguments {margin: 5px 0 10px}.tool-arguments h4 {font-size: 10px; font-weight: 650; margin: 0 0 6px; color: var(--accent)}
+.tool-arguments dl {display: grid; grid-template-columns: minmax(60px, max-content) minmax(0, 1fr); gap: 5px 12px; margin: 0; padding: 9px; background: var(--canvas); border-radius: 5px; font-size: 11px; font-family: var(--vscode-editor-font-family, monospace)}
+.tool-arguments dt {color: var(--vscode-symbolIcon-propertyForeground, #c2acd7); max-width: 130px; overflow-wrap: anywhere}.tool-arguments dd {margin: 0; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto}
+.tool-output {margin: 0; padding: 10px; max-height: 420px; overflow: auto; border-radius: 5px; background: var(--canvas); color: var(--ink); font: 11px/1.65 var(--vscode-editor-font-family, monospace); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2}
+@media (prefers-reduced-motion: no-preference) {.tool-disclosure > summary::before {transition: transform 120ms ease-out}.tool-disclosure[open] > .tool-content {animation: feedback-enter 140ms ease-out}}

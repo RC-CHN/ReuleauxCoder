@@ -1,4 +1,4 @@
-import {setLocale, t, errorText, toolLabel, type MessageKey} from '../i18n.js';
+import {setLocale, t, errorText, type MessageKey} from '../i18n.js';
 import {ConfigurationView} from './configuration.js';
 import {reveal} from './motion.js';
 import {coreMessage} from '../core-messages.js';
@@ -11,6 +11,7 @@ import {AttentionCards} from './attention.js';
 import {WorkOverviewView} from './overview.js';
 import {ImageGallery} from './images.js';
 import {TranscriptScroll} from './transcript-scroll.js';
+import {ToolCells} from './tool-cells.js';
 
 interface SavedView {draft?: string; outbox?: {input: Omit<LocalSend, 'uploads'>; cell: ChatCell}[]}
 declare function acquireVsCodeApi(): {postMessage(message: unknown): void; getState(): SavedView | undefined; setState(state: unknown): void};
@@ -26,6 +27,7 @@ const attention = new AttentionCards(element('reviews'), request);
 const overview = new WorkOverviewView(element('overview'), element('goal-strip'), element<HTMLButtonElement>('overview-toggle'), request, notice);
 const configuration = new ConfigurationView(element('configuration-editor'), request, error => {if (!snapshot?.configuration?.error) notice(error);});
 const images = new ImageGallery(request);
+const toolCells = new ToolCells(url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice), updateToolToggle);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
 const cellContent = new Map<string, {text: string; metadata: string}>();
@@ -69,31 +71,38 @@ function resizeComposer(): void {
 new ResizeObserver(resizeComposer).observe(composer);
 function saveDraft(): void {resizeComposer(); persist(); void request('draft', {text: composer.value}).catch(notice);}
 function button(text: string, action: () => void, title = text): HTMLButtonElement {const node = document.createElement('button'); node.textContent = text; node.title = title; node.addEventListener('click', action); return node;}
+function updateToolToggle(): void {
+  const toggle = element<HTMLButtonElement>('expand-all'); toggle.hidden = toolCells.size === 0;
+  const expanded = toolCells.allExpanded(), label = expanded ? t('Collapse tool activity') : t('Expand tool activity');
+  toggle.setAttribute('aria-pressed', String(expanded)); toggle.title = label; toggle.setAttribute('aria-label', label);
+}
 function cellNode(cell: ChatCell): HTMLElement {
   let node = nodes.get(cell.id);
   if (!node) {node = document.createElement('article'); node.className = `cell ${cell.role}`; node.dataset.id = cell.id; nodes.set(cell.id, node); transcript.insertBefore(node, element('reviews'));}
+  if (cell.role === 'tool' || cell.role === 'tool-group' || cell.role === 'reasoning') {
+    if (toolCells.render(node, cell)) transcriptVersion++;
+    return node;
+  }
   const {text, ...attributes} = cell;
   const metadata = JSON.stringify(attributes);
   const previous = cellContent.get(cell.id);
   if (previous?.metadata === metadata && previous.text === text) return node;
   cellContent.set(cell.id, {text, metadata}); transcriptVersion++;
   const renderBody = (body: HTMLElement) => renderMarkdown(body, cell.text, url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice));
-  if (previous?.metadata === metadata && !cell.images?.length && (cell.role === 'assistant' || cell.role === 'reasoning')) {
+  if (previous?.metadata === metadata && !cell.images?.length && cell.role === 'assistant') {
     renderBody(node.querySelector<HTMLElement>('.body')!); return node;
   }
-  const expanded = node.querySelector('details')?.open ?? false;
   node.replaceChildren();
   const meta = document.createElement('div'); meta.className = 'meta';
-  meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'reasoning' ? t('Reasoning') : cell.role === 'tool' ? toolLabel(cell.title ?? t('Tool')) : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
-  if (cell.role === 'tool') meta.title = cell.title ?? '';
+  meta.textContent = cell.role === 'user' ? t('You') : cell.role === 'notice' ? t('Notice') : 'Reuleaux';
   if (cell.status && cell.status !== 'applied') {const state = document.createElement('span'); state.textContent = t(cell.status as MessageKey) ?? cell.status; meta.append(state);}
   node.append(meta);
   const body = document.createElement('div'); body.className = 'body';
-  if (cell.role === 'assistant' || cell.role === 'reasoning') renderBody(body);
+  if (cell.role === 'assistant') renderBody(body);
   else body.textContent = cell.role === 'notice' ? coreMessage(cell.text) : cell.text;
-  if (['tool', 'reasoning'].includes(cell.role)) {const details = document.createElement('details'); details.open = expanded; const summary = document.createElement('summary'); summary.textContent = cell.role === 'tool' ? toolLabel(cell.title ?? t('Tool')) : t('Reasoning'); details.append(summary, body); node.append(details);} else node.append(body);
+  node.append(body);
   if (cell.images?.length) images.draw(body, cell.images);
-  if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = cell.role === 'tool' ? cell.detail : coreMessage(cell.detail); (cell.role === 'tool' ? node.querySelector('details')! : node).append(detail);}
+  if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = coreMessage(cell.detail); node.append(detail);}
   if (['unconfirmed', 'rejected'].includes(cell.status ?? '')) {const retry = button(t('Retry'), () => void retrySend(cell.id)); retry.className = 'retry'; node.append(retry);}
   if (cell.status === 'uploading' || cell.status === 'rejected' && (localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles)) node.append(button(t('Return to draft'), () => restoreSend(cell.id)));
   return node;
@@ -105,7 +114,7 @@ function render(state: HostSnapshot): void {
     images.reset();
     // Restore events may render before the matching state snapshot arrives.
     // Rebuild retained tiles so reset observers and discarded loads get retried.
-    cellContent.clear(); transcriptScroll.reset();
+    cellContent.clear(); transcriptScroll.reset(); toolCells.reset();
     // Preserve unsent input visibly, but never replay it automatically into a different session.
     for (const cell of optimistic.values()) {cell.status = 'rejected'; cell.detail = t('Session changed. Review your draft and send it again.');}
     consumedItems.clear();
@@ -140,7 +149,13 @@ function render(state: HostSnapshot): void {
   for (const id of consumedItems) if (!state.draftItems.some(item => item.id === id)) consumedItems.delete(id);
   const cells = [...state.cells, ...optimistic.values()];
   const visible = new Set(cells.map(cell => cell.id)); for (const [id, node] of nodes) if (!visible.has(id)) {node.remove(); nodes.delete(id); cellContent.delete(id); transcriptVersion++;}
-  for (const cell of cells) cellNode(cell);
+  let position: ChildNode | null = element('empty').nextSibling;
+  for (const cell of cells) {
+    const node = cellNode(cell);
+    if (node !== position) transcript.insertBefore(node, position);
+    position = node.nextSibling;
+  }
+  toolCells.retain(cells);
   element('empty').hidden = cells.length > 0;
   const setup = element('setup'); setup.hidden = state.phase === 'ready' || !!state.configuration;
   const phaseTitles = {idle: t('Connect your workspace'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Saving and stopping…'), ready: t('Ready'), failed: state.error?.kind === 'missing' ? t('Core not found') : state.error?.kind === 'incompatible' ? t('Core update required') : t('Could not start the core')};
@@ -276,6 +291,7 @@ element('send').addEventListener('click', () => void send());
 element('attach').addEventListener('click', () => element<HTMLInputElement>('files').click());
 element('commands').addEventListener('click', () => workbench.show());
 element('attention-jump').addEventListener('click', () => element('reviews').scrollIntoView({block: 'start', behavior: 'smooth'}));
+element('expand-all').addEventListener('click', () => toolCells.setExpanded(!toolCells.allExpanded()));
 element<HTMLInputElement>('files').addEventListener('change', event => {const input = event.target as HTMLInputElement; addFiles([...input.files ?? []]); input.value = '';});
 element('drop-zone').addEventListener('dragover', event => {event.preventDefault(); element('drop-zone').classList.add('drop-active');});
 element('drop-zone').addEventListener('dragleave', () => element('drop-zone').classList.remove('drop-active'));
