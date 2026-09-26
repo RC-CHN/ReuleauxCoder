@@ -7,7 +7,7 @@ import {reveal} from './motion.js';
 const failed = new Set(['failed', 'denied', 'cancelled', 'timeout', 'error']);
 interface Entry {
   cell: ChatCell; details: HTMLDetailsElement; title: HTMLElement; target: HTMLElement; status: HTMLElement;
-  content: HTMLElement; body?: HTMLElement; arguments?: HTMLElement; text?: string; detail?: string; header?: Partial<ChatCell>;
+  content: HTMLElement; body?: HTMLElement; arguments?: HTMLElement; text?: string; bodyStatus?: string; detail?: string; header?: Partial<ChatCell>;
 }
 function sameCell(a: ChatCell | undefined, b: ChatCell): boolean {
   return !!a && a.id === b.id && a.role === b.role && a.text === b.text && a.title === b.title && a.detail === b.detail && a.status === b.status && a.merged === b.merged && (a.members?.length ?? 0) === (b.members?.length ?? 0) && (b.members ?? []).every((member, index) => sameCell(a.members?.[index], member));
@@ -101,8 +101,8 @@ export class ToolCells {
         entry.arguments!.append(heading, list);
       }
     }
-    if (entry.text !== cell.text) {
-      entry.text = cell.text;
+    if (entry.text !== cell.text || !cell.text && entry.bodyStatus !== cell.status) {
+      entry.text = cell.text; entry.bodyStatus = cell.status;
       if (cell.role === 'reasoning') renderMarkdown(entry.body, cell.text, this.openLink, this.openFile);
       else {
         let text = cell.text;

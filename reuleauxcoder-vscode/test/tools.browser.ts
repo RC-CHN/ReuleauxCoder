@@ -53,6 +53,10 @@ test('tool inspection: preserve disclosure state, lazy bodies, streaming selecti
     assert.deepEqual(await page.locator('.tool-output').allTextContents(), ['result 1', 'result 2', 'result 3']);
     await publish();
     assert.deepEqual(await page.locator('.tool-output').allTextContents(), ['result 1', 'result 2', 'result 3']);
+    state.cells = [{...tool, id: 'empty-tool', status: 'running', text: ''}]; await publish();
+    await page.waitForFunction(() => document.querySelector('[data-tool-id="empty-tool"] .tool-output')?.textContent === '等待输出…');
+    state.cells[0].status = 'complete'; await publish();
+    await page.waitForFunction(() => document.querySelector('[data-tool-id="empty-tool"] .tool-output')?.textContent === '无输出');
     assert.deepEqual(h.errors, []);
   } finally {await h.close();}
 });
