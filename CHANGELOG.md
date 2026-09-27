@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.11.4 - 2026-09-27
 
 - Retain growing code blocks, their copy controls, selections and horizontal scroll; skip unchanged tool details and draft attachments during streaming. Keep return-to-bottom wheel gestures reliable when output arrives between scrolling and its event. Add a reproducible webview stress profiler and regression coverage for retained code and image controls.
-- Show localized thinking, responding, tool execution and waiting indicators with reduced-motion support. Keep queued guidance next to the composer with one safe Guide now action. Advance process and goal clocks locally across overview and command panels, stop estimates on exit/pause/disconnect, and retain activity while other parallel tools are running. Improve overview/Git/diagnostic contrast and clickable file details.
+- Show localized thinking, responding, tool execution and waiting indicators with reduced-motion support. Keep queued guidance next to the composer with one safe Guide now action. Advance process and goal clocks locally across overview and command panels, stop estimates on exit/pause/disconnect, and retain activity while other parallel tools are running. Improve overview/Git/diagnostic contrast and clickable file details, including light-theme fallbacks. Clear waiting placeholders when tools finish without output.
 - Group consecutive tool activity and repeated process polls without hiding failures or discarding earlier poll results. Preserve per-call disclosure state while streaming and moving calls into groups; expand all opens actual details. Render hidden bodies on demand, format arguments and JSON output for inspection, and preserve completed Markdown blocks inside reasoning.
 - Add capability-advertised, session-bound steering promotion. Explicit guidance interrupts the current step without pausing the goal; repeated or late clicks never become a stop request. Preserve the existing terminal interrupt gesture.
 - Close native proposal diff/text tabs when their review is approved, rejected, cancelled or superseded, including previews in multiple editor groups. Keep unrelated editors and blocked approvals open, and make fallback previews read-only instead of leaving unsaved untitled documents.
