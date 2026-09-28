@@ -5,6 +5,13 @@ from reuleauxcoder.domain.goal import Goal
 
 
 @dataclass(frozen=True, slots=True)
+class QueuedInput:
+    text: str
+    submission_id: str | None = None
+    steering_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSnapshot:
     revision: int = 0
     session_id: str | None = None
@@ -15,6 +22,7 @@ class RuntimeSnapshot:
     interrupt_pending: bool = False
     queued_commands: tuple[str, ...] = ()
     queued_steering: tuple[str, ...] = ()
+    queued_inputs: tuple[QueuedInput, ...] = ()
     model: str = ""
     support_modal: tuple[str, ...] = ("text",)
     context_tokens: int = 0

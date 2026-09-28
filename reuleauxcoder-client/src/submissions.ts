@@ -1,9 +1,31 @@
 import {RpcError} from './message-peer.js';
-import type {Json} from './wire.js';
+import type {Json, RuntimeState, QueuedInput} from './wire.js';
 import type {RuntimeClient} from './client.js';
 
 export interface SubmissionSink {
   submission(id: string, text: string, status: string, detail?: string): void;
+}
+
+/** Application events outrank older queue snapshots, including equal-text inputs. */
+export class InputQueueProjection {
+  private tracked = new Set<string>();
+  private appliedSubmissions = new Set<string>();
+  private appliedSteering = new Set<string>();
+  track(id: string): void {this.tracked.add(id);}
+  applied(submissionId?: string, steeringId?: string): void {
+    if (submissionId) this.appliedSubmissions.add(submissionId);
+    if (steeringId) this.appliedSteering.add(steeringId);
+  }
+  remaining(state: RuntimeState): QueuedInput[] | undefined {
+    return state.queued_inputs?.filter(item => !(item.submission_id && this.appliedSubmissions.has(item.submission_id)) && !(item.steering_id && this.appliedSteering.has(item.steering_id)));
+  }
+  untracked(state: RuntimeState): QueuedInput[] {
+    // Older cores have no queue IDs. Use locally owned submissions once present;
+    // never resurrect an applied input from an ambiguous text-only snapshot.
+    return this.remaining(state)?.filter(item => !item.submission_id || !this.tracked.has(item.submission_id))
+      ?? (this.tracked.size ? [] : state.queued_steering.map(text => ({text})));
+  }
+  clear(): void {this.tracked.clear(); this.appliedSubmissions.clear(); this.appliedSteering.clear();}
 }
 export interface SubmissionMessages {empty: string; stopped: string; uncertain(detail: string): string}
 const defaultMessages: SubmissionMessages = {

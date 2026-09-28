@@ -228,6 +228,15 @@ def contract_fixture():
 
 
 peer.methods["test.fixture"] = contract_fixture
+peer.methods["test.drain_steering"] = lambda: agent._drain_user_steering()
+
+
+def stream_output(text):
+    agent._append_message({"role": "assistant", "content": text}, source="assistant")
+    emit(AssistantContentDelta(text))
+
+
+peer.methods["test.stream_output"] = stream_output
 
 
 def image_capability(enabled):

@@ -1,5 +1,5 @@
 import {EventEmitter} from 'node:events';
-import {typeOf, type RuntimeClient, type RecordData, type SubmissionSink, type ImageReference} from '@reuleauxcoder/client';
+import {typeOf, InputQueueProjection, type RuntimeState, type RuntimeClient, type RecordData, type SubmissionSink, type ImageReference} from '@reuleauxcoder/client';
 import type {ChatCell} from '../shared.js';
 import {t, coreText} from '../i18n.js';
 import {approvalReason} from '../core-messages.js';
@@ -7,12 +7,18 @@ import {approvalReason} from '../core-messages.js';
 /** Host-owned, serializable presentation. Browser views receive snapshots, never RPC ownership. */
 export class Transcript extends EventEmitter implements SubmissionSink {
   cells: ChatCell[] = [];
+  readonly pendingInputs = new Map<string, ChatCell>();
+  readonly inputQueue = new InputQueueProjection();
+  pending(state?: RuntimeState): ChatCell[] {
+    return [...this.pendingInputs.values(), ...(state ? this.inputQueue.untracked(state) : []).map((item, index): ChatCell => ({id: item.submission_id ?? item.steering_id ?? `queued-${index}`, role: 'user', text: item.text, status: 'queued'}))];
+  }
   private next = 0;
   private assistant?: ChatCell;
   private reasoning?: ChatCell;
   private tools = new Map<string, ChatCell>();
   private sent = new Map<string, ChatCell>();
   private generation = 0;
+  private running = false;
   private subscriptions: (() => void)[] = [];
   bind(client: RuntimeClient): void {
     this.dispose(); this.clear();
@@ -21,7 +27,15 @@ export class Transcript extends EventEmitter implements SubmissionSink {
       for (const message of info.recent_conversation ?? []) this.add(message.role === 'user' ? 'user' : 'assistant', message.content).images = message.images;
       this.emit('change');
     });
-    listen('state', state => {if (state.session_generation !== this.generation) {this.generation = state.session_generation; this.clear();} if (!state.running) this.assistant = this.reasoning = undefined; this.emit('change');});
+    listen('state', state => {
+      this.running = state.running;
+      if (state.session_generation !== this.generation) {this.generation = state.session_generation; this.clear();}
+      if (!state.running) {
+        this.assistant = this.reasoning = undefined;
+        for (const cell of this.pendingInputs.values()) if (['queued', 'accepted'].includes(cell.status ?? '')) cell.status = 'not-applied';
+      }
+      this.emit('change');
+    });
     listen('event', (event, _wire, generation) => {
       if (generation !== undefined && generation < this.generation) return;
       if (generation !== undefined && generation > this.generation) {this.generation = generation; this.clear();}
@@ -35,9 +49,14 @@ export class Transcript extends EventEmitter implements SubmissionSink {
     listen('operationFailure', message => this.notice(message));
   }
   submission(id: string, text: string, status: string, detail = ''): void {
-    const cell = this.sent.get(id) ?? this.add('user', text, id);
+    this.inputQueue.track(id);
+    const cell: ChatCell = this.sent.get(id) ?? {id, role: 'user', text: String(text).slice(-262144)};
     this.sent.set(id, cell);
-    if (cell.status !== 'applied' || status === 'applied') {cell.status = status; cell.detail = detail;}
+    if (cell.status === 'applied' || ['restored', 'not-applied'].includes(cell.status ?? '') && status !== 'applied') return;
+    if (['queued', 'accepted'].includes(status) && !this.running) status = 'not-applied';
+    cell.status = status; cell.detail = detail;
+    if (status === 'applied') {this.pendingInputs.delete(id); this.append(cell);}
+    else this.pendingInputs.set(id, cell);
     this.emit('change');
   }
   notice(text: string): void {this.add('notice', text); this.emit('change');}
@@ -47,6 +66,9 @@ export class Transcript extends EventEmitter implements SubmissionSink {
   }
   private add(role: ChatCell['role'], text: string, id = `cell-${++this.next}`): ChatCell {
     const cell = {id, role, text: String(text).slice(-262144)};
+    return this.append(cell);
+  }
+  private append(cell: ChatCell): ChatCell {
     this.cells.push(cell);
     if (this.cells.length > 2000) this.cells.splice(0, this.cells.length - 2000);
     return cell;
@@ -59,6 +81,8 @@ export class Transcript extends EventEmitter implements SubmissionSink {
         const value = payload.user_input;
         const text = typeof value === 'string' ? value : value?.text ?? '';
         const id = payload.submission_id ?? value?.submission_id;
+        this.inputQueue.applied(id, payload.steering_id);
+        if (id && this.sent.get(id)?.status === 'applied') break;
         if (id) {this.submission(id, text, 'applied'); if (value?.images?.length) this.images(id, value.images); this.emit('applied', id);} else this.add('user', text).images = value?.images;
         this.assistant = this.reasoning = undefined; break;
       }
@@ -74,6 +98,6 @@ export class Transcript extends EventEmitter implements SubmissionSink {
       case 'ApprovalResolved': this.notice([payload.approved ? t('Approved') : t('Denied'), payload.reason ? approvalReason(payload.reason) : '', payload.grant_label ? coreText(payload.grant_label) : ''].filter(Boolean).join(' · ')); break;
     }
   }
-  clear(): void {this.cells = []; this.tools.clear(); this.sent.clear(); this.assistant = this.reasoning = undefined; this.emit('reset');}
+  clear(): void {this.cells = []; this.tools.clear(); this.sent.clear(); this.pendingInputs.clear(); this.inputQueue.clear(); this.assistant = this.reasoning = undefined; this.emit('reset');}
   dispose(): void {for (const dispose of this.subscriptions.splice(0)) dispose();}
 }

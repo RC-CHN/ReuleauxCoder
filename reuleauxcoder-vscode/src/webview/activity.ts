@@ -32,7 +32,7 @@ export class ActivityView {
     const visible = state.phase === 'ready' && state.running && !!status && (status.queued > 0 || status.pending);
     const wasHidden = this.steering.hidden; this.steering.hidden = !visible;
     if (!visible) return;
-    this.steering.querySelector<HTMLElement>('[data-steering-message]')!.textContent = status!.stopping ? t('Stopping; queued guidance is retained in the conversation.') : status!.pending ? t('Interrupting the current step to apply your guidance…') : t('{0} queued · applies after the current step', status!.queued);
+    this.steering.querySelector<HTMLElement>('[data-steering-message]')!.textContent = status!.stopping ? t('Stopping; unapplied guidance stays beside the input.') : status!.pending ? t('Interrupting the current step to apply your guidance…') : t('{0} queued · applies after the current step', status!.queued);
     const button = this.steering.querySelector('button')!;
     button.disabled = this.busy || status!.pending || status!.stopping || !status!.supported;
     button.textContent = status!.pending || this.busy ? t('Applying…') : t('Guide now');

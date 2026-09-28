@@ -221,6 +221,19 @@ body.configuring #transcript, body.configuring #drop-zone, body.configuring #ove
 .elapsed {font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink)}
 .steering-status {display: flex; align-items: center; gap: 10px; padding: 6px 8px; margin: 0 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px}
 .steering-status > span {flex: 1; min-width: 0}.steering-status button {flex: 0 0 auto; color: var(--accent); font-weight: 600; padding: 3px 6px; min-height: 26px}
+#pending-inputs {max-height: min(26vh, 210px); overflow: auto; overscroll-behavior: contain; margin-bottom: 5px; border-left: 2px solid var(--accent); padding-left: 5px}
+.pending-input {font-size: 11px; border-radius: 5px}
+.pending-input > summary {display: flex; align-items: baseline; gap: 7px; padding: 4px 5px; cursor: pointer; list-style: none; border-radius: 5px}
+.pending-input > summary:hover {background: var(--hover)}
+.pending-input > summary::before {content: '›'; color: var(--muted)}
+.pending-input[open] > summary::before {transform: rotate(90deg)}
+.pending-state {flex-shrink: 0; color: var(--accent); font-weight: 600}
+.pending-input:is([data-status='rejected'], [data-status='unconfirmed'], [data-status='not-applied']) .pending-state {color: var(--warning)}
+.pending-preview {white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink)}
+.pending-body {padding: 3px 8px 8px 18px; overflow-wrap: anywhere; white-space: pre-wrap}
+.pending-body .detail {color: var(--muted); margin: 5px 0}
+.pending-body button {font-size: 11px; color: var(--accent); min-height: 26px; padding: 3px 7px}
+@media (prefers-reduced-motion: no-preference) {.pending-input > summary::before {transition: transform 140ms ease}.pending-input[open] > .pending-body {animation: feedback-enter 140ms ease-out}}
 @media (prefers-reduced-motion: no-preference) {
   #activity:is([data-state="thinking"], [data-state="responding"], [data-state="tool"], [data-state="steering"], [data-state="starting"], [data-state="stopping"], [data-state="installing"]) .activity-mark i {animation: activity-wave 1200ms ease-in-out infinite}
   #activity .activity-mark i:nth-child(2) {animation-delay: 120ms}#activity .activity-mark i:nth-child(3) {animation-delay: 240ms}

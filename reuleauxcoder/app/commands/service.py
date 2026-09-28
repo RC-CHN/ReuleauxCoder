@@ -89,9 +89,13 @@ class CommandService:
 
     @property
     def pending_inputs(self) -> tuple[str, ...]:
+        return tuple(item.display_text if isinstance(item, ChatInput) else item for item in self.pending_chat_inputs)
+
+    @property
+    def pending_chat_inputs(self) -> tuple[str | ChatInput, ...]:
         with self._queue_lock:
             return tuple(
-                label
+                request
                 for request, label in self._pending
                 if isinstance(request, (str, ChatInput))
             )

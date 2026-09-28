@@ -1024,9 +1024,13 @@ class Agent:
 
     def pending_user_steering(self) -> tuple[str, ...]:
         """Queued steering previews for the current generation (UI display)."""
+        return tuple(display_content(item.content) for item in self.pending_user_steering_entries())
+
+    def pending_user_steering_entries(self) -> tuple[PendingUserSteering, ...]:
+        """Read one correlated queue snapshot without exposing the mutable queue."""
         with self._steering_lock:
             return tuple(
-                display_content(item.content)
+                item
                 for item in self._pending_user_steering
                 if item.generation == self.session_generation
             )

@@ -14,13 +14,13 @@ from reuleauxcoder.app.commands.capabilities import UIProfile
 from reuleauxcoder.app.commands.service import CommandService
 from reuleauxcoder.app.commands.view_models import GoalViewModel
 from reuleauxcoder.app.rpc.codec import encode, decode
-from reuleauxcoder.app.rpc.models import RuntimeSnapshot, Submission
+from reuleauxcoder.app.rpc.models import QueuedInput, RuntimeSnapshot, Submission
 from reuleauxcoder.app.rpc.remote_interactor import RemoteInteractor
 from reuleauxcoder.app.rpc.submissions import SubmissionAdmissions
 from reuleauxcoder.app.rpc.images import ImageUploads
 from reuleauxcoder.app.rpc.attachments import AttachmentUploads
 from reuleauxcoder.app.rpc.editor_documents import EditorDocuments
-from reuleauxcoder.domain.images import ChatInput
+from reuleauxcoder.domain.images import ChatInput, display_content
 from reuleauxcoder.infrastructure.persistence.images import ImageStore
 from reuleauxcoder.app.runtime.approval import build_runtime_approval_provider
 from reuleauxcoder.app.runtime.approval_interaction import make_approval_handler
@@ -148,6 +148,14 @@ class RuntimeServer:
             manager = agent.mcp_manager
             context = agent.context
             review = self.interactions.adapter.review_request
+            queued_inputs = tuple(
+                QueuedInput(display_content(item.content), item.submission_id, item.steering_id)
+                for item in agent.pending_user_steering_entries()
+            ) + tuple(
+                QueuedInput(item.display_text, item.submission_id)
+                if isinstance(item, ChatInput) else QueuedInput(item)
+                for item in self.commands.pending_chat_inputs
+            )
             state = RuntimeSnapshot(
                 revision=revision,
                 session_id=self.commands.session_id,
@@ -157,8 +165,8 @@ class RuntimeServer:
                 stopping=self._running and agent.stop_requested(),
                 interrupt_pending=agent.round_interrupt_pending(),
                 queued_commands=self.commands.pending_commands,
-                queued_steering=tuple(agent.pending_user_steering())
-                + self.commands.pending_inputs,
+                queued_steering=tuple(item.text for item in queued_inputs),
+                queued_inputs=queued_inputs,
                 model=agent.llm.model,
                 support_modal=tuple(getattr(agent.llm, "support_modal", ("text",))),
                 context_tokens=context.predict_request_tokens(agent.messages),

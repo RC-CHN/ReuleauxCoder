@@ -12,7 +12,8 @@ test('real core streams Unicode, owns sent drafts, and survives view listeners d
   const b = await backend(); t.after(() => b.close());
   const session = b.session; session.draftText = 'hello';
   session.submit('first', 'hello', [], b.client.state.session_generation);
-  assert.equal(session.transcript.cells[0].text, 'hello');
+  assert.equal(session.transcript.cells.length, 0);
+  assert.equal(session.transcript.pendingInputs.get('first')?.text, 'hello');
   session.draftText = 'new draft';
   const view = () => {}; session.on('change', view); session.off('change', view);
   await until(() => session.transcript.cells.some(cell => cell.role === 'assistant' && cell.text.includes('Completed 中文')));

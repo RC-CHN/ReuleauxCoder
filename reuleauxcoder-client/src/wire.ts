@@ -34,11 +34,13 @@ export interface RuntimeState {
   revision: number; session_id: string | null; agent_id: string | null; session_generation: number;
   running: boolean; stopping: boolean; interrupt_pending: boolean;
   queued_commands: string[]; queued_steering: string[]; model: string;
+  queued_inputs?: QueuedInput[];
   context_tokens: number; context_limit: number; mcp_enabled: number; mcp_tools: number;
   mcp_state: string; workspace: string; exit_saved_session_id: string | null;
   approval_waiting: number;
   mode?: string | null; approval_policy?: string;
 }
+export interface QueuedInput {text: string; submission_id?: string | null; steering_id?: string | null}
 export interface ImageReference {
   attachment_id: string; variant_id: string; mime_type: string;
   width: number; height: number; size_bytes: number;

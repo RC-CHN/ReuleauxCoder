@@ -31,13 +31,15 @@ export class WorkspaceSession extends EventEmitter {
   private draftRevision = 0;
   private clientListeners: (() => void)[] = [];
   private lifecycle = 0;
+  private sentDrafts = new Map<string, {text: string; items: DraftItem[]}>();
   constructor(readonly workspace: string, readonly environment: string) {
     super();
     this.runtime.on('client', client => this.bind(client));
     this.runtime.on('log', text => this.emit('log', text));
     this.runtime.on('exit', error => {if (this.phase === 'ready') this.fail(error);});
     this.transcript.on('change', () => this.changed());
-    this.transcript.on('applied', id => this.submissions?.applied(id));
+    this.transcript.on('applied', id => {this.submissions?.applied(id); this.sentDrafts.delete(id);});
+    this.transcript.on('reset', () => this.sentDrafts.clear());
   }
   get client(): RuntimeClient | undefined {return this.runtime.client;}
   requireClient(): RuntimeClient {
@@ -106,6 +108,7 @@ export class WorkspaceSession extends EventEmitter {
       session_id: client.state.session_id, session_generation: generation,
     }) : input;
     const display = [text, ...items.filter(item => item.kind !== 'image').map(item => `[${t(item.kind)}: ${item.name}]`)].filter(Boolean).join('\n');
+    this.sentDrafts.set(id, {text, items});
     const sending = this.submissions!.send(display, value, id);
     this.transcript.images(id, images.map(item => item.reference));
     this.draftItems = this.draftItems.filter(item => !itemIds.includes(item.id));
@@ -116,7 +119,17 @@ export class WorkspaceSession extends EventEmitter {
   }
   snapshot(reviews: ReviewSummary[] = []): HostSnapshot {
     const state = this.client?.state;
-    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, sampledAt: Date.now(), steering: {queued: state?.queued_steering.length ?? 0, pending: state?.interrupt_pending ?? false, stopping: state?.stopping ?? false, supported: this.client?.info?.steering_promotion === true}, cells: foldToolCells(this.transcript.cells), reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), configuration: this.configuration.state};
+    const pendingInputs = this.transcript.pending(state);
+    const queued = state ? this.transcript.inputQueue.remaining(state)?.length ?? pendingInputs.filter(cell => cell.status === 'queued').length : 0;
+    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, sampledAt: Date.now(), steering: {queued, pending: !!state?.interrupt_pending && queued > 0, stopping: state?.stopping ?? false, supported: this.client?.info?.steering_promotion === true}, cells: foldToolCells(this.transcript.cells), pendingInputs, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(), configuration: this.configuration.state};
+  }
+  restorePending(id: string): void {
+    const cell = this.transcript.pendingInputs.get(id), draft = this.sentDrafts.get(id);
+    if (cell?.status !== 'not-applied' || !draft) return;
+    if (this.draftItems.length + draft.items.length > 30) throw new Error(t('The draft already has 30 attachments or context items.'));
+    this.transcript.pendingInputs.delete(id); cell.status = 'restored'; this.sentDrafts.delete(id);
+    this.draftItems.push(...draft.items);
+    this.insertDraft(draft.text);
   }
   async promoteSteering(): Promise<{outcome: string; discarded_count: number}> {
     const client = this.requireClient();
@@ -125,7 +138,7 @@ export class WorkspaceSession extends EventEmitter {
   }
   async imagePreview(attachmentId: unknown, variantId: unknown): Promise<string> {
     const client = this.requireClient();
-    const reference = [...this.draftItems.filter(item => item.kind === 'image').map(item => item.reference), ...this.transcript.cells.flatMap(cell => cell.images ?? [])]
+    const reference = [...this.draftItems.filter(item => item.kind === 'image').map(item => item.reference), ...this.transcript.cells.flatMap(cell => cell.images ?? []), ...[...this.transcript.pendingInputs.values()].flatMap(cell => cell.images ?? [])]
       .find(image => image.attachment_id === attachmentId && image.variant_id === variantId);
     if (!reference) throw new Error(t('This image is no longer available.'));
     const generation = client.state.session_generation;

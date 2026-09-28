@@ -1,5 +1,5 @@
 import {EventEmitter} from 'node:events';
-import type {GitWorkspace} from '@reuleauxcoder/client';
+import {InputQueueProjection, type GitWorkspace} from '@reuleauxcoder/client';
 import {emptyState, typeOf, type Json, type RecordData, type RuntimeState, type UIEvent, type View} from '@reuleauxcoder/client';
 import {diff, fields} from '../ui/format.js';
 import {updateProcess, type ProcessView} from './processes.js';
@@ -31,20 +31,30 @@ export class SessionStore extends EventEmitter {
   private tools = new Map<string, Cell>();
   private reviewedDiffs = new Set<string>();
   private submissions = new Map<string, Cell>();
+  readonly pendingInputs = new Map<string, Cell>();
+  private inputQueue = new InputQueueProjection();
+  get untrackedInputs(): string[] {return this.inputQueue.untracked(this.state).map(item => item.text);}
 
   submission(id: string, text: string, status: string, detail = '') {
-    const cell = this.submissions.get(id) ?? this.add('user', 'You', text);
+    this.inputQueue.track(id);
+    const cell = this.submissions.get(id) ?? {id: String(++this.next), kind: 'user', title: 'You', body: text, details: '', revision: 0, streaming: false} as Cell;
     this.submissions.set(id, cell);
-    // An applied event may precede the RPC acknowledgement.
-    if (cell.tone === 'applied' && status !== 'applied') return;
+    // Only application events append to history; receipts cannot move a message.
+    if (cell.tone === 'applied' || cell.tone === 'not-applied' && status !== 'applied') return;
+    if (['queued', 'accepted'].includes(status) && !this.state.running) status = 'not-applied';
     cell.title = status === 'applied' ? 'You' : `You · ${status}`;
     cell.details = detail;
     cell.tone = status;
-    this.touch(cell);
+    if (status === 'applied') {this.pendingInputs.delete(id); this.append(cell);}
+    else this.pendingInputs.set(id, cell);
     this.emit('change');
   }
 
-  private appliedUser(text: string, id?: string, steering = false) {
+  private appliedUser(text: string, id?: string, steering = false, steeringId?: string) {
+    this.inputQueue.applied(id, steeringId);
+    if (id && this.submissions.get(id)?.tone === 'applied') return;
+    this.finishCell(this.assistant); this.finishCell(this.reasoning);
+    this.assistant = this.reasoning = undefined;
     if (id) {this.submission(id, text, 'applied'); this.emit('submissionApplied', id);}
     else this.add('user', steering ? 'You · steering applied' : 'You', text);
   }
@@ -55,15 +65,18 @@ export class SessionStore extends EventEmitter {
       cell.outputTail = new OutputTail();
       if (body !== 'Running…') cell.outputTail.append(body);
     }
+    return this.append(cell);
+  }
+  private append(cell: Cell): Cell {
     this.cells.push(cell);
     this.cellIndices.set(cell, this.cells.length - 1);
-    if (streaming) this.streaming.add(cell);
+    if (cell.streaming) this.streaming.add(cell);
     this.dirtyIndex = Math.min(this.dirtyIndex, this.cells.length - 1);
     this.contentRevision++;
     return cell;
   }
   notice(message: string, tone = 'info') {const cell = this.add('notice', tone === 'error' ? 'Error' : 'Notice', message); cell.tone = tone; this.emit('change');}
-  clear() {this.cells = []; this.submissions.clear(); this.streaming.clear(); this.dirtyIndex = 0; this.contentRevision++; this.sidebarRevision++; this.tools.clear(); this.jobs.clear(); this.processes.clear(); this.diagnostics.clear(); this.operations.clear(); this.reviewedDiffs.clear(); this.assistant = this.reasoning = undefined; this.plan = {items: []}; this.progress = {};}
+  clear() {this.cells = []; this.submissions.clear(); this.pendingInputs.clear(); this.inputQueue.clear(); this.streaming.clear(); this.dirtyIndex = 0; this.contentRevision++; this.sidebarRevision++; this.tools.clear(); this.jobs.clear(); this.processes.clear(); this.diagnostics.clear(); this.operations.clear(); this.reviewedDiffs.clear(); this.assistant = this.reasoning = undefined; this.plan = {items: []}; this.progress = {};}
   get activeCell(): Cell | undefined {
     let latest: Cell | undefined, tool: Cell | undefined;
     for (const cell of this.streaming) {latest = cell; if (cell.kind === 'tool') tool = cell;}
@@ -73,6 +86,7 @@ export class SessionStore extends EventEmitter {
   update(state: RuntimeState) {
     if (state.session_generation > this.generation) {this.clear(); this.generation = state.session_generation;}
     if (!state.running) for (const cell of this.streaming) this.finishCell(cell);
+    if (!state.running) for (const cell of this.pendingInputs.values()) if (['queued', 'accepted'].includes(cell.tone ?? '')) {cell.tone = 'not-applied'; cell.title = 'You · not applied';}
     this.state = state; this.emit('change');
   }
   initialize(info: any) {
@@ -127,7 +141,6 @@ export class SessionStore extends EventEmitter {
     if (!root && !['SubagentJobChanged', 'OperationPhaseChanged', 'DiagnosticsPublished', 'DiagnosticsCleared'].includes(type ?? '')) return;
     switch (type) {
       case 'TurnStarted': case 'ChatStarted':
-        this.assistant = this.reasoning = undefined;
         if (p.user_input) this.appliedUser(p.user_input.replace(/^\[SESSION_RESUME\][^\n]*\n\n/, ''), p.submission_id); break;
       case 'AssistantContentDelta': case 'StreamChunk':
         if (p.reasoning) {this.appendReasoning(p); break;}
@@ -195,7 +208,7 @@ export class SessionStore extends EventEmitter {
       case 'PlanUpdated': this.plan = p; break;
       case 'ProgressReported': this.progress = p; break;
       case 'OperationPhaseChanged': this.operations.set(p.operation_id, p); break;
-      case 'UserSteeringApplied': this.appliedUser(p.user_input, p.submission_id, true); break;
+      case 'UserSteeringApplied': this.appliedUser(p.user_input, p.submission_id, true, p.steering_id); break;
       case 'ApprovalRequested': break;
       case 'ApprovalResolved': this.add('notice', p.approved ? 'Approved' : 'Denied', [p.reason, p.grant_label, p.mode, p.released_count ? `${p.released_count} queued requests released` : null, p.resolution_source].filter(Boolean).join(' · ')); break;
       default: this.add('notice', type ?? 'Runtime event', fields(p));

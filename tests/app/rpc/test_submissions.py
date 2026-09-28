@@ -69,3 +69,24 @@ def test_submission_id_rejects_payload_reuse_and_stale_generation(runtime):
         runtime.server.submit("different", submission_id="unique", session_generation=0)
     with pytest.raises(RpcError, match="Session changed"):
         runtime.server.submit("first", submission_id="unique", session_generation=-1)
+
+
+def test_queue_snapshot_correlates_equal_text_and_deferred_inputs(runtime):
+    from reuleauxcoder.domain.images import ChatInput
+
+    runtime.server._running = True
+    runtime.agent._accepting_user_steering = True
+    runtime.agent._current_turn_id = "active"
+    try:
+        for identifier in ("first", "second"):
+            runtime.server.submit("same text", submission_id=identifier, session_generation=0)
+        runtime.server.commands.queue_input(ChatInput(text="next turn", submission_id="deferred"))
+        state = decode(runtime.server.snapshot_reply())
+        assert state.queued_steering == ("same text", "same text", "next turn")
+        assert tuple(item.submission_id for item in state.queued_inputs) == ("first", "second", "deferred")
+        assert state.queued_inputs[0].steering_id != state.queued_inputs[1].steering_id
+        assert runtime.agent._drain_user_steering() == 2
+        assert tuple(item.submission_id for item in runtime.server.snapshot().queued_inputs) == ("deferred",)
+    finally:
+        runtime.server.commands.clear_pending()
+        runtime.server._running = False

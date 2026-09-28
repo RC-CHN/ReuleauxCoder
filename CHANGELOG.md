@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep TUI and VS Code sent drafts beside the composer until the core adds them to context. Place applied steering after preceding assistant/tool output, split replies at that boundary, and ignore duplicate application events and late receipts. Correlate queue snapshots by submission/steering ID so stale previews cannot reappear after application, including identical message text. Preserve queued images, retry IDs, new drafts and view-reopen state; retain unapplied guidance outside history when a task stops.
+
 ## 0.11.4 - 2026-09-27
 
 - Retain growing code blocks, their copy controls, selections and horizontal scroll; skip unchanged tool details and draft attachments during streaming. Keep return-to-bottom wheel gestures reliable when output arrives between scrolling and its event. Add a reproducible webview stress profiler and regression coverage for retained code and image controls.

@@ -73,11 +73,19 @@ def run():
 
 
 loop.run = run
+
+
+def stream_output(text):
+    agent._append_message({"role": "assistant", "content": text}, source="assistant")
+    bus.emit_runtime(RuntimeEvent(payload=AssistantContentDelta(text), agent_id=agent.agent_id, session_generation=agent.session_generation))
+
+
 # ToolExecutor passes workspace.resolve() results; also expand Windows 8.3 aliases here.
 peer.methods["test.is_dirty"] = lambda path: bool(server.editor_documents.guard(str(Path(path).resolve())))
 peer.methods["test.state"] = lambda: encode(server._publish_state())
 peer.methods["test.messages"] = lambda: encode(agent.messages)
 peer.methods["test.drain_steering"] = lambda: agent._drain_user_steering()
+peer.methods["test.stream_output"] = stream_output
 if "--legacy-core" in sys.argv:
     def legacy_initialize(**params):
         result = decode(server.initialize(**params))

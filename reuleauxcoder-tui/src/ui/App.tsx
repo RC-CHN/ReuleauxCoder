@@ -66,7 +66,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   c.inputWidth = panelWidth;
   const panelHintBudget = Math.min(3, Math.ceil(90 / panelWidth));
   const hasPanel = Boolean(c.active || c.screen || c.palette.length);
-  const queue = queuedRows(c.session.state, dimensions.width, Math.max(0, Math.min(5, contentHeight - (hasPanel ? 5 : 2))));
+  const queue = queuedRows({...c.session.state, queued_steering: c.session.untrackedInputs}, dimensions.width, Math.max(0, Math.min(5, contentHeight - (hasPanel ? 5 : 2))), [...c.session.pendingInputs.values()]);
   const bodyHeight = bodyBudget - queue.length;
   const available = contentHeight - queue.length;
   const listLength = c.screen?.kind === 'list' ? c.listItems(c.screen).length : c.palette.length;

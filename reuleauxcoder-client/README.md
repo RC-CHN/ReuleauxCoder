@@ -8,6 +8,17 @@ rejected. Receipts are scoped to the live connection and session generation,
 with up to 4,096 retained IDs per generation; they are not a restart/reconnect
 deduplication contract. Legacy callers may omit the ID.
 
+Admission receipts acknowledge delivery, not insertion into context. Frontends
+keep sending/queued drafts beside the composer until `TurnStarted` or
+`UserSteeringApplied`, then append at that event's position. The optional
+`RuntimeSnapshot.queued_inputs` contains text, submission IDs and steering IDs
+from the same queue read as legacy `queued_steering`. `InputQueueProjection`
+merges those previews with local submissions and suppresses applied IDs even
+when a queue snapshot lags behind the application event. With older cores it
+prefers locally tracked messages over ambiguous text-only previews. Clear the
+projection on session generation changes; application never waits for a model
+response.
+
 `@reuleauxcoder/client` 是仓库内部共享的 JSON-RPC 客户端，供 TUI 和 VS Code 宿主使用。
 没有运行时 npm 依赖，不包含 React、Ink、界面渲染、进程启动或 Python 业务实现。
 `SubmissionQueue` 负责与界面无关的发送状态及重试；消费者通过 `SubmissionSink` 投影消息。

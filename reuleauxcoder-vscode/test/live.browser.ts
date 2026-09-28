@@ -6,6 +6,7 @@ import type {HostSnapshot} from '../src/shared.js';
 import {browserHarness} from './browser-harness.js';
 import {overview} from './webview-fixture.js';
 import {backend, until} from './helpers.js';
+import {decode} from '@reuleauxcoder/client';
 
 test('live workbench: clocks, readable facts, stable disclosures and motion in both languages', {timeout: 40000}, async () => {
   await mkdir(resolve('../artifacts/vscode-concept'), {recursive: true});
@@ -86,6 +87,7 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
     if (request.action === 'send') b.session.submit(data.id, data.text, data.items, data.generation);
     if (request.action === 'draft') b.session.draftText = data.text;
     if (request.action === 'steer') return b.session.promoteSteering();
+    if (request.action === 'restorePending') return b.session.restorePending(data.id);
     if (request.action === 'stop') return b.client.peer.request('runtime.stop');
     return null;
   }, 'zh-CN');
@@ -93,9 +95,20 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
   try {
     await h.page.locator('#composer').fill('wait'); await h.page.locator('#composer').press('Enter');
     await until(() => b.client.state.running);
+    await until(() => b.session.transcript.cells.some(cell => cell.text === 'wait'));
     await h.page.locator('#composer').fill('先检查配置'); await h.page.locator('#composer').press('Enter');
     await h.page.locator('#steer').waitFor({state: 'visible'});
     assert.equal(await h.page.locator('#composer').inputValue(), '');
+    assert.equal(await h.page.locator('#transcript .cell.user').count(), 1, 'Queued input must not be a transcript placeholder');
+    await h.page.locator('#pending-inputs summary').click();
+    assert.match(await h.page.locator('#pending-inputs .pending-body').textContent() ?? '', /先检查配置/);
+    await b.client.peer.request('test.stream_output', {text: '之前的回复'});
+    await h.page.waitForFunction(() => document.querySelector('#transcript')?.textContent?.includes('之前的回复'));
+    assert(await h.page.locator('#pending-inputs details').evaluate(node => (node as HTMLDetailsElement).open), 'Updates preserve the queue disclosure');
+    await h.page.reload();
+    await h.page.locator('#pending-inputs summary').waitFor();
+    assert.equal(await h.page.locator('#transcript .cell.user').count(), 1, 'Reopening a view does not promote queued input');
+    await h.page.screenshot({path: resolve('../artifacts/vscode-concept/steering-pending-zh-CN.png'), animations: 'disabled'});
     await h.page.locator('#composer').fill('下一条尚未发送');
     await h.page.locator('#steer').click();
     await until(() => b.client.state.interrupt_pending);
@@ -103,11 +116,26 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
     assert.equal(await h.page.locator('#composer').inputValue(), '下一条尚未发送');
     assert.equal((await b.session.promoteSteering()).outcome, 'already_promoted');
     assert.equal(await b.client.peer.request('test.drain_steering'), 1);
+    await h.page.waitForFunction(() => document.querySelectorAll('#transcript .cell.user').length === 2);
+    await h.page.locator('#pending-inputs').waitFor({state: 'hidden'});
+    await b.client.peer.request('test.stream_output', {text: '收到补充后的回复'});
+    await h.page.waitForFunction(() => document.querySelectorAll('#transcript .cell.assistant').length === 2);
+    assert.deepEqual((await h.page.locator('#transcript .cell .body').allTextContents()).map(text => text.trim()), ['wait', '之前的回复', '先检查配置', '收到补充后的回复']);
+    const history = decode(await b.client.peer.request('test.messages'));
+    assert.deepEqual(history.filter((message: any) => ['user', 'assistant'].includes(message.role)).map((message: any) => message.content), ['wait', '之前的回复', '先检查配置', '收到补充后的回复']);
     assert.equal((await b.session.promoteSteering()).outcome, 'nothing_pending');
     assert(!b.client.state.stopping);
+    await h.page.locator('#composer').fill('这条尚未应用'); await h.page.locator('#composer').press('Enter');
+    await until(() => b.client.state.queued_steering.length === 1);
+    await h.page.locator('#composer').fill('下一条尚未发送');
     await h.page.locator('#stop').click(); await until(() => !b.client.state.running);
     await h.page.locator('#steering-status').waitFor({state: 'hidden'});
     assert.equal(await h.page.locator('#composer').inputValue(), '下一条尚未发送');
+    await h.page.waitForFunction(() => document.querySelector('#pending-inputs .pending-state')?.textContent === '未应用');
+    assert.equal(await h.page.locator('#transcript .cell.user').count(), 2);
+    await h.page.getByRole('button', {name: '退回草稿', exact: true}).click();
+    await h.page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>('#composer')?.value === '下一条尚未发送\n这条尚未应用');
+    await h.page.locator('#pending-inputs').waitFor({state: 'hidden'});
     assert.deepEqual(h.errors, []);
   } finally {b.session.off('change', changed); await h.close(); await b.close();}
 });

@@ -14,6 +14,7 @@ import {TranscriptScroll} from './transcript-scroll.js';
 import {LiveClock} from './clock.js';
 import {ActivityView} from './activity.js';
 import {ToolCells} from './tool-cells.js';
+import {PendingInputs} from './pending-inputs.js';
 
 interface SavedView {draft?: string; outbox?: {input: Omit<LocalSend, 'uploads'>; cell: ChatCell}[]}
 declare function acquireVsCodeApi(): {postMessage(message: unknown): void; getState(): SavedView | undefined; setState(state: unknown): void};
@@ -31,6 +32,10 @@ const attention = new AttentionCards(element('reviews'), request);
 const overview = new WorkOverviewView(element('overview'), element('goal-strip'), element<HTMLButtonElement>('overview-toggle'), request, notice, clock);
 const configuration = new ConfigurationView(element('configuration-editor'), request, error => {if (!snapshot?.configuration?.error) notice(error);});
 const images = new ImageGallery(request);
+const pendingInputs = new PendingInputs(element('pending-inputs'), images, id => void retrySend(id), id => {
+  if (localSends.has(id)) restoreSend(id);
+  else void request('restorePending', {id}).catch(notice);
+});
 const toolCells = new ToolCells(url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice), updateToolToggle);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
@@ -107,8 +112,6 @@ function cellNode(cell: ChatCell): HTMLElement {
   node.append(body);
   if (cell.images?.length) images.draw(body, cell.images);
   if (cell.detail) {const detail = document.createElement('div'); detail.className = 'detail'; detail.textContent = coreMessage(cell.detail); node.append(detail);}
-  if (['unconfirmed', 'rejected'].includes(cell.status ?? '')) {const retry = button(t('Retry'), () => void retrySend(cell.id)); retry.className = 'retry'; node.append(retry);}
-  if (cell.status === 'uploading' || cell.status === 'rejected' && (localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles)) node.append(button(t('Return to draft'), () => restoreSend(cell.id)));
   return node;
 }
 function render(state: HostSnapshot): void {
@@ -116,6 +119,7 @@ function render(state: HostSnapshot): void {
   const previousVersion = transcriptVersion;
   if (snapshot && (snapshot.hostId !== state.hostId || snapshot.generation !== state.generation)) {
     images.reset();
+    pendingInputs.reset();
     // Restore events may render before the matching state snapshot arrives.
     // Rebuild retained tiles so reset observers and discarded loads get retried.
     cellContent.clear(); transcriptScroll.reset(); toolCells.reset();
@@ -153,9 +157,10 @@ function render(state: HostSnapshot): void {
     modeButton.setAttribute('aria-label', modeButton.title);
   }
   element<HTMLButtonElement>('stop').disabled = !state.running;
-  const known = new Set(state.cells.map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}
+  const known = new Set([...state.cells, ...state.pendingInputs ?? []].map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}
   for (const id of consumedItems) if (!state.draftItems.some(item => item.id === id)) consumedItems.delete(id);
-  const cells = [...state.cells, ...optimistic.values()];
+  const cells = state.cells;
+  pendingInputs.update([...state.pendingInputs ?? [], ...optimistic.values()], cell => cell.status === 'not-applied' || cell.status === 'uploading' || cell.status === 'rejected' && !!(localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles));
   const visible = new Set(cells.map(cell => cell.id)); for (const [id, node] of nodes) if (!visible.has(id)) {node.remove(); nodes.delete(id); cellContent.delete(id); transcriptVersion++;}
   let position: ChildNode | null = element('empty').nextSibling;
   for (const cell of cells) {

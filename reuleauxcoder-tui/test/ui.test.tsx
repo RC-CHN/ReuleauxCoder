@@ -92,6 +92,32 @@ test('input cursor follows rendered wrapping, grapheme width and the visible inp
   assert.equal(inputLayout(editor('draft'), 12, 2, false).cursor, undefined);
 });
 
+test('sent steering stays by the composer until actual context injection', async t => {
+  const b = await backend(); t.after(() => b.close());
+  const c = b.controller;
+  const app = render(<App controller={c}/>); t.after(() => app.cleanup());
+  await c.key('wait'); await c.key('', {return: true});
+  await until(() => c.session.cells.some(cell => cell.kind === 'user' && cell.body === 'wait'));
+  await c.key('Review the configuration'); await c.key('', {return: true});
+  await until(() => app.lastFrame()?.includes('QUEUED 1'));
+  assert.equal(c.composer.text, '');
+  assert.equal(c.session.cells.filter(cell => cell.kind === 'user').length, 1);
+  assert(app.lastFrame()?.includes('Prompt 1'), app.lastFrame());
+  assert(app.lastFrame()?.includes('Review the configuration'), app.lastFrame());
+  await b.peer.request('test.stream_output', {text: 'Before guidance'});
+  await until(() => app.lastFrame()?.includes('Before guidance'));
+  await c.key('Keep the next draft');
+  await b.peer.request('test.drain_steering');
+  await until(() => c.session.cells.filter(cell => cell.kind === 'user').length === 2);
+  await b.peer.request('test.stream_output', {text: 'After guidance'});
+  await until(() => app.lastFrame()?.includes('After guidance') && !app.lastFrame()?.includes('QUEUED'));
+  assert.deepEqual(c.session.cells.filter(cell => ['user', 'assistant'].includes(cell.kind)).map(cell => cell.body), ['wait', 'Before guidance', 'Review the configuration', 'After guidance']);
+  assert.equal(c.composer.text, 'Keep the next draft');
+  assert.equal(c.session.pendingInputs.size, 0);
+  await b.peer.request('runtime.stop');
+  await until(() => !b.client.state.running);
+});
+
 test('queued prompts and commands stay visible until the backend clears them', async t => {
   const b = await backend(); t.after(() => b.close());
   const c = b.controller;

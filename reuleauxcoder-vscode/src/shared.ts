@@ -30,6 +30,7 @@ export interface HostSnapshot {
   sampledAt?: number;
   steering?: {queued: number; pending: boolean; stopping: boolean; supported: boolean};
   cells: ChatCell[]; reviews: ReviewSummary[]; draftItems: DraftItem[]; draftText: string;
+  pendingInputs?: ChatCell[];
   error?: {kind: string; message: string}; notice?: string;
   catalog?: Action[]; commandSurface?: CommandSurface; interactions?: InlineInteraction[]; mode?: string;
   overview?: WorkOverview;
