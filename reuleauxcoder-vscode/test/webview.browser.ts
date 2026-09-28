@@ -181,6 +181,12 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
 
       const expected = Buffer.from('clipboard bytes 中文'.repeat(20));
       const finishUpload = holdDelivery();
+      const observation = await page.evaluateHandle(() => {
+        const state = {premature: false, observer: null as MutationObserver | null};
+        state.observer = new MutationObserver(() => {state.premature ||= document.querySelectorAll('#transcript .cell.user').length > 3;});
+        state.observer.observe(document.querySelector('#transcript')!, {childList: true, subtree: true});
+        return state;
+      });
       await page.locator('#composer').evaluate((node, values) => {
         const clipboardData = new DataTransfer(); clipboardData.items.add(new File([new Uint8Array(values)], 'paste.png', {type: 'image/png'}));
         node.dispatchEvent(new ClipboardEvent('paste', {clipboardData, bubbles: true, cancelable: true}));
@@ -189,6 +195,9 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert.equal(await page.locator('#composer').inputValue(), '');
       assert.equal(await page.locator('.cell.user').count(), 3);
       assert.equal(await page.locator('#pending-inputs .pending-input').count(), 1);
+      await page.waitForFunction(() => !!document.querySelector('#pending-inputs [data-status="sending"]'));
+      assert.equal(await observation.evaluate(state => state.premature), false, 'No upload progress callback may insert an unapplied message, even transiently');
+      await observation.evaluate(state => state.observer!.disconnect()); await observation.dispose();
       await page.locator('#composer').fill('keep this next draft');
       finishUpload();
       await page.waitForFunction(() => document.querySelectorAll('.cell.user').length === 4 && !document.querySelectorAll('.cell.user')[3].querySelector('.meta span'));

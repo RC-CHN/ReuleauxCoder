@@ -160,7 +160,7 @@ function render(state: HostSnapshot): void {
   const known = new Set([...state.cells, ...state.pendingInputs ?? []].map(cell => cell.id)); for (const id of known) {optimistic.delete(id); localSends.delete(id);}
   for (const id of consumedItems) if (!state.draftItems.some(item => item.id === id)) consumedItems.delete(id);
   const cells = state.cells;
-  pendingInputs.update([...state.pendingInputs ?? [], ...optimistic.values()], cell => cell.status === 'not-applied' || cell.status === 'uploading' || cell.status === 'rejected' && !!(localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles));
+  renderPendingInputs();
   const visible = new Set(cells.map(cell => cell.id)); for (const [id, node] of nodes) if (!visible.has(id)) {node.remove(); nodes.delete(id); cellContent.delete(id); transcriptVersion++;}
   let position: ChildNode | null = element('empty').nextSibling;
   for (const cell of cells) {
@@ -193,6 +193,9 @@ function render(state: HostSnapshot): void {
   transcriptScroll.update(transcriptVersion !== previousVersion);
 }
 let attachmentSignature = '';
+function renderPendingInputs(): void {
+  pendingInputs.update([...snapshot?.pendingInputs ?? [], ...optimistic.values()], cell => cell.status === 'not-applied' || cell.status === 'uploading' || cell.status === 'rejected' && !!(localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles));
+}
 function renderAttachments(): void {
   const items = (snapshot?.draftItems ?? []).filter(item => !consumedItems.has(item.id));
   const pendingUploads = [...uploads.values()].filter(upload => !upload.submission);
@@ -283,7 +286,7 @@ function queueUpload(upload: LocalUpload): void {
         offset = await request('upload.append', {id: started.id, offset, data: btoa(binary)});
         upload.progress = Math.round(offset / upload.file.size * 100); renderAttachments();
         const cell = upload.submission ? optimistic.get(upload.submission) : undefined;
-        if (cell) {cell.detail = `${upload.file.name} · ${t('Uploading {0}%', upload.progress)}`; cellNode(cell);}
+        if (cell) {cell.detail = `${upload.file.name} · ${t('Uploading {0}%', upload.progress)}`; renderPendingInputs();}
       }
       if (upload.cancelled) throw new Error(t('Attachment upload cancelled.'));
       upload.attachmentId = await request('upload.complete', {id: started.id});
