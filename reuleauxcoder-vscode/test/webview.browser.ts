@@ -31,6 +31,7 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as {port: number}).port;
   const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, args: ['--no-sandbox']});
+  const releases = new Set<() => void>();
   try {
     for (const language of ['en', 'zh']) {
       const page = await browser.newPage({viewport: {width: 340, height: 850}});
@@ -38,6 +39,12 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       let state: HostSnapshot = {hostId: 'host-1', revision: 1, draftRevision: 0, phase: 'ready', generation: 0, environment: 'SSH: workbench', workspace: '/workspace/project', model: 'test-model', running: false, cells: [], reviews: [], draftItems: [], draftText: ''};
       state.catalog = catalog;
       const messages: WebRequest[] = []; let failSend = false; let uploaded = Buffer.alloc(0); let surfaceId = 0;
+      let delivery: Promise<void> | undefined;
+      const holdDelivery = () => {
+        let release!: () => void;
+        delivery = new Promise<void>(resolve => {release = () => {delivery = undefined; releases.delete(release); resolve();};});
+        releases.add(release); return release;
+      };
       const publish = async () => {state.revision++; await page.evaluate(encoded => window.postMessage({kind: 'snapshot', snapshot: JSON.parse(encoded)}, '*'), JSON.stringify(state));};
       await page.exposeFunction('bridge', async (request: WebRequest) => {
         messages.push(request); let result: unknown = null; let error: string | undefined;
@@ -45,7 +52,7 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
         switch (request.action) {
           case 'ready': result = state; break;
           case 'send':
-            await delay(150);
+            await delivery;
             if (failSend) {failSend = false; error = 'Temporary bridge failure'; break;}
             if (!state.cells.some(cell => cell.id === data.id)) state.cells.push({id: data.id, role: 'user', text: data.text, status: 'applied'});
             state.draftItems = state.draftItems.filter(item => !data.items.includes(item.id)); await publish(); break;
@@ -139,6 +146,7 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert(expandedHeight > compactHeight && expandedHeight <= 200);
       await page.locator('#composer').fill('');
       assert.equal((await page.locator('#composer').boundingBox())!.height, compactHeight);
+      const finishOrdinary = holdDelivery();
       await page.locator('#composer').fill('ordinary <img src=x onerror=alert(1)>');
       await page.locator('#composer').press('Enter');
       assert.equal(await page.locator('#composer').inputValue(), '');
@@ -146,16 +154,19 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert.equal(await page.locator('#pending-inputs .pending-input').count(), 1);
       assert.equal(await page.locator('.cell img').count(), 0);
       await page.locator('#composer').fill('new draft');
+      finishOrdinary();
       await page.waitForFunction(() => document.querySelectorAll('.cell.user').length === 1 && document.querySelector('#pending-inputs')!.hasAttribute('hidden'));
       assert.equal(await page.locator('#composer').inputValue(), 'new draft');
       state.running = true; await publish();
+      const finishSteering = holdDelivery();
       await page.locator('#composer').fill('steering 中文 👩🏽‍💻');
       await page.locator('#composer').press('Enter');
       assert.equal(await page.locator('#composer').inputValue(), '');
       assert.equal(await page.locator('.cell.user').count(), 1);
       assert.equal(await page.locator('#pending-inputs .pending-input').count(), 1);
       await page.locator('#composer').press('Enter');
-      await delay(250);
+      finishSteering();
+      await page.waitForFunction(() => document.querySelectorAll('.cell.user').length === 2);
       assert.equal(messages.filter(message => message.action === 'send').length, 2);
 
       failSend = true;
@@ -163,11 +174,13 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.locator('.retry').waitFor();
       const failedId = messages.filter(message => message.action === 'send').at(-1)!.data!.id;
       await page.reload(); await page.locator('.retry').waitFor();
-      await page.locator('.retry').click(); await delay(250);
+      await page.locator('.retry').click();
+      await page.waitForFunction(() => document.querySelectorAll('.cell.user').length === 3);
       assert.equal(messages.filter(message => message.action === 'send').at(-1)!.data!.id, failedId);
       assert.equal(await page.locator('.cell.user').count(), 3);
 
       const expected = Buffer.from('clipboard bytes 中文'.repeat(20));
+      const finishUpload = holdDelivery();
       await page.locator('#composer').evaluate((node, values) => {
         const clipboardData = new DataTransfer(); clipboardData.items.add(new File([new Uint8Array(values)], 'paste.png', {type: 'image/png'}));
         node.dispatchEvent(new ClipboardEvent('paste', {clipboardData, bubbles: true, cancelable: true}));
@@ -177,6 +190,7 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       assert.equal(await page.locator('.cell.user').count(), 3);
       assert.equal(await page.locator('#pending-inputs .pending-input').count(), 1);
       await page.locator('#composer').fill('keep this next draft');
+      finishUpload();
       await page.waitForFunction(() => document.querySelectorAll('.cell.user').length === 4 && !document.querySelectorAll('.cell.user')[3].querySelector('.meta span'));
       assert.equal(await page.locator('#composer').inputValue(), 'keep this next draft');
       assert.deepEqual(messages.filter(message => message.action === 'send').at(-1)!.data!.items, ['attachment-1']);
@@ -362,5 +376,5 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await preview.screenshot({path: resolve(`../artifacts/vscode-concept/preview-sidebar-${language}.png`)});
       await preview.close();
     }
-  } finally {await browser.close(); await new Promise<void>(resolve => server.close(() => resolve()));}
+  } finally {for (const release of releases) release(); await browser.close(); await new Promise<void>(resolve => server.close(() => resolve()));}
 });
