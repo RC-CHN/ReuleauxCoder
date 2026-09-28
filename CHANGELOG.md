@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.11.5 - 2026-09-28
 
-- Keep TUI and VS Code sent drafts beside the composer until the core adds them to context, including every attachment upload progress update. Place applied steering after preceding assistant/tool output, split replies at that boundary, and ignore duplicate application events and late receipts. Correlate queue snapshots by submission/steering ID so stale previews cannot reappear after application, including identical message text. Preserve queued images, retry IDs, new drafts and view-reopen state; retain unapplied guidance outside history when a task stops.
+- Keep TUI and VS Code sent drafts beside the composer until the core adds them to context, including every attachment upload progress update. Place applied steering after preceding assistant/tool output, split replies at that boundary, and ignore duplicate application events and late receipts.
+- Correlate queue snapshots by submission/steering ID so stale previews cannot reappear after application, including identical message text. Preserve queued images, retry IDs, new drafts and view-reopen state; retain unapplied guidance outside history when a task stops and allow returning it to the draft.
 - Preserve selected pending-message text during upload progress without repeatedly serializing long drafts. Return keyboard focus to the composer when its focused guidance control disappears, retain draft cursor positions and unrelated focus, and clear the overview queue count as soon as guidance is applied.
 
 ## 0.11.4 - 2026-09-27
