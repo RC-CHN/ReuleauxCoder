@@ -80,6 +80,52 @@ test('live workbench: clocks, readable facts, stable disclosures and motion in b
   }
 });
 
+test('pending input keeps selections during progress and keyboard focus when controls disappear', {timeout: 30000}, async () => {
+  for (const language of ['en', 'zh-CN']) {
+    const state: HostSnapshot = {hostId: 'pending', revision: 1, draftRevision: 0, phase: 'ready', generation: 0, environment: 'Local', workspace: '/project', model: 'test', running: true, steering: {queued: 0, pending: false, stopping: false, supported: true}, reviews: [], cells: [], pendingInputs: [{id: 'guide', role: 'user', text: 'Check configuration before proceeding', status: 'uploading', detail: '10%'}], draftItems: [], draftText: ''};
+    const h = await browserHarness(() => state, undefined, language);
+    const {page} = h;
+    const publish = async () => {state.revision++; await h.publish();};
+    try {
+      const composer = page.locator('#composer'), summary = page.locator('#pending-inputs summary');
+      await composer.fill('Next draft');
+      await composer.evaluate(node => (node as HTMLTextAreaElement).setSelectionRange(2, 5));
+      await summary.click();
+      // Selecting a sent message to copy must survive attachment progress and admission.
+      await page.locator('.pending-body > div').first().evaluate(node => {
+        const range = document.createRange(); range.selectNodeContents(node);
+        const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+      });
+      state.pendingInputs![0].detail = '90%'; await publish();
+      await page.waitForFunction(() => document.querySelector('.pending-body .detail')?.textContent === '90%');
+      assert.equal(await page.evaluate(() => window.getSelection()?.toString()), state.pendingInputs![0].text);
+      state.pendingInputs![0].status = 'queued'; state.pendingInputs![0].detail = ''; state.steering!.queued = 1; await publish();
+      await page.locator('#steer').waitFor({state: 'visible'});
+      assert.equal(await page.evaluate(() => window.getSelection()?.toString()), state.pendingInputs![0].text);
+      assert(await page.locator('#pending-inputs details').evaluate(node => (node as HTMLDetailsElement).open));
+      await page.locator('#steer').focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(() => document.activeElement?.id === 'composer');
+      assert.equal(await composer.inputValue(), 'Next draft');
+      assert.deepEqual(await composer.evaluate(node => [(node as HTMLTextAreaElement).selectionStart, (node as HTMLTextAreaElement).selectionEnd]), [2, 5]);
+      await summary.focus();
+      state.cells.push({...state.pendingInputs![0], status: 'applied'}); state.pendingInputs = []; state.steering!.queued = 0; await publish();
+      await page.locator('#pending-inputs').waitFor({state: 'hidden'});
+      assert(await composer.evaluate(node => node === document.activeElement), 'Applying a focused queue entry returns focus to the draft');
+      state.pendingInputs = [{id: 'second', role: 'user', text: 'Another instruction', status: 'rejected'}]; await publish();
+      await page.locator('#pending-inputs .retry').click();
+      state.pendingInputs[0].status = 'sending'; await publish();
+      await page.locator('#pending-inputs .retry').waitFor({state: 'hidden'});
+      assert(await summary.evaluate(node => node === document.activeElement), 'Retry keeps keyboard navigation in the pending entry');
+      const other = page.locator('#attach'); await other.focus();
+      assert(await other.evaluate(node => node === document.activeElement));
+      state.pendingInputs = []; state.steering!.queued = 0; await publish();
+      await page.locator('#pending-inputs').waitFor({state: 'hidden'});
+      assert(await other.evaluate(node => node === document.activeElement), 'Background application must not steal focus from another control');
+      assert.deepEqual(h.errors, []);
+    } finally {await h.close();}
+  }
+});
+
 test('real core: send guidance, promote once, retain the next draft and stop separately', {timeout: 30000}, async () => {
   const b = await backend(); let revision = 0;
   const h = await browserHarness(() => ({...b.session.snapshot(), revision: ++revision}), async request => {
@@ -91,7 +137,12 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
     if (request.action === 'stop') return b.client.peer.request('runtime.stop');
     return null;
   }, 'zh-CN');
-  const changed = () => {void h.publish().catch(() => {});}; b.session.on('change', changed);
+  const applicationSnapshots: HostSnapshot[] = [];
+  const changed = () => {
+    const state = b.session.snapshot();
+    if (state.cells.some(cell => cell.role === 'user' && cell.text === '先检查配置')) applicationSnapshots.push(state);
+    void h.publish().catch(() => {});
+  }; b.session.on('change', changed);
   try {
     await h.page.locator('#composer').fill('wait'); await h.page.locator('#composer').press('Enter');
     await until(() => b.client.state.running);
@@ -118,6 +169,8 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
     assert.equal(await b.client.peer.request('test.drain_steering'), 1);
     await h.page.waitForFunction(() => document.querySelectorAll('#transcript .cell.user').length === 2);
     await h.page.locator('#pending-inputs').waitFor({state: 'hidden'});
+    assert(applicationSnapshots.length > 0);
+    assert(applicationSnapshots.every(state => state.overview?.queued === 0), 'Overview must clear the queued count at application, before a later runtime snapshot');
     await b.client.peer.request('test.stream_output', {text: '收到补充后的回复'});
     await h.page.waitForFunction(() => document.querySelectorAll('#transcript .cell.assistant').length === 2);
     assert.deepEqual((await h.page.locator('#transcript .cell .body').allTextContents()).map(text => text.trim()), ['wait', '之前的回复', '先检查配置', '收到补充后的回复']);

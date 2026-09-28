@@ -25,7 +25,7 @@ const composer = element<HTMLTextAreaElement>('composer');
 const transcript = element('transcript');
 const transcriptScroll = new TranscriptScroll(transcript, element('new-output'));
 const clock = new LiveClock();
-const activity = new ActivityView(element('activity'), element('steering-status'), request, notice);
+const activity = new ActivityView(element('activity'), element('steering-status'), request, notice, composer);
 decorateIcons();
 const workbench = new ComposerWorkbench(element('workbench'), composer, request, notice, saveDraft, clock);
 const attention = new AttentionCards(element('reviews'), request);
@@ -35,7 +35,7 @@ const images = new ImageGallery(request);
 const pendingInputs = new PendingInputs(element('pending-inputs'), images, id => void retrySend(id), id => {
   if (localSends.has(id)) restoreSend(id);
   else void request('restorePending', {id}).catch(notice);
-});
+}, composer);
 const toolCells = new ToolCells(url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice), updateToolToggle);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();

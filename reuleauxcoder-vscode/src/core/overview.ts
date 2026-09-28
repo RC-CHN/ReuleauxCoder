@@ -12,9 +12,9 @@ export class WorkOverviewStore {
   private data: WorkOverview = this.empty();
   constructor(private changed: () => void) {}
   private empty(): WorkOverview {return {contextTokens: 0, contextLimit: 0, approvalPolicy: '', mcpTools: 0, queued: 0, plan: [], progress: '', activity: '', jobs: [], processes: [], diagnostics: [], warnings: []};}
-  snapshot(): WorkOverview {
+  snapshot(queuedSteering: number): WorkOverview {
     const state = this.client?.state;
-    return {...this.data, goal: state?.goal, contextTokens: state?.context_tokens ?? 0, contextLimit: state?.context_limit ?? 0, approvalPolicy: state?.approval_policy ?? '', mcpTools: state?.mcp_tools ?? 0, queued: (state?.queued_commands.length ?? 0) + (state?.queued_steering.length ?? 0)};
+    return {...this.data, goal: state?.goal, contextTokens: state?.context_tokens ?? 0, contextLimit: state?.context_limit ?? 0, approvalPolicy: state?.approval_policy ?? '', mcpTools: state?.mcp_tools ?? 0, queued: (state?.queued_commands.length ?? 0) + queuedSteering};
   }
   bind(client: RuntimeClient): void {
     this.dispose(); this.client = client; this.data = this.empty(); this.generation = client.state.session_generation;

@@ -9,7 +9,7 @@ export class ActivityView {
   private marker = document.createElement('span');
   private label = document.createElement('span');
 
-  constructor(private root: HTMLElement, private steering: HTMLElement, private request: (action: string, data?: WebRequest['data']) => Promise<any>, private notice: (error: unknown) => void) {
+  constructor(private root: HTMLElement, private steering: HTMLElement, private request: (action: string, data?: WebRequest['data']) => Promise<any>, private notice: (error: unknown) => void, private composer: HTMLTextAreaElement) {
     this.marker.className = 'activity-mark'; this.marker.setAttribute('aria-hidden', 'true');
     for (let i = 0; i < 3; i++) this.marker.append(document.createElement('i'));
     this.label.className = 'activity-label'; root.replaceChildren(this.marker, this.label);
@@ -30,11 +30,14 @@ export class ActivityView {
       this.root.setAttribute('aria-label', this.root.title); reveal(this.root);
     }
     const visible = state.phase === 'ready' && state.running && !!status && (status.queued > 0 || status.pending);
+    const disabled = this.busy || !!status?.pending || !!status?.stopping || !status?.supported;
+    // Move focus before hiding/disabling the action; never interrupt other controls.
+    if ((!visible || disabled) && this.steering.contains(document.activeElement)) this.composer.focus({preventScroll: true});
     const wasHidden = this.steering.hidden; this.steering.hidden = !visible;
     if (!visible) return;
     this.steering.querySelector<HTMLElement>('[data-steering-message]')!.textContent = status!.stopping ? t('Stopping; unapplied guidance stays beside the input.') : status!.pending ? t('Interrupting the current step to apply your guidance…') : t('{0} queued · applies after the current step', status!.queued);
     const button = this.steering.querySelector('button')!;
-    button.disabled = this.busy || status!.pending || status!.stopping || !status!.supported;
+    button.disabled = disabled;
     button.textContent = status!.pending || this.busy ? t('Applying…') : t('Guide now');
     button.title = status!.supported ? t('Interrupt the current step and apply queued messages without stopping the task.') : t('Update the core to apply guidance immediately.');
     this.steering.setAttribute('aria-busy', String(this.busy || status!.pending));
