@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.6 - 2026-09-30
+
 - Report explicit `--resume` failures with a concise error and a recovery hint in CLI/TUI startup, without a Python traceback or changes to the unreadable session.
 - Keep startup usable when automatic workspace-session recovery encounters missing or unreadable files: warn, skip unreadable inventory entries, and start a new session if the selected replay cannot load. Preserve the failed session's files and keep explicit resume validation strict. Ignore empty reservations and unsent image caches during discovery, including caches beside legacy JSON sessions; show localized startup warnings directly in the VS Code conversation.
 
