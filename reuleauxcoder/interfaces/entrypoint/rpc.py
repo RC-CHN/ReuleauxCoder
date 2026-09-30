@@ -14,6 +14,7 @@ from reuleauxcoder.extensions.command.builtin import (
 )
 from reuleauxcoder.infrastructure.rpc.peer import RpcPeer
 from reuleauxcoder.infrastructure.rpc.transport import MemoryTransport, StreamTransport
+from reuleauxcoder.infrastructure.persistence.session_store import SessionRestoreError
 
 
 def create_server(ctx, peer, profile):
@@ -88,7 +89,17 @@ def run_stdio(options):
         server = None
         peer = RpcPeer(StreamTransport(reader, writer))
         try:
-            ctx = runner.initialize()
+            try:
+                ctx = runner.initialize()
+            except SessionRestoreError as error:
+                print(f"rcoder: {error}", file=sys.stderr)
+                if options.resume_session_id:
+                    print(
+                        "Run again without --resume to skip unreadable sessions, "
+                        "or choose another session ID.",
+                        file=sys.stderr,
+                    )
+                return 1
             server = create_server(
                 ctx, peer, UIProfile("cli", "RPC", frozenset(UICapability))
             )

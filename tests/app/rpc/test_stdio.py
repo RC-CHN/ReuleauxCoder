@@ -13,6 +13,28 @@ from reuleauxcoder.infrastructure.rpc.transport import StreamTransport
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
+def _startup_command(workspace, *args):
+    config = workspace / "config.yaml"
+    config.write_text("""app:
+  api_key: test-key
+  model: test-model
+session:
+  auto_save: false
+lsp:
+  enabled: false
+skills:
+  enabled: false
+""")
+    # Isolate global config, while exercising the real CLI bootstrap and runner.
+    script = """from pathlib import Path
+from reuleauxcoder.services.config.loader import ConfigLoader
+ConfigLoader.GLOBAL_CONFIG_PATH = Path('no-global-config.yaml')
+from reuleauxcoder.interfaces.cli.main import main
+raise SystemExit(main())
+"""
+    return [sys.executable, "-c", script, "-c", str(config), *args]
+
+
 @pytest.mark.parametrize("damaged", [None, "manifest-missing", "manifest-corrupt", "replay-missing", "replay-corrupt"])
 def test_stdio_backend_handshake_commands_and_clean_eof(tmp_path, damaged):
     tmp_path = tmp_path / "安全随手拍"
@@ -29,27 +51,10 @@ def test_stdio_backend_handshake_commands_and_clean_eof(tmp_path, damaged):
         else:
             path.write_text('{"private content":', encoding="utf-8")
         old_files = {p: p.read_bytes() for p in (sessions / old_id).rglob("*") if p.is_file()}
-    config = tmp_path / "config.yaml"
-    config.write_text("""app:
-  api_key: test-key
-  model: test-model
-session:
-  auto_save: false
-lsp:
-  enabled: false
-skills:
-  enabled: false
-""")
-    # Isolate global config, while exercising the real CLI bootstrap and runner.
-    script = """from pathlib import Path
-from reuleauxcoder.services.config.loader import ConfigLoader
-ConfigLoader.GLOBAL_CONFIG_PATH = Path('no-global-config.yaml')
-from reuleauxcoder.interfaces.cli.main import main
-main()
-"""
+    command = _startup_command(tmp_path, "--rpc-stdio")
     with (tmp_path / "stderr.log").open("w+") as errors:
         process = subprocess.Popen(
-            [sys.executable, "-c", script, "--rpc-stdio", "-c", str(config)],
+            command,
             cwd=tmp_path,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -68,7 +73,7 @@ main()
             assert client.configuration.describe()["api_version"] == 2
             inspected = client.configuration.inspect()
             assert inspected["valid"]
-            assert inspected["sources"][-1]["path"] == str(config)
+            assert inspected["sources"][-1]["path"] == str(tmp_path / "config.yaml")
             assert "test-key" not in str(inspected)
             assert client.state.model == "test-model"
             if damaged:
@@ -91,3 +96,34 @@ main()
                 process.kill()
                 process.wait()
             process.stdout.close()
+
+
+@pytest.mark.parametrize("rpc_stdio", [False, True], ids=["cli", "stdio"])
+@pytest.mark.parametrize("damaged", [False, True], ids=["missing", "corrupt"])
+def test_explicit_resume_failure_is_actionable_and_preserves_files(tmp_path, rpc_stdio, damaged):
+    sessions = tmp_path / ".rcoder/sessions"
+    session_id = "missing-session"
+    old_files = {}
+    if damaged:
+        session_id = SessionStore(sessions).save(
+            messages=[{"role": "user", "content": "private session content"}],
+            model="test-model",
+        )
+        (sessions / session_id / "manifest.json").write_text('{"private content":', encoding="utf-8")
+        old_files = {p: p.read_bytes() for p in sessions.rglob("*") if p.is_file()}
+    flags = ["--rpc-stdio"] if rpc_stdio else []
+    result = subprocess.run(
+        _startup_command(tmp_path, *flags, "--resume", session_id),
+        cwd=tmp_path,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "Session restore failed" in result.stderr
+    assert "Run again without --resume" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "private content" not in result.stderr
+    assert {p: p.read_bytes() for p in sessions.rglob("*") if p.is_file()} == old_files

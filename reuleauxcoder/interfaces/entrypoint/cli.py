@@ -84,6 +84,11 @@ def main():
             except Exception:
                 pass
         _terminal_status(str(error), tone=DisplayTone.ERROR)
+        if options.resume_session_id:
+            _terminal_status(
+                "Run again without --resume to skip unreadable sessions, "
+                "or choose another session ID."
+            )
         return 1
     except KeyboardInterrupt:
         if runner is not None:
