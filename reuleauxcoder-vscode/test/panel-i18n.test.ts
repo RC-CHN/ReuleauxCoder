@@ -44,6 +44,8 @@ test('known notices and confirmation wrappers translate without changing embedde
   setLocale('zh-CN');
   try {
     assert.equal(coreMessage("Switched session main model profile to 'code' (provider/enabled)"), '当前会话主模型已切换为“code”（provider/enabled）');
+    assert.equal(coreMessage('Could not restore the previous workspace session. Starting a new session; original files were kept. (phase=replay_read, error_type=FileNotFoundError, ref=replay)'), '无法恢复上次的工作区会话，已新建会话；原文件已保留。（phase=replay_read, error_type=FileNotFoundError, ref=replay）');
+    assert.equal(coreMessage('Some saved session data could not be read. Unreadable data was skipped; original files were kept. (phase=manifest_decode)'), '部分会话数据无法读取，已跳过；原文件已保留。（phase=manifest_decode）');
     assert.equal(coreMessage('Updated workspace approval rule and saved to C:\\My Code\\config.yaml'), '已更新工作区权限规则，并保存到 C:\\My Code\\config.yaml');
     assert.equal(coreMessage("Skill 'enabled' disabled."), '技能“enabled”已停用。');
     assert.equal(coreMessage('Skills reloaded: 19 discovered, 17 active, +2 added, ~1 updated.'), '已刷新技能：共 19 个 · 已启用 17 个 · 新增 +2 · 更新 ~1。');

@@ -924,13 +924,17 @@ class SessionStore:
                 return None
 
             data = None
+            if directory_status is not None and not stat.S_ISDIR(directory_status.st_mode):
+                raise SessionRestoreError(
+                    phase="session_discovery",
+                    error_type="NotADirectoryError",
+                    ref="session_directory",
+                )
+            if directory_status is not None and legacy_status is not None:
+                # An unsent image cache must not shadow a legacy JSON session.
+                if self._is_reserved_session_directory(directory):
+                    directory_status = None
             if directory_status is not None:
-                if not stat.S_ISDIR(directory_status.st_mode):
-                    raise SessionRestoreError(
-                        phase="session_discovery",
-                        error_type="NotADirectoryError",
-                        ref="session_directory",
-                    )
                 session = self._load_session_directory(
                     directory,
                     expected_session_id=session_id,
@@ -1234,20 +1238,12 @@ class SessionStore:
                 )
                 continue
             try:
-                next(entry.iterdir())
-            except StopIteration:
-                # Resolving a new ledger path reserves its directory before
-                # the first durable event. With no artifacts there is no
-                # persisted session to restore or diagnose.
-                continue
-            except OSError as error:
+                if self._is_reserved_session_directory(entry):
+                    continue
+            except SessionRestoreError as error:
                 canonical_keys.add(entry.name)
                 record_failure(
-                    SessionRestoreError(
-                        phase="session_discovery",
-                        error_type=_safe_error_type(error),
-                        ref="session_directory",
-                    ),
+                    error,
                     source_path=manifest_path,
                 )
                 continue
@@ -1376,6 +1372,21 @@ class SessionStore:
     ) -> SessionMetadata | None:
         """Return the most recent session metadata, if any."""
         return self.get_latest_result(fingerprint=fingerprint).session
+
+    @staticmethod
+    def _is_reserved_session_directory(directory: Path) -> bool:
+        """Empty reservations and unsent image caches contain no saved conversation."""
+        try:
+            for child in directory.iterdir():
+                if child.name != "images" or not stat.S_ISDIR(child.lstat().st_mode):
+                    return False
+        except OSError as error:
+            raise SessionRestoreError(
+                phase="session_discovery",
+                error_type=_safe_error_type(error),
+                ref="session_directory",
+            ) from None
+        return True
 
     def get_latest_result(
         self, *, fingerprint: str | None = DEFAULT_SESSION_FINGERPRINT

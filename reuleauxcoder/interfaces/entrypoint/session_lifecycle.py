@@ -14,6 +14,7 @@ from reuleauxcoder.app.runtime.session_state import (
 )
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.config.models import Config
+from reuleauxcoder.domain.session.models import SessionRestoreIssue
 from reuleauxcoder.app.ui_events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.entrypoint.dependencies import AppDependencies, AppOptions
 from reuleauxcoder.infrastructure.persistence.session_store import SessionRestoreError
@@ -91,7 +92,8 @@ def _report_inventory_issues(
     for issue in safe_issues:
         observe_session_callback(
             ui_bus.warning,
-            f"Session inventory degraded ({issue.render()}).",
+            "Some saved session data could not be read. Unreadable data was "
+            f"skipped; original files were kept. ({issue.render()})",
             kind=UIEventKind.SESSION,
             phase=issue.phase,
             error_type=issue.error_type,
@@ -209,12 +211,35 @@ def restore_session(
             ) from None
     elif options.auto_resume_latest:
         report_progress("Looking for the latest compatible session...")
-        latest_result = session_store.get_latest_result(fingerprint=current_fingerprint)
-        latest = latest_result.session
-        inventory_issues = tuple(latest_result.issues)
+        # Automatic startup can use readable entries while explicit resume
+        # continues to require the requested snapshot to validate completely.
+        inventory = session_store.list_result(limit=1, fingerprint=current_fingerprint)
+        latest = next(iter(inventory.sessions), None)
+        inventory_issues = tuple(inventory.issues)
         if latest:
             report_progress(f"Restoring latest session {latest.id}...")
-            loaded = session_store.load(latest.id)
+            try:
+                loaded = session_store.load(latest.id)
+                if loaded is None:
+                    raise SessionRestoreError(
+                        phase="session_load",
+                        error_type="FileNotFoundError",
+                        ref="session",
+                    )
+            except SessionRestoreError as error:
+                loaded = None
+                issue = SessionRestoreIssue(
+                    phase=error.phase, error_type=error.error_type, ref=error.ref,
+                )
+                report_ui(
+                    ui_bus.warning,
+                    "Could not restore the previous workspace session. Starting a "
+                    f"new session; original files were kept. ({issue.render()})",
+                    kind=UIEventKind.SESSION,
+                    phase=issue.phase,
+                    error_type=issue.error_type,
+                    ref=issue.ref,
+                )
             if loaded:
                 apply_session_runtime_state(loaded, config, agent)
                 _report_inventory_issues(
@@ -265,12 +290,6 @@ def restore_session(
                     f"Restored {len(loaded.messages)} message(s) and "
                     f"{len(loaded.history_events)} history event(s)."
                 )
-            else:
-                raise SessionRestoreError(
-                    phase="session_load",
-                    error_type="FileNotFoundError",
-                    ref="session",
-                ) from None
         else:
             report_progress(
                 "No compatible saved session found; starting a new session."

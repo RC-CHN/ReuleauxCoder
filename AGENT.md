@@ -203,6 +203,8 @@ New sessions use a directory containing append-only `events.jsonl`, canonical `r
 Session invariants:
 
 - inventory is newest-first and fingerprint-scoped by default;
+- automatic startup warns and skips unreadable inventory entries, or starts a new session when the selected replay cannot load, preserving failed session files; explicit resume remains strict;
+- empty reservations and unsent image caches are not saved sessions and do not shadow legacy JSON snapshots;
 - previews use the latest meaningful user request and omit session lifecycle markers;
 - numeric restore resolves against the current 20-entry fingerprint list;
 - explicit IDs may cross fingerprints but emit a warning;

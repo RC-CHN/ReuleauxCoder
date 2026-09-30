@@ -10,7 +10,7 @@ from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
 from reuleauxcoder.domain.hooks.registry import HookRegistry
 from reuleauxcoder.domain.session.models import SessionRestoreIssue, SessionRuntimeState
 from reuleauxcoder.infrastructure.persistence.session_store import (
-    LatestSessionResult,
+    SessionInventoryResult,
     SessionRestoreError,
     SessionStore,
 )
@@ -187,9 +187,10 @@ def test_auto_resume_uses_latest_and_issues_from_the_same_inventory_scan(
         def set_progress_callback(self, _progress) -> None:
             pass
 
-        def get_latest_result(self, *, fingerprint):
+        def list_result(self, *, limit, fingerprint):
             assert fingerprint == "local"
-            return LatestSessionResult(session=metadata, issues=(issue,))
+            assert limit == 1
+            return SessionInventoryResult(sessions=(metadata,), issues=(issue,))
 
         @property
         def inventory_issues(self):
@@ -278,11 +279,11 @@ def test_restore_progress_keyboard_interrupt_remains_user_control(
         runner._restore_session(_build_config(tmp_path), FakeAgent(), UIEventBus())
 
 
-def test_auto_resume_fails_closed_when_corrupt_manifest_scope_is_unknown(
+def test_auto_resume_warns_and_skips_unreadable_inventory_entries(
     tmp_path: Path,
 ) -> None:
     store = SessionStore(tmp_path)
-    store.save(
+    local_id = store.save(
         messages=[{"role": "user", "content": "local"}],
         model="model",
         fingerprint="local",
@@ -297,10 +298,12 @@ def test_auto_resume_fails_closed_when_corrupt_manifest_scope_is_unknown(
     agent = FakeAgent(fingerprint="local")
     ui_bus = UIEventBus()
 
-    with pytest.raises(SessionRestoreError) as raised:
-        runner._restore_session(_build_config(tmp_path), agent, ui_bus)
+    resumed, _, _ = runner._restore_session(_build_config(tmp_path), agent, ui_bus)
 
-    assert raised.value.phase == "manifest_decode"
+    assert resumed == local_id
+    assert agent.state.messages[0]["content"] == "local"
+    assert any(event.level == UIEventLevel.WARNING and event.data.get("phase") == "manifest_decode" for event in ui_bus.history_snapshot())
+    assert (tmp_path / foreign_id / "manifest.json").read_text() == '{"broken":'
 
 
 def test_restore_session_manual_resume_warns_on_cross_fingerprint_and_restores_runtime(
@@ -398,7 +401,7 @@ def test_explicit_resume_missing_fails_without_generating_new_session(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_auto_resume_selected_session_disappearing_is_terminal(
+def test_auto_resume_selected_session_disappearing_starts_new_session(
     tmp_path: Path,
 ) -> None:
     store = SessionStore(tmp_path)
@@ -410,14 +413,14 @@ def test_auto_resume_selected_session_disappearing_is_terminal(
         def set_progress_callback(self, _progress) -> None:
             pass
 
-        def get_latest_result(self, *, fingerprint):
-            return store.get_latest_result(fingerprint=fingerprint)
+        def list_result(self, *, limit, fingerprint):
+            return store.list_result(limit=limit, fingerprint=fingerprint)
 
         def load(self, _session_id):
             return None
 
         def generate_session_id(self):
-            raise AssertionError("must not generate a replacement session")
+            return "replacement-session"
 
     vanishing = VanishingStore()
     runner = AppRunner(
@@ -426,37 +429,46 @@ def test_auto_resume_selected_session_disappearing_is_terminal(
     )
     agent = FakeAgent()
 
-    with pytest.raises(SessionRestoreError) as raised:
-        runner._restore_session(_build_config(tmp_path), agent, UIEventBus())
+    ui_bus = UIEventBus()
+    restored, _, _ = runner._restore_session(_build_config(tmp_path), agent, ui_bus)
 
-    assert raised.value.phase == "session_load"
-    assert raised.value.error_type == "FileNotFoundError"
-    assert raised.value.ref == "session"
-    assert getattr(agent, "current_session_id", None) is None
+    assert restored == agent.current_session_id == "replacement-session"
+    assert agent.session_restore_issues == ()
+    assert any(event.data.get("phase") == "session_load" and event.data.get("error_type") == "FileNotFoundError" for event in ui_bus.history_snapshot())
+    assert any(event.level == UIEventLevel.WARNING and "Starting a new session" in event.message for event in ui_bus.history_snapshot())
     assert _session_entry_names(tmp_path) == {session_id}
 
 
-def test_auto_resume_propagates_corrupt_manifest_instead_of_clean_start(
-    tmp_path: Path,
+@pytest.mark.parametrize("artifact", ["manifest", "replay"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_auto_resume_read_failure_warns_and_preserves_original_files(
+    tmp_path: Path, artifact: str, missing: bool,
 ) -> None:
     store = SessionStore(tmp_path)
     session_id = store.save(
         messages=[{"role": "user", "content": "saved"}], model="model"
     )
     sentinel = "auto-resume-secret-must-not-leak"
-    (tmp_path / session_id / "manifest.json").write_text(
-        '{"broken":"' + sentinel,
-        encoding="utf-8",
-    )
+    path = tmp_path / session_id / f"{artifact}.json"
+    if missing:
+        path.unlink()
+    else:
+        path.write_text('{"broken":"' + sentinel, encoding="utf-8")
+    original = {p: p.read_bytes() for p in (tmp_path / session_id).rglob("*") if p.is_file()}
     runner = _build_runner(auto_resume_latest=True)
     agent = FakeAgent()
 
-    with pytest.raises(SessionRestoreError) as raised:
-        runner._restore_session(_build_config(tmp_path), agent, UIEventBus())
+    ui_bus = UIEventBus()
+    restored, _, _ = runner._restore_session(_build_config(tmp_path), agent, ui_bus)
 
-    assert raised.value.phase == "manifest_decode"
-    assert sentinel not in str(raised.value)
-    assert getattr(agent, "current_session_id", None) is None
+    assert restored == agent.current_session_id and restored != session_id
+    assert agent.messages == []
+    assert agent.active_mode == "coder"
+    warnings = [event for event in ui_bus.history_snapshot() if event.level == UIEventLevel.WARNING]
+    assert any(event.data.get("phase") == f"{artifact}_{'read' if missing else 'decode'}" for event in warnings)
+    assert any("original files were kept" in event.message for event in warnings)
+    assert sentinel not in str(warnings)
+    assert {p: p.read_bytes() for p in (tmp_path / session_id).rglob("*") if p.is_file()} == original
     assert _session_entry_names(tmp_path) == {session_id}
 
 
@@ -541,7 +553,7 @@ def test_missing_persisted_approval_action_cannot_inherit_allow_default(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     config = _build_config(tmp_path)
     config.approval.default_mode = "allow"
-    runner = _build_runner(auto_resume_latest=True)
+    runner = _build_runner(resume_session_id=session_id, auto_resume_latest=False)
     agent = FakeAgent()
 
     with pytest.raises(SessionRestoreError) as raised:
@@ -573,7 +585,7 @@ def test_invalid_persisted_plan_fails_before_mutating_live_agent(
     agent = FakeAgent()
     agent.messages.append({"role": "user", "content": "live state"})
     agent.active_mode = "debugger"
-    runner = _build_runner(auto_resume_latest=True)
+    runner = _build_runner(resume_session_id=session_id, auto_resume_latest=False)
 
     with pytest.raises(SessionRestoreError) as raised:
         runner._restore_session(_build_config(tmp_path), agent, UIEventBus())

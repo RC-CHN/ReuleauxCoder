@@ -830,5 +830,7 @@
   "Elapsed time": "已用时间",
   "No output": "无输出",
   "Waiting for output…": "等待输出…",
-  "{0} checks": "已检查 {0} 次"
+  "{0} checks": "已检查 {0} 次",
+  "Some saved session data could not be read. Unreadable data was skipped; original files were kept. ({0})": "部分会话数据无法读取，已跳过；原文件已保留。（{0}）",
+  "Could not restore the previous workspace session. Starting a new session; original files were kept. ({0})": "无法恢复上次的工作区会话，已新建会话；原文件已保留。（{0}）"
 }

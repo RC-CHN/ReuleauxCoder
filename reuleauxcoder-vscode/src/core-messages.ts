@@ -21,6 +21,8 @@ export function templateText(text: string, key: MessageKey, labels: readonly num
 }
 
 const notices: readonly [MessageKey, ...number[]][] = [
+  ['Some saved session data could not be read. Unreadable data was skipped; original files were kept. ({0})'],
+  ['Could not restore the previous workspace session. Starting a new session; original files were kept. ({0})'],
   ['Session saved: {0}'], ['Session auto-saved: {0}'], ['Resume with: rcoder -r {0}'], ['Resume previous with: /session {0}'],
   ["Switched session main model profile to '{0}' ({1})"], ["Switched session sub-agent model profile to '{0}' ({1})"],
   ["Set global main model profile to '{0}' ({1}) and saved to {2}"], ["Set global sub-agent model profile to '{0}' ({1}) and saved to {2}"],

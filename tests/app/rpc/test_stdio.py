@@ -2,15 +2,33 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from reuleauxcoder.app.commands.capabilities import UIProfile, UICapability
 from reuleauxcoder.app.commands.requests import ActionRequest
 from reuleauxcoder.app.rpc.client import RuntimeClient
 from reuleauxcoder.app.ui_events import UIEventBus
 from reuleauxcoder.infrastructure.rpc.peer import RpcPeer
 from reuleauxcoder.infrastructure.rpc.transport import StreamTransport
+from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
-def test_stdio_backend_handshake_commands_and_clean_eof(tmp_path):
+@pytest.mark.parametrize("damaged", [None, "manifest-missing", "manifest-corrupt", "replay-missing", "replay-corrupt"])
+def test_stdio_backend_handshake_commands_and_clean_eof(tmp_path, damaged):
+    tmp_path = tmp_path / "安全随手拍"
+    tmp_path.mkdir()
+    old_files = {}
+    old_id = None
+    if damaged:
+        sessions = tmp_path / ".rcoder/sessions"
+        old_id = SessionStore(sessions).save(messages=[{"role": "user", "content": "previous task"}], model="test-model")
+        artifact, failure = damaged.split("-")
+        path = sessions / old_id / f"{artifact}.json"
+        if failure == "missing":
+            path.unlink()
+        else:
+            path.write_text('{"private content":', encoding="utf-8")
+        old_files = {p: p.read_bytes() for p in (sessions / old_id).rglob("*") if p.is_file()}
     config = tmp_path / "config.yaml"
     config.write_text("""app:
   api_key: test-key
@@ -53,6 +71,10 @@ main()
             assert inspected["sources"][-1]["path"] == str(config)
             assert "test-key" not in str(inspected)
             assert client.state.model == "test-model"
+            if damaged:
+                assert client.state.session_id != old_id
+                assert any("original files were kept" in event.message for event in info["startup_events"])
+                assert "private content" not in str(info["startup_events"])
             client.submit("/help")
             client.wait_idle()
             client.submit(ActionRequest("thinking.set_effort", {"level": "high"}))
@@ -62,6 +84,7 @@ main()
             assert process.wait(timeout=15) == 0
             errors.seek(0)
             assert "Traceback" not in errors.read()
+            assert all(path.read_bytes() == data for path, data in old_files.items())
         finally:
             client.close()
             if process.poll() is None:

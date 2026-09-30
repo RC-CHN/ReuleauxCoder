@@ -11,6 +11,14 @@ function fixture() {
   return {client, transcript, event, close() {transcript.dispose(); client.close();}};
 }
 
+test('startup recovery warnings are visible in the conversation without opening the overview', () => {
+  const f = fixture();
+  try {
+    f.client.emit('initialized', {recent_conversation: [{role: 'user', content: 'Earlier task'}], startup_events: [{level: 'info', message: 'Connected'}, {level: 'warning', message: 'Unreadable session skipped'}, {level: 'error', message: 'Another startup diagnostic'}]});
+    assert.deepEqual(f.transcript.cells.map(cell => [cell.role, cell.text]), [['user', 'Earlier task'], ['notice', 'Unreadable session skipped'], ['notice', 'Another startup diagnostic']]);
+  } finally {f.close();}
+});
+
 test('application proof places steering after preceding output, preserving images and distinct identical messages', () => {
   const f = fixture(), t = f.transcript;
   try {

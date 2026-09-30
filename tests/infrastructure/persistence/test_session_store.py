@@ -1,11 +1,13 @@
 import json
 import os
 import threading
+from io import BytesIO
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from reuleauxcoder.domain.context.manager import MESSAGE_TOKEN_KEY
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
@@ -24,6 +26,7 @@ from reuleauxcoder.infrastructure.persistence.session_store import (
     SessionRestoreError,
     SessionStore,
 )
+from reuleauxcoder.infrastructure.persistence.images import ImageStore
 
 
 def _request_envelopes(
@@ -306,6 +309,39 @@ def test_empty_reserved_session_directory_is_not_a_persisted_session(
     inventory = store.get_latest_result(fingerprint="local")
     assert inventory.session is None
     assert inventory.issues == ()
+
+
+@pytest.mark.parametrize("saved", [False, True])
+def test_unsent_image_cache_does_not_block_session_discovery(tmp_path: Path, saved: bool) -> None:
+    store = SessionStore(tmp_path)
+    saved_id = store.save(messages=[{"role": "user", "content": "saved"}], model="model") if saved else None
+    picture = BytesIO()
+    Image.new("RGB", (2, 2)).save(picture, format="PNG")
+    images = ImageStore(tmp_path)
+    reference = images.import_bytes("session-unsent", picture.getvalue())
+
+    latest = store.get_latest_result()
+
+    assert (latest.session.id if latest.session else None) == saved_id
+    assert latest.issues == ()
+    assert images.data_url("session-unsent", reference).startswith("data:image/")
+
+
+def test_image_cache_does_not_shadow_legacy_session(tmp_path: Path) -> None:
+    session = Session(id="legacy-images", model="model", saved_at="2026-09-30T10:00:00", messages=[{"role": "user", "content": "saved"}])
+    legacy = tmp_path / "legacy-images.json"
+    legacy.write_text(json.dumps(session.to_dict()), encoding="utf-8")
+    cache = tmp_path / session.id / "images"
+    cache.mkdir(parents=True)
+    (cache / "retained").write_bytes(b"image bytes")
+    store = SessionStore(tmp_path)
+
+    assert store.get_latest_result().session.id == session.id
+    restored = store.load(session.id)
+
+    assert restored.messages[0]["content"] == "saved"
+    assert (tmp_path / session.id / "manifest.json").is_file()
+    assert (cache / "retained").read_bytes() == b"image bytes"
 
 
 def test_session_preview_uses_latest_real_user_request(tmp_path: Path) -> None:

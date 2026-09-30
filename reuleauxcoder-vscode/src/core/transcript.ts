@@ -25,6 +25,7 @@ export class Transcript extends EventEmitter implements SubmissionSink {
     const listen = (name: string, callback: (...args: any[]) => void) => {client.on(name, callback); this.subscriptions.push(() => client.off(name, callback));};
     listen('initialized', info => {
       for (const message of info.recent_conversation ?? []) this.add(message.role === 'user' ? 'user' : 'assistant', message.content).images = message.images;
+      for (const event of info.startup_events ?? []) if (event.level === 'warning' || event.level === 'error') this.add('notice', event.message);
       this.emit('change');
     });
     listen('state', state => {
