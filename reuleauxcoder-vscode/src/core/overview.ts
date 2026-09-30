@@ -43,9 +43,18 @@ export class WorkOverviewStore {
       case 'PlanUpdated': this.data.plan = payload.items ?? []; break;
       case 'ProgressReported': this.data.progress = payload.summary ?? ''; break;
       case 'ToolCallStarted': this.activeTools.set(payload.tool_call_id, payload.tool_name); this.data.activity = payload.tool_name; break;
-      case 'StreamChunk': this.data.activity = payload.reasoning ? 'Reasoning' : 'Writing'; break;
-      case 'ReasoningDelta': this.data.activity = 'Reasoning'; break;
-      case 'AssistantContentDelta': this.data.activity = 'Writing'; break;
+      case 'StreamChunk': if (payload.text) this.data.activity = payload.reasoning ? 'Reasoning' : 'Writing'; break;
+      case 'ReasoningDelta': if (payload.text) this.data.activity = 'Reasoning'; break;
+      case 'AssistantContentDelta': if (payload.text) this.data.activity = 'Writing'; break;
+      case 'OperationPhaseChanged':
+        // A new request (including a retry) has no observed output yet. Transport
+        // "streaming" alone can be an empty/role chunk, so it is not reasoning.
+        if (payload.status === 'running' && !this.activeTools.size && (
+          payload.operation === 'model' && ['connect', 'await_first_chunk', 'retry_backoff'].includes(payload.phase) ||
+          payload.operation === 'turn' && payload.phase === 'request_build'
+        )) this.data.activity = '';
+        break;
+      case 'AssistantStreamInterrupted': this.data.activity = [...this.activeTools.values()].at(-1) ?? ''; break;
       case 'ToolCallFinished': this.activeTools.delete(payload.tool_call_id); this.data.activity = [...this.activeTools.values()].at(-1) ?? ''; break;
       case 'TurnStarted': case 'ChatStarted': case 'TurnFinished': case 'ChatCompleted': this.activeTools.clear(); this.data.activity = ''; break;
       case 'SubagentJobChanged': this.data.jobs = [...this.data.jobs.filter(job => job.id !== payload.job_id), {id: payload.job_id, task: payload.task, status: payload.status, detail: payload.blocker || payload.error || payload.current_tool || payload.activity || ''}].slice(-100); break;

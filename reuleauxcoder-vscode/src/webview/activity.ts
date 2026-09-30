@@ -21,8 +21,8 @@ export class ActivityView {
     this.state = state;
     const status = state.steering, waiting = state.reviews.length + (state.interactions?.length ?? 0);
     const activity = state.overview?.activity;
-    const kind = state.phase !== 'ready' ? state.phase : status?.stopping ? 'stopping' : waiting ? 'waiting' : status?.pending ? 'steering' : !state.running ? 'ready' : activity === 'Writing' ? 'responding' : activity && activity !== 'Reasoning' ? 'tool' : 'thinking';
-    const label = {idle: t('Disconnected'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Stopping…'), failed: t('Connection failed'), waiting: t('Waiting for you'), steering: t('Applying guidance…'), ready: t('Ready'), responding: t('Responding'), tool: t('Running'), thinking: t('Thinking')}[kind];
+    const kind = state.phase !== 'ready' ? state.phase : status?.stopping ? 'stopping' : waiting ? 'waiting' : status?.pending ? 'steering' : !state.running ? 'ready' : activity === 'Writing' ? 'responding' : activity === 'Reasoning' ? 'thinking' : activity ? 'tool' : 'requesting';
+    const label = {idle: t('Disconnected'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Stopping…'), failed: t('Connection failed'), waiting: t('Waiting for you'), steering: t('Applying guidance…'), ready: t('Ready'), responding: t('Responding'), tool: t('Running'), thinking: t('Thinking'), requesting: t('Waiting for model')}[kind];
     const signature = `${kind}:${label}:${activity}`;
     if (signature !== this.signature) {
       this.signature = signature; this.root.dataset.state = kind; this.label.textContent = label;

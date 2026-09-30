@@ -13,7 +13,7 @@ test('live workbench: clocks, readable facts, stable disclosures and motion in b
   for (const language of ['en', 'zh-CN']) {
     // Deliberately use a remote host clock five hours ahead of the browser.
     const hostTime = Date.now() + 5 * 3600_000;
-    const data = structuredClone(overview); data.activity = 'Reasoning'; data.goal = null;
+    const data = structuredClone(overview); data.activity = ''; data.goal = null;
     data.processes = [{id: 'proc', command: 'npm test', state: 'running', elapsed: 6, observedAt: hostTime - 90_000, output: 'Checking the implementation…'}];
     data.diagnostics = [{path: 'src/main.ts', errors: 2, warnings: 1}];
     const state: HostSnapshot = {hostId: 'live', revision: 1, draftRevision: 0, phase: 'ready', generation: 0, environment: 'SSH', workspace: '/project', model: 'test', running: true, sampledAt: hostTime, steering: {queued: 0, pending: false, stopping: false, supported: true}, overview: data, reviews: [], cells: [{id: 'reply', role: 'assistant', text: 'Checking the implementation and preserving **existing behavior**.'}], draftItems: [], draftText: ''};
@@ -21,24 +21,42 @@ test('live workbench: clocks, readable facts, stable disclosures and motion in b
     const {page} = h;
     const publish = async () => {state.revision++; await h.publish();};
     try {
-      assert.equal(await page.locator('#activity').getAttribute('data-state'), 'thinking');
-      assert(await page.locator('#activity').isVisible());
-      await page.locator('#overview-toggle').click();
       const clock = page.locator('#overview [data-elapsed-key="process:proc"]');
       assert.equal(await clock.textContent(), '1:36');
+      const waitingLabel = language === 'zh-CN' ? '等待模型响应' : 'Waiting for model';
+      assert.equal(await page.locator('#activity').getAttribute('data-state'), 'requesting');
+      assert.equal(await page.locator('#activity').textContent(), waitingLabel);
+      assert.equal(await page.locator('#activity').getAttribute('aria-label'), waitingLabel);
+      assert(await page.locator('#activity').isVisible());
+      assert.equal(await page.locator('.activity-mark i').first().evaluate(node => getComputedStyle(node).animationName), 'working-pulse');
+      assert(await page.locator('.app-header').evaluate(node => node.scrollWidth <= node.clientWidth), 'Waiting must fit the narrow header');
+      await page.screenshot({path: resolve(`../artifacts/vscode-concept/waiting-model-${language}.png`), animations: 'disabled'});
+      await page.emulateMedia({reducedMotion: 'reduce'});
+      assert.equal(await page.locator('.activity-mark i').first().evaluate(node => getComputedStyle(node).animationName), 'none');
+      await page.emulateMedia({reducedMotion: 'no-preference'});
+      await page.locator('#overview-toggle').click();
+      assert.equal(await page.locator('.overview-live').textContent(), waitingLabel);
+      state.overview!.activity = 'Reasoning'; await publish();
+      await page.waitForFunction(() => document.querySelector('#activity')?.getAttribute('data-state') === 'thinking');
+      assert.equal(await page.locator('#activity').textContent(), language === 'zh-CN' ? '思考中' : 'Thinking');
       const processButton = page.locator('[data-overview-action="process:proc"]');
       await processButton.focus();
-      await page.waitForTimeout(2200);
-      assert.match(await clock.textContent() ?? '', /^1:(?:3[89]|4\d)$/);
+      await page.waitForFunction(() => /^1:(?:3[89]|4\d)$/.test(document.querySelector('#overview [data-elapsed-key="process:proc"]')?.textContent ?? ''), undefined, {timeout: 5000});
       assert(await processButton.evaluate(node => node === document.activeElement), 'Clock ticks must not replace controls or steal focus');
       await page.locator('.git-file').first().click(); assert(h.requests.some(request => request.action === 'openFile'));
       assert.notEqual(await page.locator('.git-added').first().evaluate(node => getComputedStyle(node).color), await page.locator('.git-deleted').first().evaluate(node => getComputedStyle(node).color));
       await page.locator('#overview-toggle').click();
       state.overview!.activity = 'Writing'; await publish();
       await page.waitForFunction(() => document.querySelector('#activity')?.getAttribute('data-state') === 'responding');
+      state.overview!.activity = ''; await publish();
+      await page.waitForFunction(() => document.querySelector('#activity')?.getAttribute('data-state') === 'requesting');
+      assert.equal(await page.locator('#activity').textContent(), waitingLabel, 'Each request starts by waiting for output');
       // A late model delta cannot hide a request waiting for the user.
       state.reviews = [{id: 'pending', title: 'edit_file', summary: 'Review this change', documents: []}]; await publish();
       await page.waitForFunction(() => document.querySelector('#activity')?.getAttribute('data-state') === 'waiting');
+      state.overview!.activity = 'Reasoning'; await publish();
+      await page.waitForFunction(() => document.querySelector('.overview-live')?.textContent !== 'Waiting for model' && document.querySelector('.overview-live')?.textContent !== '等待模型响应');
+      assert.equal(await page.locator('#activity').getAttribute('data-state'), 'waiting');
       state.reviews = []; state.steering!.queued = 1; state.overview!.activity = 'shell'; await publish();
       await page.locator('#steer').waitFor({state: 'visible'});
       assert.equal(await page.locator('#activity').getAttribute('data-state'), 'tool');
@@ -147,6 +165,8 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
     await h.page.locator('#composer').fill('wait'); await h.page.locator('#composer').press('Enter');
     await until(() => b.client.state.running);
     await until(() => b.session.transcript.cells.some(cell => cell.text === 'wait'));
+    await h.page.waitForFunction(() => document.querySelector('#activity')?.getAttribute('data-state') === 'requesting');
+    assert.equal(await h.page.locator('#activity').textContent(), '等待模型响应');
     await h.page.locator('#composer').fill('先检查配置'); await h.page.locator('#composer').press('Enter');
     await h.page.locator('#steer').waitFor({state: 'visible'});
     assert.equal(await h.page.locator('#composer').inputValue(), '');
@@ -155,6 +175,7 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
     assert.match(await h.page.locator('#pending-inputs .pending-body').textContent() ?? '', /先检查配置/);
     await b.client.peer.request('test.stream_output', {text: '之前的回复'});
     await h.page.waitForFunction(() => document.querySelector('#transcript')?.textContent?.includes('之前的回复'));
+    assert.equal(await h.page.locator('#activity').getAttribute('data-state'), 'responding');
     assert(await h.page.locator('#pending-inputs details').evaluate(node => (node as HTMLDetailsElement).open), 'Updates preserve the queue disclosure');
     await h.page.reload();
     await h.page.locator('#pending-inputs summary').waitFor();

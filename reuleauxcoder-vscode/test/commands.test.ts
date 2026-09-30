@@ -110,6 +110,44 @@ test('overview retains process tails, plans and jobs, then clears them at genera
   f.client.state.session_generation = 1; f.client.emit('state', f.client.state); emit('PlanUpdated', {items: [{step: 'Stale'}]});
   assert.equal(store.snapshot(0).plan.length, 0); assert.equal(store.snapshot(0).processes.length, 0); store.dispose(); f.commands.dispose();
 });
+test('overview distinguishes first output from empty chunks, request retries and child activity', () => {
+  const f = fixture(); f.client.state.agent_id = 'root'; f.client.state.running = true;
+  const store = new WorkOverviewStore(() => {}); store.bind(f.client as unknown as RuntimeClient);
+  const emit = (kind: string, fields: Record<string, any>, agent_id = 'root', generation = 0) => f.client.emit('event', decode(record('UIEvent', {payload: record('RuntimeEventPayload', {event: record('RuntimeEvent', {agent_id, payload: record(kind, fields)})})})), {}, generation);
+  try {
+    emit('TurnStarted', {user_input: 'hello'});
+    for (const kind of ['ReasoningDelta', 'AssistantContentDelta', 'StreamChunk']) emit(kind, {text: '', reasoning: true});
+    emit('OperationPhaseChanged', {operation: 'model', phase: 'streaming', status: 'running'});
+    assert.equal(store.snapshot(0).activity, '', 'An open stream or empty chunk is not reasoning');
+    emit('ReasoningDelta', {text: 'Considering the request'});
+    assert.equal(store.snapshot(0).activity, 'Reasoning');
+    emit('AssistantContentDelta', {text: ''});
+    assert.equal(store.snapshot(0).activity, 'Reasoning');
+    emit('AssistantContentDelta', {text: 'Here is the answer'});
+    assert.equal(store.snapshot(0).activity, 'Writing');
+    emit('OperationPhaseChanged', {operation: 'model', phase: 'await_first_chunk', status: 'running'}, 'child');
+    assert.equal(store.snapshot(0).activity, 'Writing', 'A child request cannot reset the root indicator');
+    for (const [operation, phase] of [['turn', 'request_build'], ['model', 'connect'], ['model', 'await_first_chunk'], ['model', 'retry_backoff']]) {
+      emit('AssistantContentDelta', {text: 'Previous output'});
+      emit('OperationPhaseChanged', {operation, phase, status: 'running'});
+      assert.equal(store.snapshot(0).activity, '', `Waiting again during ${phase}`);
+    }
+    emit('ReasoningDelta', {text: 'Interrupted reasoning'});
+    emit('AssistantStreamInterrupted', {attempt_id: 'attempt', interrupt_epoch: 1});
+    assert.equal(store.snapshot(0).activity, '');
+    emit('ToolCallStarted', {tool_call_id: 'tool', tool_name: 'shell'});
+    emit('OperationPhaseChanged', {operation: 'model', phase: 'connect', status: 'running'});
+    assert.equal(store.snapshot(0).activity, 'shell', 'An active tool still owns the indicator');
+    emit('ToolCallFinished', {tool_call_id: 'tool', tool_name: 'shell'});
+    assert.equal(store.snapshot(0).activity, '', 'Waiting after the last tool completes');
+    f.client.state.session_generation = 1; f.client.emit('state', f.client.state);
+    emit('ReasoningDelta', {text: 'stale'});
+    assert.equal(store.snapshot(0).activity, '');
+    emit('AssistantContentDelta', {text: 'new session'}, 'root', 1);
+    f.client.state.running = false; f.client.emit('state', f.client.state);
+    assert.equal(store.snapshot(0).activity, '');
+  } finally {store.dispose(); f.commands.dispose();}
+});
 test('real core catalog, model panels, goal controls and secret input use conversation surfaces', async t => {
   const b = await backend(); t.after(() => b.close());
   const commands = b.session.commands;

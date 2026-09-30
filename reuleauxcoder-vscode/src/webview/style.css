@@ -215,7 +215,7 @@ body.configuring #transcript, body.configuring #drop-zone, body.configuring #ove
 .activity-mark i {display: block; width: 2px; height: 8px; border-radius: 2px; background: currentColor}
 #activity[data-state="responding"] .activity-mark {color: var(--vscode-textLink-foreground, var(--info))}
 #activity[data-state="tool"] .activity-mark {color: var(--vscode-gitDecoration-addedResourceForeground, var(--success))}
-#activity[data-state="ready"] .activity-mark i {height: 3px}
+#activity:is([data-state="ready"], [data-state="requesting"]) .activity-mark i {height: 3px}
 #activity[data-state="failed"] .activity-mark {color: var(--vscode-errorForeground, var(--danger))}
 #activity[data-state="waiting"] {color: var(--accent)}
 .elapsed {font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--ink)}
@@ -236,6 +236,7 @@ body.configuring #transcript, body.configuring #drop-zone, body.configuring #ove
 @media (prefers-reduced-motion: no-preference) {.pending-input > summary::before {transition: transform 140ms ease}.pending-input[open] > .pending-body {animation: feedback-enter 140ms ease-out}}
 @media (prefers-reduced-motion: no-preference) {
   #activity:is([data-state="thinking"], [data-state="responding"], [data-state="tool"], [data-state="steering"], [data-state="starting"], [data-state="stopping"], [data-state="installing"]) .activity-mark i {animation: activity-wave 1200ms ease-in-out infinite}
+  #activity[data-state="requesting"] .activity-mark i {animation: working-pulse 1800ms ease-in-out infinite}
   #activity .activity-mark i:nth-child(2) {animation-delay: 120ms}#activity .activity-mark i:nth-child(3) {animation-delay: 240ms}
   #activity[data-state="responding"] .activity-mark i {animation-duration: 700ms}
   #activity[data-state="tool"] .activity-mark i {animation-duration: 1600ms}

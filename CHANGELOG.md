@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Distinguish waiting for the model from observed reasoning and response text in VS Code, with bilingual status labels and a gentle waiting animation. Reset the indicator between requests and retries, ignore empty stream chunks, and preserve approval/steering priority.
+
 ## 0.11.6 - 2026-09-30
 
 - Report explicit `--resume` failures with a concise error and a recovery hint in CLI/TUI startup, without a Python traceback or changes to the unreadable session.

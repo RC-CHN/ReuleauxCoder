@@ -21,7 +21,7 @@ export class WorkOverviewView {
     const scroll = this.root.scrollTop;
     const focusKey = (document.activeElement as HTMLElement)?.dataset.overviewAction;
     const summary = document.createElement('div'); summary.className = 'overview-title'; summary.textContent = t('Work overview');
-    const live = document.createElement('span'); live.className = 'overview-live'; live.textContent = state.phase === 'ready' ? (['Reasoning', 'Writing'].includes(data.activity) ? errorText(data.activity) : toolLabel(data.activity)) || (state.running ? t('Running') : t('Ready')) : ({idle: t('Idle'), starting: t('Connecting…'), failed: t('Failed'), installing: t('Installing…'), stopping: t('Saving and stopping…')})[state.phase]; summary.append(live);
+    const live = document.createElement('span'); live.className = 'overview-live'; live.textContent = state.phase === 'ready' ? (['Reasoning', 'Writing'].includes(data.activity) ? errorText(data.activity) : toolLabel(data.activity)) || (state.running ? t('Waiting for model') : t('Ready')) : ({idle: t('Idle'), starting: t('Connecting…'), failed: t('Failed'), installing: t('Installing…'), stopping: t('Saving and stopping…')})[state.phase]; summary.append(live);
     const stats = document.createElement('div'); stats.className = 'overview-stats';
     const ratio = data.contextLimit ? Math.round(data.contextTokens / data.contextLimit * 100) : null;
     stats.append(this.action(`${t('Context')} ${ratio === null ? '—' : `${ratio}%`}`, 'system.tokens', 'model'));
