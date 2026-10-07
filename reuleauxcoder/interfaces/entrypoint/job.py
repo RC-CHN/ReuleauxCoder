@@ -70,9 +70,21 @@ def _verify(spec: JobSpec, journal: JobJournal, stopped):
             finally:
                 if process.poll() is None:
                     if os.name != "nt":
-                        os.killpg(process.pid, signal.SIGKILL)
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass  # The process exited between poll and signal.
                     else:
-                        process.kill()
+                        killed = subprocess.run(
+                            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                            capture_output=True,
+                            check=False,
+                            timeout=10,
+                        )
+                        if killed.returncode != 0 and process.poll() is None:
+                            raise OSError(
+                                "Could not stop the verification process tree"
+                            )
                     process.wait()
             checks.append(
                 {

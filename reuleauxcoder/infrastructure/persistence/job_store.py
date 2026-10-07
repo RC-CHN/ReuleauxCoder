@@ -30,7 +30,16 @@ def atomic_json(path: Path, value):
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(21):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as error:
+                # Windows readers/virus scanners may briefly deny replacement.
+                # Keep the old complete snapshot, and surface persistent errors.
+                if getattr(error, "winerror", None) not in {5, 32} or attempt == 20:
+                    raise
+                time.sleep(0.01)
         if os.name != "nt":
             descriptor = os.open(path.parent, os.O_RDONLY)
             try:
@@ -138,6 +147,12 @@ class JobStore:
                     },
                 )
                 os.replace(staging, path)
+                if os.name != "nt":
+                    descriptor = os.open(self.root, os.O_RDONLY)
+                    try:
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
             finally:
                 if staging.exists():
                     shutil.rmtree(staging)

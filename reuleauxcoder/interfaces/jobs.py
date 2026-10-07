@@ -203,7 +203,7 @@ def main(argv=None):
                     raise ValueError(
                         "--spec cannot be mixed with task specification flags"
                     )
-                spec = JobSpec.from_dict(read_json(args.spec))
+                spec = JobSpec.from_dict(json.loads(_text(str(args.spec))))
             else:
                 spec = JobSpec(
                     workspace=str(args.workspace or Path.cwd()),

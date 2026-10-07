@@ -461,3 +461,23 @@ def test_budget_resume_preserves_spent_tokens(tmp_path):
         == 0
     )
     assert store.status(job_id)["goal"]["tokens_used"] == 13
+
+
+def test_atomic_snapshot_retries_windows_sharing_violation(tmp_path, monkeypatch):
+    from reuleauxcoder.infrastructure.persistence import job_store
+
+    original = job_store.os.replace
+    calls = []
+
+    def replace(source, target):
+        calls.append(1)
+        if len(calls) == 1:
+            error = PermissionError("Sharing violation")
+            error.winerror = 32
+            raise error
+        original(source, target)
+
+    monkeypatch.setattr(job_store.os, "replace", replace)
+    target = tmp_path / "state.json"
+    atomic_json(target, {"status": "complete"})
+    assert read_json(target) == {"status": "complete"} and len(calls) == 2
