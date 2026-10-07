@@ -3,6 +3,9 @@
 
 def main():
     import sys
+    if sys.argv[1:2] == ["job"]:
+        from reuleauxcoder.interfaces.jobs import main as jobs
+        return jobs(sys.argv[2:])
     if "--config-management-stdio" in sys.argv[1:]:
         from reuleauxcoder.interfaces.configuration import recovery_stdio
         return recovery_stdio(sys.argv[1:])

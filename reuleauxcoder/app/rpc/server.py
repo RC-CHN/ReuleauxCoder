@@ -502,16 +502,19 @@ class RuntimeServer:
                 try:
                     continuation = isinstance(value, _GoalContinuation)
                     if continuation:
+                        response = None
                         with self._lock:
                             current = self._next_goal()
                             allowed = (
                                 current == value and not self.agent.stop_requested()
                             )
                         if allowed:
-                            self.agent.chat(
+                            response = self.agent.chat(
                                 "", goal_continuation=True, clear_stop=False
                             )
-                        result = CommandResult(session_id=self.commands.session_id)
+                        result = CommandResult(
+                            session_id=self.commands.session_id, response=response
+                        )
                     else:
                         result = self.commands.submit(
                             value, during_turn=concurrent, clear_stop=False
