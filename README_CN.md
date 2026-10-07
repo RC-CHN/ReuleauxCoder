@@ -257,6 +257,23 @@ rcoder [-c CONFIG] [-m MODEL] [-p PROMPT] [-r ID] [--server]
 - `--server`：按 `remote_exec.relay_bind` 启动独立远端 relay host
 - `-v, --version`：显示版本号
 
+## 无人值守长期任务
+
+把完整任务段落保存为 UTF-8 文本，交给通用任务入口：
+
+```bash
+rcoder job start --id task-001 --workspace /work/project --task-file instructions.txt --detach
+rcoder job status task-001
+rcoder job logs task-001 --after 0
+rcoder job pause task-001
+rcoder job resume task-001 --detach
+rcoder job result task-001
+```
+
+每项任务保存独立身份、会话与目标。相同编号和相同说明的重复启动返回原任务；恢复必须明确指定编号。工作目录由进程锁保护，并发执行使用不同目录或 worktree。普通启动提示原样进入模型；运行时的工具、skill 发现和权限策略负责执行其中的要求。
+
+可用 `--token-budget`、`--max-seconds` 限制累计资源，用 JSON `--spec` 声明检查命令和必需成果。等待提问或审批时状态为 `waiting_input`，通过 `job answer` 回答；不会在无人值守模式下读取终端输入。结果保存最终回复、目标状态、用量、验证结果与错误。完整契约与边界见 [无人值守任务说明](docs/unattended-jobs.md)。
+
 ## 开发检查
 
 ```bash

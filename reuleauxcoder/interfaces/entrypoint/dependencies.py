@@ -45,7 +45,10 @@ from reuleauxcoder.services.llm.factory import build_llm_from_settings
 
 
 def _default_load_config(path: Path | None) -> Config:
-    return ConfigLoader.from_path(path)
+    loader = ConfigLoader(path)
+    # A job can select its workspace after this module was imported.
+    loader.WORKSPACE_CONFIG_PATH = Path.cwd() / '.rcoder' / 'config.yaml'
+    return loader.load()
 
 
 def _default_create_llm(config: Config) -> LLM:

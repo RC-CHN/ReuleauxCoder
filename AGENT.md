@@ -13,6 +13,7 @@ This file describes the current repository, not a future design. Detailed design
 - Remote peer: `reuleauxcoder-agent/`, a CLI-only Go peer.
 - VS Code extension: `reuleauxcoder-vscode/` runs in the workspace extension host on local/Remote workspaces, owns a persistent stdio core and exposes a right-side conversation, native diff approvals, editor context and byte uploads. It ships Chinese/English UI resources and a compatible core wheel; its README documents build and host/browser tests.
 - Runtime supports sessions, approvals, hooks/extensions, skills, MCP, subagents, LSP, local/remote tools, streaming output, and context compression.
+- Unattended jobs: `rcoder job` accepts plain task text and an explicit workspace, owns a job-private session, exposes JSON status/result/events and file-based interactions, and resumes by stable job ID. Job/workspace OS leases prevent competing unattended workers. This frontend uses the shared runtime and has no collaboration-service dependency; see `docs/unattended-jobs.md`.
 
 ## Repository map
 
