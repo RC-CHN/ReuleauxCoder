@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.11.7 - 2026-10-07
+
+- Add generic unattended `rcoder job` commands for launching plain task text in an explicit workspace, detached execution, durable status and results, event polling, pause/cancel/resume, and file-based answers and approvals. Startup instructions remain ordinary task input and do not require a collaboration-service adapter.
+- Protect job and workspace ownership with OS leases, bind detached admission to a launch identity across interpreter wrappers, and restore the exact job session without duplicate initial prompts. Reject stale interaction responses, retain pending approvals, and publish terminal results only after persistence and verification complete.
+- Add bounded argv verification commands, process-tree cleanup, artifact hashes, attempt history, and token/time limits for external supervisors. Harden atomic snapshots against transient Windows sharing violations.
+- Resolve default configuration from the selected workspace at startup and deliver final responses from automatic goal continuation through the shared RPC runtime.
 - Distinguish waiting for the model from observed reasoning and response text in VS Code, with bilingual status labels and a gentle waiting animation. Reset the indicator between requests and retries, ignore empty stream chunks, and preserve approval/steering priority.
 
 ## 0.11.6 - 2026-09-30
