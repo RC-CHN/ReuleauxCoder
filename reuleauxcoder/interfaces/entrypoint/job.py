@@ -130,6 +130,7 @@ def run_job(
     resume: bool = False,
     token_budget: int | None = None,
     max_seconds: float | None = None,
+    launch_id: str | None = None,
     dependencies: AppDependencies | None = None,
 ) -> int:
     """A job owns its session directory and exactly one workspace lease."""
@@ -150,6 +151,7 @@ def run_job(
         journal.update(
             status="starting",
             attempt_id=attempt_id,
+            launch_id=launch_id,
             pid=os.getpid(),
             error=None,
             verification=None,

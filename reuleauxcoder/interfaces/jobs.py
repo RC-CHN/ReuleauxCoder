@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from reuleauxcoder.domain.goal import validate_budget
 from reuleauxcoder.domain.jobs import JobSpec
@@ -55,7 +56,7 @@ def _launch(store, job_id, args):
             )
         _print(store.status(job_id))
         return code
-    previous_attempt = store.status(job_id).get("attempt_id")
+    launch_id = uuid4().hex
     command = [
         sys.executable,
         "-m",
@@ -65,6 +66,8 @@ def _launch(store, job_id, args):
         str(store.root),
         "_run",
         job_id,
+        "--launch-id",
+        launch_id,
     ]
     if args.command == "resume":
         command.append("--resume")
@@ -91,17 +94,17 @@ def _launch(store, job_id, args):
     # such as an occupied workspace. Spawning a process alone is not admission.
     deadline = time.monotonic() + 10
     while True:
-        state = store.status(job_id)
-        admitted = state.get("pid") == process.pid and state.get("attempt_id") not in {
-            None,
-            previous_attempt,
-        }
         code = process.poll()
+        state = store.status(job_id)
+        # Python launchers can create a child with a different PID (Windows
+        # virtualenvs do this). Admission belongs to this launch nonce, not PID.
+        admitted = state.get("launch_id") == launch_id
         if admitted or code is not None or time.monotonic() >= deadline:
             _print(
                 {
                     "job_id": job_id,
                     "launch_pid": process.pid,
+                    "launch_id": launch_id,
                     "launch_state": "admitted"
                     if admitted
                     else "failed"
@@ -155,6 +158,7 @@ def main(argv=None):
     )
     worker.add_argument("id")
     worker.add_argument("--resume", action="store_true")
+    worker.add_argument("--launch-id", type=valid_id)
     for command in (start, resume, worker):
         command.add_argument("--token-budget", type=int)
         command.add_argument(
@@ -240,6 +244,7 @@ def main(argv=None):
                 store,
                 args.id,
                 resume=args.resume,
+                launch_id=args.launch_id,
                 token_budget=args.token_budget,
                 max_seconds=args.max_seconds,
             )

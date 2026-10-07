@@ -8,6 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -286,3 +287,38 @@ def test_detached_file_approval_requires_current_explicit_answer(cli, tmp_path):
     final = wait_status(store, "launch", {"completed", "failed", "blocked"})
     assert final["status"] == "completed", final
     assert (workspace / "result.txt").read_text(encoding="utf-8") == "审批后写入"
+
+
+def test_launcher_pid_can_differ_from_worker_pid(cli, monkeypatch):
+    from reuleauxcoder.domain.jobs import JobSpec
+    from reuleauxcoder.interfaces import jobs
+
+    _, _, store, _, workspace = cli
+    job_id, _ = store.create(
+        JobSpec(
+            str(workspace),
+            "Complete this task",
+            config=str(workspace.parent / "config.json"),
+        ),
+        "wrapper",
+    )
+    original = jobs.subprocess.Popen
+
+    def wrapper(*args, **kwargs):
+        process = original(*args, **kwargs)
+        return SimpleNamespace(pid=process.pid + 100000, poll=process.poll)
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", wrapper)
+    results = []
+    monkeypatch.setattr(jobs, "_print", results.append)
+    args = SimpleNamespace(
+        detach=True, command="start", token_budget=None, max_seconds=None
+    )
+    assert jobs._launch(store, job_id, args) == 0
+    assert results[0]["launch_state"] == "admitted"
+    assert results[0]["launch_pid"] != results[0]["state"]["pid"]
+    assert results[0]["launch_id"] == results[0]["state"]["launch_id"]
+    assert (
+        wait_status(store, job_id, {"completed", "failed", "blocked"})["status"]
+        == "completed"
+    )

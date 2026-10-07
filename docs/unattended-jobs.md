@@ -33,7 +33,9 @@ frontends print JSON to stdout; runtime diagnostics use stderr or the detached
 
 Detached launch waits up to ten seconds for worker admission. Its `launch_state`
 is `admitted`, `failed`, or `pending`; `pending` means the caller must inspect
-status/logs, not that execution has started. Runtime failures after admission are
+status/logs, not that execution has started. Admission matches a unique `launch_id`;
+`launch_pid` is diagnostic because interpreter wrappers can use a different worker
+PID. Runtime failures after admission are
 reported in the durable status and result. An occupied workspace is a launch
 failure. A repeated start with the same ID and identical specification returns
 the existing job, without another execution; a different specification conflicts.
