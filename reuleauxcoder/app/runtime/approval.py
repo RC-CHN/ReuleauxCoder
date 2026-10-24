@@ -355,7 +355,7 @@ def apply_session_approval_grant(
     request: ApprovalRequest,
     grant: ApprovalGrantCandidate,
 ) -> None:
-    """Atomically install a validated in-memory grant and refresh policy hooks."""
+    """Persist a session grant before publishing it to live policy hooks."""
     if grant.scope_key != request.scope_key:
         raise ValueError("approval grant environment does not match the request")
     if not grant.proposed_rules:
@@ -368,8 +368,11 @@ def apply_session_approval_grant(
     lock = getattr(agent, "_session_approval_lock", None)
     if lock is None:
         raise RuntimeError("agent has no session approval rule lock")
-    with lock:
-        rules = list(getattr(agent, "session_approval_rules", []) or [])
+    # Snapshots take context before the writer. Keep staged rules invisible to
+    # other snapshots and approval judges until persistence succeeds or rolls back.
+    with agent._context_revision_lock, lock:
+        previous_rules = getattr(agent, "session_approval_rules", [])
+        rules = list(previous_rules or [])
         for proposed in grant.proposed_rules:
             rules = [
                 existing
@@ -377,16 +380,19 @@ def apply_session_approval_grant(
                 if not same_rule_target(existing, proposed)
             ]
             rules.append(proposed)
-        agent.session_approval_rules = rules
         approval = merge_approval_config(
             agent.runtime_config.approval,
-            agent.session_approval_rules,
+            rules,
         )
+        agent.session_approval_rules = rules
+        try:
+            persist = getattr(agent, "persist_runtime_snapshot", None)
+            if callable(persist):
+                persist()
+        except BaseException:
+            agent.session_approval_rules = previous_rules
+            raise
         refresh_approval_runtime(agent, approval)
-
-    persist = getattr(agent, "persist_runtime_snapshot", None)
-    if callable(persist):
-        persist()
 
 
 def _approval_identity(agent, request: ApprovalRequest) -> dict:

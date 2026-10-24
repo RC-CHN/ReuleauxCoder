@@ -24,6 +24,13 @@ Plan/progress notifications retain the committed generation and return the
 state from that commit. Existing presentation reducers ignore older revisions.
 Goal mutations already release the goal lock before publishing.
 
+Session approval grants acquire context before the session-approval lock and
+the snapshot writer. They hold context and the approval lock while staging and
+saving the new rules, restoring the old rules if saving raises. Live policy
+hooks update only after the save succeeds, so guards retain the previous
+policy during persistence and approval judges cannot observe an uncommitted
+grant.
+
 The snapshot adapter keeps a consistent context view while serializing saves.
 Explicit command, exit and relay saves use the same snapshot writer as background
 saves. Exit and diagnostic events are allocated by the live history ledger;
