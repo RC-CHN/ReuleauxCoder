@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from reuleauxcoder.app.runtime.approval import (
     apply_session_approval_grant,
     build_approval_view,
@@ -291,6 +293,42 @@ def test_apply_session_grant_updates_live_policy_and_session_state() -> None:
     )
     assert matched.action == "allow"
     assert wrong_environment.action == "require_approval"
+
+
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt])
+def test_failed_session_grant_preserves_previous_rules_and_live_policy(error_type) -> None:
+    agent = _approval_agent()
+    previous = ApprovalRuleConfig(
+        tool_name="edit_file", pattern="src/app.py", scope_key="scope-1", action="deny"
+    )
+    agent.session_approval_rules = [previous]
+    hook = ToolPolicyGuardHook(approval_config=ApprovalConfig(rules=[previous]))
+    agent.hook_registry.register(HookPoint.BEFORE_TOOL_EXECUTE, hook)
+    rule = ApprovalRuleConfig(
+        tool_name="edit_file", pattern="src/app.py", scope_key="scope-1", action="allow"
+    )
+    grant = ApprovalGrantCandidate(
+        id="exact", label="This file", description="src/app.py",
+        proposed_rules=(rule,), scope_key="scope-1",
+    )
+    request = ApprovalRequest(tool_name="edit_file", scope_key="scope-1")
+    context = ToolApprovalContext(
+        tool_call=ToolCall(id="call", name="edit_file", arguments={}),
+        tool_name="edit_file", subjects=("src/app.py",), scope_key="scope-1",
+    )
+    observed_actions = []
+
+    def fail_persistence() -> None:
+        observed_actions.append(hook.approval_engine.evaluate(context).action)
+        raise error_type("snapshot unavailable")
+
+    agent._session_persist_callback = fail_persistence
+    with pytest.raises(error_type, match="snapshot unavailable"):
+        apply_session_approval_grant(agent, request, grant)
+
+    assert agent.session_approval_rules == [previous]
+    assert observed_actions == ["deny"]
+    assert hook.approval_engine.evaluate(context).action == "deny"
 
 
 def test_runtime_provider_rechecks_live_session_grants_before_human_prompt() -> None:

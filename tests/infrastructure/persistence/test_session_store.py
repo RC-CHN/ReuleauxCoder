@@ -1930,6 +1930,23 @@ def test_manifest_runtime_state_is_strictly_validated(
     assert runtime_error.value.error_type == "SessionRuntimeStateValidationError"
 
 
+@pytest.mark.parametrize("field", ["pattern", "scope_key"])
+def test_runtime_approval_resource_identities_round_trip_beyond_metadata_limit(
+    tmp_path: Path, field: str,
+) -> None:
+    store = SessionStore(tmp_path)
+    rule = {"tool_name": "shell", "action": "allow", field: "x" * 8_192}
+    session_id = store.save(
+        messages=[{"role": "user", "content": "saved"}], model="model",
+        runtime_state=SessionRuntimeState(approval_rules=[rule]),
+    )
+
+    loaded = store.load(session_id)
+
+    assert loaded is not None
+    assert loaded.runtime_state.approval_rules == [rule]
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -1937,7 +1954,15 @@ def test_manifest_runtime_state_is_strictly_validated(
         ("skills_disabled", [f"skill_{index}" for index in range(257)]),
         (
             "approval_rules",
-            [{"action": "allow", "pattern": "x" * 1_025}],
+            [{"action": "allow", "tool_name": "x" * 1_025}],
+        ),
+        (
+            "approval_rules",
+            [{"action": "allow", "pattern": "x" * 64_000}],
+        ),
+        (
+            "approval_rules",
+            [{"action": "allow", "scope_key": "x" * 64_000}],
         ),
         ("plan_state", {"items": [], "explanation": "x" * 1_025}),
         (

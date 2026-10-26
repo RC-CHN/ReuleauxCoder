@@ -10,13 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from reuleauxcoder.app.runtime.approval import apply_session_approval_grant
 from reuleauxcoder.app.runtime.session_state import (
     _LiveSessionPersistence,
     bind_session_persistence,
     build_session_runtime_state,
 )
 from reuleauxcoder.domain.agent.agent import Agent
-from reuleauxcoder.domain.config.models import Config
+from reuleauxcoder.domain.approval import ApprovalGrantCandidate, ApprovalRequest
+from reuleauxcoder.domain.config.models import ApprovalRuleConfig, Config
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
 
 
@@ -135,6 +137,17 @@ def _context_during_snapshot(directory, operation):
             )
         elif operation == "first_message":
             agent._append_message({"role": "user", "content": "first"}, source="test")
+        elif operation == "approval":
+            rule = ApprovalRuleConfig(
+                tool_name="shell", pattern="command", scope_key="scope", action="allow"
+            )
+            grant = ApprovalGrantCandidate(
+                id="exact", label="This command", description="command",
+                proposed_rules=(rule,), scope_key="scope",
+            )
+            apply_session_approval_grant(
+                agent, ApprovalRequest(tool_name="shell", scope_key="scope"), grant,
+            )
         else:
             agent.goal_controller.create("Verify context-held goal persistence", None)
     background.join(3)
@@ -148,13 +161,15 @@ def _context_during_snapshot(directory, operation):
             loaded.runtime_state.goal["objective"]
             == "Verify context-held goal persistence"
         )
+    elif operation == "approval":
+        assert loaded.runtime_state.approval_rules == [rule.to_dict()]
     else:
         assert loaded.messages[0]["content"] == (
             "first" if operation == "first_message" else "replacement"
         )
 
 
-@pytest.mark.parametrize("operation", ["replace", "first_message", "goal"])
+@pytest.mark.parametrize("operation", ["replace", "first_message", "goal", "approval"])
 def test_context_mutations_and_snapshot_writer_share_lock_order(tmp_path, operation):
     _run_bounded(_context_during_snapshot, str(tmp_path), operation)
 

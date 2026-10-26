@@ -633,8 +633,15 @@ class SessionPayloadValidator:
         for rule in approval_rules:
             for key in approval_strings:
                 value = rule.get(key)
+                # Resource identities include complete command signatures and
+                # paths. Their combined size is bounded by the runtime budget.
+                max_chars = (
+                    _MAX_RUNTIME_STATE_CHARS
+                    if key in {"pattern", "scope_key"}
+                    else _MAX_RUNTIME_TEXT_CHARS
+                )
                 if value is not None and not _is_bounded_runtime_text(
-                    value, max_chars=_MAX_RUNTIME_TEXT_CHARS
+                    value, max_chars=max_chars
                 ):
                     raise ValueError("runtime approval rule is invalid")
             action = rule.get("action")
