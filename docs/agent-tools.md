@@ -14,6 +14,24 @@
 
 该工具只描述模型当前视图。人类 transcript 和原始事件不会因压缩被改写；需要原文时使用 `history_read`、`history_search` 和 `artifact_read`。
 
+## 按路径读取图片
+
+`view_image` 只接受 workspace 文件路径：
+
+```json
+{"path": "assets/screen.png"}
+```
+
+路径按当前 workspace host 解析，可以是绝对路径或 workspace-relative 路径。本地与远端都通过有界 `WorkspacePort.read_bytes` 读取普通文件，再导入现有 ImageStore；远端 peer 需要支持 `workspace.fs.read_bytes`，旧 peer 会明确提示升级。上传的剪贴板图片同样位于 `.rcoder/attachments` 并使用 path 引用，因此粘贴、历史和主动读图共用 variant、缓存和 retention。
+
+读取失败会区分文件不存在、目录、非图片、超限和原始缓存淘汰。需要看清小字时传入原图坐标区域：
+
+```json
+{"path": "assets/screen.png", "region": [100, 80, 640, 360]}
+```
+
+`full_resolution=true` 保留像素尺寸，但超出精读预算时会失败。初始文字模型或切换到文字模型时，canonical history 保留 path，Provider 只收到明确的文字占位，不会收到图片字节；切回视觉模型后按 `history` 或 `user_turn` 策略恢复。不得根据占位声称已经看过图片。新调用不暴露 attachment ID；旧会话仅保留兼容读取。
+
 ## 检查子 Agent
 
 `read_agent` 读取一个当前根 Agent 可见的子任务：
