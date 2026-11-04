@@ -805,7 +805,9 @@ class RemoteProcessPort:
         concurrent_poll = self._peer_supports(entry.peer_id, "process.poll.concurrent")
         deadline = time.monotonic() + wait_ms / 1000
         while True:
-            remaining = max(0, math.ceil((deadline - time.monotonic()) * 1000))
+            remaining = min(
+                wait_ms, max(0, math.ceil((deadline - time.monotonic()) * 1000))
+            )
             snapshot = self._poll_once(
                 session_id,
                 cursor=cursor,
