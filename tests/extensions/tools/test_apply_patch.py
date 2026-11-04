@@ -12,8 +12,8 @@ def _backend(root: Path) -> LocalToolBackend:
 
 
 def test_apply_patch_updates_multiple_files_and_hunks(tmp_path: Path) -> None:
-    (tmp_path / "a.txt").write_text("alpha\nmiddle\nomega\n", encoding="utf-8")
-    (tmp_path / "b.txt").write_text("old\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_bytes(b"alpha\nmiddle\nomega\n")
+    (tmp_path / "b.txt").write_bytes(b"old\n")
     backend = _backend(tmp_path)
     expected = hashlib.sha256(b"alpha\nmiddle\nomega\n").hexdigest()
     patch = """*** Begin Patch
