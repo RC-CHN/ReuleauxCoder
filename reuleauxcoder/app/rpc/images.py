@@ -6,9 +6,11 @@ import base64
 import binascii
 import tempfile
 import uuid
+from pathlib import Path
 
 from reuleauxcoder.app.rpc.codec import decode, encode
 from reuleauxcoder.domain.images import ImageReference
+from reuleauxcoder.infrastructure.persistence.attachments import store_attachment
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
 
 
@@ -121,15 +123,34 @@ class ImageUploads:
             upload = self._upload(upload_id)
             if upload["received"] != upload["size"]:
                 raise RpcError(-32602, "Image upload is incomplete")
+            stored = None
+            workspace = Path(
+                self.server.agent.runtime_working_directory or Path.cwd()
+            ).resolve()
             try:
+                upload["file"].seek(0)
+                stored = store_attachment(
+                    workspace,
+                    upload["session_id"],
+                    upload["name"],
+                    upload["file"],
+                )
                 upload["file"].seek(0)
                 image = self.server.agent.image_store.import_bytes(
                     upload["session_id"],
                     upload["file"].read(),
                     name=upload["name"],
+                    path=stored.path,
                 )
                 return encode(image)
             except (ValueError, OSError) as error:
+                if stored is not None:
+                    try:
+                        stored_file = workspace / stored.path
+                        stored_file.unlink(missing_ok=True)
+                        stored_file.parent.rmdir()
+                    except OSError:
+                        pass
                 raise RpcError(-32602, str(error)) from error
             finally:
                 self.close()

@@ -54,6 +54,7 @@ class ImageReference:
     original_height: int
     name: str = "image"
     turn_id: str | None = None
+    path: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -69,6 +70,13 @@ class ImageReference:
             or (self.turn_id is not None and not isinstance(self.turn_id, str))
         ):
             raise ValueError("Invalid image name or turn")
+        if self.path is not None and (
+            not isinstance(self.path, str)
+            or not self.path
+            or len(self.path) > 4096
+            or "\0" in self.path
+        ):
+            raise ValueError("Invalid image path")
         if self.mime_type not in {"image/png", "image/jpeg", "image/webp"}:
             raise ValueError("Unsupported image type")
         for value in (
@@ -82,18 +90,23 @@ class ImageReference:
                 raise ValueError("Invalid image dimensions or size")
 
     def to_part(self) -> dict:
-        return {"type": "image", **asdict(self)}
+        part = {"type": "image", **asdict(self)}
+        if self.path is None:
+            part.pop("path", None)
+        return part
 
     @classmethod
     def from_part(cls, part: dict) -> ImageReference:
         return cls(**{key: value for key, value in part.items() if key != "type"})
 
     def caption(self) -> str:
+        location = self.path or self.attachment_id
+        source = "path" if self.path else "attachment ID"
         return (
-            f"[Image {self.attachment_id}: {self.name}; original "
+            f"[Image {location}: {self.name}; original "
             f"{self.original_width}x{self.original_height}; sent {self.width}x{self.height}, "
             f"{self.size_bytes} bytes. For unreadable detail use view_image with this "
-            "attachment ID and a region in original, orientation-corrected pixels; "
+            f"{source} and a region in original, orientation-corrected pixels; "
             "original availability depends on the image cache.]"
         )
 
@@ -184,7 +197,12 @@ def display_content(content: object) -> str:
 class ImageStorePort(Protocol):
     def data_url(self, session_id: str, image: ImageReference) -> str: ...
     def import_bytes(
-        self, session_id: str, data: bytes, *, name: str = "image"
+        self,
+        session_id: str,
+        data: bytes,
+        *,
+        name: str = "image",
+        path: str | None = None,
     ) -> ImageReference: ...
     def read_image(
         self,
@@ -193,6 +211,7 @@ class ImageStorePort(Protocol):
         *,
         region: tuple[int, int, int, int] | None = None,
         full_resolution: bool = False,
+        path: str | None = None,
     ) -> ImageReference: ...
 
 
@@ -305,7 +324,9 @@ def project_images(
                 )
             if reason:
                 identity = (
-                    reference.attachment_id if reference else image_identity(part)
+                    (reference.path or reference.name)
+                    if reference
+                    else image_identity(part)
                 )
                 projected.append(
                     {"type": "text", "text": f"[Image {identity} not sent: {reason}.]"}

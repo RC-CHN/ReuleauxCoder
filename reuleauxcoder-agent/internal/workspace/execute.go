@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,7 +14,7 @@ import (
 )
 
 func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.WorkspaceResult {
-	if req.Operation != "fs.read_text_page" && req.Operation != "fs.read_text" && req.Operation != "fs.snapshot_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.write_text_verified" && req.Operation != "fs.replace_exact_atomic" && req.Operation != "fs.replace_exact_verified" && req.Operation != "fs.stat" && req.Operation != "fs.list" && req.Operation != "fs.glob" && req.Operation != "fs.search_text" {
+	if req.Operation != "fs.read_bytes" && req.Operation != "fs.read_text_page" && req.Operation != "fs.read_text" && req.Operation != "fs.snapshot_text" && req.Operation != "fs.write_text_atomic" && req.Operation != "fs.write_text_verified" && req.Operation != "fs.replace_exact_atomic" && req.Operation != "fs.replace_exact_verified" && req.Operation != "fs.stat" && req.Operation != "fs.list" && req.Operation != "fs.glob" && req.Operation != "fs.search_text" {
 		return failure("invalid_path", fmt.Sprintf("unsupported workspace operation %q", req.Operation))
 	}
 	cwd := defaultCWD
@@ -43,6 +45,8 @@ func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.Wo
 		return globEntries(path, pathValue, req.Args)
 	case "fs.search_text":
 		return searchText(path, pathValue, req.Args)
+	case "fs.read_bytes":
+		return readBytes(path, pathValue, req.Args)
 	case "fs.read_text":
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -198,6 +202,40 @@ func Execute(req protocol.WorkspaceRequest, root, defaultCWD string) protocol.Wo
 		return success(data)
 	}
 	return failure("invalid_path", fmt.Sprintf("unsupported workspace operation %q", req.Operation))
+}
+
+func readBytes(path, pathValue string, args map[string]any) protocol.WorkspaceResult {
+	maxBytes := int64Arg(args["max_bytes"])
+	if maxBytes < 1 || maxBytes > 64*1024*1024 {
+		return failure("invalid_path", "max_bytes must be between 1 and 67108864")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return failure("not_found", fmt.Sprintf("%s not found", pathValue))
+		}
+		return failure("io_error", err.Error())
+	}
+	if !info.Mode().IsRegular() {
+		return failure("not_a_file", fmt.Sprintf("%s is not a file", pathValue))
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return failure("io_error", err.Error())
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return failure("io_error", err.Error())
+	}
+	if int64(len(content)) > maxBytes {
+		return failure("io_error", fmt.Sprintf("%s exceeds the %d-byte read limit", pathValue, maxBytes))
+	}
+	return success(map[string]any{
+		"resolved_path": path,
+		"data":          base64.StdEncoding.EncodeToString(content),
+		"size_bytes":    len(content),
+	})
 }
 
 func readDocument(path string) ([]byte, map[string]any, error) {

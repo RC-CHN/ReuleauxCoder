@@ -443,11 +443,8 @@ class RuntimeServer:
         if not value.images:
             return
         self.images._check_session(value.session_id, value.session_generation)
-        if check_model and "image" not in getattr(self.agent.llm, "support_modal", ()):
-            raise RpcError(
-                -32602,
-                "Current model does not support images. Switch model or detach the images; your draft is preserved.",
-            )
+        # Capability fallback happens during provider projection. Canonical history
+        # retains path references for the initial text-only case and later switches.
         try:
             for image in value.images:
                 self.agent.image_store.validate_reference(value.session_id, image)

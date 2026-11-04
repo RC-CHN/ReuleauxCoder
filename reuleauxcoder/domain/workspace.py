@@ -273,6 +273,8 @@ class WorkspacePort(Protocol):
 
     def read_text(self, path: str | Path) -> str: ...
 
+    def read_bytes(self, path: str | Path, *, max_bytes: int) -> bytes: ...
+
     def read_text_page(
         self,
         path: str | Path,

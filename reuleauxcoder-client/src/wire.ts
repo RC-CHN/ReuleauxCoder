@@ -46,6 +46,8 @@ export interface ImageReference {
   attachment_id: string; variant_id: string; mime_type: string;
   width: number; height: number; size_bytes: number;
   original_width: number; original_height: number; name: string; turn_id: string | null;
+  /** Workspace path for new images; absent only for legacy session images. */
+  path?: string;
 }
 export interface AttachmentReference {
   attachment_id: string; name: string; mime_type: string; size_bytes: number;

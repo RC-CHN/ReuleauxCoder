@@ -80,7 +80,7 @@ class ImageStore:
         ).hexdigest()
 
     def import_bytes(
-        self, session_id: str, data: bytes, *, name: str = "image"
+        self, session_id: str, data: bytes, *, name: str = "image", path: str | None = None
     ) -> ImageReference:
         if (
             not isinstance(data, bytes)
@@ -91,14 +91,16 @@ class ImageStore:
         attachment_id = sha256(data).hexdigest()
         root = self._root(session_id)
         with self._lock:
-            image = self._variant(root, attachment_id, data, name=name)
+            image = self._variant(
+                root, attachment_id, data, name=name, reference_path=path
+            )
             originals = root / "originals"
             if len(data) <= self.config.originals_cache_max_bytes:
-                path = originals / attachment_id
-                if not path.exists():
-                    _atomic_write(path, data)
+                original_path = originals / attachment_id
+                if not original_path.exists():
+                    _atomic_write(original_path, data)
             self._sweep_originals(originals)
-            return image
+            return replace(image, path=path)
 
     def read_image(
         self,
@@ -107,6 +109,7 @@ class ImageStore:
         *,
         region: tuple[int, int, int, int] | None = None,
         full_resolution: bool = False,
+        path: str | None = None,
     ) -> ImageReference:
         if not _HASH.fullmatch(attachment_id):
             raise ValueError("Invalid attachment ID")
@@ -122,7 +125,13 @@ class ImageStore:
             key = self._key(attachment_id, region, full_resolution, True)
             cached = root / "metadata" / f"{key}.json"
             if cached.is_file():
-                return ImageReference(**json.loads(cached.read_text()))
+                cached_image = ImageReference(**json.loads(cached.read_text()))
+                return replace(cached_image, path=path) if path else cached_image
+            source_path = path
+            if source_path is None:
+                normal = root / "metadata" / f"{self._key(attachment_id, None, False, False)}.json"
+                if normal.is_file():
+                    source_path = ImageReference(**json.loads(normal.read_text())).path
             original = root / "originals" / attachment_id
             if not original.is_file():
                 raise ImageDeliveryError(
@@ -138,6 +147,7 @@ class ImageStore:
                 region=region,
                 full_resolution=full_resolution,
                 detail=True,
+                reference_path=source_path,
             )
 
     def data_url(self, session_id: str, image: ImageReference) -> str:
@@ -167,7 +177,9 @@ class ImageStore:
             raise ImageDeliveryError(
                 "Image was not imported into this session; attach it again"
             ) from error
-        if replace(image, turn_id=None) != saved:
+        if replace(image, turn_id=None, path=None) != replace(
+            saved, turn_id=None, path=None
+        ):
             raise ImageDeliveryError(
                 "Image reference does not match its saved metadata"
             )
@@ -183,11 +195,13 @@ class ImageStore:
         region: tuple[int, int, int, int] | None = None,
         full_resolution: bool = False,
         detail: bool = False,
+        reference_path: str | None = None,
     ) -> ImageReference:
         key = self._key(attachment_id, region, full_resolution, detail)
         metadata = root / "metadata" / f"{key}.json"
         if metadata.is_file():
-            return ImageReference(**json.loads(metadata.read_text()))
+            cached = ImageReference(**json.loads(metadata.read_text()))
+            return replace(cached, path=reference_path) if reference_path else cached
         try:
             with Image.open(BytesIO(data)) as source:
                 mime = _MIMES.get(source.format or "")
@@ -233,6 +247,7 @@ class ImageStore:
                     original_width,
                     original_height,
                     name=Path(name).name[:200] or "image",
+                    path=reference_path,
                 )
         except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as error:
             raise ImageDeliveryError("Invalid or unsafe image data") from error

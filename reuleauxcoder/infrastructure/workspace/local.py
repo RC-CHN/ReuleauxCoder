@@ -119,6 +119,34 @@ class LocalWorkspacePort:
                 WorkspaceErrorCode.IO_ERROR, f"failed to read {path}: {error}"
             ) from error
 
+    def read_bytes(self, path: str | Path, *, max_bytes: int) -> bytes:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise WorkspaceError(
+                WorkspaceErrorCode.INVALID_PATH, "max_bytes must be a positive integer"
+            )
+        resolved = self.resolve(path)
+        try:
+            if not resolved.exists():
+                raise WorkspaceError(WorkspaceErrorCode.NOT_FOUND, f"{path} not found")
+            if not resolved.is_file():
+                raise WorkspaceError(
+                    WorkspaceErrorCode.NOT_A_FILE, f"{path} is not a file"
+                )
+            with resolved.open("rb") as stream:
+                data = stream.read(max_bytes + 1)
+        except WorkspaceError:
+            raise
+        except OSError as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR, f"failed to read {path}: {error}"
+            ) from error
+        if len(data) > max_bytes:
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR,
+                f"{path} exceeds the {max_bytes}-byte read limit",
+            )
+        return data
+
     def read_text_page(
         self,
         path: str | Path,

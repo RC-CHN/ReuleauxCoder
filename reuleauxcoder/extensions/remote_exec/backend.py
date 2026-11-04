@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import concurrent.futures
 import hashlib
 import math
@@ -305,6 +307,34 @@ class RemoteWorkspacePort:
 
     def read_text(self, path: str | Path) -> str:
         return str(self._request("fs.read_text", path=str(path)).get("content", ""))
+
+    def read_bytes(self, path: str | Path, *, max_bytes: int) -> bytes:
+        if type(max_bytes) is not int or max_bytes < 1:
+            raise WorkspaceError(
+                WorkspaceErrorCode.INVALID_PATH, "max_bytes must be a positive integer"
+            )
+        if not self.backend.supports_capability("workspace.fs.read_bytes"):
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR,
+                "Remote peer does not support bounded binary reads; upgrade the peer",
+            )
+        data = self._request("fs.read_bytes", path=str(path), max_bytes=max_bytes)
+        encoded = data.get("data")
+        if not isinstance(encoded, str):
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR, "remote binary read omitted data"
+            )
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR, "invalid remote binary data"
+            ) from error
+        if len(content) > max_bytes:
+            raise WorkspaceError(
+                WorkspaceErrorCode.IO_ERROR, "remote binary read exceeded its byte limit"
+            )
+        return content
 
     def read_text_page(
         self,

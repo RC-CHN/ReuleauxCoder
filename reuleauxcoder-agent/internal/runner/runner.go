@@ -98,7 +98,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			"shell", "process.start", "process.input", "process.poll", "process.poll.concurrent", "process.cancel",
 			"process.interrupt", "process.terminate", "process.release",
 			"workspace.fs.stat", "workspace.fs.list", "workspace.fs.read_text",
-			"workspace.fs.snapshot_text",
+			"workspace.fs.read_bytes", "workspace.fs.snapshot_text",
 			"workspace.fs.read_text_page",
 			"workspace.fs.glob", "workspace.fs.search_text",
 			"workspace.fs.search_text.bounded",

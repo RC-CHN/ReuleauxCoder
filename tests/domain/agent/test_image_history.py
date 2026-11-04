@@ -7,6 +7,7 @@ from reuleauxcoder.domain.runtime.serialization import (
     tool_outcome_from_dict,
     tool_outcome_to_dict,
 )
+from reuleauxcoder.extensions.tools.backend import ExecutionContext, LocalToolBackend
 from reuleauxcoder.extensions.tools.builtin.images import ViewImageTool
 from reuleauxcoder.infrastructure.persistence.images import ImageStore
 from reuleauxcoder.infrastructure.persistence.session_store import SessionStore
@@ -130,13 +131,41 @@ def test_text_model_compaction_does_not_resurrect_removed_images(tmp_path):
         agent.llm.client.close()
 
 
+def test_initial_text_only_path_image_restores_after_switching_to_vision(tmp_path):
+    agent, _ = make_agent(tmp_path)
+    try:
+        data = picture(size=(80, 60))
+        (tmp_path / "initial.png").write_bytes(data)
+        image = agent.image_store.import_bytes(
+            "session", data, name="initial.png", path="initial.png"
+        )
+        switch(agent.llm)
+        agent.chat(ChatInput("inspect", (image,)))
+        request_text = str(agent.llm.last_dispatched_request["messages"])
+        assert not image_parts(agent.llm.last_dispatched_request["messages"])
+        assert "initial.png" in request_text
+        assert "does not support image input" in request_text
+        assert len(image_parts(agent.messages)) == 1
+
+        switch(agent.llm, True)
+        agent.chat("look now")
+        assert len(image_parts(agent.llm.last_dispatched_request["messages"])) == 1
+        assert len(image_parts(agent.messages)) == 1
+    finally:
+        agent.llm.client.close()
+
+
 def test_view_image_tool_pipeline_keeps_typed_reference(tmp_path):
-    agent, image = make_agent(tmp_path)
+    agent, _ = make_agent(tmp_path)
     try:
         # This test needs an original to create a crop.
         agent.image_store = agent.llm.image_store = ImageStore(tmp_path)
-        image = agent.image_store.import_bytes("session", picture(size=(400, 300)))
-        tool = ViewImageTool()
+        (tmp_path / "workspace.png").write_bytes(picture(size=(400, 300)))
+        tool = ViewImageTool(
+            LocalToolBackend(
+                ExecutionContext(cwd=str(tmp_path), workspace_root=str(tmp_path))
+            )
+        )
         tool.bind_agent(agent)
         agent.tools.append(tool)
         agent.image_turn_id = "turn"
@@ -145,7 +174,7 @@ def test_view_image_tool_pipeline_keeps_typed_reference(tmp_path):
                 id="view",
                 name="view_image",
                 arguments={
-                    "attachment_id": image.attachment_id,
+                    "path": "workspace.png",
                     "region": [10, 10, 100, 100],
                 },
             )
@@ -156,10 +185,13 @@ def test_view_image_tool_pipeline_keeps_typed_reference(tmp_path):
             source="tool_result",
         )
         assert image_parts(agent.messages)[0]["turn_id"] == "turn"
-        outcome = tool.execute(image.attachment_id, region=[10, 10, 100, 100])
+        assert image_parts(agent.messages)[0]["path"] == "workspace.png"
+        outcome = tool.execute("workspace.png", region=[10, 10, 100, 100])
         restored = tool_outcome_from_dict(tool_outcome_to_dict(outcome))
         assert restored.images == outcome.images
         switch(agent.llm)
-        assert not tool.execute(image.attachment_id).success
+        withheld = tool.execute("workspace.png")
+        assert withheld.success
+        assert withheld.metadata["image_withheld"] is True
     finally:
         agent.llm.client.close()

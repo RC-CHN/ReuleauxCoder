@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -39,6 +40,36 @@ func TestExecuteWorkspacePrimitives(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(root, "nested", "new.txt"))
 	if err != nil || string(content) != "created" {
 		t.Fatalf("unexpected written file: %q, %v", content, err)
+	}
+}
+
+func TestReadBytesBounded(t *testing.T) {
+	root := t.TempDir()
+	content := []byte{0, 1, 2, 255}
+	if err := os.WriteFile(filepath.Join(root, "image.png"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := Execute(request("fs.read_bytes", map[string]any{
+		"path": "image.png", "max_bytes": len(content),
+	}), root, root)
+	if !result.OK {
+		t.Fatalf("unexpected binary read failure: %#v", result)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(result.Data["data"].(string))
+	if err != nil || string(decoded) != string(content) || result.Data["size_bytes"] != len(content) {
+		t.Fatalf("unexpected binary read result: %#v", result)
+	}
+	tooSmall := Execute(request("fs.read_bytes", map[string]any{
+		"path": "image.png", "max_bytes": len(content) - 1,
+	}), root, root)
+	if tooSmall.OK {
+		t.Fatalf("expected bounded read failure: %#v", tooSmall)
+	}
+	directory := Execute(request("fs.read_bytes", map[string]any{
+		"path": ".", "max_bytes": 4,
+	}), root, root)
+	if directory.OK || directory.ErrorCode != "not_a_file" {
+		t.Fatalf("expected regular-file failure, got %#v", directory)
 	}
 }
 

@@ -40,20 +40,25 @@ def test_image_preview_validates_session_import_metadata_and_size(runtime, tmp_p
         preview(image)
 
 
-def test_attachment_admission_preserves_draft_until_capable_model(runtime, tmp_path):
+def test_text_only_attachment_admission_retains_path_and_can_switch(runtime, tmp_path):
+    runtime.agent.runtime_working_directory = str(tmp_path)
     image = attach(runtime, tmp_path)
+    assert image.path.startswith(".rcoder/attachments/")
+    assert (tmp_path / image.path).is_file()
     state = runtime.client.state
     value = ChatInput("inspect", (image,), state.session_id, state.session_generation)
-    with pytest.raises(RpcError, match="does not support images"):
-        runtime.client.submit(value)
-    assert runtime.agent.messages == []
-    runtime.agent.llm.support_modal = ("text", "image")
+
+    # The initial text-only model accepts and stores the image. Provider projection
+    # supplies the text fallback without discarding the canonical reference.
     assert runtime.client.submit(value).status == "running"
     runtime.client.wait_idle()
-    assert (
-        runtime.agent.messages[0]["content"][1]["attachment_id"] == image.attachment_id
-    )
-    assert runtime.agent.messages[0]["content"][1]["turn_id"]
+    committed = runtime.agent.messages[0]["content"][1]
+    assert committed["path"] == image.path
+    assert committed["turn_id"]
+
+    runtime.agent.llm.support_modal = ("text", "image")
+    assert runtime.client.submit("inspect after switching").status == "running"
+    runtime.client.wait_idle()
 
 
 def test_stale_attachment_and_tampered_reference_are_rejected(runtime, tmp_path):
