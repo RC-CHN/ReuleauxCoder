@@ -71,11 +71,15 @@ user/client operation remains, and the mode allows goal completion tools.
 Planner mode does not automatically continue. A model final answer ends a turn;
 `update_goal(status="complete")` ends the goal.
 
-Continuation is tagged internal context. It does not create a human message in
-the transcript. Every request receives the current goal state, including after
-compaction. The model can use the existing history tools for original details.
+Continuation is tagged internal context and emits a visible checkpoint notice. It
+does not create a human message in the transcript. Every request receives the
+current goal state, including after compaction. The model can use the existing
+history tools for original details.
 
-Pause lets the current turn finish but disables continuation. The interrupt
+Pause lets the current turn finish but disables continuation. The stored goal
+status remains `paused`; while that turn is still running, frontends derive and
+show `pausing` without adding another persisted state. The command and button use
+"Pause after turn" to make this timing explicit. The interrupt
 gesture also pauses the goal and retains the existing stop/steering behavior.
 The explicit immediate-guidance action uses `runtime.interrupt` with
 `steering_only: true` and the current `session_generation`. It promotes admitted

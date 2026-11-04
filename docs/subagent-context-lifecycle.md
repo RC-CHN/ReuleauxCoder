@@ -23,6 +23,14 @@ consumes inter-agent messages before a new model round, never inside an active
 tool batch. Session generation and parent identity are checked before delivery;
 late completions remain inspectable but are not injected.
 
+The UI and model tools distinguish working, verification pending/verifying, result
+queued, and injected for the next parent request. `read_agent` and `list_agents`
+also derive `included in parent request <request-id>` from the existing replay;
+no additional delivery marker is persisted. `read_agent` provides bounded
+checkpoint transcript pages for running jobs, or `availability=no_checkpoint`
+when no checkpoint exists yet. See [Agent tools](agent-tools.md#检查子-agent) for
+parameters and examples.
+
 This follows two useful reference patterns without copying their UI/runtime:
 
 - Codex keeps a root-scoped control plane with bounded execution, explicit
