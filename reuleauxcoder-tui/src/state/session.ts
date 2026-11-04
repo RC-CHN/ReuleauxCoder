@@ -30,6 +30,7 @@ export class SessionStore extends EventEmitter {
   private reasoning: Cell | undefined;
   private tools = new Map<string, Cell>();
   private reviewedDiffs = new Set<string>();
+  private withheldImagesKey = '';
   private submissions = new Map<string, Cell>();
   readonly pendingInputs = new Map<string, Cell>();
   private inputQueue = new InputQueueProjection();
@@ -87,12 +88,18 @@ export class SessionStore extends EventEmitter {
     if (state.session_generation > this.generation) {this.clear(); this.generation = state.session_generation;}
     if (!state.running) for (const cell of this.streaming) this.finishCell(cell);
     if (!state.running) for (const cell of this.pendingInputs.values()) if (['queued', 'accepted'].includes(cell.tone ?? '')) {cell.tone = 'not-applied'; cell.title = 'You · not applied';}
-    this.state = state; this.emit('change');
+    this.state = state;
+    const withheld = state.images_withheld ?? 0;
+    const withheldKey = withheld ? `${state.session_generation}:${state.model}:${withheld}` : '';
+    if (withheldKey && withheldKey !== this.withheldImagesKey) this.notice(`${withheld} image(s) are retained in history but withheld from requests because the current model is text-only.`, 'warning');
+    this.withheldImagesKey = withheldKey;
+    this.emit('change');
   }
   initialize(info: any) {
     this.update(info.state);
     this.startup = info.startup_events;
     for (const message of info.recent_conversation) this.add(message.role === 'user' ? 'user' : 'assistant', message.role === 'user' ? 'You' : 'Reuleaux', message.content);
+    if (info.recent_conversation.length && info.conversation_preview) this.notice(`Showing the latest ${info.conversation_preview.max_user_turns} user turns; the model restored the full session. Browse history for older messages.`);
     this.plan = info.plan ?? {items: []}; this.progress = info.progress ?? {};
     for (const event of info.runtime_events) this.runtime(event);
     for (const event of this.startup) if (event.level === 'error' || event.level === 'warning') this.notice(event.message, event.level);

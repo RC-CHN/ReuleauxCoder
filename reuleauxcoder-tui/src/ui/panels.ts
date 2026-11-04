@@ -93,6 +93,6 @@ export function panelRows(c: TuiController, width: number, height: number, layou
     const input = inputLayout(screen.input, width, Math.max(1, height - prefix.length - (screen.error ? 1 : 0)));
     return {title: screen.title, rows: [...prefix, ...input.rows, ...(screen.error ? [line(paint.error(screen.error), width)] : [])].slice(0, height), cursor: input.cursor && {...input.cursor, y: prefix.length + input.cursor.y}, hint: [keyHint('Enter', 'next / submit'), keyHint('Shift+Tab', 'previous field'), keyHint('Esc', 'back')]};
   }
-  if (c.palette.length) return {title: 'Commands', rows: selectionRows(c.palette.map(menu => ({label: menu.name, description: menu.title})), c.paletteIndex % c.palette.length, width, height, c.selection(c)), hint: [keyHint('↑↓', 'select'), keyHint('Tab', 'complete'), keyHint('Enter', 'open'), keyHint('Esc', 'dismiss')]};
+  if (c.palette.length) return {title: 'Commands', rows: selectionRows(c.palette.map(menu => ({label: menu.name, description: `${menu.group} · ${menu.description}`})), c.paletteIndex % c.palette.length, width, height, c.selection(c)), hint: [keyHint('↑↓', 'select'), keyHint('Tab', 'complete'), keyHint('Enter', 'open'), keyHint('Esc', 'dismiss')]};
   return null;
 }

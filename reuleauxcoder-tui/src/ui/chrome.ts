@@ -14,7 +14,7 @@ export function useLogoCollapse() {
 }
 
 /** Decorative rows yield to the conversation in short terminals. */
-export function consoleChrome(c: TuiController, width: number, phase: string, hiddenLogoRows: number) {
+export function consoleChrome(c: TuiController, width: number, phase: string, hiddenLogoRows: number, sidebar = false) {
   const {state, git} = c.session;
   const role: AccentRole = c.session.fatal ? 'error' : c.active || state.stopping || state.approval_waiting ? 'warning' : 'accent';
   const connection = c.session.fatal ? '● DISCONNECTED' : c.session.connected ? '● SYSTEM ONLINE' : '◌ CONNECTING';
@@ -25,14 +25,14 @@ export function consoleChrome(c: TuiController, width: number, phase: string, hi
   const roomy = c.rows >= 34 && width >= 70 && hiddenLogoRows < 3;
   const header = roomy ? [
     between(paint.accent(' █████▄   R E U L E A U X'), paint[role](connection), width),
-    between(paint.accent(' ██  ██   ') + paint.info(model), paint.secondary(context), width),
+    between(paint.accent(' ██  ██   ') + (sidebar ? '' : paint.info(model)), sidebar ? '' : paint.secondary(context), width),
     paint.accent(' ████▀'),
     paint.fade(paint.accent(' ██  ██   '), Math.min(1, 3 - hiddenLogoRows)) + paint.muted(workspace),
     '',
   ].slice(Math.floor(hiddenLogoRows)).map((row, index) =>
     index === 0 ? paint.fade(row, 1 - hiddenLogoRows % 1) : row) : [
     between(paint.accent(paint.bold('REULEAUX')) + paint.muted(' / CODER'), paint[role](connection), width),
-    ...(c.rows >= 20 ? [between(paint.muted(workspace), paint.info(statusLine([model, context], Math.floor(width / 2))), width)] : []),
+    ...(c.rows >= 20 ? [between(paint.muted(workspace), sidebar ? '' : paint.info(statusLine([model, context], Math.floor(width / 2))), width)] : []),
   ];
   const items = c.session.plan.items ?? [];
   const current = items.find((item: any) => item.status === 'in_progress');

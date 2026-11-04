@@ -13,6 +13,7 @@ import {consoleChrome, useLogoCollapse} from './chrome.js';
 import {ComposerEdge} from './composer-edge.js';
 import {Reveal} from './reveal.js';
 import {TextLayout} from './text-layout.js';
+import {STARTER_PROMPTS} from '../state/starters.js';
 
 const Rows = memo(function Rows({rows, height, width}: {rows: string[]; height: number; width: number}) {
   const text = Array.from({length: height}, (_, index) => paint.surface(fit(rows[index] || '', width))).join('\n');
@@ -53,8 +54,10 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   const width = dimensions.main;
   const height = Math.max(6, c.rows - 1);
   const liveActivity = activityFor(c);
-  const chrome = consoleChrome(c, dimensions.width, c.session.fatal ? 'Disconnected' : liveActivity?.label ?? 'Ready', hiddenLogoRows);
-  const footerHeight = chrome.status ? 2 : 1;
+  const state = c.session.state;
+  const chrome = consoleChrome(c, dimensions.width, c.session.fatal ? 'Disconnected' : liveActivity?.label ?? 'Ready', hiddenLogoRows, dimensions.sidebar > 0);
+  const showStatus = Boolean(chrome.status && state.running && !dimensions.sidebar);
+  const footerHeight = showStatus ? 2 : 1;
   const composerWidth = Math.max(1, dimensions.width - 6);
   c.composerWidth = composerWidth;
   const focused = !c.closing && !c.active && !c.screen;
@@ -80,11 +83,10 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
     [layout, c.session.contentRevision, width, transcriptHeight, c.offset, c.expanded]);
   c.viewportRows = Math.max(1, panel ? panelHeight : transcriptHeight); c.totalRows = transcript.total;
   if (c.offset !== null) c.offset = transcript.start;
-  const state = c.session.state;
   const backgroundCount = [...c.session.processes.values()].filter(process => process.state !== 'exited').length;
   const shortcutHints = (panel
     ? [keyHint('Esc', 'back'), keyHint('PgUp/PgDn', 'scroll'), keyHint('F2', 'details')]
-    : [...(!dimensions.sidebar && backgroundCount ? [keyHint('/ps', `${backgroundCount} processes`)] : []), keyHint('F4', c.expanded ? 'collapse details' : 'output + reasoning + LSP + tables'), keyHint('F2', 'session'), keyHint('/', 'commands'), ...(dimensions.width >= 100 ? [keyHint('Ctrl+C', state.running ? 'interrupt' : 'exit')] : [])]
+    : [...(!dimensions.sidebar && backgroundCount ? [keyHint('/ps', `${backgroundCount} processes`)] : []), keyHint('F4', c.expanded ? 'collapse' : 'details'), keyHint('F2', 'session'), keyHint('F1', 'help'), keyHint('/', 'commands'), ...(dimensions.width >= 120 ? [keyHint('Ctrl+C', state.running ? 'interrupt' : 'exit')] : [])]
   ).join('   ');
   const footer = c.closing ? c.exitConfirm ? paint.warning('Ctrl+C again forces exit; saving may be incomplete.') : paint.muted('Waiting for save to finish · Ctrl+C to force exit') : c.exitConfirm ? paint.warning('Press Ctrl+C again to save and exit.') : c.session.fatal ? paint.error(safe(c.session.fatal)) : c.offset !== null ? paint.muted(`History ${transcript.start + 1}/${transcript.estimated ? '~' : ''}${transcript.total}${c.hasNewOutput ? ' · New output' : ''} · Ctrl+End follows output`) : c.status ? paint.muted(safe(c.status)) : shortcutHints;
   const inputColor = focused ? paint.accent : paint.muted;
@@ -94,9 +96,12 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   ));
   const composerAction = focused ? paint.badge(state.running ? 'Enter queue' : 'Enter send') : '';
   const composerHint = c.images.length ? `${c.images.length} images · /detach <number|all> · ${state.support_modal?.includes('image') ? 'Enter send' : 'switch to an image model'}` : focused ? `Alt+Enter newline${dimensions.width >= 65 ? ' · Alt+↑↓ history' : ''}` : 'Draft preserved';
-  const welcome = [
+  const welcome = c.starterVisible ? [
+    paint.secondary('Try a starter · Alt+1/2/3 fills the draft without sending it'),
+    ...STARTER_PROMPTS.map((prompt, index) => keyHint(`Alt+${index + 1}`, prompt)),
+  ] : [
     keyHint('Enter', state.running ? 'queue a follow-up prompt' : 'send a prompt'),
-    keyHint('/', 'explore commands') + (width >= 45 ? '   ' + keyHint('Ctrl+G', 'keyboard help') : ''),
+    keyHint('/', 'explore commands') + (width >= 45 ? '   ' + keyHint('F1', 'keyboard help') : ''),
   ];
   const emptyRows = [...Array.from({length: Math.max(0, Math.floor((transcriptHeight - welcome.length) / 3))}, () => ''), ...welcome];
   const panelKind = c.active ? c.active.kind === 'review' || c.active.kind === 'confirm' ? 'REVIEW' : 'INPUT' : c.screen?.kind === 'document' ? 'DETAILS' : c.screen?.kind === 'form' ? 'CONFIGURE' : 'COMMANDS';
@@ -139,6 +144,6 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
       phase={c.session.fatal ? 'error' : c.active || state.approval_waiting ? 'attention' : liveActivity?.moving ? 'working' : 'idle'}/>
     <Rows rows={composer} height={composerHeight} width={dimensions.width}/>
     <Rows rows={[frameEdge(composerHint, dimensions.width, true, paint.muted)]} height={1} width={dimensions.width}/>
-    <Rows rows={[footer, ...(chrome.status ? [chrome.status] : [])]} height={footerHeight} width={dimensions.width}/>
+    <Rows rows={[footer, ...(showStatus && chrome.status ? [chrome.status] : [])]} height={footerHeight} width={dimensions.width}/>
   </Box>;
 }

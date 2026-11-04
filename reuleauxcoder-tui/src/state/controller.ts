@@ -6,10 +6,11 @@ import {attachImageFile} from '@reuleauxcoder/client/node';
 import {cancellation, record, tuple, typeOf, type Action, type ImageReference, type Json, type Panel, type PanelItem, type PendingInteraction, type View} from '@reuleauxcoder/client';
 import {SessionStore} from './session.js';
 import {edit, editor, type Editor} from './editor.js';
-import {actionLabel, defaults, fieldValue, humanize, menusFromCatalog, type Menu} from './menus.js';
+import {actionLabel, defaults, fieldValue, humanize, menuSearchText, menusFromCatalog, type Menu} from './menus.js';
 import {InputHistory} from './history.js';
 import {SubmissionQueue} from './submissions.js';
 import {HistoryBrowser} from './history-browser.js';
+import {STARTER_PROMPTS} from './starters.js';
 import type {HistoryOperation} from '@reuleauxcoder/client';
 import {fields} from '../ui/format.js';
 import type {SelectionViewport} from './scroll.js';
@@ -106,7 +107,10 @@ export class TuiController extends EventEmitter {
     });
     listen(client, 'event', (event, wire, generation) => {
       this.session.event(event, wire, generation);
-      if (event.message && !['RuntimeEventPayload', 'ViewEventPayload', 'InteractionPromptPayload'].includes(typeOf(event.payload) ?? '')) this.status = event.message;
+      if (event.message && !['RuntimeEventPayload', 'ViewEventPayload', 'InteractionPromptPayload'].includes(typeOf(event.payload) ?? '')) {
+        if (event.kind === 'context') this.session.notice(event.message);
+        else this.status = event.message;
+      }
       if (this.screen && typeOf(event.payload) === 'ReasoningNoticePayload') this.document(event.payload.title, event.message);
     });
     listen(client, 'completed', result => {this.session.completed(result); if (result.control === 'exit') void this.finish().catch(this.fail);});
@@ -137,10 +141,13 @@ export class TuiController extends EventEmitter {
   fail = (error: Error) => {if (!this.disposed) {this.status = error.message; this.session.notice(error.message, 'error');}};
   get active(): PendingInteraction | undefined {return this.client.interactions[0];}
   get screen(): Screen | undefined {return this.screens.at(-1);}
+  get starterVisible(): boolean {
+    return !this.active && !this.screen && !this.composer.text && !this.images.length && !this.session.cells.some(cell => cell.kind === 'user' || cell.kind === 'assistant');
+  }
   get palette(): Menu[] {
     if (this.active || this.screen || this.paletteDismissed || !this.composer.text.startsWith('/')) return [];
-    const query = this.composer.text.trim().toLowerCase();
-    return this.menus.filter(menu => menu.name.startsWith(query));
+    const terms = this.composer.text.trim().replace(/^\/+/, '').toLowerCase().split(/\s+/).filter(Boolean);
+    return this.menus.filter(menu => terms.every(term => menuSearchText(menu).includes(term)));
   }
   listItems(screen: ListScreen) {const query = screen.filter.text.toLowerCase(); return screen.items.filter(item => `${item.label} ${item.description}`.toLowerCase().includes(query));}
 
@@ -444,7 +451,10 @@ export class TuiController extends EventEmitter {
       } else screen.input = edit(screen.input, key.return ? '\n' : input, key.return ? {} : key, this.inputWidth);
       this.changed(); return;
     }
-    if (key.ctrl && input === 'p') {this.screens.push(this.list('Commands', this.menus.map(menu => ({label: menu.name, description: menu.title, select: () => this.openMenu(menu)})))); this.changed(); return;}
+    if (this.starterVisible && key.meta && ['1', '2', '3'].includes(input)) {
+      this.composer = editor(STARTER_PROMPTS[Number(input) - 1]); this.changed(); return;
+    }
+    if (key.ctrl && input === 'p') {this.screens.push(this.list('Commands', this.menus.map(menu => ({label: menu.name, description: `${menu.group} · ${menu.description}`, select: () => this.openMenu(menu)})))); this.changed(); return;}
     if (this.palette.length && (key.upArrow || key.downArrow || key.tab || key.return)) {
       const menus = this.palette;
       if (key.upArrow || key.downArrow) {this.selection(this).follow = true; this.paletteIndex = Math.max(0, Math.min(menus.length - 1, this.paletteIndex + (key.upArrow ? -1 : 1)));}

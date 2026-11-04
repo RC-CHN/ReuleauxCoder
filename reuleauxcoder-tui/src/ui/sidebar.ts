@@ -35,7 +35,8 @@ export function sidebarRows(c: TuiController, width: number, height: number, now
   if (goal) {
     const color = goal.status === 'active' ? paint.accent : goal.status === 'complete' ? paint.success : paint.warning;
     const budget = goal.token_budget === null ? 'No limit' : number.format(goal.token_budget);
-    add('GOAL', [color(goal.status.replaceAll('_', ' ')), paint.info(compact(goal.objective))], [
+    const goalLabel = goal.status === 'paused' && state.running ? 'pausing' : goal.status.replaceAll('_', ' ');
+    add('GOAL', [color(goalLabel), paint.info(compact(goal.objective))], [
       valueRow('Tokens', `${number.format(goal.tokens_used)} / ${budget}`),
       valueRow('Elapsed', duration(goal.time_used_seconds)),
       ...(goal.estimated_requests ? [paint.warning(`${goal.estimated_requests} requests estimated`)] : []),
@@ -99,7 +100,7 @@ export function sidebarRows(c: TuiController, width: number, height: number, now
   ], paint.secondary, 8);
 
   const activities = [
-    ...[...jobs.values()].filter(job => !['completed', 'cancelled', 'stale'].includes(job.status)).map(job => ({title: job.task, status: job.status, detail: job.blocker || job.error || job.current_tool || job.activity || ''})),
+    ...[...jobs.values()].filter(job => !['cancelled', 'stale'].includes(job.status) && job.activity !== 'injected; next parent request').map(job => ({title: job.task, status: job.status, detail: job.blocker || job.error || job.current_tool || job.activity || ''})),
   ];
   add('ACTIVITY', activities.length ? [paint.secondary(`${activities.length} agents`)] : [], activities.flatMap(item => [paint.secondary('● ') + paint.info(compact(item.title)) + paint.muted(` · ${item.status}`), ...(item.detail ? [paint.muted('  ' + compact(item.detail))] : [])]), paint.secondary, 5);
 
