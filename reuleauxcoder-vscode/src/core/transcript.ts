@@ -19,12 +19,14 @@ export class Transcript extends EventEmitter implements SubmissionSink {
   private sent = new Map<string, ChatCell>();
   private generation = 0;
   private running = false;
+  private withheldImagesKey = '';
   private subscriptions: (() => void)[] = [];
   bind(client: RuntimeClient): void {
     this.dispose(); this.clear();
     const listen = (name: string, callback: (...args: any[]) => void) => {client.on(name, callback); this.subscriptions.push(() => client.off(name, callback));};
     listen('initialized', info => {
       for (const message of info.recent_conversation ?? []) this.add(message.role === 'user' ? 'user' : 'assistant', message.content).images = message.images;
+      if (info.recent_conversation?.length && info.conversation_preview) this.add('notice', t('Showing recent turns; the model restored the full session. Browse history for older messages.'));
       for (const event of info.startup_events ?? []) if (event.level === 'warning' || event.level === 'error') this.add('notice', event.message);
       this.emit('change');
     });
@@ -35,6 +37,10 @@ export class Transcript extends EventEmitter implements SubmissionSink {
         this.assistant = this.reasoning = undefined;
         for (const cell of this.pendingInputs.values()) if (['queued', 'accepted'].includes(cell.status ?? '')) cell.status = 'not-applied';
       }
+      const withheld = state.images_withheld ?? 0;
+      const withheldKey = withheld ? `${state.session_generation}:${state.model}:${withheld}` : '';
+      if (withheldKey && withheldKey !== this.withheldImagesKey) this.add('notice', t('{0} images are retained in history but withheld from requests because the current model is text-only.', withheld));
+      this.withheldImagesKey = withheldKey;
       this.emit('change');
     });
     listen('event', (event, _wire, generation) => {

@@ -13,10 +13,11 @@ export class WorkOverviewView {
   }
   update(state: HostSnapshot): void {
     const data = state.overview;
+    const badge = this.toggle.querySelector<HTMLElement>('#overview-count');
     const signature = JSON.stringify([data ? {...data, goalObservedAt: 0, goal: data.goal ? {...data.goal, time_used_seconds: 0} : null, processes: data.processes.map(process => ({...process, elapsed: 0, observedAt: 0}))} : null, state.phase, state.running, state.reviews.length, state.interactions?.length]);
     if (this.signature === signature) return; this.signature = signature;
     this.toggle.disabled = !data;
-    if (!data) {this.root.hidden = true; this.goal.hidden = true; this.toggle.setAttribute('aria-expanded', 'false'); return;}
+    if (!data) {this.root.hidden = true; this.goal.hidden = true; if (badge) badge.hidden = true; this.toggle.setAttribute('aria-expanded', 'false'); return;}
     this.root.hidden = !this.open; this.toggle.setAttribute('aria-expanded', String(this.open));
     const scroll = this.root.scrollTop;
     const focusKey = (document.activeElement as HTMLElement)?.dataset.overviewAction;
@@ -29,16 +30,19 @@ export class WorkOverviewView {
     stats.append(this.action(`${t('Permissions')} · ${policy || '—'}`, 'approval.show', 'shield'));
     if (data.git?.available) stats.append(this.action(`${data.git.branch} · ${t(data.git.files.length === 1 && !data.git.truncated ? '{0} changed file' : '{0} changed files', `${data.git.files.length}${data.git.truncated ? '+' : ''}`)}`, undefined, 'history', () => void this.request('git').catch(this.notice)));
     const processes = data.processes.filter(item => item.state !== 'exited');
-    const jobs = data.jobs.filter(item => !['completed', 'cancelled', 'stale'].includes(item.status));
+    const jobs = data.jobs.filter(item => !['cancelled', 'stale'].includes(item.status) && item.detail !== 'injected; next parent request');
     if (processes.length) stats.append(this.action(`${t('Processes')} ${processes.length}`, 'processes.list', 'terminal'));
     if (jobs.length) stats.append(this.action(`${t('Agents')} ${jobs.length}`, 'subagent.jobs.list', 'agents'));
     if (data.queued) stats.append(this.text(`${t('Queue')} · ${data.queued}`, 'stat-warning'));
     const conflicts = data.git?.files.filter(file => file.conflict).length ?? 0;
     if (conflicts) stats.append(this.text(t(conflicts === 1 ? '{0} conflict' : '{0} conflicts', conflicts), 'stat-warning'));
     const waiting = state.reviews.length + (state.interactions?.length ?? 0);
+    const attentionCount = waiting + processes.length + jobs.length;
+    if (badge) {badge.hidden = attentionCount === 0; badge.textContent = String(attentionCount);}
     if (waiting) stats.append(this.action(t('Waiting for you · {0}', waiting), undefined, 'shield', () => document.getElementById('reviews')!.scrollIntoView({block: 'start'})));
     const content = document.createElement('div'); content.className = 'overview-content';
-    if (data.goal) this.section(content, `${t('Goal')} · ${errorText(data.goal.status)}`, [data.goal.objective], 'goal');
+    const goalStatus = data.goal && data.goal.status === 'paused' && state.running ? t('Pausing') : data.goal ? errorText(data.goal.status) : '';
+    if (data.goal) this.section(content, `${t('Goal')} · ${goalStatus}`, [data.goal.objective], 'goal');
     if (data.progress) this.section(content, t('Progress'), [data.progress], 'progress');
     if (data.plan.length) {
       const completed = data.plan.filter(item => item.status === 'completed').length;
@@ -81,10 +85,10 @@ export class WorkOverviewView {
     this.goal.replaceChildren(); this.goal.hidden = !data.goal || data.goal.status === 'complete';
     if (data.goal) {
       const goal = data.goal; const title = this.action(goal.objective, 'goal.show', 'goal'); title.className = 'goal-objective'; title.title = goal.objective;
-      const meta = this.text(`${errorText(goal.status)} · ${compact(goal.tokens_used)} / ${goal.token_budget === null ? t('No limit') : compact(goal.token_budget)} · `, 'goal-meta');
+      const meta = this.text(`${goalStatus} · ${compact(goal.tokens_used)} / ${goal.token_budget === null ? t('No limit') : compact(goal.token_budget)} · `, 'goal-meta');
       meta.append(this.clock.element('goal', goal.time_used_seconds));
       this.goal.append(title, meta);
-      if (goal.status !== 'complete') this.goal.append(this.action(goal.status === 'active' ? t('Pause') : t('Resume'), goal.status === 'active' ? 'goal.pause' : 'goal.resume'));
+      if (goal.status !== 'complete') this.goal.append(this.action(goal.status === 'active' ? t('Pause after turn') : t('Resume'), goal.status === 'active' ? 'goal.pause' : 'goal.resume'));
     }
     this.root.scrollTop = scroll;
     if (focusKey) [...this.root.querySelectorAll<HTMLElement>('[data-overview-action]'), ...this.goal.querySelectorAll<HTMLElement>('[data-overview-action]')].find(node => node.dataset.overviewAction === focusKey)?.focus({preventScroll: true});

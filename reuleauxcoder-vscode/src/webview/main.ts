@@ -310,6 +310,11 @@ composer.addEventListener('paste', event => {const files = [...(event.clipboardD
 element('send').addEventListener('click', () => void send());
 element('attach').addEventListener('click', () => element<HTMLInputElement>('files').click());
 element('commands').addEventListener('click', () => workbench.show());
+element('activity').addEventListener('click', () => element('overview-toggle').click());
+document.querySelectorAll<HTMLButtonElement>('[data-starter]').forEach(button => button.addEventListener('click', () => {
+  if (composer.value.trim()) {notice(t('Clear or send the current draft before choosing a starter.')); return;}
+  composer.value = button.dataset.starter ?? ''; saveDraft(); composer.focus();
+}));
 element('attention-jump').addEventListener('click', () => element('reviews').scrollIntoView({block: 'start', behavior: 'smooth'}));
 element('expand-all').addEventListener('click', () => toolCells.setExpanded(!toolCells.allExpanded()));
 element<HTMLInputElement>('files').addEventListener('change', event => {const input = event.target as HTMLInputElement; addFiles([...input.files ?? []]); input.value = '';});

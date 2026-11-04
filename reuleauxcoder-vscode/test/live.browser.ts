@@ -60,7 +60,10 @@ test('live workbench: clocks, readable facts, stable disclosures and motion in b
       state.reviews = []; state.steering!.queued = 1; state.overview!.activity = 'shell'; await publish();
       await page.locator('#steer').waitFor({state: 'visible'});
       assert.equal(await page.locator('#activity').getAttribute('data-state'), 'tool');
-      await page.locator('#overview-toggle').click();
+      assert.equal(await page.locator('#activity').textContent(), language === 'zh-CN' ? '正在运行 运行命令' : 'Running shell');
+      assert(await page.locator('#overview-count').isVisible());
+      await page.locator('#activity').click();
+      await page.locator('#overview').waitFor({state: 'visible'});
       await page.locator('#overview').evaluate(node => {node.scrollTop = 0;});
       await page.waitForTimeout(200);
       await page.screenshot({path: resolve(`../artifacts/vscode-concept/live-workbench-${language}.png`), animations: 'disabled'});

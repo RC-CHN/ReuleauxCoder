@@ -22,12 +22,13 @@ export class ActivityView {
     const status = state.steering, waiting = state.reviews.length + (state.interactions?.length ?? 0);
     const activity = state.overview?.activity;
     const kind = state.phase !== 'ready' ? state.phase : status?.stopping ? 'stopping' : waiting ? 'waiting' : status?.pending ? 'steering' : !state.running ? 'ready' : activity === 'Writing' ? 'responding' : activity === 'Reasoning' ? 'thinking' : activity ? 'tool' : 'requesting';
-    const label = {idle: t('Disconnected'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Stopping…'), failed: t('Connection failed'), waiting: t('Waiting for you'), steering: t('Applying guidance…'), ready: t('Ready'), responding: t('Responding'), tool: t('Running'), thinking: t('Thinking'), requesting: t('Waiting for model')}[kind];
+    const base = {idle: t('Disconnected'), starting: t('Connecting…'), installing: t('Installing…'), stopping: t('Stopping…'), failed: t('Connection failed'), waiting: t('Waiting for you'), steering: t('Applying guidance…'), ready: t('Ready'), responding: t('Responding'), tool: t('Running'), thinking: t('Thinking'), requesting: t('Waiting for model')}[kind];
+    const label = kind === 'tool' ? t('Running {0}', toolLabel(activity!)) : base;
     const signature = `${kind}:${label}:${activity}`;
     if (signature !== this.signature) {
       this.signature = signature; this.root.dataset.state = kind; this.label.textContent = label;
-      this.root.title = kind === 'tool' ? `${label} · ${toolLabel(activity!)}` : label;
-      this.root.setAttribute('aria-label', this.root.title); reveal(this.root);
+      this.root.title = `${label} · ${t('Open work overview')}`;
+      this.root.setAttribute('aria-label', label); reveal(this.root);
     }
     const visible = state.phase === 'ready' && state.running && !!status && (status.queued > 0 || status.pending);
     const disabled = this.busy || !!status?.pending || !!status?.stopping || !status?.supported;

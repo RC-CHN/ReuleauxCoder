@@ -92,6 +92,15 @@ test('actual bilingual webview: immediate steering, retry, paste/upload and narr
       await page.waitForFunction(() => document.querySelector('#environment')!.textContent?.includes('SSH: workbench'));
       await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('#send')!.disabled);
       assert.equal(await page.locator('#composer').getAttribute('aria-label'), language === 'zh' ? '消息' : 'Message');
+      const starter = page.locator('[data-starter]').first();
+      const starterText = await starter.getAttribute('data-starter');
+      await starter.click();
+      assert.equal(await page.locator('#composer').inputValue(), starterText);
+      assert(!messages.some(message => message.action === 'send'));
+      await page.locator('#composer').fill('Existing draft');
+      await starter.click();
+      assert.equal(await page.locator('#composer').inputValue(), 'Existing draft');
+      await page.locator('#composer').fill('');
       state.phase = 'failed'; state.error = {kind: 'incompatible', message: 'Core 0.9.3; requires 0.11.0'}; await publish();
       await page.locator('#setup').waitFor({state: 'visible'});
       const updateCore = page.locator('#setup [data-command="install"]');
