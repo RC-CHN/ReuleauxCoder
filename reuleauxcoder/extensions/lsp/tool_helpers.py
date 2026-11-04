@@ -338,3 +338,93 @@ def _count_symbols(symbols: list[dict[str, Any]]) -> int:
         if children:
             total += _count_symbols(children)
     return total
+
+
+def format_workspace_symbols(raw: Any, *, limit: int = 50) -> str:
+    symbols = raw if isinstance(raw, list) else []
+    lines: list[str] = []
+    for symbol in symbols[:limit]:
+        name = str(symbol.get("name") or "?")
+        kind = _SYMBOL_KIND_LABELS.get(symbol.get("kind", 0), "symbol")
+        container = str(symbol.get("containerName") or "").strip()
+        location = symbol.get("location") or {}
+        rendered = format_location(location)
+        suffix = f" · {container}" if container else ""
+        lines.append(f"[{kind}] {name}{suffix}\n  {rendered or 'location unavailable'}")
+    omitted = max(0, len(symbols) - len(lines))
+    if omitted:
+        lines.append(f"... {omitted} more symbols omitted")
+    return f"Workspace symbols ({len(symbols)}):\n" + ("\n".join(lines) if lines else "No matches")
+
+
+def format_call_hierarchy(
+    items: list[dict[str, Any]],
+    calls: list[tuple[dict[str, Any], Any]],
+    *,
+    direction: str,
+    limit: int = 50,
+) -> str:
+    lines = [f"Call hierarchy · {direction}:"]
+    shown = 0
+    for item in items:
+        lines.append(f"\n{item.get('name', '?')} · {format_location(item) or 'location unavailable'}")
+        related = next((raw for candidate, raw in calls if candidate is item), None)
+        entries = related if isinstance(related, list) else []
+        for call in entries:
+            linked = call.get("from" if direction == "incoming" else "to") or {}
+            rendered = format_location(linked)
+            lines.append(f"  {linked.get('name', '?')} · {rendered or 'location unavailable'}")
+            shown += 1
+            if shown >= limit:
+                lines.append("  ... call results truncated")
+                return "\n".join(lines)
+        if not entries:
+            lines.append("  No calls found")
+    return "\n".join(lines)
+
+
+def format_reference_batches(
+    batches: list[tuple[str, Any]],
+    *,
+    workspace: Any,
+    context_lines: int = 2,
+    limit: int = 50,
+) -> str:
+    """Render references with bounded source context through the workspace port."""
+    output: list[str] = []
+    shown = 0
+    total = 0
+    for origin, raw in batches:
+        locations = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+        output.append(f"\n{origin} · {len(locations)} references")
+        for location in locations:
+            total += 1
+            if shown >= limit:
+                continue
+            rendered = format_location(location)
+            if not rendered:
+                continue
+            output.append(f"  {rendered}")
+            shown += 1
+            if context_lines <= 0:
+                continue
+            uri = location.get("uri") or location.get("targetUri") or ""
+            path = _uri_to_path(str(uri))
+            rng = location.get("range") or location.get("targetSelectionRange") or {}
+            line = int((rng.get("start") or {}).get("line", 0)) + 1
+            start = max(1, line - context_lines)
+            try:
+                page = workspace.read_text_page(
+                    path, offset=start, limit=context_lines * 2 + 1, max_chars=4_000
+                )
+            except Exception as error:
+                output.append(f"    context unavailable: {type(error).__name__}")
+                continue
+            for offset, text in enumerate(page.lines):
+                number = start + offset
+                marker = ">" if number == line else " "
+                clipped = text if len(text) <= 200 else text[:199] + "…"
+                output.append(f"    {marker} {number:4d} | {clipped}")
+    if total > shown:
+        output.append(f"\n... {total - shown} more references omitted")
+    return "\n".join(output)

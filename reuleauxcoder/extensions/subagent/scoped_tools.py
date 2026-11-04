@@ -17,12 +17,14 @@ READ_ONLY_BASELINE = frozenset(
         "lsp",
         "lsp_status",
         "lsp_diagnostics",
+        "context_inspect",
     }
 )
-EFFECTFUL_REASON_TOOLS = frozenset({"write_file", "edit_file", "shell"})
+EFFECTFUL_REASON_TOOLS = frozenset({"write_file", "edit_file", "apply_patch", "shell"})
 EFFECT_CLASSES = {
     "write_file": "workspace_write",
     "edit_file": "workspace_write",
+    "apply_patch": "workspace_write",
     "shell": "process_execution",
     "shell_session": "control_plane_internal",
 }

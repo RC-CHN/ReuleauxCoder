@@ -30,6 +30,7 @@ export interface Parameter {name: string; kind: 'text' | 'integer' | 'boolean'; 
 export interface Action {action_id: string; feature_id: string; description: string; preview: boolean; parameters: Parameter[]; triggers: {kind: string; value: string}[]}
 export interface RuntimeState {
   support_modal?: string[];
+  images_withheld?: number;
   goal?: Goal | null;
   revision: number; session_id: string | null; agent_id: string | null; session_generation: number;
   running: boolean; stopping: boolean; interrupt_pending: boolean;

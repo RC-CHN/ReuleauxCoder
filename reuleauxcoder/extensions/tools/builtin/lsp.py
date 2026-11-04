@@ -33,9 +33,12 @@ from reuleauxcoder.extensions.lsp.manager import (
     LspTransportState,
 )
 from reuleauxcoder.extensions.lsp.tool_helpers import (
+    format_call_hierarchy,
     format_document_symbols,
     format_locations,
+    format_reference_batches,
     format_references,
+    format_workspace_symbols,
     resolve_file_path,
     validate_position,
 )
@@ -48,7 +51,16 @@ from reuleauxcoder.domain.agent.tool_outcome import (
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
-_OPERATIONS = frozenset({"goToDefinition", "findReferences", "documentSymbol"})
+_OPERATIONS = frozenset(
+    {
+        "goToDefinition",
+        "findReferences",
+        "documentSymbol",
+        "workspaceSymbol",
+        "callHierarchy",
+        "batchReferences",
+    }
+)
 
 # ── tools ──────────────────────────────────────────────────────────────────
 
@@ -87,17 +99,18 @@ class LspTool(_BoundLspTool):
         "Interact with Language Server Protocol (LSP) servers for code intelligence.\n"
         "\n"
         "Supported operations:\n"
-        "- goToDefinition: Find where a symbol is defined\n"
-        "- findReferences: Find all references to a symbol across the codebase\n"
-        "- documentSymbol: Get all symbols (functions, classes, variables) in a file\n"
+        "- goToDefinition / findReferences / documentSymbol: document queries\n"
+        "- workspaceSymbol: search symbols by query across the anchor's workspace\n"
+        "- callHierarchy: prepare a symbol and list incoming, outgoing or both calls\n"
+        "- batchReferences: query up to 20 positions and include bounded source context\n"
         "\n"
-        "All operations require:\n"
-        "- filePath: The absolute or relative path to the file\n"
-        "- line: The line number (1-based, as shown in editors)\n"
-        "- character: The character offset (1-based, as shown in editors)\n"
-        "\n"
-        "Note: An LSP server must be available for the file type. "
-        "If no server is running, an error will be returned."
+        "filePath is always required and selects the file, language and workspace. "
+        "line and character are 1-based and required for position operations, but "
+        "optional for documentSymbol and workspaceSymbol. batchReferences accepts "
+        "positions=[{filePath, line, character}, ...], context_lines=0..3 and "
+        "include_declaration. callHierarchy accepts direction=incoming|outgoing|both. "
+        "Example: {operation: 'workspaceSymbol', filePath: 'src/main.py', query: 'Agent'}.\n"
+        "An LSP server must be available for the file type."
     )
 
     parameters: ClassVar[dict[str, Any]] = {
@@ -105,12 +118,12 @@ class LspTool(_BoundLspTool):
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["goToDefinition", "findReferences", "documentSymbol"],
+                "enum": sorted(_OPERATIONS),
                 "description": "The LSP operation to perform.",
             },
             "filePath": {
                 "type": "string",
-                "description": "The absolute or relative path to the file.",
+                "description": "Source file or workspace/language anchor for the request.",
             },
             "line": {
                 "type": "integer",
@@ -120,17 +133,56 @@ class LspTool(_BoundLspTool):
                 "type": "integer",
                 "description": "The character offset (1-based, as shown in editors).",
             },
+            "query": {
+                "type": "string",
+                "description": "Symbol query for workspaceSymbol.",
+            },
+            "positions": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "filePath": {"type": "string"},
+                        "line": {"type": "integer", "minimum": 1},
+                        "character": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["filePath", "line", "character"],
+                    "additionalProperties": False,
+                },
+                "description": "Positions for batchReferences.",
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["incoming", "outgoing", "both"],
+                "description": "Call hierarchy direction; default both.",
+            },
+            "context_lines": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3,
+                "description": "Source lines around each batch reference; default 1.",
+            },
+            "include_declaration": {
+                "type": "boolean",
+                "description": "Include declarations in references; default true.",
+            },
         },
-        "required": ["operation", "filePath", "line", "character"],
+        "required": ["operation", "filePath"],
     }
 
-    def execute(
+    def execute(  # type: ignore[override]
         self,
         *,
         operation: str,
-        filePath: str,
-        line: int,
-        character: int,
+        filePath: str = "",
+        line: int = 1,
+        character: int = 1,
+        query: str = "",
+        positions: list[dict[str, Any]] | None = None,
+        direction: str = "both",
+        context_lines: int = 1,
+        include_declaration: bool = True,
     ) -> ToolOutcome:
         # 1. Validate operation
         if operation not in _OPERATIONS:
@@ -138,7 +190,6 @@ class LspTool(_BoundLspTool):
                 f"Unknown operation: {operation}. "
                 f"Supported: {', '.join(sorted(_OPERATIONS))}."
             )
-
         # 2. Resolve file and language
         try:
             lang, path = resolve_file_path(filePath)
@@ -150,7 +201,7 @@ class LspTool(_BoundLspTool):
         # 3. Position validation (skip for documentSymbol — line/char are
         #    ignored by the server anyway, they only exist to keep the schema
         #    uniform)
-        if operation != "documentSymbol":
+        if operation not in {"documentSymbol", "workspaceSymbol"}:
             try:
                 validate_position(path, line, character)
             except ValueError as e:
@@ -160,6 +211,18 @@ class LspTool(_BoundLspTool):
         manager = self.lsp_manager
         if manager is None:
             return _lsp_failure("LSP infrastructure is not available")
+        if operation in {"workspaceSymbol", "callHierarchy", "batchReferences"}:
+            return self._execute_workspace_operation(
+                operation=operation,
+                path=path,
+                line=line,
+                character=character,
+                query=query,
+                positions=positions,
+                direction=direction,
+                context_lines=context_lines,
+                include_declaration=include_declaration,
+            )
 
         # 5. Build LSP method + params
         if operation == "goToDefinition":
@@ -220,6 +283,110 @@ class LspTool(_BoundLspTool):
             return _lsp_failure(_safe_failure_message("format", e))
 
         return _lsp_failure(f"Unknown operation: {operation}")
+
+    def _execute_workspace_operation(
+        self,
+        *,
+        operation: str,
+        path: Path,
+        line: int,
+        character: int,
+        query: str,
+        positions: list[dict[str, Any]] | None,
+        direction: str,
+        context_lines: int,
+        include_declaration: bool,
+    ) -> ToolOutcome:
+        manager = self.lsp_manager
+        assert manager is not None
+        cancellation = self.current_cancellation_signal()
+        try:
+            if operation == "workspaceSymbol":
+                raw = manager.send_request_sync(
+                    path,
+                    "workspace/symbol",
+                    {"query": query},
+                    cancellation=cancellation,
+                )
+                return _lsp_success(operation, format_workspace_symbols(raw))
+
+            if operation == "callHierarchy":
+                if direction not in {"incoming", "outgoing", "both"}:
+                    return _lsp_failure(
+                        "callHierarchy direction must be incoming, outgoing or both"
+                    )
+                items = manager.send_request_sync(
+                    path,
+                    "textDocument/prepareCallHierarchy",
+                    _position_params(path, line, character),
+                    cancellation=cancellation,
+                )
+                if not isinstance(items, list) or not items:
+                    return _lsp_success(
+                        operation, f"No call hierarchy found at {path}:{line}:{character}"
+                    )
+                items = items[:5]
+                rendered: list[str] = []
+                for selected in ("incoming", "outgoing") if direction == "both" else (direction,):
+                    calls: list[tuple[dict[str, Any], Any]] = []
+                    for item in items:
+                        raw = manager.send_request_sync(
+                            path,
+                            f"callHierarchy/{selected}Calls",
+                            {"item": item},
+                            cancellation=cancellation,
+                        )
+                        calls.append((item, raw))
+                    rendered.append(
+                        format_call_hierarchy(items, calls, direction=selected)
+                    )
+                return _lsp_success(operation, "\n\n".join(rendered))
+
+            batches: list[tuple[str, Any]] = []
+            requested = positions or [
+                {"filePath": str(path), "line": line, "character": character}
+            ]
+            for position in requested[:20]:
+                _, item_path = resolve_file_path(str(position.get("filePath") or path))
+                item_line = int(position.get("line", 1))
+                item_character = int(position.get("character", 1))
+                validate_position(item_path, item_line, item_character)
+                raw = manager.send_request_sync(
+                    item_path,
+                    "textDocument/references",
+                    {
+                        **_position_params(item_path, item_line, item_character),
+                        "context": {"includeDeclaration": include_declaration},
+                    },
+                    cancellation=cancellation,
+                )
+                batches.append(
+                    (f"{item_path}:{item_line}:{item_character}", raw)
+                )
+            return _lsp_success(
+                operation,
+                format_reference_batches(
+                    batches,
+                    workspace=self.backend.workspace,
+                    context_lines=max(0, min(3, int(context_lines))),
+                ),
+            )
+        except LspRequestCancelled as error:
+            return _lsp_failure(
+                "LSP request cancelled; " + _safe_failure_message("request", error),
+                status=ToolOutcomeStatus.CANCELLED,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        except LspRequestTimedOut as error:
+            return _lsp_failure(
+                "LSP request timed out; " + _safe_failure_message("request", error),
+                status=ToolOutcomeStatus.TIMED_OUT,
+                error_kind=ToolErrorKind.INTERRUPTED,
+            )
+        except (LspClientError, OSError, ValueError) as error:
+            return _lsp_failure(_safe_failure_message("request", error))
+        except Exception as error:
+            return _lsp_failure(_safe_failure_message("request", error))
 
 
 class LspStatusTool(_BoundLspTool):

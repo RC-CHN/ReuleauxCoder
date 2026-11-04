@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import time
 
 from reuleauxcoder.domain.agent.tool_outcome import (
@@ -205,7 +207,7 @@ class ListAgentsTool(_RootSubagentTool):
             manager = get_subagent_manager(self._root())
             jobs = manager.list_jobs()
             now = time.time()
-            rows = [_agent_snapshot(job, now=now) for job in jobs]
+            rows = [_agent_snapshot(job, now=now, parent_agent=self._root()) for job in jobs]
             lines = [_agent_snapshot_line(row) for row in rows]
             content = "\n".join(lines) if lines else "No subagents."
             running = sum(row["status"] not in _TERMINAL for row in rows)
@@ -232,6 +234,106 @@ class ListAgentsTool(_RootSubagentTool):
                 },
             )
         except RuntimeError as error:
+            return _invalid(str(error))
+
+
+class ReadAgentTool(_RootSubagentTool):
+    name = "read_agent"
+    effect_class = "read_only_internal"
+    parallel_safe = True
+    description = (
+        "Read one visible child job's current status and, when a checkpoint "
+        "exists, a bounded transcript projection. Running jobs without a "
+        "checkpoint return status and recent progress with availability=no_checkpoint."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "minLength": 1},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            "max_chars": {"type": "integer", "minimum": 200, "maximum": 12000},
+        },
+        "required": ["job_id"],
+        "additionalProperties": False,
+    }
+
+    def execute(  # type: ignore[override]
+        self,
+        job_id: str,
+        offset: int = 0,
+        limit: int = 20,
+        max_chars: int = 6000,
+    ) -> ToolOutcome:
+        try:
+            root = self._root()
+            manager = get_subagent_manager(root)
+            job = manager.get_job(job_id)
+            if job is None:
+                raise ValueError(f"Unknown subagent job: {job_id}")
+            structured = getattr(job, "structured_result", None)
+            reference = getattr(job, "resume_reference", None) or getattr(
+                structured, "transcript_ref", None
+            )
+            offset = max(0, int(offset))
+            limit = max(1, min(50, int(limit)))
+            max_chars = max(200, min(12_000, int(max_chars)))
+            records: list[dict] = []
+            used = 0
+            availability = "no_checkpoint"
+            next_offset = None
+            has_more = False
+            if reference:
+                from reuleauxcoder.extensions.subagent.models import (
+                    SubagentTranscriptStore,
+                )
+
+                workspace = getattr(root, "runtime_working_directory", None) or Path.cwd()
+                store = SubagentTranscriptStore(workspace)
+                path = Path(reference).resolve()
+                if path.parent != store.root.resolve():
+                    raise ValueError("Subagent transcript reference is outside the checkpoint store")
+                messages = store.read(path)
+                availability = "checkpoint"
+                for index in range(offset, min(len(messages), offset + limit)):
+                    text = json.dumps(messages[index], ensure_ascii=False)
+                    remaining = max_chars - used
+                    if remaining <= 0:
+                        break
+                    truncated = len(text) > min(2_000, remaining)
+                    text = text[: min(2_000, remaining)]
+                    records.append(
+                        {
+                            "index": index,
+                            "role": messages[index].get("role"),
+                            "text": text,
+                            "truncated": truncated,
+                        }
+                    )
+                    used += len(text)
+                consumed = offset + len(records)
+                has_more = consumed < len(messages)
+                next_offset = consumed if has_more else None
+            payload = {
+                "agent": _agent_snapshot(job, now=time.time(), parent_agent=root),
+                "recent_progress": list(getattr(job, "progress", ()) or ())[-10:],
+                "transcript": {
+                    "availability": availability,
+                    "offset": offset,
+                    "returned": len(records),
+                    "has_more": has_more,
+                    "next_offset": next_offset,
+                    "truncated": any(item["truncated"] for item in records),
+                    "records": records,
+                },
+            }
+            content = json.dumps(payload, ensure_ascii=False)
+            return ToolOutcome(
+                summary=f"Read {job_id} · {job.status} · {availability}",
+                content=content,
+                metadata={"job_id": job_id, "availability": availability},
+            )
+        except (TypeError, ValueError, RuntimeError, OSError) as error:
             return _invalid(str(error))
 
 
@@ -344,7 +446,9 @@ def _clip(text: str, limit: int) -> str:
     return compact if len(compact) <= limit else compact[: limit - 1] + "…"
 
 
-def _agent_snapshot(job, *, now: float) -> dict:
+def _agent_snapshot(job, *, now: float, parent_agent=None) -> dict:
+    from reuleauxcoder.extensions.subagent.manager import _delivery_state
+
     started_at = getattr(job, "started_at", None)
     finished_at = getattr(job, "finished_at", None)
     elapsed = max(0.0, (finished_at or now) - started_at) if started_at else 0.0
@@ -368,6 +472,7 @@ def _agent_snapshot(job, *, now: float) -> dict:
         "job_id": job.id,
         "agent_id": getattr(job, "agent_id", None) or f"sa_{job.id}",
         "status": job.status,
+        "delivery_state": _delivery_state(job, parent_agent=parent_agent),
         "mode": job.mode,
         "task": _clip(job.task, 100),
         "activity": (
@@ -387,6 +492,8 @@ def _agent_snapshot(job, *, now: float) -> dict:
         "max_tokens": max_tokens,
         "blocker": blocker,
         "delivered_to_parent": bool(getattr(job, "injected_to_parent", False)),
+        "verification_job_id": getattr(job, "verification_job_id", None),
+        "verification_for": getattr(job, "verification_for", None),
     }
 
 
@@ -400,7 +507,7 @@ def _agent_snapshot_line(row: dict) -> str:
     detail = row["blocker"] or row["activity"] or row["task"]
     activity_age = row["last_activity_seconds_ago"]
     activity = f" · active {activity_age:.1f}s ago" if activity_age is not None else ""
-    delivery = " · delivered" if row["delivered_to_parent"] else ""
+    delivery = f" · {row['delivery_state']}" if row["status"] in _TERMINAL else ""
     return (
         f"{row['job_id']}/{row['agent_id']} · {row['status']} · {row['mode']} · "
         f"{row['elapsed_seconds']:.1f}s{activity}{delivery} · {budget} · "

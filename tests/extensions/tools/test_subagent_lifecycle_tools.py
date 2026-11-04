@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 import time
 
@@ -10,6 +11,7 @@ from reuleauxcoder.domain.llm.models import LLMResponse
 from reuleauxcoder.extensions.tools.builtin.subagent_control import (
     InterruptAgentTool,
     ListAgentsTool,
+    ReadAgentTool,
     SendMessageTool,
     SpawnAgentTool,
     WaitAgentTool,
@@ -178,8 +180,9 @@ def test_list_agents_marks_terminal_result_as_already_delivered(monkeypatch) -> 
 
     assert listed.summary == "0 running · 1 terminal · 1 delivered"
     assert listed.metadata["agents"][0]["delivered_to_parent"] is True
+    assert listed.metadata["agents"][0]["delivery_state"] == "injected; next parent request"
     assert "completed" in listed.content
-    assert "delivered" in listed.content
+    assert "injected; next parent request" in listed.content
 
 
 def test_wait_agent_is_interruptible_by_human_without_cancelling_child(
@@ -266,6 +269,74 @@ def test_interrupt_agent_reports_only_observed_terminal_state(monkeypatch) -> No
         "usage_uncertain": True,
     }
     assert "cancellation_id=cancel_sj_1_1" in outcome.content
+
+
+def test_read_agent_pages_checkpoint_transcript(monkeypatch, tmp_path) -> None:
+    from reuleauxcoder.extensions.subagent.models import SubagentTranscriptStore
+
+    reference = SubagentTranscriptStore(tmp_path).write(
+        "sj_1",
+        [
+            {"role": "user", "content": "inspect"},
+            {"role": "assistant", "content": "working"},
+            {"role": "assistant", "content": "done"},
+        ],
+        {},
+    )
+    job = SimpleNamespace(
+        id="sj_1",
+        status="running",
+        mode="explore",
+        task="inspect parser",
+        started_at=time.time() - 2,
+        finished_at=None,
+        prompt_tokens=0,
+        completion_tokens=0,
+        max_tokens=None,
+        tool_calls=0,
+        max_tool_calls=None,
+        progress=("reading", "checking definitions"),
+        current_tool="grep",
+        last_activity_at=time.time(),
+        resume_reference=reference,
+        structured_result=None,
+        injected_to_parent=False,
+        parent_request_attempt_id=None,
+    )
+    manager = SimpleNamespace(get_job=lambda job_id: job if job_id == "sj_1" else None)
+    monkeypatch.setattr(
+        "reuleauxcoder.extensions.tools.builtin.subagent_control.get_subagent_manager",
+        lambda _root: manager,
+    )
+    root = SimpleNamespace(
+        agent_id="root", subagent_depth=0, runtime_working_directory=str(tmp_path)
+    )
+    tool = _bind(ReadAgentTool(), root)
+
+    first = json.loads(tool.execute("sj_1", limit=2).content)
+    second = json.loads(tool.execute("sj_1", offset=2, limit=2).content)
+
+    assert first["transcript"]["availability"] == "checkpoint"
+    assert first["transcript"]["returned"] == 2
+    assert first["transcript"]["next_offset"] == 2
+    assert second["transcript"]["returned"] == 1
+    assert second["transcript"]["has_more"] is False
+    assert second["recent_progress"] == ["reading", "checking definitions"]
+
+
+def test_delivery_state_derives_parent_request_from_existing_replay() -> None:
+    from reuleauxcoder.extensions.subagent.manager import _delivery_state
+
+    job = SimpleNamespace(id="sj_1", injected_to_parent=True)
+    parent = SimpleNamespace(
+        state=SimpleNamespace(
+            replay=SimpleNamespace(items=[{"content": "result id=sj_1"}]),
+            requests=[SimpleNamespace(request_id="rq_1")],
+        )
+    )
+
+    assert _delivery_state(job, parent) == "included in parent request rq_1"
+    assert _delivery_state(job, SimpleNamespace(state=SimpleNamespace(replay=None))) == "injected; next parent request"
 
 
 class _OneResponseLLM:

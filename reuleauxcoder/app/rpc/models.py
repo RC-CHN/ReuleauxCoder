@@ -25,6 +25,7 @@ class RuntimeSnapshot:
     queued_inputs: tuple[QueuedInput, ...] = ()
     model: str = ""
     support_modal: tuple[str, ...] = ("text",)
+    images_withheld: int = 0
     context_tokens: int = 0
     context_limit: int = 0
     mcp_enabled: int = 0

@@ -204,7 +204,7 @@ def command_panel_spec():
             actions += (
                 [
                     (
-                        "Pause",
+                        "Pause after turn",
                         "pause",
                         "Let the current turn finish; stop automatic continuation",
                     )
@@ -270,7 +270,7 @@ def register_actions(registry):
         (
             "pause",
             "/goal pause",
-            "Pause automatic continuation",
+            "Pause automatic continuation after the current turn",
             EmptyCommand,
             _status("paused"),
             None,

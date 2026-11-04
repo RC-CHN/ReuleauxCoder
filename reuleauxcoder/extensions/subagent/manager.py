@@ -94,6 +94,22 @@ def _subagent_item_hash(**payload) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _delivery_state(job: "SubagentJob", parent_agent=None) -> str:
+    if job.injected_to_parent:
+        replay = getattr(getattr(parent_agent, "state", None), "replay", None)
+        items = getattr(replay, "items", ())
+        if any(f"id={job.id}" in str(item.get("content", "")) for item in items):
+            requests = getattr(getattr(parent_agent, "state", None), "requests", ())
+            request_id = requests[-1].request_id if requests else "latest"
+            return f"included in parent request {request_id}"
+        return "injected; next parent request"
+    if job.status not in _TERMINAL_JOB_STATUSES:
+        return "working"
+    if job.mode == "execute" and job.auto_verify and not job.injected_to_parent:
+        return "verifying" if job.verification_job_id else "verification pending"
+    return "result queued for parent"
+
+
 def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
     """Best-effort lifecycle projection; execution never depends on a UI."""
     ledger = getattr(parent_agent, "history_ledger", None)
@@ -161,7 +177,13 @@ def _publish_job_event(parent_agent, job: "SubagentJob") -> None:
             status=job.status,
             result=job.result if job.status == "completed" else None,
             error=job.error,
-            activity=(job.progress[1] if len(job.progress) > 1 else None),
+            activity=(
+                _delivery_state(job)
+                if job.status in _TERMINAL_JOB_STATUSES
+                else job.progress[1]
+                if len(job.progress) > 1
+                else None
+            ),
             current_tool=job.current_tool,
             tool_calls=job.tool_calls,
             max_tool_calls=job.max_tool_calls,

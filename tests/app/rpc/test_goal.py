@@ -50,7 +50,7 @@ def test_pause_preserves_current_execution_but_interrupt_cancels(runtime, operat
             assert runtime.agent.stop_requested()
         else:
             runtime.client.submit(operation)
-            # Wait on the real state notification, not a guessed sleep.
+            # Pause is observable before the current turn has finished.
             with runtime.client._condition:
                 assert runtime.client._condition.wait_for(
                     lambda: runtime.client.state.goal.status == "paused", 3

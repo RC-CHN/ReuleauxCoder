@@ -15,6 +15,7 @@ from reuleauxcoder.domain.context.replay import (
     content_hash,
 )
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
+from reuleauxcoder.domain.images import image_parts
 from reuleauxcoder.domain.llm.context_messages import (
     mark_synthetic_user_message,
     normalize_provider_message_roles,
@@ -309,6 +310,29 @@ class AgentLoop:
                 api_round_id=attempt_id,
             )
             try:
+                images = image_parts(request_messages)
+                modalities = tuple(getattr(self.agent.llm, "support_modal", ()) or ())
+                notice_key = (
+                    self.agent.image_turn_id
+                    or self.agent._current_turn_id
+                    or "restored-history",
+                    str(getattr(self.agent.llm, "model", "unknown")),
+                )
+                if (
+                    images
+                    and "image" not in modalities
+                    and self.agent._image_omission_notice_key != notice_key
+                ):
+                    self.agent._image_omission_notice_key = notice_key
+                    self.agent._emit_event(
+                        AgentEvent.diagnostic(
+                            f"{len(images)} image(s) remain in history but are withheld "
+                            "from this request because the current model is text-only.",
+                            code="images.withheld_text_model",
+                            severity="info",
+                            details={"count": len(images), "model": notice_key[1]},
+                        )
+                    )
                 self.agent.state.total_model_calls += 1
                 resp = self.agent.llm.chat(
                     messages=request_messages,

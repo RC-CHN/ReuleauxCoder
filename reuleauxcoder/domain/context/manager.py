@@ -1197,16 +1197,28 @@ class ContextManager:
         operation = (
             "Context compression" if trigger == "manual" else "Context auto-compression"
         )
+        checkpoint = self.checkpoints[-1] if self.checkpoints else None
+        preserved = (
+            f"; {checkpoint.preserved_rounds} recent API rounds preserved"
+            if checkpoint is not None
+            else ""
+        )
 
         self._ui_bus.success(
             (
                 f"{operation} completed: "
                 f"{before_tokens} → ~{after_tokens} tokens, "
-                f"{before_message_count} → {after_message_count} messages."
+                f"{before_message_count} → {after_message_count} messages{preserved}. "
+                "Human transcript unchanged; model requests now use the compacted view."
             ),
             kind=self._context_event_kind(),
             phase="after",
             trigger=trigger,
+            checkpoint_id=checkpoint.id if checkpoint is not None else None,
+            preserved_rounds=(
+                checkpoint.preserved_rounds if checkpoint is not None else None
+            ),
+            cache_epoch=checkpoint.cache_epoch if checkpoint is not None else None,
             strategy=strategy,
             applied_layers=applied_layers,
             before_tokens=before_tokens,

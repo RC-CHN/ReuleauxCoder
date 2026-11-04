@@ -164,6 +164,7 @@ class Agent:
         self.current_session_id: str | None = None
         self.image_store: ImageStorePort | None = None
         self.image_turn_id: str | None = None
+        self._image_omission_notice_key: tuple[str, str] | None = None
         self.session_fingerprint: str | None = getattr(
             config, "session_fingerprint", None
         )
@@ -1202,6 +1203,7 @@ class Agent:
             "spawn_agent",
             "send_message",
             "list_agents",
+            "read_agent",
             "wait_agent",
             "interrupt_agent",
         }
@@ -1661,6 +1663,7 @@ class Agent:
                     task=job.task,
                     status=job.status,
                     result=job.result,
+                    activity="injected; next parent request",
                     child_agent_id=getattr(job, "agent_id", None),
                 )
             )
@@ -1672,6 +1675,7 @@ class Agent:
                     task=job.task,
                     status=job.status,
                     error=job.error,
+                    activity="injected; next parent request",
                     child_agent_id=getattr(job, "agent_id", None),
                 )
             )

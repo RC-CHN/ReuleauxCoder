@@ -20,7 +20,7 @@ from reuleauxcoder.app.rpc.submissions import SubmissionAdmissions
 from reuleauxcoder.app.rpc.images import ImageUploads
 from reuleauxcoder.app.rpc.attachments import AttachmentUploads
 from reuleauxcoder.app.rpc.editor_documents import EditorDocuments
-from reuleauxcoder.domain.images import ChatInput, display_content
+from reuleauxcoder.domain.images import ChatInput, display_content, image_parts
 from reuleauxcoder.infrastructure.persistence.images import ImageStore
 from reuleauxcoder.app.runtime.approval import build_runtime_approval_provider
 from reuleauxcoder.app.runtime.approval_interaction import make_approval_handler
@@ -148,6 +148,12 @@ class RuntimeServer:
             manager = agent.mcp_manager
             context = agent.context
             review = self.interactions.adapter.review_request
+            modalities = tuple(getattr(agent.llm, "support_modal", ("text",)))
+            withheld = (
+                len(image_parts(list(agent.messages)))
+                if "image" not in modalities
+                else 0
+            )
             queued_inputs = tuple(
                 QueuedInput(display_content(item.content), item.submission_id, item.steering_id)
                 for item in agent.pending_user_steering_entries()
@@ -168,7 +174,8 @@ class RuntimeServer:
                 queued_steering=tuple(item.text for item in queued_inputs),
                 queued_inputs=queued_inputs,
                 model=agent.llm.model,
-                support_modal=tuple(getattr(agent.llm, "support_modal", ("text",))),
+                support_modal=modalities,
+                images_withheld=withheld,
                 context_tokens=context.predict_request_tokens(agent.messages),
                 context_limit=context.request_input_limit,
                 mcp_enabled=sum(server.enabled for server in self.config.mcp_servers),
@@ -265,6 +272,11 @@ class RuntimeServer:
                     "base_url": self.config.base_url,
                     "startup_events": self.bus.history_snapshot(),
                     "recent_conversation": recent,
+                    "conversation_preview": {
+                        "max_user_turns": 3,
+                        "model_context": "complete_restored_session",
+                        "full_history_available": True,
+                    },
                     "plan": controller.state,
                     "progress": controller.progress,
                     "runtime_events": self._restored_job_events(),
@@ -509,6 +521,10 @@ class RuntimeServer:
                                 current == value and not self.agent.stop_requested()
                             )
                         if allowed:
+                            self.bus.info(
+                                "Goal continuation started automatically; "
+                                "the previous response was a checkpoint, not goal completion."
+                            )
                             response = self.agent.chat(
                                 "", goal_continuation=True, clear_stop=False
                             )

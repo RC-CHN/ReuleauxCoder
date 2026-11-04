@@ -153,6 +153,42 @@ def test_edit_returns_fresh_diagnostics_from_worker(
         manager.shutdown_all()
 
 
+def test_apply_patch_returns_diagnostics_for_each_written_file(tmp_path: Path) -> None:
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("# FAKE_LSP_ERROR: first result\n", encoding="utf-8")
+    second.write_text("# FAKE_LSP_ERROR: second result\n", encoding="utf-8")
+    manager = _manager(tmp_path, tmp_path / "patch.jsonl", mode="save-only")
+    manager.config.edit_wait_timeout_ms = 3000
+    try:
+        context = AfterToolExecuteContext(
+            hook_point=HookPoint.AFTER_TOOL_EXECUTE,
+            agent_id="parent",
+            session_generation=1,
+            session_id="session",
+            turn_id="turn-1",
+            tool_call=ToolCall(id="patch-1", name="apply_patch", arguments={"patch": "..."}),
+            outcome=ToolOutcome(
+                content="patched",
+                metadata={"resolved_paths": [str(first), str(second)]},
+            ),
+        )
+        LspEditObserverHook(lsp_manager=manager).run(context)
+        assert context.outcome is not None
+        assert "first result" in context.outcome.model_text
+        assert "second result" in context.outcome.model_text
+        assert {item.path for item in context.outcome.diagnostics} == {
+            "first.py",
+            "second.py",
+        }
+        assert tuple(manager._acknowledged_batches.values()) == (
+            "lsp-edit:patch-1",
+            "lsp-edit:patch-1",
+        )
+    finally:
+        manager.shutdown_all()
+
+
 def test_edit_wait_expiry_leaves_late_diagnostics_for_request_injection(
     tmp_path: Path,
 ) -> None:

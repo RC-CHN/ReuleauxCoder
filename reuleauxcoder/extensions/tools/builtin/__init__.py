@@ -9,6 +9,7 @@ from reuleauxcoder.extensions.tools.builtin.control import (
     RequestGuidanceTool,
     UpdatePlanTool,
 )
+from reuleauxcoder.extensions.tools.builtin.context import ContextInspectTool
 from reuleauxcoder.extensions.tools.builtin.edit import EditFileTool
 from reuleauxcoder.extensions.tools.builtin.glob import GlobTool
 from reuleauxcoder.extensions.tools.builtin.goal import (
@@ -35,11 +36,13 @@ from reuleauxcoder.extensions.tools.builtin.notes import (
     EditNoteTool,
     WriteNoteTool,
 )
+from reuleauxcoder.extensions.tools.builtin.patch import ApplyPatchTool
 from reuleauxcoder.extensions.tools.builtin.read import ReadFileTool
 from reuleauxcoder.extensions.tools.builtin.shell import ShellSessionTool, ShellTool
 from reuleauxcoder.extensions.tools.builtin.subagent_control import (
     InterruptAgentTool,
     ListAgentsTool,
+    ReadAgentTool,
     SendMessageTool,
     SpawnAgentTool,
     WaitAgentTool,
@@ -55,7 +58,9 @@ _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
     ReportProgressTool,
     ReportToParentTool,
     RequestGuidanceTool,
+    ContextInspectTool,
     EditFileTool,
+    ApplyPatchTool,
     GlobTool,
     GrepTool,
     HistorySearchTool,
@@ -76,6 +81,7 @@ _BUILTIN_TOOL_TYPES: tuple[type[Tool], ...] = (
     SpawnAgentTool,
     SendMessageTool,
     ListAgentsTool,
+    ReadAgentTool,
     WaitAgentTool,
     InterruptAgentTool,
     WriteFileTool,

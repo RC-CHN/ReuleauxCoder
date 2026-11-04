@@ -66,7 +66,7 @@ DIAGNOSTIC_CASES: tuple[DiagnosticCase, ...] = (
             "\n"
             'print(greet("World")\n'
         ),
-        expected_messages=("not closed",),
+        expected_messages=("not closed", "未关闭"),
     ),
     DiagnosticCase(
         language=LanguageId.TYPESCRIPT,

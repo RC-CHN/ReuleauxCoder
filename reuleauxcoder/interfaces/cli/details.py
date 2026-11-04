@@ -22,6 +22,14 @@ def restore_context(renderer, info, state):
         renderer.console.print(
             Text(content) if entry["role"] == "user" else Markdown(content)
         )
+    if info["recent_conversation"] and info.get("conversation_preview"):
+        renderer.console.print(
+            Text(
+                "Showing the latest 3 user turns; the model restored the full "
+                "session. Browse history for older messages.",
+                style="muted",
+            )
+        )
     plan, progress = info["plan"], info["progress"]
     if plan is not None:
         envelope = dict(

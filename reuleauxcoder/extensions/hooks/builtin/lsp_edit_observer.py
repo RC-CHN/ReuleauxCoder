@@ -19,12 +19,12 @@ if TYPE_CHECKING:
     from reuleauxcoder.extensions.lsp.manager import LspManager
 
 
-EDIT_TOOLS = frozenset({"edit_file", "write_file"})
+EDIT_TOOLS = frozenset({"edit_file", "write_file", "apply_patch"})
 
 
 @dataclass(slots=True)
 class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
-    """Give the current edit a bounded chance to return its own diagnostics."""
+    """Give current edits a bounded chance to return their own diagnostics."""
 
     lsp_manager: LspManager | None = field(default=None)
 
@@ -59,65 +59,72 @@ class LspEditObserverHook(TransformHook[AfterToolExecuteContext]):
         ):
             return context
 
-        resolved_path = context.outcome.metadata.get("resolved_path")
-        file_path = (
-            resolved_path
-            if isinstance(resolved_path, str) and resolved_path
-            else tool_call.arguments.get("file_path")
-        )
-        if file_path is None:
-            return context
+        metadata = context.outcome.metadata
+        multiple = metadata.get("resolved_paths")
+        if isinstance(multiple, (list, tuple)):
+            paths = [Path(item) for item in multiple if isinstance(item, str) and item]
+        else:
+            resolved = metadata.get("resolved_path")
+            value = resolved if isinstance(resolved, str) and resolved else tool_call.arguments.get("file_path")
+            paths = [Path(value)] if isinstance(value, str) and value else []
 
-        path = Path(file_path)
-        batch_id = manager.enqueue_diagnostics(
-            path,
-            route=DiagnosticRoute(
-                file_path=path,
-                agent_id=context.agent_id,
-                session_generation=context.session_generation,
-                session_id=context.session_id,
-                turn_id=context.turn_id,
-                tool_call_id=tool_call.id,
-            ),
-            document_committed=True,
-        )
-        if batch_id is None:
-            return context
-        result = manager.wait_for_diagnostic_request(
-            batch_id,
-            timeout=manager.config.edit_wait_timeout_ms / 1000,
-            cancellation=context.cancellation,
-        )
-        if result is None:
-            return context
-        batches = manager.pending_diagnostic_batches(batch_id=batch_id)
-        projection = project_diagnostic_results(
-            batches, () if result.is_published else (result,), manager.config
-        )
-        outcome = context.outcome
-        if projection.text is not None:
-            outcome = replace(
-                outcome,
-                model_content=f"{outcome.model_text}\n\n{projection.text}",
-                diagnostics=outcome.diagnostics
-                + tuple(
-                    ToolDiagnostic(
-                        path=batch.block.file_path,
-                        line=item.line,
-                        character=item.character,
-                        message=item.message,
-                        severity=item.severity_label.lower(),
-                        code=item.code,
-                    )
-                    for batch in batches
-                    for item in batch.block.items
+        original = context.outcome
+        texts: list[str] = []
+        diagnostics: list[ToolDiagnostic] = []
+        for path in paths:
+            batch_id = manager.enqueue_diagnostics(
+                path,
+                route=DiagnosticRoute(
+                    file_path=path,
+                    agent_id=context.agent_id,
+                    session_generation=context.session_generation,
+                    session_id=context.session_id,
+                    turn_id=context.turn_id,
+                    tool_call_id=tool_call.id,
                 ),
+                document_committed=True,
             )
-        # Build the complete projection before claiming it. A competing request
-        # may have consumed or superseded it while we were rendering.
-        if manager.acknowledge_diagnostic_batch(
-            batch_id, consumer_id=f"lsp-edit:{tool_call.id}"
-        ):
-            context.outcome = outcome
-            context.result = outcome.model_text
+            if batch_id is None:
+                continue
+            result = manager.wait_for_diagnostic_request(
+                batch_id,
+                timeout=manager.config.edit_wait_timeout_ms / 1000,
+                cancellation=context.cancellation,
+            )
+            if result is None:
+                continue
+            batches = manager.pending_diagnostic_batches(batch_id=batch_id)
+            projection = project_diagnostic_results(
+                batches, () if result.is_published else (result,), manager.config
+            )
+            # Claim only complete projections. A competing request may consume or
+            # supersede this batch while it is being rendered.
+            if not manager.acknowledge_diagnostic_batch(
+                batch_id, consumer_id=f"lsp-edit:{tool_call.id}"
+            ):
+                continue
+            if projection.text is not None:
+                texts.append(projection.text)
+            diagnostics.extend(
+                ToolDiagnostic(
+                    path=batch.block.file_path,
+                    line=item.line,
+                    character=item.character,
+                    message=item.message,
+                    severity=item.severity_label.lower(),
+                    code=item.code,
+                )
+                for batch in batches
+                for item in batch.block.items
+            )
+        if not texts and not diagnostics:
+            return context
+        suffix = "\n\n" + "\n\n".join(texts) if texts else ""
+        outcome = replace(
+            original,
+            model_content=f"{original.model_text}{suffix}",
+            diagnostics=original.diagnostics + tuple(diagnostics),
+        )
+        context.outcome = outcome
+        context.result = outcome.model_text
         return context
