@@ -63,7 +63,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
       case 'restorePending': session.restorePending(data.id); return;
       case 'steer': return session.promoteSteering();
       case 'remove': session.remove(data.id); return;
-      case 'image.preview': return session.imagePreview(data.attachmentId, data.variantId);
+      case 'image.preview': return session.imagePreview(data.path, data.variantId);
       case 'command.open': session.requireClient(); return session.commands.open(data.actionId);
       case 'command.submit': session.requireClient(); return session.commands.submit(data.surfaceId, data.values);
       case 'command.select': session.requireClient(); return session.commands.select(data.surfaceId, data.index);

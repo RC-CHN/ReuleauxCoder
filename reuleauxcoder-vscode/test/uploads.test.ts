@@ -37,7 +37,7 @@ test('clipboard image upload reaches a real core turn and survives retry with th
   const image = await b.session.uploads!.complete('clipboard', upload.id);
   assert.equal(image.kind, 'image'); assert.equal(image.reference.width, 4); assert.equal(image.reference.height, 3);
   b.session.add(image); assert.equal(b.session.draftItems.length, 1);
-  const preview = await b.session.imagePreview(image.reference.attachment_id, image.reference.variant_id);
+  const preview = await b.session.imagePreview(image.reference.path, image.reference.variant_id);
   assert.match(preview, /^data:image\/png;base64,/);
   await assert.rejects(b.session.imagePreview('unknown', image.reference.variant_id), /no longer available/);
   const submit = b.client.submit.bind(b.client);
@@ -58,11 +58,11 @@ test('clipboard image upload reaches a real core turn and survives retry with th
   const messages = decode(await b.client.peer.request('test.messages'));
   const users = messages.filter((message: any) => message.role === 'user');
   assert.equal(users.length, 1);
-  assert.equal(users[0].content.find((part: any) => part.type === 'image').attachment_id, image.reference.attachment_id);
+  assert.equal(users[0].content.find((part: any) => part.type === 'image').path, image.reference.path);
   assert.equal(b.session.transcript.cells.filter(cell => cell.id === 'clipboard-image').length, 1);
   assert.equal(b.session.draftItems.length, 0);
   assert.equal(b.session.transcript.cells.find(cell => cell.id === 'clipboard-image')?.images?.[0].variant_id, image.reference.variant_id);
-  assert.equal(await b.session.imagePreview(image.reference.attachment_id, image.reference.variant_id), preview);
+  assert.equal(await b.session.imagePreview(image.reference.path, image.reference.variant_id), preview);
 });
 
 test('clipboard images keep their session when sent as steering', async t => {
@@ -77,13 +77,13 @@ test('clipboard images keep their session when sent as steering', async t => {
   b.session.submit('steering-image', 'Also check this', [image.id], b.client.state.session_generation);
   await until(() => b.session.transcript.pendingInputs.get('steering-image')?.status === 'queued');
   assert(!b.session.transcript.cells.some(cell => cell.id === 'steering-image'));
-  assert.match(await b.session.imagePreview(image.reference.attachment_id, image.reference.variant_id), /^data:image\/png;base64,/);
+  assert.match(await b.session.imagePreview(image.reference.path, image.reference.variant_id), /^data:image\/png;base64,/);
   await b.client.peer.request('test.drain_steering');
   await until(() => b.session.transcript.cells.some(cell => cell.id === 'steering-image' && cell.status === 'applied'));
   assert(!b.session.transcript.pendingInputs.has('steering-image'));
-  assert.equal(b.session.transcript.cells.find(cell => cell.id === 'steering-image')?.images?.[0].attachment_id, image.reference.attachment_id);
+  assert.equal(b.session.transcript.cells.find(cell => cell.id === 'steering-image')?.images?.[0].path, image.reference.path);
   const messages = decode(await b.client.peer.request('test.messages'));
-  assert(messages.some((message: any) => Array.isArray(message.content) && message.content.some((part: any) => part.type === 'image' && part.attachment_id === image.reference.attachment_id)));
+  assert(messages.some((message: any) => Array.isArray(message.content) && message.content.some((part: any) => part.type === 'image' && part.path === image.reference.path)));
   b.session.add(image);
   b.session.add({id: 'context', kind: 'context', name: 'Selected code', text: 'const preserved = true;'});
   b.session.submit('unapplied-image', 'Save this for later', [image.id, 'context'], b.client.state.session_generation);
@@ -97,7 +97,7 @@ test('clipboard images keep their session when sent as steering', async t => {
   b.session.restorePending('unapplied-image');
   assert.equal(b.session.draftText, 'Keep the new draft\nSave this for later');
   assert.equal(b.session.draftItems.length, 2);
-  assert.equal(b.session.draftItems[0].reference.attachment_id, image.reference.attachment_id);
+  assert.equal(b.session.draftItems[0].reference.path, image.reference.path);
   assert.equal(b.session.draftItems[1].text, 'const preserved = true;');
   assert.equal(b.session.transcript.pendingInputs.size, 0);
 });

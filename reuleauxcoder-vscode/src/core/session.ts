@@ -136,10 +136,10 @@ export class WorkspaceSession extends EventEmitter {
     if (client.info?.steering_promotion !== true) throw new Error(t('Update the core to apply guidance immediately.'));
     return client.interrupt({steeringOnly: true});
   }
-  async imagePreview(attachmentId: unknown, variantId: unknown): Promise<string> {
+  async imagePreview(path: unknown, variantId: unknown): Promise<string> {
     const client = this.requireClient();
     const reference = [...this.draftItems.filter(item => item.kind === 'image').map(item => item.reference), ...this.transcript.cells.flatMap(cell => cell.images ?? []), ...[...this.transcript.pendingInputs.values()].flatMap(cell => cell.images ?? [])]
-      .find(image => image.attachment_id === attachmentId && image.variant_id === variantId);
+      .find(image => image.path === path && image.variant_id === variantId);
     if (!reference) throw new Error(t('This image is no longer available.'));
     const generation = client.state.session_generation;
     const result = await client.peer.request('images.preview', {session_id: client.state.session_id, session_generation: generation, image: record('ImageReference', reference)});

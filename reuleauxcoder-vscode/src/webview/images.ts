@@ -49,7 +49,7 @@ export class ImageGallery {
     const key = image.variant_id;
     let pending = this.cache.get(key);
     if (!pending) {
-      pending = this.request('image.preview', {attachmentId: image.attachment_id, variantId: image.variant_id});
+      pending = this.request('image.preview', {path: image.path, variantId: image.variant_id});
       this.cache.set(key, pending!);
       if (this.cache.size > 48) this.cache.delete(this.cache.keys().next().value!);
       void pending!.catch(() => {if (this.cache.get(key) === pending) this.cache.delete(key);});

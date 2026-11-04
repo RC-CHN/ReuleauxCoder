@@ -10,7 +10,6 @@ export class Uploads {
   async begin(owner: string, name: string, size: number, image: boolean) {
     if (this.active) throw new Error(t('Another attachment is uploading. Wait or cancel it first.'));
     if (typeof name !== 'string' || name.length > 255 || /[/\\\0]/.test(name) || !Number.isSafeInteger(size) || size < 0 || size > 64 * 1024 * 1024) throw new Error(t('Invalid attachment, or larger than 64 MiB.'));
-    if (image && !this.client.state.support_modal?.includes('image')) throw new Error(t('The selected model does not support images. Choose a vision model first.'));
     const generation = this.client.state.session_generation;
     const namespace = image ? 'images' : 'attachments';
     const upload: Upload = {id: randomUUID(), owner, backend: '', namespace, generation, size, offset: 0, chunk: 0, name, busy: true}; this.active = upload;

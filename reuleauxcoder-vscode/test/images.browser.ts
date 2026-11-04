@@ -53,7 +53,7 @@ test('real core: paste, send, enlarge, reload and edit scoped permissions in bot
             case 'upload.cancel': await b.session.uploads!.cancel('browser', data.id); break;
             case 'image.preview':
               if (failPreview) {failPreview = false; error = 'Temporary preview failure'; break;}
-              result = await b.session.imagePreview(data.attachmentId, data.variantId); break;
+              result = await b.session.imagePreview(data.path, data.variantId); break;
             case 'command.open': await b.session.commands.open(data.actionId); break;
             case 'command.policy': await b.session.commands.policy(data.surfaceId, data.path); break;
             case 'command.close': b.session.commands.dismiss(data.surfaceId); break;
