@@ -7,14 +7,21 @@ import type {activate} from '../../src/extension.js';
 import {answerInteraction} from '../../src/core/interactions.js';
 import {openWorkspaceFile} from '../../src/native/file-links.js';
 
-async function until(predicate: () => unknown | Promise<unknown>, timeout = 10000): Promise<void> {
+async function until(predicate: () => unknown | Promise<unknown>, label = 'condition', timeout = 10000): Promise<void> {
   const end = Date.now() + timeout;
-  while (!await predicate()) {if (Date.now() > end) throw new Error('VS Code integration condition timed out.'); await delay(25);}
+  while (!await predicate()) {if (Date.now() > end) throw new Error(`VS Code integration condition timed out: ${label}.`); await delay(25);}
 }
 function reviewTabs(): vscode.Tab[] {
   return vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => {
     const input = tab.input;
     return input instanceof vscode.TabInputTextDiff ? input.modified.scheme === 'reuleaux-review' : input instanceof vscode.TabInputText && input.uri.scheme === 'reuleaux-review';
+  });
+}
+function reviewTabsFor(id: string): vscode.Tab[] {
+  return reviewTabs().filter(tab => {
+    const input = tab.input;
+    const uri = input instanceof vscode.TabInputTextDiff ? input.modified : input instanceof vscode.TabInputText ? input.uri : undefined;
+    return uri?.path.split('/')[1] === id;
   });
 }
 export async function run(): Promise<void> {
@@ -50,40 +57,49 @@ export async function run(): Promise<void> {
     await api.dispatch('skill.reload', {surfaceId: staleSkillSurface});
     await assert.rejects(api.dispatch('skill.open', {surfaceId: staleSkillSurface, name: 'pptx'}), /panel changed/);
     session.commands.close();
+    await until(() => !session.commands.surface, 'skills panel closes');
     console.log('PASS native readonly skill instructions, complete workspace customization and stale action guards');
 
     const comparison = vscode.Uri.joinPath(vscode.workspace.workspaceFolders![0].uri, 'comparison.py');
     await writeFile(comparison.fsPath, 'user comparison\n');
     await vscode.commands.executeCommand('vscode.diff', uri, comparison, 'User comparison', {preview: false, preserveFocus: true});
     const userComparison = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).some(tab => tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.toString() === comparison.toString());
+    await until(() => !client.state.running, 'core idle before native diff');
     for (const newline of ['\n', '\r\n']) {
+      const label = newline.length === 1 ? 'LF' : 'CRLF';
       await writeFile(uri.fsPath, `old = 1${newline}`);
       session.submit(`native-edit-${newline.length}`, 'edit', [], client.state.session_generation);
-      await until(() => reviewTabs().length > 0);
-      const input = reviewTabs()[0].input as vscode.TabInputTextDiff;
+      const request = () => client.interactions.find(item => item.kind === 'review');
+      await until(() => request(), `native review request (${label})`);
+      const reviewId = request()!.request.request_id;
+      await until(() => reviewTabsFor(reviewId).length > 0, `native review tab (${label})`);
+      const input = reviewTabsFor(reviewId)[0].input as vscode.TabInputTextDiff;
       assert.equal(input.modified.scheme, 'reuleaux-review');
       previousReviewUri = input.modified;
       assert.equal((await vscode.workspace.openTextDocument(input.original)).getText(), `old = 1${newline}`);
       assert.equal((await vscode.workspace.openTextDocument(input.modified)).getText(), `new = 1${newline}`);
       assert.equal(await readFile(uri.fsPath, 'utf8'), `old = 1${newline}`);
       await vscode.commands.executeCommand('vscode.diff', input.original, input.modified, 'Second proposal view', {preview: false, preserveFocus: true, viewColumn: vscode.ViewColumn.Two});
-      await until(() => reviewTabs().length === 2);
+      await until(() => reviewTabsFor(reviewId).length === 2, `two review tabs (${label})`);
       await vscode.commands.executeCommand('reuleaux.approve', input.modified);
-      await until(async () => (await readFile(uri.fsPath, 'utf8')) === `new = 1${newline}`);
-      await until(() => !client.state.running);
+      await until(async () => (await readFile(uri.fsPath, 'utf8')) === `new = 1${newline}`, `approved content (${label})`);
+      await until(() => !client.state.running, `approved turn completes (${label})`);
       assert.equal(client.interactions.length, 0);
       // Expired editor buttons must never approve a later request.
       await vscode.commands.executeCommand('reuleaux.approve', input.modified);
-      await until(() => reviewTabs().length === 0);
+      await until(() => reviewTabsFor(reviewId).length === 0, `review tabs close (${label})`);
       assert(userComparison(), 'Resolving a proposal must preserve unrelated diff editors');
-      console.log(`PASS native readonly diff, approval and expired actions (${newline.length === 1 ? 'LF' : 'CRLF'})`);
+      console.log(`PASS native readonly diff, approval and expired actions (${label})`);
     }
 
+    await until(() => !client.state.running, 'core idle before native reject');
     await writeFile(uri.fsPath, 'old = 1\r\n');
     session.submit('native-reject', 'edit', [], client.state.session_generation);
-    await until(() => reviewTabs().length > 0);
-    await api.dispatch('reject', {id: client.interactions.find(item => item.kind === 'review')!.request.request_id});
-    await until(() => !client.state.running && reviewTabs().length === 0);
+    await until(() => client.interactions.some(item => item.kind === 'review'), 'native reject request');
+    const rejectId = client.interactions.find(item => item.kind === 'review')!.request.request_id;
+    await until(() => reviewTabsFor(rejectId).length > 0, 'native reject tab');
+    await api.dispatch('reject', {id: rejectId});
+    await until(() => !client.state.running && reviewTabsFor(rejectId).length === 0, 'native reject closes');
     assert.equal(await readFile(uri.fsPath, 'utf8'), 'old = 1\r\n');
     assert(userComparison());
 

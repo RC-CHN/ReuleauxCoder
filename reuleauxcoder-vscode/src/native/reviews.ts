@@ -137,19 +137,16 @@ export class NativeReviews implements vscode.TextDocumentContentProvider, vscode
     if (this.find(id) === pending) this.client!.answer(id, record('ReviewResponse', {approved: false, cancelled: false, action: 'deny', reason: 'The editor contained unsaved changes. Re-read the current file and propose the edit again against its saved content.'}));
   }
   private async present(): Promise<void> {
-    const item = this.client?.interactions[0]; if (!item) return;
-    const id = item.request.request_id, key = `${this.epoch}:${id}`;
-    if (this.presenting.has(key)) return;
-    this.presenting.add(key);
-    try {
-      if (item.kind === 'review') {
-        if (!this.opened.has(id)) {
-          this.opened.add(id);
-          if (vscode.workspace.getConfiguration('reuleaux').get('openDiffAutomatically', true)) await this.open(id);
-        }
-        return;
-      }
-    } finally {this.presenting.delete(key);}
+    for (const item of this.client?.interactions ?? []) {
+      if (item.kind !== 'review') continue;
+      const id = item.request.request_id, key = `${this.epoch}:${id}`;
+      if (this.opened.has(id) || this.presenting.has(key)) continue;
+      this.presenting.add(key);
+      try {
+        if (vscode.workspace.getConfiguration('reuleaux').get('openDiffAutomatically', true)) await this.open(id);
+        this.opened.add(id);
+      } finally {this.presenting.delete(key);}
+    }
   }
   dispose(): void {this.detach?.(); this.client = undefined; this.epoch++; this.cache.clear(); void this.closeExpired().catch(this.fail);}
 }
