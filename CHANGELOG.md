@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.11.9 - 2026-11-04
+
+- Add workspace-path image input. Clipboard uploads are stored under `.rcoder/attachments`; canonical history, previews and `view_image(path)` use workspace paths, while bounded local/remote reads feed the existing image store and content-addressed variants. Text-only models retain references with explicit placeholders and recover eligible images after switching to a vision model.
+- Add `context_inspect` and bounded `read_agent` feedback, richer LSP symbol/call/reference queries, verified multi-file `apply_patch` with expected revisions, and expanded subagent lifecycle controls.
+- Simplify TUI slash navigation into task-grouped searchable menus with backend-owned panels, fill-draft starters, and preserved draft and scroll state.
+- Clarify VS Code activity and waiting states, add task starters that fill the draft, and keep image previews tied to workspace paths.
+- Persist long-session approval grants before publishing policy changes, restoring previous rules on persistence errors and interrupts.
+- Harden platform behavior and CI: retry native review presentation, cap remote long-poll waits to the requested budget, use byte-exact patch revisions on Windows, and pin VS Code browser tests to Ubuntu 24.04.
+- Document the new agent tools, image workflow, and local/remote boundaries.
+
 ## 0.11.8 - 2026-10-22
 
 - Handle macOS process-group termination races when an already-exited group reports a permission error, while preserving errors for live processes.
