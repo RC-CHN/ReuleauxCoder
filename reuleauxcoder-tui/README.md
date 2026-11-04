@@ -1,6 +1,6 @@
 # ReuleauxCoder TUI
 
-直接粘贴 PNG/JPEG/WebP 文件路径，会在输入框插入 `[Image #1]`，发出的用户消息保留相同标记；Backspace/Delete 删除标记及附件。`/attach`、`/detach` 留作备用入口。模型配置使用 `support_modal: [text, image]`，默认 `[text]`。前端分块上传文件到后端，包括 SSH 后端；文字模型拒绝新图片时保留草稿，切换会话则清除草稿附件。详见[图片输入与上下文保留](../docs/images.md)。
+直接粘贴 PNG/JPEG/WebP 文件路径，会在输入框插入 `[Image #1]`，发出的用户消息保留相同标记；Backspace/Delete 删除标记及附件。`/attach`、`/detach` 留作备用入口。模型配置使用 `support_modal: [text, image]`，默认 `[text]`。前端分块上传文件到后端，包括 SSH 后端；上传写入 `.rcoder/attachments`，新历史引用和 `view_image(path)` 都使用 workspace path。文字模型接收 path 占位而不接收图片字节，切回视觉模型后按 retention 恢复；切换会话则清除草稿附件。详见[图片输入与上下文保留](../docs/images.md)。
 
 独立的 React + Ink 终端前端，与 `reuleauxcoder-agent/` 同级。Python 后端拥有 Agent、命令、审批策略和会话保存；界面通过双向 JSON-RPC 收发数据。
 

@@ -492,7 +492,6 @@ export class TuiController extends EventEmitter {
         else this.status = 'Choose a command from / or Ctrl+P.';
       } else {
         const images = this.images;
-        if (images.length && !this.client.state.support_modal?.includes('image')) throw new Error('Current model does not support images. Switch model or detach the images; your draft is preserved.');
         const value = images.length ? record('ChatInput', {text, images: tuple(images.map(item => record('ImageReference', {...item.image}))), image_labels: tuple(images.map(item => item.label)), session_id: this.client.state.session_id, session_generation: this.client.state.session_generation}) : text;
         this.composer = editor();
         this.images = [];

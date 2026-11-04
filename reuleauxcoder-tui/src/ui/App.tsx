@@ -95,7 +95,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
     (index ? '  ' : inputColor('› ')) + row + (!c.composer.text && !index && focused ? paint.muted('Describe your next change…') : ''), dimensions.width,
   ));
   const composerAction = focused ? paint.badge(state.running ? 'Enter queue' : 'Enter send') : '';
-  const composerHint = c.images.length ? `${c.images.length} images · /detach <number|all> · ${state.support_modal?.includes('image') ? 'Enter send' : 'switch to an image model'}` : focused ? `Alt+Enter newline${dimensions.width >= 65 ? ' · Alt+↑↓ history' : ''}` : 'Draft preserved';
+  const composerHint = c.images.length ? `${c.images.length} images · /detach <number|all> · ${state.support_modal?.includes('image') ? 'Enter send' : 'Enter send · text-only placeholder'}` : focused ? `Alt+Enter newline${dimensions.width >= 65 ? ' · Alt+↑↓ history' : ''}` : 'Draft preserved';
   const welcome = c.starterVisible ? [
     paint.secondary('Try a starter · Alt+1/2/3 fills the draft without sending it'),
     ...STARTER_PROMPTS.map((prompt, index) => keyHint(`Alt+${index + 1}`, prompt)),
