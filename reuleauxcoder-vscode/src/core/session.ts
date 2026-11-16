@@ -1,7 +1,7 @@
 import {t, errorText} from '../i18n.js';
 import {EventEmitter} from 'node:events';
 import {randomUUID} from 'node:crypto';
-import {record, tuple, SubmissionQueue, type Json, type RuntimeClient} from '@reuleauxcoder/client';
+import {record, tuple, inputDraft, SubmissionQueue, type Json, type RuntimeClient} from '@reuleauxcoder/client';
 import {CoreFailure, CoreRuntime, type RuntimeOptions} from './runtime.js';
 import {Transcript} from './transcript.js';
 import {foldToolCells} from './tool-groups.js';
@@ -32,6 +32,7 @@ export class WorkspaceSession extends EventEmitter {
   private clientListeners: (() => void)[] = [];
   private lifecycle = 0;
   private sentDrafts = new Map<string, {text: string; items: DraftItem[]}>();
+  private cancelling = new Set<string>();
   constructor(readonly workspace: string, readonly environment: string) {
     super();
     this.runtime.on('client', client => this.bind(client));
@@ -67,6 +68,7 @@ export class WorkspaceSession extends EventEmitter {
       this.changed();
     });
     listen('failure', error => this.fail(error));
+    listen('inputCancelled', input => {if (input.submission_id) this.submissions?.cancelled(input.submission_id);});
     listen('interactions', () => this.changed());
     listen('shutdownProgress', text => {this.notice = text; this.changed();});
     listen('completed', result => {if (result.control === 'exit') void this.shutdown().catch(error => this.fail(error));});
@@ -121,15 +123,45 @@ export class WorkspaceSession extends EventEmitter {
     const state = this.client?.state;
     const pendingInputs = this.transcript.pending(state);
     const queued = state ? this.transcript.inputQueue.remaining(state)?.length ?? pendingInputs.filter(cell => cell.status === 'queued').length : 0;
-    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, sampledAt: Date.now(), steering: {queued, pending: !!state?.interrupt_pending && queued > 0, stopping: state?.stopping ?? false, supported: this.client?.info?.steering_promotion === true}, cells: foldToolCells(this.transcript.cells), pendingInputs, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(queued), configuration: this.configuration.state};
+    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, sampledAt: Date.now(), steering: {queued, pending: !!state?.interrupt_pending && queued > 0, stopping: state?.stopping ?? false, supported: this.client?.info?.steering_promotion === true}, cells: foldToolCells(this.transcript.cells), pendingInputs, inputCancellation: this.client?.info?.input_cancellation === true, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(queued), configuration: this.configuration.state};
   }
   restorePending(id: string): void {
     const cell = this.transcript.pendingInputs.get(id), draft = this.sentDrafts.get(id);
-    if (cell?.status !== 'not-applied' || !draft) return;
+    if (!cell || !['not-applied', 'cancelled'].includes(cell.status ?? '') || !draft) return;
+    if (this.draftText || this.draftItems.length) {this.notice = t('Clear or send the current draft first. The withdrawn message is kept here.'); this.changed(); return;}
     if (this.draftItems.length + draft.items.length > 30) throw new Error(t('The draft already has 30 attachments or context items.'));
     this.transcript.pendingInputs.delete(id); cell.status = 'restored'; this.sentDrafts.delete(id);
     this.draftItems.push(...draft.items);
     this.insertDraft(draft.text);
+  }
+  async cancelPending(id: string, edit: boolean): Promise<void> {
+    if (this.cancelling.has(id)) return;
+    this.cancelling.add(id);
+    try {await this.withdrawPending(id, edit);}
+    finally {this.cancelling.delete(id);}
+  }
+  private async withdrawPending(id: string, edit: boolean): Promise<void> {
+    const client = this.requireClient();
+    const cell = this.transcript.pending(client.state).find(cell => cell.id === id);
+    if (!cell) return;
+    if (cell.status === 'cancelled') {
+      if (edit) this.restorePending(id);
+      else {this.transcript.pendingInputs.delete(id); this.sentDrafts.delete(id); this.changed();}
+      return;
+    }
+    const generation = client.state.session_generation;
+    const result = await client.cancelInput(id);
+    if (generation !== client.state.session_generation) return;
+    if (result.outcome !== 'cancelled') {this.notice = t('This message is no longer queued.'); await client.refresh(); this.changed(); return;}
+    if (edit) {
+      if (!this.sentDrafts.has(id)) {
+        const draft = inputDraft(result.content);
+        this.sentDrafts.set(id, {text: draft.text, items: draft.images.map(reference => ({id: randomUUID(), kind: 'image', name: reference.name, reference}))});
+      }
+      cell.status = 'cancelled'; this.transcript.pendingInputs.set(id, cell);
+      this.restorePending(id);
+    } else this.sentDrafts.delete(id);
+    this.changed();
   }
   async promoteSteering(): Promise<{outcome: string; discarded_count: number}> {
     const client = this.requireClient();

@@ -15,6 +15,7 @@ export function terminalEvent(controller: TuiController, data: string): boolean 
   }
   if (/^\x1b(?:OP|\[11~|\[\[A|\[P)$/.test(data)) {controller.showHelp(); return true;}
   if (/^\x1b(?:OQ|\[12~|\[\[B|\[Q)$/.test(data)) {controller.showSession(); return true;}
+  if (/^\x1b(?:OR|\[13~|\[\[C|\[R)$/.test(data)) {void controller.key('[13~').catch(controller.fail); return true;}
   if (/^\x1b(?:OS|\[14~|\[\[D|\[S)$/.test(data)) {controller.toggleDetails(); return true;}
   return false;
 }

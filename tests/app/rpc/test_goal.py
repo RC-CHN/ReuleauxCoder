@@ -3,6 +3,7 @@ import threading
 import pytest
 
 from reuleauxcoder.app.rpc.codec import decode
+from reuleauxcoder.domain.images import ChatInput
 from reuleauxcoder.domain.llm.context_messages import is_synthetic_context_message
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
 
@@ -225,7 +226,7 @@ def test_user_input_between_goal_turns_is_queued_before_continuation(
     finally:
         release.set()
     runtime.client.wait_idle()
-    assert calls == ["", "Prioritize remote support"]
+    assert [value.text if isinstance(value, ChatInput) else value for value in calls] == ["", "Prioritize remote support"]
 
 
 def test_resume_queued_during_interrupt_starts_after_current_turn_stops(runtime):

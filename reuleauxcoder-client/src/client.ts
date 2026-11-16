@@ -3,7 +3,7 @@ import {InteractionInbox} from './interactions.js';
 import {ConfigurationClient} from './configuration.js';
 import type {MessagePeer} from './message-peer.js';
 import type {ArtifactPage, HistoryOperation, HistoryPage} from './history.js';
-import type {AttachmentReference, GitWorkspace, ImageReference} from './wire.js';
+import type {AttachmentReference, CancelledInput, GitWorkspace, ImageReference} from './wire.js';
 import {actionRequest, decode, emptyState, enumValue, record, tuple, type Action, type Json, type RuntimeState, type UIEvent} from './wire.js';
 
 export class RuntimeClient extends Events {
@@ -50,6 +50,9 @@ export class RuntimeClient extends Events {
   private notification(method: string, params: any): void {
     switch (method) {
       case 'runtime.state': this.update(decode(params.state)); break;
+      case 'runtime.input_cancelled':
+        if (params.session_generation === this.state.session_generation) this.emit('inputCancelled', params as CancelledInput);
+        break;
       case 'runtime.event': this.emit('event', decode(params.event) as UIEvent, params.event, params.session_generation); break;
       case 'runtime.completed': this.emit('completed', decode(params.result)); break;
       case 'runtime.command': this.emit('command', params.text); break;
@@ -73,6 +76,9 @@ export class RuntimeClient extends Events {
     return result;
   }
   submitAction(id: string, command: {[key: string]: Json} = {}) {return this.submit(actionRequest(id, command));}
+  async cancelInput(inputId: string): Promise<CancelledInput | {outcome: 'not_pending'}> {
+    return await this.peer.request('runtime.cancel_input', {input_id: inputId, session_generation: this.state.session_generation}) as CancelledInput | {outcome: 'not_pending'};
+  }
   async uploadImage(source: ImageSource): Promise<ImageReference> {
     if (!this.info?.image_uploads) throw new Error('Backend does not support image attachments.');
     return this.upload(source, 'images');

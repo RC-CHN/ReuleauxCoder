@@ -150,6 +150,7 @@ type ChatControlResponse struct {
 	Outcome    string `json:"outcome"`
 	SteeringID string `json:"steering_id,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 type InteractionReplyRequest struct {

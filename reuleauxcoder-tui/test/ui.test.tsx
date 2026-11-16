@@ -139,7 +139,14 @@ test('queued prompts and commands stay visible until the backend clears them', a
     assert(c.screen.body.includes('Additional prompt 3'));
   }
   await c.key('', {escape: true});
-  c.composer = editor('draft preserved'); c.resize(12, 40);
+  c.composer = editor('draft preserved');
+  app.stdin.write('\x1b[13~');
+  await until(() => app.lastFrame()?.includes('› Prompt 5'));
+  app.stdin.write('\x1b[A'); app.stdin.write('\x1b[3~');
+  await until(() => !b.client.state.queued_steering.includes('Additional prompt 2'));
+  assert(b.client.state.queued_steering.includes('Additional prompt 3'));
+  app.stdin.write('\x1b'); await until(() => !c.queueFocus);
+  c.resize(12, 40);
   await until(() => (app.lastFrame()?.split('\n').length ?? 99) <= 11);
   assert(app.lastFrame()?.includes('draft preserved'));
   assert(app.lastFrame()?.includes('QUEUED'));

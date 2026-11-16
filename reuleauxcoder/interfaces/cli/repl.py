@@ -16,6 +16,7 @@ from reuleauxcoder.interfaces.cli.input import CLIInput, PromptAction
 from reuleauxcoder.interfaces.cli.images import ImagePaste
 from reuleauxcoder.interfaces.cli.registration import CLI_PROFILE
 from reuleauxcoder.interfaces.cli.render import show_banner
+from reuleauxcoder.interfaces.queue import queue_command
 from reuleauxcoder.domain.images import ChatInput
 from reuleauxcoder.infrastructure.rpc.peer import RpcError
 
@@ -62,7 +63,7 @@ def run_repl(
                 )
             }
         )
-        words.extend(["/attach", "/detach"])
+        words.extend(["/attach", "/detach", "/queue"])
         history_path = Path(history_file or ".rcoder/history").expanduser()
         history_path.parent.mkdir(parents=True, exist_ok=True)
         editor = CLIInput(
@@ -149,6 +150,9 @@ def run_repl(
                 text = value.strip()
                 try:
                     command, _, argument = text.partition(" ")
+                    if command == "/queue":
+                        ui_bus.info(queue_command(runtime, argument))
+                        continue
                     if command == "/attach":
                         path = argument.strip()
                         if len(path) >= 2 and path[0] == path[-1] and path[0] in "\"'":

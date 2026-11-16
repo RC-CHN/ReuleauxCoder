@@ -54,15 +54,23 @@ export class Transcript extends EventEmitter implements SubmissionSink {
     });
     listen('completed', result => {if (result.clear_transcript) this.clear(); this.assistant = this.reasoning = undefined; this.emit('change');});
     listen('operationFailure', message => this.notice(message));
+    listen('inputCancelled', input => {
+      this.inputQueue.cancelled(input);
+      const cell = input.submission_id ? this.sent.get(input.submission_id) : undefined;
+      if (cell) cell.status = 'cancelled';
+      this.pendingInputs.delete(input.submission_id ?? input.steering_id ?? input.input_id);
+      this.emit('change');
+    });
   }
   submission(id: string, text: string, status: string, detail = ''): void {
     this.inputQueue.track(id);
     const cell: ChatCell = this.sent.get(id) ?? {id, role: 'user', text: String(text).slice(-262144)};
     this.sent.set(id, cell);
-    if (cell.status === 'applied' || ['restored', 'not-applied'].includes(cell.status ?? '') && status !== 'applied') return;
+    if (cell.status === 'applied' || cell.status === 'cancelled' || ['restored', 'not-applied'].includes(cell.status ?? '') && status !== 'applied') return;
     if (['queued', 'accepted'].includes(status) && !this.running) status = 'not-applied';
     cell.status = status; cell.detail = detail;
     if (status === 'applied') {this.pendingInputs.delete(id); this.append(cell);}
+    else if (status === 'cancelled') this.pendingInputs.delete(id);
     else this.pendingInputs.set(id, cell);
     this.emit('change');
   }

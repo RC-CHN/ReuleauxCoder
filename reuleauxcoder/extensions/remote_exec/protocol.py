@@ -423,6 +423,7 @@ class ChatControlResponse:
     outcome: str
     steering_id: str | None = None
     reason: str | None = None
+    message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -431,6 +432,7 @@ class ChatControlResponse:
             "outcome": self.outcome,
             "steering_id": self.steering_id,
             "reason": self.reason,
+            "message": self.message,
         }
 
     @classmethod
@@ -441,6 +443,7 @@ class ChatControlResponse:
             outcome=str(data.get("outcome", "rejected")),
             steering_id=data.get("steering_id"),
             reason=data.get("reason"),
+            message=data.get("message"),
         )
 
 

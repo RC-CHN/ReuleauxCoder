@@ -31,6 +31,7 @@ export interface HostSnapshot {
   steering?: {queued: number; pending: boolean; stopping: boolean; supported: boolean};
   cells: ChatCell[]; reviews: ReviewSummary[]; draftItems: DraftItem[]; draftText: string;
   pendingInputs?: ChatCell[];
+  inputCancellation?: boolean;
   error?: {kind: string; message: string}; notice?: string;
   catalog?: Action[]; commandSurface?: CommandSurface; interactions?: InlineInteraction[]; mode?: string;
   overview?: WorkOverview;

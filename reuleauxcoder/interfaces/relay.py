@@ -6,6 +6,8 @@ import io
 import threading
 import time
 
+from reuleauxcoder.interfaces.queue import queue_command
+
 from rich.console import Console
 
 from reuleauxcoder.app.interaction_contracts import (
@@ -145,6 +147,7 @@ class RelayUI:
                     admit_steering=self.runtime.admit_steering,
                     interrupt_intent=lambda: self.runtime.interrupt()["outcome"],
                     stop_turn=self.runtime.stop,
+                    queue_control=lambda argument: queue_command(self.runtime, argument),
                 )
             self.runtime.ready()
             self.runtime.wait_idle()

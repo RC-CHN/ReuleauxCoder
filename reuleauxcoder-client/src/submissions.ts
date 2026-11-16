@@ -1,5 +1,5 @@
 import {RpcError} from './message-peer.js';
-import type {Json, RuntimeState, QueuedInput} from './wire.js';
+import type {CancelledInput, Json, RuntimeState, QueuedInput} from './wire.js';
 import type {RuntimeClient} from './client.js';
 
 export interface SubmissionSink {
@@ -16,6 +16,7 @@ export class InputQueueProjection {
     if (submissionId) this.appliedSubmissions.add(submissionId);
     if (steeringId) this.appliedSteering.add(steeringId);
   }
+  cancelled(input: CancelledInput): void {this.applied(input.submission_id ?? undefined, input.steering_id ?? undefined);}
   remaining(state: RuntimeState): QueuedInput[] | undefined {
     return state.queued_inputs?.filter(item => !(item.submission_id && this.appliedSubmissions.has(item.submission_id)) && !(item.steering_id && this.appliedSteering.has(item.steering_id)));
   }
@@ -39,7 +40,7 @@ interface PendingSubmission {
   text: string;
   value: Json;
   generation: number;
-  status: 'sending' | 'accepted' | 'queued' | 'rejected' | 'unconfirmed' | 'applied';
+  status: 'sending' | 'accepted' | 'queued' | 'rejected' | 'unconfirmed' | 'applied' | 'cancelled';
   inFlight: boolean;
 }
 
@@ -61,13 +62,15 @@ export class SubmissionQueue {
 
   reset(): void {this.entries.clear();}
   has(id: string): boolean {return this.entries.has(id);}
+  get(id: string): Readonly<PendingSubmission> | undefined {return this.entries.get(id);}
+  cancelled(id: string): void {const item = this.entries.get(id); if (item) item.status = 'cancelled';}
 
   applied(id: string): void {
     const item = this.entries.get(id);
     if (item && this.current(item)) item.status = 'applied';
   }
 
-  private isApplied(item: PendingSubmission): boolean {return item.status === 'applied';}
+  private isSettled(item: PendingSubmission): boolean {return item.status === 'applied' || item.status === 'cancelled';}
 
   async retry(id?: string): Promise<void> {
     const item = [...this.entries.values()].reverse().find(item => (!id || item.id === id) && ['rejected', 'unconfirmed'].includes(item.status));
@@ -86,12 +89,12 @@ export class SubmissionQueue {
     this.session.submission(item.id, item.text, 'sending');
     try {
       const receipt = await this.client.submit(item.value, item.id, item.generation);
-      if (!this.current(item) || this.isApplied(item)) return;
-      item.status = receipt.status === 'rejected' ? 'rejected' : ['queued', 'steering'].includes(receipt.status) ? 'queued' : 'accepted';
+      if (!this.current(item) || this.isSettled(item)) return;
+      item.status = receipt.status === 'cancelled' ? 'cancelled' : receipt.status === 'rejected' ? 'rejected' : ['queued', 'steering'].includes(receipt.status) ? 'queued' : 'accepted';
       this.session.submission(item.id, item.text, item.status);
       if (item.status === 'rejected') this.report(this.messages.stopped);
     } catch (error) {
-      if (!this.current(item) || this.isApplied(item)) return;
+      if (!this.current(item) || this.isSettled(item)) return;
       item.status = error instanceof RpcError && [-32602, -32002].includes(error.code) ? 'rejected' : 'unconfirmed';
       const detail = error instanceof Error ? error.message : String(error);
       this.session.submission(item.id, item.text, item.status, detail);

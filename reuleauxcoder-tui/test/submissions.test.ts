@@ -7,6 +7,40 @@ import {InputHistory} from '../src/state/history.js';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
+test('F3 manages individual messages, preserves drafts and restores images only after withdrawal', async () => {
+  const f = fixture(true), c = f.c;
+  f.client.info = {input_cancellation: true};
+  f.client.state.support_modal = ['text', 'image'];
+  try {
+    c.composer = editor('Check [Image #2]');
+    const image = {attachment_id: 'image', variant_id: 'variant', path: 'image.png'} as any;
+    c.images = [{label: '[Image #2]', image}];
+    const send = c.key('', {return: true}); await tick(); f.reply(0); await send;
+    const id = f.requests[0].params.submission_id;
+    c.composer = {text: 'New draft', cursor: 3};
+    await c.key('[13~'); assert.equal(c.queueFocus, id);
+    await c.key('', {escape: true}); assert.deepEqual(c.composer, {text: 'New draft', cursor: 3});
+    await c.key('[13~');
+    const withdraw = c.key('', {return: true}); await tick();
+    assert.equal(c.composer.text, 'New draft');
+    assert(c.session.pendingInputs.has(id), 'Do not remove before backend confirmation');
+    const result = {outcome: 'cancelled', input_id: id, submission_id: id, steering_id: 'steer', session_generation: 0, content: 'Check image'};
+    f.peer.receive({jsonrpc: '2.0', method: 'runtime.input_cancelled', params: result});
+    f.peer.receive({jsonrpc: '2.0', id: f.requests.at(-1).id, result}); await withdraw;
+    assert.equal(c.composer.text, 'New draft'); assert.equal(c.queueItems[0].status, 'cancelled');
+    c.composer = editor(); await c.key('[13~'); await c.key('', {return: true});
+    assert.equal(c.composer.text, 'Check [Image #2]'); assert.deepEqual(c.images, [{label: '[Image #2]', image}]);
+    assert.equal(c.queueItems.length, 0);
+    // Another client may withdraw a send before this client's admission receipt arrives.
+    const next = c.key('', {return: true}); await tick();
+    const request = f.requests.at(-1), nextId = request.params.submission_id;
+    f.peer.receive({jsonrpc: '2.0', method: 'runtime.input_cancelled', params: {...result, input_id: nextId, submission_id: nextId}});
+    f.peer.receive({jsonrpc: '2.0', id: request.id, result: {status: 'steering', state: {...f.client.state, revision: 3}}}); await next;
+    assert.equal(c.queueItems.length, 0, 'A late receipt cannot resurrect a withdrawn message');
+    assert.equal(c.session.cells.length, 0);
+  } finally {f.close();}
+});
+
 test('queue projection uses identities, retains external inputs and ignores stale applied snapshots', () => {
   const queue = new InputQueueProjection();
   const state = {...emptyState, queued_steering: ['same', 'same', 'same'], queued_inputs: [

@@ -1,5 +1,5 @@
 import {EventEmitter} from 'node:events';
-import {InputQueueProjection, type GitWorkspace} from '@reuleauxcoder/client';
+import {InputQueueProjection, type CancelledInput, type GitWorkspace} from '@reuleauxcoder/client';
 import {emptyState, typeOf, type Json, type RecordData, type RuntimeState, type UIEvent, type View} from '@reuleauxcoder/client';
 import {diff, fields} from '../ui/format.js';
 import {updateProcess, type ProcessView} from './processes.js';
@@ -35,18 +35,29 @@ export class SessionStore extends EventEmitter {
   readonly pendingInputs = new Map<string, Cell>();
   private inputQueue = new InputQueueProjection();
   get untrackedInputs(): string[] {return this.inputQueue.untracked(this.state).map(item => item.text);}
+  get queuedInputs() {return this.inputQueue.untracked(this.state);}
+  cancelled(input: CancelledInput) {
+    this.inputQueue.cancelled(input);
+    if (input.submission_id) {
+      const cell = this.submissions.get(input.submission_id);
+      if (cell) cell.tone = 'cancelled';
+      this.pendingInputs.delete(input.submission_id);
+    }
+    this.emit('change');
+  }
 
   submission(id: string, text: string, status: string, detail = '') {
     this.inputQueue.track(id);
-    const cell = this.submissions.get(id) ?? {id: String(++this.next), kind: 'user', title: 'You', body: text, details: '', revision: 0, streaming: false} as Cell;
+    const cell = this.submissions.get(id) ?? {id, kind: 'user', title: 'You', body: text, details: '', revision: 0, streaming: false} as Cell;
     this.submissions.set(id, cell);
     // Only application events append to history; receipts cannot move a message.
-    if (cell.tone === 'applied' || cell.tone === 'not-applied' && status !== 'applied') return;
+    if (cell.tone === 'applied' || cell.tone === 'cancelled' || cell.tone === 'not-applied' && status !== 'applied') return;
     if (['queued', 'accepted'].includes(status) && !this.state.running) status = 'not-applied';
     cell.title = status === 'applied' ? 'You' : `You · ${status}`;
     cell.details = detail;
     cell.tone = status;
     if (status === 'applied') {this.pendingInputs.delete(id); this.append(cell);}
+    else if (status === 'cancelled') this.pendingInputs.delete(id);
     else this.pendingInputs.set(id, cell);
     this.emit('change');
   }

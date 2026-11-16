@@ -6,10 +6,10 @@ import {reveal} from './motion.js';
 
 /** Sent drafts stay next to the composer until the core proves application. */
 export class PendingInputs {
-  private entries = new Map<string, {node: HTMLDetailsElement; summary: HTMLElement; status: HTMLElement; text: HTMLElement; content?: string; detail: HTMLElement; gallery: HTMLElement; images: string; signature: string; retry: HTMLButtonElement; restore: HTMLButtonElement}>();
-  constructor(private root: HTMLElement, private gallery: ImageGallery, private retry: (id: string) => void, private restore: (id: string) => void, private composer: HTMLTextAreaElement) {}
+  private entries = new Map<string, {node: HTMLDetailsElement; summary: HTMLElement; status: HTMLElement; text: HTMLElement; content?: string; detail: HTMLElement; gallery: HTMLElement; images: string; signature: string; retry: HTMLButtonElement; restore: HTMLButtonElement; cancel: HTMLButtonElement}>();
+  constructor(private root: HTMLElement, private gallery: ImageGallery, private retry: (id: string) => void, private restore: (id: string) => void, private composer: HTMLTextAreaElement, private cancel: (id: string) => void) {}
 
-  update(cells: ChatCell[], canRestore: (cell: ChatCell) => boolean): void {
+  update(cells: ChatCell[], canRestore: (cell: ChatCell) => boolean, canCancel: (cell: ChatCell) => boolean): void {
     const ids = new Set(cells.map(cell => cell.id));
     for (const [id, entry] of this.entries) if (!ids.has(id)) {
       if (entry.node.contains(document.activeElement)) this.composer.focus({preventScroll: true});
@@ -29,8 +29,9 @@ export class PendingInputs {
         const text = document.createElement('div'), gallery = document.createElement('div'), detail = document.createElement('div'); detail.className = 'detail';
         const retry = document.createElement('button'); retry.className = 'retry'; retry.textContent = t('Retry'); retry.addEventListener('click', () => this.retry(cell.id));
         const restore = document.createElement('button'); restore.textContent = t('Return to draft'); restore.addEventListener('click', () => this.restore(cell.id));
-        body.append(text, gallery, detail, retry, restore); node.append(heading, body);
-        entry = {node, summary, status, text, detail, gallery, images: '', signature: '', retry, restore}; this.entries.set(cell.id, entry);
+        const cancel = document.createElement('button'); cancel.textContent = t('Cancel send'); cancel.addEventListener('click', () => this.cancel(cell.id));
+        body.append(text, gallery, detail, retry, restore, cancel); node.append(heading, body);
+        entry = {node, summary, status, text, detail, gallery, images: '', signature: '', retry, restore, cancel}; this.entries.set(cell.id, entry);
         this.root.append(node); reveal(node);
       }
       if (position !== entry.node) this.root.insertBefore(entry.node, position);
@@ -42,11 +43,11 @@ export class PendingInputs {
         entry.summary.title = cell.text;
         entry.text.textContent = cell.text;
       }
-      const restorable = canRestore(cell), signature = JSON.stringify([cell.status, cell.detail, cell.images, restorable]);
+      const restorable = canRestore(cell), cancellable = canCancel(cell), signature = JSON.stringify([cell.status, cell.detail, cell.images, restorable, cancellable]);
       if (entry.signature === signature) continue;
       entry.signature = signature;
-      const label = cell.status === 'not-applied' ? t('Not applied') : cell.status === 'queued' || cell.status === 'accepted' ? t('Waiting to apply') : t((cell.status ?? 'sending') as MessageKey);
-      if (entry.node.dataset.status !== cell.status && ['rejected', 'unconfirmed', 'not-applied'].includes(cell.status ?? '')) entry.node.open = true;
+      const label = cell.status === 'cancelled' ? t('Withdrawn') : cell.status === 'not-applied' ? t('Not applied') : cell.status === 'queued' || cell.status === 'accepted' ? t('Waiting to apply') : t((cell.status ?? 'sending') as MessageKey);
+      if (entry.node.dataset.status !== cell.status && ['rejected', 'unconfirmed', 'not-applied', 'cancelled'].includes(cell.status ?? '')) entry.node.open = true;
       entry.node.dataset.status = cell.status;
       if (entry.status.textContent !== label) entry.status.textContent = label;
       const detail = cell.status === 'not-applied' ? t('The task ended before this message was applied. Return it to the draft to send again.') : coreMessage(cell.detail ?? '');
@@ -56,6 +57,8 @@ export class PendingInputs {
       if ((!retryable && document.activeElement === entry.retry) || (!restorable && document.activeElement === entry.restore)) entry.node.querySelector('summary')!.focus({preventScroll: true});
       entry.retry.hidden = !retryable;
       entry.restore.hidden = !restorable;
+      entry.restore.textContent = cell.status === 'queued' || cell.status === 'accepted' ? t('Withdraw and edit') : t('Return to draft');
+      entry.cancel.hidden = !cancellable;
       const images = JSON.stringify(cell.images ?? []);
       if (images !== entry.images) {entry.images = images; entry.gallery.replaceChildren(); if (cell.images?.length) this.gallery.draw(entry.gallery, cell.images);}
     }

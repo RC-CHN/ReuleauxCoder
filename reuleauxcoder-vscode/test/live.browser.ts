@@ -128,6 +128,11 @@ test('pending input keeps selections during progress and keyboard focus when con
       await page.waitForFunction(() => document.activeElement?.id === 'composer');
       assert.equal(await composer.inputValue(), 'Next draft');
       assert.deepEqual(await composer.evaluate(node => [(node as HTMLTextAreaElement).selectionStart, (node as HTMLTextAreaElement).selectionEnd]), [2, 5]);
+      state.inputCancellation = true; await publish();
+      await page.getByRole('button', {name: language === 'en' ? 'Withdraw and edit' : '撤回并编辑', exact: true}).click();
+      await page.getByRole('button', {name: language === 'en' ? 'Cancel send' : '取消发送', exact: true}).click();
+      await until(() => h.requests.filter(request => request.action === 'cancelPending').length === 2);
+      assert.deepEqual(h.requests.filter(request => request.action === 'cancelPending').map(request => [request.data?.id, request.data?.edit]), [['guide', true], ['guide', false]]);
       await summary.focus();
       state.cells.push({...state.pendingInputs![0], status: 'applied'}); state.pendingInputs = []; state.steering!.queued = 0; await publish();
       await page.locator('#pending-inputs').waitFor({state: 'hidden'});
@@ -211,7 +216,10 @@ test('real core: send guidance, promote once, retain the next draft and stop sep
     await h.page.waitForFunction(() => document.querySelector('#pending-inputs .pending-state')?.textContent === '未应用');
     assert.equal(await h.page.locator('#transcript .cell.user').count(), 2);
     await h.page.getByRole('button', {name: '退回草稿', exact: true}).click();
-    await h.page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>('#composer')?.value === '下一条尚未发送\n这条尚未应用');
+    assert.equal(await h.page.locator('#composer').inputValue(), '下一条尚未发送');
+    await h.page.locator('#composer').fill('');
+    await h.page.getByRole('button', {name: '退回草稿', exact: true}).click();
+    await h.page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>('#composer')?.value === '这条尚未应用');
     await h.page.locator('#pending-inputs').waitFor({state: 'hidden'});
     assert.deepEqual(h.errors, []);
   } finally {b.session.off('change', changed); await h.close(); await b.close();}

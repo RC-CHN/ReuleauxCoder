@@ -114,13 +114,25 @@ def test_cancel_one_queued_message_preserves_others_and_prevents_resubmission(ru
 
 
 def test_cancel_deferred_input_and_reject_old_session(runtime):
+    from reuleauxcoder.extensions.remote_exec.http_service import _RemoteChatSession
+    from reuleauxcoder.extensions.remote_exec.protocol import ChatControlRequest
+    from reuleauxcoder.interfaces.queue import queue_command
     runtime.server._running = True
     try:
         # The worker is between turns, so admission uses the command service queue.
         receipt = runtime.client.submit("next turn")
         assert receipt.status == "queued"
+        assert receipt.submission_id in queue_command(runtime.client, "")
         with pytest.raises(RpcError, match="Session changed"):
             runtime.server.cancel_input(receipt.submission_id, -1)
+        remote = _RemoteChatSession(chat_id="chat", peer_id="peer", running=True)
+        remote.bind_chat_control(admit_steering=runtime.client.admit_steering,
+                                 interrupt_intent=runtime.client.interrupt,
+                                 stop_turn=runtime.client.stop,
+                                 queue_control=lambda argument: queue_command(runtime.client, argument))
+        request = ChatControlRequest("token", "chat", "cancel", "queue", f"cancel {receipt.submission_id}")
+        assert remote.apply_control(request).message == "Queued message cancelled."
+        assert remote.apply_control(request).message == "Queued message cancelled."
         assert runtime.client.cancel_input(receipt.submission_id)["content"] == "next turn"
         assert runtime.server.commands.next_pending() is None
     finally:

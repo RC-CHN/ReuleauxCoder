@@ -66,6 +66,7 @@ class _RemoteChatSession:
     cancel_callback: Callable[[], None] | None = None
     admit_steering_callback: Callable[[str], str | None] | None = None
     interrupt_intent_callback: Callable[[], Any] | None = None
+    queue_control_callback: Callable[[str], str] | None = None
     stop_turn_callback: Callable[[], None] | None = None
     control_responses: dict[str, ChatControlResponse] = field(default_factory=dict)
     cancel_requested: bool = False
@@ -216,11 +217,13 @@ class _RemoteChatSession:
         admit_steering: Callable[[str], str | None],
         interrupt_intent: Callable[[], Any],
         stop_turn: Callable[[], None],
+        queue_control: Callable[[str], str] | None = None,
     ) -> None:
         with self.cond:
             self.admit_steering_callback = admit_steering
             self.interrupt_intent_callback = interrupt_intent
             self.stop_turn_callback = stop_turn
+            self.queue_control_callback = queue_control
             cancelled = self.cancel_requested
             self.cond.notify_all()
         if cancelled:
@@ -269,6 +272,15 @@ class _RemoteChatSession:
                             None if steering_id is not None else "turn_not_accepting"
                         ),
                     )
+            elif request.action == "queue":
+                callback = self.queue_control_callback
+                if callback is None:
+                    cache_response = False
+                    response = ChatControlResponse(ok=False, control_id=request.control_id,
+                                                   outcome="rejected", reason="chat_control_not_ready")
+                else:
+                    response = ChatControlResponse(ok=True, control_id=request.control_id,
+                                                   outcome="queue", message=callback(request.content or ""))
             elif request.action == "interrupt_intent":
                 callback = self.interrupt_intent_callback
                 if callback is None:

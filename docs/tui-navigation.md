@@ -9,12 +9,21 @@ feedback. Failed or unconfirmed submissions remain in the transcript; `/retry`
 retries the latest one with the same ID without replacing the new draft. A session
 change invalidates retries from the previous session.
 
+Queued messages are removed only after the backend confirms withdrawal. If the
+composer already contains text or images, a withdrawn message stays in the queue
+area until the draft is clear; F3 then Enter restores it with its attachments.
+Already applied messages cannot be withdrawn. VS Code exposes **Withdraw and edit**
+and **Cancel send** on each pending message. The linear CLI and remote peer use
+`/queue` to list message IDs and `/queue cancel <ID>` to withdraw one.
+
 | Input | Behavior |
 | --- | --- |
 | Mouse wheel | Scroll the current panel, or the transcript when no panel is open, three rows per report. Preserve draft, history position and selection. |
 | Up / Down in a draft | Move by displayed line, including wrapped Unicode text. Remember the preferred column through shorter lines and stop at the boundary. |
 | Up in an empty draft | Recall input history. Down through history returns to the saved draft, cursor and image attachments. |
 | Alt+Up / Alt+Down | Explicitly browse history with a nonempty draft. |
+| F3 | Focus the inline message queue, starting at its latest entry. Press again or Esc to return to the unchanged composer. |
+| Up / Down in the queue | Select a message. Enter withdraws it for editing; Delete cancels sending it. Neither stops the task. |
 | Up / Down in a menu | Move selection and stop at the first/last entry. |
 | PgUp / PgDn | Scroll the active content viewport with one row of overlap. |
 | Home / End in an input | Move to the beginning/end of the logical input line. Ctrl+A / Ctrl+E move across the entire input. |

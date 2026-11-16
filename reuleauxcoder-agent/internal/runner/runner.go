@@ -506,6 +506,20 @@ func (r *Runner) runRemoteChat(
 			if text == "" {
 				continue
 			}
+			if r.chatControl && (text == "/queue" || strings.HasPrefix(text, "/queue ")) {
+				response, controlErr := r.sendChatControl(ctx, protocol.ChatControlRequest{
+					PeerToken: peerToken, ChatID: startResp.ChatID, ControlID: newControlID(),
+					Action: "queue", Content: strings.TrimSpace(strings.TrimPrefix(text, "/queue")),
+				})
+				if controlErr != nil {
+					fmt.Fprintf(os.Stderr, "\nQueue control failed: %v\n", controlErr)
+				} else if response.OK {
+					fmt.Println("\n" + response.Message)
+				} else {
+					fmt.Fprintf(os.Stderr, "\nQueue control rejected: %s\n", response.Reason)
+				}
+				continue
+			}
 			if strings.HasPrefix(text, "/") || !r.chatControl {
 				r.pendingLines = append(r.pendingLines, line)
 				fmt.Println("\nQueued for when the current chat becomes idle.")
@@ -531,7 +545,7 @@ func (r *Runner) runRemoteChat(
 				continue
 			}
 			if response.Outcome == "admitted" {
-				fmt.Println("\nSteering queued. Press Ctrl+C to apply it immediately.")
+				fmt.Println("\nSteering queued. /queue lists messages; /queue cancel <ID> withdraws one. Ctrl+C applies guidance now.")
 			} else {
 				r.pendingLines = append(r.pendingLines, line)
 				fmt.Printf("\nChat no longer accepted steering; input was preserved (%s).\n", response.Outcome)

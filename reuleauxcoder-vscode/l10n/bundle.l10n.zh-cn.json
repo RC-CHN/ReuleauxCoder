@@ -1,4 +1,10 @@
 {
+  "Summarize older context and retain recent history": "总结较早的上下文并保留近期记录",
+  "Cancel send": "取消发送",
+  "Withdraw and edit": "撤回并编辑",
+  "Withdrawn": "已撤回",
+  "This message is no longer queued.": "这条消息已不在待发送队列中。",
+  "Clear or send the current draft first. The withdrawn message is kept here.": "请先发送或清空当前草稿，撤回的消息会保留在这里。",
   "Showing recent turns; the model restored the full session. Browse history for older messages.": "仅显示最近的对话；模型已恢复完整会话。可浏览历史记录查看较早的消息。",
   "Bundled": "内置",
   "Global": "全局",

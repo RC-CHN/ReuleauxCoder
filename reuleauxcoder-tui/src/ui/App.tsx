@@ -60,7 +60,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   const footerHeight = showStatus ? 2 : 1;
   const composerWidth = Math.max(1, dimensions.width - 6);
   c.composerWidth = composerWidth;
-  const focused = !c.closing && !c.active && !c.screen;
+  const focused = !c.closing && !c.active && !c.screen && !c.queueFocus;
   const composerInput = inputLayout(c.composer, composerWidth, 4, focused);
   const composerHeight = Math.max(1, composerInput.rows.length);
   const bodyBudget = height - chrome.header.length - footerHeight - composerHeight - 2;
@@ -69,7 +69,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   c.inputWidth = panelWidth;
   const panelHintBudget = Math.min(3, Math.ceil(90 / panelWidth));
   const hasPanel = Boolean(c.active || c.screen || c.palette.length);
-  const queue = queuedRows({...c.session.state, queued_steering: c.session.untrackedInputs}, dimensions.width, Math.max(0, Math.min(5, contentHeight - (hasPanel ? 5 : 2))), [...c.session.pendingInputs.values()]);
+  const queue = queuedRows(c.session.state, dimensions.width, Math.max(0, Math.min(5, contentHeight - (hasPanel ? 5 : 2))), [], {items: c.queueItems, selected: c.queueFocus, enabled: !!c.client.info?.input_cancellation, busy: c.queueBusy});
   const bodyHeight = bodyBudget - queue.length;
   const available = contentHeight - queue.length;
   const listLength = c.screen?.kind === 'list' ? c.listItems(c.screen).length : c.palette.length;

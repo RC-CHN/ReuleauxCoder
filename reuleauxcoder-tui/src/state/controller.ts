@@ -1,7 +1,7 @@
 import {EventEmitter} from 'node:events';
 import {isDeepStrictEqual} from 'node:util';
 import type {Key} from 'ink';
-import {RuntimeClient} from '@reuleauxcoder/client';
+import {RuntimeClient, decode, inputDraft} from '@reuleauxcoder/client';
 import {attachImageFile} from '@reuleauxcoder/client/node';
 import {cancellation, record, tuple, typeOf, type Action, type ImageReference, type Json, type Panel, type PanelItem, type PendingInteraction, type View} from '@reuleauxcoder/client';
 import {SessionStore} from './session.js';
@@ -29,6 +29,9 @@ export class TuiController extends EventEmitter {
   menus: Menu[] = [];
   composer = editor();
   images: DraftImage[] = [];
+  queueFocus: string | null = null;
+  queueBusy = false;
+  private withdrawn = new Map<string, {text: string; images: DraftImage[]}>();
   private imageNumber = 0;
   private pendingPaste?: Promise<void>;
   screens: Screen[] = [];
@@ -83,8 +86,15 @@ export class TuiController extends EventEmitter {
       source.on(event, listener);
       this.subscriptions.push(() => source.off(event, listener));
     };
-    listen(this.session, 'change', this.changed);
+    listen(this.session, 'change', () => {
+      if (this.queueFocus && !this.queueBusy && !this.queueItems.some(item => item.id === this.queueFocus)) this.queueFocus = null;
+      this.changed();
+    });
     listen(this.session, 'submissionApplied', id => this.submissions.applied(id));
+    listen(client, 'inputCancelled', input => {
+      if (input.submission_id) this.submissions.cancelled(input.submission_id);
+      this.session.cancelled(input);
+    });
     listen(this.session, 'view', (view, wire) => {
       const epoch = this.viewEpoch;
       this.pendingView = this.pendingView.then(() => this.openView(view, wire, epoch)).catch(this.fail);
@@ -93,6 +103,7 @@ export class TuiController extends EventEmitter {
     listen(client, 'state', state => {
       if (state.session_id !== this.session.state.session_id || state.session_generation !== this.session.state.session_generation) {
         this.submissions.reset();
+        this.queueFocus = null; this.withdrawn.clear();
         this.leaveInputHistory();
         this.offset = null; this.readingRevision = undefined;
         if (this.images.length) this.status = 'Session changed; draft images cleared. Attach them again to use them here.';
@@ -145,11 +156,55 @@ export class TuiController extends EventEmitter {
     return !this.active && !this.screen && !this.composer.text && !this.images.length && !this.session.cells.some(cell => cell.kind === 'user' || cell.kind === 'assistant');
   }
   get palette(): Menu[] {
-    if (this.active || this.screen || this.paletteDismissed || !this.composer.text.startsWith('/')) return [];
+    if (this.active || this.screen || this.queueFocus || this.paletteDismissed || !this.composer.text.startsWith('/')) return [];
     const terms = this.composer.text.trim().replace(/^\/+/, '').toLowerCase().split(/\s+/).filter(Boolean);
     return this.menus.filter(menu => terms.every(term => menuSearchText(menu).includes(term)));
   }
   listItems(screen: ListScreen) {const query = screen.filter.text.toLowerCase(); return screen.items.filter(item => `${item.label} ${item.description}`.toLowerCase().includes(query));}
+
+  get queueItems() {
+    return [
+      ...[...this.session.pendingInputs].map(([id, cell]) => ({id, text: cell.body, status: cell.tone ?? 'sending'})),
+      ...this.session.queuedInputs.map((item, index) => ({id: item.submission_id ?? item.steering_id ?? `queued-${index}`, text: item.text, status: 'queued'})),
+      ...[...this.withdrawn].map(([id, draft]) => ({id, text: draft.text, status: 'cancelled'})),
+    ];
+  }
+  private async withdrawInput(editDraft: boolean) {
+    const item = this.queueItems.find(item => item.id === this.queueFocus);
+    if (!item || this.queueBusy) return;
+    let draft = this.withdrawn.get(item.id);
+    if (!draft) {
+      if (!['queued', 'accepted'].includes(item.status)) {this.status = 'Wait for delivery confirmation before withdrawing this message.'; return;}
+      const generation = this.client.state.session_generation;
+      const sent = this.submissions.get(item.id);
+      this.queueBusy = true; this.changed();
+      try {
+        const result = await this.client.cancelInput(item.id);
+        if (generation !== this.client.state.session_generation) return;
+        if (result.outcome !== 'cancelled') {this.status = 'This message is no longer queued.'; await this.client.refresh(); return;}
+        // The notification removes the pending tile; keep the original image labels for editing.
+        const value = sent ? decode(sent.value) : undefined;
+        const fallback = inputDraft(result.content);
+        const images: ImageReference[] = value?.images ?? fallback.images;
+        draft = {text: sent?.text ?? fallback.text, images: images.map((image, index) => ({image, label: value?.image_labels?.[index] ?? `[Image #${index + 1}]`}))};
+        for (const {label} of draft.images) if (!draft.text.includes(label)) draft.text += ` ${label}`;
+        if (editDraft) this.withdrawn.set(item.id, draft);
+      } finally {this.queueBusy = false;}
+    }
+    if (editDraft) {
+      if (this.composer.text || this.images.length) this.status = 'Message withdrawn. Your current draft is kept; use F3 then Enter to edit it after clearing the draft.';
+      else {
+        this.composer = editor(draft.text); this.images = draft.images;
+        this.imageNumber = Math.max(0, ...draft.images.map(image => Number(image.label.match(/#(\d+)/)?.[1] ?? 0)));
+        this.withdrawn.delete(item.id); this.leaveInputHistory(); this.status = 'Message returned to draft.';
+      }
+      this.queueFocus = null;
+    } else {
+      this.withdrawn.delete(item.id);
+      this.queueFocus = this.queueItems.at(-1)?.id ?? null;
+      this.status = 'Queued message cancelled.';
+    }
+  }
 
   startRefresh() {
     if (this.disposed) return;
@@ -361,6 +416,21 @@ export class TuiController extends EventEmitter {
     finally {this.inputChanged();}
   }
   private async handleKey(input: string, key: Partial<Key>) {
+    const queueKey = input === '[13~' || input === '\x1bOR' || input === 'OR';
+    if (!this.active && !this.screen && (queueKey || this.queueFocus)) {
+      if (queueKey || key.escape || key.ctrl && input === 'c') {
+        this.queueFocus = this.queueFocus ? null : queueKey && this.client.info?.input_cancellation ? this.queueItems.at(-1)?.id ?? null : null;
+      } else {
+        const items = this.queueItems;
+        if (!items.length) {this.queueFocus = null; return;}
+        let index = items.findIndex(item => item.id === this.queueFocus);
+        if (index < 0) {this.queueFocus = null; return;}
+        if (key.upArrow || key.downArrow) index = Math.max(0, Math.min(items.length - 1, index + (key.upArrow ? -1 : 1)));
+        this.queueFocus = items[index].id;
+        if (key.return || key.delete) await this.withdrawInput(!!key.return);
+      }
+      return;
+    }
     if (key.ctrl && (key.home || key.end)) {
       if (!this.active && !this.screen && !this.palette.length) {
         this.offset = key.home ? 0 : null;
@@ -541,7 +611,7 @@ export class TuiController extends EventEmitter {
     if (this.screen?.title === 'Session details') {this.screens.pop(); this.changed(); return;}
     this.document('Session details', fields({session: this.session.state, pendingInputs: [...this.session.pendingInputs.values()].map(cell => ({text: cell.body, status: cell.tone, detail: cell.details})), git: this.session.git, plan: this.session.plan, progress: this.session.progress, agents: [...this.session.jobs.values()], processes: [...this.session.processes.values()], diagnostics: [...this.session.diagnostics.values()], operations: [...this.session.operations.values()], startup: this.session.startup}));
   }
-  showHelp() {this.document('Keyboard help', 'Enter        Send / select\nShift+Enter  New line (Alt+Enter also works)\n/ or Ctrl+P  Open command menus\nEsc          Back / cancel interaction\nWheel        Scroll content without changing input\nShift+Tab    Previous form field\nCtrl+C       Cancel interaction → close menu → clear draft → interrupt → confirm exit\nCtrl+D       Exit with an empty draft\nUp / Down    Move within input; empty input recalls history\nAlt+Up/Down  Input history, including with an empty draft\nPgUp / PgDn  Scroll the focused content\nHome / End   Input line start / end\nCtrl+Home/End Transcript start / follow latest\nF1 / Ctrl+G  Keyboard help\nF2 / Ctrl+O  Session, plan, jobs and startup details\nF4 / Ctrl+R  Toggle full transcript details (all records)\nCtrl+A/E     Start / end of input\nCtrl+U/K/W   Delete before / after / previous word\n\nF4 shows:\n  Tool arguments and full received output, diffs, diagnostics and archive details.\n  Reasoning returned by the model.\nIt applies to all retained records in this conversation.\nPress F4 again to restore previews; PgUp/PgDn reads earlier content.\n\nApproval: 1/y/Enter approve once · 2/n deny · s session scope · f feedback\nSecret input is masked and never written to input history.');}
+  showHelp() {this.document('Keyboard help', 'Enter        Send / select\nShift+Enter  New line (Alt+Enter also works)\n/ or Ctrl+P  Open command menus\nEsc          Back / cancel interaction\nWheel        Scroll content without changing input\nShift+Tab    Previous form field\nCtrl+C       Cancel interaction → close menu → clear draft → interrupt → confirm exit\nCtrl+D       Exit with an empty draft\nUp / Down    Move within input; empty input recalls history\nAlt+Up/Down  Input history, including with an empty draft\nPgUp / PgDn  Scroll the focused content\nHome / End   Input line start / end\nCtrl+Home/End Transcript start / follow latest\nF1 / Ctrl+G  Keyboard help\nF2 / Ctrl+O  Session, plan, jobs and startup details\nF3           Queue: ↑↓ select · Enter withdraw/edit · Del cancel · Esc back\nF4 / Ctrl+R  Toggle full transcript details (all records)\nCtrl+A/E     Start / end of input\nCtrl+U/K/W   Delete before / after / previous word\n\nF4 shows:\n  Tool arguments and full received output, diffs, diagnostics and archive details.\n  Reasoning returned by the model.\nIt applies to all retained records in this conversation.\nPress F4 again to restore previews; PgUp/PgDn reads earlier content.\n\nApproval: 1/y/Enter approve once · 2/n deny · s session scope · f feedback\nSecret input is masked and never written to input history.');}
   async finish() {
     if (this.closing) return;
     this.closing = true; this.exitConfirm = false; clearInterval(this.refreshTimer); this.changed();

@@ -46,7 +46,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
     const entry = [...this.views.values()].find(entry => entry.owner === owner);
     if (!entry) throw new Error(t('View closed.'));
     entry.session = session;
-    if (['send', 'retry', 'restorePending', 'steer', 'upload.begin', 'image.preview', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.') || request.action.startsWith('configuration.') || request.action.startsWith('skill.')) {
+    if (['send', 'retry', 'restorePending', 'cancelPending', 'steer', 'upload.begin', 'image.preview', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.') || request.action.startsWith('configuration.') || request.action.startsWith('skill.')) {
       if (data.hostId !== session.snapshot().hostId || data.generation !== session.snapshot().generation) throw new Error(t('Session changed. Review your draft and send it again.'));
     }
     if (request.action.startsWith('configuration.')) return this.command(request.action, data);
@@ -61,6 +61,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
       case 'send': session.submit(data.id, data.text, data.items, data.generation); return;
       case 'retry': await session.submissions?.retry(data.id); return;
       case 'restorePending': session.restorePending(data.id); return;
+      case 'cancelPending': return session.cancelPending(data.id, data.edit === true);
       case 'steer': return session.promoteSteering();
       case 'remove': session.remove(data.id); return;
       case 'image.preview': return session.imagePreview(data.path, data.variantId);

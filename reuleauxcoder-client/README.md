@@ -19,6 +19,14 @@ prefers locally tracked messages over ambiguous text-only previews. Clear the
 projection on session generation changes; application never waits for a model
 response.
 
+When `initialize.input_cancellation` is true, `cancelInput(id)` withdraws a queued
+submission or steering ID in the current generation. It returns `cancelled`
+with the original content, or `not_pending` if application already won the race.
+`inputCancelled` removes pending previews and settles local submissions before
+late receipts arrive. Withdrawal leaves the task running. Only restore a draft
+after confirmation; preserve any newer composer content. This controls messages,
+not deferred slash commands.
+
 `@reuleauxcoder/client` 是仓库内部共享的 JSON-RPC 客户端，供 TUI 和 VS Code 宿主使用。
 没有运行时 npm 依赖，不包含 React、Ink、界面渲染、进程启动或 Python 业务实现。
 `SubmissionQueue` 负责与界面无关的发送状态及重试；消费者通过 `SubmissionSink` 投影消息。

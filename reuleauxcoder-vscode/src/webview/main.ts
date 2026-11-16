@@ -34,8 +34,9 @@ const configuration = new ConfigurationView(element('configuration-editor'), req
 const images = new ImageGallery(request);
 const pendingInputs = new PendingInputs(element('pending-inputs'), images, id => void retrySend(id), id => {
   if (localSends.has(id)) restoreSend(id);
+  else if (['queued', 'accepted'].includes(snapshot?.pendingInputs?.find(cell => cell.id === id)?.status ?? '')) void request('cancelPending', {id, edit: true}).catch(notice);
   else void request('restorePending', {id}).catch(notice);
-}, composer);
+}, composer, id => void request('cancelPending', {id, edit: false}).catch(notice));
 const toolCells = new ToolCells(url => void request('openLink', {url}).catch(notice), path => void request('openFile', {path}).catch(notice), updateToolToggle);
 const pending = new Map<string, {resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>}>();
 const nodes = new Map<string, HTMLElement>();
@@ -194,7 +195,8 @@ function render(state: HostSnapshot): void {
 }
 let attachmentSignature = '';
 function renderPendingInputs(): void {
-  pendingInputs.update([...snapshot?.pendingInputs ?? [], ...optimistic.values()], cell => cell.status === 'not-applied' || cell.status === 'uploading' || cell.status === 'rejected' && !!(localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles));
+  const canCancel = (cell: ChatCell) => cell.status === 'cancelled' || !!snapshot?.inputCancellation && ['queued', 'accepted'].includes(cell.status ?? '');
+  pendingInputs.update([...snapshot?.pendingInputs ?? [], ...optimistic.values()], cell => canCancel(cell) || cell.status === 'not-applied' || cell.status === 'uploading' || cell.status === 'rejected' && !!(localSends.get(cell.id)?.uploads.length || localSends.get(cell.id)?.needsFiles), canCancel);
 }
 function renderAttachments(): void {
   const items = (snapshot?.draftItems ?? []).filter(item => !consumedItems.has(item.id));

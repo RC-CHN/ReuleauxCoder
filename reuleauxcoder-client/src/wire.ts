@@ -42,6 +42,15 @@ export interface RuntimeState {
   mode?: string | null; approval_policy?: string;
 }
 export interface QueuedInput {text: string; submission_id?: string | null; steering_id?: string | null}
+export interface CancelledInput {
+  outcome: 'cancelled'; input_id: string; submission_id: string | null; steering_id: string | null;
+  session_generation: number;
+  content: string | ({type: 'text'; text: string} | ({type: 'image'} & ImageReference))[];
+}
+export function inputDraft(content: CancelledInput['content']): {text: string; images: ImageReference[]} {
+  if (typeof content === 'string') return {text: content, images: []};
+  return {text: content.filter(part => part.type === 'text').map(part => part.text).join(''), images: content.filter(part => part.type === 'image').map(({type, ...image}) => image)};
+}
 export interface ImageReference {
   attachment_id: string; variant_id: string; mime_type: string;
   width: number; height: number; size_bytes: number;
