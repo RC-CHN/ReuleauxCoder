@@ -16,6 +16,13 @@ Already applied messages cannot be withdrawn. VS Code exposes **Withdraw and edi
 and **Cancel send** on each pending message. The linear CLI and remote peer use
 `/queue` to list message IDs and `/queue cancel <ID>` to withdraw one.
 
+Command search in TUI and VS Code ranks exact slash names first, followed by
+command prefixes, word prefixes and description substrings. `/mode` therefore
+precedes `/model`. Broad model searches show the model panel; specific searches
+such as `/model use-main` expose the matching action. Session actions precede
+workspace defaults, and the shorthand `/model <profile>` shares the main-model
+menu action instead of adding another row.
+
 | Input | Behavior |
 | --- | --- |
 | Mouse wheel | Scroll the current panel, or the transcript when no panel is open, three rows per report. Preserve draft, history position and selection. |

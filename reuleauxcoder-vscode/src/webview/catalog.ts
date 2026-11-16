@@ -1,4 +1,4 @@
-import type {Action} from '@reuleauxcoder/client';
+import {commandRank, menuActions, slashNames, type Action} from '@reuleauxcoder/client';
 import {t, errorText, type MessageKey} from '../i18n.js';
 import type {IconName} from './icons.js';
 
@@ -35,20 +35,22 @@ export function actionScope(action: Action): string {
 export function commandItems(catalog: Action[], query: string): {action: Action; label: string; description: string; icon: IconName; group: string}[] {
   const search = query.replace(/^\//, '').trim().toLowerCase();
   const groups = new Map<string, Action[]>();
-  for (const action of catalog) {const items = groups.get(action.feature_id) ?? []; items.push(action); groups.set(action.feature_id, items);}
+  for (const action of menuActions(catalog)) {const items = groups.get(action.feature_id) ?? []; items.push(action); groups.set(action.feature_id, items);}
   const result = [];
   for (const [feature, actions] of groups) {
     const info = featureInfo(feature);
     const primary = actions.find(action => action.preview && action.parameters.every(parameter => !parameter.required)) ?? actions[0];
-    const candidates = search ? actions : feature === 'system' ? actions.filter(action => action.preview) : [primary];
+    const familySearch = !search.includes(' ') && (slashNames(primary).some(name => name.startsWith(search)) || info.label.toLowerCase().includes(search));
+    const candidates = feature !== 'system' && (!search || familySearch) ? [primary] : search ? actions : actions.filter(action => action.preview);
     for (const action of candidates) {
       const main = action === primary && feature !== 'system';
       const label = main ? info.label : actionLabel(action);
       const description = main ? info.description : actionScope(action) || actionLabel(action);
-      if (search && ![label, description, action.action_id, action.description, ...action.triggers.map(trigger => trigger.value)].join(' ').toLowerCase().includes(search)) continue;
-      result.push({action, label, description, icon: info.icon, group: info.group});
+      const rank = commandRank(search, slashNames(action), [label, description, action.action_id, action.description, ...action.triggers.map(trigger => trigger.value)].join(' '));
+      if (!Number.isFinite(rank)) continue;
+      result.push({action, label, description, icon: info.icon, group: info.group, rank});
     }
   }
   const order = ['goal', 'sessions', 'processes', 'subagent.jobs', 'skills', 'mcp', 'model', 'mode', 'thinking', 'approval', 'shell', 'system'];
-  return result.sort((left, right) => (order.indexOf(left.action.feature_id) < 0 ? 99 : order.indexOf(left.action.feature_id)) - (order.indexOf(right.action.feature_id) < 0 ? 99 : order.indexOf(right.action.feature_id)));
+  return result.sort((left, right) => left.rank - right.rank || (order.indexOf(left.action.feature_id) < 0 ? 99 : order.indexOf(left.action.feature_id)) - (order.indexOf(right.action.feature_id) < 0 ? 99 : order.indexOf(right.action.feature_id)));
 }

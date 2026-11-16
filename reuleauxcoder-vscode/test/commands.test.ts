@@ -8,6 +8,8 @@ import {WorkOverviewStore} from '../src/core/overview.js';
 import {backend, until} from './helpers.js';
 import {panels} from './webview-fixture.js';
 import {reviewSummary} from '../src/core/review-summary.js';
+import {commandItems} from '../src/webview/catalog.js';
+import {setLocale} from '../src/i18n.js';
 
 const action: Action = {action_id: 'goal.show', feature_id: 'goal', description: 'View goal', preview: true, parameters: [], triggers: [{kind: 'slash', value: '/goal'}]};
 const panel: Panel = {view_type: 'goal', title: 'Goal', items: [{id: 'child', label: 'Open child', description: '', current: false, action: null}], children: [['child', {view_type: 'child', title: 'Child', items: [{label: 'Pause', description: '', current: false, action: {action_id: 'goal.pause', command: {}}}], children: [], filterable: false, keep_open_on_submit: true, return_to_parent_on_submit: false}]], filterable: true, keep_open_on_submit: true, return_to_parent_on_submit: false};
@@ -150,6 +152,18 @@ test('overview distinguishes first output from empty chunks, request retries and
 });
 test('real core catalog, model panels, goal controls and secret input use conversation surfaces', async t => {
   const b = await backend(); t.after(() => b.close());
+  for (const locale of ['en', 'zh-CN']) {
+    setLocale(locale);
+    const actions = (query: string) => commandItems(b.client.catalog, query).map(item => item.action.action_id);
+    assert.deepEqual(actions('/mode').slice(0, 2), ['mode.show', 'model.show']);
+    assert.deepEqual(actions('/model'), ['model.show']);
+    assert.equal(actions('/model use-main')[0], 'model.use_main');
+    assert.equal(actions('/model set-main')[0], 'model.set_main');
+    assert(!actions('main').includes('model.switch'));
+    assert(actions('main').indexOf('model.use_main') < actions('main').indexOf('model.set_main'));
+    if (locale === 'zh-CN') assert.equal(actions('模式')[0], 'mode.show');
+  }
+  setLocale('en');
   const commands = b.session.commands;
   await commands.open('model.show'); await until(() => commands.surface?.panel?.view_type === 'model_slots');
   const root = commands.surface!; await commands.select(root.id, 0);

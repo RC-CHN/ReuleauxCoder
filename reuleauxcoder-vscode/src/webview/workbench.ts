@@ -1,4 +1,4 @@
-import type {Action} from '@reuleauxcoder/client';
+import {menuActions, type Action} from '@reuleauxcoder/client';
 import type {CommandSurface, HostSnapshot, WebRequest} from '../shared.js';
 import {t, errorText} from '../i18n.js';
 import {actionLabel, actionScope, commandItems, featureInfo} from './catalog.js';
@@ -114,7 +114,7 @@ export class ComposerWorkbench {
     this.entries = commandItems(this.state?.catalog ?? [], this.search);
     let group = '';
     for (const [index, entry] of this.entries.entries()) {
-      if (entry.group !== group) {group = entry.group; const heading = document.createElement('div'); heading.className = 'menu-group'; heading.textContent = group; body.append(heading);}
+      if (!this.search.trim() && entry.group !== group) {group = entry.group; const heading = document.createElement('div'); heading.className = 'menu-group'; heading.textContent = group; body.append(heading);}
       const row = this.row(entry.label, entry.description, () => void this.choose(entry.action));
       row.prepend(icon(entry.icon)); row.id = `command-option-${index}`; row.dataset.action = entry.action.action_id; row.setAttribute('role', 'option');
       row.addEventListener('pointermove', () => this.highlight(index, false));
@@ -191,7 +191,7 @@ export class ComposerWorkbench {
     body.append(rows);
     if (panel.show_auxiliary_actions !== false) {
       const more = document.createElement('details'); more.className = 'more-actions'; const summary = document.createElement('summary'); summary.textContent = t('More actions'); more.append(summary);
-      for (const action of this.state?.catalog?.filter(action => action.feature_id === surface.feature) ?? []) more.append(this.row(actionLabel(action), actionScope(action), () => void this.choose(action)));
+      for (const action of menuActions(this.state?.catalog?.filter(action => action.feature_id === surface.feature) ?? [])) more.append(this.row(actionLabel(action), actionScope(action), () => void this.choose(action)));
       body.append(more);
     }
   }

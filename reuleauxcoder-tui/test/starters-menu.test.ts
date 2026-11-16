@@ -27,4 +27,13 @@ test('command palette searches descriptions while direct slash names stay intact
   assert.deepEqual(c.palette.map(menu => menu.name), ['/model']);
   c.composer = editor('/model');
   assert.deepEqual(c.palette.map(menu => menu.name), ['/model']);
+  c.composer = editor('/mode');
+  assert.equal(c.palette[0].name, '/mode');
+  c.composer = editor('/mod');
+  assert.deepEqual(new Set(c.palette.map(menu => menu.name)), new Set(['/model', '/mode']));
+  c.composer = editor('/model use-main');
+  assert(!c.palette[0].actions.some(action => action.action_id === 'model.switch'));
+  await c.key('', {return: true});
+  assert.equal(c.screen?.kind, 'form');
+  if (c.screen?.kind === 'form') assert.equal(c.screen.action.action_id, 'model.use_main');
 });

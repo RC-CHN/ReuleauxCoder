@@ -1,4 +1,4 @@
-import type {Action, Json, Parameter} from '@reuleauxcoder/client';
+import {menuActions, type Action, type Json, type Parameter} from '@reuleauxcoder/client';
 
 export interface Menu {name: string; title: string; description: string; group: string; order: number; actions: Action[]}
 const FEATURE_INFO: Record<string, {title: string; description: string; group: string; order: number}> = {
@@ -19,7 +19,7 @@ const fallback = (feature: string, order: number) => ({title: humanize(feature),
 
 export function menusFromCatalog(actions: Action[]): Menu[] {
   const menus = new Map<string, Menu>();
-  for (const action of actions) {
+  for (const action of menuActions(actions)) {
     const trigger = action.triggers.find(item => item.kind === 'slash');
     if (!trigger) throw new Error(`Action has no menu entry: ${action.action_id}`);
     const name = trigger.value.split(/\s+/)[0];

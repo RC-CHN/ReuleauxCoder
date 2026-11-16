@@ -1,7 +1,7 @@
 import {EventEmitter} from 'node:events';
 import {isDeepStrictEqual} from 'node:util';
 import type {Key} from 'ink';
-import {RuntimeClient, decode, inputDraft} from '@reuleauxcoder/client';
+import {RuntimeClient, commandRank, slashNames, decode, inputDraft} from '@reuleauxcoder/client';
 import {attachImageFile} from '@reuleauxcoder/client/node';
 import {cancellation, record, tuple, typeOf, type Action, type ImageReference, type Json, type Panel, type PanelItem, type PendingInteraction, type View} from '@reuleauxcoder/client';
 import {SessionStore} from './session.js';
@@ -157,10 +157,13 @@ export class TuiController extends EventEmitter {
   }
   get palette(): Menu[] {
     if (this.active || this.screen || this.queueFocus || this.paletteDismissed || !this.composer.text.startsWith('/')) return [];
-    const terms = this.composer.text.trim().replace(/^\/+/, '').toLowerCase().split(/\s+/).filter(Boolean);
-    return this.menus.filter(menu => terms.every(term => menuSearchText(menu).includes(term)));
+    return this.menus.map(menu => ({menu, rank: commandRank(this.composer.text, menu.actions.flatMap(slashNames), menuSearchText(menu))}))
+      .filter(item => Number.isFinite(item.rank)).sort((left, right) => left.rank - right.rank).map(item => item.menu);
   }
-  listItems(screen: ListScreen) {const query = screen.filter.text.toLowerCase(); return screen.items.filter(item => `${item.label} ${item.description}`.toLowerCase().includes(query));}
+  listItems(screen: ListScreen) {
+    return screen.items.map(item => ({item, rank: commandRank(screen.filter.text, [item.label], `${item.label} ${item.description}`)}))
+      .filter(entry => Number.isFinite(entry.rank)).sort((left, right) => left.rank - right.rank).map(entry => entry.item);
+  }
 
   get queueItems() {
     return [
@@ -242,11 +245,13 @@ export class TuiController extends EventEmitter {
   }
   private list(title: string, items: Item[], menu?: Menu, panel?: Panel): ListScreen {return {kind: 'list', title, items, index: Math.max(0, items.findIndex(item => item.current)), filter: editor(), menu, panel};}
   private actionItems(menu: Menu): Item[] {return menu.actions.map(action => ({label: actionLabel(action), description: action.description.match(/^(?:\[[^\]]+\]\s*)+/)?.[0] ?? '', select: () => this.chooseAction(action)}));}
-  async openMenu(menu: Menu) {
+  async openMenu(menu: Menu, query = '') {
     this.viewEpoch++;
     this.screens = [this.list(menu.title, this.actionItems(menu), menu)];
     this.paletteDismissed = true; this.changed();
     const preview = menu.actions.find(action => action.preview && action.parameters.every(parameter => !parameter.required));
+    const exact = query.trim() ? menu.actions.find(action => commandRank(query, slashNames(action), '') === 0) : undefined;
+    if (exact && exact !== preview) {await this.chooseAction(exact); return;}
     if (preview) await this.client.submitAction(preview.action_id, defaults(preview));
   }
   private async openView(view: View, wire: Json | undefined, epoch: number) {
@@ -529,7 +534,7 @@ export class TuiController extends EventEmitter {
       const menus = this.palette;
       if (key.upArrow || key.downArrow) {this.selection(this).follow = true; this.paletteIndex = Math.max(0, Math.min(menus.length - 1, this.paletteIndex + (key.upArrow ? -1 : 1)));}
       else if (key.tab) this.composer = editor(menus[this.paletteIndex % menus.length].name);
-      else if (this.revealSelection(this, this.paletteIndex)) {const menu = menus[this.paletteIndex % menus.length]; this.composer = editor(); await this.openMenu(menu);}
+      else if (this.revealSelection(this, this.paletteIndex)) {const menu = menus[this.paletteIndex % menus.length], query = this.composer.text; this.composer = editor(); await this.openMenu(menu, query);}
       this.changed(); return;
     }
     if (key.return && !key.shift && !key.meta) {

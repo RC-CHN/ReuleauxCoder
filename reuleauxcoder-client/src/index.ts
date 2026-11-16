@@ -5,3 +5,4 @@ export {SubmissionQueue, InputQueueProjection, type SubmissionSink} from './subm
 export * from './wire.js';
 export type * from './history.js';
 export * from './configuration.js';
+export * from './commands.js';
