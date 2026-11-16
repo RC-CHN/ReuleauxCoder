@@ -52,6 +52,11 @@ for sdist in sdists:
         assert not any("node_modules/" in name for name in names), (
             f"node_modules leaked into {sdist}"
         )
+        assert not any(
+            name.startswith(("reuleauxcoder-vscode/.vscode-test/", "reuleauxcoder-vscode/test-results/"))
+            or name.endswith(".vsix")
+            for name in names
+        ), f"VS Code test runtimes or packaged extensions leaked into {sdist}"
         assert "reuleauxcoder-agent/reuleauxcoder-agent" not in names, (
             f"Peer binary leaked into {sdist}"
         )

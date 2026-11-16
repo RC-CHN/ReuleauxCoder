@@ -41,7 +41,14 @@ packages = ["reuleauxcoder"]
 artifacts = ["reuleauxcoder/_tui/**"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["**/node_modules/**", "/reuleauxcoder-agent/reuleauxcoder-agent", "/reuleauxcoder-agent/*.exe"]
+exclude = [
+    "**/node_modules/**",
+    "/reuleauxcoder-agent/reuleauxcoder-agent",
+    "/reuleauxcoder-agent/*.exe",
+    "/reuleauxcoder-vscode/.vscode-test/**",
+    "/reuleauxcoder-vscode/*.vsix",
+    "/reuleauxcoder-vscode/test-results/**",
+]
 
 [dependency-groups]
 dev = [
