@@ -82,8 +82,8 @@ export async function run(): Promise<void> {
       await vscode.commands.executeCommand('vscode.diff', input.original, input.modified, 'Second proposal view', {preview: false, preserveFocus: true, viewColumn: vscode.ViewColumn.Two});
       await until(() => reviewTabsFor(reviewId).length === 2, `two review tabs (${label})`);
       await vscode.commands.executeCommand('reuleaux.approve', input.modified);
-      await until(async () => (await readFile(uri.fsPath, 'utf8')) === `new = 1${newline}`, `approved content (${label})`);
       await until(() => !client.state.running, `approved turn completes (${label})`);
+      assert.equal(await readFile(uri.fsPath, 'utf8'), `new = 1${newline}`, `approved content (${label})`);
       assert.equal(client.interactions.length, 0);
       // Expired editor buttons must never approve a later request.
       await vscode.commands.executeCommand('reuleaux.approve', input.modified);
@@ -250,5 +250,8 @@ export async function run(): Promise<void> {
     assert.equal(vscode.window.activeTextEditor!.document.uri.fsPath, join(home, '.rcoder', 'config.yaml'));
     assert.equal(vscode.window.activeTextEditor!.document.getText(), globalText);
     console.log('PASS native config buffers, global inheritance, CRLF/comment preservation and restart preflight');
+  } catch (error) {
+    console.error('Native test state:', JSON.stringify({notice: session.notice, running: client.state.running, interactions: client.interactions.map(item => ({kind: item.kind, id: item.request.request_id})), recent: session.transcript.cells.slice(-6)}));
+    throw error;
   } finally {if (!client.peer.closed) await client.interrupt(); await session.configuration.close(); await session.shutdown();}
 }
