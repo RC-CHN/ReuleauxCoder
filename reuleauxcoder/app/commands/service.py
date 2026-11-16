@@ -121,6 +121,14 @@ class CommandService:
         with self._queue_lock:
             self._pending.clear()
 
+    def cancel_pending_input(self, submission_id: str) -> ChatInput | None:
+        with self._queue_lock:
+            for index, (request, _) in enumerate(self._pending):
+                if isinstance(request, ChatInput) and request.submission_id == submission_id:
+                    del self._pending[index]
+                    return request
+        return None
+
     def next_pending(self) -> ActionRequest | str | ChatInput | None:
         with self._queue_lock:
             if not self._pending:

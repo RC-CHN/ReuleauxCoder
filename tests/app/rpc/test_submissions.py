@@ -90,3 +90,38 @@ def test_queue_snapshot_correlates_equal_text_and_deferred_inputs(runtime):
     finally:
         runtime.server.commands.clear_pending()
         runtime.server._running = False
+
+
+def test_cancel_one_queued_message_preserves_others_and_prevents_resubmission(runtime):
+    runtime.server._running = True
+    runtime.agent._accepting_user_steering = True
+    runtime.agent._current_turn_id = "active"
+    try:
+        for identifier in ("first", "second"):
+            runtime.server.submit("same text", submission_id=identifier, session_generation=0)
+        cancelled = runtime.client.cancel_input("second")
+        assert cancelled["outcome"] == "cancelled"
+        assert runtime.client.cancel_input("second") == cancelled
+        retry = decode(runtime.server.submit("same text", submission_id="second", session_generation=0))
+        assert retry.status == "cancelled"
+        assert [item.submission_id for item in runtime.server.snapshot().queued_inputs] == ["first"]
+        assert not runtime.agent.stop_requested()
+        assert runtime.agent._drain_user_steering() == 1
+        assert runtime.client.cancel_input("first")["outcome"] == "not_pending"
+        assert [message["content"] for message in runtime.agent.messages] == ["same text"]
+    finally:
+        runtime.server._running = False
+
+
+def test_cancel_deferred_input_and_reject_old_session(runtime):
+    runtime.server._running = True
+    try:
+        # The worker is between turns, so admission uses the command service queue.
+        receipt = runtime.client.submit("next turn")
+        assert receipt.status == "queued"
+        with pytest.raises(RpcError, match="Session changed"):
+            runtime.server.cancel_input(receipt.submission_id, -1)
+        assert runtime.client.cancel_input(receipt.submission_id)["content"] == "next turn"
+        assert runtime.server.commands.next_pending() is None
+    finally:
+        runtime.server._running = False

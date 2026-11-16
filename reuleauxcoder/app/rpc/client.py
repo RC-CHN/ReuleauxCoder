@@ -138,6 +138,11 @@ class RuntimeClient:
     def admit_steering(self, text):
         return self.peer.request("runtime.admit_steering", {"text": text})
 
+    def cancel_input(self, input_id):
+        return self.peer.request("runtime.cancel_input", {
+            "input_id": input_id, "session_generation": self.state.session_generation,
+        })
+
     def stop(self):
         return self.peer.request("runtime.stop")
 

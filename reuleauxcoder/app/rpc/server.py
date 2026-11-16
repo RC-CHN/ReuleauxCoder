@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, replace
 import logging
 from pathlib import Path
 import threading
+import uuid
 from typing import get_type_hints
 
 from reuleauxcoder import __version__
@@ -65,6 +66,8 @@ class RuntimeServer:
         self._published_revision = 0
         self._workers: set[threading.Thread] = set()
         self._submissions = SubmissionAdmissions()
+        self._cancelled_inputs: dict[str, dict] = {}
+        self._cancelled_generation = self.agent.session_generation
         self.editor_documents = EditorDocuments()
         self.agent.document_mutation_guard = self.editor_documents.guard
         if self.agent.image_store is None:
@@ -106,6 +109,7 @@ class RuntimeServer:
                 "attachments.cancel": self.attachments.cancel,
                 "runtime.interrupt": self.interrupt,
                 "runtime.admit_steering": self.admit_steering,
+                "runtime.cancel_input": self.cancel_input,
                 "runtime.stop": self.stop,
                 "runtime.resize": self.resize,
                 "runtime.report_issue": self.agent.record_runtime_issue,
@@ -253,6 +257,7 @@ class RuntimeServer:
                     "conditional_snapshots": True,
                     "submission_ids": True,
                     "steering_promotion": True,
+                    "input_cancellation": True,
                     "review_documents": True,
                     "editor_documents": True,
                     "history_query": True,
@@ -362,6 +367,10 @@ class RuntimeServer:
         with entry.lock:
             if session_generation != self.agent.session_generation:
                 raise RpcError(-32002, "Session changed; submission was not accepted")
+            with self._lock:
+                if (self._cancelled_generation == session_generation
+                        and submission_id in self._cancelled_inputs):
+                    return encode(Submission("cancelled", self.snapshot(), submission_id))
             if entry.receipt is not None:
                 if entry.status != "rejected":
                     return encode(entry.receipt)
@@ -393,6 +402,9 @@ class RuntimeServer:
                 raise RpcError(-32002, "Session is closing")
             if admission is not None and admission.generation != self.agent.session_generation:
                 raise RpcError(-32002, "Session changed; submission was not accepted")
+            if submission_id is None and self._running and (isinstance(value, ChatInput)
+                                         or isinstance(value, str) and not value.startswith("/")):
+                submission_id = getattr(value, "submission_id", None) or uuid.uuid4().hex
             if submission_id is not None:
                 if isinstance(value, str) and not value.startswith("/"):
                     value = ChatInput(text=value, submission_id=submission_id)
@@ -624,6 +636,41 @@ class RuntimeServer:
         self.interactions.cancel_all(reason="turn stopped")
         self.agent.goal_controller.stop("paused")
         self._publish_state()
+
+    def cancel_input(self, input_id, session_generation):
+        if not isinstance(input_id, str) or not input_id:
+            raise RpcError(-32602, "Expected a queued input ID")
+        with self._lock:
+            if session_generation != self.agent.session_generation:
+                raise RpcError(-32002, "Session changed before the message was withdrawn")
+            if self._cancelled_generation != session_generation:
+                self._cancelled_inputs.clear()
+                self._cancelled_generation = session_generation
+            result = self._cancelled_inputs.get(input_id)
+            if result is None:
+                item = self.agent.cancel_user_steering(input_id)
+                if item is not None:
+                    content, submission_id, steering_id = item.content, item.submission_id, item.steering_id
+                else:
+                    queued = self.commands.cancel_pending_input(input_id)
+                    if queued is None:
+                        return {"outcome": "not_pending"}
+                    content, submission_id, steering_id = queued.content(""), queued.submission_id, None
+                    self.agent.history_ledger.append(
+                        "queued_input_cancelled", {"submission_id": submission_id},
+                        agent_id=self.agent.agent_id,
+                    )
+                result = {"outcome": "cancelled", "input_id": input_id,
+                          "submission_id": submission_id, "steering_id": steering_id,
+                          "content": content, "session_generation": session_generation}
+                for key in (input_id, submission_id, steering_id):
+                    if key:
+                        self._cancelled_inputs[key] = result
+        # Snapshot persistence must not hold the runtime admission lock.
+        self.agent.persist_runtime_snapshot()
+        self._notify("runtime.input_cancelled", **result)
+        self._publish_state()
+        return result
 
     def interrupt(self, *, steering_only=False, session_generation=None):
         if not isinstance(steering_only, bool):

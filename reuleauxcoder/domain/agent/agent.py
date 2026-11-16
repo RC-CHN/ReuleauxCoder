@@ -1171,6 +1171,24 @@ class Agent:
             self.persist_runtime_snapshot()
         return discarded
 
+    def cancel_user_steering(self, input_id: str) -> PendingUserSteering | None:
+        """Withdraw one queued input before the same lock admits it to history."""
+        with self._steering_lock:
+            for index, item in enumerate(self._pending_user_steering):
+                if input_id not in (item.submission_id, item.steering_id):
+                    continue
+                self.history_ledger.append(
+                    "steering_discarded",
+                    {"steering_id": item.steering_id, "submission_id": item.submission_id,
+                     "reason": "user_cancelled"},
+                    agent_id=self.agent_id, turn_id=item.turn_id,
+                )
+                self._pending_user_steering.pop(index)
+                if not self._pending_user_steering:
+                    self._round_interrupt_pending = False
+                return item
+        return None
+
     def _discard_pending_user_steering_locked(self, *, reason: str) -> int:
         pending = self._pending_user_steering
         self._pending_user_steering = []
