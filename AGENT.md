@@ -4,7 +4,7 @@ This file describes the current repository, not a future design. Detailed design
 
 ## Current snapshot
 
-- Package version: `0.11.9`.
+- Package version: `0.12.0`.
 - Python interface: `rcoder-cli` is the linear CLI with native terminal scrollback, Rich output and prompt_toolkit line editing over JSON-RPC.
 - Launcher: `rcoder` auto-selects the bundled TUI when Node >=22 and a terminal are available; `rcoder-tui` requires it explicitly. Batch/backend modes use CLI. Wheel and sdist releases contain the standalone JS bundle; runtime installation needs no npm.
 - Independent TUI: `reuleauxcoder-tui/` is a React + Ink frontend over stdio JSON-RPC, with task-grouped searchable slash menus, backend-owned command panels, fill-draft empty-state starters and a persistent composer. Wide layouts keep model/context details in the sidebar; idle screens omit the duplicate bottom status bar. Launch it with `node reuleauxcoder-tui/dist/cli.js` after building.
@@ -124,7 +124,7 @@ Managed shell processes are published before the initial wait, so interrupting a
 
 `/shell` selects an in-memory preference on the local process backend. The command-owned panel shows native executable names and paths; Windows also lists WSL distributions and probes only the chosen distribution. New pipe/PTY processes use the selection, model descriptions/runtime context reflect it, and scoped backends inherit an independent snapshot. Existing processes are unchanged. Remote peers retain their own native shell. See `docs/shell-selection.md`.
 
-The independent React TUI lives in `reuleauxcoder-tui/`. Its protocol client owns framing and reverse interactions; state reducers retain complete content and drafts; React renders cached visible rows. The frontend derives menu groups and primitive form fields from the backend catalog, and consumes command-owned panel trees. Slash input selects a top-level menu. F2 exposes session/plan/job/startup facts; F4 expands reasoning and full structured tool output. The launcher owns a stdio backend process, with `--backend` supporting an SSH subprocess. See its README for parity, controls and verification.
+The independent React TUI lives in `reuleauxcoder-tui/`. Its protocol client owns framing and reverse interactions; state reducers retain complete content and drafts; React renders cached visible rows. The frontend derives menu groups and primitive form fields from the backend catalog, and consumes command-owned panel trees. Slash search prioritizes exact commands and opens specific action forms directly. F2 exposes session/plan/job/startup facts; F3 focuses queued messages for withdrawal or editing; F4 expands reasoning and full structured tool output. The launcher owns a stdio backend process, with `--backend` supporting an SSH subprocess. See its README for parity, controls and verification.
 
 The default TUI workbench theme uses amber controls, sage activity and blue metadata. Wide terminals show a height-budgeted sidebar: attention, execution, plan and Git summaries precede session and activity details. Git facts come from the backend's `runtime.git` RPC every five seconds, using the existing bounded Git executor without consuming model-facing HEAD-change notices. F2 retains the full received snapshot; local upstream counts do not trigger network fetches. Approval actions wrap as whole items and paging information stays in the panel header.
 
@@ -316,7 +316,8 @@ The real LSP integration suite requires the configured language servers to be av
 
 ## Release rules
 
-- Keep implementation and CI fixes in separate, focused commits. The final release commit must be `chore(release): prepare vX.Y.Z`; the annotated `vX.Y.Z` tag must point to that commit. Put fixes before the release commit when arranging the history.
+- Each version must have exactly one release commit, named `chore(release): prepare vX.Y.Z`, at the end of its release preparation history; the annotated `vX.Y.Z` tag must point to it. Keep implementation and CI fixes in separate, focused commits before it.
+- If more fixes are needed before tagging, reorder those fixes before the release commit and amend or consolidate the release preparation into that single commit. Do not stack multiple release commits for the same version. Before pushing the tag, verify the history contains exactly one matching release commit and rerun CI on the final rewritten commit.
 - Update `pyproject.toml`, the root package version in `uv.lock`, the version snapshot in this file, `CHANGELOG.md`, and the wheel installation links in both READMEs together.
 - Keep `uv.lock` on the official PyPI registry and artifact URLs. A version bump must not commit machine-specific mirror rewrites or refresh unrelated dependencies.
 - Build the bundled TUI and wheel/sdist, run `scripts/check-distributions.py`, and run `scripts/smoke-install.py` outside the checkout before publishing. Keep release notes consistent with the changelog.

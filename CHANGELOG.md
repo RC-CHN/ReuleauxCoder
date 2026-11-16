@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 - 2026-11-16
 
 - Replace automatic snip/summary/collapse stages with one cache-friendly prefix checkpoint. Measure the complete prepared request, retain recent complete rounds by token budget, merge earlier checkpoints, validate effective reduction and bound context-overflow recovery.
 - Make `/compact` run the same checkpoint policy directly. Preserve original history on failed, truncated or ineffective summaries, record auxiliary usage separately, and propagate context settings to isolated workers. See `docs/context-compaction.md` for migration from the removed context settings.
+- Withdraw individual queued messages without stopping the active task. Correlate cancellation by input ID, preserve other queued messages, and prevent late receipts or same-ID retries from re-enqueueing withdrawn input.
+- Add TUI queue management with F3, arrow selection, Enter to withdraw and edit, Delete to cancel, and Esc/F3 to return to the composer. VS Code exposes matching actions; CLI and remote peers support `/queue` and `/queue cancel <ID>`. Preserve attachments and existing drafts when restoring messages.
+- Rank exact slash commands ahead of prefixes and description matches in TUI and VS Code. Keep `/mode` ahead of `/model`, collapse broad model searches to one panel entry, remove duplicate model-switch rows, and show session actions before workspace defaults.
+- Exclude downloaded VS Code test runtimes, test outputs and previously built VSIX archives from source distributions, and check release packages for those generated files.
+- **Configuration migration:** replace `auto_snip`, `auto_summarize` and `auto_collapse` with `auto_compact`; remove `snip_keep_recent_tools`, `snip_threshold_chars`, `snip_min_lines` and `summarize_keep_recent_turns`. Use `retain_ratio` for history retention and replace `/compact force <strategy>` with `/compact`. Existing sessions and checkpoints remain readable. See the [migration guide](https://github.com/RC-CHN/ReuleauxCoder/blob/v0.12.0/docs/context-compaction.md#configuration-and-migration).
 
 ## 0.11.9 - 2026-11-04
 
