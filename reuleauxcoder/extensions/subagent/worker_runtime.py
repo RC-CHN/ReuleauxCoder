@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from reuleauxcoder.domain.agent.events import AgentEvent, AgentEventType
+from reuleauxcoder.domain.config.models import Config, ContextConfig
 from reuleauxcoder.infrastructure.platform import get_platform_info
 from reuleauxcoder.domain.agent.tool_outcome import (
     ToolErrorKind,
@@ -388,18 +389,15 @@ def worker_process_main(
             shell_name=get_platform_info().get_preferred_shell().value,
             llm=llm,
             tools=tools,
+            config=Config(context=ContextConfig(**{
+                **spec.context_options, "auto_compact": spec.auto_compact,
+            })),
             max_context_tokens=spec.max_context_tokens,
             max_rounds=max(0, spec.max_rounds - spec.initial_model_calls),
             max_tool_calls=spec.max_tool_calls,
             max_total_tokens=spec.max_tokens,
             hook_registry=HookRegistry(),
             agent_id=spec.agent_id,
-        )
-        child.context.reconfigure(
-            spec.max_context_tokens,
-            auto_snip=spec.auto_snip,
-            auto_summarize=spec.auto_summarize,
-            auto_collapse=spec.auto_collapse,
         )
         child._stop_event = cancel
         child.current_session_id = spec.session_id

@@ -45,9 +45,7 @@ def test_effective_config_view_marks_session_overrides_and_sources() -> None:
     assert rows["lsp.typescript_mode"].value == "auto"
     assert rows["lsp.max_injection_chars"].value == "4000"
     assert rows["lsp.max_injection_chars"].source == "workspace"
-    assert rows["context.auto_snip"].value == "true"
-    assert rows["context.auto_summarize"].value == "true"
-    assert rows["context.auto_collapse"].value == "true"
+    assert rows["context.auto_compact"].value == "true"
     assert "models.active: legacy alias" in view.diagnostics[0]
 
 

@@ -46,6 +46,23 @@ class ProviderHTTPError(RuntimeError):
         super().__init__(f"{family} request failed with HTTP status {status_code}")
 
 
+def is_context_window_error(error: BaseException) -> bool:
+    """Classify explicit input-context failures, never rate/output-budget errors."""
+    from reuleauxcoder.domain.llm.errors import ContextWindowExceeded
+    if isinstance(error, ContextWindowExceeded):
+        return True
+    if getattr(error, "status_code", None) not in {400, 413, 422}:
+        return False
+    body = getattr(error, "body", None)
+    details = body.get("error", body) if isinstance(body, dict) else {}
+    if not isinstance(details, dict):
+        return False
+    if details.get("code") in {"context_length_exceeded", "context_window_exceeded", "CONTEXT_WINDOW_EXCEEDED"}:
+        return True
+    message = str(details.get("message", "")).lower()
+    return "prompt is too long" in message or "maximum context length" in message
+
+
 class ProviderTransportError(RuntimeError):
     """Content-free native-provider connection failure."""
 
@@ -367,6 +384,7 @@ class _ResponsesStream(Iterator["_Chunk"]):
                     arguments=str(getattr(event, "delta")),
                 )
             if event_type in {"response.completed", "response.incomplete"}:
+                self.finish_reason = "incomplete" if event_type == "response.incomplete" else "stop"
                 response = getattr(event, "response")
                 self.provider_data = {
                     "request_mode": "responses",
@@ -743,6 +761,7 @@ class _AnthropicStream(Iterator[_Chunk]):
             )
             return self._usage_chunk()
         if event_type == "message_delta":
+            self.finish_reason = (event.get("delta") or {}).get("stop_reason")
             usage = event.get("usage") or {}
             self._output_tokens = int(
                 usage.get("output_tokens") or self._output_tokens
@@ -895,8 +914,15 @@ class AnthropicMessagesProvider:
             raise ProviderTransportError(self.family, "transport") from None
         if response.status_code >= 400:
             status_code = response.status_code
+            error = ProviderHTTPError(self.family, status_code)
+            if status_code in {400, 413, 422}:
+                try:
+                    response.read()
+                    error.body = response.json()
+                except (ValueError, httpx.HTTPError):
+                    error.body = None
             context.__exit__(None, None, None)
-            raise ProviderHTTPError(self.family, status_code)
+            raise error
         return _AnthropicStream(response, context)
 
     def is_retryable(self, error: BaseException) -> bool:

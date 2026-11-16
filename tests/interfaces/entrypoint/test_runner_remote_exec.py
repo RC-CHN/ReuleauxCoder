@@ -432,19 +432,14 @@ class TestRunnerRemoteExec:
             name="main",
             model="model-main",
             api_key="key",
-            context=ContextStrategyOverrides(auto_snip=False),
+            context=ContextStrategyOverrides(auto_compact=False),
         )
         config = Config(
             api_key="key",
             model_profiles={"main": profile},
             active_main_model_profile="main",
             context=ContextConfig(
-                auto_snip=True,
-                auto_summarize=False,
-                snip_keep_recent_tools=9,
-                snip_threshold_chars=3210,
-                snip_min_lines=8,
-                summarize_keep_recent_turns=6,
+                auto_compact=True,
             ),
             remote_exec=RemoteExecConfig(enabled=False),
         )
@@ -460,7 +455,7 @@ class TestRunnerRemoteExec:
             or getattr(ctx.agent, "config", None) == config
         )
         assert ctx.agent.max_context_tokens == config.max_context_tokens
-        assert ctx.agent.context.automatic_strategies == ("collapse",)
+        assert ctx.agent.context.automatic_strategies == ()
         runner.cleanup(ctx.agent)
 
     def test_server_mode_smoke_bootstrap_endpoint(self, tmp_path: Path) -> None:

@@ -44,14 +44,14 @@ def test_subagent_worker_spec_uses_full_profile_runtime_settings() -> None:
         thinking_enabled=True,
         reasoning_replay_mode="tool_calls",
         reasoning_replay_placeholder="[PLACE_HOLDER]",
-        context=ContextStrategyOverrides(auto_snip=False),
+        context=ContextStrategyOverrides(auto_compact=False),
     )
     config = Config(
         model_profiles={"sub-profile": sub_profile},
         active_main_model_profile="sub-profile",
         active_model_profile="sub-profile",
         active_sub_model_profile="sub-profile",
-        context=ContextConfig(auto_snip=True, auto_summarize=False),
+        context=ContextConfig(auto_compact=True),
     )
     parent_agent = SimpleNamespace(
         runtime_config=config,
@@ -59,9 +59,7 @@ def test_subagent_worker_spec_uses_full_profile_runtime_settings() -> None:
         context=SimpleNamespace(
             max_tokens=64_000,
             automatic_strategy_settings={
-                "auto_snip": True,
-                "auto_summarize": True,
-                "auto_collapse": True,
+                "auto_compact": True,
             },
         ),
     )
@@ -85,9 +83,7 @@ def test_subagent_worker_spec_uses_full_profile_runtime_settings() -> None:
     assert settings["debug_trace"] is True
     assert max_context_tokens == 128_000
     assert context_settings == {
-        "auto_snip": False,
-        "auto_summarize": False,
-        "auto_collapse": True,
+        "auto_compact": False,
     }
 
 

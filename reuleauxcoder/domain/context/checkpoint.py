@@ -21,6 +21,11 @@ class CompactionCheckpoint:
     cached_input_tokens: int | None = None
     invalidated_suffix_tokens: int | None = None
     reclaimed_tokens: int | None = None
+    source_event_ids: tuple[str, ...] = ()
+    source_checkpoint_ids: tuple[str, ...] = ()
+    summary_prompt_tokens: int = 0
+    summary_completion_tokens: int = 0
+    summary_cached_input_tokens: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -46,6 +51,11 @@ class CompactionCheckpoint:
                 data.get("invalidated_suffix_tokens")
             ),
             reclaimed_tokens=_optional_int(data.get("reclaimed_tokens")),
+            source_event_ids=tuple(data.get("source_event_ids", ())),
+            source_checkpoint_ids=tuple(data.get("source_checkpoint_ids", ())),
+            summary_prompt_tokens=int(data.get("summary_prompt_tokens", 0)),
+            summary_completion_tokens=int(data.get("summary_completion_tokens", 0)),
+            summary_cached_input_tokens=_optional_int(data.get("summary_cached_input_tokens")),
         )
 
     @classmethod
@@ -64,6 +74,11 @@ class CompactionCheckpoint:
         cached_input_tokens: int | None = None,
         invalidated_suffix_tokens: int | None = None,
         reclaimed_tokens: int | None = None,
+        source_event_ids: tuple[str, ...] = (),
+        source_checkpoint_ids: tuple[str, ...] = (),
+        summary_prompt_tokens: int = 0,
+        summary_completion_tokens: int = 0,
+        summary_cached_input_tokens: int | None = None,
     ) -> "CompactionCheckpoint":
         return cls(
             id=f"cc_{uuid.uuid4().hex[:12]}",
@@ -83,6 +98,11 @@ class CompactionCheckpoint:
             cached_input_tokens=cached_input_tokens,
             invalidated_suffix_tokens=invalidated_suffix_tokens,
             reclaimed_tokens=reclaimed_tokens,
+            source_event_ids=source_event_ids,
+            source_checkpoint_ids=source_checkpoint_ids,
+            summary_prompt_tokens=summary_prompt_tokens,
+            summary_completion_tokens=summary_completion_tokens,
+            summary_cached_input_tokens=summary_cached_input_tokens,
         )
 
 

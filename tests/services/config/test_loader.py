@@ -118,24 +118,28 @@ def test_parse_config_reads_automatic_context_strategies() -> None:
     config = ConfigLoader()._parse_config(
         {
             "context": {
-                "auto_snip": False,
-                "auto_summarize": True,
-                "auto_collapse": False,
+                "auto_compact": False,
             }
         }
     )
 
-    assert config.context.auto_snip is False
-    assert config.context.auto_summarize is True
-    assert config.context.auto_collapse is False
+    assert config.context.auto_compact is False
+
+
+@pytest.mark.parametrize("scope", ["global", "profile"])
+def test_old_context_switches_report_migration_instead_of_silently_changing_policy(scope):
+    data = {"context": {"auto_snip": False}}
+    if scope == "profile":
+        data = {"models": {"profiles": {"main": data}}}
+    with pytest.raises(ValueError, match="Removed context settings.*auto_compact"):
+        ConfigLoader()._parse_config(data)
 
 
 def test_parse_config_reads_model_context_strategy_overrides() -> None:
     config = ConfigLoader()._parse_config(
         {
             "context": {
-                "auto_snip": True,
-                "auto_summarize": False,
+                "auto_compact": True,
             },
             "models": {
                 "active_main": "main",
@@ -143,7 +147,7 @@ def test_parse_config_reads_model_context_strategy_overrides() -> None:
                     "main": {
                         "model": "gpt-main",
                         "api_key": "key",
-                        "context": {"auto_snip": False},
+                        "context": {"auto_compact": False},
                     }
                 },
             },
@@ -151,8 +155,7 @@ def test_parse_config_reads_model_context_strategy_overrides() -> None:
     )
 
     profile = config.model_profiles["main"]
-    assert profile.context.auto_snip is False
-    assert profile.context.auto_summarize is None
+    assert profile.context.auto_compact is False
 
 
 def test_parse_config_selects_active_profiles_and_modes() -> None:

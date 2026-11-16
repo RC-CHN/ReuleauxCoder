@@ -28,9 +28,8 @@ def test_worker_spec_is_json_safe_and_round_trips_exact_replay_messages() -> Non
         max_rounds=20,
         max_tool_calls=80,
         max_tokens=40000,
-        auto_snip=False,
-        auto_summarize=True,
-        auto_collapse=False,
+        auto_compact=False,
+        context_options={"threshold_ratio": .75, "retain_ratio": .1, "summary_max_tokens": 2048},
         replay_messages=(
             {"role": "user", "content": "original"},
             {"role": "assistant", "content": "stable prefix"},
@@ -41,17 +40,12 @@ def test_worker_spec_is_json_safe_and_round_trips_exact_replay_messages() -> Non
 
     assert restored == spec
     assert restored.replay_messages == spec.replay_messages
-    assert restored.auto_snip is False
-    assert restored.auto_collapse is False
+    assert restored.auto_compact is False
 
     legacy = spec.to_dict()
-    legacy.pop("auto_snip")
-    legacy.pop("auto_summarize")
-    legacy.pop("auto_collapse")
+    legacy.pop("auto_compact")
     restored_legacy = WorkerSpec.from_dict(legacy)
-    assert restored_legacy.auto_snip is True
-    assert restored_legacy.auto_summarize is True
-    assert restored_legacy.auto_collapse is True
+    assert restored_legacy.auto_compact is True
 
 
 def test_worker_envelope_rejects_payload_tampering_and_old_versions() -> None:

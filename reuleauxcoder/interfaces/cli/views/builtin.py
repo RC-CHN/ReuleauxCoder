@@ -391,8 +391,7 @@ def render_token_usage_view(renderer, event) -> bool:
     table.add_row(
         "Compression",
         (
-            f"snip {model.snip_wall} (gain ≥ {model.snip_min_gain}) · "
-            f"summary {model.semantic_wall} · target {model.rewrite_target}"
+            f"compact {model.compaction_threshold} · retain {model.retained_tokens}"
         ),
     )
     table.add_row("Cache epoch", str(model.cache_epoch))

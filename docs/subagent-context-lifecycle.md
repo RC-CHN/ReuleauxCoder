@@ -61,11 +61,14 @@ retained for inspection/integration and explicitly removed with
 
 ## Context compaction
 
-Compression uses the effective input budget after output, prompt, schema and
-safety reservations. Every transform operates on complete API rounds, repairs
-tool-call/output adjacency, and creates a versioned replacement checkpoint.
+Main and isolated child agents use the same prefix-checkpoint policy, with the
+selected model's window and automatic-compaction override. Workers inherit the
+global threshold, retained-tail ratio, summary budget and bounded retry settings.
+Pressure includes the complete prepared request; prefixes and retained tails
+follow API-round boundaries to preserve tool-call/result adjacency.
 
-The order is provider cache compaction (when an adapter exists), old tool-result
-snipping, partial summary, checkpoint summary, then emergency collapse. Provider
-cache APIs are behind `ProviderContextCompactor`; no provider-specific request
-shape leaks into core policy.
+The summary reuses the original system, tools, session and history prefix and
+merges any prior checkpoint. Only validated reductions commit a replacement and
+cache epoch. Full history remains separately persisted. See
+[Context compaction](context-compaction.md) for budgets, failure behavior and
+configuration migration.

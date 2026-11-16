@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 import hashlib
 import math
 import os
@@ -12,7 +13,7 @@ import socket
 import tempfile
 import threading
 import time
-from typing import TYPE_CHECKING, Optional, Any
+from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import urlopen
 import uuid
@@ -22,19 +23,18 @@ from reuleauxcoder.domain.images import content_text, image_parts
 from reuleauxcoder.domain.context.checkpoint import CompactionCheckpoint
 from reuleauxcoder.domain.context.rounds import (
     group_api_rounds,
-    normalize_history,
-    recent_round_start,
 )
-from reuleauxcoder.domain.context.summary import CheckpointKind, generate_summary
-from reuleauxcoder.domain.context.provider import ProviderContextCompactor
+from reuleauxcoder.domain.context.summary import (
+    CompactionError, CompactionRequest, generate_summary, summary_instruction,
+)
+from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
+from reuleauxcoder.domain.context.replay import align_item_provenance
 from reuleauxcoder.domain.context.usage import UsageObservation
 from reuleauxcoder.domain.llm.context_messages import (
-    is_synthetic_context_message,
     synthetic_user_message,
 )
 
 if TYPE_CHECKING:
-    from reuleauxcoder.services.llm.client import LLM
     from reuleauxcoder.app.ui_events import UIEventBus
 
 # Tiktoken's public encoding constructor downloads this vocabulary on its first
@@ -406,924 +406,317 @@ def estimate_tokens(messages: list[dict], token_fudge_factor: float = 1.1) -> in
     return ensure_message_token_counts(messages, token_fudge_factor=token_fudge_factor)
 
 
-SUMMARY_SYSTEM_PROMPT = """\
-Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
-This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
-
-Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
-
-1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:
-   - The user's explicit requests and intents
-   - Your approach to addressing the user's requests
-   - Key decisions, technical concepts and code patterns
-   - Specific details like file names, full code snippets, function signatures, file edits, etc.
-2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.
-
-Your summary should include the following sections:
-
-1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail
-2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
-3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
-4. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
-5. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
-6. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
-7. Optional Next Step: List the next step that you will take that is related to the most recent work you were working on. IMPORTANT: ensure that this step is DIRECTLY in line with the user's explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests without confirming with the user first.
-8. If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure that there's no drift in task interpretation.
-
-Here's an example of how your output should be structured:
-
-<example>
-<analysis>
-[Your thought process, ensuring all points are covered thoroughly and accurately]
-</analysis>
-
-<summary>
-1. Primary Request and Intent:
-   [Detailed description]
-
-2. Key Technical Concepts:
-   - [Concept 1]
-   - [Concept 2]
-   - [...]
-
-3. Files and Code Sections:
-   - [File Name 1]
-      - [Summary of why this file is important]
-      - [Summary of the changes made to this file, if any]
-      - [Important Code Snippet]
-   - [File Name 2]
-      - [Important Code Snippet]
-   - [...]
-
-4. Problem Solving:
-   [Description of solved problems and ongoing troubleshooting]
-
-5. Pending Tasks:
-   - [Task 1]
-   - [Task 2]
-   - [...]
-
-6. Current Work:
-   [Precise description of current work]
-
-7. Optional Next Step:
-   [Optional Next step to take]
-
-</summary>
-</example>
-
-Please provide your summary based on the conversation so far, following this structure and ensuring precision and thoroughness in your response.
-"""
-
-
 class ContextManager:
-    """Manages conversation context with multi-layer compression."""
+    """Plan one bounded prefix checkpoint from complete request pressure."""
 
     def __init__(
-        self,
-        max_tokens: int = 128_000,
-        ui_bus: "UIEventBus | None" = None,
-        auto_snip: bool = True,
-        auto_summarize: bool = True,
-        auto_collapse: bool = True,
-        snip_keep_recent_tools: int = 2,
-        snip_threshold_chars: int = 1500,
-        snip_min_lines: int = 6,
-        summarize_keep_recent_turns: int = 5,
-        token_fudge_factor: float = 1.1,
-        reserved_output_tokens: int = 8_192,
-        fixed_prompt_tokens: int = 0,
-        tool_schema_tokens: int = 0,
+        self, max_tokens: int = 128_000, ui_bus: "UIEventBus | None" = None,
+        auto_compact: bool = True, threshold_ratio: float = 0.8,
+        retain_ratio: float = 0.16, summary_max_tokens: int = 8_192,
+        compaction_retries: int = 1, max_overflow_retries: int = 1,
+        token_fudge_factor: float = 1.1, reserved_output_tokens: int = 8_192,
+        fixed_prompt_tokens: int = 0, tool_schema_tokens: int = 0,
         safety_margin_tokens: int = 2_048,
-        provider_compactor: ProviderContextCompactor | None = None,
     ):
         self.max_tokens = max_tokens
         self._ui_bus = ui_bus
-        self._auto_snip = auto_snip
-        self._auto_summarize = auto_summarize
-        self._auto_collapse = auto_collapse
-        # Snip configuration
-        self._snip_keep_recent_tools = snip_keep_recent_tools
-        self._snip_threshold_chars = snip_threshold_chars
-        self._snip_min_lines = snip_min_lines
-        # Summarize configuration
-        self._summarize_keep_recent_turns = summarize_keep_recent_turns
-        # Token fudge factor for safety margin
+        self._auto_compact = auto_compact
+        self.threshold_ratio = threshold_ratio
+        self.retain_ratio = retain_ratio
+        self.summary_max_tokens = summary_max_tokens
+        self.compaction_retries = compaction_retries
+        self.max_overflow_retries = max_overflow_retries
         self._token_fudge_factor = token_fudge_factor
         self._budget = ContextBudget(
-            model_window=max_tokens,
-            reserved_output=reserved_output_tokens,
-            fixed_prompt_tokens=fixed_prompt_tokens,
-            tool_schema_tokens=tool_schema_tokens,
+            model_window=max_tokens, reserved_output=reserved_output_tokens,
+            fixed_prompt_tokens=fixed_prompt_tokens, tool_schema_tokens=tool_schema_tokens,
             safety_margin=safety_margin_tokens,
         )
-        self._recompute_thresholds()
         self._history_version = 0
-        self._checkpoints: list[CompactionCheckpoint] = []
-        self._consecutive_summary_failures = 0
-        self._provider_compactor = provider_compactor
-        # Rewrite/cache state
         self._cache_epoch = 0
+        self._checkpoints: list[CompactionCheckpoint] = []
         self._usage_observations: list[UsageObservation] = []
         self._latest_usage: UsageObservation | None = None
         self._estimate_scale_by_profile: dict[str, float] = {}
+        self._active_profile = "default"
+        self._request_overhead = fixed_prompt_tokens + tool_schema_tokens
+        self.last_error: str | None = None
         self.image_projection: Callable[[list[dict]], list[dict]] | None = None
 
     def get_context_tokens(self, messages: list[dict]) -> int:
-        """Get current locally-estimated context token count."""
         if self.image_projection is not None and image_parts(messages):
-            projected = self.image_projection(messages)
-            for original, message in zip(messages, projected):
-                if image_parts([original]):
+            messages = self.image_projection(messages)
+            for message in messages:
+                if image_parts([message]):
                     message.pop(MESSAGE_TOKEN_KEY, None)
-            messages = projected
         return estimate_tokens(messages, token_fudge_factor=self._token_fudge_factor)
 
-    def reconfigure(
-        self,
-        max_tokens: int,
-        *,
-        auto_snip: bool | None = None,
-        auto_summarize: bool | None = None,
-        auto_collapse: bool | None = None,
-    ) -> None:
-        """Update context budget and recompute layer thresholds."""
+    def reconfigure(self, max_tokens: int, *, auto_compact: bool | None = None) -> None:
+        from dataclasses import replace
         self.max_tokens = max_tokens
-        if auto_snip is not None:
-            self._auto_snip = auto_snip
-        if auto_summarize is not None:
-            self._auto_summarize = auto_summarize
-        if auto_collapse is not None:
-            self._auto_collapse = auto_collapse
-        self._budget = ContextBudget(
-            model_window=max_tokens,
-            reserved_output=self._budget.reserved_output,
-            fixed_prompt_tokens=self._budget.fixed_prompt_tokens,
-            tool_schema_tokens=self._budget.tool_schema_tokens,
-            safety_margin=self._budget.safety_margin,
-        )
-        self._recompute_thresholds()
+        if auto_compact is not None:
+            self._auto_compact = auto_compact
+        self._budget = replace(self._budget, model_window=max_tokens)
+        self._latest_usage = None
 
     def restore_replay_state(self, *, history_version: int, cache_epoch: int) -> None:
-        """Restore committed version watermarks without regenerating history."""
         self._history_version = max(0, int(history_version))
         self._cache_epoch = max(0, int(cache_epoch))
         self._latest_usage = None
 
     def invalidate_replay_prefix(self) -> None:
-        """Start a new committed epoch after reset or stable-prefix replacement."""
         self._history_version += 1
         self._cache_epoch += 1
         self._latest_usage = None
 
-    def _recompute_thresholds(self) -> None:
-        limit = self._budget.request_input_limit
-        self._snip_wall = max(1, int(limit * 0.60))
-        self._semantic_wall = max(1, int(limit * 0.75))
-        self._snip_min_gain = max(1, int(limit * 0.20))
-        self._rewrite_target = max(1, int(limit * 0.40))
-        self._emergency_at = max(1, int(limit * 0.90))
+    def input_limit(self, output_tokens: int = 0) -> int:
+        return max(0, self.max_tokens - max(output_tokens, self._budget.reserved_output)
+                   - self._budget.safety_margin)
+
+    def pressure_threshold(self, output_tokens: int = 0) -> int:
+        return min(int(self.max_tokens * self.threshold_ratio), self.input_limit(output_tokens))
 
     @property
     def request_input_limit(self) -> int:
-        return self._budget.request_input_limit
+        return self.input_limit()
 
     @property
     def rewrite_thresholds(self) -> dict[str, int]:
-        return {
-            "snip_wall": self._snip_wall,
-            "semantic_wall": self._semantic_wall,
-            "snip_min_gain": self._snip_min_gain,
-            "rewrite_target": self._rewrite_target,
-            "emergency_at": self._emergency_at,
-        }
+        return {"threshold": self.pressure_threshold(),
+                "retain": int(max(0, self.max_tokens - self._budget.reserved_output) * self.retain_ratio)}
 
     @property
     def automatic_strategies(self) -> tuple[str, ...]:
-        return tuple(
-            name
-            for name, enabled in (
-                ("snip", self._auto_snip),
-                ("summarize", self._auto_summarize),
-                ("collapse", self._auto_collapse),
-            )
-            if enabled
-        )
+        return ("compact",) if self._auto_compact else ()
 
     @property
     def automatic_strategy_settings(self) -> dict[str, bool]:
-        return {
-            "auto_snip": self._auto_snip,
-            "auto_summarize": self._auto_summarize,
-            "auto_collapse": self._auto_collapse,
-        }
+        return {"auto_compact": self._auto_compact}
 
     @property
     def history_version(self) -> int:
         return self._history_version
 
     @property
+    def cache_epoch(self) -> int:
+        return self._cache_epoch
+
+    @property
     def checkpoints(self) -> tuple[CompactionCheckpoint, ...]:
         return tuple(self._checkpoints)
 
-    def restore_checkpoints(
-        self, checkpoints: tuple[CompactionCheckpoint, ...] | list[CompactionCheckpoint]
-    ) -> None:
-        """Restore immutable checkpoint metadata without regenerating summaries."""
+    def restore_checkpoints(self, checkpoints) -> None:
         self._checkpoints = list(checkpoints)
 
     def clear_usage_observations(self) -> None:
-        """Clear request-local calibration before restoring another session."""
         self._usage_observations.clear()
         self._latest_usage = None
         self._estimate_scale_by_profile.clear()
+        self._active_profile = "default"
+        self._request_overhead = self._budget.fixed_prompt_tokens + self._budget.tool_schema_tokens
 
     @property
     def latest_usage(self) -> UsageObservation | None:
         return self._latest_usage
 
-    @property
-    def cache_epoch(self) -> int:
-        return self._cache_epoch
+    def estimate_request_tokens(self, messages: list[dict], tools: list[dict] | None = None) -> int:
+        import json
+        tool_tokens = _estimate_text_tokens_chars(json.dumps(tools, ensure_ascii=False)) if tools else 0
+        return max(1, self.get_context_tokens(messages) + math.ceil(tool_tokens) + len(messages) * 4)
 
-    def estimate_request_tokens(
-        self, messages: list[dict], tools: list[dict] | None = None
-    ) -> int:
-        """Estimate a complete request only when provider usage is unavailable."""
-        message_tokens = self.get_context_tokens(messages)
-        tool_tokens = len(str(tools or [])) // 3
-        return max(1, message_tokens + tool_tokens)
-
-    def observe_usage(
-        self,
-        *,
-        actual_prompt_tokens: int,
-        cached_input_tokens: int | None,
-        local_request_estimate: int,
-        local_history_estimate: int,
-        request_boundary: str,
-        model_profile: str,
-    ) -> UsageObservation | None:
-        """Record upstream truth and calibrate estimates per model/profile."""
+    def observe_usage(self, *, actual_prompt_tokens: int, cached_input_tokens: int | None,
+                      local_request_estimate: int, local_history_estimate: int,
+                      request_boundary: str, model_profile: str) -> UsageObservation | None:
         if actual_prompt_tokens <= 0:
             return None
         observation = UsageObservation.create(
-            actual_prompt_tokens=actual_prompt_tokens,
-            cached_input_tokens=cached_input_tokens,
-            local_request_estimate=local_request_estimate,
-            local_history_estimate=local_history_estimate,
-            history_version=self._history_version,
-            request_boundary=request_boundary,
+            actual_prompt_tokens=actual_prompt_tokens, cached_input_tokens=cached_input_tokens,
+            local_request_estimate=local_request_estimate, local_history_estimate=local_history_estimate,
+            history_version=self._history_version, request_boundary=request_boundary,
             model_profile=model_profile,
         )
-        raw_ratio = observation.actual_prompt_tokens / max(
-            1, observation.local_request_estimate
-        )
-        ratio = min(3.0, max(0.5, raw_ratio))
+        ratio = min(3.0, max(0.5, observation.actual_prompt_tokens / max(1, local_request_estimate)))
         previous = self._estimate_scale_by_profile.get(model_profile)
-        self._estimate_scale_by_profile[model_profile] = (
-            ratio if previous is None else (previous * 0.75 + ratio * 0.25)
-        )
+        self._estimate_scale_by_profile[model_profile] = ratio if previous is None else previous * .75 + ratio * .25
+        self._active_profile = model_profile
+        self._request_overhead = max(0, local_request_estimate - local_history_estimate)
         self._latest_usage = observation
         self._usage_observations.append(observation)
-        if len(self._usage_observations) > 100:
-            del self._usage_observations[:-100]
+        del self._usage_observations[:-100]
         return observation
 
-    def predict_request_tokens(self, messages: list[dict]) -> int:
-        """Predict current request size from actual usage plus calibrated growth."""
-        local_history = self.get_context_tokens(messages)
+    def predict_request_tokens(self, messages: list[dict], tools: list[dict] | None = None,
+                               *, complete: bool = False, local_estimate: int | None = None) -> int:
+        local = local_estimate if local_estimate is not None else (
+            self.estimate_request_tokens(messages, tools) if complete else self.get_context_tokens(messages)
+        )
         observation = self._latest_usage
-        if (
-            observation is not None
-            and observation.history_version == self._history_version
-        ):
-            scale = self._estimate_scale_by_profile.get(observation.model_profile, 1.0)
-            delta = local_history - observation.local_history_estimate
-            return max(1, int(observation.actual_prompt_tokens + delta * scale))
-        profile = observation.model_profile if observation is not None else "default"
-        scale = self._estimate_scale_by_profile.get(profile, 1.0)
-        fallback = (
-            local_history
-            + self._budget.fixed_prompt_tokens
-            + self._budget.tool_schema_tokens
-        )
-        return max(1, int(fallback * scale))
+        scale = self._estimate_scale_by_profile.get(self._active_profile, 1.0)
+        if observation is not None and observation.history_version == self._history_version:
+            baseline = observation.local_request_estimate if complete else observation.local_history_estimate
+            return max(1, int(observation.actual_prompt_tokens + (local - baseline) * scale))
+        return max(1, int((local + (0 if complete else self._request_overhead)) * scale))
 
-    def maybe_compress(
-        self,
-        messages: list[dict],
-        llm: Optional["LLM"] = None,
-        *,
-        history_events: tuple | list = (),
-        cancellation_event=None,
-    ) -> bool:
-        """Commit one rewrite epoch using the enabled automatic strategies."""
-        before_tokens = self.predict_request_tokens(messages)
-        snip_due = self._auto_snip and before_tokens >= self._snip_wall
-        semantic_due = (
-            self._auto_summarize and before_tokens >= self._semantic_wall
-        )
-        emergency_due = self._auto_collapse and before_tokens >= self._emergency_at
-        if not (snip_due or semantic_due or emergency_due):
-            return False
-
-        applied_layers: list[str] = []
-        candidate = [dict(message) for message in messages]
-        if snip_due:
-            if self._provider_compactor is not None:
-                provider_result = self._provider_compactor.compact_tool_results(
-                    candidate, keep_recent_rounds=self._snip_keep_recent_tools
-                )
-                if provider_result is not None:
-                    candidate = provider_result.messages
-                    applied_layers.append("provider_tool_cache_compaction")
-            if self._snip_tool_outputs(candidate):
-                applied_layers.append("snip_tool_outputs")
-
-        candidate_prediction = self.predict_request_tokens(candidate)
-        snip_gain = max(0, before_tokens - candidate_prediction)
-        if (
-            not semantic_due
-            and not emergency_due
-            and snip_gain < self._snip_min_gain
-        ):
-            return False
-
-        trigger = (
-            "emergency"
-            if emergency_due
-            else "semantic_wall"
-            if semantic_due
-            else "profitable_snip"
-        )
-        before_message_count = len(messages)
-        before_snapshot = self._snapshot_messages(messages)
-        self._emit_compression_started(
-            before_tokens=before_tokens,
-            before_message_count=before_message_count,
-            before_snapshot=before_snapshot,
-            trigger=trigger,
-            snip_gain=snip_gain if snip_due else None,
-        )
-
-        summarized = False
-        if semantic_due:
-            summarized = self._summarize_old(
-                candidate,
-                llm,
-                keep_recent_user_turns=self._summarize_keep_recent_turns,
-                checkpoint_kind="partial_prefix",
-                history_events=history_events,
-                cancellation_event=cancellation_event,
-            )
-            if summarized:
-                applied_layers.append("partial_prefix")
-
-        after_tokens = self.predict_request_tokens(candidate)
-        collapse_due = (
-            emergency_due
-            and after_tokens > self._emergency_at
-            and len(candidate) > 4
-        )
-        if not summarized and snip_gain < self._snip_min_gain and not collapse_due:
-            self._emit_compression_skipped(trigger=trigger)
-            return False
-
-        if collapse_due:
-            self._hard_collapse(
-                candidate,
-                llm,
-                history_events=history_events,
-                cancellation_event=cancellation_event,
-            )
-            applied_layers.append("full_recovery")
-            after_tokens = self.predict_request_tokens(candidate)
-
-        messages[:] = candidate
-        source_version = self._history_version
-        self._history_version += 1
-        self._cache_epoch += 1
-        observation = self._latest_usage
-        self._checkpoints.append(
-            CompactionCheckpoint.create(
-                trigger=trigger,
-                strategy=applied_layers,
-                source_history_version=source_version,
-                replacement_history=messages,
-                tokens_before=before_tokens,
-                tokens_after=after_tokens,
-                preserved_rounds=min(
-                    self._summarize_keep_recent_turns,
-                    len(group_api_rounds(messages)),
-                ),
-                cache_epoch=self._cache_epoch,
-                actual_prompt_tokens=(
-                    observation.actual_prompt_tokens if observation else None
-                ),
-                cached_input_tokens=(
-                    observation.cached_input_tokens if observation else None
-                ),
-                invalidated_suffix_tokens=(
-                    max(0, before_tokens - (observation.cached_input_tokens or 0))
-                    if observation and observation.cached_input_tokens is not None
-                    else None
-                ),
-                reclaimed_tokens=max(0, before_tokens - after_tokens),
-            )
-        )
-        self._latest_usage = None
-        self._emit_compression_completed(
-            before_tokens=before_tokens,
-            after_tokens=after_tokens,
-            before_message_count=before_message_count,
-            before_snapshot=before_snapshot,
-            after_messages=messages,
-            applied_layers=applied_layers,
-            trigger=trigger,
-        )
-        return True
-
-    def force_compress(
-        self,
-        messages: list[dict],
-        strategy: str,
-        llm: Optional["LLM"] = None,
-        *,
-        history_events: tuple | list = (),
-        cancellation_event=None,
-    ) -> bool:
-        """Force one specific compression strategy regardless of thresholds."""
-        before_tokens = self.predict_request_tokens(messages)
-        before_count = len(messages)
-        before_snapshot = self._snapshot_messages(messages)
-        self._emit_compression_started(
-            before_tokens=before_tokens,
-            before_message_count=before_count,
-            before_snapshot=before_snapshot,
-            trigger="manual",
-        )
-        changed = False
-        if strategy == "snip":
-            changed = self._snip_tool_outputs(messages)
-        elif strategy == "summarize":
-            changed = self._summarize_old(
-                messages,
-                llm,
-                keep_recent_user_turns=self._summarize_keep_recent_turns,
-                checkpoint_kind="partial_prefix",
-                history_events=history_events,
-                cancellation_event=cancellation_event,
-            )
-        elif strategy == "collapse":
-            if len(messages) <= 4:
-                self._emit_compression_skipped(trigger="manual")
-                return False
-            self._hard_collapse(
-                messages,
-                llm,
-                history_events=history_events,
-                cancellation_event=cancellation_event,
-            )
-            changed = True
-        if not changed:
-            self._emit_compression_skipped(trigger="manual")
-            return False
-
-        after_tokens = self.predict_request_tokens(messages)
-        source_version = self._history_version
-        self._history_version += 1
-        self._cache_epoch += 1
-        observation = self._latest_usage
-        self._checkpoints.append(
-            CompactionCheckpoint.create(
-                trigger="manual",
-                strategy=[strategy],
-                source_history_version=source_version,
-                replacement_history=messages,
-                tokens_before=before_tokens,
-                tokens_after=after_tokens,
-                preserved_rounds=min(
-                    self._summarize_keep_recent_turns,
-                    len(group_api_rounds(messages)),
-                ),
-                cache_epoch=self._cache_epoch,
-                actual_prompt_tokens=(
-                    observation.actual_prompt_tokens if observation else None
-                ),
-                cached_input_tokens=(
-                    observation.cached_input_tokens if observation else None
-                ),
-                reclaimed_tokens=max(0, before_tokens - after_tokens),
-            )
-        )
-        self._latest_usage = None
-        self._emit_compression_completed(
-            before_tokens=before_tokens,
-            after_tokens=after_tokens,
-            before_message_count=before_count,
-            before_snapshot=before_snapshot,
-            after_messages=messages,
-            applied_layers=[strategy],
-            trigger="manual",
-        )
-        return True
-
-    def _snip_tool_outputs(self, messages: list[dict]) -> bool:
-        """Layer 1: Truncate old tool results over threshold.
-
-        Protection is round-based rather than message-count-based: we
-        walk backwards to find the N-th most recent assistant message
-        that carries ``tool_calls``, then protect *all* tool messages
-        from that round onwards.  A round may contain many tool calls
-        and we want to keep the complete working set intact.
-        """
-        changed = False
-
-        # Find the split point: count backwards by assistant messages
-        # that carry tool_calls.  Each one marks the start of a round.
-        assistant_rounds = 0
-        cut_index = 0
-        for i in range(len(messages) - 1, -1, -1):
-            m = messages[i]
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                assistant_rounds += 1
-                if assistant_rounds >= self._snip_keep_recent_tools:
-                    cut_index = i
-                    break
-
-        tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-        protected = {i for i in tool_indices if i >= cut_index}
-
-        for i, m in enumerate(messages):
-            if i in protected or m.get("role") != "tool":
-                continue
-            content = m.get("content", "")
-            # Image-bearing results remain typed until a whole round is summarized.
-            if not isinstance(content, str):
-                continue
-            if len(content) <= self._snip_threshold_chars:
-                continue
-            lines = content.splitlines()
-            if len(lines) <= self._snip_min_lines:
-                continue
-            # Keep first 3 + last 3 lines
-            snipped = (
-                "\n".join(lines[:3])
-                + (
-                    f"\n... ({len(lines)} lines, context-snipped; "
-                    f"tool_call_id={m.get('tool_call_id') or 'unknown'}; "
-                    "full committed output remains searchable in HistoryLedger) ...\n"
-                )
-                + "\n".join(lines[-3:])
-            )
-            m["content"] = snipped
-            m.pop("_rc_token_count", None)  # invalidate stale cache
-            changed = True
-        return changed
-
-    def _summarize_old(
-        self,
-        messages: list[dict],
-        llm: Optional["LLM"],
-        keep_recent_user_turns: int = 20,
-        checkpoint_kind: CheckpointKind = "partial_prefix",
-        history_events: tuple | list = (),
-        cancellation_event=None,
-    ) -> bool:
-        """Layer 2: Summarize old conversation while keeping recent user turns intact."""
-        split_index = self._find_recent_user_turn_boundary(
-            messages, keep_recent_user_turns
-        )
-        split_index = self._safe_round_boundary_at_or_before(messages, split_index)
-        if split_index <= 0 or split_index >= len(messages):
-            return False
-
-        old = messages[:split_index]
-        tail = messages[split_index:]
-
-        summary = self._get_summary(
-            old,
-            llm,
-            checkpoint_kind=checkpoint_kind,
-            recent_rounds_preserved=len(group_api_rounds(tail)),
-            history_events=history_events,
-            cancellation_event=cancellation_event,
-        )
-
-        replacement = [
-            synthetic_user_message(
-                "context_summary",
-                summary,
-                source="context_compactor",
-                attributes={"kind": checkpoint_kind},
-            ),
-            *tail,
-        ]
-        messages[:] = normalize_history(replacement, reason="context compaction")
-        return True
-
-    @staticmethod
-    def _find_recent_user_turn_boundary(
-        messages: list[dict], keep_recent_user_turns: int
-    ) -> int:
-        """Return the split index that keeps the most recent N user turns and everything after them."""
-        if keep_recent_user_turns <= 0:
-            return len(messages)
-
-        user_turn_starts = [
-            i
-            for i, msg in enumerate(messages)
-            if msg.get("role") == "user" and not is_synthetic_context_message(msg)
-        ]
-        if len(user_turn_starts) <= keep_recent_user_turns:
+    def _select_prefix(self, messages: list[dict], request: CompactionRequest, retain: int) -> int:
+        rounds = group_api_rounds(messages)
+        if len(rounds) < 2:
             return 0
-        return user_turn_starts[-keep_recent_user_turns]
-
-    @staticmethod
-    def _safe_round_boundary_at_or_before(
-        messages: list[dict], split_index: int
-    ) -> int:
-        """Move a user-turn split backward so tool calls and results stay adjacent."""
+        accumulated = 0
+        split = len(messages)
+        for round_ in reversed(rounds):
+            split -= len(round_.messages)
+            projected = [request.messages[p] for p in request.history_positions[split:split + len(round_.messages)]]
+            accumulated += self.get_context_tokens(projected)
+            if accumulated >= retain:
+                break
+        # A summary must itself fit. Shorten the selected prefix only at complete
+        # round boundaries; oversized recent batches remain available to the caller.
+        boundaries = []
         offset = 0
-        for round_ in group_api_rounds(messages):
-            next_offset = offset + len(round_.messages)
-            if split_index < next_offset:
-                return offset
-            offset = next_offset
-        return min(split_index, len(messages))
+        for round_ in rounds:
+            offset += len(round_.messages)
+            if offset <= split:
+                boundaries.append(offset)
+        for boundary in reversed(boundaries):
+            summary_input = [*request.prefix(boundary), summary_instruction()]
+            if self.predict_request_tokens(summary_input, request.tools, complete=True) <= self.input_limit(self.summary_max_tokens):
+                return boundary
+        return 0
 
-    def _hard_collapse(
-        self,
-        messages: list[dict],
-        llm: Optional["LLM"],
-        *,
-        history_events: tuple | list = (),
-        cancellation_event=None,
-    ) -> None:
-        """Layer 3: Emergency compression."""
-        split_index = recent_round_start(messages, 2)
-        tail = messages[split_index:]
-        summary = self._get_summary(
-            messages[:split_index],
-            llm,
-            checkpoint_kind="full_recovery",
-            recent_rounds_preserved=len(group_api_rounds(tail)),
-            history_events=history_events,
-            cancellation_event=cancellation_event,
-        )
+    def maybe_compress(self, messages: list[dict], llm=None, *, request: CompactionRequest,
+                       history_events=(), cancellation_event=None, trigger="pressure",
+                       on_summary=None, remaining_tokens=None, before_commit=None) -> bool:
+        if not self._auto_compact:
+            return False
+        return self._compact(messages, llm, request=request, history_events=history_events,
+                             cancellation_event=cancellation_event, trigger=trigger,
+                             on_summary=on_summary, remaining_tokens=remaining_tokens,
+                             before_commit=before_commit)
 
-        messages.clear()
-        messages.extend(
-            normalize_history(
-                [
-                    synthetic_user_message(
-                        "context_summary",
-                        summary,
-                        source="context_compactor",
-                        attributes={"kind": "full_recovery"},
-                    ),
-                    *tail,
-                ],
-                reason="hard context compaction",
-            )
-        )
+    def force_compress(self, messages: list[dict], strategy: str, llm=None, **kwargs) -> bool:
+        if strategy != "summarize":
+            raise ValueError("Use /compact; snip and collapse have been replaced by prefix compaction.")
+        return self._compact(messages, llm, trigger="manual", **kwargs)
 
-    def _get_summary(
-        self,
-        messages: list[dict],
-        llm: Optional["LLM"],
-        *,
-        checkpoint_kind: CheckpointKind,
-        recent_rounds_preserved: int,
-        history_events: tuple | list = (),
-        cancellation_event=None,
-    ) -> str:
-        """Generate summary via LLM or fallback to extraction."""
+    def _compact(self, messages: list[dict], llm, *, request: CompactionRequest,
+                 history_events=(), cancellation_event=None, trigger="pressure",
+                 on_summary=None, remaining_tokens=None, before_commit=None) -> bool:
+        self.last_error = None
+        before = self.predict_request_tokens(request.messages, request.tools, complete=True)
+        threshold = self.pressure_threshold(request.output_tokens)
+        if trigger == "pressure" and before < threshold:
+            return False
+        if llm is None:
+            raise CompactionError("Compaction requires a model; history was retained.")
+        if len(request.history_positions) != len(messages):
+            raise CompactionError("Request history mapping is stale.")
+        candidate = deepcopy(messages)
+        current = request
+        total_removed = 0
+        generated = []
+        retain = int(max(0, self.max_tokens - max(request.output_tokens, self._budget.reserved_output)) * self.retain_ratio)
+        if trigger == "context-overflow":
+            retain = 0
+        started = False
         try:
-            summary = generate_summary(
-                messages,
-                llm,
-                checkpoint_kind=checkpoint_kind,
-                summarized_history_version=self._history_version,
-                recent_rounds_preserved=recent_rounds_preserved,
-                history_events=history_events,
-                cancellation_event=cancellation_event,
-            )
-        except Exception:
-            if cancellation_event is not None and cancellation_event.is_set():
-                raise
-            self._consecutive_summary_failures += 1
-            return self._extract_key_info(messages)
-        self._consecutive_summary_failures = 0
-        return summary
-
-    def _emit_compression_started(
-        self,
-        *,
-        before_tokens: int,
-        before_message_count: int,
-        before_snapshot: list[dict[str, Any]],
-        trigger: str,
-        snip_gain: int | None = None,
-    ) -> None:
-        """Tell the UI before any potentially slow compaction work begins."""
-        if not self._ui_bus:
-            return
-
-        capacity = before_tokens / max(1, self.request_input_limit)
-        operation = (
-            "Context compression" if trigger == "manual" else "Context auto-compression"
-        )
-        gain_text = ""
-        if snip_gain is not None:
-            gain_ratio = snip_gain / max(1, self.request_input_limit)
-            gain_text = f"; deterministic snip gain: {snip_gain} ({gain_ratio:.1%})"
-        self._ui_bus.info(
-            (
-                f"{operation} started: "
-                f"{before_tokens} tokens / {before_message_count} messages "
-                f"({capacity:.1%} capacity; reason: {trigger}{gain_text})."
-            ),
-            kind=self._context_event_kind(),
-            phase="before",
-            trigger=trigger,
-            trigger_tokens=before_tokens,
-            trigger_message_count=before_message_count,
-            capacity_ratio=capacity,
-            max_tokens=self.max_tokens,
-            thresholds={
-                "snip_wall": self._snip_wall,
-                "semantic_wall": self._semantic_wall,
-                "snip_min_gain": self._snip_min_gain,
-                "target": self._rewrite_target,
-                "emergency_at": self._emergency_at,
-            },
-            snip_gain=snip_gain,
-            context_snapshot=before_snapshot,
-        )
-
-    def _emit_compression_skipped(self, *, trigger: str) -> None:
-        """Close a started UI operation when compaction found no safe rewrite."""
-        if not self._ui_bus:
-            return
-        self._ui_bus.info(
-            "Context compression made no changes.",
-            kind=self._context_event_kind(),
-            phase="skipped",
-            trigger=trigger,
-        )
-
-    def _emit_compression_completed(
-        self,
-        *,
-        before_tokens: int,
-        after_tokens: int,
-        before_message_count: int,
-        before_snapshot: list[dict[str, Any]],
-        after_messages: list[dict],
-        applied_layers: list[str],
-        trigger: str,
-    ) -> None:
-        """Push the completion event using the planner's calibrated estimate."""
-        if not self._ui_bus:
-            return
-
-        after_message_count = len(after_messages)
-        after_snapshot = self._snapshot_messages(after_messages)
-        strategy = self._describe_strategy(applied_layers)
-        delta_tokens = after_tokens - before_tokens
-        delta_messages = after_message_count - before_message_count
-        operation = (
-            "Context compression" if trigger == "manual" else "Context auto-compression"
-        )
-        checkpoint = self.checkpoints[-1] if self.checkpoints else None
-        preserved = (
-            f"; {checkpoint.preserved_rounds} recent API rounds preserved"
-            if checkpoint is not None
-            else ""
-        )
-
-        self._ui_bus.success(
-            (
-                f"{operation} completed: "
-                f"{before_tokens} → ~{after_tokens} tokens, "
-                f"{before_message_count} → {after_message_count} messages{preserved}. "
-                "Human transcript unchanged; model requests now use the compacted view."
-            ),
-            kind=self._context_event_kind(),
-            phase="after",
-            trigger=trigger,
-            checkpoint_id=checkpoint.id if checkpoint is not None else None,
-            preserved_rounds=(
-                checkpoint.preserved_rounds if checkpoint is not None else None
-            ),
-            cache_epoch=checkpoint.cache_epoch if checkpoint is not None else None,
-            strategy=strategy,
-            applied_layers=applied_layers,
-            before_tokens=before_tokens,
-            after_tokens=after_tokens,
-            token_delta=delta_tokens,
-            before_message_count=before_message_count,
-            after_message_count=after_message_count,
-            message_delta=delta_messages,
-            before_context=before_snapshot,
-            after_context=after_snapshot,
-        )
-
-    @staticmethod
-    def _snapshot_messages(
-        messages: list[dict], max_items: int = 12, max_chars: int = 240
-    ) -> list[dict[str, Any]]:
-        """Create a compact, UI-friendly snapshot of current context."""
-        if len(messages) <= max_items:
-            selected = list(enumerate(messages))
-        else:
-            head_count = max_items // 2
-            tail_count = max_items - head_count
-            selected = list(enumerate(messages[:head_count]))
-            selected.append(
-                (
-                    -1,
-                    {
-                        "role": "meta",
-                        "content": f"... {len(messages) - max_items} messages omitted ...",
-                    },
+            for _ in range(1 + self.compaction_retries):
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise LLMRequestCancelled("Context compaction cancelled")
+                split = self._select_prefix(candidate, current, retain)
+                if split == 0:
+                    if not generated:
+                        return False
+                    raise CompactionError("No complete prefix can reduce the remaining request below its threshold.")
+                if not started:
+                    self._emit("before", trigger, before, before, len(messages), len(messages))
+                    started = True
+                prefix = current.prefix(split)
+                output_limit = self.summary_max_tokens
+                if remaining_tokens is not None:
+                    remaining = remaining_tokens()
+                    if remaining is not None:
+                        output_limit = min(output_limit, remaining - self.estimate_request_tokens(
+                            [*prefix, summary_instruction()], current.tools))
+                        if output_limit <= 0:
+                            raise CompactionError("Token budget exhausted before context summarization.")
+                response = generate_summary(
+                    prefix, llm, tools=current.tools, max_output_tokens=output_limit,
+                    session_id=current.session_id, metadata=current.metadata,
+                    cancellation_event=cancellation_event, on_response=on_summary,
                 )
-            )
-            selected.extend(
-                (len(messages) - tail_count + i, msg)
-                for i, msg in enumerate(messages[-tail_count:])
-            )
+                summary = synthetic_user_message(
+                    "context_summary", response.content, source="context_compactor",
+                    attributes={"kind": "checkpoint"},
+                )
+                replacement = [summary, *candidate[split:]]
+                updated = current.replace_history(replacement, split)
+                previous_tokens = self.predict_request_tokens(current.messages, current.tools, complete=True)
+                after = self.predict_request_tokens(updated.messages, updated.tools, complete=True)
+                if after >= previous_tokens:
+                    raise CompactionError("Summary did not shrink the complete request; history was retained.")
+                candidate, current = replacement, updated
+                total_removed += split - (1 if generated else 0)
+                generated.append(response)
+                if trigger == "manual" or after < threshold:
+                    break
+            else:
+                raise CompactionError("Context remains above its threshold after bounded compaction attempts.")
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise LLMRequestCancelled("Context compaction cancelled")
+            if before_commit is not None:
+                before_commit()
+        except BaseException as error:
+            self.last_error = str(error)
+            if started:
+                self._emit("failed", trigger, before, before, len(messages), len(messages), error=str(error))
+            raise
 
-        snapshot: list[dict[str, Any]] = []
-        for index, msg in selected:
-            role = msg.get("role", "?")
-            content = content_text(msg.get("content")).replace("\r", "")
-            if len(content) > max_chars:
-                content = content[: max_chars - 3] + "..."
-            item: dict[str, Any] = {
-                "index": index,
-                "role": role,
-                "content": content,
-            }
-            if msg.get("tool_call_id"):
-                item["tool_call_id"] = msg["tool_call_id"]
-            if msg.get("tool_calls"):
-                item["tool_calls"] = msg["tool_calls"]
-            snapshot.append(item)
-        return snapshot
+        # All intermediate summaries stay private until the whole replacement is useful.
+        sources = align_item_provenance(messages[:total_removed], history_events)
+        source_ids = tuple(dict.fromkeys(ref for item in sources for ref in item["source_event_ids"]))
+        source_checkpoints = tuple(dict.fromkeys(
+            item["checkpoint_id"] for item in sources if item.get("checkpoint_id")
+        ))
+        observation = self._latest_usage
+        checkpoint = CompactionCheckpoint.create(
+            trigger=trigger, strategy=["prefix_checkpoint"],
+            source_history_version=self._history_version, replacement_history=candidate,
+            tokens_before=before, tokens_after=after,
+            preserved_rounds=len(group_api_rounds(candidate[1:])),
+            cache_epoch=self._cache_epoch + 1,
+            actual_prompt_tokens=observation.actual_prompt_tokens if observation else None,
+            cached_input_tokens=observation.cached_input_tokens if observation else None,
+            reclaimed_tokens=before - after, source_event_ids=source_ids,
+            source_checkpoint_ids=source_checkpoints,
+            summary_prompt_tokens=sum(r.prompt_tokens for r in generated),
+            summary_completion_tokens=sum(r.completion_tokens for r in generated),
+            summary_cached_input_tokens=(sum(r.cached_input_tokens for r in generated)
+                                         if all(r.cached_input_tokens is not None for r in generated)
+                                         else None),
+        )
+        messages[:] = candidate
+        self._history_version += 1
+        self._cache_epoch += 1
+        self._checkpoints.append(checkpoint)
+        self._latest_usage = None
+        self._emit("after", trigger, before, after,
+                   len(request.history_positions), len(messages))
+        return True
 
-    def _describe_strategy(self, applied_layers: list[str]) -> dict[str, Any]:
-        """Describe configured compression policy and actual applied layers."""
-        return {
-            "policy": [
-                {
-                    "layer": "profitable_snip",
-                    "threshold": self._snip_wall,
-                    "description": "From 60% of request capacity, commit deterministic tool-output snipping only when it reclaims at least 20% of total request capacity.",
-                },
-                {
-                    "layer": "semantic_checkpoint",
-                    "threshold": self._semantic_wall,
-                    "description": f"At 75% of request capacity, batch deterministic snip and semantic summary in one cache epoch, preserving {self._summarize_keep_recent_turns} recent API rounds and targeting about 40%.",
-                },
-                {
-                    "layer": "hard_collapse",
-                    "threshold": self._emergency_at,
-                    "description": "At 90% of request capacity, perform last-resort recovery while preserving complete recent API rounds.",
-                },
-            ],
-            "applied_layers": applied_layers,
-        }
-
-    @staticmethod
-    def _context_event_kind():
+    def _emit(self, phase: str, trigger: str, before: int, after: int,
+              before_count: int, after_count: int, *, error: str | None = None) -> None:
+        if self._ui_bus is None:
+            return
         from reuleauxcoder.domain.runtime.notification_kind import UIEventKind
-
-        return UIEventKind.CONTEXT
-
-    @staticmethod
-    def _extract_key_info(messages: list[dict]) -> str:
-        """Fallback: extract file paths, errors, and decisions."""
-        import re
-
-        files_seen = set()
-        errors = []
-
-        for m in messages:
-            text = m.get("content", "") or ""
-            # Extract file paths
-            for match in re.finditer(r"[\w./\-]+\.\w{1,5}", text):
-                files_seen.add(match.group())
-            # Extract error lines
-            for line in text.splitlines():
-                if "error" in line.lower() or "Error" in line:
-                    errors.append(line.strip()[:150])
-
-        parts = []
-        if files_seen:
-            parts.append(f"Files touched: {', '.join(sorted(files_seen)[:20])}")
-        if errors:
-            parts.append(f"Errors seen: {'; '.join(errors[:5])}")
-        return "\n".join(parts) or "(no extractable context)"
+        message = (
+            f"Context compaction: {before:,} → {after:,} estimated request tokens."
+            if phase == "after" else
+            f"Context compaction failed: {error}" if phase == "failed" else
+            f"Compacting context ({before:,} estimated request tokens)."
+        )
+        emit = self._ui_bus.warning if phase == "failed" else self._ui_bus.info
+        emit(message, kind=UIEventKind.CONTEXT, phase=phase, trigger=trigger,
+             before_tokens=before, after_tokens=after, before_message_count=before_count,
+             after_message_count=after_count, token_delta=after - before,
+             cache_epoch=self._cache_epoch, thresholds=self.rewrite_thresholds,
+             applied_layers=["prefix_checkpoint"] if phase == "after" else [])

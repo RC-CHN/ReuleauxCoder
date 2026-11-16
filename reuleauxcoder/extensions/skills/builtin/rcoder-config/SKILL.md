@@ -26,7 +26,7 @@ Configuration files are the persistent source of truth. Edit them with ordinary 
 
 ## Load only the needed reference
 
-- [references/configuration.md](references/configuration.md): all 19 sections and 133 field patterns, types, defaults, inheritance and constraints. Consult the target fields before editing; the running version's `describe` is authoritative.
+- [references/configuration.md](references/configuration.md): all 19 sections and 130 field patterns, types, defaults, inheritance and constraints. Consult the target fields before editing; the running version's `describe` is authoritative.
 - [references/reasoning.md](references/reasoning.md): effort, thinking, visible reasoning, replay, Responses encrypted items and protocol limits. Read when the user asks about reasoning or chain-of-thought return/display; identify which layer they mean.
 - [references/workflows.md](references/workflows.md): commands, layered edits, troubleshooting and approval/MCP/skill examples. Examples are partial patches, not replacement documents.
 

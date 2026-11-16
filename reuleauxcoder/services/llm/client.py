@@ -31,7 +31,9 @@ from reuleauxcoder.domain.hooks.types import (
     HookPoint,
 )
 from reuleauxcoder.domain.llm.context_messages import normalize_provider_message_roles
-from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
+from reuleauxcoder.domain.llm.errors import (
+    ContextWindowExceeded, LLMRequestCancelled, LLMRequestDeferred,
+)
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.infrastructure.fs.paths import get_diagnostics_dir
@@ -53,6 +55,7 @@ from reuleauxcoder.services.llm.providers import (
     close_provider,
     normalize_provider_family,
     normalize_request_mode,
+    is_context_window_error,
 )
 
 
@@ -691,6 +694,7 @@ class LLM:
         prompt_tok = completion_tok = 0
         cached_input_tok: int | None = None
         received_first_chunk = False
+        finish_reason = None
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
@@ -938,6 +942,9 @@ class LLM:
             # Narrow back from HookContext — run_transforms preserves the same
             # type, but the type system doesn't track that invariant.
             before_context = cast(BeforeLLMRequestContext, before_context)
+        except LLMRequestDeferred:
+            finish_operation("completed", status="completed", detail="Deferred for context compaction")
+            raise
         except LLMRequestCancelled:
             finish_operation("cancelled", status="cancelled")
             raise
@@ -1107,11 +1114,14 @@ class LLM:
                         )
                     if cached_value is None:
                         cached_value = getattr(chunk.usage, "cached_tokens", None)
+                    if cached_value is None:
+                        cached_value = getattr(chunk.usage, "prompt_cache_hit_tokens", None)
                     if cached_value is not None:
                         cached_input_tok = max(0, int(cached_value))
 
                 if not chunk.choices:
                     continue
+                finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
                 delta = chunk.choices[0].delta
 
                 # Accumulate text
@@ -1179,6 +1189,7 @@ class LLM:
                 completion_tokens=completion_tok,
                 cached_input_tokens=cached_input_tok,
                 provider_data=getattr(stream, "provider_data", None),
+                finish_reason=getattr(stream, "finish_reason", None) or finish_reason,
                 tokens=tokens,
             )
 
@@ -1338,6 +1349,8 @@ class LLM:
                     before_context.metadata["llm_error_diagnostic_path"] = str(
                         diagnostic_path
                     )
+            if not isinstance(e, ContextWindowExceeded) and is_context_window_error(e):
+                raise ContextWindowExceeded("Provider rejected the request: context window exceeded.") from e
             raise
 
         finally:

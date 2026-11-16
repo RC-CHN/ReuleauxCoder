@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
@@ -21,11 +22,23 @@ from reuleauxcoder.domain.llm.context_messages import (
     normalize_provider_message_roles,
     synthetic_user_message,
 )
-from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
+from reuleauxcoder.domain.llm.errors import (
+    ContextWindowExceeded, LLMRequestCancelled, LLMRequestDeferred,
+)
+from reuleauxcoder.domain.context.summary import CompactionError
 
 
 class _RequestTokenBudgetExhausted(RuntimeError):
     """Raised after request hooks make a payload exceed the remaining budget."""
+
+
+class _ContextPressure(LLMRequestDeferred):
+    """Suspend a prepared request before any dispatch effects or provider call."""
+
+    def __init__(self, context):
+        self.messages = deepcopy(context.messages)
+        self.tools = deepcopy(context.request_params.get("tools") or [])
+        self.output_tokens = int(context.request_params.get("max_tokens") or 0)
 
 
 class _DispatchPayloadContractViolation(RuntimeError):
@@ -40,14 +53,28 @@ class _FinalRequestBudget:
         agent: "Agent",
         *,
         preliminary_max_output_tokens: int | None,
+        check_context: bool = False,
     ) -> None:
         self._agent = agent
         self._preliminary_max_output_tokens = preliminary_max_output_tokens
         self._requested_output_ceiling: int | None = None
         self.local_request_estimate: int | None = None
+        self._check_context = check_context
+        self.prepared_context = None
 
     def apply(self, context: BeforeLLMRequestContext) -> None:
         estimate = self.refresh_estimate(context)
+        self.prepared_context = context
+
+        pressure = self._agent.context.predict_request_tokens(
+            context.messages, context.request_params.get("tools"), complete=True, local_estimate=estimate,
+        )
+        output = int(context.request_params.get("max_tokens") or getattr(self._agent.llm, "max_tokens", 0))
+        if (self._check_context and self._agent.context.automatic_strategies
+                and pressure >= self._agent.context.pressure_threshold(output)):
+            raise _ContextPressure(context)
+        if pressure + output > self._agent.context.max_tokens:
+            raise ContextWindowExceeded("Prepared request exceeds the configured context window.")
 
         if self._agent.max_total_tokens is None:
             return
@@ -221,8 +248,10 @@ class AgentLoop:
             },
         )
 
-    def _dispatch_round_attempt(self, round_num: int):
+    def _dispatch_round_attempt(self, round_num: int, *, final_handoff: bool = False):
         """Dispatch until one attempt settles without a round interrupt."""
+        pressure_checked = False
+        overflow_retries = 0
         while True:
             attempt_id = self.agent.next_request_attempt_id(round_num)
             # A steering admission becomes model-visible only at this boundary,
@@ -232,6 +261,7 @@ class AgentLoop:
 
             streamed_output = False
             streamed_reasoning = False
+            image_traffic_recorded = False
 
             def _on_token(token: str) -> None:
                 nonlocal streamed_output
@@ -261,10 +291,11 @@ class AgentLoop:
                 detail=f"round {round_num + 1}",
             )
             request_messages = self._full_messages()
-            request_tools = self._tool_schemas()
+            request_tools = None if final_handoff else self._tool_schemas()
             restored = getattr(self.agent, "_restored_replay_envelope", None)
             if (
-                restored is not None
+                not final_handoff
+                and restored is not None
                 and restored.validate()
                 and content_hash(request_tools) == content_hash(restored.tools)
             ):
@@ -290,6 +321,7 @@ class AgentLoop:
             final_budget = _FinalRequestBudget(
                 self.agent,
                 preliminary_max_output_tokens=max_output_tokens,
+                check_context=not pressure_checked,
             )
 
             baseline_epoch = self.agent.round_interrupt_epoch()
@@ -303,6 +335,7 @@ class AgentLoop:
                 {
                     "attempt_id": attempt_id,
                     "round_index": round_num,
+                    **({"summary_phase": True} if final_handoff else {}),
                     "interrupt_epoch_baseline": baseline_epoch,
                 },
                 agent_id=self.agent.agent_id,
@@ -350,6 +383,7 @@ class AgentLoop:
                         "session_generation": self.agent.session_generation,
                         "turn_id": self.agent._current_turn_id,
                         "round_index": round_num,
+                        **({"summary_phase": True} if final_handoff else {}),
                         "image_turn_id": self.agent.image_turn_id,
                         "image_retention": getattr(
                             getattr(self.agent.runtime_config, "context", None),
@@ -366,6 +400,57 @@ class AgentLoop:
                     cancellation_event=cancellation,
                     max_output_tokens=max_output_tokens,
                 )
+            except _ContextPressure as pressure:
+                # This attempt never reached the provider. Auxiliary traffic is
+                # recorded with its own compaction event, not this attempt ID.
+                image_traffic_recorded = True
+                self.agent.state.total_model_calls -= 1
+                pressure_checked = True
+                self.agent.history_ledger.append(
+                    "request_attempt_deferred",
+                    {"attempt_id": attempt_id, "reason": "context_compaction"},
+                    agent_id=self.agent.agent_id, turn_id=self.agent._current_turn_id,
+                    api_round_id=attempt_id,
+                )
+                try:
+                    self.agent.maybe_compress_context(
+                        self.agent.llm, reason="request pressure checkpoint",
+                        request_messages=pressure.messages, request_tools=pressure.tools,
+                        output_tokens=pressure.output_tokens,
+                    )
+                except CompactionError as error:
+                    self.agent._emit_event(AgentEvent.diagnostic(
+                        str(error), code="compression.failed", severity="warning",
+                    ))
+                continue
+            except ContextWindowExceeded:
+                self._record_image_traffic(attempt_id)
+                image_traffic_recorded = True
+                if (not self.agent.context.automatic_strategies
+                        or overflow_retries >= self.agent.context.max_overflow_retries
+                        or streamed_output or streamed_reasoning):
+                    raise
+                prepared = final_budget.prepared_context
+                if prepared is None:
+                    raise
+                try:
+                    changed = self.agent.maybe_compress_context(
+                        self.agent.llm, reason="context overflow recovery",
+                        request_messages=prepared.messages,
+                        request_tools=prepared.request_params.get("tools"),
+                        output_tokens=prepared.request_params.get("max_tokens"),
+                        trigger="context-overflow",
+                    )
+                except CompactionError as error:
+                    self.agent._emit_event(AgentEvent.diagnostic(
+                        str(error), code="compression.failed", severity="warning",
+                    ))
+                    changed = False
+                if not changed:
+                    raise
+                overflow_retries += 1
+                pressure_checked = True
+                continue
             except _DispatchPayloadContractViolation as error:
                 self.agent.state.total_model_calls -= 1
                 self.agent.history_ledger.append(
@@ -373,6 +458,7 @@ class AgentLoop:
                     {
                         "attempt_id": attempt_id,
                         "round_index": round_num,
+                        **({"summary_phase": True} if final_handoff else {}),
                         "reason": "dispatch_payload_contract_violation",
                         "error": str(error),
                     },
@@ -389,6 +475,7 @@ class AgentLoop:
                         "attempt_id": attempt_id,
                         "round_index": round_num,
                         "reason": "token_budget_exhausted",
+                        **({"summary_phase": True} if final_handoff else {}),
                     },
                     agent_id=self.agent.agent_id,
                     turn_id=self.agent._current_turn_id,
@@ -403,6 +490,7 @@ class AgentLoop:
                         "attempt_id": attempt_id,
                         "round_index": round_num,
                         "interrupt_epoch": interrupt_epoch,
+                        **({"summary_phase": True} if final_handoff else {}),
                     },
                     agent_id=self.agent.agent_id,
                     turn_id=self.agent._current_turn_id,
@@ -425,14 +513,15 @@ class AgentLoop:
                 continue
 
             finally:
-                self._record_image_traffic(attempt_id)
+                if not image_traffic_recorded:
+                    self._record_image_traffic(attempt_id)
 
             if final_budget.local_request_estimate is not None:
                 local_request_estimate = final_budget.local_request_estimate
 
             self._record_dispatched_request_envelope(
                 request_messages,
-                request_tools,
+                request_tools or [],
                 attempt_id=attempt_id,
             )
             return (
@@ -453,11 +542,6 @@ class AgentLoop:
             return "(stopped: runtime failure facts could not be published)"
         if self.agent.stop_requested():
             return "(stopped by cancellation request)"
-        # Compress if needed
-        self.agent.report_operation_phase("context_prepare")
-        self.agent.maybe_compress_context(
-            self.agent.llm, reason="pre-request checkpoint"
-        )
 
         for round_num in range(self.agent.max_rounds):
             if self.agent.stop_requested():
@@ -634,11 +718,6 @@ class AgentLoop:
                 request_id = self.agent._park_request.get("guidance_request_id", "-")
                 return f"(sub-agent parked for guidance: {request_id})"
 
-            # Compress if tool outputs are big
-            self.agent.maybe_compress_context(
-                self.agent.llm, reason="post-tool checkpoint"
-            )
-
             # Flush any sub-agent injections buffered during tool execution.
             self.agent._flush_pending_subagent_injections()
             self.agent._inject_completed_subagent_jobs()
@@ -663,175 +742,13 @@ class AgentLoop:
             ),
             source="max_round_summary_instruction",
         )
-        while True:
-            attempt_id = self.agent.next_request_attempt_id(self.agent.max_rounds)
-            self.agent._drain_user_steering(attempt_id=attempt_id)
-            summary_streamed = False
-            summary_reasoning_streamed = False
-
-            def _on_summary_token(token: str) -> None:
-                nonlocal summary_streamed
-                summary_streamed = True
-                self.agent._emit_event(AgentEvent.stream_token(token))
-
-            def _on_summary_reasoning(token: str) -> None:
-                nonlocal summary_reasoning_streamed
-                summary_reasoning_streamed = True
-                self.agent._emit_event(
-                    AgentEvent(
-                        event_type=AgentEventType.STREAM_REASONING,
-                        data={
-                            "token": token,
-                            "display_mode": self.agent.reasoning_display_mode,
-                        },
-                    )
-                )
-
-            summary_messages = normalize_provider_message_roles(self._full_messages())
-            summary_local_request = self.agent.context.estimate_request_tokens(
-                summary_messages, None
-            )
-            summary_local_history = self.agent.context.get_context_tokens(
-                self.agent.state.messages
-            )
-            summary_max_output_tokens = None
-            if self.agent.max_total_tokens is not None:
-                remaining = (
-                    self.agent.max_total_tokens
-                    - self.agent.state.total_prompt_tokens
-                    - self.agent.state.total_completion_tokens
-                    - summary_local_request
-                )
-                summary_max_output_tokens = min(
-                    int(getattr(self.agent.llm, "max_tokens", max(1, remaining))),
-                    max(1, remaining),
-                )
-            final_budget = _FinalRequestBudget(
-                self.agent,
-                preliminary_max_output_tokens=summary_max_output_tokens,
-            )
-            baseline_epoch = self.agent.round_interrupt_epoch()
-            cancellation = CancellationView(
-                self.agent._stop_event,
-                self.agent.round_interrupt_epoch,
-                baseline_epoch,
-            )
-            self.agent.history_ledger.append(
-                "request_attempt_dispatched",
-                {
-                    "attempt_id": attempt_id,
-                    "round_index": self.agent.max_rounds,
-                    "summary_phase": True,
-                    "interrupt_epoch_baseline": baseline_epoch,
-                },
-                agent_id=self.agent.agent_id,
-                turn_id=self.agent._current_turn_id,
-                api_round_id=attempt_id,
-            )
-            try:
-                self.agent.state.total_model_calls += 1
-                summary_resp = self.agent.llm.chat(
-                    messages=summary_messages,
-                    tools=None,
-                    cancellation_event=cancellation,
-                    on_token=_on_summary_token,
-                    on_reasoning_token=_on_summary_reasoning,
-                    hook_registry=_BudgetingHookRegistry(
-                        self.agent.hook_registry,
-                        final_budget,
-                    ),
-                    session_id=getattr(self.agent, "current_session_id", None),
-                    trace_id=attempt_id.replace(":", "_"),
-                    metadata={
-                        "agent_id": self.agent.agent_id,
-                        "session_generation": self.agent.session_generation,
-                        "turn_id": self.agent._current_turn_id,
-                        "round_index": self.agent.state.current_round,
-                        "image_turn_id": self.agent.image_turn_id,
-                        "image_retention": getattr(
-                            getattr(self.agent.runtime_config, "context", None),
-                            "image_retention",
-                            "history",
-                        ),
-                        "attempt_id": attempt_id,
-                        "active_mode": self.agent.active_mode,
-                        "summary_phase": True,
-                        "pending_tool_calls": len(
-                            self.agent._collect_pending_tool_calls()
-                        ),
-                    },
-                    max_output_tokens=summary_max_output_tokens,
-                )
-            except _DispatchPayloadContractViolation as error:
-                self.agent.state.total_model_calls -= 1
-                self.agent.history_ledger.append(
-                    "request_attempt_rejected",
-                    {
-                        "attempt_id": attempt_id,
-                        "round_index": self.agent.max_rounds,
-                        "summary_phase": True,
-                        "reason": "dispatch_payload_contract_violation",
-                        "error": str(error),
-                    },
-                    agent_id=self.agent.agent_id,
-                    turn_id=self.agent._current_turn_id,
-                    api_round_id=attempt_id,
-                )
-                raise
-            except _RequestTokenBudgetExhausted:
-                self.agent.state.total_model_calls -= 1
-                self.agent.history_ledger.append(
-                    "request_attempt_rejected",
-                    {
-                        "attempt_id": attempt_id,
-                        "round_index": self.agent.max_rounds,
-                        "summary_phase": True,
-                        "reason": "token_budget_exhausted",
-                    },
-                    agent_id=self.agent.agent_id,
-                    turn_id=self.agent._current_turn_id,
-                    api_round_id=attempt_id,
-                )
-                return "(sub-agent token budget exhausted before final handoff)"
-            except LLMRequestCancelled:
-                interrupt_epoch = self.agent.round_interrupt_epoch()
-                self.agent.history_ledger.append(
-                    "request_attempt_cancelled",
-                    {
-                        "attempt_id": attempt_id,
-                        "round_index": self.agent.max_rounds,
-                        "summary_phase": True,
-                        "interrupt_epoch": interrupt_epoch,
-                    },
-                    agent_id=self.agent.agent_id,
-                    turn_id=self.agent._current_turn_id,
-                    api_round_id=attempt_id,
-                )
-                if self.agent.stop_requested() or interrupt_epoch <= baseline_epoch:
-                    raise
-                if summary_streamed or summary_reasoning_streamed:
-                    self.agent._emit_event(
-                        AgentEvent.assistant_stream_interrupted(
-                            attempt_id=attempt_id,
-                            interrupt_epoch=interrupt_epoch,
-                        )
-                    )
-                if summary_streamed or summary_reasoning_streamed:
-                    self._record_request_interrupt_marker(
-                        attempt_id=attempt_id,
-                        interrupt_epoch=interrupt_epoch,
-                    )
-                continue
-            finally:
-                self._record_image_traffic(attempt_id)
-            if final_budget.local_request_estimate is not None:
-                summary_local_request = final_budget.local_request_estimate
-            self._record_dispatched_request_envelope(
-                summary_messages,
-                [],
-                attempt_id=attempt_id,
-            )
-            break
+        attempt = self._dispatch_round_attempt(self.agent.max_rounds, final_handoff=True)
+        if attempt is None:
+            return "(sub-agent token budget exhausted before final handoff)"
+        (
+            summary_resp, summary_streamed, summary_local_request,
+            summary_local_history, attempt_id, _,
+        ) = attempt
 
         self.last_response_streamed = summary_streamed
         self.agent.state.total_prompt_tokens += summary_resp.prompt_tokens

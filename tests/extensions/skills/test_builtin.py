@@ -186,9 +186,8 @@ def test_documented_examples_resolve_and_produce_intended_behavior(name):
             thinking_enabled=profile.thinking_enabled)
         assert history[1]["reasoning_content"] == "[PLACE_HOLDER]"
     elif name == "context":
-        assert profile.context.auto_snip is None
-        assert profile.context.auto_summarize is False
-        assert config.context.auto_snip
+        assert profile.context.auto_compact is False
+        assert config.context.auto_compact
     elif name == "disabled-skill":
         assert config.skills.disabled == ["rcoder-config"]
 

@@ -9,16 +9,6 @@ from reuleauxcoder.domain.images import ImageReference
 
 
 @dataclass(frozen=True, slots=True)
-class CompactViewModel:
-    estimated_tokens: int
-    input_limit: int
-    view_type: str = "compact"
-
-    def to_payload(self) -> dict[str, Any]:
-        return {"estimated_tokens": self.estimated_tokens, "input_limit": self.input_limit}
-
-
-@dataclass(frozen=True, slots=True)
 class GoalViewModel:
     goal: Goal | None
     default_token_budget: int | None = None
@@ -204,11 +194,8 @@ class TokenUsageViewModel:
     actual_prompt_tokens: int | None
     cached_input_tokens: int | None
     automatic_strategies: tuple[str, ...]
-    snip_wall: int
-    semantic_wall: int
-    snip_min_gain: int
-    rewrite_target: int
-    emergency_at: int
+    compaction_threshold: int
+    retained_tokens: int
     cache_epoch: int
     view_type: str = "token_usage"
 
@@ -226,11 +213,8 @@ class TokenUsageViewModel:
                 "actual_prompt_tokens",
                 "cached_input_tokens",
                 "automatic_strategies",
-                "snip_wall",
-                "semantic_wall",
-                "snip_min_gain",
-                "rewrite_target",
-                "emergency_at",
+                "compaction_threshold",
+                "retained_tokens",
                 "cache_epoch",
             )
         }

@@ -168,11 +168,8 @@ def _handle_tokens(command, ctx) -> CommandEffect:
         ),
         cached_input_tokens=(observation.cached_input_tokens if observation else None),
         automatic_strategies=ctx.agent.context.automatic_strategies,
-        snip_wall=thresholds["snip_wall"],
-        semantic_wall=thresholds["semantic_wall"],
-        snip_min_gain=thresholds["snip_min_gain"],
-        rewrite_target=thresholds["rewrite_target"],
-        emergency_at=thresholds["emergency_at"],
+        compaction_threshold=thresholds["threshold"],
+        retained_tokens=thresholds["retain"],
         cache_epoch=ctx.agent.context.cache_epoch,
     )
 

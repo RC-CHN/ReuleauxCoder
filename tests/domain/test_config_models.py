@@ -58,12 +58,15 @@ def test_approval_rule_parsing_preserves_missing_and_explicit_actions(
     assert rule.scope_key == "workspace-session"
 
 
-def test_context_config_enables_all_automatic_strategies_by_default() -> None:
-    context = ContextConfig()
-
-    assert context.auto_snip is True
-    assert context.auto_summarize is True
-    assert context.auto_collapse is True
+@pytest.mark.parametrize("settings", [
+    {"threshold_ratio": 1}, {"retain_ratio": .9},
+    {"summary_max_tokens": 0}, {"compaction_retries": -1},
+    {"max_overflow_retries": -1},
+])
+def test_invalid_compaction_budgets_are_rejected(settings):
+    assert any("context" in error for error in Config(
+        api_key="test", context=ContextConfig(**settings),
+    ).validate())
 
 
 def test_model_context_strategy_overrides_roundtrip_and_inherit() -> None:
@@ -71,29 +74,22 @@ def test_model_context_strategy_overrides_roundtrip_and_inherit() -> None:
         "careful",
         {
             "context": {
-                "auto_snip": False,
-                "auto_collapse": True,
+                "auto_compact": False,
             }
         },
     )
     defaults = ContextConfig(
-        auto_snip=True,
-        auto_summarize=False,
-        auto_collapse=False,
+        auto_compact=True,
     )
 
     assert profile.context == ContextStrategyOverrides(
-        auto_snip=False,
-        auto_collapse=True,
+        auto_compact=False,
     )
     assert profile.to_dict()["context"] == {
-        "auto_snip": False,
-        "auto_collapse": True,
+        "auto_compact": False,
     }
     assert resolve_context_strategies(defaults, profile.context) == {
-        "auto_snip": False,
-        "auto_summarize": False,
-        "auto_collapse": True,
+        "auto_compact": False,
     }
 
 

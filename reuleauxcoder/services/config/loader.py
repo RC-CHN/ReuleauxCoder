@@ -226,6 +226,8 @@ class ConfigLoader:
         skills_config = data.get("skills", {})
         prompt_config = data.get("prompt", {})
         context_config = data.get("context", {})
+        from reuleauxcoder.domain.config.models import reject_removed_context_settings
+        reject_removed_context_settings(context_config)
         remote_exec_config = data.get("remote_exec", {})
         lsp_config = data.get("lsp", {})
         web_config = data.get("web", {})
@@ -394,30 +396,12 @@ class ConfigLoader:
             ),
             context=ContextConfig(
                 image_retention=context_config.get("image_retention", "history"),
-                auto_snip=bool(context_config.get("auto_snip", DEFAULTS["auto_snip"])),
-                auto_summarize=bool(
-                    context_config.get(
-                        "auto_summarize", DEFAULTS["auto_summarize"]
-                    )
-                ),
-                auto_collapse=bool(
-                    context_config.get(
-                        "auto_collapse", DEFAULTS["auto_collapse"]
-                    )
-                ),
-                snip_keep_recent_tools=context_config.get(
-                    "snip_keep_recent_tools", DEFAULTS["snip_keep_recent_tools"]
-                ),
-                snip_threshold_chars=context_config.get(
-                    "snip_threshold_chars", DEFAULTS["snip_threshold_chars"]
-                ),
-                snip_min_lines=context_config.get(
-                    "snip_min_lines", DEFAULTS["snip_min_lines"]
-                ),
-                summarize_keep_recent_turns=context_config.get(
-                    "summarize_keep_recent_turns",
-                    DEFAULTS["summarize_keep_recent_turns"],
-                ),
+                auto_compact=context_config.get("auto_compact", DEFAULTS["auto_compact"]),
+                threshold_ratio=context_config.get("threshold_ratio", DEFAULTS["threshold_ratio"]),
+                retain_ratio=context_config.get("retain_ratio", DEFAULTS["retain_ratio"]),
+                summary_max_tokens=context_config.get("summary_max_tokens", DEFAULTS["summary_max_tokens"]),
+                compaction_retries=context_config.get("compaction_retries", DEFAULTS["compaction_retries"]),
+                max_overflow_retries=context_config.get("max_overflow_retries", DEFAULTS["max_overflow_retries"]),
                 token_fudge_factor=context_config.get(
                     "token_fudge_factor", DEFAULTS["token_fudge_factor"]
                 ),

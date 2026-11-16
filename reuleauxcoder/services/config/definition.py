@@ -64,6 +64,7 @@ def dataclass_schema(cls, *, exclude=()) -> dict:
         value = _type_schema(hints[field.name])
         if field.name in {
             "max_tokens",
+            "summary_max_tokens",
             "max_context_tokens",
             "max_preview_lines",
             "max_preview_chars",
@@ -79,11 +80,12 @@ def dataclass_schema(cls, *, exclude=()) -> dict:
         if field.name == "temperature":
             value.update(minimum=0, maximum=2)
         if field.name in {
-            "snip_keep_recent_tools", "snip_threshold_chars", "snip_min_lines",
-            "summarize_keep_recent_turns", "reserved_output_tokens", "fixed_prompt_tokens",
+            "compaction_retries", "max_overflow_retries", "reserved_output_tokens", "fixed_prompt_tokens",
             "tool_schema_tokens", "safety_margin_tokens", "edit_wait_timeout_ms",
         }:
             value["minimum"] = 0
+        if field.name in {"threshold_ratio", "retain_ratio"}:
+            value.update(exclusiveMinimum=0, exclusiveMaximum=1)
         if field.name in {
             "bootstrap_token_ttl_sec", "peer_token_ttl_sec", "heartbeat_interval_sec",
             "heartbeat_timeout_sec", "default_tool_timeout_sec", "shell_timeout_sec",
@@ -265,11 +267,18 @@ def shape_issues(value, schema, path="", *, unknown="error") -> list[ConfigIssue
                 key, schema.get("additionalProperties", {})
             )
             if spec is False:
+                from reuleauxcoder.domain.config.models import REMOVED_CONTEXT_SETTINGS
+                message = "Unknown configuration field."
+                if path.endswith("/context") and key in REMOVED_CONTEXT_SETTINGS:
+                    message = (
+                        "This context setting was removed. Use auto_compact, threshold_ratio "
+                        "and retain_ratio; see docs/context-compaction.md."
+                    )
                 result.append(
                     ConfigIssue(
                         "unknown_field",
                         child_path,
-                        "Unknown configuration field.",
+                        message,
                         unknown,
                     )
                 )

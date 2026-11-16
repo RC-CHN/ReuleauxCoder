@@ -35,6 +35,34 @@ def _anthropic_client(handler) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
+@pytest.mark.parametrize("status,body,expected", [
+    (400, {"error": {"code": "context_length_exceeded"}}, True),
+    (400, {"error": {"message": "prompt is too long: 123 tokens"}}, True),
+    (400, {"message": "Maximum context length is 100"}, True),
+    (413, {"error": {"message": "Request body too large"}}, False),
+    (400, {"error": {"message": "max_tokens exceeds output limit"}}, False),
+    (429, {"error": {"code": "context_length_exceeded"}}, False),
+])
+def test_context_window_classification_is_specific(status, body, expected):
+    from reuleauxcoder.services.llm.providers import is_context_window_error
+    error = ProviderHTTPError("test", status)
+    error.body = body
+    assert is_context_window_error(error) is expected
+
+
+def test_native_anthropic_context_overflow_reaches_agent_as_typed_error():
+    from reuleauxcoder.domain.llm.errors import ContextWindowExceeded
+    llm = LLM(model="claude-test", api_key="test", provider="anthropic")
+    llm.client = _anthropic_client(lambda request: httpx.Response(
+        400, json={"error": {"type": "invalid_request_error", "message": "prompt is too long"}},
+    ))
+    try:
+        with pytest.raises(ContextWindowExceeded):
+            llm.chat([{"role": "user", "content": "test"}])
+    finally:
+        llm.client.close()
+
+
 def test_native_anthropic_adapter_satisfies_llm_contract_and_streams_text() -> None:
     captured = {}
 
@@ -65,7 +93,7 @@ def test_native_anthropic_adapter_satisfies_llm_contract_and_streams_text() -> N
                     "index": 1,
                     "delta": {"type": "text_delta", "text": "hello"},
                 },
-                {"type": "message_delta", "usage": {"output_tokens": 3}},
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 3}},
                 {"type": "message_stop"},
             ),
         )
@@ -92,6 +120,7 @@ def test_native_anthropic_adapter_satisfies_llm_contract_and_streams_text() -> N
     assert response.prompt_tokens == 21
     assert response.completion_tokens == 3
     assert response.cached_input_tokens == 4
+    assert response.finish_reason == "end_turn"
     request = captured["request"]
     assert request.url == "https://api.anthropic.com/v1/messages"
     assert request.headers["x-api-key"] == "anthropic-secret"

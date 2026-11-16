@@ -6,7 +6,7 @@ from reuleauxcoder.infrastructure.platform import get_platform_info
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from collections import deque
 from collections.abc import Iterable
 from pathlib import Path
@@ -2356,9 +2356,11 @@ def run_subagent_task(
             for tool in sub_tools
         ),
         max_context_tokens=subagent_max_context,
-        auto_snip=subagent_context_strategies["auto_snip"],
-        auto_summarize=subagent_context_strategies["auto_summarize"],
-        auto_collapse=subagent_context_strategies["auto_collapse"],
+        auto_compact=subagent_context_strategies["auto_compact"],
+        context_options=(
+            asdict(parent_agent.runtime_config.context)
+            if getattr(parent_agent, "runtime_config", None) is not None else {}
+        ),
         max_rounds=effective_max_rounds,
         max_tool_calls=max_tool_calls,
         max_tokens=max_tokens,

@@ -103,9 +103,7 @@ class ResponsesConfig:
 class ContextStrategyOverrides:
     """Optional model-profile overrides for automatic context compression."""
 
-    auto_snip: bool | None = None
-    auto_summarize: bool | None = None
-    auto_collapse: bool | None = None
+    auto_compact: bool | None = None
 
     @classmethod
     def from_dict(cls, value: object) -> "ContextStrategyOverrides":
@@ -113,23 +111,20 @@ class ContextStrategyOverrides:
             return cls()
         if not isinstance(value, dict):
             raise TypeError("model profile context must be an object")
-        for name in ("auto_snip", "auto_summarize", "auto_collapse"):
+        reject_removed_context_settings(value)
+        for name in ("auto_compact",):
             setting = value.get(name)
             if setting is not None and not isinstance(setting, bool):
                 raise TypeError(f"model profile context.{name} must be a boolean")
         return cls(
-            auto_snip=value.get("auto_snip"),
-            auto_summarize=value.get("auto_summarize"),
-            auto_collapse=value.get("auto_collapse"),
+            auto_compact=value.get("auto_compact"),
         )
 
     def to_dict(self) -> dict[str, bool]:
         return {
             name: setting
             for name, setting in (
-                ("auto_snip", self.auto_snip),
-                ("auto_summarize", self.auto_summarize),
-                ("auto_collapse", self.auto_collapse),
+                ("auto_compact", self.auto_compact),
             )
             if setting is not None
         }
@@ -315,19 +310,33 @@ class PromptConfig:
 class ContextConfig:
     """Context compression configuration."""
 
-    auto_snip: bool = True
-    auto_summarize: bool = True
-    auto_collapse: bool = True
+    auto_compact: bool = True
     image_retention: Literal["history", "user_turn"] = "history"
-    snip_keep_recent_tools: int = 2  # number of recent agent rounds to protect
-    snip_threshold_chars: int = 1500
-    snip_min_lines: int = 6
-    summarize_keep_recent_turns: int = 5
+    threshold_ratio: float = 0.8
+    retain_ratio: float = 0.16
+    summary_max_tokens: int = 8192
+    compaction_retries: int = 1
+    max_overflow_retries: int = 1
     token_fudge_factor: float = 1.1
     reserved_output_tokens: int = 8192
     fixed_prompt_tokens: int = 0
     tool_schema_tokens: int = 0
     safety_margin_tokens: int = 2048
+
+
+REMOVED_CONTEXT_SETTINGS = frozenset({
+    "auto_snip", "auto_summarize", "auto_collapse", "snip_keep_recent_tools",
+    "snip_threshold_chars", "snip_min_lines", "summarize_keep_recent_turns",
+})
+
+
+def reject_removed_context_settings(value: dict) -> None:
+    removed = sorted(REMOVED_CONTEXT_SETTINGS.intersection(value))
+    if removed:
+        raise ValueError(
+            f"Removed context settings: {', '.join(removed)}. Use auto_compact, "
+            "threshold_ratio and retain_ratio; see docs/context-compaction.md."
+        )
 
 
 def resolve_context_strategies(
@@ -339,9 +348,7 @@ def resolve_context_strategies(
     return {
         name: default if override is None else override
         for name, default, override in (
-            ("auto_snip", defaults.auto_snip, overrides.auto_snip),
-            ("auto_summarize", defaults.auto_summarize, overrides.auto_summarize),
-            ("auto_collapse", defaults.auto_collapse, overrides.auto_collapse),
+            ("auto_compact", defaults.auto_compact, overrides.auto_compact),
         )
     }
 
@@ -481,8 +488,7 @@ class Config:
         if self.remote_exec.heartbeat_timeout_sec <= self.remote_exec.heartbeat_interval_sec:
             errors.append("remote_exec.heartbeat_timeout_sec must exceed heartbeat_interval_sec")
         for name in (
-            "snip_keep_recent_tools", "snip_threshold_chars", "snip_min_lines",
-            "summarize_keep_recent_turns", "reserved_output_tokens", "fixed_prompt_tokens",
+            "compaction_retries", "max_overflow_retries", "reserved_output_tokens", "fixed_prompt_tokens",
             "tool_schema_tokens", "safety_margin_tokens",
         ):
             value = getattr(self.context, name)
@@ -490,6 +496,10 @@ class Config:
                 errors.append(f"context.{name} must be a non-negative integer")
         if self.context.token_fudge_factor <= 0:
             errors.append("context.token_fudge_factor must be positive")
+        if not 0 < self.context.retain_ratio < self.context.threshold_ratio < 1:
+            errors.append("context requires 0 < retain_ratio < threshold_ratio < 1")
+        if type(self.context.summary_max_tokens) is not int or self.context.summary_max_tokens < 1:
+            errors.append("context.summary_max_tokens must be a positive integer")
         for settings in (self, *self.model_profiles.values()):
             if settings.reasoning_replay_mode not in {None, "none", "tool_calls"}:
                 errors.append("reasoning_replay_mode must be none or tool_calls")

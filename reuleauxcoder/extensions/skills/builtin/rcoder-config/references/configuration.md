@@ -4,7 +4,7 @@ This reference ships with the core and the self-contained `rcoder-config` skill.
 
 ## Scope and loading
 
-The public schema has **19 top-level sections and 133 field patterns**. Dynamic profile/server keys are represented by `{name}`, list elements by `[]`, and arbitrary-value dictionaries by one field. `meta` is an open object, not a single fixed key.
+The public schema has **19 top-level sections and 130 field patterns**. Dynamic profile/server keys are represented by `{name}`, list elements by `[]`, and arbitrary-value dictionaries by one field. `meta` is an open object, not a single fixed key.
 
 Precedence is builtin defaults → user `~/.rcoder/config.yaml` → workspace `.rcoder/config.yaml` → explicit `--config` file. Dictionaries merge recursively, including same-name profiles/modes/MCP servers; lists replace completely. Removing a workspace field reveals the lower layer, not a global disable. Null is not a universal reset/delete operation.
 
@@ -42,9 +42,7 @@ Prefer explicit `models.profiles` with main/sub selections for new configuration
 | `/models/profiles/{name}/reasoning_replay_placeholder` | string? / `null` | Backfill text; runtime fallback is [PLACE_HOLDER] |
 | `/models/profiles/{name}/reasoning_effort_values` | object? / `null` | Label-to-JSON-value map; defaults to same-name low/medium/high |
 | `/models/profiles/{name}/reasoning_effort_param` | string / `reasoning_effort` | Nonempty compatible-API argument name; cannot overwrite reserved fields; Responses uses its fixed effort mapping |
-| `/models/profiles/{name}/context/auto_snip` | boolean? / `null` | Override global snipping; null/omission inherits |
-| `/models/profiles/{name}/context/auto_summarize` | boolean? / `null` | Override global summarization |
-| `/models/profiles/{name}/context/auto_collapse` | boolean? / `null` | Override global old-round collapse |
+| `/models/profiles/{name}/context/auto_compact` | boolean? / `null` | Override global prefix compaction; null/omission inherits |
 
 openai-compatible supports Chat Completions (default) and Responses; anthropic supports Messages only (default). Keep provider/request-mode pairs compatible. Static/startup checks cover all profiles; connectivity probes are selected separately. `model_targets` lists resolved targets and roles; a main-model success proves nothing about another profile. Probe failures do not prohibit saving.
 
@@ -81,14 +79,13 @@ These settings affect model context. UI controls human display; tool_output cont
 
 | Path | Type / default | Purpose and constraints |
 | --- | --- | --- |
-| `/context/auto_snip` | boolean / `true` | Automatically trim old tool output; profile may override |
-| `/context/auto_summarize` | boolean / `true` | Automatic summarization, potentially requiring extra model calls |
-| `/context/auto_collapse` | boolean / `true` | Automatically collapse old rounds |
+| `/context/auto_compact` | boolean / `true` | Automatic prefix compaction and overflow recovery; profile may override |
+| `/context/threshold_ratio` | number / `0.8` | Pressure fraction of model window; output and safety reservations also cap the threshold |
+| `/context/retain_ratio` | number / `0.16` | Recent raw-history fraction of the input budget; greater than zero and below threshold_ratio |
+| `/context/summary_max_tokens` | integer / `8192` | Positive output allowance for one summary, including reasoning |
+| `/context/compaction_retries` | integer / `1` | Extra summary attempts when pressure remains high |
+| `/context/max_overflow_retries` | integer / `1` | Recovery retries after an explicit context-window failure |
 | `/context/image_retention` | string / `history` | history retains older images; user_turn limits to current user turn, including steering |
-| `/context/snip_keep_recent_tools` | integer / `2` | Nonnegative protected agent-round count, not simply tool-call count |
-| `/context/snip_threshold_chars` | integer / `1500` | Nonnegative character threshold |
-| `/context/snip_min_lines` | integer / `6` | Nonnegative line threshold |
-| `/context/summarize_keep_recent_turns` | integer / `5` | Nonnegative recent-turn protection |
 | `/context/token_fudge_factor` | number / `1.1` | Positive token-estimate adjustment |
 | `/context/reserved_output_tokens` | integer / `8192` | Nonnegative reserved output budget |
 | `/context/fixed_prompt_tokens` | integer / `0` | Nonnegative fixed prompt reserve |

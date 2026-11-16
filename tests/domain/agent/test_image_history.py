@@ -21,7 +21,7 @@ def make_agent(tmp_path, retention="history"):
         api_key="test",
         support_modal=("text", "image"),
         session_auto_save=False,
-        context=ContextConfig(image_retention=retention, summarize_keep_recent_turns=1),
+        context=ContextConfig(image_retention=retention, retain_ratio=.0001),
     )
     llm = LLM(model="vision", api_key="test", support_modal=("text", "image"))
     llm._call_with_retry = lambda params: stream()
@@ -117,9 +117,14 @@ def test_text_model_compaction_does_not_resurrect_removed_images(tmp_path):
     try:
         agent.chat(ChatInput("inspect", (image,)))
         switch(agent.llm)
+        agent._append_message({"role": "assistant", "content": "Completed earlier investigation. " * 2000}, source="test")
         for index in range(7):
             agent.chat(f"follow up {index}")
-        assert agent.force_compress_context("collapse", None)
+        from tests.domain.agent.test_compaction import stream as summary_stream
+        from tests.domain.context.test_summary import checkpoint_text
+        agent.llm._call_with_retry = lambda params: summary_stream(checkpoint_text())
+        assert agent.force_compress_context("summarize", agent.llm)
+        agent.llm._call_with_retry = lambda params: stream()
         assert not image_parts(agent.messages)
         assert image.attachment_id in str(
             [event.payload for event in agent.history_ledger.events]

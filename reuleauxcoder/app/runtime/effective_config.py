@@ -133,19 +133,9 @@ def build_effective_config_view(config, agent=None) -> EffectiveConfigViewModel:
             source("ui.reasoning_display"),
         ),
         EffectiveConfigRowViewModel(
-            "context.auto_snip",
-            str(context.auto_snip).lower(),
-            source("context.auto_snip"),
-        ),
-        EffectiveConfigRowViewModel(
-            "context.auto_summarize",
-            str(context.auto_summarize).lower(),
-            source("context.auto_summarize"),
-        ),
-        EffectiveConfigRowViewModel(
-            "context.auto_collapse",
-            str(context.auto_collapse).lower(),
-            source("context.auto_collapse"),
+            "context.auto_compact",
+            str(context.auto_compact).lower(),
+            source("context.auto_compact"),
         ),
         EffectiveConfigRowViewModel(
             "tool_output.max_chars",

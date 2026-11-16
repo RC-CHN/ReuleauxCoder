@@ -56,7 +56,7 @@ def _profile(name: str) -> SimpleNamespace:
         reasoning_replay_mode=None,
         reasoning_replay_placeholder=None,
         max_context_tokens=100_000,
-        context=ContextStrategyOverrides(auto_snip=False),
+        context=ContextStrategyOverrides(auto_compact=False),
     )
 
 
@@ -71,7 +71,7 @@ def _config() -> SimpleNamespace:
         active_mode=None,
         llm_debug_trace=False,
         approval=SimpleNamespace(default_mode="warn", rules=[]),
-        context=ContextConfig(auto_snip=True, auto_summarize=False),
+        context=ContextConfig(auto_compact=True),
         max_context_tokens=128_000,
     )
 
@@ -135,9 +135,7 @@ def test_runtime_state_round_trip_restores_switched_profile(debug_trace) -> None
     assert restored.active_main_model_profile == "sonnet"
     assert restored.context.max_tokens == 100_000
     assert restored.context.strategy_settings == {
-        "auto_snip": False,
-        "auto_summarize": False,
-        "auto_collapse": True,
+        "auto_compact": False,
     }
 
 
@@ -156,9 +154,7 @@ def test_fresh_session_uses_config_profile_and_debug_defaults(debug_trace) -> No
     assert agent.llm.reconfigured_with["debug_trace"] is debug_trace
     assert agent.context.max_tokens == 100_000
     assert agent.context.strategy_settings == {
-        "auto_snip": False,
-        "auto_summarize": False,
-        "auto_collapse": True,
+        "auto_compact": False,
     }
 
 

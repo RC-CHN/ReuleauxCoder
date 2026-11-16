@@ -1,230 +1,75 @@
-import json
-import threading
+from copy import deepcopy
 
-from reuleauxcoder.domain.history import HistoryLedger
+import pytest
+
 from reuleauxcoder.domain.context.summary import (
-    build_summary_document,
-    generate_summary,
-    project_summary_input,
-    validate_summary_document,
+    CompactionError, SUMMARY_SECTIONS, generate_summary,
 )
-from reuleauxcoder.services.llm.client import LLMRequestCancelled
+from reuleauxcoder.domain.llm.models import LLMResponse
 
 
-class DummyResponse:
-    def __init__(self, content: str):
-        self.content = content
+def checkpoint_text(detail="Preserve the original task and its constraints."):
+    return "\n\n".join(f"## {heading}\n- {detail}" for heading in SUMMARY_SECTIONS)
 
 
-class DummyLLM:
-    def __init__(self, content):
-        self.contents = list(content) if isinstance(content, list) else [content]
+class SummaryLLM:
+    def __init__(self, content=None, *, finish_reason="stop", tool_calls=()):
         self.calls = []
-        self.call_kwargs = []
+        self.content = checkpoint_text() if content is None else content
+        self.finish_reason = finish_reason
+        self.tool_calls = list(tool_calls)
 
-    def chat(self, messages, **kwargs):
-        self.calls.append(messages)
-        self.call_kwargs.append(kwargs)
-        index = min(len(self.calls) - 1, len(self.contents) - 1)
-        return DummyResponse(self.contents[index])
-
-
-class FailingLLM:
-    def chat(self, messages, **kwargs):
-        raise RuntimeError("boom")
+    def chat(self, **kwargs):
+        self.calls.append(deepcopy(kwargs))
+        return LLMResponse(content=self.content, finish_reason=self.finish_reason,
+                           tool_calls=self.tool_calls, prompt_tokens=100,
+                           completion_tokens=50, cached_input_tokens=80)
 
 
-def test_generate_summary_uses_llm_when_available() -> None:
-    enrichment = build_summary_document([])
-    enrichment["progress"]["completed"] = ["Validated the checkpoint schema"]
-    llm = DummyLLM(json.dumps(enrichment))
-    result = generate_summary([{"role": "user", "content": "hello"}], llm=llm)
-    document = json.loads(result)
-    assert document["user_intent"]["explicit_requests"] == [
-        {"event_ref": "message:0", "text": "hello"}
-    ]
-    assert document["progress"]["completed"] == ["Validated the checkpoint schema"]
+def test_summary_reuses_full_prefix_tools_route_metadata_and_native_reasoning():
+    prefix = [{"role": "system", "content": "original system"},
+              {"role": "user", "content": "<context_summary>old constraints</context_summary>"}]
+    prefix += [{"role": "assistant", "content": f"round {i} " + "detail " * 500}
+               for i in range(30)]
+    prefix[-1]["provider_data"] = {"request_mode": "responses",
+                                  "items": [{"type": "reasoning", "encrypted_content": "opaque"}]}
+    original = deepcopy(prefix)
+    tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+    llm = SummaryLLM()
+    response = generate_summary(prefix, llm, tools=tools, session_id="same-session",
+                                metadata={"image_turn_id": "turn"}, max_output_tokens=8192)
+    call = llm.calls[0]
+    assert prefix == original
+    assert call["messages"][:-1] == prefix
+    assert call["tools"] == tools
+    assert call["session_id"] == "same-session"
+    assert call["metadata"] == {"image_turn_id": "turn", "purpose": "compaction", "volatile_tail": True}
+    assert "PRIOR checkpoint" in call["messages"][-1]["content"]
+    assert response.cached_input_tokens == 80
     assert len(llm.calls) == 1
-    assert llm.call_kwargs[0]["max_output_tokens"] == 4096
 
 
-def test_generate_summary_repairs_invalid_model_output_once() -> None:
-    repaired = build_summary_document([])
-    repaired["progress"]["completed"] = ["repaired valid JSON"]
-    llm = DummyLLM(["not json", json.dumps(repaired)])
-
-    document = json.loads(generate_summary([], llm=llm))
-
-    assert document["progress"]["completed"] == ["repaired valid JSON"]
-    assert len(llm.calls) == 2
-    assert llm.call_kwargs[1]["max_output_tokens"] == 2048
-
-
-def test_generate_summary_falls_back_when_llm_fails() -> None:
-    result = generate_summary(
-        [{"content": "Decision: continue with tests in app.py"}],
-        llm=FailingLLM(),
-    )
-    assert "app.py" in result
-    assert "Decision" in result
+@pytest.mark.parametrize("content,finish,tools", [
+    ("", "stop", []),
+    ("just some text", "stop", []),
+    ("\n".join(f"## {heading}" for heading in SUMMARY_SECTIONS), "stop", []),
+    (checkpoint_text(), "length", []),
+    (checkpoint_text(), "max_tokens", []),
+    (checkpoint_text(), "incomplete", []),
+    (checkpoint_text(), "stop", [object()]),
+])
+def test_incomplete_or_non_summary_output_never_falls_back(content, finish, tools):
+    llm = SummaryLLM(content, finish_reason=finish, tool_calls=tools)
+    observed = []
+    with pytest.raises(CompactionError):
+        generate_summary([], llm, tools=[], max_output_tokens=1024, on_response=observed.append)
+    assert len(llm.calls) == 1
+    assert len(observed) == 1
 
 
-def test_generate_summary_propagates_turn_cancellation() -> None:
-    cancellation = threading.Event()
-
-    class CancelledLLM:
-        def chat(self, messages, **kwargs):
-            assert kwargs["cancellation_event"] is cancellation
-            cancellation.set()
-            raise LLMRequestCancelled("cancelled")
-
-    try:
-        generate_summary([], llm=CancelledLLM(), cancellation_event=cancellation)
-    except LLMRequestCancelled:
-        pass
-    else:
-        raise AssertionError("summary cancellation must stop the current turn")
-
-
-def test_summary_projection_never_splits_a_tool_batch() -> None:
-    messages = []
-    for index in range(3):
-        messages.extend(
-            [
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {"id": f"call-{index}", "function": {"name": "read_file"}}
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": f"call-{index}",
-                    "content": "result",
-                },
-            ]
-        )
-
-    projected = project_summary_input(messages, max_rounds=2)
-
-    assert "1 older complete API rounds" in projected[0]["content"]
-    assert [item.get("tool_call_id") for item in projected] == [
-        None,
-        None,
-        "call-1",
-        None,
-        "call-2",
-    ]
-
-
-def test_summary_validation_rejects_wrong_nested_types() -> None:
-    document = build_summary_document([])
-    document["scope"]["summarized_rounds"] = "3"
-    assert validate_summary_document(document) is False
-
-
-def test_summary_projection_compacts_one_oversized_round_without_splitting_it() -> None:
-    messages = [
-        {
-            "role": "assistant",
-            "content": [
-                {"type": "image_url", "id": "diagram"},
-                {"type": "text", "text": "inspect image"},
-            ],
-            "tool_calls": [
-                {
-                    "id": "call",
-                    "function": {
-                        "name": "shell",
-                        "arguments": "x" * 10_000,
-                    },
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": "call", "content": "y" * 10_000},
-    ]
-
-    projected = project_summary_input(messages, max_chars=1_500)
-
-    assert len(projected) == 2
-    assert projected[0]["tool_calls"][0]["id"] == "call"
-    assert projected[1]["tool_call_id"] == "call"
-    assert "image_url source=diagram" in projected[0]["content"]
-    assert "payload omitted" in projected[1]["content"]
-
-
-def test_deterministic_summary_uses_ledger_provenance_and_control_facts() -> None:
-    ledger = HistoryLedger(session_id="session", agent_id="root")
-    user_event = ledger.append_message(
-        {"role": "user", "content": "必须保留真实历史"}, source="user_input"
-    )
-    ledger.append(
-        "approval_requested",
-        {"request_id": "approval-1", "tool_name": "edit_file"},
-    )
-    ledger.append(
-        "subagent_job_changed",
-        {
-            "job_id": "sj_active",
-            "status": "running",
-            "task": "verify history",
-            "worktree_path": "/tmp/worktree",
-        },
-    )
-    ledger.append("context_checkpoint", {"checkpoint_id": "cp_previous"})
-
-    document = json.loads(
-        generate_summary(
-            [{"role": "user", "content": "必须保留真实历史"}],
-            history_events=ledger.events,
-        )
-    )
-
-    assert (
-        document["user_intent"]["explicit_requests"][0]["event_ref"]
-        == user_event.event_id
-    )
-    assert "approval-1: edit_file" in document["agent_state"]["pending_approvals"]
-    assert any(
-        "sj_active: running" in item
-        for item in document["agent_state"]["active_subagents"]
-    )
-    assert document["code_state"]["worktrees_and_commits"] == [
-        "sj_active: /tmp/worktree"
-    ]
-    assert document["provenance"]["source_checkpoint_ids"] == ["cp_previous"]
-    assert user_event.event_id in document["provenance"]["source_event_ids"]
-
-
-def test_summary_sources_resolve_exact_messages_and_cannot_be_invented(tmp_path):
-    from reuleauxcoder.infrastructure.persistence.history_query import SessionHistory
-
-    directory = tmp_path / "session"
-    directory.mkdir()
-    ledger = HistoryLedger(session_id="session", sink_path=directory / "events.jsonl")
-    messages = [
-        {"role": "user", "content": "shared prefix " * 100 + ending}
-        for ending in ("Windows Terminal", "VS Code Remote")
-    ]
-    events = [ledger.append_message(message, source="user") for message in messages]
-    enrichment = build_summary_document([])
-    enrichment["provenance"]["source_event_ids"] = ["invented-source"]
-    enrichment["user_intent"]["explicit_requests"] = [
-        {"text": "invented request", "event_ref": "invented-source"}
-    ]
-    document = json.loads(
-        generate_summary(
-            messages, history_events=ledger.events, llm=DummyLLM(json.dumps(enrichment))
-        )
-    )
-    references = [
-        request["event_ref"] for request in document["user_intent"]["explicit_requests"]
-    ]
-    assert references == [event.event_id for event in events]
-    assert "invented-source" not in document["provenance"]["source_event_ids"]
-    history = SessionHistory(tmp_path)
-    assert [
-        history.read("session", event_id=reference).records[0].content
-        for reference in references
-    ] == [message["content"] for message in messages]
+def test_accounting_failure_propagates_instead_of_becoming_summary_failure():
+    def broken_accounting(response):
+        raise OSError("ledger unavailable")
+    with pytest.raises(OSError, match="ledger unavailable"):
+        generate_summary([], SummaryLLM(), tools=[], max_output_tokens=1024,
+                         on_response=broken_accounting)

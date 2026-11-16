@@ -189,10 +189,8 @@ def resolve_layers(
                     )
                 )
         for field in (
-            "snip_keep_recent_tools",
-            "snip_threshold_chars",
-            "snip_min_lines",
-            "summarize_keep_recent_turns",
+            "compaction_retries",
+            "max_overflow_retries",
         ):
             if getattr(config.context, field) < 0:
                 issues.append(

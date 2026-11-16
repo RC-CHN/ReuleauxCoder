@@ -270,10 +270,11 @@ class Agent:
             self.context = ContextManager(
                 max_tokens=max_context_tokens,
                 **strategies,
-                snip_keep_recent_tools=context_cfg.snip_keep_recent_tools,
-                snip_threshold_chars=context_cfg.snip_threshold_chars,
-                snip_min_lines=context_cfg.snip_min_lines,
-                summarize_keep_recent_turns=context_cfg.summarize_keep_recent_turns,
+                threshold_ratio=context_cfg.threshold_ratio,
+                retain_ratio=context_cfg.retain_ratio,
+                summary_max_tokens=context_cfg.summary_max_tokens,
+                compaction_retries=context_cfg.compaction_retries,
+                max_overflow_retries=context_cfg.max_overflow_retries,
                 token_fudge_factor=getattr(context_cfg, "token_fudge_factor", 1.1),
                 reserved_output_tokens=getattr(
                     context_cfg, "reserved_output_tokens", 8192
@@ -659,7 +660,9 @@ class Agent:
             if record:
                 self.persist_runtime_snapshot()
 
-    def maybe_compress_context(self, llm, *, reason: str) -> bool:
+    def maybe_compress_context(self, llm, *, reason: str, request_messages=None,
+                               request_tools=None, output_tokens=None,
+                               trigger="pressure") -> bool:
         # Never start a model-backed compression while the user is trying to
         # unwind the turn. If cancellation lands after this check, propagate
         # the same turn-scoped event into the summary request.
@@ -672,14 +675,26 @@ class Agent:
             baseline_epoch,
         )
         with self._context_revision_lock:
+            request = self._loop._projection.compaction_request(
+                request_messages, request_tools, output_tokens,
+            )
             source_revision = self._context_revision
             candidate = [dict(message) for message in self.state.messages]
+            def before_commit():
+                from reuleauxcoder.domain.context.summary import CompactionError
+                if source_revision != self._context_revision:
+                    raise CompactionError("History changed during compaction; the checkpoint was not committed.")
             try:
                 compressed = self.context.maybe_compress(
                     candidate,
                     llm,
                     history_events=self.history_ledger.events,
                     cancellation_event=cancellation,
+                    request=request,
+                    trigger=trigger,
+                    on_summary=self._record_compaction_response,
+                    remaining_tokens=self._remaining_compaction_tokens,
+                    before_commit=before_commit,
                 )
             except LLMRequestCancelled:
                 if self.stop_requested():
@@ -712,13 +727,23 @@ class Agent:
             track_usage(self.goal_controller.turn_usage_recorder()),
             self._context_revision_lock,
         ):
+            request = self._loop._projection.compaction_request()
             candidate = [dict(message) for message in self.state.messages]
+            source_revision = self._context_revision
+            def before_commit():
+                from reuleauxcoder.domain.context.summary import CompactionError
+                if source_revision != self._context_revision:
+                    raise CompactionError("History changed during compaction; the checkpoint was not committed.")
             if not self.context.force_compress(
                 candidate,
                 strategy,
                 llm,
                 history_events=self.history_ledger.events,
                 cancellation_event=self._stop_event,
+                request=request,
+                on_summary=self._record_compaction_response,
+                remaining_tokens=self._remaining_compaction_tokens,
+                before_commit=before_commit,
             ):
                 return False
             checkpoint = self.context.checkpoints[-1]
@@ -728,6 +753,33 @@ class Agent:
                 checkpoint_id=checkpoint.id,
             )
             return True
+
+    def _remaining_compaction_tokens(self) -> int | None:
+        if self.max_total_tokens is None:
+            return None
+        return self.max_total_tokens - self.state.total_prompt_tokens - self.state.total_completion_tokens
+
+    def _record_compaction_response(self, response) -> None:
+        """Account for auxiliary usage without replacing normal-request calibration."""
+        from reuleauxcoder.domain.context.replay import content_hash
+        self.state.total_model_calls += 1
+        self.state.total_prompt_tokens += response.prompt_tokens
+        self.state.total_completion_tokens += response.completion_tokens
+        self.history_ledger.append(
+            "compaction_response",
+            {
+                "request_hash": content_hash(getattr(self.llm, "last_dispatched_request", None)),
+                "model": self.llm.model,
+                "request_mode": getattr(self.llm, "request_mode", "chat-completions"),
+                "content": response.content,
+                "finish_reason": getattr(response, "finish_reason", None),
+                "prompt_tokens": response.prompt_tokens,
+                "completion_tokens": response.completion_tokens,
+                "cached_input_tokens": response.cached_input_tokens,
+                "image_attempts": [dict(item) for item in getattr(self.llm, "last_image_attempts", ())],
+            },
+            agent_id=self.agent_id, turn_id=self._current_turn_id,
+        )
 
     def restore_history_runtime(self, session) -> tuple[HistoryEvent, ...]:
         if self._session_persist_callback is not None:

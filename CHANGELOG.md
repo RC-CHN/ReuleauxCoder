@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Replace automatic snip/summary/collapse stages with one cache-friendly prefix checkpoint. Measure the complete prepared request, retain recent complete rounds by token budget, merge earlier checkpoints, validate effective reduction and bound context-overflow recovery.
+- Make `/compact` run the same checkpoint policy directly. Preserve original history on failed, truncated or ineffective summaries, record auxiliary usage separately, and propagate context settings to isolated workers. See `docs/context-compaction.md` for migration from the removed context settings.
+
 ## 0.11.9 - 2026-11-04
 
 - Add workspace-path image input. Clipboard uploads are stored under `.rcoder/attachments`; canonical history, previews and `view_image(path)` use workspace paths, while bounded local/remote reads feed the existing image store and content-addressed variants. Text-only models retain references with explicit placeholders and recover eligible images after switching to a vision model.

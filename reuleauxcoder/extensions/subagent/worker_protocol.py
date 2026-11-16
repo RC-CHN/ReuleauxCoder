@@ -68,9 +68,8 @@ class WorkerSpec:
     max_tool_calls: int | None
     max_tokens: int | None
     working_directory: str | None = None
-    auto_snip: bool = True
-    auto_summarize: bool = True
-    auto_collapse: bool = True
+    auto_compact: bool = True
+    context_options: dict[str, Any] = field(default_factory=dict)
     replay_messages: tuple[dict[str, Any], ...] = ()
     resume_directives: tuple[str, ...] = ()
     initial_prompt_tokens: int = 0
@@ -119,11 +118,8 @@ class WorkerSpec:
             max_tool_calls=_optional_int(values, "max_tool_calls"),
             max_tokens=_optional_int(values, "max_tokens"),
             working_directory=_optional_str(values, "working_directory"),
-            auto_snip=_optional_bool(values, "auto_snip", default=True),
-            auto_summarize=_optional_bool(
-                values, "auto_summarize", default=True
-            ),
-            auto_collapse=_optional_bool(values, "auto_collapse", default=True),
+            auto_compact=_optional_bool(values, "auto_compact", default=True),
+            context_options=_require_object(values.get("context_options", {}), "context_options"),
             replay_messages=tuple(
                 _require_object(message, "replay message") for message in messages
             ),

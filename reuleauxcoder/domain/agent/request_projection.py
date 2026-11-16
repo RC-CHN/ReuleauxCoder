@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import json
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Protocol
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from reuleauxcoder.domain.llm.context_messages import (
     normalize_provider_message_roles,
     synthetic_user_message,
 )
+from reuleauxcoder.domain.context.summary import CompactionError, CompactionRequest
+from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 
 
 _SINGLE_SYSTEM_PROTOCOL_MARKER = "# Runtime Context Protocol"
@@ -124,6 +127,67 @@ class RequestProjector:
                 llm, "reasoning_replay_placeholder", None
             ),
         }
+
+    def compaction_request(
+        self, messages: list[dict] | None = None, tools: list[dict] | None = None,
+        output_tokens: int | None = None,
+    ) -> CompactionRequest:
+        """Capture the prepared request without executing dispatch side effects."""
+        agent = self.agent
+        if messages is None:
+            messages = self._full_messages()
+            tools = self._tool_schemas()
+            context = BeforeLLMRequestContext(
+                hook_point=HookPoint.BEFORE_LLM_REQUEST,
+                messages=deepcopy(messages), tools=tools,
+                request_params={"tools": tools, "max_tokens": agent.llm.max_tokens},
+                model=agent.llm.model,
+                session_id=getattr(agent, "current_session_id", None),
+                turn_id=getattr(agent, "_current_turn_id", None),
+            )
+            registry = agent.hook_registry
+            for decision in registry.run_guards(HookPoint.BEFORE_LLM_REQUEST, context):
+                if not decision.allowed:
+                    raise CompactionError(decision.reason or "Summary request denied by a request guard.")
+            context = registry.run_transforms(HookPoint.BEFORE_LLM_REQUEST, context)
+            messages = normalize_provider_message_roles(context.messages)
+            tools = context.request_params.get("tools") or []
+            output_tokens = context.request_params.get("max_tokens")
+
+        sources = getattr(agent.llm, "image_projection_sources", {})
+
+        def identity(message):
+            original = sources.get(content_hash(message), message)
+            return content_hash({key: original.get(key) for key in (
+                "role", "content", "tool_call_id", "tool_calls",
+            )})
+
+        identities = [identity(message) for message in messages]
+        positions = []
+        cursor = 1
+        for message in agent.state.messages:
+            expected = identity(message)
+            try:
+                position = identities.index(expected, cursor)
+            except ValueError as error:
+                raise CompactionError("Cannot map the prepared request to unchanged session history.") from error
+            positions.append(position)
+            cursor = position + 1
+        if positions and positions != list(range(positions[0], positions[0] + len(positions))):
+            raise CompactionError("A request hook interleaves history; no safe prefix replacement is available.")
+        return CompactionRequest(
+            messages=deepcopy(messages), tools=deepcopy(tools or []),
+            history_positions=tuple(positions),
+            output_tokens=int(output_tokens or agent.llm.max_tokens),
+            session_id=getattr(agent, "current_session_id", None),
+            metadata={
+                "agent_id": agent.agent_id,
+                "turn_id": getattr(agent, "_current_turn_id", None),
+                "image_turn_id": getattr(agent, "image_turn_id", None),
+                "image_retention": getattr(getattr(getattr(agent, "runtime_config", None), "context", None),
+                                           "image_retention", "history"),
+            },
+        )
 
     @staticmethod
     def _dir_listing(cwd: str, max_entries: int = 50) -> tuple[int, str] | None:

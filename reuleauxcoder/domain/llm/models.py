@@ -28,6 +28,7 @@ class LLMResponse:
     completion_tokens: int = 0
     cached_input_tokens: int | None = None
     provider_data: dict | None = None
+    finish_reason: str | None = None
     tokens: list[str] = field(
         default_factory=list
     )  # Streamed tokens for event emission

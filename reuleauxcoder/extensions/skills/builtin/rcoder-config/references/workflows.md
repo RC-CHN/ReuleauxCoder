@@ -107,9 +107,7 @@ models:
   profiles:
     main:
       context:
-        auto_snip: null
-        auto_summarize: false
-        auto_collapse: null
+        auto_compact: false
 ```
 
 Null inherits the global switch here; it does not disable all compression. Disabling summaries may reduce extra summary requests but can reach capacity sooner.

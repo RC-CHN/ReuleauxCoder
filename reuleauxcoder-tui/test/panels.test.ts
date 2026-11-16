@@ -7,37 +7,24 @@ import {RpcPeer} from '@reuleauxcoder/client/node';
 import {TuiController} from '../src/state/controller.js';
 import type {View} from '@reuleauxcoder/client';
 import type {Action} from '@reuleauxcoder/client';
-import {panelRows} from '../src/ui/panels.js';
 
-test('compact opens choices and sends a typed strategy without a text form', async t => {
+test('compact submits directly without a strategy picker', async t => {
   const peer = new RpcPeer(new PassThrough(), new PassThrough());
   const client = new RuntimeClient(peer);
   const controller = new TuiController(client);
   t.after(() => {controller.dispose(); peer.close();});
   const calls: any[] = [];
-  const action: Action = {action_id: 'system.compact', feature_id: 'system', description: 'Compact context', preview: true,
-    parameters: [{name: 'force_strategy', kind: 'text', required: false, nullable: true, default: null}], triggers: [{kind: 'slash', value: '/compact'}]};
-  client.panel = async () => ({refresh: 'update', definition: {
-    view_type: 'compact', title: 'Compact · estimated 1,200 / 8,000 tokens',
-    items: ['summarize', 'snip', 'collapse'].map(strategy => ({label: strategy, description: '', current: false, action: {action_id: action.action_id, command: {force_strategy: strategy}}})),
-    children: [], filterable: false, keep_open_on_submit: false, return_to_parent_on_submit: false, show_auxiliary_actions: false,
-  }});
+  const action: Action = {action_id: 'system.compact', feature_id: 'system', description: 'Compact context', preview: false,
+    parameters: [], triggers: [{kind: 'slash', value: '/compact'}]};
+  client.panel = async () => {throw new Error('compact has no panel');};
   client.submitAction = async (id, command) => {
     calls.push({id, command});
-    if (!command?.force_strategy) controller.session.emit('view', {action: 'open', title: 'Compact', focus: true, view_model: {}, reuse_key: 'compact'}, {});
     return {} as any;
   };
   await controller.openMenu({name: '/compact', title: 'Compact', actions: [action]});
-  await nextTurn();
-  assert.equal(controller.screen?.kind, 'list');
-  if (controller.screen?.kind !== 'list') throw new Error('missing compact picker');
-  assert.deepEqual(controller.screen.items.map(item => item.label), ['summarize', 'snip', 'collapse']);
-  assert(!panelRows(controller, 80, 12)!.rows.join('\n').includes('Filter options'));
-  await controller.key('x', {});
-  assert.equal(controller.screen.filter.text, '');
-  await controller.key('', {downArrow: true});
   await controller.key('', {return: true});
-  assert.deepEqual(calls.at(-1), {id: 'system.compact', command: {force_strategy: 'snip'}});
+  await nextTurn();
+  assert.deepEqual(calls, [{id: 'system.compact', command: undefined}]);
   assert.equal(controller.screen, undefined);
 });
 

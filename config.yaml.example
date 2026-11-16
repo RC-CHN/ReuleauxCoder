@@ -16,7 +16,7 @@ models:
       # Optional automatic context-policy overrides; omitted fields inherit
       # the global context section below.
       # context:
-      #   auto_snip: false
+      #   auto_compact: false
       # Keep provider-returned reasoning_content in history for later rounds.
       preserve_reasoning_content: true
       # For stricter gateways, inject an empty reasoning_content on assistant tool-call
@@ -125,26 +125,17 @@ approval:
 #     detail_max_base64_bytes: 2097152     # 2 MiB Base64 for detail/ROI
 #     originals_cache_max_bytes: 1073741824 # 1 GiB originals per session
 
-# Optional context compression settings. Omit to use defaults.
+# Context compaction; see docs/context-compaction.md.
 # context:
-#   image_retention: history # history | user_turn; steering/goal continuations keep the turn.
-#   # Automatic strategies are independent; manual /compact force remains available.
-#   auto_snip: true
-#   auto_summarize: true
-#   auto_collapse: true
-#   # A models.profiles.<name>.context section may override any switch above.
-#   # Number of recent tool calls to protect from snipping.
-#   snip_keep_recent_tools: 5
-#   # Min content length (chars) to trigger tool output snip.
-#   snip_threshold_chars: 1500
-#   # Min line count to trigger tool output snip.
-#   snip_min_lines: 6
-#   # Number of recent complete API rounds to protect during LLM summarize.
-#   summarize_keep_recent_turns: 5
-#   # Reserve output and safety headroom before calculating input thresholds.
+#   image_retention: history # history | user_turn
+#   auto_compact: true
+#   threshold_ratio: 0.8
+#   retain_ratio: 0.16
+#   summary_max_tokens: 8192
+#   compaction_retries: 1
+#   max_overflow_retries: 1
 #   reserved_output_tokens: 8192
 #   safety_margin_tokens: 2048
-#   # Optional estimates for stable prompt/tool-schema overhead.
 #   fixed_prompt_tokens: 0
 #   tool_schema_tokens: 0
 

@@ -66,7 +66,7 @@ def _build_ctx() -> SimpleNamespace:
         max_tokens=8000,
         temperature=0.2,
         max_context_tokens=200000,
-        context=ContextStrategyOverrides(auto_snip=False),
+        context=ContextStrategyOverrides(auto_compact=False),
     )
     config = Config(
         model="base-model",
@@ -77,7 +77,7 @@ def _build_ctx() -> SimpleNamespace:
         active_model_profile="alpha",
         active_sub_model_profile="alpha",
         max_context_tokens=64000,
-        context=ContextConfig(auto_snip=True, auto_summarize=False),
+        context=ContextConfig(auto_compact=True),
     )
     llm = FakeLLM()
     agent = SimpleNamespace(
@@ -102,16 +102,14 @@ def test_switch_model_is_session_scoped() -> None:
     assert ctx.config.active_model_profile == "alpha"
     assert ctx.agent.context.max_tokens == 200000
     assert ctx.agent.context.strategy_settings == {
-        "auto_snip": False,
-        "auto_summarize": False,
-        "auto_collapse": True,
+        "auto_compact": False,
     }
     assert result.state["active_main_profile"] == "beta"
     assert result.state["active_sub_profile"] == "alpha"
     beta = next(
         profile for profile in result.state["profiles"] if profile["name"] == "beta"
     )
-    assert beta["automatic_strategies"] == ("collapse",)
+    assert beta["automatic_strategies"] == ()
 
 
 def test_use_main_model_alias_switches_session_main_model() -> None:
