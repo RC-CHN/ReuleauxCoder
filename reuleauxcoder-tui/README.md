@@ -124,12 +124,12 @@ Enter 立即清空已发送的草稿。发送中和排队中的消息留在输�
 | `/session`、`/save`、`/new` | 浏览、恢复、保存、新建会话 |
 | `/reset`、`/compact`、`/quit` | 清空、压缩、保存退出 |
 
-`/compact` 直接打开策略面板：默认选中旧对话摘要，也可选择精简工具输出或深度压缩；只有深度压缩需要额外确认。面板显示后端估计的上下文用量，执行后报告前后变化。CLI 复用同一组选项；`/compact force <snip|summarize|collapse>` 仍可直接指定策略。
+`/compact` 直接使用与自动压缩相同的前缀摘要策略，保留近期完整轮次，执行后报告上下文用量变化。摘要请求复用原有请求前缀，便于命中提供商缓存；失败或无效摘要不会替换原始历史。已移除工具 snip、深度压缩和 `/compact force <strategy>`，旧配置项的替换方式见[迁移说明](../docs/context-compaction.md#configuration-and-migration)。
 
 `/ps` 按命令选择进程，显示状态、耗时和本地/远端来源；已结束进程放在二级列表。进入详情自动读取输出，↑↓ 选择操作、Enter 执行、PgUp/PgDn 滚动、Home/End 查看进程信息或最新输出。刷新、打断和密文输入后仍留在详情页，终止进程树需要确认；Esc 只关闭面板。人工输出保留每个流最近 8,000 字符，读取游标独立于模型，重新进入详情不会丢掉已读输出。CLI 的显式 `/ps poll|interrupt|terminate <id>` 和 `/stop <id|all>` 仍可用。
 | `/help`、`/config`、`/tokens`、`/status`、`/debug` | 帮助、配置、token、性能与调试 |
 
-`View all details` 展示视图的全部字段。命令帮助里保留的旧 CLI 语法是后端参考信息；新版输入区的 slash 用于打开一级菜单。
+`View all details` 展示视图的全部字段。命令搜索优先匹配完整 slash 名称，再匹配前缀和描述；`/mode` 排在 `/model` 前面，具体子命令可直接进入对应表单。模型菜单不重复展示简写别名，会话设置排在工作区默认设置之前。
 
 | 内容/交互 | 新版位置 |
 | --- | --- |
@@ -153,12 +153,13 @@ Enter 立即清空已发送的草稿。发送中和排队中的消息留在输�
 | Alt+Enter / Shift+Enter | 换行；Shift+Enter 取决于终端是否发送独立键码 |
 | `/` / Ctrl+P | 命令菜单；Ctrl+P 保留草稿 |
 | Esc | 返回、关闭菜单或取消交互 |
-| ↑↓ | 菜单选择；输入为空时滚动会话，否则浏览输入历史 |
+| ↑↓ | 菜单或队列选择；草稿内按可见行移动，空输入时回溯输入历史 |
 | Alt+↑↓ | 浏览输入历史，包括空输入时 |
 | PgUp / PgDn | 滚动当前内容；长菜单翻页 |
-| Home / End | 空输入时跳到会话开头 / 跟随最新输出；编辑时移动光标 |
+| Home / End | 输入行开头 / 结尾；Ctrl+Home/End 跳到会话开头 / 跟随最新输出 |
 | F1 / Ctrl+G | 快捷键帮助 |
 | F2 / Ctrl+O | 会话、计划、进程、子 Agent 和启动详情 |
+| F3 | 聚焦队尾消息；↑↓ 选择，Enter 撤回编辑，Delete 取消发送，Esc/F3 返回草稿 |
 | F4 / Ctrl+R | 切换整个会话记录的详细视图：工具参数/完整输出、reasoning、LSP 诊断 |
 | Ctrl+A/E、Ctrl+U/K/W | 移动光标及删除文本 |
 | Ctrl+C | 依次取消交互、关闭菜单、清空草稿、中断运行、确认退出；停止期间再次按下退出 |
@@ -188,7 +189,7 @@ F2 会话详情内按 `h` 浏览完整历史：`n/p` 翻页、`/` 搜索、方�
 
 滚动按键先立即移动一行，再缓动到目标位置；后续滚动帧直接通知视图，不再经过后端事件使用的 16ms 合并窗口。连续输入累计距离，反向、End 和切换面板会取消旧目标。滚动时复用未变化的侧栏和文本区域，重要运行状态仍正常更新。
 
-排队中的 Prompt 和 Command 在输入栏上方的 `QUEUED` 区域显示内容预览；F2 会话详情可查看完整文本及全部队列。队列由后端快照驱动，执行或取消后自动移除，队列清空后隐藏整个区域。
+排队中的 Prompt 和 Command 在输入栏上方的 `QUEUED` 区域显示内容预览；F2 会话详情可查看完整文本及全部队列。F3 管理尚未应用的消息，撤回不停止当前任务。输入框已有草稿时，撤回内容连同图片保留在队列区，清空草稿后可再按 Enter 取回；后端确认后才移除待发送消息，已应用的消息无法撤回。CLI 和远程端使用 `/queue` 列出消息 ID，`/queue cancel <ID>` 撤回一条消息。
 
 审批：`y` / Enter 批准一次，`n` 拒绝，`s` 选择会话授权范围，`f` 输入拒绝反馈。单选支持数字 1–9。
 
@@ -271,4 +272,4 @@ npm --prefix reuleauxcoder-tui run benchmark -- --label local --json /tmp/rcoder
 
 测试使用真实 Python CommandService、RuntimeServer、codec 和 stdio，替换 LLM 循环以避免外部模型调用。涵盖全部命令目录和预览入口、参数表单、四类反向交互、工具完整信息、队列/中断、失败保存、恢复会话、Unicode、密文遮盖，以及实际 PTY 中的缩放和终端恢复。PTY 测试在 Windows 跳过。用 `RCODER_TUI_PYTHON` 指定测试 Python 环境；它必须安装本仓库 Python 包及依赖。
 
-Ink 7 的 `useInput` 不暴露 F1、F2、F4，适配集中在 `src/ui/terminal.ts`；升级锁定的 Ink 版本时运行终端测试。Ctrl+G/O/R 同时提供替代键位。
+Ink 7 的 `useInput` 不暴露 F1–F4，适配集中在 `src/ui/terminal.ts`；升级锁定的 Ink 版本时运行终端测试。Ctrl+G/O/R 分别为 F1/F2/F4 提供替代键位。
