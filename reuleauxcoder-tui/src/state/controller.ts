@@ -1,7 +1,7 @@
 import {EventEmitter} from 'node:events';
 import {isDeepStrictEqual} from 'node:util';
 import type {Key} from 'ink';
-import {RuntimeClient, commandRank, slashNames, decode, inputDraft} from '@reuleauxcoder/client';
+import {RpcTimeoutError, RuntimeClient, commandRank, slashNames, decode, inputDraft} from '@reuleauxcoder/client';
 import {attachImageFile} from '@reuleauxcoder/client/node';
 import {cancellation, record, tuple, typeOf, type Action, type ImageReference, type Json, type Panel, type PanelItem, type PendingInteraction, type View} from '@reuleauxcoder/client';
 import {SessionStore} from './session.js';
@@ -212,6 +212,7 @@ export class TuiController extends EventEmitter {
   startRefresh() {
     if (this.disposed) return;
     let refreshing = false;
+    let snapshotTimedOut = false;
     let gitRefreshing = false, nextGitRefresh = 0, lastStateRefresh = -Infinity;
     this.refreshTimer = setInterval(() => {
       if (!this.session.connected || this.closing) return;
@@ -219,7 +220,17 @@ export class TuiController extends EventEmitter {
       if (!refreshing && now - lastStateRefresh >= (this.session.state.running || this.active ? 500 : 5000)) {
         refreshing = true;
         lastStateRefresh = now;
-        void this.client.refresh().catch(error => {if (!this.disposed) {this.session.connected = false; this.session.fatal = error.message; this.fail(error);}}).finally(() => {refreshing = false;});
+        void this.client.refresh().then(() => {snapshotTimedOut = false;}).catch(error => {
+          if (this.disposed || this.closing || !this.session.connected) return;
+          if (error instanceof RpcTimeoutError) {
+            if (!snapshotTimedOut) this.session.notice('Status refresh timed out. Retrying…', 'warning');
+            snapshotTimedOut = true;
+            return;
+          }
+          this.session.connected = false;
+          this.session.fatal = error.message;
+          this.fail(error);
+        }).finally(() => {refreshing = false;});
       }
       if (this.client.info.workspace_git && !gitRefreshing && performance.now() >= nextGitRefresh) {
         gitRefreshing = true;

@@ -4,6 +4,9 @@ import type {Json} from './wire.js';
 export class RpcError extends Error {
   constructor(public code: number, message: string, public data?: Json) {super(message);}
 }
+export class RpcTimeoutError extends Error {
+  constructor(method: string) {super(`Request timed out: ${method}`);}
+}
 type Handler = (params: any) => Json | Promise<Json>;
 
 /** One reader; request handlers may wait for human input without blocking notifications. */
@@ -20,7 +23,7 @@ export class MessagePeer extends Events {
     if (this.closed) return Promise.reject(new Error('Backend disconnected'));
     const id = String(++this.nextId);
     return new Promise((resolve, reject) => {
-      const timer = timeout === null ? undefined : setTimeout(() => {this.pending.delete(id); reject(new Error(`Request timed out: ${method}`));}, timeout);
+      const timer = timeout === null ? undefined : setTimeout(() => {this.pending.delete(id); reject(new RpcTimeoutError(method));}, timeout);
       this.pending.set(id, {resolve, reject, timer});
       try {this.send({jsonrpc: '2.0', id, method, params});}
       catch (error) {clearTimeout(timer); this.pending.delete(id); reject(error);}
