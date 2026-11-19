@@ -8,6 +8,7 @@ from reuleauxcoder.domain.hooks.base import TransformHook
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.domain.context.replay import content_hash
 from reuleauxcoder.domain.llm.models import LLMResponse, ToolCall
+from reuleauxcoder.domain.llm.errors import IncompleteModelResponse
 from reuleauxcoder.domain.plan import PlanState, ProgressState
 from reuleauxcoder.domain.goal import GoalController
 from reuleauxcoder.services.llm.client import LLMRequestCancelled
@@ -377,6 +378,23 @@ class _BudgetLLM:
     def chat(self, **kwargs):
         self.calls.append(kwargs)
         return self.response
+
+
+@pytest.mark.parametrize("rounds", [0, 1], ids=["handoff", "working-round"])
+def test_incomplete_response_from_llm_port_never_commits_tool_calls(rounds):
+    response = LLMResponse(
+        tool_calls=[ToolCall("partial", "edit_file", {})],
+        provider_data={"items": [{"type": "function_call", "call_id": "partial"}]},
+        finish_reason="content_filter", prompt_tokens=25, completion_tokens=4,
+    )
+    agent = Agent(llm=_BudgetLLM(response), tools=[], max_rounds=rounds)
+    with pytest.raises(IncompleteModelResponse, match="provider filtered"):
+        agent.chat("Work")
+    assert agent.state.total_prompt_tokens == 25
+    assert agent.state.total_completion_tokens == 4
+    assert agent.state.total_tool_calls == 0
+    assert all("tool_calls" not in msg and "provider_data" not in msg for msg in agent.messages)
+    assert not any(msg["role"] == "assistant" for msg in agent.messages)
 
 
 class _HookAwareBudgetLLM(_BudgetLLM):

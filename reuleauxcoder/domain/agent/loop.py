@@ -17,13 +17,15 @@ from reuleauxcoder.domain.context.replay import (
 )
 from reuleauxcoder.domain.hooks.types import BeforeLLMRequestContext, HookPoint
 from reuleauxcoder.domain.images import image_parts
+from reuleauxcoder.domain.llm.models import LLMResponse
 from reuleauxcoder.domain.llm.context_messages import (
     mark_synthetic_user_message,
     normalize_provider_message_roles,
     synthetic_user_message,
 )
 from reuleauxcoder.domain.llm.errors import (
-    ContextWindowExceeded, LLMRequestCancelled, LLMRequestDeferred,
+    INCOMPLETE_FINISH_REASONS, ContextWindowExceeded, IncompleteModelResponse,
+    LLMRequestCancelled, LLMRequestDeferred,
 )
 from reuleauxcoder.domain.context.summary import CompactionError
 
@@ -400,6 +402,10 @@ class AgentLoop:
                     cancellation_event=cancellation,
                     max_output_tokens=max_output_tokens,
                 )
+            except IncompleteModelResponse as error:
+                # Record the dispatched request and usage through the same path as
+                # other responses before reporting the incomplete turn to its caller.
+                resp = error.response
             except _ContextPressure as pressure:
                 # This attempt never reached the provider. Auxiliary traffic is
                 # recorded with its own compaction event, not this attempt ID.
@@ -524,14 +530,54 @@ class AgentLoop:
                 request_tools or [],
                 attempt_id=attempt_id,
             )
-            return (
-                resp,
-                streamed_output,
-                local_request_estimate,
-                local_history_estimate,
-                attempt_id,
-                baseline_epoch,
+            self._record_response(resp, local_request_estimate, local_history_estimate, attempt_id)
+            return resp, streamed_output, attempt_id, baseline_epoch
+
+    def _record_response(
+        self, resp: LLMResponse, local_request_estimate: int,
+        local_history_estimate: int, attempt_id: str,
+    ) -> None:
+        cached_tokens = getattr(resp, "cached_input_tokens", None)
+        self.agent.state.total_prompt_tokens += resp.prompt_tokens
+        self.agent.state.total_completion_tokens += resp.completion_tokens
+        self.agent.context.observe_usage(
+            actual_prompt_tokens=resp.prompt_tokens,
+            cached_input_tokens=cached_tokens,
+            local_request_estimate=local_request_estimate,
+            local_history_estimate=local_history_estimate,
+            request_boundary=attempt_id,
+            model_profile=str(getattr(self.agent.llm, "model", "unknown")),
+        )
+        self.agent.history_ledger.append(
+            "usage_observed",
+            {
+                "actual_prompt_tokens": resp.prompt_tokens,
+                "cached_input_tokens": cached_tokens,
+                "local_request_estimate": local_request_estimate,
+                "local_history_estimate": local_history_estimate,
+                "request_boundary": attempt_id,
+                "attempt_id": attempt_id,
+                "model_profile": str(getattr(self.agent.llm, "model", "unknown")),
+            },
+            agent_id=self.agent.agent_id,
+            turn_id=self.agent._current_turn_id,
+            api_round_id=attempt_id,
+        )
+
+        if getattr(resp, "finish_reason", None) not in INCOMPLETE_FINISH_REASONS:
+            return
+        metadata = {"attempt_id": attempt_id, "finish_reason": resp.finish_reason}
+        if resp.content:
+            self.agent._append_message(
+                {"role": "assistant", "content": resp.content},
+                source="assistant_partial", history_metadata=metadata,
             )
+        error = IncompleteModelResponse(resp)
+        self.agent._append_message(
+            synthetic_user_message("runtime_instruction", str(error), source="response_incomplete"),
+            source="response_incomplete", history_metadata=metadata,
+        )
+        raise error
 
     def run(self) -> str:
         """Run the conversation loop."""
@@ -578,8 +624,6 @@ class AgentLoop:
             (
                 resp,
                 streamed_output,
-                local_request_estimate,
-                local_history_estimate,
                 attempt_id,
                 tool_interrupt_baseline,
             ) = dispatched_attempt
@@ -598,33 +642,6 @@ class AgentLoop:
                     turn_id=self.agent._current_turn_id,
                     api_round_id=attempt_id,
                 )
-
-            # Update token counts
-            self.agent.state.total_prompt_tokens += resp.prompt_tokens
-            self.agent.state.total_completion_tokens += resp.completion_tokens
-            self.agent.context.observe_usage(
-                actual_prompt_tokens=resp.prompt_tokens,
-                cached_input_tokens=getattr(resp, "cached_input_tokens", None),
-                local_request_estimate=local_request_estimate,
-                local_history_estimate=local_history_estimate,
-                request_boundary=attempt_id,
-                model_profile=str(getattr(self.agent.llm, "model", "unknown")),
-            )
-            self.agent.history_ledger.append(
-                "usage_observed",
-                {
-                    "actual_prompt_tokens": resp.prompt_tokens,
-                    "cached_input_tokens": getattr(resp, "cached_input_tokens", None),
-                    "local_request_estimate": local_request_estimate,
-                    "local_history_estimate": local_history_estimate,
-                    "request_boundary": attempt_id,
-                    "attempt_id": attempt_id,
-                    "model_profile": str(getattr(self.agent.llm, "model", "unknown")),
-                },
-                agent_id=self.agent.agent_id,
-                turn_id=self.agent._current_turn_id,
-                api_round_id=attempt_id,
-            )
 
             # No tool calls -> done
             if not resp.tool_calls:
@@ -749,38 +766,8 @@ class AgentLoop:
         attempt = self._dispatch_round_attempt(self.agent.max_rounds, final_handoff=True)
         if attempt is None:
             return "(sub-agent token budget exhausted before final handoff)"
-        (
-            summary_resp, summary_streamed, summary_local_request,
-            summary_local_history, attempt_id, _,
-        ) = attempt
+        summary_resp, summary_streamed, _, _ = attempt
 
         self.last_response_streamed = summary_streamed
-        self.agent.state.total_prompt_tokens += summary_resp.prompt_tokens
-        self.agent.state.total_completion_tokens += summary_resp.completion_tokens
-        self.agent.context.observe_usage(
-            actual_prompt_tokens=summary_resp.prompt_tokens,
-            cached_input_tokens=getattr(summary_resp, "cached_input_tokens", None),
-            local_request_estimate=summary_local_request,
-            local_history_estimate=summary_local_history,
-            request_boundary=attempt_id,
-            model_profile=str(getattr(self.agent.llm, "model", "unknown")),
-        )
-        self.agent.history_ledger.append(
-            "usage_observed",
-            {
-                "actual_prompt_tokens": summary_resp.prompt_tokens,
-                "cached_input_tokens": getattr(
-                    summary_resp, "cached_input_tokens", None
-                ),
-                "local_request_estimate": summary_local_request,
-                "local_history_estimate": summary_local_history,
-                "request_boundary": attempt_id,
-                "attempt_id": attempt_id,
-                "model_profile": str(getattr(self.agent.llm, "model", "unknown")),
-            },
-            agent_id=self.agent.agent_id,
-            turn_id=self.agent._current_turn_id,
-            api_round_id=attempt_id,
-        )
         self.agent._append_message(summary_resp.message, source="assistant_summary")
         return summary_resp.content or "(reached maximum tool-call rounds)"

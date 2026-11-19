@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from reuleauxcoder.domain.config.models import ModelProfileConfig
+from reuleauxcoder.domain.llm.errors import IncompleteModelResponse
 from reuleauxcoder.domain.llm.protocols import LLMProtocol
 from reuleauxcoder.domain.runtime.events import OperationPhaseChanged
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
@@ -33,6 +34,62 @@ def _sse(*events: dict) -> bytes:
 
 def _anthropic_client(handler) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_anthropic_output_limit_propagates_partial_text():
+    wire = _sse(
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Part"}},
+        {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}, "usage": {"output_tokens": 2}},
+        {"type": "message_stop"},
+    )
+    llm = LLM(model="claude-test", api_key="test", provider="anthropic")
+    llm.client = _anthropic_client(lambda request: httpx.Response(200, content=wire))
+    try:
+        with pytest.raises(IncompleteModelResponse) as raised:
+            llm.chat([{"role": "user", "content": "Work"}])
+    finally:
+        llm.close()
+    assert raised.value.response.finish_reason == "max_tokens"
+    assert raised.value.response.content == "Part"
+    assert raised.value.response.completion_tokens == 2
+
+
+@pytest.mark.parametrize("reason", ["max_output_tokens", "content_filter", None])
+def test_responses_incomplete_with_missing_usage_keeps_finish_reason(reason):
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="Part"),
+        SimpleNamespace(type="response.incomplete", response=SimpleNamespace(
+            incomplete_details=SimpleNamespace(reason=reason), output=[], usage=None,
+        )),
+    ]
+    llm = LLM(model="test", api_key="test", request_mode="responses")
+    llm.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **params: iter(events)))
+    try:
+        with pytest.raises(IncompleteModelResponse) as raised:
+            llm.chat([{"role": "user", "content": "Work"}])
+    finally:
+        llm.close()
+    assert raised.value.response.finish_reason == (reason or "incomplete")
+    assert raised.value.response.content == "Part"
+
+
+@pytest.mark.parametrize("protocol", ["responses", "anthropic"])
+def test_partial_text_followed_by_eof_without_a_terminal_event(protocol):
+    if protocol == "responses":
+        llm = LLM(model="test", api_key="test", request_mode="responses")
+        events = [SimpleNamespace(type="response.output_text.delta", delta="Part")]
+        llm.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **params: iter(events)))
+    else:
+        llm = LLM(model="test", api_key="test", provider="anthropic")
+        wire = _sse({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Part"}})
+        llm.client = _anthropic_client(lambda request: httpx.Response(200, content=wire))
+    try:
+        with pytest.raises(IncompleteModelResponse, match="before its completion event") as raised:
+            llm.chat([{"role": "user", "content": "Work"}])
+    finally:
+        llm.close()
+    assert raised.value.response.finish_reason == "stream_ended"
+    assert raised.value.response.content == "Part"
 
 
 @pytest.mark.parametrize("status,body,expected", [
@@ -174,6 +231,7 @@ def test_native_anthropic_adapter_translates_tools_and_streams_arguments() -> No
                     },
                 },
                 {"type": "message_delta", "usage": {"output_tokens": 8}},
+                {"type": "message_stop"},
             ),
         )
 
@@ -654,6 +712,8 @@ def test_responses_defaults_to_implicit_cache_and_created_starts_streaming() -> 
                     type="response.output_text.delta",
                     delta="done",
                 )
+            if self.step == 3:
+                return SimpleNamespace(type="response.completed", response=SimpleNamespace(output=[], usage=None))
             raise StopIteration
 
         def close(self) -> None:

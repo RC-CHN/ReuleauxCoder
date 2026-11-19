@@ -56,7 +56,7 @@ from reuleauxcoder.domain.llm.usage import track_usage
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
 from reuleauxcoder.domain.extensions import HookExtensionAdapter, LifecycleCoordinator
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
-from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
+from reuleauxcoder.domain.llm.errors import IncompleteModelResponse, LLMRequestCancelled
 from reuleauxcoder.domain.llm.context_messages import (
     escape_context_attribute,
     escape_context_payload,
@@ -2060,9 +2060,11 @@ class Agent:
             self.reconcile_pending_tool_calls(
                 reason=f"Interrupted due to {type(e).__name__}."
             )
+            failure = {"state": "turn_failed", "error_type": type(e).__name__}
+            if isinstance(e, IncompleteModelResponse):
+                failure["finish_reason"] = e.response.finish_reason
             self.history_ledger.append(
-                "agent_lifecycle",
-                {"state": "turn_failed", "error_type": type(e).__name__},
+                "agent_lifecycle", failure,
                 agent_id=self.agent_id,
                 turn_id=self._current_turn_id,
             )

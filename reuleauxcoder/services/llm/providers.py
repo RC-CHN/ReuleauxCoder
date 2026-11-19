@@ -344,6 +344,7 @@ class _ResponsesStream(Iterator["_Chunk"]):
         self._stream = stream
         self._events = iter(stream)
         self._liveness_emitted = False
+        self.finish_reason = "stream_ended"
         self.provider_data: dict[str, Any] | None = None
 
     def __iter__(self) -> "_ResponsesStream":
@@ -384,16 +385,25 @@ class _ResponsesStream(Iterator["_Chunk"]):
                     arguments=str(getattr(event, "delta")),
                 )
             if event_type in {"response.completed", "response.incomplete"}:
-                self.finish_reason = "incomplete" if event_type == "response.incomplete" else "stop"
                 response = getattr(event, "response")
-                self.provider_data = {
-                    "request_mode": "responses",
-                    "items": [
-                        self._serialize_item(item)
-                        for item in getattr(response, "output")
-                    ],
-                }
-                usage = getattr(response, "usage")
+                if event_type == "response.incomplete":
+                    details = getattr(response, "incomplete_details", None)
+                    reason = getattr(details, "reason", None)
+                    self.finish_reason = (
+                        reason if reason in {"max_output_tokens", "content_filter"} else "incomplete"
+                    )
+                else:
+                    self.finish_reason = "stop"
+                    self.provider_data = {
+                        "request_mode": "responses",
+                        "items": [
+                            self._serialize_item(item)
+                            for item in getattr(response, "output")
+                        ],
+                    }
+                usage = getattr(response, "usage", None)
+                if usage is None:
+                    return _Chunk()
                 details = getattr(usage, "input_tokens_details", None)
                 cached = getattr(details, "cached_tokens", None)
                 return _Chunk(
@@ -709,6 +719,7 @@ class _AnthropicStream(Iterator[_Chunk]):
         self._context = context
         self._lines = iter(response.iter_lines())
         self._closed = False
+        self.finish_reason: str | None = None
         self._input_tokens = 0
         self._output_tokens = 0
         self._cache_read_input_tokens: int | None = None
@@ -722,6 +733,7 @@ class _AnthropicStream(Iterator[_Chunk]):
                 continue
             raw = line[5:].strip()
             if raw == "[DONE]":
+                self.finish_reason = self.finish_reason or "end_turn"
                 self.close()
                 raise StopIteration
             try:
@@ -742,6 +754,7 @@ class _AnthropicStream(Iterator[_Chunk]):
                 raise ProviderProtocolError("anthropic") from None
             if chunk is not None:
                 return chunk
+        self.finish_reason = self.finish_reason or "stream_ended"
         self.close()
         raise StopIteration
 
@@ -749,6 +762,9 @@ class _AnthropicStream(Iterator[_Chunk]):
         event_type = event.get("type")
         if event_type == "error":
             raise ProviderProtocolError("anthropic", "error")
+        if event_type == "message_stop":
+            self.finish_reason = self.finish_reason or "end_turn"
+            return None
         if event_type == "message_start":
             usage = (event.get("message") or {}).get("usage") or {}
             cached = usage.get("cache_read_input_tokens")
@@ -761,7 +777,7 @@ class _AnthropicStream(Iterator[_Chunk]):
             )
             return self._usage_chunk()
         if event_type == "message_delta":
-            self.finish_reason = (event.get("delta") or {}).get("stop_reason")
+            self.finish_reason = (event.get("delta") or {}).get("stop_reason") or self.finish_reason
             usage = event.get("usage") or {}
             self._output_tokens = int(
                 usage.get("output_tokens") or self._output_tokens

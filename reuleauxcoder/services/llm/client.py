@@ -32,7 +32,8 @@ from reuleauxcoder.domain.hooks.types import (
 )
 from reuleauxcoder.domain.llm.context_messages import normalize_provider_message_roles
 from reuleauxcoder.domain.llm.errors import (
-    ContextWindowExceeded, LLMRequestCancelled, LLMRequestDeferred,
+    INCOMPLETE_FINISH_REASONS, ContextWindowExceeded, IncompleteModelResponse,
+    LLMRequestCancelled, LLMRequestDeferred,
 )
 from reuleauxcoder.domain.llm.models import ToolCall, LLMResponse
 from reuleauxcoder.domain.runtime.performance import RuntimePerformanceMonitor
@@ -1155,6 +1156,19 @@ class LLM:
             if cancellation_event is not None and cancellation_event.is_set():
                 raise LLMRequestCancelled("LLM stream cancelled")
 
+            finish_reason = getattr(stream, "finish_reason", None) or finish_reason
+            if finish_reason in INCOMPLETE_FINISH_REASONS:
+                # Even well-formed argument fragments may belong to a truncated batch.
+                # Keep partial text and usage, but never parse or replay its tool items.
+                raise IncompleteModelResponse(LLMResponse(
+                    content="".join(content_parts),
+                    reasoning_content="".join(reasoning_parts) or None,
+                    finish_reason=finish_reason,
+                    prompt_tokens=prompt_tok,
+                    completion_tokens=completion_tok,
+                    cached_input_tokens=cached_input_tok,
+                ))
+
             # Parse accumulated tool calls
             parsed: list[ToolCall] = []
             for tool_call_index, idx in enumerate(sorted(tc_map)):
@@ -1189,7 +1203,7 @@ class LLM:
                 completion_tokens=completion_tok,
                 cached_input_tokens=cached_input_tok,
                 provider_data=getattr(stream, "provider_data", None),
-                finish_reason=getattr(stream, "finish_reason", None) or finish_reason,
+                finish_reason=finish_reason,
                 tokens=tokens,
             )
 
@@ -1302,6 +1316,9 @@ class LLM:
             after_context = cast(AfterLLMResponseContext, after_context)
             finish_operation("completed", status="completed")
             return after_context.response or response
+        except IncompleteModelResponse as error:
+            finish_operation("incomplete", status="failed", detail=str(error), error_type=type(error).__name__)
+            raise
         except LLMRequestCancelled:
             finish_operation("cancelled", status="cancelled")
             raise

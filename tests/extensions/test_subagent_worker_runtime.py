@@ -8,6 +8,8 @@ from pathlib import Path
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from reuleauxcoder.domain.agent.agent import Agent
 from reuleauxcoder.domain.agent.tool_outcome import ToolOutcome
 from reuleauxcoder.domain.config.models import Config, ModelProfileConfig
@@ -162,6 +164,8 @@ def test_parent_tool_broker_classifies_effectful_scoped_tools() -> None:
 
 
 class _StreamingHandler(BaseHTTPRequestHandler):
+    finish_reason = "stop"
+
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("content-length", "0"))
         self.rfile.read(length)
@@ -184,7 +188,7 @@ class _StreamingHandler(BaseHTTPRequestHandler):
                 "object": "chat.completion.chunk",
                 "created": 0,
                 "model": "test",
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": self.finish_reason}],
                 "usage": {
                     "prompt_tokens": 100,
                     "completion_tokens": 10,
@@ -375,7 +379,9 @@ class _GuidanceHandler(BaseHTTPRequestHandler):
         _ = format, args
 
 
-def test_isolated_worker_runs_model_loop_in_spawn_process(monkeypatch) -> None:
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+def test_isolated_worker_runs_model_loop_in_spawn_process(monkeypatch, finish_reason) -> None:
+    monkeypatch.setattr(_StreamingHandler, "finish_reason", finish_reason)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StreamingHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -429,8 +435,13 @@ def test_isolated_worker_runs_model_loop_in_spawn_process(monkeypatch) -> None:
         server.shutdown()
         server.server_close()
 
-    assert result.status == "ok", result
-    assert result.summary == "Conclusion: isolated worker complete"
+    if finish_reason == "length":
+        assert result.status == "failed"
+        assert result.partial and "length" in result.summary
+    else:
+        assert result.status == "ok", result
+        assert result.summary == "Conclusion: isolated worker complete"
+    assert (result.prompt_tokens, result.completion_tokens) == (100, 10)
     assert any(
         message.get("content") == "Conclusion: isolated worker complete"
         for message in result.messages

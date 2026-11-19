@@ -101,6 +101,52 @@ def test_error_blocks_goal_without_retrying_whole_turn(runtime):
     assert runtime.client.state.goal.status == "blocked"
 
 
+@pytest.mark.parametrize("arguments", [None, '{"status":"complete"}', '{"status":'])
+def test_truncated_stream_blocks_goal_and_keeps_only_partial_text(runtime, monkeypatch, arguments):
+    from types import SimpleNamespace
+
+    from reuleauxcoder.domain.agent.loop import AgentLoop
+    from reuleauxcoder.extensions.tools.builtin.goal import UpdateGoalTool
+    from reuleauxcoder.services.llm.client import LLM
+    from tests.services.test_llm_client import _FakeChunk, _FakeUsage
+
+    calls = []
+
+    def respond(params):
+        calls.append(params)
+        tools = [] if arguments is None else [SimpleNamespace(
+            index=0, id="partial-call",
+            function=SimpleNamespace(name="update_goal", arguments=arguments),
+        )]
+        chunk = _FakeChunk(content="First half", tool_calls=tools, usage=_FakeUsage(100, 10, 80))
+        chunk.choices[0].finish_reason = "length"
+        return iter([chunk])
+
+    llm = LLM(model="test", api_key="test")
+    monkeypatch.setattr(llm, "_call_with_retry", respond)
+    runtime.agent.llm = llm
+    tool = UpdateGoalTool()
+    tool.bind_agent(runtime.agent)
+    runtime.agent.tools = [tool]
+    runtime.agent._loop = AgentLoop(runtime.agent, prompt_fn=lambda *a, **kw: "Work", shell_name="bash")
+
+    runtime.client.submit("/goal create Finish the task")
+    with pytest.raises(RpcError, match="reached its output or context limit"):
+        runtime.client.wait_idle()
+    assert len(calls) == 1
+    assert runtime.client.state.goal.status == "blocked"
+    assert runtime.client.state.goal.tokens_used == 30
+    partial = runtime.agent.messages[-2]
+    assert partial["role"] == "assistant" and partial["content"] == "First half"
+    assert "tool_calls" not in partial
+    assert "length" in runtime.agent.messages[-1]["content"]
+    events = runtime.agent.history_ledger.events
+    assert not any(event.kind == "tool_call_started" for event in events)
+    lifecycle = [event.payload for event in events if event.kind == "agent_lifecycle"]
+    assert [event["state"] for event in lifecycle] == ["turn_started", "turn_failed"]
+    assert lifecycle[-1]["finish_reason"] == "length"
+
+
 def test_budget_change_does_not_resume_and_resume_retains_cumulative_usage(runtime):
     def run():
         control = runtime.agent.goal_controller

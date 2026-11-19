@@ -24,6 +24,7 @@ from reuleauxcoder.domain.agent.tool_outcome import (
     ToolOutcomeStatus,
 )
 from reuleauxcoder.domain.llm.models import ToolCall
+from reuleauxcoder.domain.llm.errors import IncompleteModelResponse
 from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 from reuleauxcoder.domain.runtime import (
     agent_event_to_runtime_event,
@@ -439,20 +440,26 @@ def worker_process_main(
                     ),
                     source="subagent_guidance",
                 )
-            result = (
-                child._loop.run()
-                if child.max_rounds > 0
-                else "(sub-agent round budget exhausted)"
-            )
+        try:
+            if spec.replay_messages:
+                result = (
+                    child._loop.run()
+                    if child.max_rounds > 0
+                    else "(sub-agent round budget exhausted)"
+                )
+            else:
+                result = child.chat(spec.delegated_prompt)
+        except IncompleteModelResponse as error:
+            # Return the child's recorded text, tool history, and usage as partial work.
+            status, result = "failed", str(error)
         else:
-            result = child.chat(spec.delegated_prompt)
-        status = (
-            "cancelled"
-            if cancel.is_set()
-            else "blocked"
-            if child._park_request is not None
-            else "ok"
-        )
+            status = (
+                "cancelled"
+                if cancel.is_set()
+                else "blocked"
+                if child._park_request is not None
+                else "ok"
+            )
         if status == "blocked":
             assert child._park_request is not None
             checkpoint_state = {
@@ -490,7 +497,7 @@ def worker_process_main(
                     else None
                 ),
                 "model_calls": child.state.total_model_calls,
-                "partial": child._loop.round_limit_reached,
+                "partial": child._loop.round_limit_reached or status == "failed",
             },
         )
     except BaseException as error:
@@ -742,6 +749,7 @@ def run_isolated_worker(
                         else None
                     ),
                     model_calls=int(envelope.payload.get("model_calls") or 0),
+                    partial=bool(envelope.payload.get("partial", False)),
                 )
                 if terminal.status == "blocked" and checkpoint is not None:
                     terminal.messages = checkpoint.messages

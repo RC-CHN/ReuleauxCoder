@@ -7,7 +7,9 @@ from dataclasses import dataclass
 
 from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 from reuleauxcoder.domain.llm.models import LLMResponse
-from reuleauxcoder.domain.llm.errors import LLMRequestCancelled
+from reuleauxcoder.domain.llm.errors import (
+    INCOMPLETE_FINISH_REASONS, IncompleteModelResponse, LLMRequestCancelled,
+)
 from reuleauxcoder.domain.llm.protocols import LLMProtocol
 
 
@@ -109,15 +111,15 @@ def generate_summary(
             cancellation_event=cancellation_event,
             max_output_tokens=max_output_tokens,
         )
+    except IncompleteModelResponse as error:
+        response = error.response
     except LLMRequestCancelled:
         raise
     except Exception as error:
         raise CompactionError(f"Summary request failed ({type(error).__name__}); history was retained.") from error
     if on_response is not None:
         on_response(response)
-    if getattr(response, "finish_reason", None) in {
-        "length", "max_tokens", "max_output_tokens", "incomplete", "content_filter",
-    }:
+    if getattr(response, "finish_reason", None) in INCOMPLETE_FINISH_REASONS:
         raise CompactionError("Summary was truncated or filtered; history was retained.")
     if response.tool_calls:
         raise CompactionError("Summary returned tool calls; no tools were executed.")
