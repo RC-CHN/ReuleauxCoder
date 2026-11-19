@@ -2,16 +2,18 @@ import * as vscode from 'vscode';
 import {randomBytes, randomUUID} from 'node:crypto';
 import type {WorkspaceSession} from './core/session.js';
 import type {NativeReviews} from './native/reviews.js';
-import type {WebRequest} from './shared.js';
+import type {ChatCell, HostSnapshot, WebRequest} from './shared.js';
+import {captureCells, snapshotUpdate, type SnapshotUpdate} from './transcript-updates.js';
 import {t, errorText} from './i18n.js';
 import {webviewHtml} from './webview/html.js';
 import {answerInteraction} from './core/interactions.js';
 
 export class ConversationViews implements vscode.WebviewViewProvider, vscode.Disposable {
-  private views = new Map<vscode.Webview, {owner: string; disposables: vscode.Disposable[]; session?: WorkspaceSession}>();
+  private views = new Map<vscode.Webview, {owner: string; disposables: vscode.Disposable[]; session?: WorkspaceSession; last?: HostSnapshot}>();
   private editor?: vscode.WebviewPanel;
   private timer?: ReturnType<typeof setTimeout>;
   private sequence = 0;
+  private cells: ChatCell[] = [];
   constructor(private extension: vscode.Uri, private session: () => Promise<WorkspaceSession>, private reviews: NativeReviews, private command: (action: string, data?: Record<string, any>) => Promise<unknown>) {}
   resolveWebviewView(view: vscode.WebviewView): void {this.attach(view.webview, view);}
   showCommands(): void {for (const webview of this.views.keys()) void webview.postMessage({kind: 'commands'});}
@@ -38,6 +40,7 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
     disposables.push(view.onDidDispose(() => {
       const ownerSession = this.views.get(webview)?.session;
       this.views.delete(webview); for (const disposable of disposables) disposable.dispose();
+      if (!this.views.size) this.cells = [];
       void ownerSession?.uploads?.cancel(owner).catch(() => {});
     }));
   }
@@ -47,14 +50,15 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
     if (!entry) throw new Error(t('View closed.'));
     entry.session = session;
     if (['send', 'retry', 'restorePending', 'cancelPending', 'steer', 'upload.begin', 'image.preview', 'newSession', 'sessions', 'models', 'approve', 'reject', 'saveReview', 'answer'].includes(request.action) || request.action.startsWith('command.') || request.action.startsWith('configuration.') || request.action.startsWith('skill.')) {
-      if (data.hostId !== session.snapshot().hostId || data.generation !== session.snapshot().generation) throw new Error(t('Session changed. Review your draft and send it again.'));
+      if (!session.matches(data.hostId, data.generation)) throw new Error(t('Session changed. Review your draft and send it again.'));
     }
     if (request.action.startsWith('configuration.')) return this.command(request.action, data);
     if (request.action.startsWith('skill.')) return this.command(request.action, data);
     switch (request.action) {
-      case 'ready': {
-        const snapshot = {...session.snapshot(this.reviews.summaries()), revision: ++this.sequence};
-        if (session.phase === 'idle' && vscode.workspace.getConfiguration('reuleaux').get('autoStart', true)) void this.command('start').catch(() => {});
+      case 'resync': case 'ready': {
+        const snapshot = this.capture(session);
+        entry.last = snapshot;
+        if (request.action === 'ready' && session.phase === 'idle' && vscode.workspace.getConfiguration('reuleaux').get('autoStart', true)) void this.command('start').catch(() => {});
         return snapshot;
       }
       case 'draft': if (typeof data.text === 'string' && data.text.length <= 1024 * 1024) session.draftText = data.text; return;
@@ -86,9 +90,28 @@ export class ConversationViews implements vscode.WebviewViewProvider, vscode.Dis
   changed(): void {
     if (!this.timer) this.timer = setTimeout(() => {this.timer = undefined; void this.broadcast();}, 32);
   }
+  private capture(session: WorkspaceSession): HostSnapshot {
+    this.cells = captureCells(session.transcript.cells, this.cells);
+    return {...session.snapshot(this.reviews.summaries(), this.cells), revision: ++this.sequence};
+  }
   private async broadcast(): Promise<void> {
-    if (!this.views.size) return;
-    try {const session = await this.session(); const snapshot = {...session.snapshot(this.reviews.summaries()), revision: ++this.sequence}; for (const webview of this.views.keys()) void webview.postMessage({kind: 'snapshot', snapshot});}
+    if (![...this.views.values()].some(entry => entry.last)) return;
+    try {
+      const snapshot = this.capture(await this.session());
+      const updates = new Map<number, SnapshotUpdate>();
+      for (const [webview, entry] of this.views) {
+        const base = entry.last;
+        if (!base) continue;
+        entry.last = snapshot;
+        if (base.hostId !== snapshot.hostId || base.generation !== snapshot.generation) {
+          void webview.postMessage({kind: 'snapshot', snapshot});
+        } else {
+          const update = updates.get(base.revision) ?? snapshotUpdate(base, snapshot);
+          updates.set(base.revision, update);
+          void webview.postMessage({kind: 'update', update});
+        }
+      }
+    }
     catch (error) {for (const webview of this.views.keys()) void webview.postMessage({kind: 'error', error: errorText(error)});}
   }
   private html(webview: vscode.Webview): string {

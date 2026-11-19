@@ -5,6 +5,34 @@ import {resolve} from 'node:path';
 import type {ChatCell, HostSnapshot} from '../src/shared.js';
 import {browserHarness} from './browser-harness.js';
 import {foldToolCells} from '../src/core/tool-groups.js';
+import {snapshotUpdate} from '../src/transcript-updates.js';
+
+test('webview applies streamed deltas, breaks out a timeout, and resyncs after a missed revision', async () => {
+  let state: HostSnapshot = {hostId: 'host', revision: 1, generation: 0, draftRevision: 0, phase: 'ready', environment: 'Local',
+    workspace: '/project', model: 'test', running: true, draftItems: [], draftText: '', reviews: [], cells: [
+      {id: 'first', role: 'tool', title: 'shell', status: 'succeeded', text: 'ok'},
+      {id: 'second', role: 'tool', title: 'shell', status: 'running', text: ''},
+      {id: 'answer', role: 'assistant', text: 'Checking'},
+    ]};
+  const h = await browserHarness(() => state, async request => request.action === 'resync' ? state : null);
+  const {page} = h;
+  try {
+    await page.locator('[data-tool-id="group:first"]').waitFor();
+    const baseline = state;
+    state = {...state, revision: 2, cells: [state.cells[0], {...state.cells[1], status: 'timed_out'}, {...state.cells[2], text: 'Checking shell'}]};
+    await page.evaluate(json => window.postMessage({kind: 'update', update: JSON.parse(json)}, '*'), JSON.stringify(snapshotUpdate(baseline, state)));
+    const timedOut = page.locator('[data-tool-id="second"][open][data-failed]');
+    await timedOut.waitFor();
+    await page.getByText('Checking shell', {exact: true}).waitFor();
+    assert.equal(await page.locator('[data-tool-id="group:first"]').count(), 0);
+    const missed = {...state, revision: 3, cells: [...state.cells, {id: 'summary', role: 'assistant' as const, text: 'Partial'}]};
+    state = {...missed, revision: 4, cells: [...missed.cells.slice(0, -1), {...missed.cells.at(-1)!, text: 'Partial summary'}]};
+    await page.evaluate(json => window.postMessage({kind: 'update', update: JSON.parse(json)}, '*'), JSON.stringify(snapshotUpdate(missed, state)));
+    await page.getByText('Partial summary', {exact: true}).waitFor();
+    assert.equal(h.requests.filter(request => request.action === 'resync').length, 1);
+    assert.deepEqual(h.errors, []);
+  } finally {await h.close();}
+});
 
 test('tool inspection: preserve disclosure state, lazy bodies, streaming selections and all-details control', {timeout: 30000}, async () => {
   const tool: ChatCell = {id: 'read', role: 'tool', title: 'read_file', status: 'complete', text: '{"ok":true,"lines":[1,2]}', detail: '{"file_path":"src/main.ts","start_line":1}'};

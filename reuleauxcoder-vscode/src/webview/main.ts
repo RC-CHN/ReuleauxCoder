@@ -4,6 +4,8 @@ import {reveal} from './motion.js';
 import {coreMessage} from '../core-messages.js';
 import {modeLabel} from '../panel-i18n.js';
 import type {ChatCell, HostSnapshot, WebRequest} from '../shared.js';
+import {applySnapshotUpdate, type SnapshotUpdate} from '../transcript-updates.js';
+import {foldToolCells, type ToolGroupCache} from '../core/tool-groups.js';
 import {decorateIcons, icon} from './icons.js';
 import {renderMarkdown} from './markdown.js';
 import {ComposerWorkbench} from './workbench.js';
@@ -47,6 +49,10 @@ interface LocalSend {id: string; text: string; items: string[]; generation: numb
 const localSends = new Map<string, LocalSend>();
 const consumedItems = new Set<string>();
 let snapshot: HostSnapshot | undefined;
+let transmitted: HostSnapshot | undefined;
+const foldedGroups: ToolGroupCache = new WeakMap();
+let syncing = false;
+let missingRevision = 0;
 let initial = true;
 let next = 0;
 let persisted = '';
@@ -193,6 +199,35 @@ function render(state: HostSnapshot): void {
   persist();
   transcriptScroll.update(transcriptVersion !== previousVersion);
 }
+
+function receiveSnapshot(state: HostSnapshot): void {
+  if (transmitted && state.revision <= transmitted.revision) return;
+  const cells = snapshot && transmitted?.cells === state.cells ? snapshot.cells : foldToolCells(state.cells, foldedGroups);
+  transmitted = state;
+  render({...state, cells});
+}
+
+async function syncSnapshot(action: 'ready' | 'resync'): Promise<void> {
+  if (syncing) return;
+  syncing = true;
+  try {
+    do {
+      receiveSnapshot(await request(action));
+      action = 'resync';
+    } while (transmitted && transmitted.revision < missingRevision);
+  } catch (error) {notice(error);}
+  finally {syncing = false;}
+}
+
+function receiveUpdate(update: SnapshotUpdate): void {
+  if (transmitted && update.state.revision <= transmitted.revision) return;
+  const next = applySnapshotUpdate(transmitted, update);
+  if (next) receiveSnapshot(next);
+  else {
+    missingRevision = Math.max(missingRevision, update.state.revision);
+    void syncSnapshot('resync');
+  }
+}
 let attachmentSignature = '';
 function renderPendingInputs(): void {
   const canCancel = (cell: ChatCell) => cell.status === 'cancelled' || !!snapshot?.inputCancellation && ['queued', 'accepted'].includes(cell.status ?? '');
@@ -302,7 +337,8 @@ function addFiles(files: File[]): void {for (const file of files) {const upload:
 window.addEventListener('message', event => {
   const message = event.data;
   if (message?.kind === 'response') {const entry = pending.get(message.id); if (!entry) return; pending.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.result);}
-  else if (message?.kind === 'snapshot') render(message.snapshot);
+  else if (message?.kind === 'snapshot') receiveSnapshot(message.snapshot);
+  else if (message?.kind === 'update') receiveUpdate(message.update);
   else if (message?.kind === 'error') notice(message.error);
   else if (message?.kind === 'commands') workbench.show();
 });
@@ -329,4 +365,4 @@ element('drop-zone').addEventListener('drop', event => {
 });
 document.querySelectorAll<HTMLButtonElement>('[data-command]').forEach(button => button.addEventListener('click', () => void request(button.dataset.command!).catch(notice)));
 document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => button.addEventListener('click', () => void request('command.open', {actionId: button.dataset.action!}).catch(notice)));
-void request('ready').then(render).catch(notice);
+void syncSnapshot('ready');

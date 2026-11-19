@@ -9,6 +9,7 @@ interface Entry {
   content: HTMLElement; body?: HTMLElement; arguments?: HTMLElement; text?: string; bodyStatus?: string; detail?: string; header?: Partial<ChatCell>;
 }
 function sameCell(a: ChatCell | undefined, b: ChatCell): boolean {
+  if (a === b) return true;
   return !!a && a.id === b.id && a.role === b.role && a.text === b.text && a.title === b.title && a.detail === b.detail && a.status === b.status && a.merged === b.merged && (a.members?.length ?? 0) === (b.members?.length ?? 0) && (b.members ?? []).every((member, index) => sameCell(a.members?.[index], member));
 }
 

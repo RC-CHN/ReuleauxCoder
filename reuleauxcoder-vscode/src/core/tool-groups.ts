@@ -60,12 +60,23 @@ function groupCell(run: ChatCell[], members: ChatCell[]): ChatCell {
   return {id: `group:${run[0].id}`, role: 'tool-group', text: parts.join(' · '), status: running ? 'running' : 'complete', members};
 }
 
-export function foldToolCells(cells: ChatCell[]): ChatCell[] {
+export type ToolGroupCache = WeakMap<ChatCell, {run: ChatCell[]; group: ChatCell}>;
+
+// The browser receives immutable cell revisions and can reuse settled groups.
+// Callers folding mutable transcript cells omit the cache.
+export function foldToolCells(cells: ChatCell[], cache?: ToolGroupCache): ChatCell[] {
   const folded: ChatCell[] = [];
   let run: ChatCell[] = [];
   const flush = (): void => {
-    if (run.filter(cell => cell.role === 'tool').length >= 2) folded.push(groupCell(run, mergePolls(run)));
-    else folded.push(...run);
+    if (run.filter(cell => cell.role === 'tool').length >= 2) {
+      const old = cache?.get(run[0]);
+      if (old && old.run.length === run.length && run.every((cell, i) => cell === old.run[i])) folded.push(old.group);
+      else {
+        const group = groupCell(run, mergePolls(run));
+        cache?.set(run[0], {run, group});
+        folded.push(group);
+      }
+    } else folded.push(...run);
     run = [];
   };
   for (const cell of cells) {

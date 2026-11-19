@@ -43,6 +43,9 @@ export class WorkspaceSession extends EventEmitter {
     this.transcript.on('reset', () => this.sentDrafts.clear());
   }
   get client(): RuntimeClient | undefined {return this.runtime.client;}
+  matches(hostId: unknown, generation: unknown): boolean {
+    return hostId === this.hostId && generation === (this.client?.state.session_generation ?? 0);
+  }
   requireClient(): RuntimeClient {
     if (this.phase !== 'ready' || !this.client || this.client.peer.closed) throw new Error(t('Start the workspace core first.'));
     return this.client;
@@ -119,11 +122,11 @@ export class WorkspaceSession extends EventEmitter {
     this.changed();
     void sending.catch(error => this.report(error));
   }
-  snapshot(reviews: ReviewSummary[] = []): HostSnapshot {
+  snapshot(reviews: ReviewSummary[] = [], cells = foldToolCells(this.transcript.cells)): HostSnapshot {
     const state = this.client?.state;
     const pendingInputs = this.transcript.pending(state);
     const queued = state ? this.transcript.inputQueue.remaining(state)?.length ?? pendingInputs.filter(cell => cell.status === 'queued').length : 0;
-    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, sampledAt: Date.now(), steering: {queued, pending: !!state?.interrupt_pending && queued > 0, stopping: state?.stopping ?? false, supported: this.client?.info?.steering_promotion === true}, cells: foldToolCells(this.transcript.cells), pendingInputs, inputCancellation: this.client?.info?.input_cancellation === true, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(queued), configuration: this.configuration.state};
+    return {hostId: this.hostId, revision: this.revision, draftRevision: this.draftRevision, phase: this.phase, environment: this.environment, workspace: this.workspace, generation: state?.session_generation ?? 0, model: state?.model ?? '', running: state?.running ?? false, sampledAt: Date.now(), steering: {queued, pending: !!state?.interrupt_pending && queued > 0, stopping: state?.stopping ?? false, supported: this.client?.info?.steering_promotion === true}, cells, pendingInputs, inputCancellation: this.client?.info?.input_cancellation === true, reviews, draftItems: this.draftItems, draftText: this.draftText, error: this.error, notice: this.notice, catalog: this.client?.catalog ?? [], commandSurface: this.commands.surface, interactions: inlineInteractions(this.client), mode: state?.mode ?? undefined, overview: this.overview.snapshot(queued), configuration: this.configuration.state};
   }
   restorePending(id: string): void {
     const cell = this.transcript.pendingInputs.get(id), draft = this.sentDrafts.get(id);
