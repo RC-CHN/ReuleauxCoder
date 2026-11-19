@@ -38,7 +38,7 @@ export function sidebarRows(c: TuiController, width: number, height: number, now
     const goalLabel = goal.status === 'paused' && state.running ? 'pausing' : goal.status.replaceAll('_', ' ');
     add('GOAL', [color(goalLabel), paint.info(compact(goal.objective))], [
       valueRow('Tokens', `${number.format(goal.tokens_used)} / ${budget}`),
-      valueRow('Elapsed', duration(goal.time_used_seconds)),
+      valueRow('Elapsed', duration(goal.time_used_seconds + (goal.status === 'active' ? Math.max(0, now - c.session.goalObservedAt) / 1000 : 0))),
       ...(goal.estimated_requests ? [paint.warning(`${goal.estimated_requests} requests estimated`)] : []),
       paint.muted('/goal · Manage'),
     ], color, 1);
@@ -84,6 +84,8 @@ export function sidebarRows(c: TuiController, width: number, height: number, now
       return color(status) + ' ' + paint.info(compact(file.path));
     }), ...(git.files.length > visibleFiles.length ? [paint.muted(`and ${git.truncated ? '≥' : ''}${git.files.length - visibleFiles.length} more · F2`)] : []), paint.muted(git.upstream ? `Upstream: ${compact(git.upstream)} (local)` : 'No upstream configured')];
     if (git.truncated) details.unshift(paint.warning('Partial Git scan · totals incomplete'));
+    if (c.session.gitStale && c.session.gitObservedAt !== undefined)
+      summary.unshift(paint.warning(`Last updated ${duration(Math.max(0, now - c.session.gitObservedAt) / 1000)} ago`));
     add('GIT', summary, details, git.branch === '(detached)' ? paint.warning : paint.info, 6, git.branch === '(detached)' ? `${git.head.slice(0, 8)} detached` : compact(git.branch));
   } else if (git) add('GIT', [paint.muted(git.reason || 'Unavailable')], [], paint.info);
 

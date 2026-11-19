@@ -23,7 +23,8 @@ const Rows = memo(function Rows({rows, height, width}: {rows: string[]; height: 
 
 function ProcessSidebar({controller, width, height}: {controller: TuiController; width: number; height: number}) {
   const [now, setNow] = useState(Date.now);
-  const running = [...controller.session.processes.values()].some(process => process.state === 'running');
+  const running = controller.session.state.goal?.status === 'active' || controller.session.gitStale
+    || [...controller.session.processes.values()].some(process => process.state === 'running');
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -110,7 +111,7 @@ export function App({controller: c, alternateScreen = false, mouse = true}: {con
   const sidebar = useMemo(() => dimensions.sidebar > 0
     ? <ProcessSidebar controller={c} height={bodyHeight} width={dimensions.sidebar}/> : null,
   [c, bodyHeight, dimensions.sidebar, c.session.state, c.session.sidebarRevision, c.session.plan, c.session.progress,
-    c.session.git, c.session.fatal, c.active, liveActivity?.label]);
+    c.session.git, c.session.gitStale, c.session.fatal, c.active, liveActivity?.label]);
   // Coordinates include the root padding and the input's frame/rail prefix.
   setCursorPosition(composerInput.cursor ? {
     x: 5 + composerInput.cursor.x,

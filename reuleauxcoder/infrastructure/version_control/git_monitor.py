@@ -161,6 +161,9 @@ class GitMonitor:
         self.path_limit = max(24, int(path_limit))
         self.cache_ttl_seconds = max(0.0, float(cache_ttl_seconds))
         self._lock = threading.Lock()
+        self._workspace_lock = threading.Lock()
+        self._workspace_cache: GitWorkspace | None = None
+        self._workspace_sampled_at = 0.0
         self._repo_root: Path | None = None
         self._discovery_failed_at: float | None = None
         self._discovery_failed_turn_id: str | None = None
@@ -182,9 +185,17 @@ class GitMonitor:
             self._snapshot_cache_turn_id = None
             self._snapshot_cache = None
 
-    def workspace_snapshot(self) -> GitWorkspace:
+    def workspace_snapshot(self, *, max_age_seconds: float = 0) -> GitWorkspace:
         """Sample UI facts without consuming the execution overlay's HEAD notices."""
-        return read_workspace(self._git)
+        with self._workspace_lock:
+            if (
+                self._workspace_cache is not None
+                and time.monotonic() - self._workspace_sampled_at < max_age_seconds
+            ):
+                return self._workspace_cache
+            self._workspace_cache = read_workspace(self._git)
+            self._workspace_sampled_at = time.monotonic()
+            return self._workspace_cache
 
     def _git(
         self,

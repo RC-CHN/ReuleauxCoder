@@ -194,17 +194,25 @@ class RuntimeServer:
                 approval_policy=self.config.approval.default_mode,
                 goal=agent.goal_controller.state,
             )
-            if state != self._snapshot:
-                self._snapshot = replace(state, revision=revision + 1)
+            previous = self._snapshot
+            if (
+                previous and previous.goal and state.goal
+                and state.goal.status == previous.goal.status == "active"
+            ):
+                # Elapsed time is sampled for the reader, not a change to the goal.
+                previous_goal = replace(previous.goal, time_used_seconds=state.goal.time_used_seconds)
+                previous = replace(previous, goal=previous_goal)
+            self._snapshot = state if state == previous else replace(state, revision=revision + 1)
             return self._snapshot
 
     def snapshot_reply(self, known_revision=None):
         state = self.snapshot()
         return None if state.revision == known_revision else encode(state)
 
-    def git_snapshot(self):
+    def git_snapshot(self, cached=False):
         monitor = self.agent.git_monitor
-        return encode(monitor.workspace_snapshot() if monitor else None)
+        workspace = monitor.workspace_snapshot(max_age_seconds=5 if cached else 0) if monitor else None
+        return encode(workspace)
 
     def history_query(self, operation, session_id=None, **parameters):
         with self._lock:
@@ -256,6 +264,7 @@ class RuntimeServer:
                     # Revision 2 adds bounded image previews and restore references.
                     "editor_api_version": 2,
                     "workspace_git": self.agent.git_monitor is not None,
+                    "cached_workspace_git": True,
                     "conditional_snapshots": True,
                     "submission_ids": True,
                     "steering_promotion": True,

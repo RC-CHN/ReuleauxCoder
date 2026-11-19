@@ -72,6 +72,33 @@ def test_snapshot_revision_tracks_changes_and_conditional_reads(runtime):
     assert client.state.model == "changed-model"
 
 
+def test_active_goal_clock_does_not_invalidate_conditional_snapshot(runtime):
+    goal = runtime.agent.goal_controller
+    goal.create("Sample elapsed time", None)
+    first = runtime.server.snapshot()
+    for _ in range(20):
+        assert runtime.server.snapshot_reply(first.revision) is None
+    assert runtime.server.snapshot().goal.time_used_seconds >= first.goal.time_used_seconds
+    goal.update(status="paused")
+    assert decode(runtime.server.snapshot_reply(first.revision)).goal.status == "paused"
+
+
+def test_git_poll_reuses_a_sample_and_explicit_refresh_rescans(runtime, tmp_path, monkeypatch):
+    from reuleauxcoder.domain.version_control import GitWorkspace
+    from reuleauxcoder.infrastructure.version_control import GitMonitor, git_monitor
+
+    samples = []
+    def scan(_git):
+        samples.append(1)
+        return GitWorkspace(available=True, branch=f"sample-{len(samples)}")
+
+    monkeypatch.setattr(git_monitor, "read_workspace", scan)
+    runtime.agent.git_monitor = GitMonitor(tmp_path)
+    assert decode(runtime.server.git_snapshot(cached=True)).branch == "sample-1"
+    assert decode(runtime.server.git_snapshot(cached=True)).branch == "sample-1"
+    assert decode(runtime.server.git_snapshot()).branch == "sample-2"
+
+
 def test_promote_steering_keeps_goal_and_does_not_stop_a_raced_or_repeated_click(
     runtime,
 ):

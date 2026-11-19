@@ -101,6 +101,11 @@ export class TuiController extends EventEmitter {
     });
     listen(client, 'initialized', info => {this.menus = menusFromCatalog(client.catalog); this.session.initialize(info);});
     listen(client, 'state', state => {
+      if (state.workspace !== this.session.state.workspace) {
+        this.session.git = null;
+        this.session.gitObservedAt = undefined;
+        this.session.gitStale = false;
+      }
       if (state.session_id !== this.session.state.session_id || state.session_generation !== this.session.state.session_generation) {
         this.submissions.reset();
         this.queueFocus = null; this.withdrawn.clear();
@@ -224,6 +229,7 @@ export class TuiController extends EventEmitter {
     let refreshing = false;
     let snapshotTimedOut = false;
     let gitRefreshing = false, nextGitRefresh = 0, lastStateRefresh = -Infinity;
+    let gitFailures = 0, gitInterval = 5000, gitWorkspace = this.session.state.workspace;
     this.refreshTimer = setInterval(() => {
       if (!this.session.connected || this.closing) return;
       const now = performance.now();
@@ -242,11 +248,39 @@ export class TuiController extends EventEmitter {
           this.fail(error);
         }).finally(() => {refreshing = false;});
       }
-      if (this.client.info.workspace_git && !gitRefreshing && performance.now() >= nextGitRefresh) {
+      if (gitWorkspace !== this.session.state.workspace) {
+        gitWorkspace = this.session.state.workspace;
+        gitFailures = 0; gitInterval = 5000; nextGitRefresh = 0;
+      }
+      if (this.client.info.workspace_git && !gitRefreshing && now >= nextGitRefresh) {
         gitRefreshing = true;
-        nextGitRefresh = performance.now() + 5000;
-        void this.client.git().then(git => {if (!this.disposed && !isDeepStrictEqual(this.session.git, git)) {this.session.git = git; this.changed();}})
-          .catch(this.fail).finally(() => {gitRefreshing = false;});
+        const workspace = this.session.state.workspace;
+        const current = () => !this.disposed && !this.closing && this.session.connected && workspace === this.session.state.workspace;
+        const failed = (reason: string, report = true) => {
+          if (!current()) return;
+          if (!gitFailures && report) this.session.notice(reason + ' Retrying…', 'warning');
+          gitFailures++;
+          this.session.gitStale = !!this.session.git?.available;
+          this.changed();
+        };
+        void this.client.git(true).then(git => {
+          if (!current()) return;
+          if (git && !git.available) {
+            if (!this.session.git?.available) this.session.git = git;
+            failed(git.reason || 'Git status unavailable.', !!this.session.git?.available);
+            return;
+          }
+          gitFailures = 0;
+          this.session.gitObservedAt = Date.now();
+          const changed = this.session.gitStale || !isDeepStrictEqual(this.session.git, git);
+          gitInterval = changed ? 5000 : Math.min(15000, gitInterval + 5000);
+          this.session.gitStale = false;
+          if (changed) {this.session.git = git; this.changed();}
+        }).catch(error => failed(error.message)).finally(() => {
+          gitRefreshing = false;
+          const delay = gitFailures ? Math.min(60000, 5000 * 2 ** Math.min(gitFailures, 4)) : gitInterval;
+          nextGitRefresh = current() ? performance.now() + delay : 0;
+        });
       }
     }, 500);
     this.refreshTimer.unref();

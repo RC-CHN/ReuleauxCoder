@@ -24,6 +24,9 @@ export class SessionStore extends EventEmitter {
   private cellIndices = new WeakMap<Cell, number>();
   private streaming = new Set<Cell>();
   git: GitWorkspace | null = null;
+  gitStale = false;
+  gitObservedAt?: number;
+  goalObservedAt = Date.now();
   private next = 0;
   private generation = 0;
   private assistant: Cell | undefined;
@@ -99,6 +102,7 @@ export class SessionStore extends EventEmitter {
     if (state.session_generation > this.generation) {this.clear(); this.generation = state.session_generation;}
     if (!state.running) for (const cell of this.streaming) this.finishCell(cell);
     if (!state.running) for (const cell of this.pendingInputs.values()) if (['queued', 'accepted'].includes(cell.tone ?? '')) {cell.tone = 'not-applied'; cell.title = 'You · not applied';}
+    this.goalObservedAt = Date.now();
     this.state = state;
     const withheld = state.images_withheld ?? 0;
     const withheldKey = withheld ? `${state.session_generation}:${state.model}:${withheld}` : '';
