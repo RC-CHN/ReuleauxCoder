@@ -39,7 +39,7 @@ async function main() {
     return value ? [`--${name}`, name === 'config' ? resolve(value) : value] : [];
   })];
   const history = new InputHistory(resolve(cwd, '.rcoder/tui-history.jsonl'));
-  await history.load();
+  const historyWarning = await history.load().catch((error: Error) => `Could not load input history: ${error.message}`);
   const child = spawn(executable, args, {cwd, stdio: ['pipe', 'pipe', 'pipe']});
   const peer = new RpcPeer(child.stdout, child.stdin);
   const client = new RuntimeClient(peer);
@@ -70,6 +70,7 @@ async function main() {
   process.once('SIGHUP', terminate);
   try {
     await client.initialize(tuiProfile);
+    if (historyWarning) controller.session.notice(historyWarning, 'warning');
     client.resize(controller.rows, controller.columns);
     controller.startRefresh();
     const saved = await app.waitUntilExit();

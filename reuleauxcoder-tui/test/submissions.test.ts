@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {mkdtemp, mkdir, rm, writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {MessagePeer, RuntimeClient, InputQueueProjection, decode, emptyState, record} from '@reuleauxcoder/client';
 import {TuiController} from '../src/state/controller.js';
 import {editor} from '../src/state/editor.js';
@@ -157,6 +160,28 @@ test('slow local history does not delay clearing or visible feedback', async () 
     await send;
     release();
   } finally {f.close();}
+});
+
+test('a torn history record and a failed append do not prevent later saves', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'rcoder-history-'));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const dir = join(root, 'state'), path = join(dir, 'history.jsonl');
+  await mkdir(dir);
+  await writeFile(path, '"first"\n"torn');
+  const history = new InputHistory(path);
+  assert.match(await history.load() ?? '', /Skipped 1/);
+  assert.deepEqual(history.entries, ['first']);
+  await history.add('second');
+  const reopened = new InputHistory(path);
+  await reopened.load();
+  assert.deepEqual(reopened.entries, ['first', 'second']);
+  await rm(dir, {recursive: true});
+  await writeFile(dir, 'occupied');
+  await assert.rejects(history.add('third'));
+  await rm(dir);
+  await history.add('third');
+  await reopened.load();
+  assert.deepEqual(reopened.entries, ['third']);
 });
 
 test('unconfirmed delivery retries with the same ID and leaves the next draft alone', async () => {
