@@ -69,9 +69,12 @@ not automatically resume a stopped goal: choose Resume explicitly.
 The backend starts another regular turn only when the goal is `active`, no
 user/client operation remains, and the mode allows goal completion tools.
 Planner mode does not automatically continue. A model final answer ends a turn;
-`update_goal(status="complete")` ends the goal.
+`update_goal(status="complete")` ends the goal. Consecutive text-only replies can
+each start another turn while the goal is active. At a turn's working-round limit,
+an active goal eligible for automatic continuation yields to the scheduler with
+its existing history and tools, skipping the extra model request for a handoff.
 
-Continuation is tagged internal context and emits a visible checkpoint notice. It
+Continuation is tagged internal context and emits a visible continuation notice. It
 does not create a human message in the transcript. Every request receives the
 current goal state, including after compaction. The model can use the existing
 history tools for original details.

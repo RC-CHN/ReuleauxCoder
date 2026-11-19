@@ -726,6 +726,10 @@ class AgentLoop:
         if self.agent.stop_requested():
             return "(stopped by cancellation request)"
 
+        # The runtime can resume the same goal with its existing history and tools.
+        if self.agent.max_rounds > 0 and self.agent.can_auto_continue_goal():
+            return ""
+
         summary_prompt = (
             "Your working-round budget is exhausted. Stop working and do not call any tools. "
             "Return a concise handoff of the work already performed. Include: "

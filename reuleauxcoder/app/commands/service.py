@@ -129,6 +129,11 @@ class CommandService:
                     return request
         return None
 
+    @property
+    def has_pending(self) -> bool:
+        with self._queue_lock:
+            return bool(self._pending)
+
     def next_pending(self) -> ActionRequest | str | ChatInput | None:
         with self._queue_lock:
             if not self._pending:

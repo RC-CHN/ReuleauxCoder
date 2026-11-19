@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from collections.abc import Callable, Iterable
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from typing import Any, TYPE_CHECKING, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
@@ -244,6 +244,7 @@ class Agent:
         self._resume_runtime_descriptor_hash: str | None = None
         self.plan_controller = PlanController(self)
         self.goal_controller = GoalController(self)
+        self.can_auto_continue_goal: Callable[[], bool] = lambda: False
         self._goal_request: tuple[str, str] | None = None
         self._session_persist_callback = None
         self._output_journal: OutputJournal | None = None
@@ -1937,31 +1938,35 @@ class Agent:
         *,
         goal_continuation: bool = False,
         clear_stop: bool = True,
+        turn_admission: AbstractContextManager[bool] | None = None,
     ) -> str:
         scope = (
             track_usage(self.goal_controller.turn_usage_recorder())
             if self.subagent_depth == 0
             else nullcontext()
         )
+        admission = turn_admission if turn_admission is not None else nullcontext(True)
         with scope:
-            return self._chat_turn(
-                user_input, goal_continuation=goal_continuation, clear_stop=clear_stop
-            )
+            # Admit the turn and open it to user steering as one scheduling decision.
+            with admission as admitted:
+                if not admitted:
+                    return ""
+                if clear_stop:
+                    self.clear_stop_request()
+                self._current_turn_id = uuid.uuid4().hex
+                if not goal_continuation:
+                    self.image_turn_id = self._current_turn_id
+                with self._steering_lock:
+                    self._accepting_user_steering = True
+                    self._round_interrupt_pending = False
+                    self._turn_attempt_counter = 0
+                    self._turn_interrupted_marker_recorded = False
+            return self._chat_turn(user_input, goal_continuation=goal_continuation)
 
     def _chat_turn(
-        self, user_input: str | ChatInput, *, goal_continuation: bool, clear_stop: bool
+        self, user_input: str | ChatInput, *, goal_continuation: bool
     ) -> str:
         """Process one user message."""
-        if clear_stop:
-            self.clear_stop_request()
-        self._current_turn_id = uuid.uuid4().hex
-        if not goal_continuation:
-            self.image_turn_id = self._current_turn_id
-        with self._steering_lock:
-            self._accepting_user_steering = True
-            self._round_interrupt_pending = False
-            self._turn_attempt_counter = 0
-            self._turn_interrupted_marker_recorded = False
         self.history_ledger.append(
             "agent_lifecycle",
             {"state": "turn_started"},

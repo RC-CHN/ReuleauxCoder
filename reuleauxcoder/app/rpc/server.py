@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 import logging
 from pathlib import Path
@@ -90,6 +91,7 @@ class RuntimeServer:
         self.agent.add_event_handler(bridge.on_agent_event)
         self.bus.subscribe(self._event, replay_history=False)
         self.agent.goal_controller.on_change = self._goal_changed
+        self.agent.can_auto_continue_goal = self._can_auto_continue_goal
         peer.methods.update(
             {
                 "initialize": self.initialize,
@@ -438,6 +440,8 @@ class RuntimeServer:
                 self._spawn(value)
             if admission is not None:
                 admission.status = status
+            if status == "queued":
+                self._lock.notify_all()
             submission = Submission(status, self._publish_state(), submission_id)
         # Admission remains atomic and ledger-durable. Snapshot capture can
         # wait for context/goal work that itself publishes through this lock.
@@ -507,15 +511,46 @@ class RuntimeServer:
             return None
         return _GoalContinuation(goal.id, self.agent.session_generation)
 
-    def _wake_goal(self):
+    def _can_auto_continue_goal(self) -> bool:
+        with self._lock:
+            return self._next_goal() is not None
+
+    @contextmanager
+    def _admit_goal_turn(self, candidate):
+        with self._lock:
+            admitted = (
+                len(self._workers) == 1
+                and not self.commands.has_pending
+                and self._next_goal() == candidate
+            )
+            yield admitted
+        if admitted:
+            self.bus.info("Continuing the active goal automatically.")
+
+    def _wake_goal(self) -> bool:
         # Called under the admission lock, after all user/client work is drained.
         if self._running or self._workers:
-            return
+            return False
         value = self._next_goal()
-        if value is not None:
-            self.agent.clear_stop_request()
-            self._running = True
-            self._spawn(value)
+        if value is None:
+            return False
+        self.agent.clear_stop_request()
+        self._running = True
+        self._spawn(value)
+        return True
+
+    def _next_main_operation(self):
+        # Keep the main worker busy while concurrent controls settle so wait_idle()
+        # cannot finish between two turns of the same active goal.
+        while not self._closing:
+            pending = self.commands.next_pending()
+            if pending is not None:
+                return pending
+            goal = self._next_goal()
+            if goal is None or len(self._workers) == 1:
+                return goal
+            self._lock.wait()
+        return None
 
     def _run(self, value, concurrent):
         try:
@@ -523,20 +558,10 @@ class RuntimeServer:
                 try:
                     continuation = isinstance(value, _GoalContinuation)
                     if continuation:
-                        response = None
-                        with self._lock:
-                            current = self._next_goal()
-                            allowed = (
-                                current == value and not self.agent.stop_requested()
-                            )
-                        if allowed:
-                            self.bus.info(
-                                "Goal continuation started automatically; "
-                                "the previous response was a checkpoint, not goal completion."
-                            )
-                            response = self.agent.chat(
-                                "", goal_continuation=True, clear_stop=False
-                            )
+                        response = self.agent.chat(
+                            "", goal_continuation=True, clear_stop=False,
+                            turn_admission=self._admit_goal_turn(value),
+                        )
                         result = CommandResult(
                             session_id=self.commands.session_id, response=response
                         )
@@ -591,17 +616,11 @@ class RuntimeServer:
                         message=str(error),
                     )
                 with self._lock:
-                    value = (
-                        None
-                        if concurrent or self._closing
-                        else self.commands.next_pending()
-                    )
-                    if not concurrent and value is None and len(self._workers) == 1:
-                        value = self._next_goal()
-                    if not concurrent and value is None:
-                        self._running = False
-                    elif not concurrent:
-                        self.agent.clear_stop_request()
+                    value = None if concurrent else self._next_main_operation()
+                    if not concurrent:
+                        self._running = value is not None
+                        if self._running:
+                            self.agent.clear_stop_request()
                     self._publish_state()
         except BaseException:
             log.exception("Runtime could not record or publish its result")
@@ -613,7 +632,8 @@ class RuntimeServer:
         finally:
             with self._lock:
                 self._workers.discard(threading.current_thread())
-                self._wake_goal()
+                if self._wake_goal():
+                    self._publish_state()
                 self._lock.notify_all()
 
     def admit_steering(self, text):
@@ -718,6 +738,7 @@ class RuntimeServer:
         progress("Stopping active tasks...")
         with self._lock:
             self._closing = True
+            self._lock.notify_all()
             self.images.close()
             self.attachments.close()
             self.commands.clear_pending()
