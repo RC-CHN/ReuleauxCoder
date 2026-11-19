@@ -39,6 +39,13 @@ It still waits for real disk writes: this fix does not make fsync asynchronous
 or promise that a busy/damaged disk cannot stall I/O. Initial session discovery,
 ledger durability, snapshot-failure recovery and final shutdown saves remain.
 
+Interactive sessions reserve an OS writer lock for their session ID before
+loading the live history. The reservation covers migration, ledger appends,
+snapshot saves and shutdown. A second explicit resume reports the busy session.
+Automatic startup opens a fresh session if the latest one already has a writer.
+The OS releases ownership on process exit. The files under `.writers/` keep a
+stable lock identity across restarts.
+
 `persist=False` on internal steering admission/discard skips only the immediate
 snapshot, not the ledger write. RPC callers must flush after releasing admission
 and before returning success. It is not a client-visible RPC option.

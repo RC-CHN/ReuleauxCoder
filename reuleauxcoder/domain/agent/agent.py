@@ -247,6 +247,7 @@ class Agent:
         self.can_auto_continue_goal: Callable[[], bool] = lambda: False
         self._goal_request: tuple[str, str] | None = None
         self._session_persist_callback = None
+        self._session_writer_lease = None
         self._output_journal: OutputJournal | None = None
         self._session_persist_accepts_deferred: bool | None = None
         self._control_plane_recovery_required = False
@@ -547,6 +548,9 @@ class Agent:
         self.history_ledger.unbind_jsonl()
         self._session_persist_callback = None
         self._session_persist_accepts_deferred = None
+        if self._session_writer_lease is not None:
+            self._session_writer_lease.release()
+            self._session_writer_lease = None
 
     @staticmethod
     def _persistence_callback_accepts_deferred(callback) -> bool | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 import json
+import math
 import threading
 import time
 from typing import Callable, Literal, get_args
@@ -34,6 +35,44 @@ class Goal:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_history(cls, snapshot: dict | None, events=()) -> Goal | None:
+        for event in reversed(events):
+            if event.kind == "runtime_reset":
+                return None
+            if event.kind == "goal_changed":
+                recorded = event.payload["goal"]
+                # A snapshot of the same commit can include more active elapsed time.
+                if not (
+                    isinstance(snapshot, dict)
+                    and isinstance(recorded, dict)
+                    and snapshot.get("id") == recorded.get("id")
+                    and snapshot.get("updated_at", 0) == recorded.get("updated_at", 0)
+                ):
+                    snapshot = recorded
+                break
+        if snapshot is None:
+            return None
+        goal = cls(**snapshot)
+        if not isinstance(goal.id, str) or not goal.id:
+            raise ValueError("Invalid persisted goal id")
+        if (
+            not isinstance(goal.objective, str)
+            or not goal.objective.strip()
+            or len(goal.objective) > 4000
+        ):
+            raise ValueError("Invalid persisted goal objective")
+        if goal.status not in GOAL_STATUSES:
+            raise ValueError("Invalid persisted goal status")
+        validate_budget(goal.token_budget)
+        for value in (goal.tokens_used, goal.estimated_requests):
+            if type(value) is not int or value < 0:
+                raise ValueError("Invalid persisted goal counter")
+        for value in (goal.time_used_seconds, goal.created_at, goal.updated_at):
+            if type(value) not in (float, int) or not math.isfinite(value) or value < 0:
+                raise ValueError("Invalid persisted goal time")
+        return goal
 
 
 class GoalController:
@@ -152,23 +191,9 @@ class GoalController:
         self._publish()
 
     def restore(self, snapshot: dict | None, events=()) -> None:
-        for event in reversed(events):
-            if event.kind == "runtime_reset":
-                snapshot = None
-                break
-            if event.kind == "goal_changed":
-                recorded = event.payload["goal"]
-                # A snapshot of the same commit can include more active elapsed time.
-                if not (
-                    snapshot
-                    and recorded
-                    and snapshot["id"] == recorded["id"]
-                    and snapshot["updated_at"] == recorded["updated_at"]
-                ):
-                    snapshot = recorded
-                break
+        goal = Goal.from_history(snapshot, events)
         with self._lock:
-            self._goal = Goal(**snapshot) if snapshot else None
+            self._goal = goal
             self._clock = time.monotonic()
 
     def record_usage(self, goal_id: str, usage: dict) -> None:

@@ -151,11 +151,16 @@ def _build_runner_with_fake_agent(
     )
 
 
-def _register_peer(base_url: str, bootstrap_token: str, cwd: str) -> tuple[str, str]:
+def _register_peer(
+    base_url: str, bootstrap_token: str, cwd: str, *, hostname: str | None = None
+) -> tuple[str, str]:
     _, register_body = _json_request(
         "POST",
         f"{base_url}/remote/register",
-        {"bootstrap_token": bootstrap_token, "cwd": cwd, "workspace_root": cwd},
+        {
+            "bootstrap_token": bootstrap_token, "cwd": cwd, "workspace_root": cwd,
+            "host_info_min": {"hostname": hostname} if hostname else {},
+        },
     )
     payload = register_body["payload"]
     return payload["peer_id"], payload["peer_token"]
@@ -186,6 +191,69 @@ def _collect_stream_events(
 
 
 class TestRunnerRemoteExec:
+    def test_disconnect_stops_active_writer_and_reconnect_resumes_history(self, tmp_path):
+        running = threading.Event()
+        peers = []
+
+        def chat(peer, prompt):
+            peers.append(peer)
+            if prompt == "hold":
+                running.set()
+                assert peer._stop_event.wait(10)
+            return peer.current_session_id
+
+        runner = _build_runner_with_fake_agent(
+            f"127.0.0.1:{_free_port()}", session_dir=tmp_path, chat_behavior=chat
+        )
+        ctx = runner.initialize()
+        base = runner._relay_http_service.base_url
+
+        def register():
+            return _register_peer(
+                base, runner._relay_server.issue_bootstrap_token(), str(tmp_path),
+                hostname="laptop",
+            )
+
+        try:
+            first_id, token = register()
+            _, first = _json_request(
+                "POST", f"{base}/remote/chat", {"peer_token": token, "prompt": "one"}
+            )
+            session_id = first["response"]
+            _, started = _json_request(
+                "POST", f"{base}/remote/chat/start", {"peer_token": token, "prompt": "hold"}
+            )
+            assert running.wait(5)
+            assert peers[0]._session_writer_lease is not None
+            assert _json_request(
+                "POST", f"{base}/remote/disconnect", {"peer_token": token, "reason": "close"}
+            ) == (200, {"ok": True})
+            assert peers[0]._session_writer_lease is None
+            events = _collect_stream_events(base, token, started["chat_id"])
+            assert any(e["type"] == "error" for e in events)
+
+            # An outstanding poll from the old peer cannot reopen its runtime.
+            _json_request("POST", f"{base}/remote/poll", {"peer_token": token})
+            _, offline = _json_request(
+                "POST", f"{base}/remote/chat", {"peer_token": token, "prompt": "late"}
+            )
+            assert "disconnect" in offline["error"].lower()
+            next_id, token = register()
+            assert first_id != next_id
+            _, resumed = _json_request(
+                "POST", f"{base}/remote/chat", {"peer_token": token, "prompt": "two"}
+            )
+            assert resumed["response"] == session_id
+            user_messages = [
+                m["content"] for m in peers[-1].messages
+                if m["role"] == "user" and not m["content"].startswith("[SESSION_EXIT]")
+            ]
+            assert user_messages[:-1] == ["one", "hold"]
+            assert user_messages[-1].startswith("[SESSION_RESUME]")
+            assert user_messages[-1].endswith("\n\ntwo")
+        finally:
+            runner.cleanup(ctx.agent)
+
     def test_cleanup_waits_for_peer_initialization_and_closes_its_runtime(
         self, tmp_path
     ):

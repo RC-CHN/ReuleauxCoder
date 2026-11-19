@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +31,7 @@ from reuleauxcoder.domain.context.replay import (
     validate_provider_message,
     validate_replay_payload,
 )
+from reuleauxcoder.domain.goal import Goal
 from reuleauxcoder.domain.history import HistoryEvent, HistoryLedger
 from reuleauxcoder.domain.llm.context_messages import synthetic_user_message
 from reuleauxcoder.domain.llm.tool_history import reconcile_tool_call_adjacency
@@ -52,8 +53,10 @@ from reuleauxcoder.infrastructure.persistence.session_projection import (
 from reuleauxcoder.infrastructure.persistence.session_paths import (
     is_safe_session_id,
     is_encoded_session_path_component,
+    session_path_component,
     session_storage_path,
 )
+from reuleauxcoder.infrastructure.persistence.job_store import LeaseBusy, lease
 
 from reuleauxcoder.infrastructure.persistence.session_validation import (
     SessionPayloadValidator,
@@ -209,6 +212,52 @@ class _DirectoryWriteCursor:
     checkpoint_ids: set[str] = field(default_factory=set)
 
 
+class _SessionMaintenanceRequired(Exception):
+    """Retry the read under the session lock before modifying canonical files."""
+
+
+class SessionWriterBusy(SessionRestoreError):
+    def __init__(self):
+        super().__init__(phase="session_open", error_type="SessionWriterBusy", ref="session")
+
+    def __str__(self) -> str:
+        return "Another rcoder process is writing this session. Close it before resuming here."
+
+
+class SessionWriterLease:
+    """A restore reservation and its live writer can briefly share one OS lock."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._scope = ExitStack()
+        self._holders = 0
+
+    def acquire(self) -> None:
+        if not self._holders:
+            try:
+                self._scope.enter_context(lease(self.path))
+            except LeaseBusy:
+                raise SessionWriterBusy() from None
+            except OSError as error:
+                raise SessionRestoreError(
+                    phase="session_open", error_type=_safe_error_type(error), ref="writer_lock",
+                ) from None
+        self._holders += 1
+
+    def release(self) -> None:
+        self._holders -= 1
+        if not self._holders:
+            self._scope.close()
+
+    @contextmanager
+    def reserve(self):
+        self.acquire()
+        try:
+            yield self
+        finally:
+            self.release()
+
+
 class SessionStore:
     """File-backed store for conversation sessions."""
 
@@ -220,6 +269,7 @@ class SessionStore:
         self._sessions_dir = sessions_dir or get_sessions_dir()
         self._progress = progress
         self._lock = threading.RLock()
+        self._loading_for_writer: str | None = None
         self._write_cursors: dict[str, _DirectoryWriteCursor] = {}
         self._projection = SessionInventoryProjection(self._sessions_dir)
         self._projection_issue: SessionRestoreIssue | None = None
@@ -231,6 +281,23 @@ class SessionStore:
     def sessions_dir(self) -> Path:
         """Return the underlying session directory."""
         return self._sessions_dir
+
+    def writer_lease(self, session_id: str, current=None, *, for_resume=False) -> SessionWriterLease:
+        self._require_safe_session_id(session_id)
+        directory = self._sessions_dir / ".writers"
+        path = directory / (session_path_component(session_id) + ".lock")
+        if for_resume and self._safe_path_status(path, phase="session_open", ref="writer_lock") is None:
+            # Older sessions may have no lock file yet. Validate them without
+            # changing the directory; only a successful open creates new files.
+            if self._load(session_id, maintenance=False) is None:
+                raise SessionRestoreError(
+                    phase="session_discovery", error_type="FileNotFoundError", ref="session",
+                )
+        self._ensure_sessions_root(create=True)
+        self._ensure_safe_directory(directory, ref="writer_directory")
+        self._safe_path_status(path, phase="session_open", ref="writer_lock")
+        path = path.absolute()
+        return current if current is not None and current.path == path else SessionWriterLease(path)
 
     def last_persisted_sequence(self, session_id: str) -> int:
         """Return the highest event sequence known to be persisted."""
@@ -349,7 +416,7 @@ class SessionStore:
         status = self._safe_path_status(path, phase=f"{ref}_write", ref=ref)
         if status is None:
             try:
-                path.mkdir()
+                path.mkdir(exist_ok=True)
             except OSError as error:
                 raise SessionRestoreError(
                     phase=f"{ref}_write",
@@ -902,8 +969,35 @@ class SessionStore:
         """Generate a new session ID."""
         return f"session_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
 
+    def load_for_writer(self, session_id: str, writer: SessionWriterLease) -> Session | None:
+        """Keep store adapters' load hook while authorizing repairs for this read."""
+        if self.writer_lease(session_id, writer) is not writer or not writer._holders:
+            raise ValueError("Session writer reservation does not match this session")
+        with self._lock:
+            previous = self._loading_for_writer
+            self._loading_for_writer = session_id
+            try:
+                return self.load(session_id)
+            finally:
+                self._loading_for_writer = previous
+
     def load(self, session_id: str) -> Session | None:
-        """Load a saved session."""
+        """Load a snapshot; repairs and legacy migration require exclusive access."""
+        try:
+            with self._lock:
+                return self._load(session_id, maintenance=True if self._loading_for_writer == session_id else None)
+        except _SessionMaintenanceRequired:
+            pass
+        with ExitStack() as scope:
+            try:
+                scope.enter_context(self.writer_lease(session_id).reserve())
+            except SessionRestoreError:
+                # Readers can still project the legacy data in memory.
+                return self._load(session_id, maintenance=False)
+            # The ledger may have changed since the first scan.
+            return self._load(session_id, maintenance=True)
+
+    def _load(self, session_id: str, *, maintenance: bool | None) -> Session | None:
         with self._lock:
             self._report_progress(f"Loading session files for {session_id}...")
             if self._ensure_sessions_root(create=False) is None:
@@ -920,6 +1014,8 @@ class SessionStore:
                 phase="session_discovery",
                 ref="legacy_session",
             )
+            if legacy_status is not None and maintenance is None:
+                raise _SessionMaintenanceRequired
             if directory_status is None and legacy_status is None:
                 return None
 
@@ -938,6 +1034,7 @@ class SessionStore:
                 session = self._load_session_directory(
                     directory,
                     expected_session_id=session_id,
+                    maintenance=maintenance,
                 )
             else:
                 data = self._read_json_artifact(path, ref="legacy_session")
@@ -975,7 +1072,15 @@ class SessionStore:
                     session.history_completeness == "complete"
                 )
 
-            if directory_status is not None and legacy_status is not None:
+            # Reject an unusable goal before a caller switches away from its live session.
+            try:
+                Goal.from_history(session.runtime_state.goal, session.history_events)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                raise SessionRestoreError(
+                    phase="goal_validate", error_type="SessionGoalValidationError", ref="goal",
+                ) from None
+
+            if maintenance and directory_status is not None and legacy_status is not None:
                 # A validated canonical directory supersedes the old
                 # compatibility snapshot. Keeping both doubles current-state
                 # storage and makes it unclear which copy is authoritative.
@@ -1010,7 +1115,7 @@ class SessionStore:
                 session.runtime_state.model = session.model
             if session.runtime_state.active_mode is None:
                 session.runtime_state.active_mode = session.active_mode
-            if data is not None:
+            if data is not None and maintenance:
                 # Reading a legacy single-file session upgrades it to the
                 # canonical directory format. Only remove the duplicate after
                 # every canonical artifact has been written successfully.
@@ -1220,7 +1325,7 @@ class SessionStore:
                 continue
             if not stat.S_ISDIR(entry_status.st_mode):
                 continue
-            if entry.name == INDEX_DIRECTORY_NAME:
+            if entry.name in {INDEX_DIRECTORY_NAME, ".writers"}:
                 continue
             manifest_path = entry / "manifest.json"
             if not (
@@ -2019,6 +2124,7 @@ class SessionStore:
         directory: Path,
         *,
         expected_session_id: str | None = None,
+        maintenance: bool | None = True,
     ) -> Session:
         directory_status = self._safe_path_status(
             directory,
@@ -2088,6 +2194,7 @@ class SessionStore:
             events_path,
             expected_session_id=manifest["id"],
             trusted_last_event_seq=trusted_last_event_seq,
+            maintenance=maintenance,
         )
         events = list(history_result.events)
         history_issues = history_result.issues
@@ -2455,6 +2562,7 @@ class SessionStore:
         *,
         expected_session_id: str,
         trusted_last_event_seq: int = 0,
+        maintenance: bool | None = True,
     ) -> _HistoryLoadResult:
         """Load history, retaining safe facts for every recoverable failure."""
         decoded_events: list[HistoryEvent] = []
@@ -2563,7 +2671,11 @@ class SessionStore:
             and len(decoded_events) == physical_line_count
             and self._history_event_ordering_is_valid(repaired_events)
         )
-        if repaired_is_complete:
+        if repaired_is_complete and maintenance is None:
+            raise _SessionMaintenanceRequired
+        if repaired_is_complete and maintenance is False:
+            decoded_events = repaired_events
+        if repaired_is_complete and maintenance:
             try:
                 self._atomic_replace_history(events_path, repaired_events)
             except SessionRestoreError as error:

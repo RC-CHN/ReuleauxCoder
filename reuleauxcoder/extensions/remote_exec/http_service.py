@@ -361,6 +361,7 @@ class RemoteRelayHTTPService:
         self.artifact_provider = artifact_provider
         self.chat_handler = chat_handler
         self.stream_chat_handler = stream_chat_handler
+        self.peer_disconnect_handler: Callable[[str], None] | None = None
         self.bootstrap_access_secret = bootstrap_access_secret
         self.bootstrap_token_ttl_sec = bootstrap_token_ttl_sec
         self._server: ThreadingHTTPServer | None = None
@@ -1069,16 +1070,23 @@ class RemoteRelayHTTPService:
                 service._abort_peer_chat_sessions(
                     peer_id, f"peer_disconnected: {notice.reason}"
                 )
-                # Mark disconnected synchronously so callers (tests, UI) can see
-                # the state change immediately without waiting for the async
-                # event-loop dispatch.
-                service.relay_server._registry.mark_disconnected(peer_id, notice.reason)
+                # An explicitly disconnected ID cannot start another writer, even
+                # if its last poll arrives late. Its token can still read final events.
+                service.relay_server.registry.remove(peer_id)
                 service.relay_server.handle_inbound(
                     peer_id,
                     RelayEnvelope(
                         type="disconnect", peer_id=peer_id, payload=notice.to_dict()
                     ),
                 )
+                if service.peer_disconnect_handler is not None:
+                    try:
+                        service.peer_disconnect_handler(peer_id)
+                    except Exception:
+                        self._send_json(
+                            HTTPStatus.SERVICE_UNAVAILABLE, {"error": "peer_shutdown_failed"}
+                        )
+                        return
                 service.ui_bus and service.ui_bus.warning(
                     f"Remote peer disconnected: {peer_id}",
                     kind=UIEventKind.REMOTE,

@@ -32,6 +32,8 @@ from reuleauxcoder.app.runtime.session_state import (
     apply_session_runtime_state,
     save_session_snapshot,
     get_session_fingerprint,
+    reserve_session_writer,
+    load_reserved_session,
     restore_config_runtime_defaults,
 )
 from reuleauxcoder.infrastructure.persistence.session_store import (
@@ -217,7 +219,12 @@ def _resume_session(command, ctx) -> CommandEffect:
             return ctx.effect.finish(control="continue")
         session_id = latest.id
 
-    loaded = store.load(session_id)
+    with reserve_session_writer(ctx.agent, store, session_id) as writer:
+        return _restore_target(ctx, store, session_id, fingerprint, inventory_issues, writer)
+
+
+def _restore_target(ctx, store, session_id, fingerprint, inventory_issues, writer):
+    loaded = load_reserved_session(store, session_id, writer)
     if loaded is None:
         raise SessionRestoreError(
             phase="session_discovery",
@@ -234,6 +241,10 @@ def _resume_session(command, ctx) -> CommandEffect:
             current_fingerprint=fingerprint,
         )
 
+    # A filesystem preflight failure still belongs to the old live session.
+    events_path = store.get_session_events_path(session_id)
+    exit_time = store.get_exit_time(loaded.messages)
+
     current_session_id = ctx.agent.current_session_id
     if (
         current_session_id
@@ -249,10 +260,6 @@ def _resume_session(command, ctx) -> CommandEffect:
         )
         ctx.agent.lifecycle.session_saved(saved_id)
 
-    # A filesystem preflight failure still belongs to the old live session.
-    events_path = store.get_session_events_path(session_id)
-    exit_time = store.get_exit_time(loaded.messages)
-
     apply_session_runtime_state(loaded, ctx.config, ctx.agent)
     ctx.agent.session_inventory_issues = tuple(inventory_issues)
     ctx.agent.session_fingerprint = loaded.fingerprint
@@ -263,6 +270,7 @@ def _resume_session(command, ctx) -> CommandEffect:
         session_id,
         fingerprint=loaded.fingerprint,
         events_path=events_path,
+        writer=writer,
     )
     ctx.agent.lifecycle.session_started(session_id, reason="restore")
 
@@ -348,9 +356,16 @@ def _handle_save_session(command, ctx) -> CommandEffect:
 
 
 def _handle_new_session(command, ctx) -> CommandEffect:
-    ctx.effect.clear_transcript = True
     store = SessionStore(ctx.sessions_dir)
     fingerprint = get_session_fingerprint(ctx.config, ctx.agent)
+    new_session_id = store.generate_session_id()
+    with reserve_session_writer(ctx.agent, store, new_session_id, for_resume=False) as writer:
+        events_path = store.get_session_events_path(new_session_id)
+        return _start_new_session(ctx, store, fingerprint, new_session_id, events_path, writer)
+
+
+def _start_new_session(ctx, store, fingerprint, new_session_id, events_path, writer):
+    ctx.effect.clear_transcript = True
     previous_session_id = ctx.agent.current_session_id
     if ctx.agent.messages and ctx.config.session_auto_save:
         sid = _settle_current_session(
@@ -365,8 +380,6 @@ def _handle_new_session(command, ctx) -> CommandEffect:
             f"Session auto-saved: {sid}", kind=UIEventKind.SESSION, session_id=sid
         )
 
-    new_session_id = store.generate_session_id()
-    events_path = store.get_session_events_path(new_session_id)
     unbind = getattr(ctx.agent, "unbind_session_persistence", None)
     if callable(unbind):
         unbind()
@@ -383,6 +396,7 @@ def _handle_new_session(command, ctx) -> CommandEffect:
         new_session_id,
         fingerprint=fingerprint,
         events_path=events_path,
+        writer=writer,
     )
     ctx.agent.lifecycle.session_started(new_session_id, reason="new")
     notice = ctx.effect.warning if bind_issue is not None else ctx.effect.success

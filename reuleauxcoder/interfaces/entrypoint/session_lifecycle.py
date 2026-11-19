@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import ExitStack
 import logging
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from reuleauxcoder.app.runtime.session_state import (
     bind_session_persistence,
     apply_session_runtime_state,
     get_session_fingerprint,
+    reserve_session_writer,
+    load_reserved_session,
     restore_config_runtime_defaults,
 )
 from reuleauxcoder.domain.agent.agent import Agent
@@ -17,7 +20,10 @@ from reuleauxcoder.domain.config.models import Config
 from reuleauxcoder.domain.session.models import SessionRestoreIssue
 from reuleauxcoder.app.ui_events import UIEventBus, UIEventKind
 from reuleauxcoder.interfaces.entrypoint.dependencies import AppDependencies, AppOptions
-from reuleauxcoder.infrastructure.persistence.session_store import SessionRestoreError
+from reuleauxcoder.infrastructure.persistence.session_store import (
+    SessionRestoreError,
+    SessionWriterBusy,
+)
 
 
 _logger = logging.getLogger(__name__)
@@ -121,6 +127,12 @@ def restore_session(
     progress: Callable[[str], None] | None = None,
 ) -> tuple[str | None, str | None, Path | None]:
     """Restore requested/latest session and return session runtime metadata."""
+    with ExitStack() as reservations:
+        return _restore_session(options, dependencies, config, agent, ui_bus, progress, reservations)
+
+
+def _restore_session(options, dependencies, config, agent, ui_bus, progress, reservations):
+    writer = None
     current_session_id = None
     session_exit_time = None
     inventory_issues = ()
@@ -157,7 +169,10 @@ def restore_session(
         )
     if options.resume_session_id:
         report_progress(f"Restoring requested session {options.resume_session_id}...")
-        loaded = session_store.load(options.resume_session_id)
+        writer = reservations.enter_context(
+            reserve_session_writer(agent, session_store, options.resume_session_id)
+        )
+        loaded = load_reserved_session(session_store, options.resume_session_id, writer)
         if loaded:
             if loaded.fingerprint != current_fingerprint:
                 report_ui(
@@ -219,7 +234,10 @@ def restore_session(
         if latest:
             report_progress(f"Restoring latest session {latest.id}...")
             try:
-                loaded = session_store.load(latest.id)
+                writer = reservations.enter_context(
+                    reserve_session_writer(agent, session_store, latest.id)
+                )
+                loaded = load_reserved_session(session_store, latest.id, writer)
                 if loaded is None:
                     raise SessionRestoreError(
                         phase="session_load",
@@ -228,13 +246,20 @@ def restore_session(
                     )
             except SessionRestoreError as error:
                 loaded = None
+                writer = None
                 issue = SessionRestoreIssue(
                     phase=error.phase, error_type=error.error_type, ref=error.ref,
                 )
+                notice = (
+                    "The latest workspace session is open in another rcoder process. "
+                    "Starting a new session."
+                    if isinstance(error, SessionWriterBusy)
+                    else "Could not restore the previous workspace session. Starting a "
+                    f"new session; original files were kept. ({issue.render()})"
+                )
                 report_ui(
                     ui_bus.warning,
-                    "Could not restore the previous workspace session. Starting a "
-                    f"new session; original files were kept. ({issue.render()})",
+                    notice,
                     kind=UIEventKind.SESSION,
                     phase=issue.phase,
                     error_type=issue.error_type,
@@ -314,6 +339,7 @@ def restore_session(
         session_store,
         current_session_id,
         fingerprint=getattr(agent, "session_fingerprint", None) or current_fingerprint,
+        writer=writer,
     )
     if bind_issue is not None:
         report_ui(

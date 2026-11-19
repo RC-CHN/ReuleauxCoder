@@ -755,4 +755,6 @@ class RuntimeServer:
                 raise TimeoutError("Backend operations did not stop within 10 seconds")
         self.agent.reconcile_pending_tool_calls("session closed")
         self.commands.save_exit(progress=progress)
+        if getattr(self.agent, "_session_writer_lease", None) is not None:
+            self.agent.unbind_session_persistence()
         self._publish_state()

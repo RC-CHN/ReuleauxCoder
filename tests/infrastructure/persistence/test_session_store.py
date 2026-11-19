@@ -3246,6 +3246,12 @@ def test_load_repairs_legacy_store_side_sequence_reuse(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    original = events_path.read_bytes()
+    with store.writer_lease(session_id).reserve():
+        read_only = SessionStore(tmp_path).load(session_id)
+        assert [event.seq for event in read_only.history_events] == [1, 2, 3, 4, 5]
+        assert events_path.read_bytes() == original
+
     loaded = store.load(session_id)
 
     assert loaded is not None

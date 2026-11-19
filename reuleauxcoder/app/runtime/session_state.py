@@ -123,6 +123,23 @@ def get_session_fingerprint(config: Config, agent: Agent) -> str:
     )
 
 
+def _writer_lease(agent, store, session_id, *, for_resume=False):
+    factory = getattr(store, "writer_lease", None)
+    if callable(factory) and callable(getattr(agent, "bind_session_persistence", None)):
+        return factory(session_id, getattr(agent, "_session_writer_lease", None), for_resume=for_resume)
+    return None
+
+
+def reserve_session_writer(agent, store, session_id, *, for_resume=True):
+    """Hold the target before reading its ledger, through attachment to the agent."""
+    writer = _writer_lease(agent, store, session_id, for_resume=for_resume)
+    return writer.reserve() if writer is not None else nullcontext()
+
+
+def load_reserved_session(store, session_id, writer):
+    return store.load_for_writer(session_id, writer) if writer is not None else store.load(session_id)
+
+
 def build_session_persistence_kwargs(agent: Agent) -> dict:
     """Return canonical history/replay state for SessionStore.save."""
     ledger = getattr(agent, "history_ledger", None)
@@ -180,6 +197,7 @@ def bind_session_persistence(
     *,
     fingerprint: str,
     events_path=None,
+    writer=None,
 ) -> SessionRestoreIssue | None:
     """Bind live ledger fsync and replay snapshots to the active session."""
     from reuleauxcoder.infrastructure.persistence.images import ImageStore
@@ -265,6 +283,18 @@ def bind_session_persistence(
             if callable(resolve_events_path)
             else store.sessions_dir / session_id / "events.jsonl"
         )
+    if writer is None:
+        writer = _writer_lease(agent, store, session_id)
+    if writer is not None and writer is not getattr(agent, "_session_writer_lease", None):
+        writer.acquire()
+        try:
+            if getattr(agent, "_session_writer_lease", None) is not None:
+                agent.unbind_session_persistence()
+        except BaseException:
+            writer.release()
+            raise
+        agent._session_writer_lease = writer
+
     agent.current_session_id = session_id
     ledger = getattr(agent, "history_ledger", None)
     bind_context = getattr(ledger, "bind_context", None)

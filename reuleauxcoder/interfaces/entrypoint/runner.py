@@ -816,6 +816,8 @@ class AppRunner:
                 detach_git_monitor,
             )
         self._git_monitor = None
+        if getattr(agent, "_session_writer_lease", None) is not None:
+            settle("close_session_writer", agent.unbind_session_persistence)
         elapsed = time.monotonic() - shutdown_started_monotonic
         failure_total = sum(failures.values())
         if ui_reporter is not None:
