@@ -31,3 +31,16 @@ test('vertical movement uses displayed word wrapping and whole Unicode graphemes
   assert.notEqual(layoutEditor(text, 5), layout, 'resize computes new rows');
   assert.equal(edit(editor('世界👩🏽‍💻'), '', {leftArrow: true}).cursor, 2);
 });
+
+test('edits reuse earlier paragraphs and preserve full Unicode wrapping geometry', () => {
+  const prefix = '你好 👩🏽‍💻 abcde\n'.repeat(60);
+  const previous = layoutEditor(prefix + 'tail', 10);
+  const text = prefix + 'word boundary 👨‍👩‍👧';
+  const updated = layoutEditor(text, 10);
+  assert.equal(updated.rows[0], previous.rows[0]);
+  layoutEditor('evict 1', 8); layoutEditor('evict 2', 8);
+  assert.deepEqual(updated, layoutEditor(text, 10));
+  const joined = edit(editor('e'), '\u0301', {});
+  assert.deepEqual(joined, {text: 'e\u0301', cursor: 1});
+  assert.equal(edit(editor(''), 'x'.repeat(150000), {}).cursor, 150000);
+});
