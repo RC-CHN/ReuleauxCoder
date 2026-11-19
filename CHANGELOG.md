@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.1 - 2026-11-19
+
+- Continue eligible active goals after a normal text reply or the turn's tool-call limit. The next turn keeps the same history and tools, eliminating the extra handoff request at the turn limit. User input takes priority over automatic continuation.
+- Hold an exclusive session writer lock through restore, live writes and shutdown. Explicit resume reports when another process owns the session, and automatic startup opens a fresh session in that case. Remote disconnect releases the lock so a reconnect can recover the conversation.
+- Treat provider-reported truncation as a failed turn, preserve partial text and reported token usage, and discard all tool calls from that response. Detect streams that end before their completion event in the Responses and Anthropic protocols.
+- Retry timed-out TUI status refreshes, keep the last Git result visible during retries, and share recent Git samples across background polls. The active goal clock advances locally between state changes.
+- Keep readable TUI input history when a record is damaged and resume saving after a failed write. Use F3 and Enter to restore an unapplied message with its original attachments. Reuse layout for unchanged paragraphs to speed up editing long drafts.
+- Send incremental transcript updates to VS Code and resynchronize the view after a missed update. Timed-out tool calls open in their own failure row.
+
 ## 0.12.0 - 2026-11-16
 
 - Replace automatic snip/summary/collapse stages with one cache-friendly prefix checkpoint. Measure the complete prepared request, retain recent complete rounds by token budget, merge earlier checkpoints, validate effective reduction and bound context-overflow recovery.
